@@ -1,8 +1,11 @@
-![workflow](https://github.com/codefly-dev/cli/actions/workflows/go.yml/badge.svg)
-
-![](docs/media/dragonfly.png)
+[![Go CLI](https://github.com/codefly-dev/cli/actions/workflows/go.yml/badge.svg)](https://github.com/codefly-dev/cli/actions/workflows/go.yml)
+[![Release](https://github.com/codefly-dev/cli/actions/workflows/release.yml/badge.svg)](https://github.com/codefly-dev/cli/actions/workflows/release.yml)
 
 # Welcome to the `codefly.ai` CLI 😇
+
+> We are building the next generation of tools for developers.
+
+![](docs/media/dragonfly.png)
 
 ## Local Development
 

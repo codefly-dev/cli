@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.21
+
+      - name: Build Binary
+        run: |
+          GOOS=darwin GOARCH=amd64 go build -o codefly-darwin-amd64 main.go
+          GOOS=darwin GOARCH=arm64 go build -o codefly-darwin-arm64 main.go
+
+      - name: Checkout Target Repository
+        uses: actions/checkout@v3
+        with:
+          repository: 'codefly-dev/cli-releases'
+          token: ${{ secrets.GH_PAT }}
+          path: 'cli-releases'
+
+      - name: Copy File to Target Repository
+        run: |
+          cp ./codefly-darwin-amd64 ./cli-releases/
+          cp ./codefly-darwin-arm64 ./cli-releases/
+
+      - name: Configure Git with PAT
+        run: |
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+          git -C cli-releases remote set-url origin https://x-access-token:${{ secrets.GH_PAT }}@github.com/codefly-dev/cli-releases.git
+
+
+      - name: Commit and Push to Target Repository
+        run: |
+          cd cli-releases
+          git add codefly-darwin-amd64 codefly-darwin-arm64
+          # Check for changes
+          git diff --staged --quiet || {
+            echo "No changes to commit"
+            exit 0
+          }
+          git commit -m "Add new release binary"
+          git push
+
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+      - name: Upload AMD Binary to cli-releases Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./cli-releases/codefly-darwin-amd64
+          asset_name: codefly-darwin-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload ARM Binary to cli-releases Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./cli-releases/codefly-darwin-arm64
+          asset_name: codefly-darwin-arm64
+          asset_content_type: application/octet-stream
