@@ -1,0 +1,96 @@
+syntax = "proto3";
+package v1.applications.views;
+
+import "core/api.proto";
+import "google/api/annotations.proto";
+
+
+message ProjectView {
+  string name = 1;
+  repeated ApplicationView applications = 3;
+}
+
+message ProjectInformationRequest {
+}
+
+message ProjectInformationResponse {
+  ProjectView project = 1;
+}
+
+message ApplicationView {
+  string application = 1;
+  repeated ServiceView services = 2;
+}
+
+message ApplicationInformationRequest {
+  string application = 2;
+}
+
+message ApplicationInformationResponse {
+  ApplicationView application = 1;
+}
+
+message ServiceView {
+  string service = 1;
+  repeated EndpointView endpoints = 2;
+}
+
+message EndpointView {
+  v1.core.api.Endpoint endpoint = 1;
+}
+
+
+message ServiceInformationRequest {
+  string application = 1;
+  string service = 2;
+}
+
+
+message ServiceInformationResponse {
+}
+
+message PluginUsageRequest {
+  string publisher = 1;
+  string name = 2;
+}
+
+message Usage {
+  string application = 1;
+  string service = 2;
+}
+
+message PluginUsage {
+}
+
+message PluginUsageResponse {
+  PluginUsage usage = 1;
+}
+
+
+service Web {
+
+  rpc GetProjectInformation(ProjectInformationRequest) returns (ProjectInformationResponse) {
+    option (google.api.http) = {
+      get: "/project/information"
+    };
+  }
+//
+//  rpc GetApplicationInformation(ApplicationInformationRequest) returns (ApplicationInformationResponse) {
+//    option (google.api.http) = {
+//      get: "/project/application/{application}/information"
+//    };
+//  }
+//
+//
+//  rpc GetServiceInformation(ServiceInformationRequest) returns (ServiceInformationResponse) {
+//    option (google.api.http) = {
+//      get: "/project/application/{application}/service/{service}/information"
+//    };
+//  }
+//
+//  rpc GetPluginUsage(PluginUsageRequest) returns (PluginUsageResponse) {
+//    option (google.api.http) = {
+//      get: "/plugin/{publisher}/{name}/usage"
+//    };
+//  }
+}

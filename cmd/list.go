@@ -1,0 +1,18 @@
+package cmd
+
+import (
+	"github.com/codefly-dev/cli/cmd/list"
+	"github.com/spf13/cobra"
+)
+
+// ListCmd represents the list command
+var ListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List",
+}
+
+func init() {
+	ListCmd.AddCommand(list.ProjectCmd)
+	ListCmd.AddCommand(list.ApplicationCmd)
+	ListCmd.AddCommand(list.LibraryCmd)
+}

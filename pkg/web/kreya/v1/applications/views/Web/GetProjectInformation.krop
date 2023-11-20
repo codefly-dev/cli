@@ -1,0 +1,13 @@
+{
+  "details": {
+    "methodFqn": "v1.applications.views.Web.GetProjectInformation"
+  },
+  "requests": [
+    {
+      "location": "GetProjectInformation-request.json"
+    }
+  ],
+  "operationType": "unary",
+  "invokerName": "grpc",
+  "importStreamId": "ce958171-3c21-49cc-b450-6e3a4f54aaf9"
+}

@@ -1,0 +1,22 @@
+project_name: codefly
+
+builds:
+  - id: "codefly"
+    main: .
+    binary: codefly
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+brews:
+  - name: codefly
+    description: "codefly CLI"
+    homepage: "https://codefly.ai" # replace with your project's homepage
+    url_template: "https://github.com/codefly-dev/cli/releases/download/{{ .Tag }}/codefly_{{ .Tag }}_{{ .Os }}_{{ .Arch }}.tar.gz"
+    caveats: "How to use your tool after installation"
+    test: "codefly version"
+    repository:
+      owner: codefly-dev
+      name: cli-homebrew

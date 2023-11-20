@@ -1,0 +1,489 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "services/factory/factory.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "Factory"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {},
+  "definitions": {
+    "VisibilityValue": {
+      "type": "string",
+      "enum": [
+        "PUBLIC",
+        "APPLICATION"
+      ],
+      "default": "PUBLIC"
+    },
+    "apiAPI": {
+      "type": "object",
+      "properties": {
+        "tcp": {
+          "$ref": "#/definitions/apiTcpAPI"
+        },
+        "rest": {
+          "$ref": "#/definitions/apiRestAPI"
+        },
+        "grpc": {
+          "$ref": "#/definitions/apiGrpcAPI"
+        }
+      }
+    },
+    "apiApplicationEndpointGroup": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "serviceEndpointGroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/apiServiceEndpointGroup"
+          }
+        }
+      }
+    },
+    "apiEndpoint": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "visibility": {
+          "$ref": "#/definitions/apiVisibility"
+        },
+        "api": {
+          "$ref": "#/definitions/apiAPI"
+        },
+        "application": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        }
+      }
+    },
+    "apiEndpointGroup": {
+      "type": "object",
+      "properties": {
+        "applicationEndpointGroup": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/apiApplicationEndpointGroup"
+          }
+        }
+      }
+    },
+    "apiGrpcAPI": {
+      "type": "object",
+      "properties": {
+        "proto": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "apiHttpMethod": {
+      "type": "string",
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "PATCH",
+        "OPTIONS",
+        "HEAD",
+        "CONNECT",
+        "TRACE"
+      ],
+      "default": "GET"
+    },
+    "apiRestAPI": {
+      "type": "object",
+      "properties": {
+        "openapi": {
+          "type": "string",
+          "format": "byte"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/apiRestRoute"
+          }
+        }
+      }
+    },
+    "apiRestRoute": {
+      "type": "object",
+      "properties": {
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/apiHttpMethod"
+          }
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "apiServiceEndpointGroup": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/apiEndpoint"
+          }
+        }
+      }
+    },
+    "apiTcpAPI": {
+      "type": "object"
+    },
+    "apiVisibility": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/definitions/VisibilityValue"
+        }
+      }
+    },
+    "communicateAnswer": {
+      "type": "object",
+      "properties": {
+        "done": {
+          "type": "boolean"
+        },
+        "method": {
+          "$ref": "#/definitions/communicateMethod"
+        },
+        "round": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "error": {
+          "type": "string"
+        },
+        "confirm": {
+          "$ref": "#/definitions/communicateConfirmAnswer"
+        },
+        "input": {
+          "$ref": "#/definitions/communicateInputAnswer"
+        },
+        "choice": {
+          "$ref": "#/definitions/communicateChoiceAnswer"
+        },
+        "selection": {
+          "$ref": "#/definitions/communicateSelectionAnswer"
+        }
+      }
+    },
+    "communicateChannel": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "$ref": "#/definitions/communicateMethod"
+        }
+      }
+    },
+    "communicateChoice": {
+      "type": "object",
+      "properties": {
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/communicateMessage"
+          }
+        }
+      }
+    },
+    "communicateChoiceAnswer": {
+      "type": "object",
+      "properties": {
+        "option": {
+          "type": "string"
+        }
+      }
+    },
+    "communicateConfirm": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "boolean"
+        }
+      }
+    },
+    "communicateConfirmAnswer": {
+      "type": "object",
+      "properties": {
+        "confirmed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "communicateDisplay": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "communicateInformationRequest": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "$ref": "#/definitions/communicateMethod"
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "question": {
+          "$ref": "#/definitions/communicateQuestion"
+        }
+      }
+    },
+    "communicateInput": {
+      "type": "object",
+      "properties": {
+        "stringDefault": {
+          "type": "string"
+        },
+        "intDefault": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "communicateInputAnswer": {
+      "type": "object",
+      "properties": {
+        "stringValue": {
+          "type": "string"
+        },
+        "intValue": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "communicateMessage": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "communicateMethod": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "CREATE",
+        "SYNC"
+      ],
+      "default": "UNKNOWN",
+      "title": "- CREATE: Factory\n - SYNC: Runtime"
+    },
+    "communicateQuestion": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "$ref": "#/definitions/communicateMethod"
+        },
+        "round": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "$ref": "#/definitions/communicateMessage"
+        },
+        "display": {
+          "$ref": "#/definitions/communicateDisplay"
+        },
+        "confirm": {
+          "$ref": "#/definitions/communicateConfirm"
+        },
+        "input": {
+          "$ref": "#/definitions/communicateInput"
+        },
+        "choice": {
+          "$ref": "#/definitions/communicateChoice"
+        },
+        "selection": {
+          "$ref": "#/definitions/communicateSelection"
+        }
+      }
+    },
+    "communicateSelection": {
+      "type": "object",
+      "properties": {
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/communicateMessage"
+          }
+        }
+      }
+    },
+    "communicateSelectionAnswer": {
+      "type": "object",
+      "properties": {
+        "selected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "factoryBuildResponse": {
+      "type": "object"
+    },
+    "factoryCreateResponse": {
+      "type": "object",
+      "properties": {
+        "needCommunication": {
+          "type": "boolean"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/apiEndpoint"
+          },
+          "title": "The endpoints of the created service"
+        }
+      }
+    },
+    "factoryDeploymentResponse": {
+      "type": "object"
+    },
+    "factoryInitResponse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "$ref": "#/definitions/servicesVersion",
+          "title": "The version of the service"
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/communicateChannel"
+          },
+          "title": "The communication channels of the service"
+        }
+      }
+    },
+    "factorySyncResponse": {
+      "type": "object",
+      "properties": {
+        "needCommunication": {
+          "type": "boolean"
+        }
+      }
+    },
+    "factoryUpdateResponse": {
+      "type": "object"
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "servicesServiceIdentity": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "The name of the service"
+        },
+        "domain": {
+          "type": "string",
+          "title": "The domain of the service"
+        },
+        "application": {
+          "type": "string",
+          "title": "The application of the service | logical partitioning"
+        },
+        "namespace": {
+          "type": "string",
+          "title": "The namespace of the service | resource partitioning"
+        }
+      }
+    },
+    "servicesVersion": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

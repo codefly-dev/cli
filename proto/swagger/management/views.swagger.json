@@ -1,0 +1,246 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "management/views.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "Web"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/project/information": {
+      "get": {
+        "operationId": "Web_GetProjectInformation",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/viewsProjectInformationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Web"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "VisibilityValue": {
+      "type": "string",
+      "enum": [
+        "PUBLIC",
+        "APPLICATION"
+      ],
+      "default": "PUBLIC"
+    },
+    "apiAPI": {
+      "type": "object",
+      "properties": {
+        "tcp": {
+          "$ref": "#/definitions/apiTcpAPI"
+        },
+        "rest": {
+          "$ref": "#/definitions/apiRestAPI"
+        },
+        "grpc": {
+          "$ref": "#/definitions/apiGrpcAPI"
+        }
+      }
+    },
+    "apiEndpoint": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "visibility": {
+          "$ref": "#/definitions/apiVisibility"
+        },
+        "api": {
+          "$ref": "#/definitions/apiAPI"
+        },
+        "application": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        }
+      }
+    },
+    "apiGrpcAPI": {
+      "type": "object",
+      "properties": {
+        "proto": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "apiHttpMethod": {
+      "type": "string",
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "PATCH",
+        "OPTIONS",
+        "HEAD",
+        "CONNECT",
+        "TRACE"
+      ],
+      "default": "GET"
+    },
+    "apiRestAPI": {
+      "type": "object",
+      "properties": {
+        "openapi": {
+          "type": "string",
+          "format": "byte"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/apiRestRoute"
+          }
+        }
+      }
+    },
+    "apiRestRoute": {
+      "type": "object",
+      "properties": {
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/apiHttpMethod"
+          }
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "apiTcpAPI": {
+      "type": "object"
+    },
+    "apiVisibility": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/definitions/VisibilityValue"
+        }
+      }
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "viewsApplicationView": {
+      "type": "object",
+      "properties": {
+        "application": {
+          "type": "string"
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewsServiceView"
+          }
+        }
+      }
+    },
+    "viewsEndpointView": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "$ref": "#/definitions/apiEndpoint"
+        }
+      }
+    },
+    "viewsProjectInformationResponse": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "$ref": "#/definitions/viewsProjectView"
+        }
+      }
+    },
+    "viewsProjectView": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "applications": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewsApplicationView"
+          }
+        }
+      }
+    },
+    "viewsServiceView": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "string"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewsEndpointView"
+          }
+        }
+      }
+    }
+  }
+}

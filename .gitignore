@@ -1,0 +1,77 @@
+# Go work
+go.work*
+
+# Compiled Object files, Static and Dynamic libs (Shared Objects)
+*.o
+*.a
+*.so
+*.dylib
+
+# Folders & Files related to Go build/test outputs
+dist
+# common directory for distribution artifacts
+
+# Coverage output files
+*.coverprofile
+coverage.txt
+coverage.out
+coverage.html
+
+# Dependency directories (remove these lines if you prefer to check in your vendor directory)
+/vendor/
+Godeps/
+
+# Output of the go tool
+/obj/
+/testbin/
+
+# Output of the gorelease tool
+/release/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Certificates
+*.pem
+*.key
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite
+
+# Environment files
+.env
+.env.local
+
+# Binary output
+/main
+/*.exe
+/*.exe~
+
+# Generated files by Swagger
+/docs/swagger
+
+# Node modules (for projects using JavaScript/TypeScript tools)
+/node_modules/
+
+# Yarn Integrity file
+.yarn-integrity
+
+# Test binary, build with 'go test -c'
+*.test
+*.test.exe
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Profile output
+*.pprof
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn

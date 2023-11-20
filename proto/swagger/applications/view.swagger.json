@@ -1,0 +1,431 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "applications/view.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "Web"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/plugin/{publisher}/{name}/usage": {
+      "get": {
+        "operationId": "Web_GetPluginUsage",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/viewPluginUsageResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "publisher",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
+    },
+    "/project/{project}/application/{unique}/information": {
+      "get": {
+        "operationId": "Web_GetApplicationInformation",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/viewApplicationInformationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "unique",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
+    },
+    "/project/{project}/application/{unique}/service/{unique}/information": {
+      "get": {
+        "operationId": "Web_GetServiceInformation",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/viewServiceInformationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "unique",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "unique",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "application",
+            "description": "unique",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
+    },
+    "/project/{project}/information": {
+      "get": {
+        "operationId": "Web_GetProjectInformation",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/viewProjectInformationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
+    },
+    "/workspace/view": {
+      "get": {
+        "operationId": "Web_GetWorkspace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/viewWorkspaceViewResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Web"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "viewApiView": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "viewApplicationInformationResponse": {
+      "type": "object",
+      "properties": {
+        "application": {
+          "$ref": "#/definitions/viewApplicationView"
+        }
+      }
+    },
+    "viewApplicationView": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "unique": {
+          "type": "string"
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewServiceView"
+          }
+        }
+      }
+    },
+    "viewDeployment": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "viewEndpointView": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "api": {
+          "$ref": "#/definitions/viewApiView"
+        }
+      }
+    },
+    "viewPluginUsage": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "uses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewUsage"
+          }
+        }
+      }
+    },
+    "viewPluginUsageResponse": {
+      "type": "object",
+      "properties": {
+        "usage": {
+          "$ref": "#/definitions/viewPluginUsage"
+        }
+      }
+    },
+    "viewProjectInformationResponse": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "$ref": "#/definitions/viewProjectView"
+        }
+      }
+    },
+    "viewProjectView": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "unique": {
+          "type": "string"
+        },
+        "applications": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewApplicationView"
+          }
+        }
+      }
+    },
+    "viewServiceDeployment": {
+      "type": "object",
+      "properties": {
+        "deployment": {
+          "$ref": "#/definitions/viewDeployment"
+        },
+        "information": {
+          "$ref": "#/definitions/viewServiceInformation"
+        }
+      }
+    },
+    "viewServiceInformation": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "viewServiceInformationResponse": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/definitions/viewServiceSource"
+        },
+        "deployments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewServiceDeployment"
+          }
+        }
+      }
+    },
+    "viewServiceSource": {
+      "type": "object",
+      "properties": {
+        "information": {
+          "$ref": "#/definitions/viewServiceInformation"
+        }
+      }
+    },
+    "viewServiceView": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "unique": {
+          "type": "string"
+        },
+        "base": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewEndpointView"
+          }
+        }
+      }
+    },
+    "viewUsage": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "application": {
+          "type": "string"
+        },
+        "unique": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "viewWorkspace": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewProjectView"
+          }
+        }
+      }
+    },
+    "viewWorkspaceViewResponse": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "#/definitions/viewWorkspace"
+        }
+      }
+    }
+  }
+}

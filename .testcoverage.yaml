@@ -1,0 +1,33 @@
+profile: cover.out
+
+local-prefix: "github.com/codefly-dev/cli"
+
+## in this example badge is created and committed only for main brach
+git-token: ${{ github.ref_name == 'main' && secrets.GITHUB_TOKEN || '' }}
+## name of branch where badges are stored
+## ideally this should be orphan branch (see below how to create this branch)
+git-branch: badges
+
+threshold:
+  file: 0
+
+  package: 0
+
+  total: 0
+
+# Holds regexp rules which will override thresholds for matched files or packages using their paths.
+#
+# First rule from this list that matches file or package is going to apply new threshold to it.
+# If project has multiple rules that match same path, override rules should be listed in order from
+# specific to more general rules.
+override:
+  # Increase coverage threshold to 100% for `foo` package (default is 80, as configured above)
+  - threshold: 100
+    path: ^pkg/lib/foo$
+
+# Holds regexp rules which will exclude matched files or packages from coverage statistics
+exclude:
+  # Exclude files or packages matching their paths
+  paths:
+    - \.pb\.go$    # excludes all protobuf generated files
+    - ^pkg/bar     # exclude package `pkg/bar`
