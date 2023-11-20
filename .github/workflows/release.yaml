@@ -17,6 +17,14 @@ jobs:
         with:
           go-version: 1.21
 
+      - name: Cache Go Modules
+        uses: actions/cache@v2
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
       - name: Build Binary
         run: |
           GOOS=darwin GOARCH=amd64 go build -o codefly-darwin-amd64 main.go
@@ -53,15 +61,25 @@ jobs:
           git commit -m "Add new release binary"
           git push
 
-      - name: Create Release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      - name: Create Release in Target Repository
+        id: create_release
+        uses: actions/github-script@v3
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const repoName = 'cli-releases';
+            const ownerName = 'codefly-dev';
+
+            const releaseResponse = await github.repos.createRelease({
+              owner: ownerName,
+              repo: repoName,
+              tag_name: '${{ github.ref }}',
+              name: 'Release ${{ github.ref }}',
+              draft: false,
+              prerelease: false
+            });
+
+            core.setOutput('upload_url', releaseResponse.data.upload_url);
 
       - name: Upload AMD Binary to cli-releases Release
         uses: actions/upload-release-asset@v1
