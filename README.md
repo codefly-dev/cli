@@ -7,6 +7,9 @@
 
 ![](docs/media/dragonfly.png)
 
+
+TODO: golang ci lint
+
 ## Local Development
 
 ### Setup
