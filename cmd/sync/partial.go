@@ -7,6 +7,7 @@ import (
 	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/cli/pkg/partial"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
@@ -39,14 +40,12 @@ var PartialCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		part, err := partial.NewPartial(project, conf)
+		part, err := partial.NewPartial(project, conf, application.FactoryMode)
 		shared.ExitOnError(err, "<%s>", conf.Name)
 
 		if initOnly {
 			return
 		}
-		err = part.Configure(ctx)
-		shared.UnexpectedExitOnError(err, "cannot configure partial")
 
 		err = part.Sync(ctx)
 		shared.UnexpectedExitOnError(err, "cannot sync partial")

@@ -14,13 +14,13 @@ import (
 
 func WithApi(endpoint *configurations.Endpoint, source ApiSource) (*corev1.Endpoint, error) {
 	logger := shared.NewLogger("services.DefaultApi")
-	logger.TODO("visibility")
 	api, err := source.Proto()
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create grpc api: %v")
 	}
 	return &corev1.Endpoint{
 		Name:        endpoint.Name,
+		Visibility:  endpoint.Visibility,
 		Description: endpoint.Description,
 		Api:         api,
 	}, nil

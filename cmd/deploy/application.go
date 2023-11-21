@@ -19,7 +19,7 @@ var ApplicationCmd = &cobra.Command{
 		config := common.ApplicationConfiguration(current)
 
 		configurations.SetMode(configurations.ModeApplication)
-		app, err := application.Load(project, config)
+		app, err := application.Load(project, config, application.FactoryMode)
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
 		golor.Println(`#(blue,bold)[Deploying applications]: #(italic,white)[{{.Configuration.Name}}]`, app)

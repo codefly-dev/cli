@@ -29,6 +29,7 @@ jobs:
         run: |
           GOOS=darwin GOARCH=amd64 go build -o codefly-darwin-amd64 main.go
           GOOS=darwin GOARCH=arm64 go build -o codefly-darwin-arm64 main.go
+          GOOS=linux GOARCH=amd64 go build -o codefly-linux-x86_64 main.go
 
       - name: Checkout Target Repository
         uses: actions/checkout@v3
@@ -41,6 +42,7 @@ jobs:
         run: |
           cp ./codefly-darwin-amd64 ./cli-releases/
           cp ./codefly-darwin-arm64 ./cli-releases/
+          cp ./codefly-linux-x86_64 ./cli-releases/
 
       - name: Configure Git with PAT
         run: |
@@ -52,7 +54,7 @@ jobs:
       - name: Commit and Push to Target Repository
         run: |
           cd cli-releases
-          git add codefly-darwin-amd64 codefly-darwin-arm64
+          git add codefly-darwin-amd64 codefly-darwin-arm64 codefly-linux-x86_64
           # Check for changes
           git diff --staged --quiet || {
             echo "No changes to commit"
@@ -100,3 +102,32 @@ jobs:
           asset_path: ./cli-releases/codefly-darwin-arm64
           asset_name: codefly-darwin-arm64
           asset_content_type: application/octet-stream
+
+      - name: Upload Linux Binary to cli-releases Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./cli-releases/codefly-linux-x86_64
+          asset_name: codefly-linux-x86_64
+          asset_content_type: application/octet-stream
+
+      - name: Check out the formula repository
+        uses: actions/checkout@v2
+        with:
+          repository: your-username/homebrew-tap
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Update the formula
+        run: |
+          # Update formula file with new version and SHA
+          # This could be a script that updates the URL and sha256 fields in the formula file
+          ./scripts/dev/update_homebrew.sh ${{ github.event.release.tag_name }}
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name 'Your Name'
+          git config --global user.email 'your-email@example.com'
+          git commit -am "Update formula to version ${{ github.event.release.tag_name }}"
+          git push

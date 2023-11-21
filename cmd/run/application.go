@@ -51,7 +51,7 @@ func run(project *configurations.Project, config *configurations.Application) {
 	errs := make(chan error, 1) // Buffered channel
 
 	configurations.SetMode(configurations.ModeApplication)
-	app, err := application.Load(project, config)
+	app, err := application.Load(project, config, application.RuntimeMode)
 	shared.ExitOnError(err, "<%s>", config.Name)
 
 	// Web server interface to codefly

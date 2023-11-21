@@ -29,7 +29,7 @@ var ApplicationCmd = &cobra.Command{
 #(blue,bold)[Ctrl-C anytime to exit...]`, config)
 
 		configurations.SetMode(configurations.ModeApplication)
-		app, err := application.Load(project, config)
+		app, err := application.Load(project, config, application.FactoryMode)
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
 		err = app.Update()

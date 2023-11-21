@@ -8,6 +8,13 @@ import (
 	"github.com/codefly-dev/golor"
 )
 
+type Mode string
+
+const (
+	RuntimeMode Mode = "runtime"
+	FactoryMode Mode = "factory"
+)
+
 type Loader struct {
 	application *configurations.Application
 	project     *configurations.Project
@@ -19,6 +26,8 @@ type Loader struct {
 	entries        map[string]*configurations.ServiceDependency
 
 	publicDependencies map[string][]*configurations.ServiceDependency
+
+	mode Mode
 
 	graph   *Graph
 	verbose bool
@@ -64,10 +73,22 @@ func (l *Loader) Load() (*Application, error) {
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create applications")
 	}
-	err = app.Init()
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot init applications")
+	switch l.mode {
+	case FactoryMode:
+		err = app.FactoryInit()
+		if err != nil {
+			return nil, logger.Wrapf(err, "cannot init applications for factory")
+		}
+	case RuntimeMode:
+		err = app.RuntimeInit()
+		if err != nil {
+			return nil, logger.Wrapf(err, "cannot init applications for runtime")
+		}
+	default:
+		return nil, logger.Errorf("unknown mode <%s>", l.mode)
+
 	}
+
 	if l.Verbose() {
 		app.MakeVerbose()
 	}
@@ -135,10 +156,11 @@ func (l *Loader) Verbose() bool {
 	return l.verbose
 }
 
-func NewLoader(project *configurations.Project, app *configurations.Application) (*Loader, error) {
+func NewLoader(project *configurations.Project, app *configurations.Application, mode Mode) (*Loader, error) {
 	return &Loader{
 		application:        app,
 		project:            project,
+		mode:               mode,
 		entries:            make(map[string]*configurations.ServiceDependency),
 		publicDependencies: make(map[string][]*configurations.ServiceDependency),
 		references:         make(map[string]*configurations.ServiceReference),

@@ -50,7 +50,7 @@ func (m *Manager) LoadProject(project *configurations.Project) (*managementv1.Pr
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot load applications: %s", a.Name)
 		}
-		app, err := m.LoadApplication(config, project)
+		app, err := m.LoadApplication(config, project, application.FactoryMode)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot create applications: %s", config.Name)
 		}
@@ -62,12 +62,12 @@ func (m *Manager) LoadProject(project *configurations.Project) (*managementv1.Pr
 	}, nil
 }
 
-func (m *Manager) LoadApplication(config *configurations.Application, project *configurations.Project) (*managementv1.ApplicationView, error) {
+func (m *Manager) LoadApplication(config *configurations.Application, project *configurations.Project, mode application.Mode) (*managementv1.ApplicationView, error) {
 	logger := shared.NewLogger("management.LoadApplication")
-	application.ShowAll()
+	application.ShowEndpointManagerState()
 	var services []*managementv1.ServiceView
 	// Much easier to load it
-	app, err := application.Load(project, config)
+	app, err := application.Load(project, config, mode)
 	if err != nil {
 		return nil, err
 	}

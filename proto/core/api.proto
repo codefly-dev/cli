@@ -13,18 +13,19 @@ Only public endpoint can be accessed across applications
 
 */
 
-message Visibility {
-  enum Value {
-    PUBLIC = 0;
-    APPLICATION = 1;
-  }
-  Value value = 1;
-}
+//message Visibility {
+//  enum Value {
+//    PUBLIC = 0;
+//    PROJECT = 1;
+//    PRIVATE = 2;
+//  }
+//  Value value = 1;
+//}
 
 message Endpoint {
   string name = 1;
   string description = 2;
-  Visibility visibility = 3;
+  string visibility = 3;
   API api = 4;
   string application = 5;
   string service = 6;

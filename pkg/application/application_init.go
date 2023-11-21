@@ -7,13 +7,13 @@ import (
 	"github.com/codefly-dev/core/shared"
 )
 
-// Init the application components
-func (app *Application) Init() error {
+// FactoryInit the application components
+func (app *Application) FactoryInit() error {
 	logger := shared.NewLogger("applications.Init<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
-		logger.DebugMe("init %v", service.Unique())
+		logger.Debugf("init %v", service.Unique())
 		app.uniques[service.Configuration.Unique()] = service
-		err := app.InitService(service)
+		err := app.FactoryInitService(service)
 		if err != nil {
 			return logger.Wrapf(err, "cannot init service")
 		}
@@ -21,7 +21,21 @@ func (app *Application) Init() error {
 	return nil
 }
 
-func (app *Application) InitService(instance *services.Instance) error {
+// RuntimeInit the application components
+func (app *Application) RuntimeInit() error {
+	logger := shared.NewLogger("applications.Init<%s>", app.Configuration.Name)
+	for _, service := range app.Plan.Services {
+		logger.Debugf("init %v", service.Unique())
+		app.uniques[service.Configuration.Unique()] = service
+		err := app.RuntimeInitService(service)
+		if err != nil {
+			return logger.Wrapf(err, "cannot init service")
+		}
+	}
+	return nil
+}
+
+func (app *Application) FactoryInitService(instance *services.Instance) error {
 	logger := shared.NewLogger("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Plugin.Identifier)
 	if instance.Initialized {
 		return nil
@@ -38,9 +52,36 @@ func (app *Application) InitService(instance *services.Instance) error {
 		DependencyEndpointGroup: group,
 	}
 
-	_, err = instance.FactoryInit(req)
+	init, err := instance.FactoryInit(req)
 	if err != nil {
 		return logger.Wrapf(err, "cannot init factory")
+	}
+
+	logger.Tracef("init response: version: %v, #endpoints: %d, #channels: %d", init.Version, len(init.Endpoints), len(init.Channels))
+
+	err = app.EndpointManager.Add(instance.Configuration, init.Endpoints)
+	if err != nil {
+		return logger.Wrapf(err, "cannot add endpoints")
+	}
+	instance.Initialized = true
+	return nil
+}
+
+func (app *Application) RuntimeInitService(instance *services.Instance) error {
+	logger := shared.NewLogger("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Plugin.Identifier)
+	if instance.Initialized {
+		return nil
+	}
+	group, err := GetEndpointDependencyGroup(instance.Configuration)
+	if err != nil {
+		return logger.Wrapf(err, "cannot get application group endpoint")
+	}
+
+	req := &servicev1.InitRequest{
+		Debug:                   shared.Debug(),
+		Location:                instance.Location,
+		Identity:                instance.ServiceIdentity,
+		DependencyEndpointGroup: group,
 	}
 
 	init, err := instance.RuntimeInit(req)

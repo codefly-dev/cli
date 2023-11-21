@@ -9,8 +9,9 @@ import "services/init.proto";
 */
 
 message InitResponse {
-  Version version = 1; // The version of the service
-  repeated core.communicate.Channel channels = 2; // The communication channels of the service
+  services.Version version = 1;
+  repeated v1.core.api.Endpoint endpoints = 2;
+  repeated core.communicate.Channel channels = 3; // The communication channels of the service
 }
 
 /*

@@ -7,6 +7,7 @@ import (
 	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/cli/pkg/partial"
 	"github.com/codefly-dev/cli/pkg/plugins"
 	"github.com/codefly-dev/core/shared"
@@ -35,7 +36,7 @@ var PartialCmd = &cobra.Command{
 			fmt.Printf("Cannot find partial <%s> in project <%s>\n", name, project.Name)
 			os.Exit(1)
 		}
-		part, err := partial.NewPartial(project, conf)
+		part, err := partial.NewPartial(project, conf, application.FactoryMode)
 		shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
 
 		err = part.Build(ctx)

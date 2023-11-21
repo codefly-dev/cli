@@ -16,7 +16,7 @@ type Partial struct {
 	Applications  []*application.Application
 }
 
-func NewPartial(project *configurations.Project, partial *configurations.Partial) (*Partial, error) {
+func NewPartial(project *configurations.Project, partial *configurations.Partial, mode application.Mode) (*Partial, error) {
 	logger := shared.NewLogger("partial.NewPartial<%s>", partial.Name)
 	configurations.SetMode(configurations.ModePartial)
 	display.PartialLoading(partial)
@@ -28,7 +28,7 @@ func NewPartial(project *configurations.Project, partial *configurations.Partial
 		if err != nil {
 			return nil, logger.Wrapf(err, "failed to load application configuration: %s", name)
 		}
-		app, err := application.Load(project, config)
+		app, err := application.Load(project, config, mode)
 		if err != nil {
 			return nil, logger.Wrapf(err, "failed to load application: %s", config)
 		}

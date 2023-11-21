@@ -63,14 +63,15 @@ func (n NilEndpointError) Error() string {
 	return "endpoint is nil"
 }
 
-func FromProtoEndpoint(r *corev1.Endpoint) (*configurations.Endpoint, error) {
-	if r == nil {
+func FromProtoEndpoint(e *corev1.Endpoint) (*configurations.Endpoint, error) {
+	if e == nil {
 		return nil, &NilEndpointError{}
 	}
 	return &configurations.Endpoint{
-		Name:        r.Name,
-		Description: r.Description,
-		Api:         FromProtoApi(r.Api),
+		Name:        e.Name,
+		Visibility:  e.Visibility,
+		Description: e.Description,
+		Api:         FromProtoApi(e.Api),
 	}, nil
 }
 
@@ -111,6 +112,7 @@ func LightApi(api *corev1.API) *corev1.API {
 func Light(e *corev1.Endpoint) *corev1.Endpoint {
 	return &corev1.Endpoint{
 		Name:        e.Name,
+		Visibility:  e.Visibility,
 		Description: e.Description,
 		Api:         LightApi(e.Api),
 	}

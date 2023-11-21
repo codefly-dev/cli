@@ -34,7 +34,7 @@ var ApplicationCmd = &cobra.Command{
 		}
 
 		configurations.SetMode(configurations.ModeApplication)
-		app, err := application.Load(project, config)
+		app, err := application.Load(project, config, application.FactoryMode)
 
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
@@ -50,8 +50,6 @@ var ApplicationCmd = &cobra.Command{
 		logger.Debugf("other applications: %d", len(others))
 		golor.Println(`#(blue,bold)[Syncing application]: #(italic,white)[{{.Configuration.Name}}]`, app)
 
-		err = app.Configure(ctx)
-		shared.UnexpectedExitOnError(err, "cannot configure application")
 		err = app.Sync(ctx)
 		shared.UnexpectedExitOnError(err, "cannot sync application")
 	},

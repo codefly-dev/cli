@@ -24,10 +24,10 @@ var ApplicationCmd = &cobra.Command{
 		golor.Println(`#(blue,bold)[Building applications]: #(italic,white)[{{ .Name }}]`, config)
 		configurations.SetMode(configurations.ModeApplication)
 
-		app, err := application.Load(project, config)
+		app, err := application.Load(project, config, application.FactoryMode)
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
-		err = app.Init()
+		err = app.FactoryInit()
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
 		err = app.Build(ctx)

@@ -10,23 +10,32 @@ import (
 )
 
 type EndpointHolder struct {
-	//application *configurations.Application
-	//service  *configurations.Service
-	endpoint *corev1.Endpoint
+	application string
+	endpoint    *corev1.Endpoint
+}
+
+func (p *EndpointHolder) AccessibleFrom(app string) bool {
+	logger := shared.NewLogger("applications.EndpointHolder.AccessibleFrom<%s>", p.endpoint.Name)
+	logger.DebugMe("visibility of endpoint: %s<%s> | access from app %v", p.endpoint.Name, p.endpoint.Visibility, app)
+	if p.endpoint.Visibility == "" || p.endpoint.Visibility == "private" {
+		return p.application == app
+	}
+	logger.DebugMe("IT IS")
+	return true
 }
 
 func (p *EndpointHolder) Add(endpoint *corev1.Endpoint) {
 	p.endpoint = endpoint
 }
 
-func NewEndpointHolder(endpoint *corev1.Endpoint) *EndpointHolder {
-	return &EndpointHolder{endpoint: endpoint}
+func NewEndpointHolder(application string, endpoint *corev1.Endpoint) *EndpointHolder {
+	return &EndpointHolder{application: application, endpoint: endpoint}
 }
 
 type ServiceEndpointManager struct {
-	//application *configurations.Application
-	service   *configurations.Service
-	endpoints []*EndpointHolder
+	application string
+	service     *configurations.Service
+	endpoints   []*EndpointHolder
 }
 
 func (s *ServiceEndpointManager) Add(endpoint *corev1.Endpoint) error {
@@ -42,7 +51,7 @@ func (s *ServiceEndpointManager) Add(endpoint *corev1.Endpoint) error {
 	}
 
 	logger.Debugf("adding endpoint: %s::%s", endpoint.Name, api)
-	s.endpoints = append(s.endpoints, NewEndpointHolder(endpoint))
+	s.endpoints = append(s.endpoints, NewEndpointHolder(s.application, endpoint))
 	return nil
 }
 
@@ -61,7 +70,10 @@ func (s *ServiceEndpointManager) ServiceGroupEndpoints(dep *configurations.Servi
 	logger.TODO("visibility")
 	var es []*corev1.Endpoint
 	for _, holder := range s.endpoints {
-
+		// Visibility check
+		if !holder.AccessibleFrom(dep.Application) {
+			continue
+		}
 		es = append(es, holder.endpoint)
 	}
 	logger.Debugf("endpoints: #%d", len(es))
@@ -74,17 +86,10 @@ func (s *ServiceEndpointManager) ServiceGroupEndpoints(dep *configurations.Servi
 	return &corev1.ServiceEndpointGroup{Name: dep.Name}, nil
 }
 
-func (s *ServiceEndpointManager) ShowAll() {
-	fmt.Println("showing", s.service.Name, len(s.endpoints))
-	for _, endpoint := range s.endpoints {
-		fmt.Printf("    Endpoint: %s \n", endpoint.endpoint.Name)
-	}
-
-}
-
 func NewServiceEndpointManager(service *configurations.Service) *ServiceEndpointManager {
 	return &ServiceEndpointManager{
-		service: service,
+		service:     service,
+		application: service.Application,
 	}
 }
 
@@ -125,7 +130,9 @@ func (m *ApplicationEndpointManager) ServiceEndpointManager(name string) (*Servi
 }
 
 func (m *ApplicationEndpointManager) Add(service *configurations.Service, endpoints []*corev1.Endpoint) error {
+	logger := shared.NewLogger("applications.ApplicationEndpointManager.Add<%s>", service.Name)
 	for _, endpoint := range endpoints {
+		logger.DebugMe("adding endpoint: %s | visibility <%s>", endpoint.Name, endpoint.Visibility)
 		svc, err := m.GetServiceEndpointManager(service)
 		if err != nil {
 			return err
@@ -155,16 +162,17 @@ func GetEndpoints(configuration *configurations.Service) ([]*corev1.Endpoint, er
 	return es, nil
 }
 
-func GetEndpointDependencyGroup(configuration *configurations.Service) (*corev1.EndpointGroup, error) {
-	logger := shared.NewLogger("applications.GetEndpointDependencyGroup<%s>", configuration.Name)
-	// Right now, only do +1 dependencies
+func GetEndpointDependencyGroup(service *configurations.Service) (*corev1.EndpointGroup, error) {
+	logger := shared.NewLogger("applications.GetEndpointDependencyGroup<%s>", service.Name)
+	// We want to find the dependencies for this service
+	target := &configurations.ServiceDependency{Name: service.Name, Application: service.Application}
 	var groups []*corev1.ApplicationEndpointGroup
-	for _, dep := range configuration.Dependencies {
+	for _, dep := range service.Dependencies {
 		app, err := GetApplicationEndpointManager(dep.Application)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot get application endpoint manager")
 		}
-		group, err := app.ApplicationGroupEndpoints(dep)
+		group, err := app.ApplicationGroupEndpoints(target)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot get application group endpoints")
 		}
@@ -240,7 +248,7 @@ func CondensedOutput(group *corev1.EndpointGroup) []string {
 	return outs
 }
 
-func ShowAll() {
+func ShowEndpointManagerState() {
 	for _, manager := range managers {
 		fmt.Println("Application:", manager.application.Name)
 		for _, svc := range manager.services {

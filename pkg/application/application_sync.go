@@ -25,13 +25,14 @@ func (app *Application) SyncService(ctx context.Context, instance *services.Inst
 	if instance.Runtime == nil {
 		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}
-
+	logger.Debugf("syncing")
+	// ShowEndpointManagerState()
 	group, err := GetEndpointDependencyGroup(instance.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot get application group endpoints")
 	}
 
-	logger.Debugf("dependency group: %v", CondensedOutput(group))
+	logger.DebugMe("dependency group: %v", CondensedOutput(group))
 
 	sync, err := instance.Sync(&factoryv1.SyncRequest{DependencyEndpointGroup: group})
 	if err != nil {

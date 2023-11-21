@@ -104,7 +104,7 @@ func (app *Application) Restart(unique string) error {
 
 	ctx := context.Background()
 	if !app.uniques[unique].Ready {
-		err := app.InitService(service)
+		err := app.RuntimeInitService(service)
 		if err != nil {
 			return logger.Wrapf(err, "cannot init service")
 		}
@@ -200,10 +200,10 @@ func (app *Application) MakeVerbose() {
 	app.verbose = true
 }
 
-func Load(project *configurations.Project, app *configurations.Application) (*Application, error) {
+func Load(project *configurations.Project, app *configurations.Application, mode Mode) (*Application, error) {
 	logger := shared.NewLogger("application.Load<%s/%s>", project.Name, app.Name)
 	logger.Debugf("calling loader")
-	loader, err := NewLoader(project, app)
+	loader, err := NewLoader(project, app, mode)
 	if err != nil {
 		return nil, err
 	}

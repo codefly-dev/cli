@@ -17,14 +17,6 @@
   ],
   "paths": {},
   "definitions": {
-    "VisibilityValue": {
-      "type": "string",
-      "enum": [
-        "PUBLIC",
-        "APPLICATION"
-      ],
-      "default": "PUBLIC"
-    },
     "apiAPI": {
       "type": "object",
       "properties": {
@@ -67,7 +59,7 @@
           "type": "string"
         },
         "visibility": {
-          "$ref": "#/definitions/apiVisibility"
+          "type": "string"
         },
         "api": {
           "$ref": "#/definitions/apiAPI"
@@ -169,14 +161,6 @@
     },
     "apiTcpAPI": {
       "type": "object"
-    },
-    "apiVisibility": {
-      "type": "object",
-      "properties": {
-        "value": {
-          "$ref": "#/definitions/VisibilityValue"
-        }
-      }
     },
     "communicateAnswer": {
       "type": "object",
@@ -404,8 +388,14 @@
       "type": "object",
       "properties": {
         "version": {
-          "$ref": "#/definitions/servicesVersion",
-          "title": "The version of the service"
+          "$ref": "#/definitions/servicesVersion"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/apiEndpoint"
+          }
         },
         "channels": {
           "type": "array",
