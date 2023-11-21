@@ -1,6 +1,7 @@
 package application
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/plugins/endpoints"
@@ -42,7 +43,14 @@ func (s *ServiceEndpointManager) Add(endpoint *corev1.Endpoint) error {
 	logger := shared.NewLogger("applications.ServiceEndpointManager.Add<%s>", s.service.Unique())
 	api, err := endpoints.WhichApiFromEndpoint(endpoint)
 	if err != nil {
-		return logger.Wrapf(err, "cannot determine api from endpoint")
+		var nilApiError *endpoints.NilApiError
+		if errors.As(err, &nilApiError) {
+			return logger.Wrapf(err, "got an empty api")
+		}
+		var unknownApiError *endpoints.UnknownApiError
+		if errors.As(err, &unknownApiError) {
+			return logger.Wrapf(err, "got an unknown api")
+		}
 	}
 	for _, holder := range s.endpoints {
 		if holder.endpoint.Api == endpoint.Api {

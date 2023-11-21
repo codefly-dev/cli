@@ -114,7 +114,7 @@ jobs:
           asset_content_type: application/octet-stream
 
       - name: Check out the formula repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           repository: codefly-dev/homebrew-cli
           token: ${{ secrets.GH_PAT }}
@@ -123,7 +123,7 @@ jobs:
         run: |
           # Update formula file with new version and SHA
           # This could be a script that updates the URL and sha256 fields in the formula file
-          ./scripts/dev/update_homebrew.sh ${{ github.event.release.tag_name }}
+          ./update_homebrew.sh ${{ github.event.release.tag_name }}
 
       - name: Commit and push changes
         run: |
