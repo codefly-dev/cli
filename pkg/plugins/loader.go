@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 
 	"github.com/cheggaaa/pb/v3"
 	"github.com/codefly-dev/core/configurations"
@@ -106,7 +107,7 @@ func Download(p *configurations.Plugin) error {
 	logger := shared.NewLogger("plugins.Download<%s>", p.Unique())
 	golor.Println(`#(blue,bold)[Downloading plugin {{.Publisher}}::{{.Identifier}} Version {{.Version}}]`, p)
 	logger.TODO("Publisher to URL")
-	releaseURL := fmt.Sprintf("https://github.com/codefly-dev/service-%s/releases/download/v%s/service-%s_%s_darwin_amd64.tar.gz", p.Identifier, p.Version, p.Identifier, p.Version)
+	releaseURL := DownloadURL(p)
 	resp, err := http.Get(releaseURL)
 	if err != nil {
 		panic(err)
@@ -165,6 +166,12 @@ func Download(p *configurations.Plugin) error {
 	target, err := p.Path()
 	if err != nil {
 		return logger.Wrapf(err, "cannot compute plugin path")
+	}
+	// create folder if needed
+	folder := filepath.Dir(target)
+	err = shared.CheckDirectoryOrCreate(folder)
+	if err != nil {
+		return logger.Wrapf(err, "cannot create plugin folder")
 	}
 
 	cmd := exec.Command("mv", binary, target)
