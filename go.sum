@@ -45,12 +45,8 @@ github.com/cheggaaa/pb/v3 v3.1.4/go.mod h1:6wVjILNBaXMs8c21qRiaUM8BR82erfgau1DQ4
 github.com/cloudflare/circl v1.3.3/go.mod h1:5XYMA4rFBvNIrhs50XuiBJ15vF2pZn4nnUKZrLbUZFA=
 github.com/cloudflare/circl v1.3.6 h1:/xbKIqSHbZXHwkhbrhrt2YOHIwYJlXH94E3tI/gDlUg=
 github.com/cloudflare/circl v1.3.6/go.mod h1:5XYMA4rFBvNIrhs50XuiBJ15vF2pZn4nnUKZrLbUZFA=
-github.com/codefly-dev/core v0.0.15 h1:IirZgY0oL/lnVbgbkGuPGM2ERgc76IBVbklTzJ3lLlQ=
-github.com/codefly-dev/core v0.0.15/go.mod h1:92/teE7+8+ygagcoDqw9OdXRtfmtZWMwbhBdatAC80M=
-github.com/codefly-dev/core v0.0.16 h1:lvwSXzG1JQVgyXR+ocPybJpJ6xGoRa7YBbTxo3OeiLQ=
-github.com/codefly-dev/core v0.0.16/go.mod h1:92/teE7+8+ygagcoDqw9OdXRtfmtZWMwbhBdatAC80M=
-github.com/codefly-dev/core v0.0.17 h1:RwcY/x5z3YX6kyk6BHJeth6n5+IpFefB5Q+nCpSpbfo=
-github.com/codefly-dev/core v0.0.17/go.mod h1:92/teE7+8+ygagcoDqw9OdXRtfmtZWMwbhBdatAC80M=
+github.com/codefly-dev/core v0.0.18 h1:kBqtgVSuYJEwrNcWF3PQaZdVuf3pvijxvfg6XXvPE4A=
+github.com/codefly-dev/core v0.0.18/go.mod h1:92/teE7+8+ygagcoDqw9OdXRtfmtZWMwbhBdatAC80M=
 github.com/codefly-dev/golor v0.0.10 h1:eqNxY3aSVbXDWo+3S9fcRynCEStPNo033owzwvzziOQ=
 github.com/codefly-dev/golor v0.0.10/go.mod h1:TzMkdNwKUDO9PKz9f2LzMPOMHYGFXQEluOj8wEP2q1g=
 github.com/compose-spec/compose-go v1.20.1 h1:I6gCMGLl96kEf8XZwaozeTwnNfxA2eVsO46W+5ciTEg=

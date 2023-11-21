@@ -100,7 +100,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/skeema/knownhosts v1.2.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/stretchr/testify v1.8.4 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/ulikunitz/xz v0.5.11 // indirect
@@ -130,7 +129,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.24.2
 	github.com/charmbracelet/lipgloss v0.9.1
 	github.com/cheggaaa/pb/v3 v3.1.4
-	github.com/codefly-dev/core v0.0.17
+	github.com/codefly-dev/core v0.0.18
 	github.com/codefly-dev/golor v0.0.10
 	github.com/compose-spec/compose-go v1.20.1
 	github.com/fsnotify/fsnotify v1.7.0
@@ -139,6 +138,7 @@ require (
 	github.com/go-openapi/spec v0.20.9
 	github.com/mholt/archiver/v3 v3.5.1
 	github.com/rs/cors v1.10.1
+	github.com/stretchr/testify v1.8.4
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20220101234140-673ab2c3ae75
 	golang.org/x/mod v0.14.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20231106174013-bbf56f31fb17
