@@ -17,13 +17,13 @@ jobs:
         with:
           go-version: 1.21
 
-      - name: Cache Go Modules
-        uses: actions/cache@v2
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+#      - name: Cache Go Modules
+#        uses: actions/cache@v3
+#        with:
+#          path: ~/go/pkg/mod
+#          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+#          restore-keys: |
+#            ${{ runner.os }}-go-
 
       - name: Build Binary
         run: |
@@ -116,7 +116,7 @@ jobs:
       - name: Check out the formula repository
         uses: actions/checkout@v2
         with:
-          repository: your-username/homebrew-tap
+          repository: codefly-dev/homebrew-cli
           token: ${{ secrets.GH_PAT }}
 
       - name: Update the formula
