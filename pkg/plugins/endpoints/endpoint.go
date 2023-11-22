@@ -76,6 +76,9 @@ func FromProtoEndpoint(e *corev1.Endpoint) (*configurations.Endpoint, error) {
 }
 
 func FromProtoApi(api *corev1.API) string {
+	if api == nil {
+		return configurations.Unknown
+	}
 	switch api.Value.(type) {
 	case *corev1.API_Grpc:
 		return configurations.Grpc

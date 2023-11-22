@@ -72,10 +72,9 @@ func (s *Base) Context() context.Context {
 func (s *Base) Init(req *v1.InitRequest, settings any) error {
 
 	s.Identity = req.Identity
-	s.ServiceLogger = plugins.NewServiceLogger(s.Identity.Name)
+	s.ServiceLogger = plugins.NewServiceLogger(s.Identity, s.Plugin)
 
-	pluginName := fmt.Sprintf("%s::%s", s.Identity.Name, s.Plugin.Name())
-	s.PluginLogger = plugins.NewPluginLogger(pluginName)
+	s.PluginLogger = plugins.NewPluginLogger(s.Identity, s.Plugin)
 	defer s.PluginLogger.Catch()
 	s.Location = req.Location
 

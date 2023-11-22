@@ -16,10 +16,11 @@ import (
 )
 
 type DockerRunner struct {
-	cli        *client.Client
-	ctx        context.Context
-	Containers []*ContainerInstance
-	logger     *plugins.PluginLogger
+	cli           *client.Client
+	ctx           context.Context
+	Containers    []*ContainerInstance
+	PluginLogger  *plugins.PluginLogger
+	ServiceLogger *plugins.ServiceLogger
 }
 
 type ContainerInstance struct {
@@ -31,15 +32,16 @@ type ContainerInstance struct {
 }
 
 // NewDockerRunner creates a new docker runner
-func NewDockerRunner(ctx context.Context, logger *plugins.PluginLogger) (*DockerRunner, error) {
+func NewDockerRunner(ctx context.Context, serviceLogger *plugins.ServiceLogger, pluginLogger *plugins.PluginLogger) (*DockerRunner, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot create docker client")
+		return nil, pluginLogger.Wrapf(err, "cannot create docker client")
 	}
 	return &DockerRunner{
-		ctx:    ctx,
-		cli:    cli,
-		logger: logger,
+		ctx:           ctx,
+		cli:           cli,
+		PluginLogger:  pluginLogger,
+		ServiceLogger: serviceLogger,
 	}, nil
 }
 
@@ -89,11 +91,11 @@ func (r *DockerRunner) CreateContainer(input CreateDockerInput, opts ...DockerOp
 		opt(options)
 	}
 	name := input.ApplicationEndpointInstance.Name()
-	r.logger.Debugf("PortBinding %s", input.ApplicationEndpointInstance.ApplicationEndpoint.PortBinding)
+	r.PluginLogger.Debugf("PortBinding %s", input.ApplicationEndpointInstance.ApplicationEndpoint.PortBinding)
 
 	good, err := r.ContainerReady(name)
 	if err != nil {
-		return r.logger.Wrapf(err, "cannot check if container is ready")
+		return r.PluginLogger.Wrapf(err, "cannot check if container is ready")
 	}
 	if good {
 		return nil
@@ -106,7 +108,7 @@ func (r *DockerRunner) CreateContainer(input CreateDockerInput, opts ...DockerOp
 			},
 		},
 	}
-	r.logger.Debugf("port mapping: %v", portMapping)
+	r.PluginLogger.Debugf("port mapping: %v", portMapping)
 
 	cfg := &container.Config{
 		Image: input.Image,
@@ -139,12 +141,12 @@ func (r *DockerRunner) CreateContainer(input CreateDockerInput, opts ...DockerOp
 			PortBindings: portMapping,
 			Mounts:       mounts,
 		}, nil, nil, name)
-	r.logger.Debugf("creating <%s> from <%s> took: %v", name, input.Image, time.Since(t))
+	r.PluginLogger.Debugf("creating <%s> from <%s> took: %v", name, input.Image, time.Since(t))
 	if err != nil {
-		return r.logger.Wrapf(err, "cannot create container")
+		return r.PluginLogger.Wrapf(err, "cannot create container")
 	}
 	if err != nil {
-		return r.logger.Wrapf(err, "cannot create container")
+		return r.PluginLogger.Wrapf(err, "cannot create container")
 	}
 	instance := ContainerInstance{
 		Name: name,
@@ -157,7 +159,7 @@ func (r *DockerRunner) CreateContainer(input CreateDockerInput, opts ...DockerOp
 func (r *DockerRunner) cleanContainers(name string) error {
 	containers, err := r.cli.ContainerList(r.ctx, types.ContainerListOptions{All: true})
 	if err != nil {
-		return r.logger.Wrapf(err, "cannot list containers")
+		return r.PluginLogger.Wrapf(err, "cannot list containers")
 	}
 	var id string
 
@@ -176,56 +178,56 @@ found:
 	}
 	inspectedContainer, err := r.cli.ContainerInspect(r.ctx, id)
 	if err != nil {
-		return r.logger.Wrapf(err, "cannot inspect container")
+		return r.PluginLogger.Wrapf(err, "cannot inspect container")
 	}
 
 	if inspectedContainer.State.Status == "exited" || inspectedContainer.State.Status == "dead" {
 		// Restart the container if it's stopped TODO: port strategy
 		//if err := r.cli.ContainerRestart(r.ctx, id, nil); err != nil {
-		//	return r.logger.Wrapf(err, "cannot restart container")
+		//	return r.PluginLogger.Wrapf(err, "cannot restart container")
 		//}
-		//r.logger.Info("container restarted")
+		//r.PluginLogger.Info("container restarted")
 		if err := r.cli.ContainerRemove(context.Background(), id, types.ContainerRemoveOptions{}); err != nil {
-			r.logger.Warn("Error remove container %s: %v", name, err)
-			return r.logger.Wrapf(err, "cannot remove container")
+			r.PluginLogger.Warn("Error remove container %s: %v", name, err)
+			return r.PluginLogger.Wrapf(err, "cannot remove container")
 		}
 	} else {
-		r.logger.Info("container is running")
+		r.PluginLogger.Info("container is running")
 		// Stop the container
 		if err := r.cli.ContainerStop(context.Background(), id, container.StopOptions{}); err != nil {
-			r.logger.Warn("Error stopping container %s: %v", name, err)
-			return r.logger.Wrapf(err, "cannot stop container")
+			r.PluginLogger.Warn("Error stopping container %s: %v", name, err)
+			return r.PluginLogger.Wrapf(err, "cannot stop container")
 		}
 
 		// Remove the container
 		if err := r.cli.ContainerRemove(context.Background(), id, types.ContainerRemoveOptions{}); err != nil {
-			return r.logger.Wrapf(err, "cannot remove stopped container")
+			return r.PluginLogger.Wrapf(err, "cannot remove stopped container")
 		}
 	}
 	//// Stop the container
 	//if err := r.cli.ContainerStop(context.Background(), id, container.StopOptions{}); err != nil {
-	//	r.logger.Warn("Error stopping container %s: %v", name, err)
-	//	return r.logger.Wrapf(err, "cannot stop container")
+	//	r.PluginLogger.Warn("Error stopping container %s: %v", name, err)
+	//	return r.PluginLogger.Wrapf(err, "cannot stop container")
 	//}
 
 	//// Remove the container
 	//if err := r.cli.ContainerRemove(context.Background(), id, types.ContainerRemoveOptions{}); err != nil {
-	//	return r.logger.Wrapf(err, "cannot remove stopped container")
+	//	return r.PluginLogger.Wrapf(err, "cannot remove stopped container")
 	//}
 	//status, errs := r.cli.ContainerWait(context.Background(), id, container.WaitConditionRemoved)
 	//select {
 	//case err := <-errs:
 	//	if err != nil {
-	//		r.logger.Debugf("cannot wait for container to be removed: %v", err)
+	//		r.PluginLogger.Debugf("cannot wait for container to be removed: %v", err)
 	//		return nil
 	//	}
 	//case s := <-status:
 	//	if s.StatusCode == 0 {
-	//		r.logger.Debugf("container %s removed successfully", name)
+	//		r.PluginLogger.Debugf("container %s removed successfully", name)
 	//		return nil
 	//	}
 	//}
-	//return r.logger.Errorf("not sure why I am here")
+	//return r.PluginLogger.Errorf("not sure why I am here")
 	return nil
 }
 
@@ -240,17 +242,17 @@ func (r *DockerRunner) Start() error {
 	for _, c := range r.Containers {
 		err := r.StartContainer(c)
 		if err != nil {
-			return r.logger.Wrapf(err, "cannot start container")
+			return r.PluginLogger.Wrapf(err, "cannot start container")
 		}
 		// After the container starts, get its logs
 		out, err := r.cli.ContainerLogs(r.ctx, c.ID,
 			types.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Timestamps: false, Details: false})
 		if err != nil {
-			return r.logger.Wrapf(err, "cannot get container logs")
+			return r.PluginLogger.Wrapf(err, "cannot get container logs")
 		}
 
 		go func(name string) {
-			ForwardLogs(out, plugins.NewServiceLogger(name))
+			ForwardLogs(out, r.ServiceLogger)
 		}(c.Name)
 	}
 	return nil
@@ -263,7 +265,7 @@ func (r *DockerRunner) Stop() error {
 		logger.Debugf("cleaning %v", c.Name)
 		err := r.cleanContainers(c.Name)
 		if err != nil {
-			r.logger.Warn("cannot clean container %s: %v", c.Name, err)
+			r.PluginLogger.Warn("cannot clean container %s: %v", c.Name, err)
 		}
 	}
 	return nil
@@ -301,13 +303,13 @@ func (r *DockerRunner) EnsureImage(imageName string) error {
 
 func (r *DockerRunner) IP(instance *network.ApplicationEndpointInstance) (string, error) {
 	// Get IP Address
-	r.logger.TODO("DEAL WITH NETWORK DOCKER")
+	r.PluginLogger.TODO("DEAL WITH NETWORK DOCKER")
 	return "172.17.0.2", nil
-	//r.logger.Debugf("Instance container %v", instance)
+	//r.PluginLogger.Debugf("Instance container %v", instance)
 	//// Get container JSON object
 	//container, err := r.cli.ContainerInspect(context.Background(), instance.Name())
 	//if err != nil {
-	//	return "", r.logger.Wrapf(err, "cannot inspect container")
+	//	return "", r.PluginLogger.Wrapf(err, "cannot inspect container")
 	//}
 	//ipAddress := container.NetworkSettings.IPAddress
 	//// If using the default bridge network, you might want to get the IP from the Networks map
@@ -317,13 +319,13 @@ func (r *DockerRunner) IP(instance *network.ApplicationEndpointInstance) (string
 	//for _, network := range container.NetworkSettings.Networks {
 	//	return network.IPAddress, nil
 	//}
-	//return "", r.logger.Errorf("cannot get ip address")
+	//return "", r.PluginLogger.Errorf("cannot get ip address")
 }
 
 func (r *DockerRunner) ContainerReady(name string) (bool, error) {
 	containers, err := r.cli.ContainerList(r.ctx, types.ContainerListOptions{All: true})
 	if err != nil {
-		return false, r.logger.Wrapf(err, "cannot list containers")
+		return false, r.PluginLogger.Wrapf(err, "cannot list containers")
 	}
 	var id string
 
@@ -342,7 +344,7 @@ found:
 	}
 	inspectedContainer, err := r.cli.ContainerInspect(r.ctx, id)
 	if err != nil {
-		return false, r.logger.Wrapf(err, "cannot inspect container")
+		return false, r.PluginLogger.Wrapf(err, "cannot inspect container")
 	}
 
 	if inspectedContainer.State.Status == "running" {

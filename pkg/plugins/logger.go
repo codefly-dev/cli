@@ -4,16 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/codefly-dev/cli/proto/v1/management"
+	"github.com/charmbracelet/lipgloss"
+	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
+	servicev1 "github.com/codefly-dev/cli/proto/v1/services"
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
-	"github.com/fatih/color"
 	"github.com/hashicorp/go-hclog"
 	"github.com/pkg/errors"
 )
@@ -23,22 +25,26 @@ logger used to take the output of the service
 */
 
 type ServiceLogger struct {
-	Name        string
-	transport   hclog.Logger
-	Service     string
-	Application string
-	JSON        bool
+	transport        hclog.Logger
+	PluginIdentifier string
+	Service          string
+	Application      string
+	JSON             bool
 }
 
 func (l *ServiceLogger) SetLevel(lvl shared.LogLevel) {
 	// Not supported for now
 }
 
-func NewServiceLogger(name string) *ServiceLogger {
+func NewServiceLogger(identity *servicev1.ServiceIdentity, plugin *configurations.Plugin) *ServiceLogger {
 	logger := hclog.New(&hclog.LoggerOptions{
 		JSONFormat: true,
 	})
-	return &ServiceLogger{Name: name, transport: logger}
+	return &ServiceLogger{transport: logger,
+		PluginIdentifier: plugin.Identifier,
+		Application:      identity.Application,
+		Service:          identity.Name,
+	}
 }
 
 func (l *ServiceLogger) Write(p []byte) (n int, err error) {
@@ -46,8 +52,10 @@ func (l *ServiceLogger) Write(p []byte) (n int, err error) {
 		return 0, nil
 	}
 	entry := LogEntry{
-		Msg:    string(p),
-		Sender: l.Name,
+		Msg:              string(p),
+		PluginIdentifier: l.PluginIdentifier,
+		Service:          l.Service,
+		Application:      l.Application,
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -115,10 +123,12 @@ logger used by plugin surrounding
 // @specialization
 
 type PluginLogger struct {
-	Name      string
-	transport hclog.Logger
-	debug     bool
-	trace     bool
+	transport        hclog.Logger
+	PluginIdentifier string
+	Service          string
+	Application      string
+	debug            bool
+	trace            bool
 }
 
 func (l *PluginLogger) SetLevel(lvl shared.LogLevel) {
@@ -144,18 +154,23 @@ func (l *PluginLogger) Wrapf(err error, format string, args ...any) error {
 	return errors.Wrapf(err, format, args...)
 }
 
-func NewPluginLogger(name string) *PluginLogger {
-	pluginName := fmt.Sprintf("plugin:%s", name)
+func NewPluginLogger(identity *servicev1.ServiceIdentity, plugin *configurations.Plugin) *PluginLogger {
 	logger := hclog.New(&hclog.LoggerOptions{
 		JSONFormat: true,
 	})
-	return &PluginLogger{Name: pluginName, transport: logger}
+	return &PluginLogger{
+		PluginIdentifier: plugin.Identifier,
+		Application:      identity.Application,
+		Service:          identity.Name,
+		transport:        logger}
 }
 
 type LogEntry struct {
-	Msg     string
-	Sender  string
-	DebugMe bool
+	Msg              string
+	PluginIdentifier string
+	Service          string
+	Application      string
+	DebugMe          bool
 }
 
 func (l *PluginLogger) WriteEntry(entry LogEntry) (n int, err error) {
@@ -174,14 +189,20 @@ func (l *PluginLogger) WriteEntry(entry LogEntry) (n int, err error) {
 	return n, err
 }
 
-func (l *PluginLogger) Write(p []byte) (n int, err error) {
-	if len(p) == 0 {
+func (l *PluginLogger) NewLogEntry(b []byte) LogEntry {
+	return LogEntry{
+		Msg:              string(b),
+		PluginIdentifier: l.PluginIdentifier,
+		Service:          l.Service,
+		Application:      l.Application,
+	}
+}
+
+func (l *PluginLogger) Write(b []byte) (n int, err error) {
+	if len(b) == 0 {
 		return 0, nil
 	}
-	return l.WriteEntry(LogEntry{
-		Msg:    string(p),
-		Sender: l.Name,
-	})
+	return l.WriteEntry(l.NewLogEntry(b))
 }
 
 func (l *PluginLogger) UnsafeWrite(s string) {
@@ -209,11 +230,9 @@ func (l *PluginLogger) DebugMe(format string, args ...any) {
 	if !l.debug {
 		return
 	}
-	_, _ = l.WriteEntry(LogEntry{
-		Msg:     fmt.Sprintf(format, args...),
-		Sender:  l.Name,
-		DebugMe: true,
-	})
+	entry := l.NewLogEntry([]byte(fmt.Sprintf(format, args...)))
+	entry.DebugMe = true
+	_, _ = l.WriteEntry(entry)
 }
 
 var todos map[string]bool
@@ -231,10 +250,8 @@ func (l *PluginLogger) TODO(format string, args ...any) {
 	}
 	todos[format] = true
 
-	_, _ = l.WriteEntry(LogEntry{
-		Msg:    fmt.Sprintf(fmt.Sprintf("⚠️TODO %s", format), args...),
-		Sender: l.Name,
-	})
+	entry := l.NewLogEntry([]byte(fmt.Sprintf(fmt.Sprintf("⚠️TODO %s", format), args...)))
+	_, _ = l.WriteEntry(entry)
 }
 
 func (l *PluginLogger) Info(format string, args ...any) {
@@ -283,50 +300,62 @@ func NewServerLogger() hclog.Logger {
 }
 
 type ColorPicker struct {
-	current int
-	colors  []color.Attribute
+	styles []lipgloss.Style
+}
+
+func generateColors() []lipgloss.Style {
+	colorsForDarkBackground := []lipgloss.Style{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#ADD8E6")), // Light Blue
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#90EE90")), // Soft Green
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#FFC0CB")), // Pale Pink
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#E6E6FA")), // Lavender
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#F08080")), // Light Coral
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#F5DEB3")), // Wheat
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")), // Bright Green
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")), // Cyan
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#FF1493")), // Neon Pink
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#7DF9FF")), // Electric Blue
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#FF69B4")), // Hot Pink
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#C0C0C0")), // Silver
+	}
+	return colorsForDarkBackground
 }
 
 func NewColorPicker() *ColorPicker {
 	return &ColorPicker{
-		colors: []color.Attribute{
-			color.FgBlue,
-			color.FgGreen,
-			color.FgMagenta,
-			color.FgCyan,
-			color.FgYellow,
-			color.FgWhite,
-		},
+		styles: generateColors(),
 	}
 }
 
-func (cp *ColorPicker) Next() *color.Color {
-	if cp.current >= len(cp.colors) {
-		cp.current = 0
-	}
+func (cp *ColorPicker) hashString(s string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum32()
+}
 
-	c := color.New(cp.colors[cp.current])
-	cp.current++
-	return c
+func (cp *ColorPicker) PickStyle(s string) lipgloss.Style {
+	hash := cp.hashString(s)
+	index := hash % uint32(len(cp.styles))
+	return cp.styles[index]
 }
 
 type ServerFormatter struct {
 	buffer    bytes.Buffer
 	picker    *ColorPicker
-	colors    map[string]*color.Color
 	debug     bool
 	callbacks []LogCallback
+	styles    map[string]lipgloss.Style
 }
 
 func NewServerFormatter(debug bool) *ServerFormatter {
 	return &ServerFormatter{
 		picker: NewColorPicker(),
-		colors: make(map[string]*color.Color),
+		styles: make(map[string]lipgloss.Style),
 		debug:  debug,
 	}
 }
 
-type LogCallback func(logEntry *management.Log)
+type LogCallback func(logEntry *managementv1.Log)
 
 func RegisterCallback(callback LogCallback) {
 	output.callbacks = append(output.callbacks, callback)
@@ -335,23 +364,24 @@ func RegisterCallback(callback LogCallback) {
 type LogMessage struct {
 	Level      string    `json:"@level"`
 	RawMessage string    `json:"@message"`
-	Module     string    `json:"@module"`
 	Timestamp  time.Time `json:"@timestamp"`
 
 	Message LogMessageContent
 }
 
 type LogMessageContent struct {
-	Sender  string `json:"Sender"`
-	DebugMe bool   `json:"DebugMe"`
-	Msg     string `json:"Msg"`
+	Msg              string `json:"Msg"`
+	Application      string `json:"Application"`
+	Service          string `json:"Service"`
+	PluginIdentifier string `json:"PluginIdentifier"`
+	Level            string `json:"Level"`
 }
 
-func createManagementLog(log LogMessage) *management.Log {
-	return &management.Log{
+func createManagementLog(log LogMessage) *managementv1.Log {
+	return &managementv1.Log{
 		At:          timestamppb.New(log.Timestamp),
-		Application: log.Message.Sender,
-		Service:     log.Message.Sender,
+		Application: log.Message.Application,
+		Service:     log.Message.Service,
 		Message:     log.Message.Msg,
 	}
 }
@@ -371,8 +401,7 @@ func (out *ServerFormatter) Write(p []byte) (n int, err error) {
 	}
 	err = json.Unmarshal([]byte(log.RawMessage), &log.Message)
 	if err != nil {
-		//fmt.Printf("got error unmarshalling log: %v\n", err)
-		return
+		log.Message = LogMessageContent{}
 	}
 
 	message := log.Message.Msg
@@ -386,29 +415,29 @@ func (out *ServerFormatter) Write(p []byte) (n int, err error) {
 		callback(mgLog)
 	}
 
-	sender := log.Message.Sender
-	// Only show plugin messages in debug mode
-	if !out.debug && strings.HasPrefix(sender, "plugin:") {
-		return
+	unique := fmt.Sprintf("%s/%s", log.Message.Application, log.Message.Service)
+
+	var style lipgloss.Style
+	var ok bool
+	if style, ok = out.styles[unique]; !ok {
+		out.styles[unique] = out.picker.PickStyle(unique)
 	}
 
-	if _, ok := out.colors[sender]; !ok {
-		out.colors[sender] = out.picker.Next()
-	}
-	c := out.colors[sender]
 	// debug me bool
-	debugMe := log.Message.DebugMe
-	if debugMe {
-		// reserved for debug me
-		c = color.New(color.FgRed, color.Bold)
+	if log.Message.Level == "debug-me" {
+		style = style.Copy().Background(lipgloss.Color("#FFD700")) // gold
 	}
-	n, err = c.Printf("[%s] %s\n", sender, message)
-	if err != nil {
-		return
-	}
+	sender := fmt.Sprintf("%s/%s", log.Message.Application, log.Message.Service)
+
+	fmt.Println(style.Render(fmt.Sprintf("[%s] %s", sender, message)))
 	return
 }
 
 func NoLogger() hclog.Logger {
 	return hclog.NewNullLogger()
 }
+
+//func createStyledMessage(msg string, style lipgloss.Style, bgColor string) string {
+//	styled := style.Copy().Background(lipgloss.Color(bgColor))
+//	return styled.Render(msg)
+//}
