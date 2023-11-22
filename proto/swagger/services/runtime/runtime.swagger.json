@@ -58,7 +58,7 @@
         "description": {
           "type": "string"
         },
-        "visibility": {
+        "scope": {
           "type": "string"
         },
         "api": {

@@ -1,0 +1,12 @@
+{
+  "settings": [
+    {
+      "options": {
+        "rest": {
+          "endpoint": "http://localhost:10001",
+          "pathParams": []
+        }
+      }
+    }
+  ]
+}

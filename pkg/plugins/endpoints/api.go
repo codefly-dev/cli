@@ -14,13 +14,14 @@ import (
 
 func WithApi(endpoint *configurations.Endpoint, source ApiSource) (*corev1.Endpoint, error) {
 	logger := shared.NewLogger("services.DefaultApi")
+	logger.Debugf("VISILIBITY %v", endpoint.Scope)
 	api, err := source.Proto()
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create grpc api: %v")
 	}
 	return &corev1.Endpoint{
 		Name:        endpoint.Name,
-		Visibility:  endpoint.Visibility,
+		Scope:       endpoint.Scope,
 		Description: endpoint.Description,
 		Api:         api,
 	}, nil
@@ -83,6 +84,7 @@ func NewRestApiFromOpenAPI(ctx context.Context, endpoint *configurations.Endpoin
 	rest := &corev1.API_Rest{Rest: &corev1.RestAPI{}}
 	e := &corev1.Endpoint{
 		Name:        endpoint.Name,
+		Scope:       endpoint.Scope,
 		Description: endpoint.Description,
 		Api: &corev1.API{
 			Value: rest,

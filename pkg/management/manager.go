@@ -92,7 +92,7 @@ func (m *Manager) LoadService(app *application.Application, service *configurati
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot get endpoints")
 	}
-	logger.DebugMe("found #%d endpoints of %s", len(es), service.Unique())
+	logger.Debugf("found #%d endpoints of %s", len(es), service.Unique())
 	for _, e := range es {
 
 		views = append(views, &managementv1.EndpointView{

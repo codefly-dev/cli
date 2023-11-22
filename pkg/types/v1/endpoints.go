@@ -36,7 +36,7 @@ func FlattenRestRoutes(group *corev1.EndpointGroup) []*corev1.RestRoute {
 func DetectNewRoutes(ctx context.Context, known []*configurations.RestRoute, group *corev1.EndpointGroup) []*configurations.RestRoute {
 	logger := ctx.Value(shared.Plugin).(shared.BaseLogger)
 	if group == nil {
-		logger.DebugMe("we have a nil group")
+		logger.Debugf("we have a nil group")
 		return nil
 	}
 	logger.Debugf("application groups: #%d", len(group.ApplicationEndpointGroup))

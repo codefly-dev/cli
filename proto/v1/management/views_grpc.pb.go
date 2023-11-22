@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -19,7 +20,8 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	Web_GetProjectInformation_FullMethodName = "/v1.applications.views.Web/GetProjectInformation"
+	Web_GetProjectInformation_FullMethodName = "/v1.management.views.Web/GetProjectInformation"
+	Web_Logs_FullMethodName                  = "/v1.management.views.Web/Logs"
 )
 
 // WebClient is the client API for Web service.
@@ -27,6 +29,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WebClient interface {
 	GetProjectInformation(ctx context.Context, in *ProjectInformationRequest, opts ...grpc.CallOption) (*ProjectInformationResponse, error)
+	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
 }
 
 type webClient struct {
@@ -46,11 +49,44 @@ func (c *webClient) GetProjectInformation(ctx context.Context, in *ProjectInform
 	return out, nil
 }
 
+func (c *webClient) Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error) {
+	stream, err := c.cc.NewStream(ctx, &Web_ServiceDesc.Streams[0], Web_Logs_FullMethodName, opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &webLogsClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type Web_LogsClient interface {
+	Recv() (*Log, error)
+	grpc.ClientStream
+}
+
+type webLogsClient struct {
+	grpc.ClientStream
+}
+
+func (x *webLogsClient) Recv() (*Log, error) {
+	m := new(Log)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // WebServer is the server API for Web service.
 // All implementations must embed UnimplementedWebServer
 // for forward compatibility
 type WebServer interface {
 	GetProjectInformation(context.Context, *ProjectInformationRequest) (*ProjectInformationResponse, error)
+	Logs(*emptypb.Empty, Web_LogsServer) error
 	mustEmbedUnimplementedWebServer()
 }
 
@@ -60,6 +96,9 @@ type UnimplementedWebServer struct {
 
 func (UnimplementedWebServer) GetProjectInformation(context.Context, *ProjectInformationRequest) (*ProjectInformationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetProjectInformation not implemented")
+}
+func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
+	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
 }
 func (UnimplementedWebServer) mustEmbedUnimplementedWebServer() {}
 
@@ -92,11 +131,32 @@ func _Web_GetProjectInformation_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Web_Logs_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(emptypb.Empty)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(WebServer).Logs(m, &webLogsServer{stream})
+}
+
+type Web_LogsServer interface {
+	Send(*Log) error
+	grpc.ServerStream
+}
+
+type webLogsServer struct {
+	grpc.ServerStream
+}
+
+func (x *webLogsServer) Send(m *Log) error {
+	return x.ServerStream.SendMsg(m)
+}
+
 // Web_ServiceDesc is the grpc.ServiceDesc for Web service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var Web_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "v1.applications.views.Web",
+	ServiceName: "v1.management.views.Web",
 	HandlerType: (*WebServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -104,6 +164,12 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Web_GetProjectInformation_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Logs",
+			Handler:       _Web_Logs_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "management/views.proto",
 }

@@ -14,6 +14,15 @@
           "../../../proto"
         ]
       }
+    },
+    {
+      "id": "90f336b0-e889-4dd3-b5ff-a27c9844b896",
+      "name": "swagger",
+      "importerName": "OpenApiFileImporter",
+      "createMissingOperations": true,
+      "options": {
+        "path": "../../../proto/swagger/management/views.swagger.json"
+      }
     }
   ],
   "authConfigs": [],

@@ -1,7 +1,9 @@
 syntax = "proto3";
-package v1.applications.views;
+package v1.management.views;
 
+import "google/protobuf/empty.proto";
 import "core/api.proto";
+import "management/logs.proto";
 import "google/api/annotations.proto";
 
 
@@ -72,6 +74,13 @@ service Web {
   rpc GetProjectInformation(ProjectInformationRequest) returns (ProjectInformationResponse) {
     option (google.api.http) = {
       get: "/project/information"
+    };
+  }
+
+  rpc Logs(google.protobuf.Empty)  returns (stream v1.management.logs.Log) {
+    option (google.api.http) = {
+      post: "/project/logs"
+      body: "*"
     };
   }
 //

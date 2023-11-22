@@ -72,7 +72,7 @@ func Load[P PluginContext, Instance any](p *configurations.Plugin, unique string
 	placeholder := this.Default()
 	pluginMap := map[string]plugin.Plugin{this.Key(p, unique): placeholder}
 
-	clientLogger := NewServerLogger(shared.Debug() || shared.Trace())
+	clientLogger := NewServerLogger() //shared.Debug() || shared.Trace())
 
 	if opt.Quiet {
 		clientLogger = NoLogger()

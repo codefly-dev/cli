@@ -7,9 +7,11 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/cli/pkg/management"
+	"github.com/codefly-dev/cli/pkg/plugins"
 	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
 	"github.com/codefly-dev/golor"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type Configuration struct {
@@ -21,8 +23,23 @@ type Configuration struct {
 
 type Server struct {
 	managementv1.UnsafeWebServer
-	config *Configuration
-	gRPC   *grpc.Server
+	config     *Configuration
+	gRPC       *grpc.Server
+	logChannel chan *managementv1.Log
+}
+
+func (s *Server) sendLogToClients(logEntry *managementv1.Log) {
+	s.logChannel <- logEntry
+}
+
+func (s *Server) Logs(empty *emptypb.Empty, server managementv1.Web_LogsServer) error {
+	for logEntry := range s.logChannel {
+		if err := server.Send(logEntry); err != nil {
+			return err
+		}
+		// handle context cancellation or timeout if necessary
+	}
+	return nil
 }
 
 func (s *Server) GetProjectInformation(ctx context.Context, request *managementv1.ProjectInformationRequest) (*managementv1.ProjectInformationResponse, error) {
@@ -56,16 +73,19 @@ func (s *Server) GetServiceInformation(ctx context.Context, request *managementv
 
 func NewServer(c *Configuration) (*Server, error) {
 	grpcServer := grpc.NewServer()
+	bufferSize := 100
 	s := Server{
-		config: c,
-		gRPC:   grpcServer,
+		config:     c,
+		gRPC:       grpcServer,
+		logChannel: make(chan *managementv1.Log, bufferSize),
 	}
 	managementv1.RegisterWebServer(grpcServer, &s)
+	plugins.RegisterCallback(s.sendLogToClients)
 	return &s, nil
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	golor.Println(`#(blue,bold)[🚀 Starting gRPC server at]: #(italic,white)[{{ .EndpointGrpc }}]`,
+	golor.Println(`#(blue,bold)[🚀 Starting codefly gRPC server at]: #(italic,white)[{{ .EndpointGrpc }}]`,
 		map[string]string{"EndpointGrpc": s.config.EndpointGrpc})
 	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
 	if err != nil {

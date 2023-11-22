@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package v1.management.logs;
+
+import "google/protobuf/timestamp.proto";
+
+
+message Log {
+  enum Kind {
+    UNKNOWN = 0;
+    PLUGIN = 1;
+    SERVICE = 2;
+  }
+  google.protobuf.Timestamp at = 1;
+  string application = 2;
+  string service = 3;
+  Kind kind = 4;
+  string message = 5;
+}

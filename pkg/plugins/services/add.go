@@ -56,7 +56,7 @@ type WithClientDecider interface {
 func Add(input *CreationInput, opts ...configurations.Option) error {
 	scope := configurations.WithScope(opts...)
 	logger := shared.NewLogger("services.Creator<%s>.Add", scope.Application.Name)
-	logger.DebugMe("adding from %v", input.Plugin)
+	logger.Debugf("adding from %v", input.Plugin)
 
 	// Instance configuration
 	svc, err := configurations.NewService(input.Name, input.Namespace, input.Plugin, opts...)

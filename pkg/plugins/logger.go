@@ -7,7 +7,11 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/codefly-dev/cli/proto/v1/management"
 	"github.com/codefly-dev/core/shared"
 	"github.com/fatih/color"
 	"github.com/hashicorp/go-hclog"
@@ -19,13 +23,15 @@ logger used to take the output of the service
 */
 
 type ServiceLogger struct {
-	Name      string
-	transport hclog.Logger
+	Name        string
+	transport   hclog.Logger
+	Service     string
+	Application string
+	JSON        bool
 }
 
 func (l *ServiceLogger) SetLevel(lvl shared.LogLevel) {
-	// TODO implement me
-	panic("implement me")
+	// Not supported for now
 }
 
 func NewServiceLogger(name string) *ServiceLogger {
@@ -257,14 +263,20 @@ logger used by Codefly server
 */
 
 var logger hclog.Logger
+var output *ServerFormatter
 
-func NewServerLogger(debug bool) hclog.Logger {
+func init() {
+	output = NewServerFormatter(shared.Debug())
+}
+
+func NewServerLogger() hclog.Logger {
 	if logger != nil {
 		return logger
 	}
+
 	logger = hclog.New(&hclog.LoggerOptions{
 		JSONFormat: true,
-		Output:     NewServerFormatter(debug),
+		Output:     output,
 		Level:      hclog.Debug,
 	})
 	return logger
@@ -299,10 +311,11 @@ func (cp *ColorPicker) Next() *color.Color {
 }
 
 type ServerFormatter struct {
-	buffer bytes.Buffer
-	picker *ColorPicker
-	colors map[string]*color.Color
-	debug  bool
+	buffer    bytes.Buffer
+	picker    *ColorPicker
+	colors    map[string]*color.Color
+	debug     bool
+	callbacks []LogCallback
 }
 
 func NewServerFormatter(debug bool) *ServerFormatter {
@@ -313,30 +326,67 @@ func NewServerFormatter(debug bool) *ServerFormatter {
 	}
 }
 
+type LogCallback func(logEntry *management.Log)
+
+func RegisterCallback(callback LogCallback) {
+	output.callbacks = append(output.callbacks, callback)
+}
+
+type LogMessage struct {
+	Level      string    `json:"@level"`
+	RawMessage string    `json:"@message"`
+	Module     string    `json:"@module"`
+	Timestamp  time.Time `json:"@timestamp"`
+
+	Message LogMessageContent
+}
+
+type LogMessageContent struct {
+	Sender  string `json:"Sender"`
+	DebugMe bool   `json:"DebugMe"`
+	Msg     string `json:"Msg"`
+}
+
+func createManagementLog(log LogMessage) *management.Log {
+	return &management.Log{
+		At:          timestamppb.New(log.Timestamp),
+		Application: log.Message.Sender,
+		Service:     log.Message.Sender,
+		Message:     log.Message.Msg,
+	}
+}
+
 func (out *ServerFormatter) Write(p []byte) (n int, err error) {
-	//fmt.Printf("ServerFormatter: %s\n", string(p))
 	n, err = out.buffer.Write(p)
 	if err != nil {
 		return
 	}
 	defer out.buffer.Reset()
 
-	var data map[string]any
-	err = json.Unmarshal(out.buffer.Bytes(), &data)
+	var log LogMessage
+	err = json.Unmarshal(out.buffer.Bytes(), &log)
 	if err != nil {
+		fmt.Printf("got error unmarshalling log: %v\n", err)
 		return
 	}
-	format := data["@message"].(string)
-	err = json.Unmarshal([]byte(format), &data)
+	err = json.Unmarshal([]byte(log.RawMessage), &log.Message)
 	if err != nil {
+		//fmt.Printf("got error unmarshalling log: %v\n", err)
 		return
 	}
-	sender := data["Sender"].(string)
-	message := strings.TrimSpace(data["Msg"].(string))
-	// Don't print empty lines
+
+	message := log.Message.Msg
 	if message == "" {
 		return
 	}
+
+	mgLog := createManagementLog(log)
+	// Send the management Log to registered callbacks
+	for _, callback := range out.callbacks {
+		callback(mgLog)
+	}
+
+	sender := log.Message.Sender
 	// Only show plugin messages in debug mode
 	if !out.debug && strings.HasPrefix(sender, "plugin:") {
 		return
@@ -347,8 +397,8 @@ func (out *ServerFormatter) Write(p []byte) (n int, err error) {
 	}
 	c := out.colors[sender]
 	// debug me bool
-	debugMe := data["DebugMe"]
-	if debugMe != nil && debugMe.(bool) {
+	debugMe := log.Message.DebugMe
+	if debugMe {
 		// reserved for debug me
 		c = color.New(color.FgRed, color.Bold)
 	}

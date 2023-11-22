@@ -17,11 +17,10 @@ type EndpointHolder struct {
 
 func (p *EndpointHolder) AccessibleFrom(app string) bool {
 	logger := shared.NewLogger("applications.EndpointHolder.AccessibleFrom<%s>", p.endpoint.Name)
-	logger.DebugMe("visibility of endpoint: %s<%s> | access from app %v", p.endpoint.Name, p.endpoint.Visibility, app)
-	if p.endpoint.Visibility == "" || p.endpoint.Visibility == "private" {
+	logger.Debugf("visibility of endpoint <%s>: <%s> | access from app %v", p.endpoint.Name, p.endpoint.Scope, app)
+	if p.endpoint.Scope == "" || p.endpoint.Scope == "private" {
 		return p.application == app
 	}
-	logger.DebugMe("IT IS")
 	return true
 }
 
@@ -41,6 +40,7 @@ type ServiceEndpointManager struct {
 
 func (s *ServiceEndpointManager) Add(endpoint *corev1.Endpoint) error {
 	logger := shared.NewLogger("applications.ServiceEndpointManager.Add<%s>", s.service.Unique())
+	logger.Debugf("adding endpoint: %s", endpoint.Name)
 	api, err := endpoints.WhichApiFromEndpoint(endpoint)
 	if err != nil {
 		var nilApiError *endpoints.NilApiError
@@ -78,7 +78,7 @@ func (s *ServiceEndpointManager) ServiceGroupEndpoints(dep *configurations.Servi
 	logger.TODO("visibility")
 	var es []*corev1.Endpoint
 	for _, holder := range s.endpoints {
-		// Visibility check
+		// Scope check
 		if !holder.AccessibleFrom(dep.Application) {
 			continue
 		}
@@ -140,7 +140,7 @@ func (m *ApplicationEndpointManager) ServiceEndpointManager(name string) (*Servi
 func (m *ApplicationEndpointManager) Add(service *configurations.Service, endpoints []*corev1.Endpoint) error {
 	logger := shared.NewLogger("applications.ApplicationEndpointManager.Add<%s>", service.Name)
 	for _, endpoint := range endpoints {
-		logger.DebugMe("adding endpoint: %s | visibility <%s>", endpoint.Name, endpoint.Visibility)
+		logger.Debugf("adding endpoint: %s | visibility <%s>", endpoint.Name, endpoint.Scope)
 		svc, err := m.GetServiceEndpointManager(service)
 		if err != nil {
 			return err

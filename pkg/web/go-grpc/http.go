@@ -26,7 +26,7 @@ func NewHttpServer(c *Configuration) (*HttpServer, error) {
 }
 
 func (s *HttpServer) Run(ctx context.Context) error {
-	golor.Println(`#(blue,bold)[🚀 Starting REST server at]: #(italic,white)[{{ .EndpointRest }}]`,
+	golor.Println(`#(blue,bold)[🚀 Starting codefly REST server at]: #(italic,white)[{{ .EndpointRest }}]`,
 		map[string]string{"EndpointRest": s.config.EndpointRest})
 	gwMux := runtime.NewServeMux()
 

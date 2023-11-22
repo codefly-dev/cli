@@ -46,7 +46,7 @@ var ServiceCmd = &cobra.Command{
 				os.Exit(1)
 			}
 		}
-		logger.DebugMe("plugin %s", plugin)
+		logger.Debugf("plugin %s", plugin)
 
 		// Give a new overview of the application
 		//manager := management.NewManager()

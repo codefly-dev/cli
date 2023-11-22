@@ -37,9 +37,60 @@
           "Web"
         ]
       }
+    },
+    "/project/logs": {
+      "post": {
+        "operationId": "Web_Logs",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/logsLog"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of logsLog"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
     }
   },
   "definitions": {
+    "LogKind": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "PLUGIN",
+        "SERVICE"
+      ],
+      "default": "UNKNOWN"
+    },
     "apiAPI": {
       "type": "object",
       "properties": {
@@ -63,7 +114,7 @@
         "description": {
           "type": "string"
         },
-        "visibility": {
+        "scope": {
           "type": "string"
         },
         "api": {
@@ -136,6 +187,27 @@
     },
     "apiTcpAPI": {
       "type": "object"
+    },
+    "logsLog": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "application": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/LogKind"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
     },
     "protobufAny": {
       "type": "object",

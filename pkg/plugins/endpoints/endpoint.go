@@ -69,7 +69,7 @@ func FromProtoEndpoint(e *corev1.Endpoint) (*configurations.Endpoint, error) {
 	}
 	return &configurations.Endpoint{
 		Name:        e.Name,
-		Visibility:  e.Visibility,
+		Scope:       e.Scope,
 		Description: e.Description,
 		Api:         FromProtoApi(e.Api),
 	}, nil
@@ -112,8 +112,8 @@ func LightApi(api *corev1.API) *corev1.API {
 func Light(e *corev1.Endpoint) *corev1.Endpoint {
 	return &corev1.Endpoint{
 		Name:        e.Name,
-		Visibility:  e.Visibility,
+		Scope:       e.Scope,
 		Description: e.Description,
-		Api:         LightApi(e.Api),
+		Api:         e.Api,
 	}
 }

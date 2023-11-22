@@ -36,15 +36,17 @@ func (app *Application) RuntimeInit() error {
 }
 
 func (app *Application) FactoryInitService(instance *services.Instance) error {
-	logger := shared.NewLogger("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Plugin.Identifier)
+	logger := shared.NewLogger("applications.FactoryInitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Plugin.Identifier)
 	if instance.Initialized {
 		return nil
 	}
+
 	group, err := GetEndpointDependencyGroup(instance.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot get application group endpoint")
 	}
 
+	ShowEndpointManagerState()
 	req := &servicev1.InitRequest{
 		Debug:                   shared.Debug(),
 		Location:                instance.Location,
@@ -57,7 +59,7 @@ func (app *Application) FactoryInitService(instance *services.Instance) error {
 		return logger.Wrapf(err, "cannot init factory")
 	}
 
-	logger.Tracef("init response: version: %v, #endpoints: %d, #channels: %d", init.Version, len(init.Endpoints), len(init.Channels))
+	logger.Debugf("response: version: %v, #endpoints: %d, #channels: %d", init.Version, len(init.Endpoints), len(init.Channels))
 
 	err = app.EndpointManager.Add(instance.Configuration, init.Endpoints)
 	if err != nil {
@@ -86,7 +88,7 @@ func (app *Application) RuntimeInitService(instance *services.Instance) error {
 
 	init, err := instance.RuntimeInit(req)
 	if err != nil {
-		logger.DebugMe("ERROR: %v", err)
+		logger.Debugf("ERROR: %v", err)
 		return logger.Wrapf(err, "cannot init: something dramatic happened")
 	}
 

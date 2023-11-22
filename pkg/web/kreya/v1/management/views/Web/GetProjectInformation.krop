@@ -1,6 +1,6 @@
 {
   "details": {
-    "methodFqn": "v1.applications.views.Web.GetProjectInformation"
+    "methodFqn": "v1.management.views.Web.GetProjectInformation"
   },
   "requests": [
     {
