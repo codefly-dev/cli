@@ -37,7 +37,7 @@ type SingleTracker struct {
 	// internal
 	ctx    context.Context
 	cancel func()
-	sync.RWMutex
+	*sync.RWMutex
 	stopping bool
 }
 
@@ -150,7 +150,7 @@ Name tracker
 
 type ServiceTracker struct {
 	current map[string]Tracker
-	sync.RWMutex
+	*sync.RWMutex
 	events   chan<- ServiceEvent
 	trackers map[string]*runtimev1.TrackerList
 }
@@ -192,13 +192,14 @@ func (t *ServiceTracker) Track(ctx context.Context, service *configurations.Serv
 
 func (t *ServiceTracker) Untrack(service *configurations.Service) error {
 	t.Lock()
+	defer t.Unlock()
 	unique := service.Unique()
 	if v, ok := t.current[unique]; ok {
 		v.Stop()
 	}
 	delete(t.current, unique)
 	delete(t.trackers, unique)
-	t.Unlock()
+
 	return nil
 }
 

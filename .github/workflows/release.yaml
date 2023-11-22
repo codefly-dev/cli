@@ -2,7 +2,7 @@ name: Release
 
 on:
   release:
-    types: [published]
+    types: [released]
 
 jobs:
   build:
@@ -15,7 +15,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
-          go-version: 1.21
+          go-version: 1.21.4
 
 #      - name: Cache Go Modules
 #        uses: actions/cache@v3
@@ -25,12 +25,15 @@ jobs:
 #          restore-keys: |
 #            ${{ runner.os }}-go-
 
-      - name: Build Binary
+      - name: Build Binary Darwin Intel
         run: |
           GOOS=darwin GOARCH=amd64 go build -o codefly-darwin-amd64 main.go
+      - name: Build Binary Darwin ARM
+        run: |
           GOOS=darwin GOARCH=arm64 go build -o codefly-darwin-arm64 main.go
+      - name: Build Binary Linux
+        run: |
           GOOS=linux GOARCH=amd64 go build -o codefly-linux-x86_64 main.go
-
       - name: Checkout Target Repository
         uses: actions/checkout@v3
         with:

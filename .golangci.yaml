@@ -2,6 +2,8 @@
 run:
   # Timeout for analysis, e.g. "5m", "10m30s" or "2h"
   deadline: 5m
+  build-tags:
+    - linux
 
   # Files and directories to exclude from linting
   skip-files:
