@@ -33,7 +33,7 @@ func (app *Application) SyncService(ctx context.Context, instance *services.Inst
 		return logger.Wrapf(err, "cannot get application group endpoints")
 	}
 
-	logger.Debugf("dependency group: %v", CondensedOutput(group))
+	logger.DebugMe("dependency group: %v", CondensedOutput(group))
 
 	sync, err := instance.Sync(&factoryv1.SyncRequest{DependencyEndpointGroup: group})
 	if err != nil {

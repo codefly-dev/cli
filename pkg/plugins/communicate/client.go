@@ -3,6 +3,7 @@ package communicate
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "github.com/codefly-dev/cli/proto/v1/core"
 	"github.com/codefly-dev/core/shared"
@@ -64,6 +65,21 @@ func (c *ClientContext) Confirm(s int) *corev1.ConfirmAnswer {
 	return answer.GetConfirm()
 }
 
+func (c *ClientContext) SafeConfirm(s int) (*corev1.ConfirmAnswer, error) {
+	if len(c.states) < s {
+		return nil, fmt.Errorf("no state for %d", s)
+	}
+	answer := c.states[s]
+	if answer == nil {
+		return nil, fmt.Errorf("no state for %d", s)
+	}
+	back := answer.GetConfirm()
+	if back == nil {
+		return nil, fmt.Errorf("state is not of the confirm type for %d", s)
+	}
+	return back, nil
+}
+
 func (c *ClientContext) Selection(i int) *corev1.SelectionAnswer {
 	answer := c.states[i]
 	if answer == nil {
@@ -78,6 +94,27 @@ func (c *ClientContext) Input(i int) *corev1.InputAnswer {
 		return nil
 	}
 	return answer.GetInput()
+}
+
+func StateAsString(s *corev1.Answer) string {
+	switch s.Value.(type) {
+	case *corev1.Answer_Confirm:
+		return s.GetConfirm().String()
+	case *corev1.Answer_Selection:
+		return s.GetSelection().String()
+	case *corev1.Answer_Input:
+		return s.GetInput().String()
+	default:
+		return ""
+	}
+}
+
+func (c *ClientContext) Get() string {
+	var ss []string
+	for i, s := range c.states {
+		ss = append(ss, fmt.Sprintf("%d: %s", i, StateAsString(s)))
+	}
+	return strings.Join(ss, " -> ")
 }
 
 type NoOpClientContext struct{}

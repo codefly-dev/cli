@@ -24,8 +24,14 @@ var OpenCmd = &cobra.Command{
 			app = common.ApplicationConfiguration(true)
 		}
 		shared.ExitOnError(err, "cannot get current application")
-		c := exec.Command("goland", app.Dir())
+		c := exec.Command(editor, app.Dir())
 		err = c.Run()
 		shared.ExitOnError(err, "cannot open application")
 	},
+}
+
+var editor string
+
+func init() {
+	OpenCmd.Flags().StringVar(&editor, "editor", "goland", "your editor: 'code' for vscode, 'goland' for goland")
 }

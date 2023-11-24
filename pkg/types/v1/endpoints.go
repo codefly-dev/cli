@@ -42,9 +42,9 @@ func DetectNewRoutes(ctx context.Context, known []*configurations.RestRoute, gro
 	logger.Debugf("application groups: #%d", len(group.ApplicationEndpointGroup))
 	var newRoutes []*configurations.RestRoute
 	for _, app := range group.ApplicationEndpointGroup {
-		logger.Tracef("service groups: %s #%d", app.Name, len(app.ServiceEndpointGroups))
+		logger.DebugMe("service groups: %s #%d", app.Name, len(app.ServiceEndpointGroups))
 		for _, svc := range app.ServiceEndpointGroups {
-			logger.Tracef("endpoints: %s #%d", svc.Name, len(svc.Endpoints))
+			logger.DebugMe("endpoints: %s #%d", svc.Name, len(svc.Endpoints))
 			for _, ep := range svc.Endpoints {
 				if rest := IsRest(ctx, ep.Api); rest != nil {
 					for _, route := range rest.Routes {

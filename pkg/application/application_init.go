@@ -46,6 +46,7 @@ func (app *Application) FactoryInitService(instance *services.Instance) error {
 		return logger.Wrapf(err, "cannot get application group endpoint")
 	}
 
+	logger.DebugMe("group: %v", CondensedOutput(group))
 	ShowEndpointManagerState()
 	req := &servicev1.InitRequest{
 		Debug:                   shared.Debug(),

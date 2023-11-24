@@ -79,6 +79,44 @@
           "Web"
         ]
       }
+    },
+    "/project/logs/history": {
+      "get": {
+        "operationId": "Web_LogHistory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/viewsLogResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
     }
   },
   "definitions": {
@@ -209,6 +247,21 @@
         }
       }
     },
+    "logsLogSessionGroup": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/definitions/typesSession"
+        },
+        "logs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/logsLog"
+          }
+        }
+      }
+    },
     "protobufAny": {
       "type": "object",
       "properties": {
@@ -237,6 +290,58 @@
         }
       }
     },
+    "typesApplicationReference": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "project": {
+          "$ref": "#/definitions/typesProjectReference"
+        }
+      }
+    },
+    "typesPartialReference": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "project": {
+          "$ref": "#/definitions/typesProjectReference"
+        },
+        "applications": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/typesApplicationReference"
+          }
+        }
+      }
+    },
+    "typesProjectReference": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "typesSession": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "partial": {
+          "$ref": "#/definitions/typesPartialReference"
+        },
+        "application": {
+          "$ref": "#/definitions/typesApplicationReference"
+        }
+      }
+    },
     "viewsApplicationView": {
       "type": "object",
       "properties": {
@@ -257,6 +362,18 @@
       "properties": {
         "endpoint": {
           "$ref": "#/definitions/apiEndpoint"
+        }
+      }
+    },
+    "viewsLogResponse": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/logsLogSessionGroup"
+          }
         }
       }
     },

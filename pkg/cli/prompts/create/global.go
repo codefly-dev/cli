@@ -7,38 +7,15 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/golor"
 )
 
 type Global struct {
-	org                  string
-	domain               string
-	createDefaultProject bool
-	defaultProjectRoot   string
-	defaultProjectName   string
-}
-
-func (g *Global) ProjectBuilder() configurations.ProjectBuilder {
-	// TODO implement me
-	panic("implement me")
+	org    string
+	domain string
 }
 
 func NewGlobal() *Global {
-	return &Global{
-		createDefaultProject: true,
-		defaultProjectRoot:   configurations.HomeDir(),
-		defaultProjectName:   "default",
-	}
-}
-
-func (g *Global) DefaultProjectName() string {
-	return g.defaultProjectName
-}
-
-func (g *Global) ProjectGetter() configurations.ProjectBuilder {
-	return &configurations.ProjectInput{
-		Name: g.DefaultProjectName(),
-	}
+	return &Global{}
 }
 
 func (g *Global) Fetch() error {
@@ -64,28 +41,6 @@ func (g *Global) Fetch() error {
 		return logger.Wrapf(err, "cannot ask for domain")
 	}
 
-	var relativeProjectRoot string
-	prompt = &survey.Input{
-		Message: "Where from ~ do you want to store your projects by default?",
-		Default: "codefly",
-	}
-	err = survey.AskOne(prompt, &relativeProjectRoot)
-	if err != nil {
-		return logger.Wrapf(err, "cannot ask for project root")
-	}
-	g.defaultProjectRoot = relativeProjectRoot
-	confirm := &survey.Confirm{
-		Message: fmt.Sprintf("Do you want to create a default project at <%s/default>?", relativeProjectRoot),
-		Default: true,
-	}
-	err = survey.AskOne(confirm, &g.createDefaultProject)
-	if err != nil {
-		return logger.Wrapf(err, "cannot ask for default project")
-	}
-	if !g.createDefaultProject {
-		golor.Println(`You can create a new project later with
-#(blue)[codefly create project <name>]`)
-	}
 	return nil
 }
 
@@ -97,6 +52,4 @@ func (g *Global) Domain() string {
 	return g.domain
 }
 
-func (g *Global) CreateDefaultProject() bool {
-	return g.createDefaultProject
-}
+var _ configurations.GlobalConfigurationInputer = (*Global)(nil)

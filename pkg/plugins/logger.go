@@ -300,43 +300,50 @@ func NewServerLogger() hclog.Logger {
 }
 
 type ColorPicker struct {
-	styles []lipgloss.Style
+	foregroundColors []lipgloss.Color
+	backgroundColors []lipgloss.Color
 }
 
-func generateColors() []lipgloss.Style {
-	colorsForDarkBackground := []lipgloss.Style{
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#ADD8E6")), // Light Blue
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#90EE90")), // Soft Green
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#FFC0CB")), // Pale Pink
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#E6E6FA")), // Lavender
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#F08080")), // Light Coral
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#F5DEB3")), // Wheat
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")), // Bright Green
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#00FFFF")), // Cyan
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#FF1493")), // Neon Pink
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#7DF9FF")), // Electric Blue
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#FF69B4")), // Hot Pink
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#C0C0C0")), // Silver
+func generateForegroundColors() []lipgloss.Color {
+	return []lipgloss.Color{
+		lipgloss.Color("#ADD8E6"), // Light Blue
+		lipgloss.Color("#90EE90"), // Soft Green
+		lipgloss.Color("#FFC0CB"), // Pale Pink
+		lipgloss.Color("#E6E6FA"), // Lavender
+		lipgloss.Color("#F08080"), // Light Coral
+		lipgloss.Color("#F5DEB3"), // Wheat
+		lipgloss.Color("#00FF00"), // Bright Green
+		lipgloss.Color("#00FFFF"), // Cyan
+		lipgloss.Color("#FF1493"), // Neon Pink
+		lipgloss.Color("#7DF9FF"), // Electric Blue
+		lipgloss.Color("#FF69B4"), // Hot Pink
+		lipgloss.Color("#C0C0C0"), // Silver
 	}
-	return colorsForDarkBackground
 }
 
 func NewColorPicker() *ColorPicker {
-	return &ColorPicker{
-		styles: generateColors(),
+	var backgroundColors = []lipgloss.Color{
+		lipgloss.Color("#333333"), lipgloss.Color("#444444"), // ... add more colors
 	}
+	return &ColorPicker{backgroundColors: backgroundColors, foregroundColors: generateForegroundColors()}
 }
 
-func (cp *ColorPicker) hashString(s string) uint32 {
+func hashString(s string) uint32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
 	return h.Sum32()
 }
 
-func (cp *ColorPicker) PickStyle(s string) lipgloss.Style {
-	hash := cp.hashString(s)
-	index := hash % uint32(len(cp.styles))
-	return cp.styles[index]
+func (cp *ColorPicker) PickStyle(app string, service string) lipgloss.Style {
+	hashApp := hashString(app)
+	hashService := hashString(service)
+
+	fgColor := cp.foregroundColors[hashApp%uint32(len(cp.foregroundColors))]
+	bgColor := cp.backgroundColors[hashService%uint32(len(cp.backgroundColors))]
+
+	return lipgloss.NewStyle().
+		Foreground(fgColor).
+		Background(bgColor)
 }
 
 type ServerFormatter struct {
@@ -420,7 +427,7 @@ func (out *ServerFormatter) Write(p []byte) (n int, err error) {
 	var style lipgloss.Style
 	var ok bool
 	if style, ok = out.styles[unique]; !ok {
-		out.styles[unique] = out.picker.PickStyle(unique)
+		out.styles[unique] = out.picker.PickStyle(log.Message.Application, log.Message.Service)
 	}
 
 	// debug me bool

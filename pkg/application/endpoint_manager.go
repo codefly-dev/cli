@@ -3,6 +3,7 @@ package application
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/codefly-dev/cli/pkg/plugins/endpoints"
 	corev1 "github.com/codefly-dev/cli/proto/v1/core"
@@ -87,7 +88,7 @@ func (s *ServiceEndpointManager) ServiceGroupEndpoints(dep *configurations.Servi
 	logger.Debugf("endpoints: #%d", len(es))
 	if len(es) > 0 {
 		return &corev1.ServiceEndpointGroup{
-			Name:      dep.Name,
+			Name:      s.service.Name,
 			Endpoints: es,
 		}, nil
 	}
@@ -174,6 +175,7 @@ func GetEndpointDependencyGroup(service *configurations.Service) (*corev1.Endpoi
 	logger := shared.NewLogger("applications.GetEndpointDependencyGroup<%s>", service.Name)
 	// We want to find the dependencies for this service
 	target := &configurations.ServiceDependency{Name: service.Name, Application: service.Application}
+	logger.Debugf("looking in the endpoint manager dependencies for %s", target)
 	var groups []*corev1.ApplicationEndpointGroup
 	for _, dep := range service.Dependencies {
 		app, err := GetApplicationEndpointManager(dep.Application)
@@ -257,13 +259,17 @@ func CondensedOutput(group *corev1.EndpointGroup) []string {
 }
 
 func ShowEndpointManagerState() {
+	logger := shared.NewLogger("applications.ShowEndpointManagerState")
+	var es []string
 	for _, manager := range managers {
-		fmt.Println("Application:", manager.application.Name)
+		es = append(es, fmt.Sprintf("- Application: %s", manager.application.Name))
 		for _, svc := range manager.services {
-			fmt.Println("    Service:", svc.service.Name)
+			es = append(es, fmt.Sprintf("  - Service: %s", svc.service.Name))
 			for _, endpoint := range svc.endpoints {
-				fmt.Printf("        Endpoint: %s \n", endpoint.endpoint.Name)
+				es = append(es, fmt.Sprintf("    - Endpoint: %s", endpoint.endpoint.Name))
 			}
 		}
 	}
+	logger.Debugf("state: \n%s", strings.Join(es, "\n"))
+
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"github.com/codefly-dev/cli/pkg/cli/prompts/create"
 	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
@@ -12,21 +13,34 @@ var InitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "eInit",
 	Run: func(cmd *cobra.Command, args []string) {
-		golor.Println(`#(blue)[Welcome to Codefly 🪽!]
-
-#(italic,white)[🔜 Coming soon:] logging to get your configuration from the server.
-`)
+		golor.Println(`#(blue)[Welcome to Codefly 🪽!]`)
 		getter := create.NewGlobal()
-		//override := create.NewOverrider()
 		configurations.InitGlobal(getter)
+		// Creating a default project
+		project, err := configurations.NewProject("default")
+		if err != nil {
+			//shared.ExitOnError(err, "cannot create default project")
+		}
+		configurations.AddProject(project)
+		configurations.SetCurrentProject(project)
+		golor.Println(`#(blue)[Project <default> created at ~/codefly/default!]`)
 
-		golor.Println(`#(blue)[📝Important]
-Passing around names of project, applications or service is very poor UX.
-Codefly tries to avoid it by keeping the context of your current work, what project and applications you are working on.
+		// Creating a default application
+		application, err := configurations.NewApplication("application")
+		if err != nil {
+			shared.ExitOnError(err, "cannot create default application")
+		}
+		configurations.AddApplication(application)
+		configurations.SetCurrentApplication(application)
+		golor.Println(`#(blue)[Application <application> created at ~/codefly/default/application!]
+Add new services to your application with
+#(cyan)[codefly add service {NAME} --plugin={PLUGIN}]
+To get started, try adding a service that wraps an shell command with
+#(cyan)[codefly add service {NAME} --plugin=codefly.ai/shell:latest]
 
-To see your current context use the #(italic,white)[codefly context view] command.
+Note: To quickly edit your services, run
+#(cyan)[codefly open --editor={EDITOR}]
+to open the project in your favorite IDE, vscode or others.`)
 
-You can always change the context by using the #(italic,white)[codefly context set] command.
-`)
 	},
 }

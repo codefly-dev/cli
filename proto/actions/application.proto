@@ -1,0 +1,13 @@
+syntax = "proto3";
+package v1.actions;
+
+message AddApplication {
+    string kind = 1;
+    string name = 2;
+    string description = 3;
+    string project = 4;
+}
+
+message AddApplicationOutput {
+    string name = 1;
+}

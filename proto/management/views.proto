@@ -5,7 +5,7 @@ import "google/protobuf/empty.proto";
 import "core/api.proto";
 import "management/logs.proto";
 import "google/api/annotations.proto";
-
+import "google/protobuf/timestamp.proto";
 
 message ProjectView {
   string name = 1;
@@ -68,6 +68,21 @@ message PluginUsageResponse {
   PluginUsage usage = 1;
 }
 
+/*
+Logs
+*/
+
+
+message LogRequest {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to = 2;
+}
+
+
+message LogResponse {
+  repeated logs.LogSessionGroup groups = 1;
+}
+
 
 service Web {
 
@@ -81,6 +96,12 @@ service Web {
     option (google.api.http) = {
       post: "/project/logs"
       body: "*"
+    };
+  }
+
+  rpc LogHistory(LogRequest) returns (LogResponse) {
+    option (google.api.http) = {
+      get: "/project/logs/history"
     };
   }
 //

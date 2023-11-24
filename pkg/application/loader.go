@@ -131,7 +131,6 @@ func (l *Loader) LoadServiceConfiguration(ref *configurations.ServiceReference) 
 		}
 		l.publicDependencies[unique] = append(l.publicDependencies[unique], dep)
 		if !BelongToSameApplication(dep, l.application) {
-			logger.Info("found a dep for another application: %v. Define and run a partial instead of application standalone!", dep.Application)
 			// Only load in-application dependencies
 			continue
 		}

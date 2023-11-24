@@ -163,7 +163,7 @@ func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse
 		s.Logger.Debugf("we need some communication!")
 
 		for {
-			s.Logger.DebugMe("answer: %v", answer)
+			s.Logger.Debugf("answer: %v", answer)
 			eng, err := server.Communicate(answer)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate CREATE from server")
@@ -174,6 +174,8 @@ func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate CREATE from factory")
 			}
+			s.Logger.DebugMe("information request by client: %v", req)
+
 			if req.Done {
 				s.Logger.Debugf("client is done")
 				break
@@ -205,17 +207,19 @@ func (s *Instance) Sync(r *factoryv1.SyncRequest) (*factoryv1.SyncResponse, erro
 		s.Logger.DebugMe("we need some communication!")
 
 		for {
+			s.Logger.DebugMe("answer: %v", answer)
 			eng, err := server.Communicate(answer)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate SYNC")
 			}
-			s.Logger.Debugf("got engage: %v", eng)
 
-			req, err := s.Runtime.Communicate(eng)
+			s.Logger.DebugMe("engagement: %v", eng)
+			req, err := s.Factory.Communicate(eng)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate")
 			}
-			s.Logger.Debugf("information request by client: %v", req)
+			s.Logger.DebugMe("information request by client: %v", req)
+
 			if req.Done {
 				s.Logger.Debugf("client is done")
 				break

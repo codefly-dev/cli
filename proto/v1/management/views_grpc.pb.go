@@ -8,6 +8,7 @@ package management
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -22,6 +23,7 @@ const _ = grpc.SupportPackageIsVersion7
 const (
 	Web_GetProjectInformation_FullMethodName = "/v1.management.views.Web/GetProjectInformation"
 	Web_Logs_FullMethodName                  = "/v1.management.views.Web/Logs"
+	Web_LogHistory_FullMethodName            = "/v1.management.views.Web/LogHistory"
 )
 
 // WebClient is the client API for Web service.
@@ -30,6 +32,7 @@ const (
 type WebClient interface {
 	GetProjectInformation(ctx context.Context, in *ProjectInformationRequest, opts ...grpc.CallOption) (*ProjectInformationResponse, error)
 	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
+	LogHistory(ctx context.Context, in *LogRequest, opts ...grpc.CallOption) (*LogResponse, error)
 }
 
 type webClient struct {
@@ -81,12 +84,22 @@ func (x *webLogsClient) Recv() (*Log, error) {
 	return m, nil
 }
 
+func (c *webClient) LogHistory(ctx context.Context, in *LogRequest, opts ...grpc.CallOption) (*LogResponse, error) {
+	out := new(LogResponse)
+	err := c.cc.Invoke(ctx, Web_LogHistory_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WebServer is the server API for Web service.
 // All implementations must embed UnimplementedWebServer
 // for forward compatibility
 type WebServer interface {
 	GetProjectInformation(context.Context, *ProjectInformationRequest) (*ProjectInformationResponse, error)
 	Logs(*emptypb.Empty, Web_LogsServer) error
+	LogHistory(context.Context, *LogRequest) (*LogResponse, error)
 	mustEmbedUnimplementedWebServer()
 }
 
@@ -99,6 +112,9 @@ func (UnimplementedWebServer) GetProjectInformation(context.Context, *ProjectInf
 }
 func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
 	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
+}
+func (UnimplementedWebServer) LogHistory(context.Context, *LogRequest) (*LogResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LogHistory not implemented")
 }
 func (UnimplementedWebServer) mustEmbedUnimplementedWebServer() {}
 
@@ -152,6 +168,24 @@ func (x *webLogsServer) Send(m *Log) error {
 	return x.ServerStream.SendMsg(m)
 }
 
+func _Web_LogHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WebServer).LogHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Web_LogHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WebServer).LogHistory(ctx, req.(*LogRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Web_ServiceDesc is the grpc.ServiceDesc for Web service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -162,6 +196,10 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetProjectInformation",
 			Handler:    _Web_GetProjectInformation_Handler,
+		},
+		{
+			MethodName: "LogHistory",
+			Handler:    _Web_LogHistory_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

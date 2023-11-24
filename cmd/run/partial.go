@@ -8,6 +8,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
+	"github.com/codefly-dev/cli/pkg/cli/development"
 	"github.com/codefly-dev/cli/pkg/management"
 	"github.com/codefly-dev/cli/pkg/partial"
 	"github.com/codefly-dev/cli/pkg/plugins"
@@ -40,7 +41,12 @@ var PartialCmd = &cobra.Command{
 			fmt.Printf("Cannot find partial <%s> in project <%s>\n", name, project.Name)
 			os.Exit(1)
 		}
-		part, err := partial.NewPartial(project, conf, application.RuntimeMode)
+		session := management.NewPartialSession(conf)
+		spy, err := development.NewSpy(session)
+		shared.ExitOnError(err, "cannot create spy")
+		defer spy.Report()
+
+		partial, err := partial.NewPartial(project, conf, application.RuntimeMode)
 		shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
 
 		// Web server interface to codefly
@@ -58,15 +64,17 @@ var PartialCmd = &cobra.Command{
 		if initOnly {
 			goto cleanup
 		}
-		err = part.Configure(ctx)
+		err = partial.Configure(ctx)
 		shared.UnexpectedExitOnError(err, "cannot configure partial")
 
 		if configureOnly {
 			goto cleanup
 		}
 
+		spy.Activate()
+
 		go func() {
-			errs <- part.Run(ctx)
+			errs <- partial.Run(ctx)
 		}()
 
 		for {
@@ -97,7 +105,7 @@ var PartialCmd = &cobra.Command{
 			return
 		}
 		//logger.Debugf("Stopping partial <%s>", conf.Name)
-		//err = part.Stop(ctx)
+		//err = partial.Stop(ctx)
 		//shared.ExitOnError(err, "cannot stop partial")
 	},
 }

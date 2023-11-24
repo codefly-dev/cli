@@ -106,8 +106,8 @@ func Load[P PluginContext, Instance any](p *configurations.Plugin, unique string
 func Download(p *configurations.Plugin) error {
 	logger := shared.NewLogger("plugins.Download<%s>", p.Unique())
 	golor.Println(`#(blue,bold)[Downloading plugin {{.Publisher}}::{{.Identifier}} Version {{.Version}}]`, p)
-	logger.TODO("Publisher to URL")
 	releaseURL := DownloadURL(p)
+	logger.TODO("Publisher to URL: %v", releaseURL)
 	resp, err := http.Get(releaseURL)
 	if err != nil {
 		panic(err)

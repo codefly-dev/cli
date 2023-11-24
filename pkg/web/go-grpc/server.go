@@ -28,6 +28,10 @@ type Server struct {
 	logChannel chan *managementv1.Log
 }
 
+func (s *Server) LogHistory(ctx context.Context, request *managementv1.LogRequest) (*managementv1.LogResponse, error) {
+	return nil, nil
+}
+
 func (s *Server) sendLogToClients(logEntry *managementv1.Log) {
 	s.logChannel <- logEntry
 }

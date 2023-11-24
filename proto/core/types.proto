@@ -1,0 +1,28 @@
+syntax = "proto3";
+package v1.core.types;
+
+import "google/protobuf/timestamp.proto";
+
+message ProjectReference {
+  string name = 1;
+}
+
+message ApplicationReference {
+  string name = 1;
+  ProjectReference project = 2;
+}
+
+message PartialReference {
+  string name = 1;
+  ProjectReference project = 2;
+  repeated ApplicationReference applications = 3;
+}
+
+
+message Session {
+  google.protobuf.Timestamp at = 1;
+  oneof session {
+    v1.core.types.PartialReference partial = 2;
+    v1.core.types.ApplicationReference application = 3;
+  }
+}

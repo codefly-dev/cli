@@ -9,6 +9,6 @@ import (
 )
 
 func DownloadURL(p *configurations.Plugin) string {
-	return fmt.Sprintf("https://github.com/codefly-dev/service-%s/releases/download/v%s/service-%s_%s_darwin_arm4.tar.gz", p.Identifier, p.Version, p.Identifier, p.Version)
+	return fmt.Sprintf("https://github.com/codefly-dev/service-%s/releases/download/v%s/service-%s_%s_darwin_arm64.tar.gz", p.Identifier, p.Version, p.Identifier, p.Version)
 
 }
