@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"log"
 	"os"
 	"path"
@@ -24,12 +25,23 @@ type ProjectReference struct {
 	*corev1.ProjectReference
 }
 
+type Session struct {
+	ID string
+	*corev1.Session
+}
+
 type Sqlite struct {
 	db *sql.DB
 }
 
 func (s *Sqlite) Init(session *corev1.Session) error {
-	return nil
+
+	switch x := session.Session.(type) {
+	case *corev1.Session_Partial:
+		return addPartialReference(s.db, x.Partial)
+	default:
+		return errors.New("TBI")
+	}
 }
 
 func NewSqliteStorage() (Storage, error) {
@@ -41,12 +53,11 @@ func NewSqliteStorage() (Storage, error) {
 }
 
 func SqliteInit() (*sql.DB, error) {
-
 	ws, err := configurations.Current()
 	if err != nil {
 		return nil, err
 	}
-	dbFile := path.Join(ws.Dir(), "session.db")
+	dbFile := path.Join(ws.Dir(), "sessions.db")
 	// Check if the file exists. If not, create it.
 	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
 		file, err := os.Create(dbFile)
@@ -92,6 +103,24 @@ func SqliteInit() (*sql.DB, error) {
 	return db, nil
 }
 
+func startSession(db *sql.DB, session *corev1.Session) (*Session, error) {
+	// SQL statement to insert a new session
+	stmt, err := db.Prepare(`INSERT INTO session (id, at) VALUES (?, ?)`)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+
+	// Execute the statement
+	res, err := stmt.Exec(uuid.New(), session.At.AsTime())
+	if err != nil {
+		return nil, err
+	}
+
+	log.Println("Session added successfully")
+	return nil
+}
+
 func getOrCreateProject(db *sql.DB, projectName string) (*ProjectReference, error) {
 	// Check if the project exists
 	var project ProjectReference
@@ -100,7 +129,7 @@ func getOrCreateProject(db *sql.DB, projectName string) (*ProjectReference, erro
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Project does not exist, create it
-			_, err := db.Exec("INSERT INTO project_reference (name) VALUES (?)", projectName)
+			_, err := db.Exec("INSERT INTO project_reference (id, name) VALUES (?, ?)", uuid.New(), projectName)
 			if err != nil {
 				return nil, err
 			}
@@ -122,14 +151,14 @@ func addPartialReference(db *sql.DB, partial *corev1.PartialReference) error {
 	if err != nil {
 
 	}
-	stmt, err := db.Prepare(`INSERT INTO partial_reference (name, project_id) VALUES (?, ?)`)
+	stmt, err := db.Prepare(`INSERT INTO partial_reference (id, name, project_id) VALUES (?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	// Execute the statement
-	_, err = stmt.Exec(partial.Name, project.ID)
+	_, err = stmt.Exec(project.ID, partial.Name, project.ID)
 	if err != nil {
 		return err
 	}

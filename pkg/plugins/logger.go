@@ -53,6 +53,7 @@ func (l *ServiceLogger) Write(p []byte) (n int, err error) {
 	}
 	entry := LogEntry{
 		Msg:              string(p),
+		Kind:             ServiceKind,
 		PluginIdentifier: l.PluginIdentifier,
 		Service:          l.Service,
 		Application:      l.Application,
@@ -170,6 +171,7 @@ type LogEntry struct {
 	PluginIdentifier string
 	Service          string
 	Application      string
+	Kind             string
 	DebugMe          bool
 }
 
@@ -189,9 +191,15 @@ func (l *PluginLogger) WriteEntry(entry LogEntry) (n int, err error) {
 	return n, err
 }
 
+const (
+	PluginKind  = "plugin"
+	ServiceKind = "service"
+)
+
 func (l *PluginLogger) NewLogEntry(b []byte) LogEntry {
 	return LogEntry{
 		Msg:              string(b),
+		Kind:             PluginKind,
 		PluginIdentifier: l.PluginIdentifier,
 		Service:          l.Service,
 		Application:      l.Application,
@@ -369,9 +377,10 @@ func RegisterCallback(callback LogCallback) {
 }
 
 type LogMessage struct {
-	Level      string    `json:"@level"`
-	RawMessage string    `json:"@message"`
-	Timestamp  time.Time `json:"@timestamp"`
+	Level     string    `json:"@level"`
+	Timestamp time.Time `json:"@timestamp"`
+
+	RawMessage string `json:"@message"`
 
 	Message LogMessageContent
 }
@@ -380,13 +389,26 @@ type LogMessageContent struct {
 	Msg              string `json:"Msg"`
 	Application      string `json:"Application"`
 	Service          string `json:"Service"`
+	Kind             string `json:"Kind"`
 	PluginIdentifier string `json:"PluginIdentifier"`
 	Level            string `json:"Level"`
+}
+
+func ToKind(s string) managementv1.Log_Kind {
+	switch s {
+	case ServiceKind:
+		return managementv1.Log_SERVICE
+	case PluginKind:
+		return managementv1.Log_PLUGIN
+	default:
+		return managementv1.Log_UNKNOWN
+	}
 }
 
 func createManagementLog(log LogMessage) *managementv1.Log {
 	return &managementv1.Log{
 		At:          timestamppb.New(log.Timestamp),
+		Kind:        ToKind(log.Message.Kind),
 		Application: log.Message.Application,
 		Service:     log.Message.Service,
 		Message:     log.Message.Msg,
@@ -443,8 +465,3 @@ func (out *ServerFormatter) Write(p []byte) (n int, err error) {
 func NoLogger() hclog.Logger {
 	return hclog.NewNullLogger()
 }
-
-//func createStyledMessage(msg string, style lipgloss.Style, bgColor string) string {
-//	styled := style.Copy().Background(lipgloss.Color(bgColor))
-//	return styled.Render(msg)
-//}
