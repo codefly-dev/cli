@@ -15,8 +15,8 @@ if [ ! -f "$YAML_FILE" ]; then
     exit 1
 fi
 
-# Update the version in the YAML file
-sed -i "s/version:.*/version: $NEW_VERSION/" "$YAML_FILE"
+# Update the version in the YAML file (for macOS)
+sed -i '' "s/version:.*/version: $NEW_VERSION/" "$YAML_FILE"
 
 # Add the changes to git
 git add "$YAML_FILE"
