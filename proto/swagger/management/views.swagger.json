@@ -39,7 +39,7 @@
       }
     },
     "/project/logs": {
-      "post": {
+      "get": {
         "operationId": "Web_Logs",
         "responses": {
           "200": {
@@ -64,17 +64,6 @@
             }
           }
         },
-        "parameters": [
-          {
-            "name": "body",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "type": "object",
-              "properties": {}
-            }
-          }
-        ],
         "tags": [
           "Web"
         ]

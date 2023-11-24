@@ -94,8 +94,7 @@ service Web {
 
   rpc Logs(google.protobuf.Empty)  returns (stream v1.management.logs.Log) {
     option (google.api.http) = {
-      post: "/project/logs"
-      body: "*"
+      get: "/project/logs"
     };
   }
 

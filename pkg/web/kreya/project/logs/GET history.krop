@@ -1,0 +1,28 @@
+{
+  "details": {
+    "path": "/project/logs/history",
+    "method": "GET",
+    "importedOperationId": "GET /project/logs/history",
+    "queryParams": [
+      {
+        "key": "from",
+        "value": "Unbranded generate green",
+        "ignored": true
+      },
+      {
+        "key": "to",
+        "value": "Front-line Lead Underpass",
+        "ignored": true
+      }
+    ]
+  },
+  "requests": [
+    {
+      "contentType": "none"
+    }
+  ],
+  "operationType": "unary",
+  "invokerName": "rest",
+  "typeHint": "GET",
+  "importStreamId": "90f336b0-e889-4dd3-b5ff-a27c9844b896"
+}

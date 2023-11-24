@@ -87,15 +87,19 @@ func WrapStart(cmd *exec.Cmd, loggers ...shared.BaseLogger) error {
 	}
 
 	var ws []io.Writer
+	var errorWs []io.Writer
 	for _, logger := range loggers {
 		ws = append(ws, logger)
+		errorWs = append(errorWs, logger)
 	}
 	go ForwardLogs(stdout, ws...)
 
 	//	catch the error
 	var b bytes.Buffer
 	w := bufio.NewWriter(&b)
-	go ForwardLogs(stderr, w)
+	errorWs = append(errorWs, w)
+
+	go ForwardLogs(stderr, ws...)
 
 	err = cmd.Start()
 	if err != nil {
