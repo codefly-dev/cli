@@ -122,7 +122,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.24.2
 	github.com/charmbracelet/lipgloss v0.9.1
 	github.com/cheggaaa/pb/v3 v3.1.4
-	github.com/codefly-dev/core v0.0.21
+	github.com/codefly-dev/core v0.0.22
 	github.com/codefly-dev/golor v0.0.10
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/fsnotify/fsnotify v1.7.0
