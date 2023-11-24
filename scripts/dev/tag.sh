@@ -29,4 +29,4 @@ git tag -a "v$NEW_VERSION" -m "Version $NEW_VERSION" -f
 
 # Force push the commit and tag to the remote repository
 git push -f
-git push origin "v$NEW_VERSION"
+git push origin "v$NEW_VERSION" -f
