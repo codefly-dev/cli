@@ -370,9 +370,9 @@ func NewServerFormatter(debug bool) *ServerFormatter {
 	}
 }
 
-type LogCallback func(logEntry *managementv1.Log)
+type LogCallback func(log *managementv1.Log)
 
-func RegisterCallback(callback LogCallback) {
+func RegisterLogCallback(callback LogCallback) {
 	output.callbacks = append(output.callbacks, callback)
 }
 

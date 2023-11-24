@@ -279,38 +279,47 @@
         }
       }
     },
-    "typesApplicationReference": {
+    "typesApplicationSnapshot": {
       "type": "object",
       "properties": {
+        "uuid": {
+          "type": "string"
+        },
         "name": {
           "type": "string"
         },
         "project": {
-          "$ref": "#/definitions/typesProjectReference"
+          "$ref": "#/definitions/typesProjectSnapshot"
         }
       }
     },
-    "typesPartialReference": {
+    "typesPartialSnapshot": {
       "type": "object",
       "properties": {
+        "uuid": {
+          "type": "string"
+        },
         "name": {
           "type": "string"
         },
         "project": {
-          "$ref": "#/definitions/typesProjectReference"
+          "$ref": "#/definitions/typesProjectSnapshot"
         },
         "applications": {
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/typesApplicationReference"
+            "$ref": "#/definitions/typesApplicationSnapshot"
           }
         }
       }
     },
-    "typesProjectReference": {
+    "typesProjectSnapshot": {
       "type": "object",
       "properties": {
+        "uuid": {
+          "type": "string"
+        },
         "name": {
           "type": "string"
         }
@@ -319,15 +328,18 @@
     "typesSession": {
       "type": "object",
       "properties": {
+        "uuid": {
+          "type": "string"
+        },
         "at": {
           "type": "string",
           "format": "date-time"
         },
         "partial": {
-          "$ref": "#/definitions/typesPartialReference"
+          "$ref": "#/definitions/typesPartialSnapshot"
         },
         "application": {
-          "$ref": "#/definitions/typesApplicationReference"
+          "$ref": "#/definitions/typesApplicationSnapshot"
         }
       }
     },

@@ -6,41 +6,45 @@ import (
 	corev1 "github.com/codefly-dev/cli/proto/v1/core"
 	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
 	"github.com/codefly-dev/core/configurations"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// NewProjectReference creates a new ProjectReference instance.
-func NewProjectReference(name string) *corev1.ProjectReference {
-	return &corev1.ProjectReference{
+// NewProjectSnapshot creates a new ProjectSnapshot instance.
+func NewProjectSnapshot(name string) *corev1.ProjectSnapshot {
+	return &corev1.ProjectSnapshot{
+		Uuid: uuid.NewString(),
 		Name: name,
 	}
 }
 
-// NewApplicationReference creates a new ApplicationReference instance.
-func NewApplicationReference(name string, project *corev1.ProjectReference) *corev1.ApplicationReference {
-	return &corev1.ApplicationReference{
+// NewApplicationSnapshot creates a new ApplicationSnapshot instance.
+func NewApplicationSnapshot(name string, project *corev1.ProjectSnapshot) *corev1.ApplicationSnapshot {
+	return &corev1.ApplicationSnapshot{
+		Uuid:    uuid.NewString(),
 		Name:    name,
 		Project: project,
 	}
 }
 
-// NewPartialReference creates a new PartialReference instance.
-func NewPartialReference(name string, project *corev1.ProjectReference, applications []*corev1.ApplicationReference) *corev1.PartialReference {
-	return &corev1.PartialReference{
+// NewPartialSnapshot creates a new PartialSnapshot instance.
+func NewPartialSnapshot(name string, project *corev1.ProjectSnapshot, applications []*corev1.ApplicationSnapshot) *corev1.PartialSnapshot {
+	return &corev1.PartialSnapshot{
+		Uuid:         uuid.NewString(),
 		Name:         name,
 		Project:      project,
 		Applications: applications,
 	}
 }
 
-func ToPartialReference(partial *configurations.Partial) *corev1.PartialReference {
-	return NewPartialReference(partial.Name, NewProjectReference(partial.Name), ToApplicationReferences(partial.Applications))
+func ToPartialSnapshot(partial *configurations.Partial) *corev1.PartialSnapshot {
+	return NewPartialSnapshot(partial.Name, NewProjectSnapshot(partial.Name), ToApplicationSnapshots(partial.Applications))
 }
 
-func ToApplicationReferences(applications []string) []*corev1.ApplicationReference {
-	var refs []*corev1.ApplicationReference
+func ToApplicationSnapshots(applications []string) []*corev1.ApplicationSnapshot {
+	var refs []*corev1.ApplicationSnapshot
 	for _, name := range applications {
-		refs = append(refs, NewApplicationReference(name, nil))
+		refs = append(refs, NewApplicationSnapshot(name, nil))
 	}
 	return refs
 }
@@ -59,8 +63,9 @@ func NewLog(at time.Time, application, service, message string, kind managementv
 // NewPartialSession creates a new LogSession instance.
 func NewPartialSession(partial *configurations.Partial) *corev1.Session {
 	session := &corev1.Session{
+		Uuid:    uuid.NewString(),
 		At:      timestamppb.New(time.Now()),
-		Session: &corev1.Session_Partial{Partial: ToPartialReference(partial)},
+		Session: &corev1.Session_Partial{Partial: ToPartialSnapshot(partial)},
 	}
 	return session
 }

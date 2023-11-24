@@ -1,8 +1,0 @@
-CREATE TABLE session (
- id TEXT PRIMARY KEY,
- at DATETIME NOT NULL,
- partial_id TEXT,
- application_id TEXT,
- FOREIGN KEY (partial_id) REFERENCES partial_reference(id),
- FOREIGN KEY (application_id) REFERENCES application_reference(id)
-);

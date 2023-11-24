@@ -2,10 +2,11 @@ package cmd
 
 import (
 	"embed"
-	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 	"io/fs"
 	"log"
+
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 type Information struct {

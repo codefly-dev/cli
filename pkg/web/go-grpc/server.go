@@ -84,7 +84,7 @@ func NewServer(c *Configuration) (*Server, error) {
 		logChannel: make(chan *managementv1.Log, bufferSize),
 	}
 	managementv1.RegisterWebServer(grpcServer, &s)
-	plugins.RegisterCallback(s.sendLogToClients)
+	plugins.RegisterLogCallback(s.sendLogToClients)
 	return &s, nil
 }
 

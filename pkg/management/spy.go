@@ -1,7 +1,9 @@
-package development
+package management
 
 import (
+	"github.com/codefly-dev/cli/pkg/plugins"
 	corev1 "github.com/codefly-dev/cli/proto/v1/core"
+	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -11,24 +13,29 @@ type Spy struct {
 }
 
 type Storage interface {
-	Init(session *corev1.Session) error
+	StartSession(session *corev1.Session) error
+	AddLog(log *managementv1.Log) // Plugin callback
+	Close()
 }
 
-func (s *Spy) Report() {
-	// Update the session time
-
+func (s *Spy) Close() {
+	s.Storage.Close()
 }
 
 func (s *Spy) Activate() error {
+	logger := shared.NewLogger("development.SpyActivate")
 	storage, err := NewSqliteStorage()
 	if err != nil {
-		return err
+		return logger.Wrapf(err, "cannot create storage")
 	}
 	s.Storage = storage
-	err = s.Storage.Init(s.Session)
+	// Session will take a snapshot of all the dependencies
+	logger.TODO("we need to define some fuzzy equality on snapshots")
+	err = s.Storage.StartSession(s.Session)
 	if err != nil {
 		return err
 	}
+	plugins.RegisterLogCallback(s.Storage.AddLog)
 	return nil
 }
 

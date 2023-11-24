@@ -3,26 +3,30 @@ package v1.core.types;
 
 import "google/protobuf/timestamp.proto";
 
-message ProjectReference {
-  string name = 1;
+message ProjectSnapshot {
+  string uuid = 1;
+  string name = 2;
 }
 
-message ApplicationReference {
-  string name = 1;
-  ProjectReference project = 2;
+message ApplicationSnapshot {
+  string uuid = 1;
+  string name = 2;
+  ProjectSnapshot project = 3;
 }
 
-message PartialReference {
-  string name = 1;
-  ProjectReference project = 2;
-  repeated ApplicationReference applications = 3;
+message PartialSnapshot {
+  string uuid = 1;
+  string name = 2;
+  ProjectSnapshot project = 3;
+  repeated ApplicationSnapshot applications = 4;
 }
 
 
 message Session {
-  google.protobuf.Timestamp at = 1;
+  string uuid = 1;
+  google.protobuf.Timestamp at = 2;
   oneof session {
-    v1.core.types.PartialReference partial = 2;
-    v1.core.types.ApplicationReference application = 3;
+    v1.core.types.PartialSnapshot partial = 3;
+    v1.core.types.ApplicationSnapshot application = 4;
   }
 }

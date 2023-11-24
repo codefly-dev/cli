@@ -8,7 +8,6 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/cli/pkg/cli/development"
 	"github.com/codefly-dev/cli/pkg/management"
 	"github.com/codefly-dev/cli/pkg/partial"
 	"github.com/codefly-dev/cli/pkg/plugins"
@@ -41,13 +40,14 @@ var PartialCmd = &cobra.Command{
 			fmt.Printf("Cannot find partial <%s> in project <%s>\n", name, project.Name)
 			os.Exit(1)
 		}
-		session := management.NewPartialSession(conf)
-		spy, err := development.NewSpy(session)
-		shared.ExitOnError(err, "cannot create spy")
-		defer spy.Report()
 
 		partial, err := partial.NewPartial(project, conf, application.RuntimeMode)
 		shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
+
+		session := management.NewPartialSession(conf)
+		spy, err := management.NewSpy(session)
+		shared.ExitOnError(err, "cannot create spy")
+		defer spy.Close()
 
 		// Web server interface to codefly
 		if server {
@@ -71,7 +71,8 @@ var PartialCmd = &cobra.Command{
 			goto cleanup
 		}
 
-		spy.Activate()
+		err = spy.Activate()
+		shared.UnexpectedExitOnError(err, "cannot activate spy")
 
 		go func() {
 			errs <- partial.Run(ctx)
