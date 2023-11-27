@@ -5,9 +5,10 @@ import (
 	"os"
 	"testing"
 
+	v1actions "github.com/codefly-dev/cli/proto/v1/go/actions"
+
 	"github.com/codefly-dev/cli/pkg/actions/actions"
 	"github.com/codefly-dev/cli/pkg/actions/project"
-	v1actions "github.com/codefly-dev/cli/proto/v1/actions"
 	"github.com/stretchr/testify/assert"
 )
 

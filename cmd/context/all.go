@@ -31,7 +31,7 @@ func ShowAll() {
 	//
 	//projects, err := configurations.ListProjects()
 	//shared.ExitOnError(err, "Cannot list projects")
-	//var others []*configurations.Project
+	//var others []*configurations.View
 	//for _, p := range projects {
 	//	if p.Name == project.Name {
 	//		continue

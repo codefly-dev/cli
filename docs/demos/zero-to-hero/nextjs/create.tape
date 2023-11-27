@@ -16,13 +16,13 @@ Enter
 
 Sleep 3s
 
-Type "# Adding a new service to your application with nexjs+auth0 plugin"
+Type "# Adding a new service to your application with nexjs+auth0 agent"
 Enter
 Sleep 1s
 
 
 
-Type "codefly add service web --plugin=codefly.ai/nextjs-auth0:0.0.1"
+Type "codefly add service web --agent=codefly.ai/nextjs-auth0:0.0.1"
 Enter
 
 Sleep 5s

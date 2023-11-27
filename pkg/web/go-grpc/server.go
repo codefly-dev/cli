@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net"
 
+	managementv1 "github.com/codefly-dev/cli/proto/v1/go/management"
+	"github.com/codefly-dev/core/agents"
+	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
+
 	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/cli/pkg/management"
-	"github.com/codefly-dev/cli/pkg/plugins"
-	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
 	"github.com/codefly-dev/golor"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -25,14 +27,14 @@ type Server struct {
 	managementv1.UnsafeWebServer
 	config     *Configuration
 	gRPC       *grpc.Server
-	logChannel chan *managementv1.Log
+	logChannel chan *agentsv1.Log
 }
 
 func (s *Server) LogHistory(ctx context.Context, request *managementv1.LogRequest) (*managementv1.LogResponse, error) {
 	return nil, nil
 }
 
-func (s *Server) sendLogToClients(logEntry *managementv1.Log) {
+func (s *Server) sendLogToClients(logEntry *agentsv1.Log) {
 	s.logChannel <- logEntry
 }
 
@@ -62,13 +64,13 @@ func (s *Server) GetApplicationInformation(ctx context.Context, request *managem
 	return &managementv1.ApplicationInformationResponse{Application: app}, nil
 }
 
-func (s *Server) GetPluginUsage(ctx context.Context, request *managementv1.PluginUsageRequest) (*managementv1.PluginUsageResponse, error) {
+func (s *Server) GetAgentUsage(ctx context.Context, request *managementv1.AgentUsageRequest) (*managementv1.AgentUsageResponse, error) {
 	base := fmt.Sprintf("%s/%s", request.Publisher, request.Name)
 	usage, err := s.config.Workspace.Usage(base)
 	if err != nil {
-		return nil, fmt.Errorf("cannot get plugin usage: %s", err)
+		return nil, fmt.Errorf("cannot get agent usage: %s", err)
 	}
-	return &managementv1.PluginUsageResponse{Usage: usage}, nil
+	return &managementv1.AgentUsageResponse{Usage: usage}, nil
 }
 
 func (s *Server) GetServiceInformation(ctx context.Context, request *managementv1.ServiceInformationRequest) (*managementv1.ServiceInformationResponse, error) {
@@ -81,10 +83,10 @@ func NewServer(c *Configuration) (*Server, error) {
 	s := Server{
 		config:     c,
 		gRPC:       grpcServer,
-		logChannel: make(chan *managementv1.Log, bufferSize),
+		logChannel: make(chan *agentsv1.Log, bufferSize),
 	}
 	managementv1.RegisterWebServer(grpcServer, &s)
-	plugins.RegisterLogCallback(s.sendLogToClients)
+	agents.RegisterLogCallback(s.sendLogToClients)
 	return &s, nil
 }
 

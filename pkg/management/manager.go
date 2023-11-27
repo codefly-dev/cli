@@ -3,27 +3,28 @@ package management
 import (
 	"fmt"
 
+	managementv1 "github.com/codefly-dev/cli/proto/v1/go/management"
+	"github.com/codefly-dev/core/agents/endpoints"
+
 	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/cli/pkg/plugins/endpoints"
-	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 )
 
 type Workspace struct {
-	Project      *managementv1.ProjectView
-	PluginUsages map[string]*managementv1.PluginUsage
+	View        *managementv1.ProjectView
+	AgentUsages map[string]*managementv1.AgentUsage
 }
 
 type Manager struct {
-	apps   map[string]*application.Application
-	plugin *PluginsManager
+	apps  map[string]*application.Application
+	agent *AgentsManager
 }
 
 func NewManager() *Manager {
 	return &Manager{
-		apps:   make(map[string]*application.Application),
-		plugin: NewPluginsManager(),
+		apps:  make(map[string]*application.Application),
+		agent: NewAgentsManager(),
 	}
 }
 
@@ -34,11 +35,11 @@ func (m *Manager) Load() (*Workspace, error) {
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot list projects")
 	}
-	w.Project, err = m.LoadProject(project)
+	w.View, err = m.LoadProject(project)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot load project")
 	}
-	w.PluginUsages = m.plugin.Usage()
+	w.AgentUsages = m.agent.Usage()
 	return &w, nil
 }
 
@@ -99,7 +100,7 @@ func (m *Manager) LoadService(app *application.Application, service *configurati
 			Endpoint: endpoints.Light(e),
 		})
 	}
-	m.plugin.AddPlugin(app.Configuration, service)
+	m.agent.AddAgent(app.Configuration, service)
 	return &managementv1.ServiceView{
 		Service:   service.Name,
 		Endpoints: views,
@@ -107,7 +108,7 @@ func (m *Manager) LoadService(app *application.Application, service *configurati
 }
 
 func (w *Workspace) GetProject() (*managementv1.ProjectView, error) {
-	return w.Project, nil
+	return w.View, nil
 }
 
 func (w *Workspace) GetApplication(application string) (*managementv1.ApplicationView, error) {
@@ -123,6 +124,6 @@ func (w *Workspace) GetApplication(application string) (*managementv1.Applicatio
 	return nil, fmt.Errorf("applications not found")
 }
 
-func (w *Workspace) Usage(base string) (*managementv1.PluginUsage, error) {
-	return w.PluginUsages[base], nil
+func (w *Workspace) Usage(base string) (*managementv1.AgentUsage, error) {
+	return w.AgentUsages[base], nil
 }

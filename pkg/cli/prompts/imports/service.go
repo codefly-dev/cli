@@ -3,9 +3,10 @@ package imports
 import (
 	"fmt"
 
+	"github.com/codefly-dev/cli/pkg/services"
+
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/codefly-dev/cli/pkg/imports"
-	"github.com/codefly-dev/cli/pkg/plugins/services"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
@@ -40,11 +41,11 @@ func (p *ServicePrompt) Fetch(rec *imports.Recommendation) error {
 		options = append(options, base.Name)
 	}
 	sel := survey.Select{
-		Message: "Choose a service plugin to use",
+		Message: "Choose a service agent to use",
 		Options: options,
 	}
-	var pluginInput string
-	err = survey.AskOne(&sel, &pluginInput)
+	var agentInput string
+	err = survey.AskOne(&sel, &agentInput)
 	if err != nil {
 		return logger.Wrapf(err, "cannot ask for base")
 	}
@@ -54,9 +55,9 @@ func (p *ServicePrompt) Fetch(rec *imports.Recommendation) error {
 	if err != nil {
 		return logger.Wrapf(err, "cannot ask for namespace")
 	}
-	plugin, err := configurations.ParsePlugin(configurations.PluginService, pluginInput)
+	agent, err := configurations.ParseAgent(configurations.AgentService, agentInput)
 	if err != nil {
-		return logger.Wrapf(err, "cannot parse plugin")
+		return logger.Wrapf(err, "cannot parse agent")
 	}
 
 	var dependsOn []string
@@ -82,7 +83,7 @@ func (p *ServicePrompt) Fetch(rec *imports.Recommendation) error {
 				p.steps = append(p.steps, &services.CreationInput{
 					Name:      name,
 					Namespace: p.namespace,
-					Plugin:    dep,
+					Agent:     dep,
 				})
 				dependsOn = append(dependsOn, name)
 			}
@@ -91,7 +92,7 @@ func (p *ServicePrompt) Fetch(rec *imports.Recommendation) error {
 	p.steps = append(p.steps, &services.CreationInput{
 		Name:      p.name,
 		Namespace: p.namespace,
-		Plugin:    plugin,
+		Agent:     agent,
 		Files:     rec.Main.Includes,
 		DependsOn: dependsOn,
 	})

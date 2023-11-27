@@ -10,7 +10,7 @@ package ops
 //	"fmt"
 //	"github.com/docker/docker/api/types"
 //	"github.com/docker/docker/client"
-//	"github.com/codefly-dev/cli/pkg/platform/plugins"
+//	"github.com/codefly-dev/cli/pkg/platform/agents"
 //	"io"
 //	"os"
 //	"path/filepath"
@@ -19,10 +19,10 @@ package ops
 //
 //type Docker struct {
 //	cli    *client.Client
-//	logger *plugins.PluginLogger
+//	logger *agents.AgentLogger
 //}
 //
-//func NewDocker(logger *plugins.PluginLogger) (*Docker, error) {
+//func NewDocker(logger *agents.AgentLogger) (*Docker, error) {
 //	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 //	if err != nil {
 //		return nil, fmt.Errorf("cannot create docker client: %w", err)

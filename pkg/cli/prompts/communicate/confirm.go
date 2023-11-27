@@ -7,9 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	corev1 "github.com/codefly-dev/cli/proto/v1/core"
 	"github.com/codefly-dev/golor"
 )
 
@@ -56,7 +57,7 @@ func (m ConfirmModel) View() string {
 	return style.Render(golor.Sprintf("#(bold,magenta)[{{.Description}}\n{{.Prompt}}] [y/n]", m))
 }
 
-func Confirm(msg *corev1.Message, c *corev1.Confirm) (*corev1.Answer, error) {
+func Confirm(msg *agentsv1.Message, c *agentsv1.Confirm) (*agentsv1.Answer, error) {
 	// Catch interrupt signal
 
 	p := tea.NewProgram(ConfirmModel{
@@ -75,9 +76,9 @@ func Confirm(msg *corev1.Message, c *corev1.Confirm) (*corev1.Answer, error) {
 		return nil, err
 	}
 	m := mod.(ConfirmModel)
-	return &corev1.Answer{
-		Value: &corev1.Answer_Confirm{
-			Confirm: &corev1.ConfirmAnswer{
+	return &agentsv1.Answer{
+		Value: &agentsv1.Answer_Confirm{
+			Confirm: &agentsv1.ConfirmAnswer{
 				Confirmed: m.confirmed,
 			},
 		},

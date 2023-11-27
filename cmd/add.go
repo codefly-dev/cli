@@ -16,5 +16,4 @@ func init() {
 	AddCmd.AddCommand(add.PartialCmd)
 	AddCmd.AddCommand(add.ApplicationCmd)
 	AddCmd.AddCommand(add.ServiceCmd)
-	AddCmd.AddCommand(add.ProviderCmd)
 }

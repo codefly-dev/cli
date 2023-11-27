@@ -38,7 +38,7 @@ Interactive mode to be supported soon.`)
 
 		golor.Println(`#(blue)[Successfully created your application <{{.Name}}>!]
 #(italic,blue)[You are ready to add some services to it!]
-#(italic,white)[codefly create service <service-name> --plugin=<base>]
+#(italic,white)[codefly create service <service-name> --agent=<base>]
 
 Go to the website to look for services to get started: never start from a blank page!!
 

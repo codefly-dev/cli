@@ -1,20 +1,20 @@
 package management
 
 import (
-	"github.com/codefly-dev/cli/pkg/plugins"
-	corev1 "github.com/codefly-dev/cli/proto/v1/core"
-	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
+	"github.com/codefly-dev/core/agents"
+	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
+	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
 	"github.com/codefly-dev/core/shared"
 )
 
 type Spy struct {
-	Session *corev1.Session
+	Session *basev1.Session
 	Storage Storage
 }
 
 type Storage interface {
-	StartSession(session *corev1.Session) error
-	AddLog(log *managementv1.Log) // Plugin callback
+	StartSession(session *basev1.Session) error
+	AddLog(log *agentsv1.Log) // Agent callback
 	Close()
 }
 
@@ -35,11 +35,11 @@ func (s *Spy) Activate() error {
 	if err != nil {
 		return err
 	}
-	plugins.RegisterLogCallback(s.Storage.AddLog)
+	agents.RegisterLogCallback(s.Storage.AddLog)
 	return nil
 }
 
-func NewSpy(session *corev1.Session) (*Spy, error) {
+func NewSpy(session *basev1.Session) (*Spy, error) {
 	logger := shared.NewLogger("development.NewSpy")
 	storage, err := NewSqliteStorage()
 	if err != nil {

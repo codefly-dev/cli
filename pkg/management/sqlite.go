@@ -10,8 +10,8 @@ import (
 	"path"
 	"time"
 
-	corev1 "github.com/codefly-dev/cli/proto/v1/core"
-	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
+	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
+
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/golang-migrate/migrate/v4"
@@ -19,17 +19,19 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "github.com/mattn/go-sqlite3"
+
+	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
 )
 
 type Sqlite struct {
 	db           *sql.DB
-	logBuffer    []*managementv1.Log
+	logBuffer    []*agentsv1.Log
 	flushChannel chan bool
 	clean        func(db *sql.DB)
-	session      *corev1.Session
+	session      *basev1.Session
 }
 
-func (storage *Sqlite) AddLog(log *managementv1.Log) {
+func (storage *Sqlite) AddLog(log *agentsv1.Log) {
 	storage.logBuffer = append(storage.logBuffer, log)
 	// Optionally, add logic here to handle buffer size limits
 }
@@ -64,7 +66,7 @@ func (storage *Sqlite) Close() {
 	storage.clean(storage.db)
 }
 
-func (storage *Sqlite) StartSession(session *corev1.Session) error {
+func (storage *Sqlite) StartSession(session *basev1.Session) error {
 	storage.session = session
 	err := storage.initSession(session)
 	if err != nil {
@@ -121,16 +123,16 @@ func NewSqliteStorage() (Storage, error) {
 	return &Sqlite{db: db, clean: func(db *sql.DB) { db.Close() }}, nil
 }
 
-func (storage *Sqlite) initSession(session *corev1.Session) error {
+func (storage *Sqlite) initSession(session *basev1.Session) error {
 	switch session.Session.(type) {
-	case *corev1.Session_Partial:
+	case *basev1.Session_Partial:
 		return storage.initPartialSession(session)
 	default:
 		return errors.New("TBI")
 	}
 }
 
-func (storage *Sqlite) initPartialSession(session *corev1.Session) error {
+func (storage *Sqlite) initPartialSession(session *basev1.Session) error {
 	logger := shared.NewLogger("development.initPartialSession")
 
 	fmt.Println("PROJECT ID", session.GetPartial().Project.Uuid)
@@ -161,7 +163,7 @@ func (storage *Sqlite) initPartialSession(session *corev1.Session) error {
 	return nil
 }
 
-func (storage *Sqlite) addProjectSnapshot(project *corev1.ProjectSnapshot) error {
+func (storage *Sqlite) addProjectSnapshot(project *basev1.ProjectSnapshot) error {
 	logger := shared.NewLogger("development.SqliteAddProjectSnapshot")
 	_, err := storage.db.Exec("INSERT INTO project_snapshot (id, name) VALUES (?, ?)", project.Uuid, project.Name)
 	if err != nil {
@@ -171,7 +173,7 @@ func (storage *Sqlite) addProjectSnapshot(project *corev1.ProjectSnapshot) error
 	return nil
 }
 
-func (storage *Sqlite) addPartialSnapshot(partial *corev1.PartialSnapshot) error {
+func (storage *Sqlite) addPartialSnapshot(partial *basev1.PartialSnapshot) error {
 	logger := shared.NewLogger("development.SqliteAddPartialSnapshot")
 
 	stmt, err := storage.db.Prepare(`INSERT INTO partial_snapshot (id, name, project_id) VALUES (?, ?, ?)`)
@@ -189,7 +191,7 @@ func (storage *Sqlite) addPartialSnapshot(partial *corev1.PartialSnapshot) error
 	return nil
 }
 
-func insertLogs(db *sql.DB, sessionID string, logs []*managementv1.Log) error {
+func insertLogs(db *sql.DB, sessionID string, logs []*agentsv1.Log) error {
 	// Start a transaction
 	tx, err := db.Begin()
 	if err != nil {

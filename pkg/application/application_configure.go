@@ -3,8 +3,9 @@ package application
 import (
 	"context"
 
-	"github.com/codefly-dev/cli/pkg/plugins/services"
-	runtimev1 "github.com/codefly-dev/cli/proto/v1/services/runtime"
+	"github.com/codefly-dev/cli/pkg/services"
+	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
+
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -29,7 +30,7 @@ func (app *Application) Configure(ctx context.Context) error {
 }
 
 func (app *Application) ConfigureService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.NewLogger("applications.ConfigureService<%s::%s[%s]>", app.Configuration.Name, instance.Configuration.Name, instance.Configuration.Plugin.Identifier)
+	logger := shared.NewLogger("applications.ConfigureService<%s::%s[%s]>", app.Configuration.Name, instance.Configuration.Name, instance.Configuration.Agent.Identifier)
 	logger.Debugf("configuring instance")
 
 	configure, err := instance.Configure(&runtimev1.ConfigureRequest{})

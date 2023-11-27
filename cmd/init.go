@@ -23,7 +23,7 @@ var InitCmd = &cobra.Command{
 		}
 		configurations.AddProject(project)
 		configurations.SetCurrentProject(project)
-		golor.Println(`#(blue)[Project <default> created at ~/codefly/default!]`)
+		golor.Println(`#(blue)[View <default> created at ~/codefly/default!]`)
 
 		// Creating a default application
 		application, err := configurations.NewApplication("application")
@@ -34,9 +34,9 @@ var InitCmd = &cobra.Command{
 		configurations.SetCurrentApplication(application)
 		golor.Println(`#(blue)[Application <application> created at ~/codefly/default/application!]
 Add new services to your application with
-#(cyan)[codefly add service {NAME} --plugin={PLUGIN}]
+#(cyan)[codefly add service {NAME} --agent={AGENT}]
 To get started, try adding a service that wraps an shell command with
-#(cyan)[codefly add service {NAME} --plugin=codefly.ai/shell:latest]
+#(cyan)[codefly add service {NAME} --agent=codefly.ai/shell:latest]
 
 Note: To quickly edit your services, run
 #(cyan)[codefly open --editor={EDITOR}]

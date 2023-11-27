@@ -84,7 +84,7 @@ func (p *ApplicationImporter) Fetch() error {
 		}
 		options = append(options, project.Name)
 	}
-	sel := survey.Select{Message: "Project:", Options: options}
+	sel := survey.Select{Message: "View:", Options: options}
 	err = survey.AskOne(&sel, &p.project)
 	if err != nil {
 		return logger.Wrapf(err, "cannot ask project")

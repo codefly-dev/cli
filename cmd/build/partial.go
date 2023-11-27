@@ -6,10 +6,11 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/codefly-dev/core/agents"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/cli/pkg/partial"
-	"github.com/codefly-dev/cli/pkg/plugins"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
@@ -42,8 +43,8 @@ var PartialCmd = &cobra.Command{
 		err = part.Build(ctx)
 		shared.UnexpectedExitOnError(err, "cannot build partial")
 
-		logger.Debugf("Clearing plugins")
-		plugins.ClearPlugins()
+		logger.Debugf("Clearing agents")
+		agents.ClearAgents()
 		fmt.Println("Cleaning up...")
 	},
 }

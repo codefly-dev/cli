@@ -1,9 +1,9 @@
 package application
 
 import (
-	"github.com/codefly-dev/cli/pkg/plugins/services"
-	runtimev1 "github.com/codefly-dev/cli/proto/v1/services/runtime"
+	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
+	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
 	"github.com/codefly-dev/core/shared"
 )
 

@@ -1,7 +1,7 @@
 package create
 
 import (
-	"github.com/codefly-dev/cli/pkg/plugins/services"
+	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
 )
 

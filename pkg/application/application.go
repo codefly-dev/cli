@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"strings"
 
+	services2 "github.com/codefly-dev/core/agents/services"
+
 	"github.com/codefly-dev/cli/pkg/monitoring"
-	"github.com/codefly-dev/cli/pkg/plugins"
-	"github.com/codefly-dev/cli/pkg/plugins/services"
-	runtimev1 "github.com/codefly-dev/cli/proto/v1/services/runtime"
+	"github.com/codefly-dev/cli/pkg/services"
+	"github.com/codefly-dev/core/agents"
+	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
+
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
@@ -28,7 +31,7 @@ type Application struct {
 	ServiceTracker *monitoring.ServiceTracker
 
 	// Load services runtime
-	ServiceLoader *services.ServiceRuntimeLoader
+	ServiceLoader *services2.ServiceRuntimeLoader
 
 	// TODO: clarify which one does what...
 	Environment     *Environment
@@ -171,7 +174,7 @@ func (app *Application) StopService(ctx context.Context, service *services.Insta
 	if err != nil {
 		return logger.Wrapf(err, "cannot untrack service")
 	}
-	plugins.Cleanup(service.Configuration.Unique())
+	agents.Cleanup(service.Configuration.Unique())
 	return nil
 }
 

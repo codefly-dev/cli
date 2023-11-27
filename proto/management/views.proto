@@ -2,9 +2,10 @@ syntax = "proto3";
 package v1.management.views;
 
 import "google/protobuf/empty.proto";
-import "core/api.proto";
-import "management/logs.proto";
 import "google/api/annotations.proto";
+
+import "base/api.proto";
+import "agents/logs.proto";
 import "google/protobuf/timestamp.proto";
 
 message ProjectView {
@@ -38,7 +39,7 @@ message ServiceView {
 }
 
 message EndpointView {
-  v1.core.api.Endpoint endpoint = 1;
+  v1.base.Endpoint endpoint = 1;
 }
 
 
@@ -51,7 +52,7 @@ message ServiceInformationRequest {
 message ServiceInformationResponse {
 }
 
-message PluginUsageRequest {
+message AgentUsageRequest {
   string publisher = 1;
   string name = 2;
 }
@@ -61,11 +62,11 @@ message Usage {
   string service = 2;
 }
 
-message PluginUsage {
+message AgentUsage {
 }
 
-message PluginUsageResponse {
-  PluginUsage usage = 1;
+message AgentUsageResponse {
+  AgentUsage usage = 1;
 }
 
 /*
@@ -80,7 +81,7 @@ message LogRequest {
 
 
 message LogResponse {
-  repeated logs.LogSessionGroup groups = 1;
+  repeated v1.agents.logs.LogSessionGroup groups = 1;
 }
 
 
@@ -92,7 +93,7 @@ service Web {
     };
   }
 
-  rpc Logs(google.protobuf.Empty)  returns (stream v1.management.logs.Log) {
+  rpc Logs(google.protobuf.Empty)  returns (stream v1.agents.logs.Log) {
     option (google.api.http) = {
       get: "/project/logs"
     };
@@ -103,23 +104,5 @@ service Web {
       get: "/project/logs/history"
     };
   }
-//
-//  rpc GetApplicationInformation(ApplicationInformationRequest) returns (ApplicationInformationResponse) {
-//    option (google.api.http) = {
-//      get: "/project/application/{application}/information"
-//    };
-//  }
-//
-//
-//  rpc GetServiceInformation(ServiceInformationRequest) returns (ServiceInformationResponse) {
-//    option (google.api.http) = {
-//      get: "/project/application/{application}/service/{service}/information"
-//    };
-//  }
-//
-//  rpc GetPluginUsage(PluginUsageRequest) returns (PluginUsageResponse) {
-//    option (google.api.http) = {
-//      get: "/plugin/{publisher}/{name}/usage"
-//    };
-//  }
+
 }

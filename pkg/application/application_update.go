@@ -3,9 +3,12 @@ package application
 import (
 	"time"
 
+	"github.com/codefly-dev/core/agents/services"
+
+	services2 "github.com/codefly-dev/cli/pkg/services"
+	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
+
 	"github.com/briandowns/spinner"
-	"github.com/codefly-dev/cli/pkg/plugins/services"
-	factoryv1 "github.com/codefly-dev/cli/proto/v1/services/factory"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
@@ -21,7 +24,7 @@ func (app *Application) Update() error {
 	return nil
 }
 
-func (app *Application) UpdateService(service *services.Instance) error {
+func (app *Application) UpdateService(service *services2.Instance) error {
 	logger := shared.NewLogger("applications.UpdateService<%s>", service.Configuration.Name)
 	golor.Println(`#(bold,cyan)[Updating {{.Name}}]`, service.Configuration)
 	s := spinner.New(spinner.CharSets[9], 100*time.Millisecond) // Build our new spinner

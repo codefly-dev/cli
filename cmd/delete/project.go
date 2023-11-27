@@ -14,6 +14,6 @@ var ProjectCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
 		configurations.DeleteProject(name)
-		golor.Println(`Project deleted!`)
+		golor.Println(`View deleted!`)
 	},
 }

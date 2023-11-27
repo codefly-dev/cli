@@ -82,8 +82,8 @@ func init() {
 	// Open your applications in your favorite editor
 	RootCmd.AddCommand(OpenCmd)
 
-	// Plugins
-	RootCmd.AddCommand(PluginCmd)
+	// Agents
+	RootCmd.AddCommand(AgentCmd)
 
 	RootCmd.PersistentFlags().StringVar(&root, "root", "", "NewDir directory of the project")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")

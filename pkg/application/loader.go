@@ -2,7 +2,7 @@ package application
 
 import (
 	"github.com/codefly-dev/cli/pkg/cli/display"
-	"github.com/codefly-dev/cli/pkg/plugins/services"
+	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
@@ -66,7 +66,7 @@ func (l *Loader) Load() (*Application, error) {
 		if err != nil {
 			return nil, logger.Wrapf(err, "Cannot create service")
 		}
-		logger.Debugf("loaded service <%s> from plugin: %v", svc.Configuration.Name, conf.Plugin.Name())
+		logger.Debugf("loaded service <%s> from agent: %v", svc.Configuration.Name, conf.Agent.Name())
 		l.plan = append(l.plan, svc)
 	}
 	app, err := NewApplication(l)

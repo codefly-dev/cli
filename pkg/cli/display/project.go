@@ -17,8 +17,8 @@ func ShowProject(project *configurations.Project, current bool) {
 	if current {
 		currentSign = "#(green)[*]"
 	}
-	d := ProjectDisplay{Project: project, Action: "Project", Current: currentSign}
-	golor.Println(`#(blue,bold)[🔎 Project <#bold[{{.Project.Name}}{{.Current}}]>]`, d)
+	d := ProjectDisplay{Project: project, Action: "View", Current: currentSign}
+	golor.Println(`#(blue,bold)[🔎 View <#bold[{{.View.Name}}{{.Current}}]>]`, d)
 
 	apps, err := configurations.ListApplications()
 	shared.ExitOnError(err, "Cannot list applications")
@@ -31,5 +31,5 @@ func ShowProject(project *configurations.Project, current bool) {
 
 func CreatedProject(project *configurations.Project) {
 	d := ProjectDisplay{Project: project}
-	golor.Println(`#(blue,bold)[🔎 Created project #bold[{{.Project.Name}}]]`, d)
+	golor.Println(`#(blue,bold)[🔎 Created project #bold[{{.View.Name}}]]`, d)
 }

@@ -27,13 +27,13 @@ Enter
 
 Sleep 3s
 
-Type "# Adding a new service to your application with go-grpc plugin"
+Type "# Adding a new service to your application with go-grpc agent"
 Sleep 1s
 Enter
 Sleep 1s
 
 
-Type "codefly add service mybackend --plugin=codefly.ai/go-grpc:0.0.1"
+Type "codefly add service mybackend --agent=codefly.ai/go-grpc:0.0.1"
 Sleep 1s
 Enter
 

@@ -6,7 +6,8 @@ import (
 	"io/fs"
 	"net/http"
 
-	managementv1 "github.com/codefly-dev/cli/proto/v1/management"
+	managementv1 "github.com/codefly-dev/cli/proto/v1/go/management"
+
 	"github.com/codefly-dev/golor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"

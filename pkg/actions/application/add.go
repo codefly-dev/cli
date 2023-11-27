@@ -3,8 +3,9 @@ package application
 import (
 	"context"
 
+	v1actions "github.com/codefly-dev/cli/proto/v1/go/actions"
+
 	"github.com/codefly-dev/cli/pkg/actions/actions"
-	v1actions "github.com/codefly-dev/cli/proto/v1/actions"
 	"github.com/codefly-dev/core/configurations"
 )
 

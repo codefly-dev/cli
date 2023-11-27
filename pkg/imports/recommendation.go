@@ -6,17 +6,17 @@ import (
 )
 
 type ServiceRecommendation struct {
-	Names    []PluginRecommendation
+	Names    []AgentRecommendation
 	Includes []shared.CopyInstruction
 }
 
 type Recommendation struct {
 	Main         ServiceRecommendation
-	Dependencies []*configurations.Plugin
+	Dependencies []*configurations.Agent
 	Name         string
 }
 
-type PluginRecommendation struct {
+type AgentRecommendation struct {
 	Name        string
 	Description string
 	Reason      string

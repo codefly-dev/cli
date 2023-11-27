@@ -20,7 +20,7 @@ codefly.dev
 ├── cli
 ├── core
 ├── golor
-├── plugins
+├── agents
 │   ├── libraries
 │   └── services
 └── sdk
@@ -57,9 +57,9 @@ This also does the `zsh` completion. Bash or other shells are supported as well 
 codefly init
 ```
 
-### Building plugins
+### Building agents
 
-Inside each plugin you want to build, run:
+Inside each agent you want to build, run:
 
 ```shell
 ./build.sh
@@ -95,7 +95,7 @@ codefly add application your-app
 ### Creating a service
 
 ```shell
- codefly add service my-service --plugin=python
+ codefly add service my-service --agent=python
 ```
 
 ### Running things
@@ -106,7 +106,7 @@ codefly run application -d
 
 Generate templates code
 ```shell
-codefly plugin generate -d --todo --service=../plugins/services/go-grpc
+codefly agent generate -d --todo --service=../agents/services/go-grpc
 ```
 
 

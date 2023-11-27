@@ -3,9 +3,10 @@ package add
 import (
 	"context"
 
+	v1actions "github.com/codefly-dev/cli/proto/v1/go/actions"
+
 	"github.com/codefly-dev/cli/pkg/actions/project"
 	"github.com/codefly-dev/cli/pkg/cli/display"
-	v1actions "github.com/codefly-dev/cli/proto/v1/actions"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"

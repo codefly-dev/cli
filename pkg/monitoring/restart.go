@@ -4,8 +4,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codefly-dev/cli/pkg/plugins/services"
-	runtimev1 "github.com/codefly-dev/cli/proto/v1/services/runtime"
+	"github.com/codefly-dev/core/agents/services"
+
+	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
+
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -30,7 +32,7 @@ func (t *RestartTracker) Start(events chan<- ServiceEvent) error {
 				logger.Debugf("cannot get status from runtime: %v", err)
 				continue
 			}
-			if req.Status == services.RestartWanted {
+			if req.Status == services.RestartWantedState {
 				logger.Debugf("restart wanted: sending restart wanted message")
 				events <- ServiceEvent{
 					Unique: t.unique,

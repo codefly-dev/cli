@@ -1,8 +1,8 @@
 package monitoring
 
 import (
-	runtimev1 "github.com/codefly-dev/cli/proto/v1/services/runtime"
 	"github.com/codefly-dev/core/configurations"
+	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
 )
 
 type Tracked interface {

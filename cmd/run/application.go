@@ -7,10 +7,11 @@ import (
 	"os/signal"
 	"sync"
 
+	"github.com/codefly-dev/core/agents"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/cli/pkg/management"
-	"github.com/codefly-dev/cli/pkg/plugins"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
@@ -101,7 +102,7 @@ loop:
 	}
 
 	// Perform cleanup
-	plugins.ClearPlugins()
+	agents.ClearAgents()
 	if server {
 		waitOnServer.Done() // Wait for the server goroutine to finish
 	}

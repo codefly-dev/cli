@@ -8,7 +8,8 @@ import (
 	"strings"
 	"syscall"
 
-	runtimev1 "github.com/codefly-dev/cli/proto/v1/services/runtime"
+	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
+
 	"github.com/codefly-dev/core/shared"
 	"github.com/shirou/gopsutil/v3/process"
 )

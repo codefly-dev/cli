@@ -46,10 +46,10 @@ func CheckDocker(dir string) (*Recommendation, error) {
 
 type MainServiceRecommendation struct {
 	Kind  string // go, etc...
-	Bases []PluginRecommendation
+	Bases []AgentRecommendation
 }
 
-func NewGoBase(recs []PluginRecommendation) (*MainServiceRecommendation, error) {
+func NewGoBase(recs []AgentRecommendation) (*MainServiceRecommendation, error) {
 	return &MainServiceRecommendation{
 		Kind:  "go",
 		Bases: recs,
@@ -68,7 +68,7 @@ func recommendedMain(cmds []dockerfile.Command) (*MainServiceRecommendation, err
 func RecommendBaseFromDocker(image string) (*MainServiceRecommendation, error) {
 	logger := shared.NewLogger("RecommendBaseFromDocker<%s>", image)
 	logger.TODO("IMPLEMENT PYTHON")
-	return NewGoBase([]PluginRecommendation{
+	return NewGoBase([]AgentRecommendation{
 		{Name: "codefly.ai/go:latest", Description: "Go base image", Reason: "Go is awesome"},
 		{Name: "codefly.ai/go-grpc:latest", Description: "Go with gRPC/REST", Reason: "Get a lot more done with less code"},
 	})
@@ -89,7 +89,7 @@ func includes(dir string, cmds []dockerfile.Command) ([]shared.CopyInstruction, 
 	return results, nil
 }
 
-func recommendedDependencies(dir string, kind string) ([]*configurations.Plugin, error) {
+func recommendedDependencies(dir string, kind string) ([]*configurations.Agent, error) {
 	switch kind {
 	case "go":
 		return frameworks.RecommendedGoDependencies(dir)

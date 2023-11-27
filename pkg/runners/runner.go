@@ -8,7 +8,8 @@ import (
 	"os/exec"
 
 	"github.com/codefly-dev/cli/pkg/monitoring"
-	"github.com/codefly-dev/cli/pkg/plugins"
+	"github.com/codefly-dev/core/agents"
+
 	"github.com/codefly-dev/core/shared"
 	"github.com/pkg/errors"
 )
@@ -21,8 +22,8 @@ type Runner struct {
 	Envs  []string
 	Debug bool
 
-	ServiceLogger *plugins.ServiceLogger
-	PluginLogger  *plugins.PluginLogger
+	ServiceLogger *agents.ServiceLogger
+	AgentLogger   *agents.AgentLogger
 
 	Wait bool
 
@@ -43,12 +44,12 @@ func (g *Runner) Run(ctx context.Context) (*monitoring.TrackedProcess, error) {
 	g.Cmd.Env = g.Envs
 	g.Cmd.Dir = g.Dir
 	if g.Wait {
-		err := WrapStartDebug(g.Cmd, g.PluginLogger)
+		err := WrapStartDebug(g.Cmd, g.AgentLogger)
 		if err != nil {
-			return nil, g.PluginLogger.Wrapf(err, "cannot wrap execution of cmd")
+			return nil, g.AgentLogger.Wrapf(err, "cannot wrap execution of cmd")
 		}
 	} else {
-		err := WrapStart(g.Cmd, g.ServiceLogger, g.PluginLogger)
+		err := WrapStart(g.Cmd, g.ServiceLogger, g.AgentLogger)
 		if err != nil {
 			return nil, shared.Wrapf(err, "cannot wrap execution of cmd")
 		}
@@ -111,7 +112,7 @@ func WrapStart(cmd *exec.Cmd, loggers ...shared.BaseLogger) error {
 	return nil
 }
 
-func WrapStartDebug(cmd *exec.Cmd, logger *plugins.PluginLogger) error {
+func WrapStartDebug(cmd *exec.Cmd, logger *agents.AgentLogger) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Debugf("OOPS got error %v %v", err, string(out))

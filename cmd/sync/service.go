@@ -1,7 +1,7 @@
 package sync
 
 import (
-	"github.com/codefly-dev/cli/pkg/plugins/services"
+	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"

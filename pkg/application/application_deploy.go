@@ -3,9 +3,10 @@ package application
 import (
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/services"
+	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
+
 	"github.com/briandowns/spinner"
-	"github.com/codefly-dev/cli/pkg/plugins/services"
-	factoryv1 "github.com/codefly-dev/cli/proto/v1/services/factory"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )

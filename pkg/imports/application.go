@@ -3,8 +3,9 @@ package imports
 import (
 	"context"
 
+	"github.com/codefly-dev/cli/pkg/services"
+
 	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/cli/pkg/plugins/services"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
@@ -74,7 +75,7 @@ func ImportApplication(imp *Importer) error {
 
 	inputs, err := imp.ServiceImporter.CreationInputs()
 	if err != nil {
-		return logger.Wrapf(err, "cannot get base plugin")
+		return logger.Wrapf(err, "cannot get base agent")
 	}
 	for _, input := range inputs {
 		logger.Debugf("creating service <%s>", input.Name)

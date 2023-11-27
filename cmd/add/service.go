@@ -3,10 +3,11 @@ package add
 import (
 	"os"
 
+	"github.com/codefly-dev/cli/pkg/services"
+	"github.com/codefly-dev/core/agents"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli/prompts/create"
-	"github.com/codefly-dev/cli/pkg/plugins"
-	"github.com/codefly-dev/cli/pkg/plugins/services"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
@@ -18,7 +19,7 @@ var ServiceCmd = &cobra.Command{
 	Short: "Add an service",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		defer plugins.ClearPlugins()
+		defer agents.ClearAgents()
 
 		if len(args) == 0 || interactive {
 			shared.Exit(`🥸Provide a name for your service as the argument.`)
@@ -33,20 +34,20 @@ var ServiceCmd = &cobra.Command{
 		err := configurations.ValidateServiceName(name)
 		shared.ExitOnError(err, "invalid service name: %s", name)
 
-		if plugin == "" {
-			shared.Exit("need to specify a plugin: --plugin=<plugin-name>")
+		if agent == "" {
+			shared.Exit("need to specify a agent: --agent=<agent-name>")
 		}
 
-		plugin, err := configurations.ParsePlugin(configurations.PluginService, plugin)
+		agent, err := configurations.ParseAgent(configurations.AgentService, agent)
 		if err != nil {
 			if shared.IsUserWarning(err) {
 				logger.Warn(err)
 			} else {
-				logger.Oops("cannot parse plugin: %s", plugin)
+				logger.Oops("cannot parse agent: %s", agent)
 				os.Exit(1)
 			}
 		}
-		logger.Debugf("plugin %s", plugin)
+		logger.Debugf("agent %s", agent)
 
 		// Give a new overview of the application
 		//manager := management.NewManager()
@@ -57,13 +58,13 @@ var ServiceCmd = &cobra.Command{
 		input := &services.CreationInput{
 			Name:              name,
 			Namespace:         namespace,
-			Plugin:            plugin,
+			Agent:             agent,
 			RequiredBy:        requiredBy,
 			DependsOn:         dependsOn,
 			WithClientDecider: create.NewClientBuilder(),
 			Application:       config,
 		}
-		logger.Debugf("creating service <%s> from plugin <%s>", input.Name, plugin.Name())
+		logger.Debugf("creating service <%s> from agent <%s>", input.Name, agent.Name())
 		err = input.SetNamespace(namespace)
 		shared.ExitOnError(err, "cannot set namespace: %s", namespace)
 
@@ -91,7 +92,7 @@ var (
 
 func init() {
 	ServiceCmd.Flags().BoolVarP(&current, "current", "c", false, "Use the current application")
-	ServiceCmd.Flags().StringVar(&plugin, "plugin", "", "Instance plugin to get started")
+	ServiceCmd.Flags().StringVar(&agent, "agent", "", "Instance agent to get started")
 	ServiceCmd.Flags().StringVar(&namespace, "namespace", "default", "Namespace where to deploy the service")
 	ServiceCmd.Flags().StringSliceVar(&requiredBy, "required-by", nil, "Other services requiring this service")
 	ServiceCmd.Flags().StringSliceVar(&dependsOn, "depends-on", nil, "Other services this service depends on")

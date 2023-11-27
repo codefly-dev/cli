@@ -1,9 +1,9 @@
 package application
 
 import (
-	"github.com/codefly-dev/cli/pkg/plugins/services"
-	servicev1 "github.com/codefly-dev/cli/proto/v1/services"
-	runtimev1 "github.com/codefly-dev/cli/proto/v1/services/runtime"
+	"github.com/codefly-dev/cli/pkg/services"
+	"github.com/codefly-dev/core/agents"
+	servicev1 "github.com/codefly-dev/core/proto/v1/go/services"
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -36,7 +36,7 @@ func (app *Application) RuntimeInit() error {
 }
 
 func (app *Application) FactoryInitService(instance *services.Instance) error {
-	logger := shared.NewLogger("applications.FactoryInitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Plugin.Identifier)
+	logger := shared.NewLogger("applications.FactoryInitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
 	if instance.Initialized {
 		return nil
 	}
@@ -71,7 +71,7 @@ func (app *Application) FactoryInitService(instance *services.Instance) error {
 }
 
 func (app *Application) RuntimeInitService(instance *services.Instance) error {
-	logger := shared.NewLogger("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Plugin.Identifier)
+	logger := shared.NewLogger("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
 	if instance.Initialized {
 		return nil
 	}
@@ -93,7 +93,7 @@ func (app *Application) RuntimeInitService(instance *services.Instance) error {
 		return logger.Wrapf(err, "cannot init: something dramatic happened")
 	}
 
-	if init.Status.State == runtimev1.InitStatus_ERROR {
+	if init.Status.State == agents.InitError {
 		return logger.Errorf("cannot init service: %v", init.Status.Message)
 	}
 

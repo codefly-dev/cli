@@ -4,9 +4,10 @@ import (
 	"context"
 	"os"
 
+	"github.com/codefly-dev/cli/pkg/services"
+	"github.com/codefly-dev/core/agents"
+
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/plugins"
-	"github.com/codefly-dev/cli/pkg/plugins/services"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 
@@ -48,6 +49,6 @@ var ServiceCmd = &cobra.Command{
 		err = instance.SoloBuild(ctx)
 		shared.UnexpectedExitOnError(err, "cannot build")
 
-		plugins.ClearPlugins()
+		agents.ClearAgents()
 	},
 }

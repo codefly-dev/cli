@@ -1,6 +1,0 @@
-kind: go
-plugin:
-    kind: library
-    name: hygge.io/go-grpc
-    version: latest
-relative-path: hygge-cli/pkg/applications/go-grpc

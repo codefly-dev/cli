@@ -3,14 +3,15 @@ package v1
 import (
 	"context"
 
-	"github.com/codefly-dev/cli/pkg/plugins/services"
-	corev1 "github.com/codefly-dev/cli/proto/v1/core"
+	"github.com/codefly-dev/cli/pkg/services"
+	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
+
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 )
 
-func FlattenEndpoints(group *corev1.EndpointGroup) []*corev1.Endpoint {
-	var endpoints []*corev1.Endpoint
+func FlattenEndpoints(group *basev1.EndpointGroup) []*basev1.Endpoint {
+	var endpoints []*basev1.Endpoint
 	if group == nil {
 		return endpoints
 	}
@@ -22,9 +23,9 @@ func FlattenEndpoints(group *corev1.EndpointGroup) []*corev1.Endpoint {
 	return endpoints
 }
 
-func FlattenRestRoutes(group *corev1.EndpointGroup) []*corev1.RestRoute {
+func FlattenRestRoutes(group *basev1.EndpointGroup) []*basev1.RestRoute {
 	endpoints := FlattenEndpoints(group)
-	var routes []*corev1.RestRoute
+	var routes []*basev1.RestRoute
 	for _, ep := range endpoints {
 		if rest := ep.Api.GetRest(); rest != nil {
 			routes = append(routes, rest.Routes...)
@@ -33,8 +34,8 @@ func FlattenRestRoutes(group *corev1.EndpointGroup) []*corev1.RestRoute {
 	return routes
 }
 
-func DetectNewRoutes(ctx context.Context, known []*configurations.RestRoute, group *corev1.EndpointGroup) []*configurations.RestRoute {
-	logger := ctx.Value(shared.Plugin).(shared.BaseLogger)
+func DetectNewRoutes(ctx context.Context, known []*configurations.RestRoute, group *basev1.EndpointGroup) []*configurations.RestRoute {
+	logger := ctx.Value(shared.Agent).(shared.BaseLogger)
 	if group == nil {
 		logger.Debugf("we have a nil group")
 		return nil
@@ -65,12 +66,12 @@ func DetectNewRoutes(ctx context.Context, known []*configurations.RestRoute, gro
 	return newRoutes
 }
 
-func IsRest(ctx context.Context, api *corev1.API) *corev1.RestAPI {
+func IsRest(ctx context.Context, api *basev1.API) *basev1.RestAPI {
 	if api == nil {
 		return nil
 	}
 	switch v := api.Value.(type) {
-	case *corev1.API_Rest:
+	case *basev1.API_Rest:
 		return v.Rest
 	default:
 		return nil
