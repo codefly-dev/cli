@@ -33,7 +33,7 @@ Enter
 Sleep 1s
 
 
-Type "codefly add service mybackend --agent=codefly.ai/go-grpc:0.0.1"
+Type "codefly add service mybackend --agent=codefly.ai/go-grpc:0.0.8"
 Sleep 1s
 Enter
 

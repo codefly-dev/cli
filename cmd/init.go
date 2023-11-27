@@ -23,7 +23,7 @@ var InitCmd = &cobra.Command{
 		}
 		configurations.AddProject(project)
 		configurations.SetCurrentProject(project)
-		golor.Println(`#(blue)[View <default> created at ~/codefly/default!]`)
+		golor.Println(`#(blue)[Project <default> created at ~/codefly/default!]`)
 
 		// Creating a default application
 		application, err := configurations.NewApplication("application")

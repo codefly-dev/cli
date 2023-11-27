@@ -1,7 +1,7 @@
 
 # Shortcuts? Where we are going, we don't need shortcuts!
 
-![shortcuts](../media/shortcuts.jpg)
+![shortcuts](../../../media/shortcuts.jpg)
 
 **codefly + Next.js + Auth0 + KrakenD + Go + gRPC + REST = 🚀**
 

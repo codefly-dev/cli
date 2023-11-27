@@ -23,8 +23,8 @@ func ShowCurrent() {
 		logger.Oops("No current project: TODO: Select or create default: %v", err)
 		return
 	}
-	golor.Println(`#(blue,bold)[🔎 Current View]: #(italic,white)[{{ .View }}]`,
-		map[string]string{"Organization": project.Organization, "View": project.Name})
+	golor.Println(`#(blue,bold)[🔎 Current Project]: #(italic,white)[{{ .Project }}]`,
+		map[string]string{"Organization": project.Organization, "Project": project.Name})
 
 	app, err := project.CurrentApplication()
 	if err != nil {
@@ -36,7 +36,7 @@ func ShowCurrent() {
 	}
 	golor.Println(`#(blue,bold[🌟 Current Name]: #(italic,white)[{{ .Name }}]`, map[string]string{
 		"Organization": project.Organization,
-		"View":         project.Name,
+		"Project":      project.Name,
 		"Name":         app.Name,
 	})
 

@@ -22,7 +22,7 @@ Sleep 1s
 
 
 
-Type "codefly add service web --agent=codefly.ai/nextjs-auth0:0.0.1"
+Type "codefly add service web --agent=codefly.ai/nextjs-auth0:0.0.8"
 Enter
 
 Sleep 5s
