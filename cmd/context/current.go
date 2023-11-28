@@ -34,7 +34,7 @@ func ShowCurrent() {
 		return
 
 	}
-	golor.Println(`#(blue,bold[🌟 Current Name]: #(italic,white)[{{ .Name }}]`, map[string]string{
+	golor.Println(`#(blue,bold[🌟 Current Application]: #(italic,white)[{{ .Name }}]`, map[string]string{
 		"Organization": project.Organization,
 		"Project":      project.Name,
 		"Name":         app.Name,
@@ -67,7 +67,8 @@ codefly create service <service-name> --agent=<base>`)
 	if len(others) == 0 {
 		return
 	}
-	golor.Println(`#(blue,bold[💥 Other applications]
+	golor.Println(`
+#(blue,bold[💥 Other applications]
 {{- range .Others}}
 - #(cyan,bold)[{{.Name}}]{{end}}`, map[string]any{
 		"Others": others,
