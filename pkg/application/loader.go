@@ -52,7 +52,7 @@ func (l *Loader) Load() (*Application, error) {
 
 	// Order of services
 	order := l.graph.TopologicalSort()
-	logger.Debugf("services to run in order: %v", order)
+	logger.Debugf("services in application: %v", order)
 
 	if l.Verbose() {
 		golor.Println(`#(blue,bold)[Running services]:
@@ -64,7 +64,7 @@ func (l *Loader) Load() (*Application, error) {
 		conf := l.configurations[name]
 		svc, err := services.NewServiceInstance(conf, l.application)
 		if err != nil {
-			return nil, logger.Wrapf(err, "Cannot create service")
+			return nil, logger.Wrapf(err, "cannot create service")
 		}
 		logger.Debugf("loaded service <%s> from agent: %v", svc.Configuration.Name, conf.Agent.Name())
 		l.plan = append(l.plan, svc)

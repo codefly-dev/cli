@@ -2,12 +2,10 @@ package application
 
 import (
 	"context"
-	"time"
 
 	"github.com/codefly-dev/cli/pkg/services"
 	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
 
-	"github.com/briandowns/spinner"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
@@ -34,20 +32,19 @@ func (app *Application) BuildService(ctx context.Context, instance *services.Ins
 		return logger.Wrapf(err, "cannot get application group endpoints")
 	}
 
+	if app.verbose {
+		ShowEndpointManagerState()
+	}
+
 	logger.Debugf("dependency group: %v", CondensedOutput(group))
-	logger.TODO("Type of build will depend on deployment, right now assume we dockerize")
-	// What kind of build will be picked from the deployment
 
 	golor.Println(`#(bold,cyan)[Building {{.Name}}]`, instance.Configuration)
-	s := spinner.New(spinner.CharSets[9], 100*time.Millisecond) // Build our new spinner
-	s.Start()                                                   // Start the spinner
 	_, err = instance.Build(&factoryv1.BuildRequest{
 		DependencyEndpointGroup: group,
 	})
 	if err != nil {
 		return logger.Wrapf(err, "cannot build runtime")
 	}
-	s.Stop()
 	golor.Println(`#(bold,cyan)[Build {{.Name}}]: #(green)[OK]`, instance.Configuration)
 	return nil
 }

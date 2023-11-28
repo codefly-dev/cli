@@ -18,7 +18,7 @@ var SwitchCmd = &cobra.Command{
 	Short: "Switch current configuration",
 	Run: func(cmd *cobra.Command, args []string) {
 		logger := shared.NewLogger("context.SwitchCmd")
-		current := common.ProjectConfiguration(true)
+		currentProject := common.ProjectConfiguration(true)
 		if switchProject {
 			projects, err := configurations.ListProjects()
 			shared.ExitOnError(err, "cannot list projects")
@@ -26,14 +26,14 @@ var SwitchCmd = &cobra.Command{
 				return
 			}
 			var options []string
-			var currentProject string
-			if current != nil {
-				logger.Debugf("current project: %s", current.Name)
-				currentProject = fmt.Sprintf("%s*", current.Name)
-				options = append(options, currentProject)
+			var def string
+			if currentProject != nil {
+				logger.Debugf("currentProject project: %s", currentProject.Name)
+				def = fmt.Sprintf("%s*", currentProject.Name)
+				options = append(options, def)
 			}
 			for _, project := range projects {
-				if project.Name == current.Name {
+				if project.Name == currentProject.Name {
 					continue
 				}
 				options = append(options, project.Name)
@@ -41,14 +41,12 @@ var SwitchCmd = &cobra.Command{
 			prompt := &survey.Select{
 				Message: "Choose a project:",
 				Options: options,
-			}
-			if currentProject != "" {
-				prompt.Default = currentProject
+				Default: def,
 			}
 			var selected string
 			err = survey.AskOne(prompt, &selected)
 			shared.ExitOnError(err, "cannot ask for projects")
-			if selected == currentProject {
+			if selected == def {
 				return
 			}
 			project, err := configurations.LoadProjectFromName(selected)
@@ -57,28 +55,41 @@ var SwitchCmd = &cobra.Command{
 			return
 		}
 
-		if current == nil {
-			golor.Println(`#(cyan,bold)[No current project. Use the --project option to pin one.]`)
+		if currentProject == nil {
+			golor.Println(`#(cyan,bold)[No currentProject project. Use the --project option to pin one.]`)
 			os.Exit(0)
 		}
+
 		apps, err := configurations.ListApplications()
 		shared.ExitOnError(err, "cannot list applications")
 		if len(apps) == 0 {
 			return
 		}
 
+		currentApplication := common.ApplicationConfiguration(true)
+		var def string
 		var options []string
+		if currentApplication != nil {
+			def = fmt.Sprintf("%s*", currentApplication.Name)
+			options = append(options, def)
+		}
 		for _, app := range apps {
+			if app.Name == currentApplication.Name {
+				continue
+			}
 			options = append(options, app.Name)
 		}
 		prompt := &survey.Select{
 			Message: "Choose an applications:",
 			Options: options,
-			Default: current,
+			Default: def,
 		}
 		var selected string
 		err = survey.AskOne(prompt, &selected)
 		shared.ExitOnError(err, "cannot ask for applications")
+		if selected == def {
+			return
+		}
 		app, err := configurations.LoadApplicationFromName(selected)
 		shared.ExitOnError(err, "cannot load applications")
 		configurations.SetCurrentApplication(app)

@@ -227,12 +227,31 @@ func init() {
 }
 
 func GetApplicationEndpointManager(name string) (*ApplicationEndpointManager, error) {
+	logger := shared.NewLogger("applications.GetApplicationEndpointManager<%s>", name)
 	for _, manager := range managers {
 		if manager.application.Name == name {
 			return manager, nil
 		}
 	}
-	return nil, fmt.Errorf("api manager for application <%s> not found: probably need to run a partial", name)
+	logger.Debugf("loading endpoint manager")
+	return LoadApplicationEndpointManager(name)
+}
+
+func LoadApplicationEndpointManager(name string) (*ApplicationEndpointManager, error) {
+	logger := shared.NewLogger("applications.LoadApplicationEndpointManager<%s>", name)
+	config, err := configurations.LoadApplicationFromName(name)
+	if err != nil {
+		return nil, logger.Wrapf(err, "cannot load application")
+	}
+	app, err := Load(configurations.MustCurrentProject(), config, FactoryMode)
+	if err != nil {
+		return nil, logger.Wrapf(err, "cannot load application")
+	}
+	err = app.FactoryInit()
+	if err != nil {
+		return nil, logger.Wrapf(err, "cannot init application")
+	}
+	return app.EndpointManager, nil
 }
 
 func NewApplicationEndpointManager(app *configurations.Application) *ApplicationEndpointManager {
