@@ -42,7 +42,7 @@ type ServiceEndpointManager struct {
 
 func (s *ServiceEndpointManager) Add(endpoint *basev1.Endpoint) error {
 	logger := shared.NewLogger("applications.ServiceEndpointManager.Add<%s>", s.service.Unique())
-	logger.DebugMe("adding endpoint: %s", endpoints.Destination(endpoint))
+	logger.Debugf("adding endpoint: %s", endpoints.Destination(endpoint))
 	api, err := endpoints.WhichApiFromEndpoint(endpoint)
 	if err != nil {
 		var nilApiError *endpoints.NilApiError
