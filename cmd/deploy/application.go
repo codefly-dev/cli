@@ -24,13 +24,18 @@ var ApplicationCmd = &cobra.Command{
 
 		golor.Println(`#(blue,bold)[Deploying applications]: #(italic,white)[{{.Configuration.Name}}]`, app)
 
-		err = app.Deploy()
+		env, err := project.FindEnvironment(environment)
+		shared.UnexpectedExitOnError(err, "cannot find environment <%s>", environment)
+
+		err = app.Deploy(env)
 		shared.UnexpectedExitOnError(err, "cannot deploy applications")
 	},
 }
 
 var current bool
+var environment string
 
 func init() {
 	ApplicationCmd.Flags().BoolVar(&current, "current", false, "Deploy the current application")
+	ApplicationCmd.Flags().StringVar(&environment, "environment", "", "Deploy the application in the given environment")
 }

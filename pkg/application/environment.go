@@ -22,35 +22,6 @@ func (e *ServiceEnvironment) Add(service *services.Instance, mappings []*runtime
 	e.mappings = mappings
 }
 
-//
-//func (e *ServiceEnvironment) NetworkMappingsFor(service *services.Instance) ([]*runtimev1.NetworkMapping, error) {
-//	var mappings []*runtimev1.NetworkMapping
-//	// For external services, we will append all the mappings
-//	if e.name != service.Name() {
-//		mappings = append(mappings, e.mappings...)
-//		for _, rep := range e.replicas {
-//			mappings = append(mappings, rep...)
-//		}
-//		return mappings, nil
-//	}
-//	//// the original, ignore replicas entirely
-//	//if !service.IsReplica() {
-//	//	return e.mappings
-//	//}
-//	//// for replica, use the reference of the original with the address of the replica
-//	//for _, mapping := range e.mappings {
-//	//	var addresses []string
-//	//	for _, m := range e.replicas[service.Name()] {
-//	//		addresses = append(addresses, m.Addresses...)
-//	//	}
-//	//	mappings = append(mappings, &runtimev1.NetworkMapping{
-//	//		Unique: mapping.Unique,
-//	//		Addresses: addresses,
-//	//	})
-//	//}
-//	return mappings, nil
-//}
-
 func NewServiceEnvironment(name string, logger *shared.Logger) *ServiceEnvironment {
 	return &ServiceEnvironment{
 		logger: logger,

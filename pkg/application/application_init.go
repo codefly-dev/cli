@@ -3,6 +3,7 @@ package application
 import (
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/agents/endpoints"
 	servicev1 "github.com/codefly-dev/core/proto/v1/go/services"
 	"github.com/codefly-dev/core/shared"
 )
@@ -46,7 +47,7 @@ func (app *Application) FactoryInitService(instance *services.Instance) error {
 		return logger.Wrapf(err, "cannot get application group endpoint")
 	}
 
-	logger.DebugMe("group: %v", CondensedOutput(group))
+	logger.DebugMe("group: %v", endpoints.CondensedOutput(group))
 	ShowEndpointManagerState()
 	req := &servicev1.InitRequest{
 		Debug:                   shared.Debug(),

@@ -151,7 +151,7 @@ func (s *Instance) Update(r *factoryv1.UpdateRequest) (*factoryv1.UpdateResponse
 func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse, error) {
 	if server, ok := s.CommunicationServerManager.RequiresCommunication(r); ok {
 		handler := &cli.CliHandler{}
-		s.Logger.DebugMe("starting CREATE communication to fetch the information for the agent")
+		s.Logger.Debugf("starting CREATE communication to fetch the information for the agent")
 		var answer *agentsv1.Answer
 
 		// Send a first message
@@ -171,12 +171,12 @@ func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse
 				return nil, s.Logger.Wrapf(err, "cannot communicate CREATE from server")
 			}
 
-			s.Logger.DebugMe("engagement: %v", eng)
+			s.Logger.Debugf("engagement: %v", eng)
 			req, err := s.Factory.Communicate(eng)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate CREATE from factory")
 			}
-			s.Logger.DebugMe("information request by client: %v", req)
+			s.Logger.Debugf("information request by client: %v", req)
 
 			if req.Done {
 				s.Logger.Debugf("client is done")
@@ -189,7 +189,7 @@ func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse
 			}
 		}
 	} else {
-		s.Logger.DebugMe("no communication required")
+		s.Logger.Debugf("no communication required")
 	}
 	return s.Factory.Create(r)
 }
@@ -208,21 +208,21 @@ func (s *Instance) Sync(r *factoryv1.SyncRequest) (*factoryv1.SyncResponse, erro
 		if !first.NeedCommunication {
 			return first, nil
 		}
-		s.Logger.DebugMe("we need some communication!")
+		s.Logger.Debugf("we need some communication!")
 
 		for {
-			s.Logger.DebugMe("answer: %v", answer)
+			s.Logger.Debugf("answer: %v", answer)
 			eng, err := server.Communicate(answer)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate SYNC")
 			}
 
-			s.Logger.DebugMe("engagement: %v", eng)
+			s.Logger.Debugf("engagement: %v", eng)
 			req, err := s.Factory.Communicate(eng)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate")
 			}
-			s.Logger.DebugMe("information request by client: %v", req)
+			s.Logger.Debugf("information request by client: %v", req)
 
 			if req.Done {
 				s.Logger.Debugf("client is done")

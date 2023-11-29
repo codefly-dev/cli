@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services"
+	"github.com/codefly-dev/core/agents/endpoints"
 	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
 
 	"github.com/codefly-dev/core/shared"
@@ -27,16 +28,13 @@ func (app *Application) BuildService(ctx context.Context, instance *services.Ins
 		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}
 
+	ShowEndpointManagerState()
 	group, err := GetEndpointDependencyGroup(instance.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot get application group endpoints")
 	}
 
-	if app.verbose {
-		ShowEndpointManagerState()
-	}
-
-	logger.Debugf("dependency group: %v", CondensedOutput(group))
+	logger.Debugf("dependency group: %v", endpoints.CondensedOutput(group))
 
 	golor.Println(`#(bold,cyan)[Building {{.Name}}]`, instance.Configuration)
 	_, err = instance.Build(&factoryv1.BuildRequest{

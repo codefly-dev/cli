@@ -42,7 +42,7 @@ type ServiceEndpointManager struct {
 
 func (s *ServiceEndpointManager) Add(endpoint *basev1.Endpoint) error {
 	logger := shared.NewLogger("applications.ServiceEndpointManager.Add<%s>", s.service.Unique())
-	logger.Debugf("adding endpoint: %s", endpoint.Name)
+	logger.DebugMe("adding endpoint: %s", endpoints.Destination(endpoint))
 	api, err := endpoints.WhichApiFromEndpoint(endpoint)
 	if err != nil {
 		var nilApiError *endpoints.NilApiError
@@ -263,21 +263,6 @@ func NewApplicationEndpointManager(app *configurations.Application) *Application
 	return mgr
 }
 
-func CondensedOutput(group *basev1.EndpointGroup) []string {
-	if group == nil {
-		return nil
-	}
-	var outs []string
-	for _, appGroup := range group.ApplicationEndpointGroup {
-		for _, svcGroup := range appGroup.ServiceEndpointGroups {
-			if len(svcGroup.Endpoints) > 0 {
-				outs = append(outs, fmt.Sprintf("%s/%s[#%d]", appGroup.Name, svcGroup.Name, len(svcGroup.Endpoints)))
-			}
-		}
-	}
-	return outs
-}
-
 func ShowEndpointManagerState() {
 	logger := shared.NewLogger("applications.ShowEndpointManagerState")
 	var es []string
@@ -285,8 +270,8 @@ func ShowEndpointManagerState() {
 		es = append(es, fmt.Sprintf("- Application: %s", manager.application.Name))
 		for _, svc := range manager.services {
 			es = append(es, fmt.Sprintf("  - Service: %s", svc.service.Name))
-			for _, endpoint := range svc.endpoints {
-				es = append(es, fmt.Sprintf("    - Endpoint: %s", endpoint.endpoint.Name))
+			for _, e := range svc.endpoints {
+				es = append(es, fmt.Sprintf("    - Endpoint: %s", endpoints.Destination(e.endpoint)))
 			}
 		}
 	}
