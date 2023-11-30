@@ -7,6 +7,7 @@ import (
 
 	managementv1 "github.com/codefly-dev/cli/proto/v1/go/management"
 	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/overview"
 	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
 
 	"github.com/codefly-dev/cli/pkg/application"
@@ -19,8 +20,11 @@ import (
 type Configuration struct {
 	EndpointGrpc       string
 	EndpointRest       string
-	Workspace          *management.Workspace
 	RunningApplication *application.Application
+
+	Workspace *management.Workspace
+
+	DependencyGraph *overview.DependencyGraph
 }
 
 type Server struct {
@@ -28,6 +32,22 @@ type Server struct {
 	config     *Configuration
 	gRPC       *grpc.Server
 	logChannel chan *agentsv1.Log
+}
+
+func (s *Server) GetDependencyGraph(ctx context.Context, request *managementv1.DependencyGraphRequest) (*managementv1.GraphResponse, error) {
+	g := &managementv1.GraphResponse{}
+	for _, node := range s.config.DependencyGraph.Nodes() {
+		g.Nodes = append(g.Nodes, &managementv1.GraphNode{
+			Id: node,
+		})
+	}
+	for _, edge := range s.config.DependencyGraph.Edges() {
+		g.Edges = append(g.Edges, &managementv1.GraphEdge{
+			From: edge.From,
+			To:   edge.To,
+		})
+	}
+	return g, nil
 }
 
 func (s *Server) LogHistory(ctx context.Context, request *managementv1.LogRequest) (*managementv1.LogResponse, error) {

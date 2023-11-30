@@ -21,7 +21,7 @@
       "importerName": "OpenApiFileImporter",
       "createMissingOperations": true,
       "options": {
-        "path": "../../../proto/swagger/management/views.swagger.json"
+        "path": "../../../proto/v1/swagger/management/views.swagger.json"
       }
     }
   ],

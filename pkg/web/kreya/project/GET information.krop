@@ -1,6 +1,6 @@
 {
   "details": {
-    "path": "/api/project/information",
+    "path": "api/project/information",
     "method": "GET",
     "importedOperationId": "GET /project/information",
     "pathParams": []

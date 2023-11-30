@@ -7,6 +7,7 @@ import (
 	"os/signal"
 
 	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/overview"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
@@ -55,7 +56,12 @@ var PartialCmd = &cobra.Command{
 			m := management.NewManager()
 			workspace, err := m.Load()
 			shared.ExitOnError(err, "cannot load management")
-			w, err := web.NewServer(web.ServerData{Workspace: workspace})
+
+			dependencyGraph, err := overview.NewDependencyGraph(project)
+			shared.ExitOnError(err, "cannot load management")
+
+			w, err := web.NewServer(web.ServerData{Workspace: workspace, DependencyGraph: dependencyGraph})
+
 			shared.ExitOnError(err, "cannot create applications server")
 			go func() {
 				errs <- w.Start(ctx)

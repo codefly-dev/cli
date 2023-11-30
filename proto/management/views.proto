@@ -84,12 +84,42 @@ message LogResponse {
   repeated v1.agents.logs.LogSessionGroup groups = 1;
 }
 
+/*
+Dependency Graph
+
+*/
+
+message DependencyGraphRequest {
+}
+
+
+message GraphNode {
+  string id = 1;
+  bool value = 2;
+}
+
+message GraphEdge {
+  string from = 1;
+  string to = 2;
+}
+
+message GraphResponse {
+  repeated GraphNode nodes = 1;
+  repeated GraphEdge edges = 2;
+}
+
 
 service Web {
 
   rpc GetProjectInformation(ProjectInformationRequest) returns (ProjectInformationResponse) {
     option (google.api.http) = {
       get: "/project/information"
+    };
+  }
+
+  rpc GetDependencyGraph(DependencyGraphRequest) returns (GraphResponse) {
+    option (google.api.http) = {
+      get: "/project/dependency-graph"
     };
   }
 

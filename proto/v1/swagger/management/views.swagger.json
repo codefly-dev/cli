@@ -16,6 +16,28 @@
     "application/json"
   ],
   "paths": {
+    "/project/dependency-graph": {
+      "get": {
+        "operationId": "Web_GetDependencyGraph",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/viewsGraphResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Web"
+        ]
+      }
+    },
     "/project/information": {
       "get": {
         "operationId": "Web_GetProjectInformation",
@@ -363,6 +385,47 @@
       "properties": {
         "endpoint": {
           "$ref": "#/definitions/baseEndpoint"
+        }
+      }
+    },
+    "viewsGraphEdge": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      }
+    },
+    "viewsGraphNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "value": {
+          "type": "boolean"
+        }
+      }
+    },
+    "viewsGraphResponse": {
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewsGraphNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/viewsGraphEdge"
+          }
         }
       }
     },

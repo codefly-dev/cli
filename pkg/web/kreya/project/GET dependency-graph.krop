@@ -1,8 +1,8 @@
 {
   "details": {
-    "path": "api/project/logs",
+    "path": "api/project/dependency-graph",
     "method": "GET",
-    "importedOperationId": "GET /project/logs",
+    "importedOperationId": "GET /project/dependency-graph",
     "pathParams": []
   },
   "requests": [

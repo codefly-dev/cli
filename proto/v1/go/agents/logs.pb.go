@@ -7,13 +7,12 @@
 package agents
 
 import (
-	reflect "reflect"
-	sync "sync"
-
 	base "github.com/codefly-dev/core/proto/v1/go/base"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
+	reflect "reflect"
+	sync "sync"
 )
 
 const (

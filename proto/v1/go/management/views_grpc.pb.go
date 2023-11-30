@@ -8,7 +8,6 @@ package management
 
 import (
 	context "context"
-
 	agents "github.com/codefly-dev/core/proto/v1/go/agents"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
@@ -23,6 +22,7 @@ const _ = grpc.SupportPackageIsVersion7
 
 const (
 	Web_GetProjectInformation_FullMethodName = "/v1.management.views.Web/GetProjectInformation"
+	Web_GetDependencyGraph_FullMethodName    = "/v1.management.views.Web/GetDependencyGraph"
 	Web_Logs_FullMethodName                  = "/v1.management.views.Web/Logs"
 	Web_LogHistory_FullMethodName            = "/v1.management.views.Web/LogHistory"
 )
@@ -32,6 +32,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WebClient interface {
 	GetProjectInformation(ctx context.Context, in *ProjectInformationRequest, opts ...grpc.CallOption) (*ProjectInformationResponse, error)
+	GetDependencyGraph(ctx context.Context, in *DependencyGraphRequest, opts ...grpc.CallOption) (*GraphResponse, error)
 	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
 	LogHistory(ctx context.Context, in *LogRequest, opts ...grpc.CallOption) (*LogResponse, error)
 }
@@ -47,6 +48,15 @@ func NewWebClient(cc grpc.ClientConnInterface) WebClient {
 func (c *webClient) GetProjectInformation(ctx context.Context, in *ProjectInformationRequest, opts ...grpc.CallOption) (*ProjectInformationResponse, error) {
 	out := new(ProjectInformationResponse)
 	err := c.cc.Invoke(ctx, Web_GetProjectInformation_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *webClient) GetDependencyGraph(ctx context.Context, in *DependencyGraphRequest, opts ...grpc.CallOption) (*GraphResponse, error) {
+	out := new(GraphResponse)
+	err := c.cc.Invoke(ctx, Web_GetDependencyGraph_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +109,7 @@ func (c *webClient) LogHistory(ctx context.Context, in *LogRequest, opts ...grpc
 // for forward compatibility
 type WebServer interface {
 	GetProjectInformation(context.Context, *ProjectInformationRequest) (*ProjectInformationResponse, error)
+	GetDependencyGraph(context.Context, *DependencyGraphRequest) (*GraphResponse, error)
 	Logs(*emptypb.Empty, Web_LogsServer) error
 	LogHistory(context.Context, *LogRequest) (*LogResponse, error)
 	mustEmbedUnimplementedWebServer()
@@ -110,6 +121,9 @@ type UnimplementedWebServer struct {
 
 func (UnimplementedWebServer) GetProjectInformation(context.Context, *ProjectInformationRequest) (*ProjectInformationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetProjectInformation not implemented")
+}
+func (UnimplementedWebServer) GetDependencyGraph(context.Context, *DependencyGraphRequest) (*GraphResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetDependencyGraph not implemented")
 }
 func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
 	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
@@ -144,6 +158,24 @@ func _Web_GetProjectInformation_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WebServer).GetProjectInformation(ctx, req.(*ProjectInformationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Web_GetDependencyGraph_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DependencyGraphRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WebServer).GetDependencyGraph(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Web_GetDependencyGraph_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WebServer).GetDependencyGraph(ctx, req.(*DependencyGraphRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -197,6 +229,10 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetProjectInformation",
 			Handler:    _Web_GetProjectInformation_Handler,
+		},
+		{
+			MethodName: "GetDependencyGraph",
+			Handler:    _Web_GetDependencyGraph_Handler,
 		},
 		{
 			MethodName: "LogHistory",
