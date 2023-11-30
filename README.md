@@ -7,6 +7,10 @@
 
 ![](docs/media/dragonfly.png)
 
+## Requirements
+
+- https://github.com/usvc/semver [Optional: to use ./scripts/dev/tag.sh]
+
 
 TODO: golang ci lint
 
