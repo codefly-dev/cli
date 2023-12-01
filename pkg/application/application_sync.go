@@ -29,7 +29,6 @@ func (app *Application) SyncService(ctx context.Context, instance *services.Inst
 	}
 	logger.Debugf("syncing")
 
-	ShowEndpointManagerState()
 	group, err := GetEndpointDependencyGroup(instance.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot get application group endpoints")

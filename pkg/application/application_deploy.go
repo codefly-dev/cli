@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services"
+	"github.com/codefly-dev/core/agents/endpoints"
 	"github.com/codefly-dev/core/configurations"
 	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
 	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
@@ -23,20 +24,29 @@ func (app *Application) Deploy(ctx context.Context, env *configurations.Environm
 	return nil
 }
 
-func (app *Application) DeployService(service *services.Instance, env *configurations.Environment) error {
-	logger := shared.NewLogger("applications.DeployService<%s>", service.Configuration.Name)
-	if service.Runtime == nil {
-		return logger.Errorf("runtime for service <%s> is not initialized, run first app.Init()", service.Configuration.Name)
+func (app *Application) DeployService(instance *services.Instance, env *configurations.Environment) error {
+	logger := shared.NewLogger("applications.DeployService<%s>", instance.Configuration.Name)
+	if instance.Runtime == nil {
+		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}
 	logger.TODO("Type of build will depend on deployment, right now assume we dockerize")
 	// What kind of build will be picked from the deployment
-	golor.Println(`#(bold,cyan)[Deploying {{.Name}}]`, service.Configuration)
-	_, err := service.Deploy(&factoryv1.DeploymentRequest{
-		Environment: &basev1.Environment{Name: env.Name},
+
+	group, err := GetEndpointDependencyGroup(instance.Configuration)
+	if err != nil {
+		return logger.Wrapf(err, "cannot get application group endpoints")
+	}
+
+	logger.Debugf("dependency group: %v", endpoints.CondensedOutput(group))
+
+	golor.Println(`#(bold,cyan)[Deploying {{.Name}}]`, instance.Configuration)
+	_, err = instance.Deploy(&factoryv1.DeploymentRequest{
+		Environment:             &basev1.Environment{Name: env.Name},
+		DependencyEndpointGroup: group,
 	})
 	if err != nil {
 		return logger.Wrapf(err, "cannot build runtime")
 	}
-	golor.Println(`#(bold,cyan)[Build {{.Name}}]: #(green)[OK]`, service.Configuration)
+	golor.Println(`#(bold,cyan)[Build {{.Name}}]: #(green)[OK]`, instance.Configuration)
 	return nil
 }
