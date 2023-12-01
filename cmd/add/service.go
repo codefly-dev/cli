@@ -49,6 +49,10 @@ var ServiceCmd = &cobra.Command{
 			}
 		}
 		logger.Debugf("agent %s", agent)
+		if agent.Version == "latest" {
+			err = agents.PinToLatestRelease(agent)
+			shared.ExitOnError(err, "cant get latest version")
+		}
 
 		confirm, err := promptseervices.Add(name, agent, app)
 		shared.ExitOnError(err, "cannot prompt for service")
@@ -71,17 +75,9 @@ var ServiceCmd = &cobra.Command{
 
 		err = services.Add(input, configurations.WithProject(project), configurations.WithApplication(app))
 		shared.ExitOnError(err, "cannot add service")
-		//
-		//		isFirst := ""
-		//		if len(configurations.MustCurrentApplication().Services) == 1 {
-		//			isFirst = "#(bold)[first] "
-		//		}
-		//		golor.Println(`#(blue)[Successfully created your {{.IsFirst}}service for your applications <{{.Name}}>!]
-		//#(italic,cyan)[You are ready to go, run this and start building cool things!]
-		//#(italic,white)[codefly run applications]`, map[string]string{
-		//			"Name": configurations.MustCurrentApplication().Name,
-		//			"IsFirst":     isFirst,
-		//		})
+		err = app.Save()
+		shared.ExitOnError(err, "cannot save application configuration")
+
 	},
 }
 

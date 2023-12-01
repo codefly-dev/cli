@@ -160,7 +160,7 @@ func Add(input *CreationInput, opts ...configurations.Option) error {
 
 	// Map svc to applications configuration when there are no dependencies
 	if len(input.RequiredBy) == 0 {
-		err = configurations.MustCurrentApplication().AddService(svc)
+		err = scope.Application.AddService(svc)
 		if err != nil {
 			return logger.Errorf("cannot add svc to applications configuration: %v", err)
 		}
