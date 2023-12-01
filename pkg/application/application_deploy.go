@@ -1,6 +1,8 @@
 package application
 
 import (
+	"context"
+
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
 	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
@@ -10,7 +12,7 @@ import (
 	"github.com/codefly-dev/golor"
 )
 
-func (app *Application) Deploy(env *configurations.Environment) error {
+func (app *Application) Deploy(ctx context.Context, env *configurations.Environment) error {
 	logger := shared.NewLogger("applications.Deploy<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		err := app.DeployService(service, env)

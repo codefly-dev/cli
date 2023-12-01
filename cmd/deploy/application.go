@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"context"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/core/configurations"
@@ -15,6 +17,7 @@ var ApplicationCmd = &cobra.Command{
 	Short: "Deploy an application",
 
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx := context.Background()
 		project := common.ProjectConfiguration(current)
 		config := common.ApplicationConfiguration(current)
 
@@ -27,13 +30,10 @@ var ApplicationCmd = &cobra.Command{
 		env, err := project.FindEnvironment(environment)
 		shared.UnexpectedExitOnError(err, "cannot find environment <%s>", environment)
 
-		err = app.Deploy(env)
+		err = app.Deploy(ctx, env)
 		shared.UnexpectedExitOnError(err, "cannot deploy applications")
 	},
 }
-
-var current bool
-var environment string
 
 func init() {
 	ApplicationCmd.Flags().BoolVar(&current, "current", false, "Deploy the current application")

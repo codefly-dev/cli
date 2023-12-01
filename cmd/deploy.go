@@ -13,4 +13,5 @@ var DeployCmd = &cobra.Command{
 
 func init() {
 	DeployCmd.AddCommand(deploy.ApplicationCmd)
+	DeployCmd.AddCommand(deploy.PartialCmd)
 }

@@ -13,14 +13,13 @@ import (
 	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
 
 	"github.com/codefly-dev/core/configurations"
+	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
 	"github.com/codefly-dev/core/shared"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	_ "github.com/mattn/go-sqlite3"
-
-	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
+	_ "modernc.org/sqlite"
 )
 
 type Sqlite struct {
@@ -93,7 +92,7 @@ func NewSqliteStorage() (Storage, error) {
 		}
 		file.Close()
 	}
-	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?cache=shared&_fk=1", dbFile))
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?cache=shared&_fk=1", dbFile))
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot open database")
 	}

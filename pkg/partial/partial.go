@@ -88,3 +88,14 @@ func (p *Partial) Build(ctx context.Context) error {
 	}
 	return shared.MultiErrors(errs...)
 }
+
+func (p *Partial) Deploy(ctx context.Context, env *configurations.Environment) error {
+	var errs []error
+	for _, app := range p.Applications {
+		if err := app.Deploy(ctx, env); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return shared.MultiErrors(errs...)
+
+}
