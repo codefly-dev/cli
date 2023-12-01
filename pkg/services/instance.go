@@ -56,7 +56,7 @@ func NewServiceInstance(conf *configurations.Service, app *configurations.Applic
 	logger := shared.NewLogger("service.Instance<%s>", conf.Name)
 	scope := configurations.WithScopeProjectOnly()
 	scope.Application = app
-	opts := []configurations.Option{configurations.WithProject(scope.Project), configurations.WithApplication(app)}
+	opts := []configurations.Option{configurations.WithApplication(app)}
 	ref, err := conf.Reference()
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot get reference")
