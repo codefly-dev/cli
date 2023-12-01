@@ -3,6 +3,7 @@ package add
 import (
 	"os"
 
+	promptseervices "github.com/codefly-dev/cli/pkg/cli/prompts/services"
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents"
 
@@ -26,9 +27,9 @@ var ServiceCmd = &cobra.Command{
 		}
 
 		project := common.ProjectConfiguration(current)
-		config := common.ApplicationConfiguration(current)
+		app := common.ApplicationConfiguration(current)
 
-		logger := shared.NewLogger("create.service<%s>", config.Name)
+		logger := shared.NewLogger("create.service<%s>", app.Name)
 
 		name := args[0]
 		err := configurations.ValidateServiceName(name)
@@ -49,11 +50,11 @@ var ServiceCmd = &cobra.Command{
 		}
 		logger.Debugf("agent %s", agent)
 
-		// Give a new overview of the application
-		//manager := management.NewManager()
-		//app, err := manager.LoadApplication(config, project)
-		//
-		//shared.UnexpectedExitOnError(err, "cannot load application")
+		confirm, err := promptseervices.Add(name, agent, app)
+		shared.ExitOnError(err, "cannot prompt for service")
+		if !confirm {
+			shared.Exit("Received loud and clear!")
+		}
 
 		input := &services.CreationInput{
 			Name:              name,
@@ -62,13 +63,13 @@ var ServiceCmd = &cobra.Command{
 			RequiredBy:        requiredBy,
 			DependsOn:         dependsOn,
 			WithClientDecider: create.NewClientBuilder(),
-			Application:       config,
+			Application:       app,
 		}
 		logger.Debugf("creating service <%s> from agent <%s>", input.Name, agent.Name())
 		err = input.SetNamespace(namespace)
 		shared.ExitOnError(err, "cannot set namespace: %s", namespace)
 
-		err = services.Add(input, configurations.WithProject(project), configurations.WithApplication(config))
+		err = services.Add(input, configurations.WithProject(project), configurations.WithApplication(app))
 		shared.ExitOnError(err, "cannot add service")
 		//
 		//		isFirst := ""

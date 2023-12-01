@@ -2,21 +2,28 @@ package services
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/golor"
 )
 
-type model struct {
+type add struct {
 	confirmed bool
+	agent     *configurations.Agent
+	app       *configurations.Application
+	name      string
 }
 
-func (m model) Init() tea.Cmd {
+func (m add) Init() tea.Cmd {
 	return nil
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m add) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if msg.Type == tea.KeyEnter {
+			m.confirmed = true
+			return m, tea.Quit
+		}
 		switch msg.String() {
 		case "y":
 			m.confirmed = true
@@ -29,22 +36,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) View() string {
+func (m add) View() string {
 	if m.confirmed {
-		return "You chose to override the file.\n"
+		return "Let's create some magic for you!\n"
 	}
-	return golor.Sprintf("#(bold,green)[Service already found]. Override it? [y/n]: ")
+	return golor.Sprintf("#(bold,green)[Want to add a service <{{.Service}}> based on the agent <{{.Agent.Identifier}}> in your application <{{.Application.Name}}>]? Y/n",
+		map[string]interface{}{"Service": m.name, "Agent": m.agent, "Application": m.app})
 }
 
-func Override() (bool, error) {
-	if shared.Override() {
-		return true, nil
-	}
-	p := tea.NewProgram(model{})
+func Add(name string, agent *configurations.Agent, app *configurations.Application) (bool, error) {
+	p := tea.NewProgram(add{name: name, agent: agent, app: app})
 	mod, err := p.Run()
 	if err != nil {
 		return false, err
 	}
-	m := mod.(model)
+	m := mod.(add)
 	return m.confirmed, nil
 }
