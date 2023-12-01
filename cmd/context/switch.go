@@ -51,7 +51,7 @@ var SwitchCmd = &cobra.Command{
 			}
 			project, err := configurations.LoadProjectFromName(selected)
 			shared.ExitOnError(err, "cannot load projects")
-			configurations.SetCurrentProject(project)
+			configurations.Global().SetCurrentProject(project)
 			return
 		}
 

@@ -18,22 +18,20 @@ var InitCmd = &cobra.Command{
 		configurations.InitGlobal(getter)
 		// Creating a default project
 		project, err := configurations.NewProject("default")
-		if err != nil {
-			//shared.ExitOnError(err, "cannot create default project")
-		}
-		configurations.AddProject(project)
-		configurations.SetCurrentProject(project)
+		shared.ExitOnError(err, "cannot create default project")
+		configurations.Global().AddProject(project)
+		configurations.Global().SetCurrentProject(project)
 		golor.Println(`#(blue)[Project <default> created at ~/codefly/default!]`)
 
-		// Creating a default application
-		application, err := configurations.NewApplication("application")
-		if err != nil {
-			shared.ExitOnError(err, "cannot create default application")
-		}
-		configurations.AddApplication(application)
-		configurations.SetCurrentApplication(application)
-		golor.Println(`#(blue)[Application <application> created at ~/codefly/default/application!]
-Add new services to your application with
+		// Creating a default app
+		app, err := configurations.NewApplication("future")
+		shared.ExitOnError(err, "cannot create default app")
+		err = project.AddApplication(app.Reference())
+		shared.ExitOnError(err, "cannot add default app")
+
+		configurations.SetCurrentApplication(app)
+		golor.Println(`#(blue)[Application <app> created at ~/codefly/default/app!]
+Add new services to your app with
 #(cyan)[codefly add service {NAME} --agent={AGENT}]
 To get started, try adding a service that wraps an shell command with
 #(cyan)[codefly add service {NAME} --agent=codefly.ai/shell:latest]

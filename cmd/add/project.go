@@ -32,8 +32,8 @@ var ProjectCmd = &cobra.Command{
 		shared.ExitOnFalse(ok, "cannot cast result to project.AddProjectOutput: %T", output)
 
 		display.CreatedProject(output.Project)
-		configurations.MustCurrent().CurrentProject = output.Project.Name
-		configurations.SaveCurrent()
+		configurations.Global().SetCurrentProject(output.Project)
+		configurations.Global().SaveCurrent()
 	},
 }
 

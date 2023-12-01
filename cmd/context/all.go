@@ -28,21 +28,18 @@ func ShowAll() {
 
 	display.ShowProject(project, true)
 	fmt.Println()
-	//
-	//projects, err := configurations.ListProjects()
-	//shared.ExitOnError(err, "Cannot list projects")
-	//var others []*configurations.View
-	//for _, p := range projects {
-	//	if p.Name == project.Name {
-	//		continue
-	//	}
-	//	others = append(others, p)
-	//}
-	//if len(others) == 0 {
-	//	return
-	//}
-	//for _, p := range others {
-	//	display.ShowProject(p, false)
-	//	fmt.Println()
-	//}
+
+	projects, err := configurations.ListProjects()
+	shared.ExitOnError(err, "Cannot list projects")
+	var others []*configurations.Project
+	for _, p := range projects {
+		if p.Name == project.Name {
+			continue
+		}
+		others = append(others, p)
+	}
+	for _, p := range others {
+		display.ShowProject(p, false)
+		fmt.Println()
+	}
 }

@@ -54,7 +54,7 @@ func ImportApplication(imp *Importer) error {
 	if err != nil {
 		return logger.Wrapf(err, "needs a project to import into")
 	}
-	configurations.SetCurrentProject(project)
+	configurations.Global().SetCurrentProject(project)
 
 	// Will clone to the name
 	name := imp.NewApplicationName()
