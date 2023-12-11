@@ -1,10 +1,13 @@
 package add
 
+// Override existing agent
+var override bool
+
 // Run command in interactive mode
 var interactive bool
 
-// Use current project/application instead of path based resolution
-var current bool
+// Confirm default
+var withDefault bool
 
 // Name of agent
 var agent string

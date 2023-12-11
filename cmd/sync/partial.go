@@ -32,7 +32,7 @@ var PartialCmd = &cobra.Command{
 		}
 		name := args[0]
 
-		project := common.ProjectConfiguration(current)
+		project := common.Project(ctx)
 
 		conf, err := project.GetPartial(name)
 		if err != nil {
@@ -40,7 +40,7 @@ var PartialCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		part, err := partial.NewPartial(project, conf, application.FactoryMode)
+		part, err := partial.NewPartial(ctx, project, conf, application.FactoryMode)
 		shared.ExitOnError(err, "<%s>", conf.Name)
 
 		if initOnly {

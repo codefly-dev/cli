@@ -1,6 +1,8 @@
 package monitoring
 
 import (
+	"context"
+
 	"github.com/codefly-dev/core/configurations"
 	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
 )
@@ -8,8 +10,8 @@ import (
 type Tracked interface {
 	Name() string   // For display
 	Unique() string // For identification in the system
-	GetStatus() (ProcessState, error)
-	GetUsage() (*Usage, error)
+	GetStatus(ctx context.Context) (ProcessState, error)
+	GetUsage(ctx context.Context) (*Usage, error)
 	Kill() error
 }
 
@@ -58,11 +60,11 @@ type TrackedContainer struct {
 	unique string
 }
 
-func (t TrackedContainer) GetStatus() (ProcessState, error) {
+func (t TrackedContainer) GetStatus(ctx context.Context) (ProcessState, error) {
 	return Unknown, nil
 }
 
-func (t TrackedContainer) GetUsage() (*Usage, error) {
+func (t TrackedContainer) GetUsage(ctx context.Context) (*Usage, error) {
 	return &Usage{CPU: 100.0, Memory: 100.0}, nil
 }
 

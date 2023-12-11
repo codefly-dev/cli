@@ -1,6 +1,7 @@
 package monitoring
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -13,12 +14,12 @@ import (
 
 type RestartTracker struct {
 	unique  string
-	runtime services.IRuntime
+	runtime services.Runtime
 	sync.RWMutex
 }
 
-func (t *RestartTracker) Start(events chan<- ServiceEvent) error {
-	logger := shared.NewLogger("monitoring.RestartTracker")
+func (t *RestartTracker) Start(ctx context.Context, events chan<- ServiceEvent) error {
+	logger := shared.GetLogger(ctx).With("monitoring.RestartTracker")
 	logger.Debugf("runtime wants to restart -- will ping the runtime for started status")
 	ticker := time.NewTicker(1 * time.Second)
 	go func() {
@@ -27,7 +28,7 @@ func (t *RestartTracker) Start(events chan<- ServiceEvent) error {
 			if t.runtime == nil {
 				continue
 			}
-			req, err := t.runtime.Information(&runtimev1.InformationRequest{})
+			req, err := t.runtime.Information(ctx, &runtimev1.InformationRequest{})
 			if err != nil {
 				logger.Debugf("cannot get status from runtime: %v", err)
 				continue

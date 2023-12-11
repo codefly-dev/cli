@@ -11,7 +11,7 @@ import (
 // Run runs the applications of the partial
 // Each application run is blocking so we need to go-routine them
 func (p *Partial) Run(ctx context.Context) error {
-	logger := shared.NewLogger("partial.Run")
+	logger := shared.GetLogger(ctx).With("partial.Run")
 	for _, app := range p.Applications {
 		err := app.Configure(ctx)
 		if err != nil {

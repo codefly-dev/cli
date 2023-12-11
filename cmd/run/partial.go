@@ -23,7 +23,8 @@ var PartialCmd = &cobra.Command{
 	Use:   "partial",
 	Short: "Run an partial",
 	Run: func(cmd *cobra.Command, args []string) {
-		logger := shared.NewLogger("run.PartialCmd")
+		ctx := shared.NewContext()
+		logger := shared.GetLogger(ctx).With("run.PartialCmd")
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 
@@ -35,7 +36,7 @@ var PartialCmd = &cobra.Command{
 		}
 		name := args[0]
 
-		project := common.ProjectConfiguration(current)
+		project := common.Project(ctx)
 
 		conf, err := project.GetPartial(name)
 		if err != nil {
@@ -43,11 +44,11 @@ var PartialCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		partial, err := partial.NewPartial(project, conf, application.RuntimeMode)
+		partial, err := partial.NewPartial(ctx, project, conf, application.RuntimeMode)
 		shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
 
 		session := management.NewPartialSession(conf)
-		spy, err := management.NewSpy(session)
+		spy, err := management.NewSpy(ctx, session)
 		shared.ExitOnError(err, "cannot create spy")
 		defer spy.Close()
 
@@ -78,7 +79,7 @@ var PartialCmd = &cobra.Command{
 			goto cleanup
 		}
 
-		err = spy.Activate()
+		err = spy.Activate(ctx)
 		shared.UnexpectedExitOnError(err, "cannot activate spy")
 
 		go func() {
@@ -93,8 +94,8 @@ var PartialCmd = &cobra.Command{
 					goto cleanup
 				}
 				// Do we have some output error
-				if outputError, ok := shared.IsOutputError(err); ok {
-					fmt.Printf("Got output error:\n %v\n", outputError)
+				if ok, err := shared.IsOutputError(err); ok {
+					fmt.Printf("Got output error:\n %v\n", err)
 					continue
 				}
 				fmt.Printf("Got partials run error: %v\n", err)

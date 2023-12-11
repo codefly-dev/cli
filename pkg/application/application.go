@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	services2 "github.com/codefly-dev/core/agents/services"
-
 	"github.com/codefly-dev/cli/pkg/monitoring"
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents"
@@ -29,9 +27,6 @@ type Application struct {
 
 	// Track running services
 	ServiceTracker *monitoring.ServiceTracker
-
-	// Load services runtime
-	ServiceLoader *services2.ServiceRuntimeLoader
 
 	// TODO: clarify which one does what...
 	Environment     *Environment
@@ -63,8 +58,8 @@ func (p *Plan) Show() string {
 	return fmt.Sprintf("[%s]", strings.Join(names, ", "))
 }
 
-func NewApplication(loader *Loader) (*Application, error) {
-	logger := shared.NewLogger("applications.NewApplication<%s>", loader.application.Name)
+func NewApplication(ctx context.Context, loader *Loader) (*Application, error) {
+	logger := shared.GetLogger(ctx).With("applications.NewApplication<%s>", loader.application.Name)
 	events := make(chan monitoring.ServiceEvent)
 	serviceTracker, err := monitoring.NewServiceTracker(events)
 	if err != nil {
@@ -90,24 +85,23 @@ func NewApplication(loader *Loader) (*Application, error) {
 		// Note: never loop over maps
 		uniques: make(map[string]*services.Instance),
 
-		EndpointManager: NewApplicationEndpointManager(loader.application),
+		EndpointManager: NewApplicationEndpointManager(ctx, loader.application),
 	}
-	go app.Listen()
+	go app.Listen(ctx)
 	return app, nil
 }
 
-func (app *Application) Restart(unique string) error {
+func (app *Application) Restart(ctx context.Context, unique string) error {
 	service, ok := app.uniques[unique]
 	if !ok {
 		return fmt.Errorf("unknow service unique identifier: %s", unique)
 	}
-	logger := shared.NewLogger("applications.Restart<%s>", service.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.Restart<%s>", service.Configuration.Name)
 
 	golor.Println(`#(bold,cyan)[Restarting {{.Name}}]`, map[string]any{"Name": service.Configuration.Name})
 
-	ctx := context.Background()
 	if !app.uniques[unique].Ready {
-		err := app.RuntimeInitService(service)
+		err := app.RuntimeInitService(ctx, service)
 		if err != nil {
 			return logger.Wrapf(err, "cannot init service")
 		}
@@ -134,7 +128,7 @@ func (app *Application) Restart(unique string) error {
 }
 
 func (app *Application) Stop(ctx context.Context) error {
-	logger := shared.NewLogger("applications.Stop<%s>", app.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.Stop<%s>", app.Configuration.Name)
 	logger.Debugf("stopping")
 	var exitOrder []*services.Instance
 	exitOrder = append(exitOrder, app.Plan.Services...)
@@ -154,7 +148,7 @@ func (app *Application) Stop(ctx context.Context) error {
 }
 
 func (app *Application) StopService(ctx context.Context, service *services.Instance) error {
-	logger := shared.NewLogger("applications.StopService<%s>", service.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.StopService<%s>", service.Configuration.Name)
 	if service.Runtime == nil {
 		return logger.Errorf("runtime for service <%s> is not initialized, run first app.Init()", service.Configuration.Name)
 	}
@@ -162,7 +156,7 @@ func (app *Application) StopService(ctx context.Context, service *services.Insta
 		return nil
 	}
 	// Stop the runtime
-	_, err := service.Runtime.Stop(&runtimev1.StopRequest{
+	_, err := service.Runtime.Stop(ctx, &runtimev1.StopRequest{
 		Persist: service.Persistence,
 	})
 	if err != nil {
@@ -178,12 +172,12 @@ func (app *Application) StopService(ctx context.Context, service *services.Insta
 	return nil
 }
 
-func (app *Application) Listen() {
-	logger := shared.NewLogger("applications.Listen<%s>", app.Configuration.Name)
+func (app *Application) Listen(ctx context.Context) {
+	logger := shared.GetLogger(ctx).With("applications.Listen<%s>", app.Configuration.Name)
 	for event := range app.events {
 		switch event.Event {
 		case "RestartWanted":
-			err := app.Restart(event.Unique)
+			err := app.Restart(ctx, event.Unique)
 			if err != nil {
 				logger.Oops("cannot restart service <%s>: %v", event.Unique, err)
 			}
@@ -203,12 +197,12 @@ func (app *Application) MakeVerbose() {
 	app.verbose = true
 }
 
-func Load(project *configurations.Project, app *configurations.Application, mode Mode) (*Application, error) {
-	logger := shared.NewLogger("application.Load<%s/%s>", project.Name, app.Name)
+func Load(ctx context.Context, project *configurations.Project, app *configurations.Application, mode Mode) (*Application, error) {
+	logger := shared.GetLogger(ctx).With("application.Load<%s/%s>", project.Name, app.Name)
 	logger.Debugf("calling loader")
 	loader, err := NewLoader(project, app, mode)
 	if err != nil {
 		return nil, err
 	}
-	return loader.Load()
+	return loader.Load(ctx)
 }

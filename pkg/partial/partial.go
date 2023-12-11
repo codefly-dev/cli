@@ -15,26 +15,26 @@ type Partial struct {
 	Applications  []*application.Application
 }
 
-func NewPartial(project *configurations.Project, partial *configurations.Partial, mode application.Mode) (*Partial, error) {
-	logger := shared.NewLogger("partial.NewPartial<%s>", partial.Name)
+func NewPartial(ctx context.Context, project *configurations.Project, partial *configurations.Partial, mode application.Mode) (*Partial, error) {
+	logger := shared.GetLogger(ctx).With("partial.NewPartial<%s>", partial.Name)
 	configurations.SetMode(configurations.ModePartial)
 	display.PartialLoading(partial)
 	p := &Partial{Configuration: partial}
 	for _, name := range partial.Applications {
 		logger.Debugf("Loading application: %s", name)
 		// Get config
-		config, err := configurations.LoadApplicationFromName(name)
-		if err != nil {
-			return nil, logger.Wrapf(err, "failed to load application configuration: %s", name)
-		}
-		app, err := application.Load(project, config, mode)
-		if err != nil {
-			return nil, logger.Wrapf(err, "failed to load application: %s", config)
-		}
-		err = p.Add(app)
-		if err != nil {
-			return nil, logger.Wrapf(err, "failed to add application: %s", config)
-		}
+		//config, err := configurations.LoadApplicationFromName(name)
+		//if err != nil {
+		//	return nil, logger.Wrapf(err, "failed to load application configuration: %s", name)
+		//}
+		//app, err := application.Load(project, config, mode)
+		//if err != nil {
+		//	return nil, logger.Wrapf(err, "failed to load application: %s", config)
+		//}
+		//err = p.Add(app)
+		//if err != nil {
+		//	return nil, logger.Wrapf(err, "failed to add application: %s", config)
+		//}
 
 	}
 

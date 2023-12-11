@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"path"
 
 	"github.com/codefly-dev/core/agents/services"
 
@@ -30,8 +29,8 @@ type Instance struct {
 
 	ServiceIdentity *servicev1.ServiceIdentity
 
-	Runtime *services.ServiceRuntime
-	Factory *services.ServiceFactory
+	Runtime *services.RuntimeAgent
+	Factory *services.FactoryAgent
 
 	Initialized bool
 	Ready       bool
@@ -53,49 +52,47 @@ const (
 )
 
 func NewServiceInstance(conf *configurations.Service, app *configurations.Application) (*Instance, error) {
-	logger := shared.NewLogger("service.Instance<%s>", conf.Name)
-	scope := configurations.WithScopeProjectOnly()
-	scope.Application = app
-	opts := []configurations.Option{configurations.WithApplication(app)}
-	ref, err := conf.Reference()
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot get reference")
-	}
-	id := configurations.Identity(conf)
-	identity := &servicev1.ServiceIdentity{
-		Name:        id.Name,
-		Application: id.Application,
-		Domain:      id.Domain,
-		Namespace:   id.Namespace,
-	}
-	location := path.Join(app.Dir(opts...), conf.Name)
-	instance := &Instance{
-		Logger:        logger,
-		Configuration: conf,
-		Application:   app,
-
-		ServiceIdentity: identity,
-		Location:        location,
-
-		Quiet:                      ref.RunningOptions.Quiet,
-		Persistence:                ref.RunningOptions.Persistence,
-		CommunicationServerManager: communicate.NewServerManager(logger),
-		Reference:                  ref,
-	}
-	err = instance.LoadFactory()
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot create factory")
-	}
-	err = instance.LoadRuntime()
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot create runtime")
-	}
-	return instance, nil
+	//logger := shared.GetLogger(ctx).With("service.Instance<%s>", conf.Name)
+	//ref, err := conf.Reference()
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot get reference")
+	//}
+	//id := configurations.Identity(conf)
+	//identity := &servicev1.ServiceIdentity{
+	//	Name:        id.Name,
+	//	Application: id.Application,
+	//	Domain:      id.Domain,
+	//	Namespace:   id.Namespace,
+	//}
+	//location := path.Join(app.Dir(opts...), conf.Name)
+	//instance := &Instance{
+	//	Logger:        logger,
+	//	Configuration: conf,
+	//	Application:   app,
+	//
+	//	ServiceIdentity: identity,
+	//	Location:        location,
+	//
+	//	Quiet:                      ref.RunningOptions.Quiet,
+	//	Persistence:                ref.RunningOptions.Persistence,
+	//	CommunicationServerManager: communicate.NewServerManager(logger),
+	//	Reference:                  ref,
+	//}
+	//err = instance.LoadFactory()
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot create factory")
+	//}
+	//err = instance.LoadRuntime()
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot create runtime")
+	//}
+	//return instance, nil
+	return nil, nil
 }
 
-func (s *Instance) LoadFactory() error {
-	logger := shared.NewLogger("applications.LoadFactory<%s>", s.Unique())
-	factory, err := services.LoadFactory(s.Configuration)
+func (s *Instance) LoadFactory(ctx context.Context) error {
+	logger := shared.GetLogger(ctx).With("applications.LoadFactory<%s>", s.Unique())
+	factory, err := services.LoadFactory(ctx, s.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot load factory")
 	}
@@ -103,9 +100,9 @@ func (s *Instance) LoadFactory() error {
 	return nil
 }
 
-func (s *Instance) LoadRuntime() error {
-	logger := shared.NewLogger("applications.LoadRuntime<%s>", s.Unique())
-	runtime, err := services.LoadRuntime(s.Configuration)
+func (s *Instance) LoadRuntime(ctx context.Context) error {
+	logger := shared.GetLogger(ctx).With("applications.LoadRuntime<%s>", s.Unique())
+	runtime, err := services.LoadRuntime(ctx, s.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot load factory")
 	}
@@ -124,16 +121,16 @@ Factory wrapper
 func (s *Instance) SoloFactoryInit(ctx context.Context) error {
 	// Need some refactoring between Instance and Service in Application
 	req := &servicev1.InitRequest{
-		Debug:    shared.Debug(),
+		Debug:    shared.IsDebug(),
 		Location: s.Location,
 		Identity: s.ServiceIdentity,
 	}
-	_, err := s.FactoryInit(req)
+	_, err := s.FactoryInit(ctx, req)
 	return err
 }
 
-func (s *Instance) FactoryInit(r *servicev1.InitRequest) (*factoryv1.InitResponse, error) {
-	resp, err := s.Factory.Init(r)
+func (s *Instance) FactoryInit(ctx context.Context, r *servicev1.InitRequest) (*factoryv1.InitResponse, error) {
+	resp, err := s.Factory.Init(ctx, r)
 	if err != nil {
 		return nil, s.Logger.Wrapf(err, "cannot init factory")
 	}
@@ -144,18 +141,18 @@ func (s *Instance) FactoryInit(r *servicev1.InitRequest) (*factoryv1.InitRespons
 	return resp, nil
 }
 
-func (s *Instance) Update(r *factoryv1.UpdateRequest) (*factoryv1.UpdateResponse, error) {
-	return s.Factory.Update(r)
+func (s *Instance) Update(ctx context.Context, r *factoryv1.UpdateRequest) (*factoryv1.UpdateResponse, error) {
+	return s.Factory.Update(ctx, r)
 }
 
-func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse, error) {
+func (s *Instance) Create(ctx context.Context, r *factoryv1.CreateRequest) (*factoryv1.CreateResponse, error) {
 	if server, ok := s.CommunicationServerManager.RequiresCommunication(r); ok {
 		handler := &cli.CliHandler{}
 		s.Logger.Debugf("starting CREATE communication to fetch the information for the agent")
 		var answer *agentsv1.Answer
 
 		// Send a first message
-		first, err := s.Factory.Create(r)
+		first, err := s.Factory.Create(ctx, r)
 		if err != nil {
 			return nil, s.Logger.Wrapf(err, "cannot sync")
 		}
@@ -172,7 +169,7 @@ func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse
 			}
 
 			s.Logger.Debugf("engagement: %v", eng)
-			req, err := s.Factory.Communicate(eng)
+			req, err := s.Factory.Communicate(ctx, eng)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate CREATE from factory")
 			}
@@ -183,7 +180,7 @@ func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse
 				break
 			}
 
-			answer, err = handler.Process(req)
+			answer, err = handler.Process(ctx, req)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot process")
 			}
@@ -191,17 +188,17 @@ func (s *Instance) Create(r *factoryv1.CreateRequest) (*factoryv1.CreateResponse
 	} else {
 		s.Logger.Debugf("no communication required")
 	}
-	return s.Factory.Create(r)
+	return s.Factory.Create(ctx, r)
 }
 
-func (s *Instance) Sync(r *factoryv1.SyncRequest) (*factoryv1.SyncResponse, error) {
+func (s *Instance) Sync(ctx context.Context, r *factoryv1.SyncRequest) (*factoryv1.SyncResponse, error) {
 	if server, ok := s.CommunicationServerManager.RequiresCommunication(r); ok {
 		handler := &cli.CliHandler{}
 		s.Logger.Debugf("starting SYNC communication to fetch the information for the agent")
 		var answer *agentsv1.Answer
 
 		// Send a first message
-		first, err := s.Factory.Sync(r)
+		first, err := s.Factory.Sync(ctx, r)
 		if err != nil {
 			return nil, s.Logger.Wrapf(err, "cannot sync")
 		}
@@ -218,7 +215,7 @@ func (s *Instance) Sync(r *factoryv1.SyncRequest) (*factoryv1.SyncResponse, erro
 			}
 
 			s.Logger.Debugf("engagement: %v", eng)
-			req, err := s.Factory.Communicate(eng)
+			req, err := s.Factory.Communicate(ctx, eng)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot communicate")
 			}
@@ -229,14 +226,14 @@ func (s *Instance) Sync(r *factoryv1.SyncRequest) (*factoryv1.SyncResponse, erro
 				break
 			}
 
-			answer, err = handler.Process(req)
+			answer, err = handler.Process(ctx, req)
 			if err != nil {
 				return nil, s.Logger.Wrapf(err, "cannot process")
 			}
 		}
 	}
 
-	return s.Factory.Sync(r)
+	return s.Factory.Sync(ctx, r)
 }
 
 // SoloBuild should really be used for debugging only
@@ -246,16 +243,16 @@ func (s *Instance) SoloBuild(ctx context.Context) error {
 		return s.Logger.Wrapf(err, "cannot init runtime")
 	}
 	req := &factoryv1.BuildRequest{}
-	_, err = s.Build(req)
+	_, err = s.Build(ctx, req)
 	return err
 }
 
-func (s *Instance) Build(r *factoryv1.BuildRequest) (*factoryv1.BuildResponse, error) {
-	return s.Factory.Build(r)
+func (s *Instance) Build(ctx context.Context, r *factoryv1.BuildRequest) (*factoryv1.BuildResponse, error) {
+	return s.Factory.Build(ctx, r)
 }
 
-func (s *Instance) Deploy(r *factoryv1.DeploymentRequest) (*factoryv1.DeploymentResponse, error) {
-	return s.Factory.Deploy(r)
+func (s *Instance) Deploy(ctx context.Context, r *factoryv1.DeploymentRequest) (*factoryv1.DeploymentResponse, error) {
+	return s.Factory.Deploy(ctx, r)
 }
 
 func (s *Instance) Name() string {
@@ -276,17 +273,17 @@ Runtime wrapper
 func (s *Instance) SoloRuntimeInit(ctx context.Context) error {
 	// Need some refactoring between Instance and Service in Application
 	req := &servicev1.InitRequest{
-		Debug:    shared.Debug(),
+		Debug:    shared.IsDebug(),
 		Location: s.Location,
 		Identity: s.ServiceIdentity,
 	}
-	_, err := s.RuntimeInit(req)
+	_, err := s.RuntimeInit(ctx, req)
 	return err
 }
 
-func (s *Instance) RuntimeInit(r *servicev1.InitRequest) (*runtimev1.InitResponse, error) {
-	logger := shared.NewLogger("applications.eInit<%s>", s.Unique())
-	resp, err := s.Runtime.Init(r)
+func (s *Instance) RuntimeInit(ctx context.Context, r *servicev1.InitRequest) (*runtimev1.InitResponse, error) {
+	logger := shared.GetLogger(ctx).With("applications.eInit<%s>", s.Unique())
+	resp, err := s.Runtime.Init(ctx, r)
 	if err != nil {
 		return nil, s.Logger.Wrapf(err, "cannot init runtime")
 	}
@@ -302,12 +299,12 @@ func (s *Instance) RuntimeInit(r *servicev1.InitRequest) (*runtimev1.InitRespons
 	return resp, nil
 }
 
-func (s *Instance) Configure(r *runtimev1.ConfigureRequest) (*runtimev1.ConfigureResponse, error) {
-	return s.Runtime.Configure(r)
+func (s *Instance) Configure(ctx context.Context, r *runtimev1.ConfigureRequest) (*runtimev1.ConfigureResponse, error) {
+	return s.Runtime.Configure(ctx, r)
 }
 
-func (s *Instance) Start(r *runtimev1.StartRequest) (*runtimev1.StartResponse, error) {
-	logger := shared.NewLogger("applications.Start<%s>", s.Unique())
+func (s *Instance) Start(ctx context.Context, r *runtimev1.StartRequest) (*runtimev1.StartResponse, error) {
+	logger := shared.GetLogger(ctx).With("applications.Start<%s>", s.Unique())
 	logger.Tracef("starting!")
-	return s.Runtime.Start(r)
+	return s.Runtime.Start(ctx, r)
 }

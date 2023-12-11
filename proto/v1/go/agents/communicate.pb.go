@@ -362,7 +362,7 @@ func (x *Input) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Input.ProtoReflect.Descriptor instead.
+// Deprecated: Use Default.ProtoReflect.Descriptor instead.
 func (*Input) Descriptor() ([]byte, []int) {
 	return file_agents_communicate_proto_rawDescGZIP(), []int{5}
 }
@@ -1245,7 +1245,7 @@ var file_agents_communicate_proto_goTypes = []interface{}{
 	(*Display)(nil),            // 3: v1.agents.communicate.Display
 	(*Confirm)(nil),            // 4: v1.agents.communicate.Confirm
 	(*ConfirmAnswer)(nil),      // 5: v1.agents.communicate.ConfirmAnswer
-	(*Input)(nil),              // 6: v1.agents.communicate.Input
+	(*Input)(nil),              // 6: v1.agents.communicate.Default
 	(*InputAnswer)(nil),        // 7: v1.agents.communicate.InputAnswer
 	(*Choice)(nil),             // 8: v1.agents.communicate.Choice
 	(*ChoiceAnswer)(nil),       // 9: v1.agents.communicate.ChoiceAnswer
@@ -1266,7 +1266,7 @@ var file_agents_communicate_proto_depIdxs = []int32{
 	2,  // 5: v1.agents.communicate.Question.message:type_name -> v1.agents.communicate.Message
 	3,  // 6: v1.agents.communicate.Question.display:type_name -> v1.agents.communicate.Display
 	4,  // 7: v1.agents.communicate.Question.confirm:type_name -> v1.agents.communicate.Confirm
-	6,  // 8: v1.agents.communicate.Question.input:type_name -> v1.agents.communicate.Input
+	6,  // 8: v1.agents.communicate.Question.input:type_name -> v1.agents.communicate.Default
 	8,  // 9: v1.agents.communicate.Question.choice:type_name -> v1.agents.communicate.Choice
 	10, // 10: v1.agents.communicate.Question.selection:type_name -> v1.agents.communicate.Selection
 	0,  // 11: v1.agents.communicate.Answer.method:type_name -> v1.agents.communicate.Method

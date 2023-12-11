@@ -1,6 +1,7 @@
 package frameworks
 
 import (
+	"context"
 	"os"
 	"path"
 	"strings"
@@ -10,8 +11,8 @@ import (
 	"golang.org/x/mod/modfile"
 )
 
-func RecommendedGoDependencies(dir string) ([]*configurations.Agent, error) {
-	logger := shared.NewLogger("RecommendedGoDependencies<%s>", dir)
+func RecommendedGoDependencies(ctx context.Context, dir string) ([]*configurations.Agent, error) {
+	logger := shared.GetLogger(ctx).With("RecommendedGoDependencies<%s>", dir)
 	// Parse the go.mod file
 	content, err := os.ReadFile(path.Join(dir, "go.mod"))
 	if err != nil {
@@ -40,10 +41,10 @@ func RecommendedGoDependencies(dir string) ([]*configurations.Agent, error) {
 func GuessAgentFromGoRequire(require *modfile.Require) *configurations.Agent {
 	if strings.Contains(require.Mod.String(), "redis") {
 		return &configurations.Agent{
-			Publisher:  "codefly.ai",
-			Identifier: "redis",
-			Version:    "latest",
-			Kind:       configurations.AgentService,
+			Publisher: "codefly.ai",
+			Name:      "redis",
+			Version:   "latest",
+			Kind:      configurations.ServiceAgent,
 		}
 	}
 	return nil

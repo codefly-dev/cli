@@ -1,9 +1,6 @@
 package sync
 
 import (
-	"github.com/codefly-dev/cli/pkg/services"
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
 
@@ -13,23 +10,24 @@ var ServiceCmd = &cobra.Command{
 	Short: "Sync a service",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		app := configurations.MustCurrentApplication()
+		//ctx := shared.NewContext()
+		////app := common.Application()
+		//
+		//var config *configurations.Service
+		//var err error
+		//
+		//if len(args) > 0 {
+		//	ref := &configurations.ServiceReference{Name: "TODO"}
+		//	config, err = configurations.FindServiceFromReference(ref)
+		//} else {
+		//	config, err = configurations.FindUp[configurations.Service](ctx)
+		//}
+		//shared.ExitOnError(err, "cannot load service configuration")
 
-		var config *configurations.Service
-		var err error
-
-		if len(args) > 0 {
-			ref := &configurations.ServiceReference{Name: "TODO"}
-			config, err = configurations.FindServiceFromReference(ref)
-		} else {
-			config, err = configurations.FindUp[configurations.Service](".")
-		}
-		shared.ExitOnError(err, "cannot load service configuration")
-
-		refresher, err := services.NewSyncer(app)
-		shared.ExitOnError(err, "cannot create service refresher")
-
-		err = refresher.Sync(config)
-		shared.ExitOnError(err, "cannot sync service")
+		//refresher, err := services.NewSyncer(app)
+		//shared.ExitOnError(err, "cannot create service refresher")
+		//
+		//err = refresher.Sync(ctx, config)
+		//shared.ExitOnError(err, "cannot sync service")
 	},
 }

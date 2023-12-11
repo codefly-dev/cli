@@ -1,6 +1,7 @@
 package communicate
 
 import (
+	"context"
 	"fmt"
 
 	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
@@ -10,8 +11,8 @@ import (
 
 type CliHandler struct{}
 
-func (h *CliHandler) Process(req *agentsv1.InformationRequest) (*agentsv1.Answer, error) {
-	logger := shared.NewLogger("communicate")
+func (h *CliHandler) Process(ctx context.Context, req *agentsv1.InformationRequest) (*agentsv1.Answer, error) {
+	logger := shared.GetLogger(ctx).With("communicate")
 	logger.Debugf("Processing request: %v", req)
 	switch v := req.Question.Value.(type) {
 	case *agentsv1.Question_Display:

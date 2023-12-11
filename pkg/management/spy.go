@@ -1,6 +1,8 @@
 package management
 
 import (
+	"context"
+
 	"github.com/codefly-dev/core/agents"
 	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
 	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
@@ -22,8 +24,8 @@ func (s *Spy) Close() {
 	s.Storage.Close()
 }
 
-func (s *Spy) Activate() error {
-	logger := shared.NewLogger("development.SpyActivate")
+func (s *Spy) Activate(ctx context.Context) error {
+	logger := shared.GetLogger(ctx).With("development.SpyActivate")
 	storage, err := NewSqliteStorage()
 	if err != nil {
 		return logger.Wrapf(err, "cannot create storage")
@@ -39,8 +41,8 @@ func (s *Spy) Activate() error {
 	return nil
 }
 
-func NewSpy(session *basev1.Session) (*Spy, error) {
-	logger := shared.NewLogger("development.NewSpy")
+func NewSpy(ctx context.Context, session *basev1.Session) (*Spy, error) {
+	logger := shared.GetLogger(ctx).With("development.NewSpy")
 	storage, err := NewSqliteStorage()
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create storage")

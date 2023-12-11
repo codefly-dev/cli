@@ -10,7 +10,7 @@ var LibraryCmd = &cobra.Command{
 	Short: "Install a library",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		//logger := shared.NewLogger("install.LibraryCmd")
+		//logger := shared.GetBaseLogger(ctx).With("install.LibraryCmd")
 		//ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 		//
 		//defer stop()
@@ -53,5 +53,5 @@ var (
 
 func init() {
 	LibraryCmd.PersistentFlags().StringVar(&destination, "destination", "", "Address of the library")
-	LibraryCmd.PersistentFlags().BoolVar(&override, "override", false, "Override destination directory")
+	LibraryCmd.PersistentFlags().BoolVar(&override, "override", false, "Replace destination directory")
 }

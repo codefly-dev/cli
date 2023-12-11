@@ -19,7 +19,7 @@ type ServiceEvent struct {
 }
 
 type Tracker interface {
-	Start(events chan<- ServiceEvent) error
+	Start(ctx context.Context, events chan<- ServiceEvent) error
 	Stop()
 	// Tracks() []*applications.Tracked
 }
@@ -30,7 +30,7 @@ First target tracker
 
 type SingleTracker struct {
 	Tracked Tracked
-	Runtime services.IRuntime
+	Runtime services.Runtime
 
 	// latest
 	usage  *Usage
@@ -52,19 +52,18 @@ func (t *SingleTracker) Stop() {
 	t.stopping = true
 }
 
-func NewSingleTracker(service *configurations.Service, runtime services.IRuntime, tracker *runtime.Tracker) (*SingleTracker, error) {
-	logger := shared.NewLogger("monitoring.NewSingleTracker<%s>", service.Name)
+func NewSingleTracker(ctx context.Context, service *configurations.Service, runtime services.Runtime, tracker *runtime.Tracker) (*SingleTracker, error) {
+	logger := shared.GetLogger(ctx).With("monitoring.NewSingleTracker<%s>", service.Name)
 	tracked, err := NewTracked(service, tracker)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create tracked")
 	}
-	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 	return &SingleTracker{Tracked: tracked, Runtime: runtime, ctx: ctx, cancel: cancel}, nil
 }
 
-func (t *SingleTracker) Start(events chan<- ServiceEvent) error {
-	logger := shared.NewLogger("monitoring.SingleTracker.Start")
+func (t *SingleTracker) Start(ctx context.Context, events chan<- ServiceEvent) error {
+	logger := shared.GetLogger(ctx).With("monitoring.SingleTracker.Start")
 	ticker := time.NewTicker(1 * time.Second)
 	go func() {
 		for {
@@ -80,7 +79,7 @@ func (t *SingleTracker) Start(events chan<- ServiceEvent) error {
 					return
 				}
 				t.RUnlock()
-				req, err := t.Runtime.Information(&runtime.InformationRequest{})
+				req, err := t.Runtime.Information(ctx, &runtime.InformationRequest{})
 				if err != nil {
 					logger.Debugf("cannot get status from runtime: %v", err)
 					continue
@@ -98,13 +97,13 @@ func (t *SingleTracker) Start(events chan<- ServiceEvent) error {
 				if t.Tracked == nil {
 					return
 				}
-				status, err := t.Tracked.GetStatus()
+				status, err := t.Tracked.GetStatus(ctx)
 				if err == nil {
 					t.Lock()
 					t.status = status
 					t.Unlock()
 				}
-				usage, err := t.Tracked.GetUsage()
+				usage, err := t.Tracked.GetUsage(ctx)
 				if err == nil {
 					t.Lock()
 					t.usage = usage
@@ -132,7 +131,7 @@ type GroupTracker struct{}
 //	panic("implement me")
 //}
 
-func (g GroupTracker) Start(events chan<- ServiceEvent) error {
+func (g GroupTracker) Start(ctx context.Context, events chan<- ServiceEvent) error {
 	// TODO implement me
 	panic("implement me")
 }
@@ -142,7 +141,7 @@ func (g GroupTracker) Stop() {
 	panic("implement me")
 }
 
-func NewGroupTracker(service *configurations.Service, runtime services.IRuntime, trackers []*runtime.Tracker) (*GroupTracker, error) {
+func NewGroupTracker(ctx context.Context, service *configurations.Service, runtime services.Runtime, trackers []*runtime.Tracker) (*GroupTracker, error) {
 	return &GroupTracker{}, nil
 }
 
@@ -157,11 +156,11 @@ type ServiceTracker struct {
 	trackers map[string]*runtime.TrackerList
 }
 
-func (t *ServiceTracker) OnHold(service *configurations.Service, runtime services.IRuntime) error {
-	logger := shared.NewLogger("monitoring.ServiceTracker.OnHold<%s>", service.Name)
+func (t *ServiceTracker) OnHold(ctx context.Context, service *configurations.Service, runtime services.Runtime) error {
+	logger := shared.GetLogger(ctx).With("monitoring.ServiceTracker.OnHold<%s>", service.Name)
 	tracker := &RestartTracker{unique: service.Unique(), runtime: runtime}
 	// Start errors first or start working in a non-blocking way
-	err := tracker.Start(t.events)
+	err := tracker.Start(ctx, t.events)
 	if err != nil {
 		return logger.Wrapf(err, "cannot start on-hold")
 	}
@@ -171,9 +170,9 @@ func (t *ServiceTracker) OnHold(service *configurations.Service, runtime service
 	return nil
 }
 
-func (t *ServiceTracker) Track(ctx context.Context, service *configurations.Service, runtime services.IRuntime, trackers []*runtime.Tracker) error {
-	logger := shared.NewLogger("monitoring.ServiceTracker.Track<%s>", service.Name)
-	tracker, err := CreateTracker(service, runtime, trackers)
+func (t *ServiceTracker) Track(ctx context.Context, service *configurations.Service, runtime services.Runtime, trackers []*runtime.Tracker) error {
+	logger := shared.GetLogger(ctx).With("monitoring.ServiceTracker.Track<%s>", service.Name)
+	tracker, err := CreateTracker(ctx, service, runtime, trackers)
 	if err != nil {
 		return logger.Wrapf(err, "cannot create tracker")
 	}
@@ -181,7 +180,7 @@ func (t *ServiceTracker) Track(ctx context.Context, service *configurations.Serv
 		return nil
 	}
 	// Start errors first or start working in a non-blocking way
-	err = tracker.Start(t.events)
+	err = tracker.Start(ctx, t.events)
 	if err != nil {
 		return logger.Wrapf(err, "cannot start tracker")
 	}
@@ -214,14 +213,14 @@ func (t *ServiceTracker) Untrack(service *configurations.Service) error {
 //	return tracks
 //}
 
-func CreateTracker(service *configurations.Service, runtime services.IRuntime, trackers []*runtime.Tracker) (Tracker, error) {
+func CreateTracker(ctx context.Context, service *configurations.Service, runtime services.Runtime, trackers []*runtime.Tracker) (Tracker, error) {
 	if len(trackers) == 0 {
 		return nil, nil
 	}
 	if len(trackers) == 1 {
-		return NewSingleTracker(service, runtime, trackers[0])
+		return NewSingleTracker(ctx, service, runtime, trackers[0])
 	}
-	return NewGroupTracker(service, runtime, trackers)
+	return NewGroupTracker(ctx, service, runtime, trackers)
 }
 
 func NewServiceTracker(events chan<- ServiceEvent) (*ServiceTracker, error) {

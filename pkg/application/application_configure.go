@@ -10,11 +10,11 @@ import (
 )
 
 func (app *Application) Configure(ctx context.Context) error {
-	logger := shared.NewLogger("applications.Configure<%s>", app.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.Configure<%s>", app.Configuration.Name)
 	if app.IsConfigured {
 		return nil
 	}
-	env, err := NewEnvironment(app.Configuration.Name)
+	env, err := NewEnvironment(ctx, app.Configuration.Name)
 	if err != nil {
 		return logger.Wrapf(err, "cannot create environment")
 	}
@@ -30,10 +30,10 @@ func (app *Application) Configure(ctx context.Context) error {
 }
 
 func (app *Application) ConfigureService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.NewLogger("applications.ConfigureService<%s::%s[%s]>", app.Configuration.Name, instance.Configuration.Name, instance.Configuration.Agent.Identifier)
+	logger := shared.GetLogger(ctx).With("applications.ConfigureService<%s::%s[%s]>", app.Configuration.Name, instance.Configuration.Name, instance.Configuration.Agent.Identifier)
 	logger.Debugf("configuring instance")
 
-	configure, err := instance.Configure(&runtimev1.ConfigureRequest{})
+	configure, err := instance.Configure(ctx, &runtimev1.ConfigureRequest{})
 	if err != nil {
 		return logger.Wrapf(err, "something dramatic has happened")
 	}
@@ -44,7 +44,7 @@ func (app *Application) ConfigureService(ctx context.Context, instance *services
 	instance.Ready = true
 
 	logger.Tracef("configure response: %v", configure)
-	err = app.Environment.AddNetworkMappings(instance, configure.NetworkMappings)
+	err = app.Environment.AddNetworkMappings(ctx, instance, configure.NetworkMappings)
 	if err != nil {
 		return logger.Wrapf(err, "cannot add network mappings")
 	}

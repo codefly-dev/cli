@@ -43,7 +43,7 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 }
 
 func (server *CodeflyServer) Start(ctx context.Context) error {
-	logger := shared.NewLogger("CodeflyServer.Start")
+	logger := shared.GetLogger(ctx).With("CodeflyServer.Start")
 	golor.Println(`#(blue)[Starting server...]`)
 	go func() {
 		err := server.rest.Run(ctx)

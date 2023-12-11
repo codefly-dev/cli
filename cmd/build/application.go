@@ -1,8 +1,6 @@
 package build
 
 import (
-	"context"
-
 	"github.com/codefly-dev/core/agents"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -18,17 +16,17 @@ var ApplicationCmd = &cobra.Command{
 	Use:   "application",
 	Short: "Build an application",
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
-		config := common.ApplicationConfiguration(current)
-		project := common.ProjectConfiguration(current)
+		ctx := shared.NewContext()
+		config := common.Application(ctx)
+		project := common.Project(ctx)
 
 		golor.Println(`#(blue,bold)[Building applications]: #(italic,white)[{{ .Name }}]`, config)
 		configurations.SetMode(configurations.ModeApplication)
 
-		app, err := application.Load(project, config, application.FactoryMode)
+		app, err := application.Load(ctx, project, config, application.FactoryMode)
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
-		err = app.FactoryInit()
+		err = app.FactoryInit(ctx)
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
 		err = app.Build(ctx)

@@ -1,24 +1,19 @@
 package management
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path"
 	"time"
 
 	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
 
-	"github.com/codefly-dev/core/configurations"
 	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
 	"github.com/codefly-dev/core/shared"
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "modernc.org/sqlite"
 )
 
@@ -42,32 +37,32 @@ func (storage *Sqlite) flushLogsPeriodically() {
 	for {
 		select {
 		case <-ticker.C:
-			storage.flushLogs()
+			storage.flushLogs(context.Background())
 		case <-storage.flushChannel:
 			return
 		}
 	}
 }
 
-func (storage *Sqlite) flushLogs() error {
+func (storage *Sqlite) flushLogs(ctx context.Context) error {
 	if len(storage.logBuffer) == 0 {
 		return nil
 	}
-	err := insertLogs(storage.db, storage.session.Uuid, storage.logBuffer)
+	err := insertLogs(ctx, storage.db, storage.session.Uuid, storage.logBuffer)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (storage *Sqlite) Close() {
-	storage.flushLogs()
+func (storage *Sqlite) Close(ctx context.Context) {
+	storage.flushLogs(ctx)
 	storage.clean(storage.db)
 }
 
-func (storage *Sqlite) StartSession(session *basev1.Session) error {
+func (storage *Sqlite) StartSession(ctx context.Context, session *basev1.Session) error {
 	storage.session = session
-	err := storage.initSession(session)
+	err := storage.initSession(ctx, session)
 	if err != nil {
 		return err
 	}
@@ -78,69 +73,70 @@ func (storage *Sqlite) StartSession(session *basev1.Session) error {
 type Clean func()
 
 func NewSqliteStorage() (Storage, error) {
-	logger := shared.NewLogger("development.SqliteInit")
-	ws, err := configurations.Current()
-	if err != nil {
-		return nil, err
-	}
-	dbFile := path.Join(ws.Dir(), "sessions.db")
-	// Check if the file exists. If not, create it.
-	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
-		file, err := os.Create(dbFile)
-		if err != nil {
-			return nil, logger.Wrapf(err, "cannot create database file")
-		}
-		file.Close()
-	}
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?cache=shared&_fk=1", dbFile))
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot open database")
-	}
-
-	driver, err := sqlite.WithInstance(db, &sqlite.Config{})
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot create driver")
-	}
-
-	d, err := iofs.New(migrations, "db")
-
-	m, err := migrate.NewWithInstance(
-		"iofs",
-		d,
-		"sqlite3",
-		driver,
-	)
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot create migration")
-	}
-
-	// Apply migrations
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return nil, logger.Wrapf(err, "Failed to apply migrations")
-	}
-
-	return &Sqlite{db: db, clean: func(db *sql.DB) { db.Close() }}, nil
+	//logger := shared.GetLogger(ctx).With("development.SqliteInit")
+	//ws, err := configurations.Current()
+	//if err != nil {
+	//	return nil, err
+	//}
+	//dbFile := path.Join(ws.Dir(), "sessions.db")
+	//// Check if the file exists. If not, create it.
+	//if _, err := os.Stat(dbFile); os.IsNotExist(err) {
+	//	file, err := os.Create(dbFile)
+	//	if err != nil {
+	//		return nil, logger.Wrapf(err, "cannot create database file")
+	//	}
+	//	file.Close()
+	//}
+	//db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?cache=shared&_fk=1", dbFile))
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot open database")
+	//}
+	//
+	//driver, err := sqlite.WithInstance(db, &sqlite.Config{})
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot create driver")
+	//}
+	//
+	//d, err := iofs.New(migrations, "db")
+	//
+	//m, err := migrate.NewWithInstance(
+	//	"iofs",
+	//	d,
+	//	"sqlite3",
+	//	driver,
+	//)
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot create migration")
+	//}
+	//
+	//// Apply migrations
+	//if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+	//	return nil, logger.Wrapf(err, "Failed to apply migrations")
+	//}
+	//
+	//return &Sqlite{db: db, clean: func(db *sql.DB) { db.Close() }}, nil
+	return nil, nil
 }
 
-func (storage *Sqlite) initSession(session *basev1.Session) error {
+func (storage *Sqlite) initSession(ctx context.Context, session *basev1.Session) error {
 	switch session.Session.(type) {
 	case *basev1.Session_Partial:
-		return storage.initPartialSession(session)
+		return storage.initPartialSession(ctx, session)
 	default:
 		return errors.New("TBI")
 	}
 }
 
-func (storage *Sqlite) initPartialSession(session *basev1.Session) error {
-	logger := shared.NewLogger("development.initPartialSession")
+func (storage *Sqlite) initPartialSession(ctx context.Context, session *basev1.Session) error {
+	logger := shared.GetLogger(ctx).With("development.initPartialSession")
 
 	fmt.Println("PROJECT ID", session.GetPartial().Project.Uuid)
-	err := storage.addProjectSnapshot(session.GetPartial().Project)
+	err := storage.addProjectSnapshot(ctx, session.GetPartial().Project)
 	if err != nil {
 		return logger.Wrapf(err, "cannot add project snapshot")
 	}
 	fmt.Println("PARTIAL ID", session.GetPartial().Uuid)
-	err = storage.addPartialSnapshot(session.GetPartial())
+	err = storage.addPartialSnapshot(ctx, session.GetPartial())
 	if err != nil {
 		return logger.Wrapf(err, "cannot add partial snapshot")
 	}
@@ -162,8 +158,8 @@ func (storage *Sqlite) initPartialSession(session *basev1.Session) error {
 	return nil
 }
 
-func (storage *Sqlite) addProjectSnapshot(project *basev1.ProjectSnapshot) error {
-	logger := shared.NewLogger("development.SqliteAddProjectSnapshot")
+func (storage *Sqlite) addProjectSnapshot(ctx context.Context, project *basev1.ProjectSnapshot) error {
+	logger := shared.GetLogger(ctx).With("development.SqliteAddProjectSnapshot")
 	_, err := storage.db.Exec("INSERT INTO project_snapshot (id, name) VALUES (?, ?)", project.Uuid, project.Name)
 	if err != nil {
 		return logger.Wrapf(err, "cannot add project snapshot")
@@ -172,8 +168,8 @@ func (storage *Sqlite) addProjectSnapshot(project *basev1.ProjectSnapshot) error
 	return nil
 }
 
-func (storage *Sqlite) addPartialSnapshot(partial *basev1.PartialSnapshot) error {
-	logger := shared.NewLogger("development.SqliteAddPartialSnapshot")
+func (storage *Sqlite) addPartialSnapshot(ctx context.Context, partial *basev1.PartialSnapshot) error {
+	logger := shared.GetLogger(ctx).With("development.SqliteAddPartialSnapshot")
 
 	stmt, err := storage.db.Prepare(`INSERT INTO partial_snapshot (id, name, project_id) VALUES (?, ?, ?)`)
 	if err != nil {
@@ -190,7 +186,7 @@ func (storage *Sqlite) addPartialSnapshot(partial *basev1.PartialSnapshot) error
 	return nil
 }
 
-func insertLogs(db *sql.DB, sessionID string, logs []*agentsv1.Log) error {
+func insertLogs(ctx context.Context, db *sql.DB, sessionID string, logs []*agentsv1.Log) error {
 	// Start a transaction
 	tx, err := db.Begin()
 	if err != nil {

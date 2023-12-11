@@ -1,6 +1,7 @@
 package application
 
 import (
+	"context"
 	"time"
 
 	"github.com/codefly-dev/core/agents/services"
@@ -13,10 +14,10 @@ import (
 	"github.com/codefly-dev/golor"
 )
 
-func (app *Application) Update() error {
-	logger := shared.NewLogger("applications.Update<%s>", app.Configuration.Name)
+func (app *Application) Update(ctx context.Context) error {
+	logger := shared.GetLogger(ctx).With("applications.Update<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
-		err := app.UpdateService(service)
+		err := app.UpdateService(ctx, service)
 		if err != nil {
 			return logger.Wrapf(err, "cannot build service <%s>", service.Configuration.Name)
 		}
@@ -24,17 +25,17 @@ func (app *Application) Update() error {
 	return nil
 }
 
-func (app *Application) UpdateService(service *services2.Instance) error {
-	logger := shared.NewLogger("applications.UpdateService<%s>", service.Configuration.Name)
+func (app *Application) UpdateService(ctx context.Context, service *services2.Instance) error {
+	logger := shared.GetLogger(ctx).With("applications.UpdateService<%s>", service.Configuration.Name)
 	golor.Println(`#(bold,cyan)[Updating {{.Name}}]`, service.Configuration)
 	s := spinner.New(spinner.CharSets[9], 100*time.Millisecond) // Build our new spinner
 	s.Start()
 	var err error
-	service.Factory, err = services.LoadFactory(service.Configuration)
+	service.Factory, err = services.LoadFactory(ctx, service.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot load factory")
 	}
-	_, err = service.Update(&factoryv1.UpdateRequest{})
+	_, err = service.Update(ctx, &factoryv1.UpdateRequest{})
 	if err != nil {
 		return logger.Wrapf(err, "cannot update")
 	}

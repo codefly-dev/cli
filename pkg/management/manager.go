@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"fmt"
 
 	managementv1 "github.com/codefly-dev/cli/proto/v1/go/management"
@@ -29,52 +30,53 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Load() (*Workspace, error) {
-	logger := shared.NewLogger("management.Load")
-	w := Workspace{}
-	project, err := configurations.CurrentProject()
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot list projects")
-	}
-	w.View, err = m.LoadProject(project)
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot load project")
-	}
-	w.AgentUsages = m.agent.Usage()
-	return &w, nil
+	//logger := shared.GetLogger(ctx).With("management.Load")
+	//w := Workspace{}
+	//project, err := configurations.CurrentProject()
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot list projects")
+	//}
+	//w.View, err = m.LoadProject(project)
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot load project")
+	//}
+	//w.AgentUsages = m.agent.Usage()
+	//return &w, nil
+	return nil, nil
 }
 
-func (m *Manager) LoadProject(project *configurations.Project) (*managementv1.ProjectView, error) {
-	logger := shared.NewLogger("management.LoadProject")
+func (m *Manager) LoadProject(ctx context.Context, project *configurations.Project) (*managementv1.ProjectView, error) {
+	//logger := shared.GetLogger(ctx).With("management.LoadProject")
 	var apps []*managementv1.ApplicationView
-	for _, a := range project.Applications {
-		config, err := configurations.LoadApplicationFromName(a.Name, configurations.WithProject(project))
-		if err != nil {
-			return nil, logger.Wrapf(err, "cannot load applications: %s", a.Name)
-		}
-		app, err := m.LoadApplication(config, project, application.FactoryMode)
-		if err != nil {
-			return nil, logger.Wrapf(err, "cannot create applications: %s", config.Name)
-		}
-		apps = append(apps, app)
-	}
+	//for _, a := range project.Applications {
+	//	config, err := configurations.LoadApplicationFromName(a.Name, configurations.WithProject(project))
+	//	if err != nil {
+	//		return nil, logger.Wrapf(err, "cannot load applications: %s", a.Name)
+	//	}
+	//	app, err := m.LoadApplication(ctx, config, project, application.FactoryMode)
+	//	if err != nil {
+	//		return nil, logger.Wrapf(err, "cannot create applications: %s", config.Name)
+	//	}
+	//	apps = append(apps, app)
+	//}
 	return &managementv1.ProjectView{
 		Name:         project.Name,
 		Applications: apps,
 	}, nil
 }
 
-func (m *Manager) LoadApplication(config *configurations.Application, project *configurations.Project, mode application.Mode) (*managementv1.ApplicationView, error) {
-	logger := shared.NewLogger("management.LoadApplication")
-	application.ShowEndpointManagerState()
+func (m *Manager) LoadApplication(ctx context.Context, config *configurations.Application, project *configurations.Project, mode application.Mode) (*managementv1.ApplicationView, error) {
+	logger := shared.GetLogger(ctx).With("management.LoadApplication")
+	application.ShowEndpointManagerState(ctx)
 	var services []*managementv1.ServiceView
 	// Much easier to load it
-	app, err := application.Load(project, config, mode)
+	app, err := application.Load(ctx, project, config, mode)
 	if err != nil {
 		return nil, err
 	}
 	m.apps[app.Configuration.Name] = app
 	for _, service := range app.Plan.Services {
-		service, err := m.LoadService(app, service.Configuration)
+		service, err := m.LoadService(ctx, app, service.Configuration)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot create service: %s", config.Name)
 		}
@@ -86,10 +88,10 @@ func (m *Manager) LoadApplication(config *configurations.Application, project *c
 	}, nil
 }
 
-func (m *Manager) LoadService(app *application.Application, service *configurations.Service) (*managementv1.ServiceView, error) {
-	logger := shared.NewLogger("management.LoadServiceConfiguration<%s>", service.Name)
+func (m *Manager) LoadService(ctx context.Context, app *application.Application, service *configurations.Service) (*managementv1.ServiceView, error) {
+	logger := shared.GetLogger(ctx).With("management.LoadServiceConfiguration<%s>", service.Name)
 	var views []*managementv1.EndpointView
-	es, err := application.GetEndpoints(service)
+	es, err := application.GetEndpoints(ctx, service)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot get endpoints")
 	}

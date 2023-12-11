@@ -37,11 +37,11 @@ func (m override) View() string {
 	if m.confirmed {
 		return "You chose to override the file.\n"
 	}
-	return golor.Sprintf("#(bold,green)[Service already found]. Override it? [y/n]: ")
+	return golor.Sprintf("#(bold,green)[Service already found]. Replace it? [y/n]: ")
 }
 
 func Override() (bool, error) {
-	if shared.Override() {
+	if shared.GlobalOverride() {
 		return true, nil
 	}
 	p := tea.NewProgram(override{})

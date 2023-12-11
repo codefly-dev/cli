@@ -4,7 +4,7 @@ import (
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/cmd/context"
+	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/shared"
 
 	"github.com/spf13/cobra"
@@ -16,7 +16,7 @@ var RootCmd = &cobra.Command{
 	Short: "🪄Codefly is magic",
 	Run: func(cmd *cobra.Command, args []string) {
 		common.Logo()
-		context.ShowCurrent()
+		//context.ShowCurrent()
 	},
 }
 
@@ -24,21 +24,29 @@ var RootCmd = &cobra.Command{
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	_ = RootCmd.ParseFlags(os.Args)
-	shared.SetDebug(debug)
-	shared.SetTrace(trace)
+	if debug {
+		shared.SetLogLevel(shared.Debug)
+	}
+	if trace {
+		shared.SetLogLevel(shared.Trace)
+	}
 	shared.SetTodo(todo)
 	shared.SetOverride(override)
+
+	if tracker != "" {
+		actions.InitActionTracker(tracker)
+	}
 
 	shared.ExitOnError(RootCmd.Execute(), "cannot execute command")
 }
 
 // Origin of the World
 var (
-	root     string
 	debug    bool
 	todo     bool
 	trace    bool
 	override bool
+	tracker  string
 )
 
 func init() {
@@ -85,10 +93,13 @@ func init() {
 	// Agents
 	RootCmd.AddCommand(AgentCmd)
 
-	RootCmd.PersistentFlags().StringVar(&root, "root", "", "NewDir directory of the project")
+	// Replay
+	RootCmd.AddCommand(ReplayCmd)
+
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
 	RootCmd.PersistentFlags().BoolVar(&todo, "todo", false, "Print TODOs")
-	RootCmd.PersistentFlags().BoolVar(&override, "override", false, "Override all")
+	RootCmd.PersistentFlags().BoolVar(&override, "override", false, "Replace all")
+	RootCmd.PersistentFlags().StringVar(&tracker, "track", "", "Tracker of actions -- advanced usage")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }

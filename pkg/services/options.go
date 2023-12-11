@@ -50,7 +50,7 @@ package services
 //		}
 //		return selected, nil
 //	default:
-//		prompt := &survey.Input{
+//		prompt := &survey.Default{
 //			Message: opt.Description,
 //			Default: fmt.Sprintf("%v", opt.Default),
 //		}
@@ -143,7 +143,7 @@ package services
 //}
 //
 //func ConvertToOption(opt *basev1.Option) (interface{}, error) {
-//	logger := shared.NewLogger("agents.ConvertToOption")
+//	logger := shared.GetBaseLogger(ctx).With("agents.ConvertToOption")
 //	if stringValue := opt.Default.GetStrValue(); stringValue != "" {
 //		return &Option[string]{
 //			Name:        opt.Name,

@@ -1,27 +1,31 @@
 package imports
 
-import "github.com/codefly-dev/core/shared"
+import (
+	"context"
+
+	"github.com/codefly-dev/core/shared"
+)
 
 type SourceImporter interface {
-	Analyze() (*Recommendation, error)
+	Analyze(ctx context.Context) (*Recommendation, error)
 }
 
 type LocalSourceImporter struct {
 	dir string
 }
 
-func (l *LocalSourceImporter) Analyze() (*Recommendation, error) {
-	logger := shared.NewLogger("import.LocalSourceImporter.Analyze")
-	recommendations, err := Analyze(l.dir)
+func (l *LocalSourceImporter) Analyze(ctx context.Context) (*Recommendation, error) {
+	logger := shared.GetLogger(ctx).With("import.LocalSourceImporter.Analyze")
+	recommendations, err := Analyze(ctx, l.dir)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot analyze directory")
 	}
 	return recommendations, nil
 }
 
-func (l *LocalSourceImporter) Import(target string) error {
-	logger := shared.NewLogger("import.LocalSourceImporter.Import")
-	err := shared.CopyDirectory(l.dir, target)
+func (l *LocalSourceImporter) Import(ctx context.Context, target string) error {
+	logger := shared.GetLogger(ctx).With("import.LocalSourceImporter.Import")
+	err := shared.CopyDirectory(ctx, l.dir, target)
 	if err != nil {
 		return logger.Wrapf(err, "cannot copy directory")
 	}

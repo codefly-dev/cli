@@ -8,7 +8,7 @@ package ops
 //		return fmt.Errorf("cannot load units: %w", err)
 //	}
 //	for _, u := range us {
-//		input, err := app.Input(u.Configuration, units.ContainerizationMode)
+//		input, err := app.Default(u.Configuration, units.ContainerizationMode)
 //		_, err = u.Unit.Expose(input)
 //		if err != nil {
 //			return fmt.Errorf("cannot configure unit [%s]: %w", u.Configuration.Name, err)

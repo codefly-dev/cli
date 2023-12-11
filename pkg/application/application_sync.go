@@ -11,7 +11,7 @@ import (
 )
 
 func (app *Application) Sync(ctx context.Context) error {
-	logger := shared.NewLogger("applications.Sync<%s>", app.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.Sync<%s>", app.Configuration.Name)
 	logger.Debugf("current")
 	for _, service := range app.Plan.Services {
 		err := app.SyncService(ctx, service)
@@ -23,20 +23,20 @@ func (app *Application) Sync(ctx context.Context) error {
 }
 
 func (app *Application) SyncService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.NewLogger("applications.SyncService<%s>", instance.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.SyncService<%s>", instance.Configuration.Name)
 	if instance.Runtime == nil {
 		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}
 	logger.Debugf("syncing")
 
-	group, err := GetEndpointDependencyGroup(instance.Configuration)
+	group, err := GetEndpointDependencyGroup(ctx, instance.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot get application group endpoints")
 	}
 
 	logger.Debugf("dependency group: %v", endpoints.CondensedOutput(group))
 
-	sync, err := instance.Sync(&factoryv1.SyncRequest{DependencyEndpointGroup: group})
+	sync, err := instance.Sync(ctx, &factoryv1.SyncRequest{DependencyEndpointGroup: group})
 	if err != nil {
 		return logger.Wrapf(err, "cannot sync runtime")
 	}

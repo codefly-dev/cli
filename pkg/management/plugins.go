@@ -51,7 +51,7 @@ func NewAgentsManager() *AgentsManager {
 }
 
 func (m *AgentsManager) AddAgent(app *configurations.Application, service *configurations.Service) {
-	base := fmt.Sprintf("%s/%s", service.Agent.Publisher, service.Agent.Identifier)
+	base := fmt.Sprintf("%s/%s", service.Agent.Publisher, service.Agent.Identifier())
 	if _, ok := m.bases[base]; !ok {
 		m.bases[base] = NewAgentManager()
 	}

@@ -25,25 +25,25 @@ var ApplicationCmd = &cobra.Command{
 	Use:   "application",
 	Short: "Run an application",
 	Run: func(cmd *cobra.Command, args []string) {
-
-		project := common.ProjectConfiguration(current)
+		ctx := shared.NewContext()
+		project := common.Project(ctx)
 
 		var app *configurations.Application
-		var err error
+		//	var err error
 		// Optional application argument
-		if len(args) > 0 {
-			name := args[0]
-			app, err = configurations.LoadApplicationFromName(name, configurations.WithProject(project))
-			shared.ExitOnError(err, "cannot load application <%s>", name)
-		} else {
-			app = common.ApplicationConfiguration(current)
-		}
-		run(project, app)
+		//if len(args) > 0 {
+		//	name := args[0]
+		//	app, err = configurations.LoadApplicationFromName(name, configurations.WithProject(project))
+		//	shared.ExitOnError(err, "cannot load application <%s>", name)
+		//} else {
+		//	app = common.ApplicationConfiguration(current)
+		//}
+		run(ctx, project, app)
 	},
 }
 
-func run(project *configurations.Project, config *configurations.Application) {
-	logger := shared.NewLogger("run.ApplicationCmd")
+func run(ctx context.Context, project *configurations.Project, config *configurations.Application) {
+	logger := shared.GetLogger(ctx).With("run.ApplicationCmd")
 
 	// Create a context that is cancelled on os.Interrupt or os.Kill
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
@@ -53,7 +53,7 @@ func run(project *configurations.Project, config *configurations.Application) {
 	errs := make(chan error, 1) // Buffered channel
 
 	configurations.SetMode(configurations.ModeApplication)
-	app, err := application.Load(project, config, application.RuntimeMode)
+	app, err := application.Load(ctx, project, config, application.RuntimeMode)
 	shared.ExitOnError(err, "<%s>", config.Name)
 
 	// Web server interface to codefly
@@ -94,8 +94,8 @@ loop:
 		select {
 		case err := <-errs:
 			if err != nil {
-				if outputError, ok := shared.IsOutputError(err); ok {
-					fmt.Printf("Got output error:\n %v\n", outputError)
+				if ok, err := shared.IsOutputError(err); ok {
+					fmt.Printf("Got output error:\n %v\n", err)
 					continue
 				}
 				fmt.Printf("Got applications run error: %v\n", err)
