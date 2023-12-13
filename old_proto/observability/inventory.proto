@@ -1,0 +1,49 @@
+syntax = "proto3";
+package v1.observability;
+
+import "base/endpoints.proto";
+
+
+message ProjectView {
+  string name = 1;
+  repeated ApplicationView applications = 3;
+}
+
+message ProjectInformationRequest {
+}
+
+message ProjectInformationResponse {
+  ProjectView project = 1;
+}
+
+message ApplicationView {
+  string application = 1;
+  repeated ServiceView services = 2;
+}
+
+message ApplicationInformationRequest {
+  string application = 2;
+}
+
+message ApplicationInformationResponse {
+  ApplicationView application = 1;
+}
+
+message ServiceView {
+  string service = 1;
+  repeated EndpointView endpoints = 2;
+}
+
+message EndpointView {
+  v1.base.Endpoint endpoint = 1;
+}
+
+
+message ServiceInformationRequest {
+  string application = 1;
+  string service = 2;
+}
+
+
+message ServiceInformationResponse {
+}

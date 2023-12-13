@@ -3,7 +3,7 @@ package delete
 import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/cli/prompts"
+	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
@@ -30,7 +30,7 @@ func deleteProject(name string) {
 		cli.Error("Project <{{.}}> does not exist in workspace", name)
 		return
 	}
-	confirm := prompts.Confirm(golor.Sprintf("Delete the project <{{.}}>?", name), false)
+	confirm := models.Confirm(golor.Sprintf("Delete the project <{{.}}>?", name), false)
 	if confirm {
 		err := w.DeleteProject(ctx, name)
 		shared.UnexpectedExitOnError(err, "cannot delete project")

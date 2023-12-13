@@ -7,13 +7,9 @@ import (
 	"os/signal"
 	"sync"
 
-	"github.com/codefly-dev/core/agents"
-	"github.com/codefly-dev/core/overview"
-
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/cli/pkg/management"
-	"github.com/codefly-dev/cli/pkg/web"
+	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
@@ -55,25 +51,6 @@ func run(ctx context.Context, project *configurations.Project, config *configura
 	configurations.SetMode(configurations.ModeApplication)
 	app, err := application.Load(ctx, project, config, application.RuntimeMode)
 	shared.ExitOnError(err, "<%s>", config.Name)
-
-	// Web server interface to codefly
-	if server {
-		waitOnServer.Add(1)
-		go func() {
-			defer waitOnServer.Done()
-
-			m := management.NewManager()
-			workspace, err := m.Load()
-			shared.ExitOnError(err, "cannot load management")
-
-			dependencyGraph, err := overview.NewDependencyGraph(project)
-			shared.ExitOnError(err, "cannot load management")
-
-			w, err := web.NewServer(web.ServerData{Workspace: workspace, DependencyGraph: dependencyGraph})
-			shared.ExitOnError(err, "cannot create applications server")
-			errs <- w.Start(ctx)
-		}()
-	}
 
 	if initOnly {
 		golor.Println(`Press #(italic,white)[Ctrl+C] to exit`)

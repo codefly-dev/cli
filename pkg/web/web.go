@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 
-	"github.com/codefly-dev/cli/pkg/management"
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
 	"github.com/codefly-dev/core/overview"
 	"github.com/codefly-dev/core/shared"
@@ -17,7 +16,7 @@ type CodeflyServer struct {
 }
 
 type ServerData struct {
-	*management.Workspace
+	*observability.Workspace
 	*overview.DependencyGraph
 }
 

@@ -4,7 +4,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/display"
-	"github.com/codefly-dev/cli/pkg/cli/prompts"
+	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
@@ -33,7 +33,7 @@ func deleteApplication(name string) {
 			display.New().WithProject(project))
 		return
 	}
-	confirm := prompts.Confirm(golor.Sprintf("Do you want to delete the application <{{.Project.Name}} in project <{{.other.application}}>?",
+	confirm := models.Confirm(golor.Sprintf("Do you want to delete the application <{{.Project.Name}} in project <{{.other.application}}>?",
 		display.New().WithProject(project).With("application", name)), false)
 	if confirm {
 	}

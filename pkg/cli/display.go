@@ -8,6 +8,9 @@ import (
 )
 
 func Header(level int, s string, templates ...any) {
+	if len(s) == 0 {
+		return
+	}
 	switch level {
 	case 1:
 		// Render a block of text.

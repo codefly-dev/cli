@@ -1,0 +1,42 @@
+syntax = "proto3";
+package v1.observability;
+
+import "observability/inventory.proto";
+import "observability/dependencies.proto";
+import "observability/logs.proto";
+
+import "google/protobuf/empty.proto";
+import "google/api/annotations.proto";
+
+import "base/endpoints.proto";
+import "agents/logs.proto";
+import "google/protobuf/timestamp.proto";
+
+
+service Web {
+
+  rpc GetProjectInformation(ProjectInformationRequest) returns (ProjectInformationResponse) {
+    option (google.api.http) = {
+      get: "/project/information"
+    };
+  }
+
+  rpc GetDependencyGraph(DependencyGraphRequest) returns (GraphResponse) {
+    option (google.api.http) = {
+      get: "/project/dependency-graph"
+    };
+  }
+
+  rpc Logs(google.protobuf.Empty)  returns (stream v1.agents.logs.Log) {
+    option (google.api.http) = {
+      get: "/project/logs"
+    };
+  }
+
+  rpc LogHistory(LogRequest) returns (LogResponse) {
+    option (google.api.http) = {
+      get: "/project/logs/history"
+    };
+  }
+
+}

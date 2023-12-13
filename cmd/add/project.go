@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/cli/prompts"
+	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/actions/actions"
 	actionsproject "github.com/codefly-dev/core/actions/project"
 	"github.com/codefly-dev/core/configurations"
@@ -42,10 +42,10 @@ func addProject(name string) {
 	}
 
 	// Asks for Description
-	addDescription := prompts.Confirm("Do you want to add a short description?", false)
+	addDescription := models.Confirm("Do you want to add a short description?", false)
 	var desc string
 	if addDescription {
-		desc = prompts.Input("Description", "Make some magic 🪄")
+		desc = models.Input("Description", "Make some magic 🪄")
 	}
 	action, err := actionsproject.NewActionAddProject(ctx, &actionsproject.AddProject{
 		InWorkspace: workspace.Name,

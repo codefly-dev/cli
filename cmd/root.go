@@ -53,6 +53,9 @@ func init() {
 	// Auto-completion
 	RootCmd.AddCommand(CompletionCmd)
 
+	// Server
+	RootCmd.AddCommand(ServerCmd)
+
 	// Version
 	RootCmd.AddCommand(VersionCmd)
 

@@ -5,11 +5,7 @@ import (
 
 	"github.com/codefly-dev/core/agents/services"
 
-	"github.com/codefly-dev/core/agents/communicate"
-
-	cli "github.com/codefly-dev/cli/pkg/cli/prompts/communicate"
 	"github.com/codefly-dev/core/configurations"
-	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
 	servicev1 "github.com/codefly-dev/core/proto/v1/go/services"
 	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
 	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
@@ -39,9 +35,6 @@ type Instance struct {
 	ReplicaOf   *configurations.Service
 	Quiet       bool
 	Persistence bool
-
-	// Communication helper
-	CommunicationServerManager *communicate.ServerManager
 }
 
 type Mode string
@@ -130,15 +123,7 @@ func (s *Instance) SoloFactoryInit(ctx context.Context) error {
 }
 
 func (s *Instance) FactoryInit(ctx context.Context, r *servicev1.InitRequest) (*factoryv1.InitResponse, error) {
-	resp, err := s.Factory.Init(ctx, r)
-	if err != nil {
-		return nil, s.Logger.Wrapf(err, "cannot init factory")
-	}
-	err = s.CommunicationServerManager.Register(resp.Channels...)
-	if err != nil {
-		return nil, s.Logger.Wrapf(err, "cannot register channels")
-	}
-	return resp, nil
+	return nil, nil
 }
 
 func (s *Instance) Update(ctx context.Context, r *factoryv1.UpdateRequest) (*factoryv1.UpdateResponse, error) {
@@ -146,94 +131,12 @@ func (s *Instance) Update(ctx context.Context, r *factoryv1.UpdateRequest) (*fac
 }
 
 func (s *Instance) Create(ctx context.Context, r *factoryv1.CreateRequest) (*factoryv1.CreateResponse, error) {
-	if server, ok := s.CommunicationServerManager.RequiresCommunication(r); ok {
-		handler := &cli.CliHandler{}
-		s.Logger.Debugf("starting CREATE communication to fetch the information for the agent")
-		var answer *agentsv1.Answer
+	return nil, nil
 
-		// Send a first message
-		first, err := s.Factory.Create(ctx, r)
-		if err != nil {
-			return nil, s.Logger.Wrapf(err, "cannot sync")
-		}
-		if !first.NeedCommunication {
-			return first, nil
-		}
-		s.Logger.Debugf("we need some communication!")
-
-		for {
-			s.Logger.Debugf("answer: %v", answer)
-			eng, err := server.Communicate(answer)
-			if err != nil {
-				return nil, s.Logger.Wrapf(err, "cannot communicate CREATE from server")
-			}
-
-			s.Logger.Debugf("engagement: %v", eng)
-			req, err := s.Factory.Communicate(ctx, eng)
-			if err != nil {
-				return nil, s.Logger.Wrapf(err, "cannot communicate CREATE from factory")
-			}
-			s.Logger.Debugf("information request by client: %v", req)
-
-			if req.Done {
-				s.Logger.Debugf("client is done")
-				break
-			}
-
-			answer, err = handler.Process(ctx, req)
-			if err != nil {
-				return nil, s.Logger.Wrapf(err, "cannot process")
-			}
-		}
-	} else {
-		s.Logger.Debugf("no communication required")
-	}
-	return s.Factory.Create(ctx, r)
 }
 
 func (s *Instance) Sync(ctx context.Context, r *factoryv1.SyncRequest) (*factoryv1.SyncResponse, error) {
-	if server, ok := s.CommunicationServerManager.RequiresCommunication(r); ok {
-		handler := &cli.CliHandler{}
-		s.Logger.Debugf("starting SYNC communication to fetch the information for the agent")
-		var answer *agentsv1.Answer
-
-		// Send a first message
-		first, err := s.Factory.Sync(ctx, r)
-		if err != nil {
-			return nil, s.Logger.Wrapf(err, "cannot sync")
-		}
-		if !first.NeedCommunication {
-			return first, nil
-		}
-		s.Logger.Debugf("we need some communication!")
-
-		for {
-			s.Logger.Debugf("answer: %v", answer)
-			eng, err := server.Communicate(answer)
-			if err != nil {
-				return nil, s.Logger.Wrapf(err, "cannot communicate SYNC")
-			}
-
-			s.Logger.Debugf("engagement: %v", eng)
-			req, err := s.Factory.Communicate(ctx, eng)
-			if err != nil {
-				return nil, s.Logger.Wrapf(err, "cannot communicate")
-			}
-			s.Logger.Debugf("information request by client: %v", req)
-
-			if req.Done {
-				s.Logger.Debugf("client is done")
-				break
-			}
-
-			answer, err = handler.Process(ctx, req)
-			if err != nil {
-				return nil, s.Logger.Wrapf(err, "cannot process")
-			}
-		}
-	}
-
-	return s.Factory.Sync(ctx, r)
+	return nil, nil
 }
 
 // SoloBuild should really be used for debugging only
@@ -282,7 +185,6 @@ func (s *Instance) SoloRuntimeInit(ctx context.Context) error {
 }
 
 func (s *Instance) RuntimeInit(ctx context.Context, r *servicev1.InitRequest) (*runtimev1.InitResponse, error) {
-	logger := shared.GetLogger(ctx).With("applications.eInit<%s>", s.Unique())
 	resp, err := s.Runtime.Init(ctx, r)
 	if err != nil {
 		return nil, s.Logger.Wrapf(err, "cannot init runtime")
@@ -290,11 +192,6 @@ func (s *Instance) RuntimeInit(ctx context.Context, r *servicev1.InitRequest) (*
 	if resp.Status.State != servicev1.InitStatus_READY {
 		return nil, s.Logger.Errorf("runtime is not ready: %v", resp.Status.Message)
 
-	}
-	logger.Debugf("got channels: %v", resp.Channels)
-	err = s.CommunicationServerManager.Register(resp.Channels...)
-	if err != nil {
-		return nil, s.Logger.Wrapf(err, "cannot register channels")
 	}
 	return resp, nil
 }

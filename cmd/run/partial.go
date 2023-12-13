@@ -11,7 +11,6 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/cli/pkg/management"
 	"github.com/codefly-dev/cli/pkg/partial"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/shared"
@@ -47,14 +46,14 @@ var PartialCmd = &cobra.Command{
 		partial, err := partial.NewPartial(ctx, project, conf, application.RuntimeMode)
 		shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
 
-		session := management.NewPartialSession(conf)
-		spy, err := management.NewSpy(ctx, session)
+		session := observability.NewPartialSession(conf)
+		spy, err := observability.NewSpy(ctx, session)
 		shared.ExitOnError(err, "cannot create spy")
 		defer spy.Close()
 
 		// Web server interface to codefly
 		if server {
-			m := management.NewManager()
+			m := observability.NewManager()
 			workspace, err := m.Load()
 			shared.ExitOnError(err, "cannot load management")
 

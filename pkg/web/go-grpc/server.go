@@ -11,7 +11,6 @@ import (
 	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
 
 	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/cli/pkg/management"
 	"github.com/codefly-dev/golor"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -21,8 +20,6 @@ type Configuration struct {
 	EndpointGrpc       string
 	EndpointRest       string
 	RunningApplication *application.Application
-
-	Workspace *management.Workspace
 
 	DependencyGraph *overview.DependencyGraph
 }

@@ -3,7 +3,7 @@ package _switch
 import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/cli/prompts"
+	"github.com/codefly-dev/cli/pkg/cli/models"
 	actions "github.com/codefly-dev/core/actions/actions"
 	projectactions "github.com/codefly-dev/core/actions/project"
 	"github.com/codefly-dev/core/configurations"
@@ -31,22 +31,22 @@ func switchProject() {
 		cli.Header(2, "You have only one project")
 		return
 	}
-	active := &prompts.Entry{
+	active := &models.Entry{
 		Identifier:  project.Name,
 		Description: project.Description,
 		Current:     true,
 	}
-	entries := []*prompts.Entry{active}
+	entries := []*models.Entry{active}
 	for _, p := range all {
 		if p.Name == project.Name {
 			continue
 		}
-		entries = append(entries, &prompts.Entry{
+		entries = append(entries, &models.Entry{
 			Identifier:  p.Name,
 			Description: p.Description,
 		})
 	}
-	selected, err := prompts.Select("Make this project active", entries)
+	selected, err := models.Select("Make this project active", entries)
 	shared.UnexpectedExitOnError(err, "cannot select project")
 
 	if selected.Identifier == project.Name {

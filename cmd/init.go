@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/cli/prompts"
+	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/actions/actions"
 	actionworkspace "github.com/codefly-dev/core/actions/workspace"
 	"github.com/codefly-dev/core/configurations"
@@ -35,8 +35,8 @@ Use --override to reinitialize codefly.`)
 
 	cli.Header(2, "Let's start by creating an organization - don't worry you can change that easily later on.")
 
-	orgName := prompts.Input("Organization name", "McFly.dev")
-	orgDomain := prompts.Input("Organization domain", configurations.ToOrganizationDomain(orgName))
+	orgName := models.Input("Organization name", "McFly.dev")
+	orgDomain := models.Input("Organization domain", configurations.ToOrganizationDomain(orgName))
 
 	org := &v1base.Organization{
 		Name:   orgName,

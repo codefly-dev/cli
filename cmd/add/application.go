@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/cli/prompts"
+	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/actions/actions"
 	actionsapplication "github.com/codefly-dev/core/actions/application"
 	"github.com/codefly-dev/core/configurations"
@@ -42,17 +42,17 @@ func addApplication(name string) {
 		os.Exit(0)
 	}
 
-	confirm := prompts.Confirm(golor.Sprintf("Do you want to add an application in your project <{{.Name}}>?", project), true)
+	confirm := models.Confirm(golor.Sprintf("Do you want to add an application in your project <{{.Name}}>?", project), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		os.Exit(0)
 	}
 
 	// Asks for Description
-	addDescription := prompts.Confirm("Do you want to add a short description?", false)
+	addDescription := models.Confirm("Do you want to add a short description?", false)
 	var desc string
 	if addDescription {
-		desc = prompts.Input("Description", "Make some magic 🪄")
+		desc = models.Input("Description", "Make some magic 🪄")
 	}
 
 	action, err := actionsapplication.NewActionAddApplication(ctx, &actionsapplication.AddApplication{

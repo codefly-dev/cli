@@ -35,7 +35,7 @@ func LoadTemplate(local embed.FS, f string, obj any) (string, error) {
 //
 //func CopyTemplateFile(local embed.FS, f string, destination string, obj any) error {
 //	if _, err := os.Stat(destination); err == nil {
-//		selected := prompt.Default(
+//		selected := prompt.Options(
 //			fmt.Sprintf("Do you want to override the file %s? ", destination),
 //			func(d prompt.Document) []prompt.Suggest {
 //				return []prompt.Suggest{}

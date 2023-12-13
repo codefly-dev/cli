@@ -63,8 +63,6 @@ func (app *Application) FactoryInitService(ctx context.Context, instance *servic
 		return logger.Wrapf(err, "cannot init factory")
 	}
 
-	logger.Debugf("response: version: %v, #endpoints: %d, #channels: %d", init.Version, len(init.Endpoints), len(init.Channels))
-
 	err = app.EndpointManager.Add(ctx, instance.Configuration, init.Endpoints)
 	if err != nil {
 		return logger.Wrapf(err, "cannot add endpoints")
@@ -99,8 +97,6 @@ func (app *Application) RuntimeInitService(ctx context.Context, instance *servic
 	if init.Status.State == agents.InitError {
 		return logger.Errorf("cannot init service: %v", init.Status.Message)
 	}
-
-	logger.Tracef("init response: version: %v, #endpoints: %d, #channels: %d", init.Version, len(init.Endpoints), len(init.Channels))
 
 	err = app.EndpointManager.Add(ctx, instance.Configuration, init.Endpoints)
 	if err != nil {

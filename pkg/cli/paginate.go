@@ -42,9 +42,13 @@ func (m paginatedText) Init() tea.Cmd {
 func (m paginatedText) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+
 	case tea.KeyMsg:
+		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEnter {
+			return m, tea.Quit
+		}
 		switch msg.String() {
-		case "q", "esc", "ctrl+c":
+		case "q":
 			return m, tea.Quit
 		}
 	}
@@ -60,7 +64,7 @@ func (m paginatedText) View() string {
 		b.WriteString("  • " + item + "\n\n")
 	}
 	b.WriteString("  " + m.paginator.View())
-	b.WriteString("\n\n  h/l ←/→ page • q: quit\n")
+	b.WriteString("\n\n  h/l ←/→ page • q/Enter: done\n")
 	return b.String()
 }
 

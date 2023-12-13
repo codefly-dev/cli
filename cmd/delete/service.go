@@ -4,7 +4,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/display"
-	"github.com/codefly-dev/cli/pkg/cli/prompts"
+	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
@@ -32,7 +32,7 @@ func deleteService(name string) {
 		cli.Error("Service <{{.Other.Service}}> does not exist in application <{{.Application.Name}}>", display.New().WithProject(project).WithApplication(app).With("Service", name))
 		return
 	}
-	confirm := prompts.Confirm(golor.Sprintf("Confirm deletion of service <{{.Other.Service}}> in application <{{.Application.Name}}> in project <{{.Project.Name}}>?",
+	confirm := models.Confirm(golor.Sprintf("Confirm deletion of service <{{.Other.Service}}> in application <{{.Application.Name}}> in project <{{.Project.Name}}>?",
 		display.New().WithProject(project).WithApplication(app).With("Service", name)), false)
 	if confirm {
 		err := app.DeleteService(ctx, name)
