@@ -1,12 +1,13 @@
 package application
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/codefly-dev/core/agents/endpoints"
-	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
+	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
 
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
@@ -17,10 +18,10 @@ type EndpointHolder struct {
 	endpoint    *basev1.Endpoint
 }
 
-func (p *EndpointHolder) AccessibleFrom(app string) bool {
-	logger := shared.NewLogger("applications.EndpointHolder.AccessibleFrom<%s>", p.endpoint.Name)
-	logger.Debugf("visibility of endpoint <%s>: <%s> | access from app %v", p.endpoint.Name, p.endpoint.Scope, app)
-	if p.endpoint.Scope == "" || p.endpoint.Scope == "private" {
+func (p *EndpointHolder) AccessibleFrom(ctx context.Context, app string) bool {
+	logger := shared.GetLogger(ctx).With("applications.EndpointHolder.AccessibleFrom<%s>", p.endpoint.Name)
+	logger.Debugf("visibility of endpoint <%s>: <%s> | access from app %v", p.endpoint.Name, p.endpoint.Visibility, app)
+	if p.endpoint.Visibility == "" || p.endpoint.Visibility == "private" {
 		return p.application == app
 	}
 	return true
@@ -40,16 +41,16 @@ type ServiceEndpointManager struct {
 	endpoints   []*EndpointHolder
 }
 
-func (s *ServiceEndpointManager) Add(endpoint *basev1.Endpoint) error {
-	logger := shared.NewLogger("applications.ServiceEndpointManager.Add<%s>", s.service.Unique())
+func (s *ServiceEndpointManager) Add(ctx context.Context, endpoint *basev1.Endpoint) error {
+	logger := shared.GetLogger(ctx).With("applications.ServiceEndpointManager.Add<%s>", s.service.Unique())
 	logger.Debugf("adding endpoint: %s", endpoints.Destination(endpoint))
-	api, err := endpoints.WhichApiFromEndpoint(endpoint)
+	api, err := endpoints.WhichAPIFromEndpoint(endpoint)
 	if err != nil {
-		var nilApiError *endpoints.NilApiError
+		var nilApiError *endpoints.NilAPIError
 		if errors.As(err, &nilApiError) {
 			return logger.Wrapf(err, "got an empty api")
 		}
-		var unknownApiError *endpoints.UnknownApiError
+		var unknownApiError *endpoints.UnknownAPIError
 		if errors.As(err, &unknownApiError) {
 			return logger.Wrapf(err, "got an unknown api")
 		}
@@ -65,8 +66,8 @@ func (s *ServiceEndpointManager) Add(endpoint *basev1.Endpoint) error {
 	return nil
 }
 
-func (s *ServiceEndpointManager) Get(ref *configurations.EndpointReference) (*basev1.Endpoint, error) {
-	logger := shared.NewLogger("applications.ServiceEndpointManager.Get<%s>", s.service.Name)
+func (s *ServiceEndpointManager) Get(ctx context.Context, ref *configurations.EndpointReference) (*basev1.Endpoint, error) {
+	logger := shared.GetLogger(ctx).With("applications.ServiceEndpointManager.Get<%s>", s.service.Name)
 	for _, holder := range s.endpoints {
 		if holder.endpoint.Name == ref.Name {
 			return holder.endpoint, nil
@@ -75,13 +76,13 @@ func (s *ServiceEndpointManager) Get(ref *configurations.EndpointReference) (*ba
 	return nil, logger.Errorf("endpoint <%s> not found", ref.Name)
 }
 
-func (s *ServiceEndpointManager) ServiceGroupEndpoints(dep *configurations.ServiceDependency) (*basev1.ServiceEndpointGroup, error) {
-	logger := shared.NewLogger("applications.ServiceEndpointManager.ServiceGroupEndpoints<%s>", s.service.Name)
+func (s *ServiceEndpointManager) ServiceGroupEndpoints(ctx context.Context, dep *configurations.ServiceDependency) (*basev1.ServiceEndpointGroup, error) {
+	logger := shared.GetLogger(ctx).With("applications.ServiceEndpointManager.ServiceGroupEndpoints<%s>", s.service.Name)
 	logger.TODO("visibility")
 	var es []*basev1.Endpoint
 	for _, holder := range s.endpoints {
-		// Scope check
-		if !holder.AccessibleFrom(dep.Application) {
+		// Visibility check
+		if !holder.AccessibleFrom(ctx, dep.Application) {
 			continue
 		}
 		es = append(es, holder.endpoint)
@@ -104,16 +105,16 @@ func NewServiceEndpointManager(service *configurations.Service) *ServiceEndpoint
 }
 
 type ApplicationEndpointManager struct {
-	logger      *shared.Logger
+	logger      shared.BaseLogger
 	services    []*ServiceEndpointManager
 	application *configurations.Application
 }
 
-func (m *ApplicationEndpointManager) Get(name string, ref *configurations.EndpointReference) (*basev1.Endpoint, error) {
-	logger := shared.NewLogger("applications.ApplicationEndpointManager.Get")
+func (m *ApplicationEndpointManager) Get(ctx context.Context, name string, ref *configurations.EndpointReference) (*basev1.Endpoint, error) {
+	logger := shared.GetLogger(ctx).With("applications.ApplicationEndpointManager.Get")
 	for _, svc := range m.services {
 		if svc.service.Name == name {
-			return svc.Get(ref)
+			return svc.Get(ctx, ref)
 		}
 	}
 	return nil, logger.Errorf("service <%s> not found", name)
@@ -139,15 +140,15 @@ func (m *ApplicationEndpointManager) ServiceEndpointManager(name string) (*Servi
 	return nil, m.logger.Errorf("service <%s> not found", name)
 }
 
-func (m *ApplicationEndpointManager) Add(service *configurations.Service, endpoints []*basev1.Endpoint) error {
-	logger := shared.NewLogger("applications.ApplicationEndpointManager.Add<%s>", service.Name)
+func (m *ApplicationEndpointManager) Add(ctx context.Context, service *configurations.Service, endpoints []*basev1.Endpoint) error {
+	logger := shared.GetLogger(ctx).With("applications.ApplicationEndpointManager.Add<%s>", service.Name)
 	for _, endpoint := range endpoints {
-		logger.Debugf("adding endpoint: %s | visibility <%s>", endpoint.Name, endpoint.Scope)
+		logger.Debugf("adding endpoint: %s | visibility <%s>", endpoint.Name, endpoint.Visibility)
 		svc, err := m.GetServiceEndpointManager(service)
 		if err != nil {
 			return err
 		}
-		err = svc.Add(endpoint)
+		err = svc.Add(ctx, endpoint)
 		if err != nil {
 			return err
 		}
@@ -155,9 +156,9 @@ func (m *ApplicationEndpointManager) Add(service *configurations.Service, endpoi
 	return nil
 }
 
-func GetEndpoints(configuration *configurations.Service) ([]*basev1.Endpoint, error) {
-	logger := shared.NewLogger("applications.GetEndpointDependencyGroup<%s>", configuration.Name)
-	app, err := GetApplicationEndpointManager(configuration.Application)
+func GetEndpoints(ctx context.Context, configuration *configurations.Service) ([]*basev1.Endpoint, error) {
+	logger := shared.GetLogger(ctx).With("applications.GetEndpointDependencyGroup<%s>", configuration.Name)
+	app, err := GetApplicationEndpointManager(ctx, configuration.Application)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot get application endpoint manager")
 	}
@@ -172,18 +173,18 @@ func GetEndpoints(configuration *configurations.Service) ([]*basev1.Endpoint, er
 	return es, nil
 }
 
-func GetEndpointDependencyGroup(service *configurations.Service) (*basev1.EndpointGroup, error) {
-	logger := shared.NewLogger("applications.GetEndpointDependencyGroup<%s>", service.Name)
+func GetEndpointDependencyGroup(ctx context.Context, service *configurations.Service) (*basev1.EndpointGroup, error) {
+	logger := shared.GetLogger(ctx).With("applications.GetEndpointDependencyGroup<%s>", service.Name)
 	// We want to find the dependencies for this service
 	target := &configurations.ServiceDependency{Name: service.Name, Application: service.Application}
 	logger.Debugf("looking in the endpoint manager dependencies for %s", target)
 	var groups []*basev1.ApplicationEndpointGroup
 	for _, dep := range service.Dependencies {
-		app, err := GetApplicationEndpointManager(dep.Application)
+		app, err := GetApplicationEndpointManager(ctx, dep.Application)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot get application endpoint manager")
 		}
-		group, err := app.ApplicationGroupEndpoints(target)
+		group, err := app.ApplicationGroupEndpoints(ctx, target)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot get application group endpoints")
 		}
@@ -200,10 +201,10 @@ func GetEndpointDependencyGroup(service *configurations.Service) (*basev1.Endpoi
 	return nil, nil
 }
 
-func (m *ApplicationEndpointManager) ApplicationGroupEndpoints(dep *configurations.ServiceDependency) (*basev1.ApplicationEndpointGroup, error) {
+func (m *ApplicationEndpointManager) ApplicationGroupEndpoints(ctx context.Context, dep *configurations.ServiceDependency) (*basev1.ApplicationEndpointGroup, error) {
 	var groups []*basev1.ServiceEndpointGroup
 	for _, svc := range m.services {
-		group, err := svc.ServiceGroupEndpoints(dep)
+		group, err := svc.ServiceGroupEndpoints(ctx, dep)
 		if err != nil {
 			return nil, m.logger.Wrapf(err, "cannot get service group endpoints")
 		}
@@ -226,8 +227,8 @@ var managers []*ApplicationEndpointManager
 func init() {
 }
 
-func GetApplicationEndpointManager(name string) (*ApplicationEndpointManager, error) {
-	logger := shared.NewLogger("applications.GetApplicationEndpointManager<%s>", name)
+func GetApplicationEndpointManager(ctx context.Context, name string) (*ApplicationEndpointManager, error) {
+	logger := shared.GetLogger(ctx).With("applications.GetApplicationEndpointManager<%s>", name)
 	for _, manager := range managers {
 		if manager.application.Name == name {
 			return manager, nil
@@ -238,33 +239,34 @@ func GetApplicationEndpointManager(name string) (*ApplicationEndpointManager, er
 }
 
 func LoadApplicationEndpointManager(name string) (*ApplicationEndpointManager, error) {
-	logger := shared.NewLogger("applications.LoadApplicationEndpointManager<%s>", name)
-	config, err := configurations.LoadApplicationFromName(name)
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot load application")
-	}
-	app, err := Load(configurations.MustCurrentProject(), config, FactoryMode)
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot load application")
-	}
-	err = app.FactoryInit()
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot init application")
-	}
-	return app.EndpointManager, nil
+	//logger := shared.GetLogger(ctx).With("applications.LoadApplicationEndpointManager<%s>", name)
+	//config, err := configurations.LoadApplicationFromName(name)
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot load application")
+	//}
+	//app, err := Load(configurations.MustCurrentProject(), config, FactoryMode)
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot load application")
+	//}
+	//err = app.FactoryInit()
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot init application")
+	//}
+	//return app.EndpointManager, nil
+	return nil, nil
 }
 
-func NewApplicationEndpointManager(app *configurations.Application) *ApplicationEndpointManager {
+func NewApplicationEndpointManager(ctx context.Context, app *configurations.Application) *ApplicationEndpointManager {
 	mgr := &ApplicationEndpointManager{
 		application: app,
-		logger:      shared.NewLogger("applications.ApplicationEndpointManager<%s>", app.Name),
+		logger:      shared.GetLogger(ctx).With("applications.ApplicationEndpointManager<%s>", app.Name),
 	}
 	managers = append(managers, mgr)
 	return mgr
 }
 
-func ShowEndpointManagerState() {
-	logger := shared.NewLogger("applications.ShowEndpointManagerState")
+func ShowEndpointManagerState(ctx context.Context) {
+	logger := shared.GetLogger(ctx).With("applications.ShowEndpointManagerState")
 	var es []string
 	for _, manager := range managers {
 		es = append(es, fmt.Sprintf("- Application: %s", manager.application.Name))

@@ -1,11 +1,13 @@
 package add
 
 import (
-	"context"
 	"os"
-	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/cli/models"
+	"github.com/codefly-dev/core/actions/actions"
+	actionsapplication "github.com/codefly-dev/core/actions/application"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
@@ -18,38 +20,56 @@ var ApplicationCmd = &cobra.Command{
 	Short: "Add an application",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		_, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
-		defer stop()
-
-		if len(args) == 0 || interactive {
-			shared.Exit(`🥸Provide a name for your application as the argument.
-Interactive mode to be supported soon.`)
+		ctx := shared.NewContext()
+		logger := shared.GetLogger(ctx).With("Add application")
+		if interactive {
+			logger.Oops("Interactive mode not implemented yet")
 		}
-		project := common.ProjectConfiguration(current)
-		if project == nil {
-			shared.Exit("cannot find project")
+		if len(args) != 1 {
+			logger.Oops("You must provide a name for the application as the single argument")
 		}
-
-		name := args[0]
-		app, err := configurations.NewApplication(name)
-		if err != nil {
-			shared.ExitOnError(err, "cannot create application <%s>", name)
-		}
-
-		golor.Println(`#(blue)[Successfully created your application <{{.Name}}>!]
-#(italic,blue)[You are ready to add some services to it!]
-#(italic,white)[codefly create service <service-name> --agent=<base>]
-
-Go to the website to look for services to get started: never start from a blank page!!
-
-See #(italic,white)[codefly create service --help] for more information.
-
-#(italic,white)[You can also open your applications in your favorite IDE by running]
-codefly open
-`, app)
-		shared.UnexpectedExitOnError(project.AddApplication(app.Reference()), "cannot add application")
-		shared.UnexpectedExitOnError(project.Save(), "cannot save project")
+		addApplication(args[0])
 	},
+}
+
+func addApplication(name string) {
+	ctx := shared.NewContext()
+
+	project := common.Project(ctx)
+
+	if project.ExistsApplication(name) {
+		cli.Error("Application <{{.}}> already exists", name)
+		os.Exit(0)
+	}
+
+	confirm := models.Confirm(golor.Sprintf("Do you want to add an application in your project <{{.Name}}>?", project), true)
+	if !confirm {
+		cli.Header(2, "Received loud and clear!")
+		os.Exit(0)
+	}
+
+	// Asks for Description
+	addDescription := models.Confirm("Do you want to add a short description?", false)
+	var desc string
+	if addDescription {
+		desc = models.Input("Description", "Make some magic 🪄")
+	}
+
+	action, err := actionsapplication.NewActionAddApplication(ctx, &actionsapplication.AddApplication{
+		Name:        name,
+		Description: desc,
+		Project:     project.Name,
+	})
+	shared.UnexpectedExitOnError(err, "cannot create action")
+	out, err := actions.Run(ctx, action)
+	if err != nil {
+		shared.UnexpectedExitOnError(err, "cannot add application")
+	}
+	app, err := actions.As[configurations.Application](out)
+	if err != nil {
+		shared.UnexpectedExitOnError(err, "cannot add application")
+	}
+	cli.Header(2, "Application <{{.Name}}> added and is now active", app)
 }
 
 func init() {

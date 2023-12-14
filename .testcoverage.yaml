@@ -30,4 +30,4 @@ exclude:
   # Exclude files or packages matching their paths
   paths:
     - \.pb\.go$    # excludes all protobuf generated files
-    - ^pkg/bar     # exclude package `pkg/bar`
+    - \.pb\.go$    # excludes all protobuf generated files

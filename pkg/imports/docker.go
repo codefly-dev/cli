@@ -1,6 +1,7 @@
 package imports
 
 import (
+	"context"
 	"fmt"
 	"path"
 
@@ -10,8 +11,8 @@ import (
 	"github.com/codefly-dev/core/shared"
 )
 
-func CheckDocker(dir string) (*Recommendation, error) {
-	logger := shared.NewLogger("CheckDocker<%s>", dir)
+func CheckDocker(ctx context.Context, dir string) (*Recommendation, error) {
+	logger := shared.GetLogger(ctx).With("CheckDocker<%s>", dir)
 	file := path.Join(dir, "Dockerfile")
 	if !shared.FileExists(file) {
 		return nil, nil
@@ -21,7 +22,7 @@ func CheckDocker(dir string) (*Recommendation, error) {
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot parse Dockerfile")
 	}
-	main, err := recommendedMain(cmds)
+	main, err := recommendedMain(ctx, cmds)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot recommend bases")
 	}
@@ -29,7 +30,7 @@ func CheckDocker(dir string) (*Recommendation, error) {
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot recommend includes")
 	}
-	dependencies, err := recommendedDependencies(dir, main.Kind)
+	dependencies, err := recommendedDependencies(ctx, dir, main.Kind)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot recommend dependencies")
 	}
@@ -56,17 +57,17 @@ func NewGoBase(recs []AgentRecommendation) (*MainServiceRecommendation, error) {
 	}, nil
 }
 
-func recommendedMain(cmds []dockerfile.Command) (*MainServiceRecommendation, error) {
+func recommendedMain(ctx context.Context, cmds []dockerfile.Command) (*MainServiceRecommendation, error) {
 	for _, cmd := range cmds {
 		if cmd.Cmd == "FROM" {
-			return RecommendBaseFromDocker(cmd.Value[0])
+			return RecommendBaseFromDocker(ctx, cmd.Value[0])
 		}
 	}
 	return nil, fmt.Errorf("no FROM command found")
 }
 
-func RecommendBaseFromDocker(image string) (*MainServiceRecommendation, error) {
-	logger := shared.NewLogger("RecommendBaseFromDocker<%s>", image)
+func RecommendBaseFromDocker(ctx context.Context, image string) (*MainServiceRecommendation, error) {
+	logger := shared.GetLogger(ctx).With("RecommendBaseFromDocker<%s>", image)
 	logger.TODO("IMPLEMENT PYTHON")
 	return NewGoBase([]AgentRecommendation{
 		{Name: "codefly.ai/go:latest", Description: "Go base image", Reason: "Go is awesome"},
@@ -89,10 +90,10 @@ func includes(dir string, cmds []dockerfile.Command) ([]shared.CopyInstruction, 
 	return results, nil
 }
 
-func recommendedDependencies(dir string, kind string) ([]*configurations.Agent, error) {
+func recommendedDependencies(ctx context.Context, dir string, kind string) ([]*configurations.Agent, error) {
 	switch kind {
 	case "go":
-		return frameworks.RecommendedGoDependencies(dir)
+		return frameworks.RecommendedGoDependencies(ctx, dir)
 	default:
 		return nil, fmt.Errorf("cannot recommend dependencies for %s", kind)
 	}

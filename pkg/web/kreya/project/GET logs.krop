@@ -1,9 +1,8 @@
 {
   "details": {
-    "path": "api/project/logs",
+    "path": "/project/logs",
     "method": "GET",
-    "importedOperationId": "GET /project/logs",
-    "pathParams": []
+    "importedOperationId": "GET /project/logs"
   },
   "requests": [
     {
@@ -13,5 +12,5 @@
   "operationType": "unary",
   "invokerName": "rest",
   "typeHint": "GET",
-  "importStreamId": "90f336b0-e889-4dd3-b5ff-a27c9844b896"
+  "importStreamId": "0d6a68cd-f2b9-4a80-9456-7a8b4b897580"
 }

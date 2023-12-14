@@ -2,13 +2,14 @@ package monitoring
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"syscall"
 
-	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
+	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
 
 	"github.com/codefly-dev/core/shared"
 	"github.com/shirou/gopsutil/v3/process"
@@ -53,8 +54,8 @@ func (p *TrackedProcess) Kill() error {
 	panic("implement me")
 }
 
-func (p *TrackedProcess) GetStatus() (ProcessState, error) {
-	logger := shared.NewLogger("TrackedProcess.State<%d>", p.PID)
+func (p *TrackedProcess) GetStatus(ctx context.Context) (ProcessState, error) {
+	logger := shared.GetLogger(ctx).With("TrackedProcess.State<%d>", p.PID)
 	// Check for PID
 	proc, err := os.FindProcess(p.PID)
 	if err != nil {
@@ -64,7 +65,7 @@ func (p *TrackedProcess) GetStatus() (ProcessState, error) {
 	// and do nothing if it is.
 	err = proc.Signal(syscall.Signal(0))
 	if err == nil {
-		state, err := findState(p.PID)
+		state, err := findState(ctx, p.PID)
 		if err != nil {
 			return Unknown, logger.Wrapf(err, "cannot check if proc is defunct")
 		}
@@ -73,8 +74,8 @@ func (p *TrackedProcess) GetStatus() (ProcessState, error) {
 	return Dead, nil
 }
 
-func (p *TrackedProcess) GetUsage() (*Usage, error) {
-	logger := shared.NewLogger("TrackedProcess.Usage<%d>", p.PID)
+func (p *TrackedProcess) GetUsage(ctx context.Context) (*Usage, error) {
+	logger := shared.GetLogger(ctx).With("TrackedProcess.Usage<%d>", p.PID)
 	proc, err := process.NewProcess(int32(p.PID))
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create process")
@@ -117,8 +118,8 @@ func parseState(out string) (string, bool) {
 	return state, true
 }
 
-func findState(pid int) (ProcessState, error) {
-	logger := shared.NewLogger("TrackedProcess.State<%d>", pid)
+func findState(ctx context.Context, pid int) (ProcessState, error) {
+	logger := shared.GetLogger(ctx).With("TrackedProcess.State<%d>", pid)
 	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "state=")
 	var out bytes.Buffer
 	cmd.Stdout = &out

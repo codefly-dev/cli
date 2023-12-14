@@ -5,14 +5,14 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents/endpoints"
-	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
+	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
 
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
 
 func (app *Application) Build(ctx context.Context) error {
-	logger := shared.NewLogger("applications.Build<%s>", app.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.Build<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		err := app.BuildService(ctx, service)
 		if err != nil {
@@ -23,13 +23,13 @@ func (app *Application) Build(ctx context.Context) error {
 }
 
 func (app *Application) BuildService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.NewLogger("applications.BuildService<%s>", instance.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.BuildService<%s>", instance.Configuration.Name)
 	if instance.Factory == nil {
 		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}
 
-	ShowEndpointManagerState()
-	group, err := GetEndpointDependencyGroup(instance.Configuration)
+	ShowEndpointManagerState(ctx)
+	group, err := GetEndpointDependencyGroup(ctx, instance.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot get application group endpoints")
 	}
@@ -37,7 +37,7 @@ func (app *Application) BuildService(ctx context.Context, instance *services.Ins
 	logger.Debugf("dependency group: %v", endpoints.CondensedOutput(group))
 
 	golor.Println(`#(bold,cyan)[Building {{.Name}}]`, instance.Configuration)
-	_, err = instance.Build(&factoryv1.BuildRequest{
+	_, err = instance.Build(ctx, &factoryv1.BuildRequest{
 		DependencyEndpointGroup: group,
 	})
 	if err != nil {

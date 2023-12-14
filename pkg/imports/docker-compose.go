@@ -10,9 +10,8 @@ import (
 	"github.com/compose-spec/compose-go/types"
 )
 
-func CheckDockerCompose(dir string) (*Recommendation, error) {
-	logger := shared.NewLogger("CheckDockerCompose<%s>", dir)
-	ctx := context.Background()
+func CheckDockerCompose(ctx context.Context, dir string) (*Recommendation, error) {
+	logger := shared.GetLogger(ctx).With("CheckDockerCompose<%s>", dir)
 	dockerfile := path.Join(dir, "docker-compose.yml")
 	if !shared.FileExists(dockerfile) {
 		return nil, nil

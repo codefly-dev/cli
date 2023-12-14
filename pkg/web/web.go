@@ -3,9 +3,8 @@ package web
 import (
 	"context"
 
-	"github.com/codefly-dev/cli/pkg/management"
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
-	"github.com/codefly-dev/core/overview"
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
@@ -17,18 +16,15 @@ type CodeflyServer struct {
 }
 
 type ServerData struct {
-	*management.Workspace
-	*overview.DependencyGraph
+	Workspace *configurations.Workspace
 }
 
 func NewServer(input ServerData) (*CodeflyServer, error) {
 	config := go_grpc.Configuration{
-		EndpointGrpc:    ":10000",
-		EndpointRest:    ":10001",
-		Workspace:       input.Workspace,
-		DependencyGraph: input.DependencyGraph,
+		EndpointGrpc: ":10000",
+		EndpointRest: ":10001",
 	}
-	server, err := go_grpc.NewServer(&config)
+	server, err := go_grpc.NewServer(&config, input.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +39,7 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 }
 
 func (server *CodeflyServer) Start(ctx context.Context) error {
-	logger := shared.NewLogger("CodeflyServer.Start")
+	logger := shared.GetLogger(ctx).With("CodeflyServer.Start")
 	golor.Println(`#(blue)[Starting server...]`)
 	go func() {
 		err := server.rest.Run(ctx)

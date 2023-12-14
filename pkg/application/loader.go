@@ -1,6 +1,8 @@
 package application
 
 import (
+	"context"
+
 	"github.com/codefly-dev/cli/pkg/cli/display"
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
@@ -33,8 +35,8 @@ type Loader struct {
 	verbose bool
 }
 
-func (l *Loader) Load() (*Application, error) {
-	logger := shared.NewLogger("applications.Loader<%s::%s>", l.application.Name, l.project.Name)
+func (l *Loader) Load(ctx context.Context) (*Application, error) {
+	logger := shared.GetLogger(ctx).With("applications.Loader<%s::%s>", l.application.Name, l.project.Name)
 	display.ApplicationLoading(l.application)
 	logger.Debugf("loading application")
 	for _, ref := range l.application.Services {
@@ -42,7 +44,7 @@ func (l *Loader) Load() (*Application, error) {
 			ref.Application = l.application.Name
 		}
 		logger.Debugf("loading service %v/%v", ref.Application, ref.Name)
-		svc, err := l.LoadServiceConfiguration(ref)
+		svc, err := l.LoadServiceConfiguration(ctx, ref)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot load service <%s>", ref.Name)
 		}
@@ -66,21 +68,21 @@ func (l *Loader) Load() (*Application, error) {
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot create service")
 		}
-		logger.Debugf("loaded service <%s> from agent: %v", svc.Configuration.Name, conf.Agent.Name())
+		logger.Debugf("loaded service <%s> from agent: %v", svc.Configuration.Name, conf.Agent.Identifier())
 		l.plan = append(l.plan, svc)
 	}
-	app, err := NewApplication(l)
+	app, err := NewApplication(ctx, l)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create applications")
 	}
 	switch l.mode {
 	case FactoryMode:
-		err = app.FactoryInit()
+		err = app.FactoryInit(ctx)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot init applications for factory")
 		}
 	case RuntimeMode:
-		err = app.RuntimeInit()
+		err = app.RuntimeInit(ctx)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot init applications for runtime")
 		}
@@ -96,51 +98,48 @@ func (l *Loader) Load() (*Application, error) {
 	return app, nil
 }
 
-func (l *Loader) LoadServiceConfiguration(ref *configurations.ServiceReference) (*configurations.Service, error) {
-	logger := shared.NewLogger("application.Loader.LoadServiceConfiguration<%s>", ref.Name)
-	name := ref.Name
-	if svc, ok := l.configurations[name]; ok {
-		logger.Tracef("service <%s> already loaded", name)
-		return svc, nil
-	}
-	app := l.application
-	opts := []configurations.Option{configurations.WithProject(l.project)}
-	if ref.Application != l.application.Name {
-		other, err := configurations.LoadApplicationFromName(ref.Application)
-		opts = append(opts, configurations.WithApplication(other))
-		if err != nil {
-			return nil, logger.Wrapf(err, "cannot load application <%s>", ref.Application)
-		}
-	} else {
-		opts = append(opts, configurations.WithApplication(app))
-	}
-	service, err := configurations.LoadServiceFromReference(ref, opts...)
-	if err != nil {
-		return nil, logger.Wrapf(err, "cannot load service application for %v", ref)
-	}
-	l.references[name] = ref
-	l.configurations[name] = service
-	unique := service.Unique()
-
-	logger.Tracef("loaded service <%s>", name)
-	l.graph.AddNode(name)
-	for _, dep := range service.Dependencies {
-		if dep.Application == "" {
-			// For convenience -- wil not be saved
-			dep.Application = l.application.Name
-		}
-		l.publicDependencies[unique] = append(l.publicDependencies[unique], dep)
-		if !BelongToSameApplication(dep, l.application) {
-			// Only load in-application dependencies
-			continue
-		}
-		_, err := l.LoadServiceConfiguration(dep.AsReference())
-		if err != nil {
-			return nil, logger.Wrapf(err, "cannot load service <%s>", dep.Name)
-		}
-		l.graph.AddEdge(dep.Name, name)
-	}
-	return service, nil
+func (l *Loader) LoadServiceConfiguration(ctx context.Context, ref *configurations.ServiceReference) (*configurations.Service, error) {
+	//logger := shared.GetLogger(ctx).With("application.Loader.LoadServiceConfiguration<%s>", ref.Name)
+	//name := ref.Name
+	//if svc, ok := l.configurations[name]; ok {
+	//	logger.Tracef("service <%s> already loaded", name)
+	//	return svc, nil
+	//}
+	////app := l.application
+	//if ref.Application != l.application.Name {
+	//	//other, err := configurations.LoadApplicationFromName(ref.Application)
+	//	//if err != nil {
+	//	//	return nil, logger.Wrapf(err, "cannot load application <%s>", ref.Application)
+	//	//}
+	//}
+	//service, err := configurations.LoadServiceFromReference(ref)
+	//if err != nil {
+	//	return nil, logger.Wrapf(err, "cannot load service application for %v", ref)
+	//}
+	//l.references[name] = ref
+	//l.configurations[name] = service
+	//unique := service.Unique()
+	//
+	//logger.Tracef("loaded service <%s>", name)
+	//l.graph.AddNode(name)
+	//for _, dep := range service.Dependencies {
+	//	if dep.Application == "" {
+	//		// For convenience -- wil not be saved
+	//		dep.Application = l.application.Name
+	//	}
+	//	l.publicDependencies[unique] = append(l.publicDependencies[unique], dep)
+	//	if !BelongToSameApplication(dep, l.application) {
+	//		// Only load in-application dependencies
+	//		continue
+	//	}
+	//	_, err := l.LoadServiceConfiguration(ctx, dep.AsReference())
+	//	if err != nil {
+	//		return nil, logger.Wrapf(err, "cannot load service <%s>", dep.Name)
+	//	}
+	//	l.graph.AddEdge(dep.Name, name)
+	//}
+	//return service, nil
+	return nil, nil
 }
 
 func BelongToSameApplication(dep *configurations.ServiceDependency, app *configurations.Application) bool {

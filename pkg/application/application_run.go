@@ -4,14 +4,14 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services"
-	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
+	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
 
 	"github.com/codefly-dev/core/shared"
 )
 
 // Run is a blocking call to run the applications
 func (app *Application) Run(ctx context.Context) error {
-	logger := shared.NewLogger("applications.Run<%s>", app.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.Run<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		logger.Debugf("starting service %v", service.Configuration.Name)
 		err := app.StartService(ctx, service)
@@ -27,21 +27,21 @@ func (app *Application) Run(ctx context.Context) error {
 // StartService starts the service in a non-blocking way
 // Response has the tracker: this is how we detect re-start
 func (app *Application) StartService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.NewLogger("applications.StartService<%s>", instance.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.StartService<%s>", instance.Configuration.Name)
 
 	if !instance.Ready {
 		return logger.Errorf("service is not ready")
 	}
 
 	// What are the dependencies
-	mappings, err := NetworkMappingsFor(instance.Configuration.Dependencies)
+	mappings, err := NetworkMappingsFor(ctx, instance.Configuration.Dependencies)
 	if err != nil {
 		return logger.Wrapf(err, "cannot get network mappings")
 	}
 
 	logger.Debugf("network mappings #%d", len(mappings))
 
-	start, err := instance.Start(&runtimev1.StartRequest{
+	start, err := instance.Start(ctx, &runtimev1.StartRequest{
 		NetworkMappings: mappings,
 	})
 	if err != nil {

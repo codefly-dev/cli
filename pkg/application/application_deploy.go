@@ -6,17 +6,17 @@ import (
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents/endpoints"
 	"github.com/codefly-dev/core/configurations"
-	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
-	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
+	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
+	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
 
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
 
 func (app *Application) Deploy(ctx context.Context, env *configurations.Environment) error {
-	logger := shared.NewLogger("applications.Deploy<%s>", app.Configuration.Name)
+	logger := shared.GetLogger(ctx).With("applications.Deploy<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
-		err := app.DeployService(service, env)
+		err := app.DeployService(ctx, service, env)
 		if err != nil {
 			return logger.Wrapf(err, "cannot build service <%s>", service.Configuration.Name)
 		}
@@ -24,15 +24,15 @@ func (app *Application) Deploy(ctx context.Context, env *configurations.Environm
 	return nil
 }
 
-func (app *Application) DeployService(instance *services.Instance, env *configurations.Environment) error {
-	logger := shared.NewLogger("applications.DeployService<%s>", instance.Configuration.Name)
+func (app *Application) DeployService(ctx context.Context, instance *services.Instance, env *configurations.Environment) error {
+	logger := shared.GetLogger(ctx).With("applications.DeployService<%s>", instance.Configuration.Name)
 	if instance.Runtime == nil {
 		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}
 	logger.TODO("Type of build will depend on deployment, right now assume we dockerize")
 	// What kind of build will be picked from the deployment
 
-	group, err := GetEndpointDependencyGroup(instance.Configuration)
+	group, err := GetEndpointDependencyGroup(ctx, instance.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot get application group endpoints")
 	}
@@ -40,7 +40,7 @@ func (app *Application) DeployService(instance *services.Instance, env *configur
 	logger.Debugf("dependency group: %v", endpoints.CondensedOutput(group))
 
 	golor.Println(`#(bold,cyan)[Deploying {{.Name}}]`, instance.Configuration)
-	_, err = instance.Deploy(&factoryv1.DeploymentRequest{
+	_, err = instance.Deploy(ctx, &factoryv1.DeploymentRequest{
 		Environment:             &basev1.Environment{Name: env.Name},
 		DependencyEndpointGroup: group,
 	})

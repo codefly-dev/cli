@@ -1,6 +1,9 @@
 package update
 
 import (
+	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
 
@@ -10,26 +13,12 @@ var ServiceCmd = &cobra.Command{
 	Short: "Update an service",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		//_, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
-		//defer stop()
-		//
-		//logger := shared.NewLogger("update.ServiceCmd")
-		//if interactive {
-		//	logger.Oops("interactive mode not supported yet")
-		//	os.Exit(0)
-		//}
-		//if len(args) != 1 {
-		//	logger.Oops("service name is required")
-		//	os.Exit(0)
-		//}
-		//name := args[0]
-		//
-		//app := common.ApplicationConfiguration(current)
-		//svc, err := configurations.FindServiceFromName(name, configurations.WithApplication(app))
-		//shared.UnexpectedExitOnError(err, "cannot find service")
-		//
-		//err = service.Update(svc, app)
-		//shared.UnexpectedExitOnError(err, "<%s>", svc.Name)
+		ctx := shared.NewContext()
+		service := common.Service(ctx)
+
+		_, err := services.Load(ctx, service)
+		shared.ExitOnError(err, "cannot load service")
+
 	},
 }
 

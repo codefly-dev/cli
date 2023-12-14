@@ -5,7 +5,7 @@ package services
 //	Name        string
 //	Description string
 //	Value       *T
-//	Default     T
+//	Options     T
 //}
 //
 //func ExtractEndpoint(opt string) (string, error) {
@@ -25,7 +25,7 @@ package services
 //	var t T
 //	switch any(t).(type) {
 //	case *basev1.Choice:
-//		choice, ok := any(opt.Default).(*basev1.Choice)
+//		choice, ok := any(opt.Options).(*basev1.Choice)
 //		if !ok {
 //			return nil, errors.Errorf("cannot convert default value to choice")
 //		}
@@ -50,9 +50,9 @@ package services
 //		}
 //		return selected, nil
 //	default:
-//		prompt := &survey.Input{
+//		prompt := &survey.Options{
 //			Message: opt.Description,
-//			Default: fmt.Sprintf("%v", opt.Default),
+//			Options: fmt.Sprintf("%v", opt.Options),
 //		}
 //		err := survey.AskOne(prompt, opt.Value)
 //		if err != nil {
@@ -115,7 +115,7 @@ package services
 //	return &basev1.Option{
 //		Name:        name,
 //		Description: description,
-//		Default:     NewRuntimeOptionDefault(value),
+//		Options:     NewRuntimeOptionDefault(value),
 //	}
 //}
 //
@@ -143,46 +143,46 @@ package services
 //}
 //
 //func ConvertToOption(opt *basev1.Option) (interface{}, error) {
-//	logger := shared.NewLogger("agents.ConvertToOption")
-//	if stringValue := opt.Default.GetStrValue(); stringValue != "" {
+//	logger := shared.GetBaseLogger(ctx).With("agents.ConvertToOption")
+//	if stringValue := opt.Options.GetStrValue(); stringValue != "" {
 //		return &Option[string]{
 //			Name:        opt.Name,
 //			Description: opt.Description,
 //			Value:       &stringValue,
-//			Default:     opt.Default.GetStrValue(),
+//			Options:     opt.Options.GetStrValue(),
 //		}, nil
 //	}
-//	if floatValue := opt.Default.GetFloatValue(); floatValue != 0 {
+//	if floatValue := opt.Options.GetFloatValue(); floatValue != 0 {
 //		return &Option[float32]{
 //			Name:        opt.Name,
 //			Description: opt.Description,
 //			Value:       &floatValue,
-//			Default:     opt.Default.GetFloatValue(),
+//			Options:     opt.Options.GetFloatValue(),
 //		}, nil
 //	}
-//	if boolValue := opt.Default.GetBoolValue(); boolValue {
+//	if boolValue := opt.Options.GetBoolValue(); boolValue {
 //		return &Option[bool]{
 //			Name:        opt.Name,
 //			Description: opt.Description,
 //			Value:       &boolValue,
-//			Default:     opt.Default.GetBoolValue(),
+//			Options:     opt.Options.GetBoolValue(),
 //		}, nil
 //	}
-//	if intValue := opt.Default.GetIntValue(); intValue != 0 {
+//	if intValue := opt.Options.GetIntValue(); intValue != 0 {
 //		value := int(intValue)
 //		return &Option[int]{
 //			Name:        opt.Name,
 //			Description: opt.Description,
 //			Value:       &value,
-//			Default:     int(opt.Default.GetIntValue()),
+//			Options:     int(opt.Options.GetIntValue()),
 //		}, nil
 //	}
-//	if choiceValue := opt.Default.GetChoiceValue(); choiceValue != nil {
+//	if choiceValue := opt.Options.GetChoiceValue(); choiceValue != nil {
 //		return &Option[*basev1.Choice]{
 //			Name:        opt.Name,
 //			Description: opt.Description,
 //			Value:       &choiceValue,
-//			Default:     choiceValue,
+//			Options:     choiceValue,
 //		}, nil
 //	}
 //	return nil, logger.Errorf("unknown type in factory option argument")

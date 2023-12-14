@@ -20,7 +20,8 @@ var PartialCmd = &cobra.Command{
 	Use:   "partial",
 	Short: "Deploy an partial",
 	Run: func(cmd *cobra.Command, args []string) {
-		logger := shared.NewLogger("deploy.PartialCmd")
+		ctx := shared.NewContext()
+		logger := shared.GetLogger(ctx).With("deploy.PartialCmd")
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 
@@ -30,14 +31,14 @@ var PartialCmd = &cobra.Command{
 		}
 		name := args[0]
 
-		project := common.ProjectConfiguration(current)
+		project := common.Project(ctx)
 
 		conf, err := project.GetPartial(name)
 		if err != nil {
 			fmt.Printf("Cannot find partial <%s> in project <%s>\n", name, project.Name)
 			os.Exit(1)
 		}
-		part, err := partial.NewPartial(project, conf, application.FactoryMode)
+		part, err := partial.NewPartial(ctx, project, conf, application.FactoryMode)
 		shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
 
 		env, err := project.FindEnvironment(environment)

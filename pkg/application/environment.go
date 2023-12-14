@@ -1,14 +1,15 @@
 package application
 
 import (
+	"context"
+
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
-	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
+	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
 	"github.com/codefly-dev/core/shared"
 )
 
 type ServiceEnvironment struct {
-	logger   *shared.Logger
 	name     string
 	mappings []*runtimev1.NetworkMapping
 	replicas map[string][]*runtimev1.NetworkMapping
@@ -22,45 +23,43 @@ func (e *ServiceEnvironment) Add(service *services.Instance, mappings []*runtime
 	e.mappings = mappings
 }
 
-func NewServiceEnvironment(name string, logger *shared.Logger) *ServiceEnvironment {
+func NewServiceEnvironment(ctx context.Context, name string) *ServiceEnvironment {
 	return &ServiceEnvironment{
-		logger: logger,
-		name:   name, replicas: make(map[string][]*runtimev1.NetworkMapping),
+		name: name, replicas: make(map[string][]*runtimev1.NetworkMapping),
 	}
 }
 
 type Environment struct {
-	logger      *shared.Logger
 	application string
 	services    map[string]*ServiceEnvironment
 }
 
-func (e *Environment) AddNetworkMappings(service *services.Instance, mappings []*runtimev1.NetworkMapping) error {
-	e.logger.Debugf("adding network for %v %v #%d", service.Configuration.Name, service.IsReplica(), len(mappings))
+func (e *Environment) AddNetworkMappings(ctx context.Context, service *services.Instance, mappings []*runtimev1.NetworkMapping) error {
 	name := service.Name() // Identical for replicas and original
 	if _, ok := e.services[name]; !ok {
-		e.services[name] = NewServiceEnvironment(name, e.logger)
+		e.services[name] = NewServiceEnvironment(ctx, name)
 	}
 	e.services[name].Add(service, mappings)
 	return nil
 }
 
-func (e *Environment) NetworkMappingsFor(name string) ([]*runtimev1.NetworkMapping, error) {
+func (e *Environment) NetworkMappingsFor(ctx context.Context, name string) ([]*runtimev1.NetworkMapping, error) {
+	logger := shared.GetLogger(ctx).With("NetworkMappingsFor")
 	if env, ok := e.services[name]; ok {
 		return env.mappings, nil
 	}
-	return nil, e.logger.Errorf("cannot find service environment for %s", name)
+	return nil, logger.Errorf("cannot find service environment for %s", name)
 }
 
-func NetworkMappingsFor(refs []*configurations.ServiceDependency) ([]*runtimev1.NetworkMapping, error) {
-	logger := shared.NewLogger("NetworkMappingsFor")
+func NetworkMappingsFor(ctx context.Context, refs []*configurations.ServiceDependency) ([]*runtimev1.NetworkMapping, error) {
+	logger := shared.GetLogger(ctx).With("NetworkMappingsFor")
 	var mappings []*runtimev1.NetworkMapping
 	for _, ref := range refs {
 		env := GetEnvironment(ref.Application)
 		if env == nil {
 			return nil, logger.Errorf("cannot find environment for application <%s>", ref.Application)
 		}
-		mps, err := env.NetworkMappingsFor(ref.Name)
+		mps, err := env.NetworkMappingsFor(ctx, ref.Name)
 		if err != nil {
 			return nil, logger.Wrapf(err, "cannot get network mappings for service <%s>", ref.Name)
 		}
@@ -82,10 +81,9 @@ func GetEnvironment(app string) *Environment {
 	return nil
 }
 
-func NewEnvironment(app string) (*Environment, error) {
+func NewEnvironment(ctx context.Context, app string) (*Environment, error) {
 	env := &Environment{
 		application: app,
-		logger:      shared.NewLogger("NewEnvironment"),
 		services:    make(map[string]*ServiceEnvironment),
 	}
 	environments[app] = env

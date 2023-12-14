@@ -12,11 +12,11 @@ var GenerateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "agent generation for libraries",
 	Run: func(cmd *cobra.Command, args []string) {
-		logger := shared.NewLogger("agents.GenerateCmd")
-		// Actualize path
+		ctx := shared.NewContext()
+		logger := shared.GetLogger(ctx).With("agents.GenerateCmd")
 		p := configurations.SolveDir(service)
 		logger.Debugf("generating service agent from existing source at: %s", p)
-		err := generator.GenerateServiceTemplate(p)
+		err := generator.GenerateServiceTemplate(ctx, p)
 		shared.ExitOnError(err, "cannot create service")
 	},
 }

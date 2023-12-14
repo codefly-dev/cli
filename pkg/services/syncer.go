@@ -1,10 +1,12 @@
 package services
 
 import (
+	"context"
+
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
-	v1 "github.com/codefly-dev/core/proto/v1/go/services"
-	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
+	v1 "github.com/codefly-dev/core/generated/v1/go/proto/services"
+	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -16,11 +18,11 @@ func NewSyncer(app *configurations.Application) (*Syncer, error) {
 	return &Syncer{ApplicationConfiguration: app}, nil
 }
 
-func (r *Syncer) Sync(conf *configurations.Service) error {
-	logger := shared.NewLogger("services.Syncer.Sync<%s>", conf.Name)
+func (r *Syncer) Sync(ctx context.Context, conf *configurations.Service) error {
+	logger := shared.GetLogger(ctx).With("services.Syncer.Sync<%s>", conf.Name)
 	logger.Debugf("refreshing service")
 
-	f, err := services.LoadFactory(conf)
+	f, err := services.LoadFactory(ctx, conf)
 	if err != nil {
 		return logger.Errorf("cannot load factory: %v", err)
 	}
@@ -28,7 +30,7 @@ func (r *Syncer) Sync(conf *configurations.Service) error {
 	domain := r.ApplicationConfiguration.ServiceDomain(conf.Name)
 
 	// Always eInit the factory instance
-	_, err = f.Init(&v1.InitRequest{
+	_, err = f.Init(ctx, &v1.InitRequest{
 		Identity: &v1.ServiceIdentity{
 			Name:      conf.Name,
 			Domain:    domain,
@@ -39,7 +41,7 @@ func (r *Syncer) Sync(conf *configurations.Service) error {
 		return logger.Wrapf(err, "cannot initialize factory")
 	}
 
-	_, err = f.Sync(&factoryv1.SyncRequest{
+	_, err = f.Sync(ctx, &factoryv1.SyncRequest{
 		// Address: path.Join(r.ApplicationConfiguration.NewDir(), conf.Name),
 	})
 	if err != nil {

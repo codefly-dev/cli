@@ -1,7 +1,6 @@
 package update
 
 import (
-	"context"
 	"os"
 	"os/signal"
 
@@ -19,20 +18,21 @@ var ApplicationCmd = &cobra.Command{
 	Short: "Update an application",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		_, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+		ctx := shared.NewContext()
+		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
 
-		project := common.ProjectConfiguration(current)
-		config := common.ApplicationConfiguration(current)
+		project := common.Project(ctx)
+		config := common.Application(ctx)
 
 		golor.Println(`#(blue,bold)[Starting application]: #(italic,white)[{{ .Name }}]
 #(blue,bold)[Ctrl-C anytime to exit...]`, config)
 
 		configurations.SetMode(configurations.ModeApplication)
-		app, err := application.Load(project, config, application.FactoryMode)
+		app, err := application.Load(ctx, project, config, application.FactoryMode)
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
-		err = app.Update()
+		err = app.Update(ctx)
 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 	},
 }
