@@ -11,7 +11,7 @@ func Project(ctx context.Context) *configurations.Project {
 	workspace, err := configurations.LoadWorkspace(ctx)
 	shared.UnexpectedExitOnError(err, "cannot get current workspace")
 	project, err := configurations.LoadProjectFromPath(ctx)
-	shared.UnexpectedExitOnError(err, "cannot get current project")
+	shared.UnexpectedExitOnError(err, "cannot load project")
 	if project != nil {
 		return project
 	}
