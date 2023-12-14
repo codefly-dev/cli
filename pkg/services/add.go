@@ -44,12 +44,12 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return nil
 	}
 	cli.Header(2, "Service <{{.Name}}> has a factory", service)
-	init, err := instance.Init(ctx)
+	init, err := instance.Factory.Init(ctx)
 	if err != nil {
 		return logger.Wrapf(err, "cannot create service instance")
 	}
 	// README
-	rendered, err := glamour.Render(init.Readme, "dark")
+	rendered, err := glamour.Render(init.ReadMe, "dark")
 	if err != nil {
 		return logger.Wrapf(err, "cannot render readme")
 	}
@@ -61,7 +61,7 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return logger.Wrapf(err, "cannot communicate")
 	}
 
-	_, err = instance.Create(ctx)
+	_, err = instance.Factory.Create(ctx)
 	if err != nil {
 		return logger.Wrapf(err, "cannot create service instance")
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
@@ -22,20 +23,27 @@ var ServerCmd = &cobra.Command{
 
 		errs := make(chan error, 1) // Buffered channel
 
+		workspace := common.Workspace(ctx)
+		if workspace == nil {
+			shared.Exit("No workspace found")
+		}
 		go func() {
-			w, err := web.NewServer(web.ServerData{})
+			w, err := web.NewServer(web.ServerData{Workspace: workspace})
 			shared.ExitOnError(err, "cannot create applications server")
 			errs <- w.Start(ctx)
 		}()
 
+	loop:
 		for {
 			select {
 			case err := <-errs:
 				if err != nil {
 					fmt.Printf("Got applications run error: %v\n", err)
 				}
+				break loop
 			case <-ctx.Done():
 				fmt.Println("Got context.Cancel: Exiting...")
+				break loop
 			}
 		}
 

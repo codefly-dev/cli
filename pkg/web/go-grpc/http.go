@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 
-	managementv1 "github.com/codefly-dev/cli/proto/v1/go/management"
+	obsv1 "github.com/codefly-dev/cli/proto/v1/go/observability"
 
 	"github.com/codefly-dev/golor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -32,7 +32,7 @@ func (s *HttpServer) Run(ctx context.Context) error {
 	gwMux := runtime.NewServeMux()
 
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	err := managementv1.RegisterWebHandlerFromEndpoint(ctx, gwMux, s.config.EndpointGrpc, opts)
+	err := obsv1.RegisterWebHandlerFromEndpoint(ctx, gwMux, s.config.EndpointGrpc, opts)
 	if err != nil {
 		return err
 	}

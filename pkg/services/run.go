@@ -6,7 +6,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
-	servicev1 "github.com/codefly-dev/core/proto/v1/go/services"
 	runtimev1 "github.com/codefly-dev/core/proto/v1/go/services/runtime"
 	"github.com/codefly-dev/core/shared"
 )
@@ -22,14 +21,7 @@ func Run(ctx context.Context, service *configurations.Service) error {
 		cli.Error("No runtime is implemented for service <{{.Name}}>", service)
 		return nil
 	}
-
-	req := &servicev1.InitRequest{
-		Debug:    shared.IsDebug(),
-		Location: service.Dir(),
-		Identity: service.Identity(),
-	}
-
-	init, err := instance.Runtime.Init(ctx, req)
+	init, err := instance.Runtime.Init(ctx)
 	if err != nil {
 		return logger.Wrapf(err, "cannot init service instance")
 	}

@@ -2,9 +2,10 @@ version: v1
 managed:
   enabled: true
   go_package_prefix:
-    default: github.com/codefly-dev/core/proto/v1/go
+    default: github.com/codefly-dev/core/generated/v1/go
     except:
       - buf.build/googleapis/googleapis
+      - buf.build/bufbuild/protovalidate
 plugins:
   - plugin: buf.build/protocolbuffers/go
     out: v1/go
@@ -17,3 +18,8 @@ plugins:
     opt: paths=source_relative
   - name: openapiv2
     out: v1/swagger
+  - plugin: es
+    out: v1/ts
+    opt: target=ts
+  - name: python
+    out: v1/python
