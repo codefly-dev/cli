@@ -31,7 +31,7 @@ Use --override to reinitialize codefly.`)
 			return
 		}
 	}
-	cli.Header(1, "Welcome to Codefly Demo 🪽!")
+	cli.Header(1, "Welcome to Codefly 🪽!")
 
 	cli.Header(2, "Let's start by creating an organization - don't worry you can change that easily later on.")
 
