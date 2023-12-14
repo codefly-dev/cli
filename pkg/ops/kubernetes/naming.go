@@ -6,7 +6,7 @@ package kubernetes
 //	"strings"
 //)
 //
-//func ToK8sNamespace(scope *units.Scope) string {
+//func ToK8sNamespace(scope *units.Visibility) string {
 //	return strings.ReplaceAll(scope.Domain, "/", "-")
 //}
 //

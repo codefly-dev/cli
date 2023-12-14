@@ -6,7 +6,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/endpoints"
-	servicev1 "github.com/codefly-dev/core/proto/v1/go/services"
+	servicev1 "github.com/codefly-dev/core/generated/v1/go/proto/services"
 	"github.com/codefly-dev/core/shared"
 )
 

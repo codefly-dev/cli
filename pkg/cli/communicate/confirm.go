@@ -3,7 +3,7 @@ package communicate
 import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
+	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
 )
 
 func Confirm(msg *agentsv1.Message, c *agentsv1.Confirm) (*agentsv1.Answer, error) {

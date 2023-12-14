@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/agents/endpoints"
-	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
+	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
 
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
@@ -20,8 +20,8 @@ type EndpointHolder struct {
 
 func (p *EndpointHolder) AccessibleFrom(ctx context.Context, app string) bool {
 	logger := shared.GetLogger(ctx).With("applications.EndpointHolder.AccessibleFrom<%s>", p.endpoint.Name)
-	logger.Debugf("visibility of endpoint <%s>: <%s> | access from app %v", p.endpoint.Name, p.endpoint.Scope, app)
-	if p.endpoint.Scope == "" || p.endpoint.Scope == "private" {
+	logger.Debugf("visibility of endpoint <%s>: <%s> | access from app %v", p.endpoint.Name, p.endpoint.Visibility, app)
+	if p.endpoint.Visibility == "" || p.endpoint.Visibility == "private" {
 		return p.application == app
 	}
 	return true
@@ -81,7 +81,7 @@ func (s *ServiceEndpointManager) ServiceGroupEndpoints(ctx context.Context, dep 
 	logger.TODO("visibility")
 	var es []*basev1.Endpoint
 	for _, holder := range s.endpoints {
-		// Scope check
+		// Visibility check
 		if !holder.AccessibleFrom(ctx, dep.Application) {
 			continue
 		}
@@ -143,7 +143,7 @@ func (m *ApplicationEndpointManager) ServiceEndpointManager(name string) (*Servi
 func (m *ApplicationEndpointManager) Add(ctx context.Context, service *configurations.Service, endpoints []*basev1.Endpoint) error {
 	logger := shared.GetLogger(ctx).With("applications.ApplicationEndpointManager.Add<%s>", service.Name)
 	for _, endpoint := range endpoints {
-		logger.Debugf("adding endpoint: %s | visibility <%s>", endpoint.Name, endpoint.Scope)
+		logger.Debugf("adding endpoint: %s | visibility <%s>", endpoint.Name, endpoint.Visibility)
 		svc, err := m.GetServiceEndpointManager(service)
 		if err != nil {
 			return err

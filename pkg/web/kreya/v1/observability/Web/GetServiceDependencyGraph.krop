@@ -1,0 +1,13 @@
+{
+  "details": {
+    "methodFqn": "v1.observability.Web.GetServiceDependencyGraph"
+  },
+  "requests": [
+    {
+      "location": "GetServiceDependencyGraph-request.json"
+    }
+  ],
+  "operationType": "unary",
+  "invokerName": "grpc",
+  "importStreamId": "c7b74ebc-cf1e-4b44-bb9f-6a3c2c203963"
+}

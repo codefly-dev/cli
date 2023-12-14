@@ -58,7 +58,7 @@ func addApplication(name string) {
 	action, err := actionsapplication.NewActionAddApplication(ctx, &actionsapplication.AddApplication{
 		Name:        name,
 		Description: desc,
-		InProject:   project.Name,
+		Project:     project.Name,
 	})
 	shared.UnexpectedExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)

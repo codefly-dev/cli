@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 
-	obsv1 "github.com/codefly-dev/cli/proto/v1/go/observability"
+	obsv1 "github.com/codefly-dev/core/generated/v1/go/proto/observability"
 
 	"github.com/codefly-dev/golor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"

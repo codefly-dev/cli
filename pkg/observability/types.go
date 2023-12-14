@@ -3,8 +3,8 @@ package observability
 import (
 	"time"
 
-	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
-	basev1 "github.com/codefly-dev/core/proto/v1/go/base"
+	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
+	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
 
 	"github.com/codefly-dev/core/configurations"
 	"github.com/google/uuid"

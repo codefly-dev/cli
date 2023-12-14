@@ -1,0 +1,3 @@
+[submodule "generated/proto"]
+	path = generated/proto
+	url = git@github.com:codefly-dev/proto.git

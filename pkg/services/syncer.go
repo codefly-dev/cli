@@ -5,8 +5,8 @@ import (
 
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
-	v1 "github.com/codefly-dev/core/proto/v1/go/services"
-	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
+	v1 "github.com/codefly-dev/core/generated/v1/go/proto/services"
+	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
 	"github.com/codefly-dev/core/shared"
 )
 

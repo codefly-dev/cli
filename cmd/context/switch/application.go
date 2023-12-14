@@ -56,8 +56,8 @@ func switchApplication() {
 	}
 
 	action, err := applicationactions.NewActionSetApplicationActive(ctx, &applicationactions.SetApplicationActive{
-		Name:      selected.Identifier,
-		InProject: project.Name,
+		Name:    selected.Identifier,
+		Project: project.Name,
 	})
 	shared.UnexpectedExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)

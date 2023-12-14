@@ -12,12 +12,12 @@ import (
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	cliobsv1 "github.com/codefly-dev/cli/proto/v1/go/observability"
+	cliobsv1 "github.com/codefly-dev/cli/generated/v1/go/proto/observability"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
+	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
+	"github.com/codefly-dev/core/generated/v1/go/proto/base"
 	"github.com/codefly-dev/core/observability"
-	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
-	"github.com/codefly-dev/core/proto/v1/go/base"
 
 	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/golor"
@@ -50,7 +50,7 @@ func (s *Server) GetProjectInventory(ctx context.Context, request *cliobsv1.Proj
 	return view, nil
 }
 
-func (s *Server) GetServiceDependencyGraph(ctx context.Context, request *cliobsv1.ServiceDependencyGraphRequest) (*cliobsv1.GraphResponse, error) {
+func (s *Server) GetServiceDependencyGraph(ctx context.Context, request *obsv1.ServiceDependencyGraphRequest) (*cliobsv1.GraphResponse, error) {
 	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())

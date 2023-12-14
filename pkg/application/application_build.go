@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents/endpoints"
-	factoryv1 "github.com/codefly-dev/core/proto/v1/go/services/factory"
+	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
 
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"

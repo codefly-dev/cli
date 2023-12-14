@@ -1,0 +1,623 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "proto/services/runtime/runtime.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "Runtime"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {},
+  "definitions": {
+    "EngageMode": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "START",
+        "END"
+      ],
+      "default": "UNKNOWN"
+    },
+    "agentscommunicateInformationRequest": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "$ref": "#/definitions/communicateQuestion"
+        },
+        "done": {
+          "type": "boolean"
+        }
+      }
+    },
+    "baseAPI": {
+      "type": "object",
+      "properties": {
+        "tcp": {
+          "$ref": "#/definitions/baseTcpAPI"
+        },
+        "rest": {
+          "$ref": "#/definitions/baseRestAPI"
+        },
+        "grpc": {
+          "$ref": "#/definitions/baseGrpcAPI"
+        }
+      }
+    },
+    "baseApplicationEndpointGroup": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "serviceEndpointGroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/baseServiceEndpointGroup"
+          }
+        }
+      }
+    },
+    "baseEndpoint": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "visibility": {
+          "type": "string"
+        },
+        "api": {
+          "$ref": "#/definitions/baseAPI"
+        },
+        "application": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        }
+      }
+    },
+    "baseEndpointGroup": {
+      "type": "object",
+      "properties": {
+        "applicationEndpointGroup": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/baseApplicationEndpointGroup"
+          }
+        }
+      }
+    },
+    "baseGrpcAPI": {
+      "type": "object",
+      "properties": {
+        "proto": {
+          "type": "string",
+          "format": "byte"
+        },
+        "rpcs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/baseRPC"
+          }
+        }
+      }
+    },
+    "baseHTTPMethod": {
+      "type": "string",
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "PATCH",
+        "OPTIONS",
+        "HEAD",
+        "CONNECT",
+        "TRACE"
+      ],
+      "default": "GET"
+    },
+    "baseRPC": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "baseRestAPI": {
+      "type": "object",
+      "properties": {
+        "openapi": {
+          "type": "string",
+          "format": "byte"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/baseRestRoute"
+          }
+        }
+      }
+    },
+    "baseRestRoute": {
+      "type": "object",
+      "properties": {
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/baseHTTPMethod"
+          }
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "baseServiceEndpointGroup": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/baseEndpoint"
+          }
+        }
+      }
+    },
+    "baseTcpAPI": {
+      "type": "object"
+    },
+    "communicateAnswer": {
+      "type": "object",
+      "properties": {
+        "done": {
+          "type": "boolean"
+        },
+        "channel": {
+          "$ref": "#/definitions/communicateChannel"
+        },
+        "round": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "error": {
+          "type": "string"
+        },
+        "confirm": {
+          "$ref": "#/definitions/communicateConfirmAnswer"
+        },
+        "input": {
+          "$ref": "#/definitions/communicateInputAnswer"
+        },
+        "choice": {
+          "$ref": "#/definitions/communicateChoiceAnswer"
+        },
+        "selection": {
+          "$ref": "#/definitions/communicateSelectionAnswer"
+        }
+      }
+    },
+    "communicateChannel": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        }
+      }
+    },
+    "communicateChoice": {
+      "type": "object",
+      "properties": {
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/communicateMessage"
+          }
+        }
+      }
+    },
+    "communicateChoiceAnswer": {
+      "type": "object",
+      "properties": {
+        "option": {
+          "type": "string"
+        }
+      }
+    },
+    "communicateConfirm": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "boolean"
+        }
+      }
+    },
+    "communicateConfirmAnswer": {
+      "type": "object",
+      "properties": {
+        "confirmed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "communicateDisplay": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "communicateInput": {
+      "type": "object",
+      "properties": {
+        "stringDefault": {
+          "type": "string"
+        },
+        "intDefault": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "communicateInputAnswer": {
+      "type": "object",
+      "properties": {
+        "stringValue": {
+          "type": "string"
+        },
+        "intValue": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "communicateMessage": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "communicateQuestion": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "$ref": "#/definitions/communicateChannel"
+        },
+        "round": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "$ref": "#/definitions/communicateMessage"
+        },
+        "display": {
+          "$ref": "#/definitions/communicateDisplay"
+        },
+        "confirm": {
+          "$ref": "#/definitions/communicateConfirm"
+        },
+        "input": {
+          "$ref": "#/definitions/communicateInput"
+        },
+        "choice": {
+          "$ref": "#/definitions/communicateChoice"
+        },
+        "selection": {
+          "$ref": "#/definitions/communicateSelection"
+        }
+      }
+    },
+    "communicateSelection": {
+      "type": "object",
+      "properties": {
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/communicateMessage"
+          }
+        }
+      }
+    },
+    "communicateSelectionAnswer": {
+      "type": "object",
+      "properties": {
+        "selected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "googlerpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "runtimeConfigureResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/runtimeConfigureStatus"
+        },
+        "networkMappings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/runtimeNetworkMapping"
+          }
+        }
+      }
+    },
+    "runtimeConfigureStatus": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/runtimeConfigureStatusState"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "runtimeConfigureStatusState": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "READY",
+        "ERROR"
+      ],
+      "default": "UNKNOWN"
+    },
+    "runtimeDockerTracker": {
+      "type": "object",
+      "properties": {
+        "containerId": {
+          "type": "string"
+        }
+      }
+    },
+    "runtimeInformationResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/runtimeInformationResponseStatus"
+        }
+      }
+    },
+    "runtimeInformationResponseStatus": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "INIT",
+        "STARTED",
+        "RESTART_WANTED",
+        "SYNC_WANTED",
+        "STOPPED",
+        "ERROR"
+      ],
+      "default": "UNKNOWN"
+    },
+    "runtimeInitResponse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "$ref": "#/definitions/servicesVersion"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/baseEndpoint"
+          }
+        },
+        "status": {
+          "$ref": "#/definitions/servicesInitStatus"
+        }
+      }
+    },
+    "runtimeNetworkMapping": {
+      "type": "object",
+      "properties": {
+        "application": {
+          "type": "string",
+          "title": "Application name"
+        },
+        "service": {
+          "type": "string",
+          "title": "Service name"
+        },
+        "endpoint": {
+          "$ref": "#/definitions/baseEndpoint"
+        },
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "List of addresses to map to"
+        }
+      }
+    },
+    "runtimeProcessTracker": {
+      "type": "object",
+      "properties": {
+        "PID": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "type": {
+          "type": "string"
+        }
+      }
+    },
+    "runtimeStartResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/runtimeStartStatus"
+        },
+        "trackers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/runtimeTracker"
+          }
+        }
+      }
+    },
+    "runtimeStartStatus": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/runtimeStartStatusState"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "runtimeStartStatusState": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "STARTED",
+        "ERROR"
+      ],
+      "default": "UNKNOWN"
+    },
+    "runtimeStopResponse": {
+      "type": "object"
+    },
+    "runtimeTracker": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "processTracker": {
+          "$ref": "#/definitions/runtimeProcessTracker"
+        },
+        "dockerTracker": {
+          "$ref": "#/definitions/runtimeDockerTracker"
+        }
+      }
+    },
+    "servicesInitStatus": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/servicesInitStatusState"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "servicesInitStatusState": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "READY",
+        "ERROR"
+      ],
+      "default": "UNKNOWN"
+    },
+    "servicesServiceIdentity": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "The name of the service"
+        },
+        "domain": {
+          "type": "string",
+          "title": "The domain of the service"
+        },
+        "application": {
+          "type": "string",
+          "title": "The application of the service | logical partitioning"
+        },
+        "namespace": {
+          "type": "string",
+          "title": "The namespace of the service | resource partitioning"
+        }
+      }
+    },
+    "servicesVersion": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

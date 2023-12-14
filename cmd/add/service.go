@@ -78,12 +78,12 @@ func addService(name string, agentInput string) {
 	}
 
 	input := &actionsservice.AddService{
-		Name:          name,
-		Description:   desc,
-		InProject:     project.Name,
-		InApplication: app.Name,
-		Agent:         agent,
-		Override:      override,
+		Name:        name,
+		Description: desc,
+		Project:     project.Name,
+		Application: app.Name,
+		Agent:       agent,
+		Override:    override,
 	}
 
 	err = services.Add(ctx, input)

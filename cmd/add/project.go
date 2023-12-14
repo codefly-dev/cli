@@ -48,7 +48,7 @@ func addProject(name string) {
 		desc = models.Input("Description", "Make some magic 🪄")
 	}
 	action, err := actionsproject.NewActionAddProject(ctx, &actionsproject.AddProject{
-		InWorkspace: workspace.Name,
+		Workspace:   workspace.Name,
 		Name:        name,
 		Description: desc,
 	})

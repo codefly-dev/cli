@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
+	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
 	"github.com/codefly-dev/core/shared"
 )
 

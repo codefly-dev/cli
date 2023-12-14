@@ -5,7 +5,7 @@ package communicate
 import (
 	"fmt"
 
-	agentsv1 "github.com/codefly-dev/core/proto/v1/go/agents"
+	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/codefly-dev/golor"
