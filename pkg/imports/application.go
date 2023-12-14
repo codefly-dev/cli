@@ -1,9 +1,5 @@
 package imports
 
-import (
-	"github.com/codefly-dev/cli/pkg/services"
-)
-
 type ApplicationImporter interface {
 	NewApplicationName() string
 	ProjectName() string
@@ -14,7 +10,6 @@ type ApplicationImporter interface {
 
 type ServiceImporter interface {
 	Fetch(rec *Recommendation) error
-	CreationInputs() ([]*services.CreationInput, error)
 }
 
 type Importer struct {

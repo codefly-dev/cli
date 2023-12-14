@@ -1,0 +1,25 @@
+{
+  "id": "08d42c93-51cc-4307-86f6-187126488632",
+  "importStreams": [
+    {
+      "id": "02eb33e5-d96c-4ec0-bc33-60a673d698f3",
+      "name": "grpc-server-reflection",
+      "importerName": "GrpcServerReflection",
+      "createMissingOperations": true,
+      "options": {
+        "endpoint": "http://localhost:10000"
+      }
+    },
+    {
+      "id": "0d6a68cd-f2b9-4a80-9456-7a8b4b897580",
+      "name": "open-api-file-importer",
+      "importerName": "OpenApiFileImporter",
+      "createMissingOperations": true,
+      "options": {
+        "path": "../../../generated/v1/swagger/web.swagger.json"
+      }
+    }
+  ],
+  "authConfigs": [],
+  "certificates": []
+}

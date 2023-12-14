@@ -1,10 +1,10 @@
 {
   "details": {
-    "methodFqn": "v1.observability.Web.GetProjectInventory"
+    "methodFqn": "v1.observability.Web.GetProjectServiceDependencyGraph"
   },
   "requests": [
     {
-      "location": "GetProjectInventory-request.json"
+      "location": "GetProjectServiceDependencyGraph-request.json"
     }
   ],
   "operationType": "unary",

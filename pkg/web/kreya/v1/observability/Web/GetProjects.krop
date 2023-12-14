@@ -1,13 +1,13 @@
 {
   "details": {
-    "methodFqn": "v1.observability.Web.Logs"
+    "methodFqn": "v1.observability.Web.GetProjects"
   },
   "requests": [
     {
-      "location": "Logs-request.json"
+      "location": "GetProjects-request.json"
     }
   ],
-  "operationType": "serverStreaming",
+  "operationType": "unary",
   "invokerName": "grpc",
   "importStreamId": "02eb33e5-d96c-4ec0-bc33-60a673d698f3"
 }

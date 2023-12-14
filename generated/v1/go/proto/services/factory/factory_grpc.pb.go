@@ -8,8 +8,8 @@ package factory
 
 import (
 	context "context"
-	agents "github.com/codefly-dev/cli/generated/v1/go/proto/agents"
-	services "github.com/codefly-dev/cli/generated/v1/go/proto/services"
+	agents "github.com/codefly-dev/core/generated/v1/go/proto/agents"
+	services "github.com/codefly-dev/core/generated/v1/go/proto/services"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"

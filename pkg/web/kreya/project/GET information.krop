@@ -1,8 +1,8 @@
 {
   "details": {
-    "path": "/project/logs",
+    "path": "/project/information",
     "method": "GET",
-    "importedOperationId": "GET /project/logs"
+    "importedOperationId": "GET /project/information"
   },
   "requests": [
     {

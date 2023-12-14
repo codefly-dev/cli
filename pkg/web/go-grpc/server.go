@@ -12,11 +12,12 @@ import (
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	cliobsv1 "github.com/codefly-dev/cli/generated/v1/go/proto/observability"
+	web "github.com/codefly-dev/cli/generated/v1/go"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
 	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
 	"github.com/codefly-dev/core/generated/v1/go/proto/base"
+	obs1 "github.com/codefly-dev/core/generated/v1/go/proto/observability"
 	"github.com/codefly-dev/core/observability"
 
 	"github.com/codefly-dev/cli/pkg/application"
@@ -31,26 +32,36 @@ type Configuration struct {
 }
 
 type Server struct {
-	cliobsv1.UnimplementedWebServer
+	web.UnsafeWebServer
 	config     *Configuration
 	gRPC       *grpc.Server
 	logChannel chan *agentsv1.Log
 	workspace  *configurations.Workspace
 }
 
-func (s *Server) GetProjectInventory(ctx context.Context, request *cliobsv1.ProjectInformationRequest) (*base.Project, error) {
+func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*web.GetProjectsResponse, error) {
+	var projects []string
+	for _, project := range s.workspace.Projects {
+		projects = append(projects, project.Name)
+	}
+	return &web.GetProjectsResponse{
+		Projects: projects,
+	}, nil
+}
+
+func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectInventoryRequest) (*base.Project, error) {
 	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	view, err := observability.LoadProject(ctx, project)
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return view, nil
 }
 
-func (s *Server) GetServiceDependencyGraph(ctx context.Context, request *obsv1.ServiceDependencyGraphRequest) (*cliobsv1.GraphResponse, error) {
+func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *web.ServiceDependencyGraphRequest) (*obs1.GraphResponse, error) {
 	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -59,14 +70,14 @@ func (s *Server) GetServiceDependencyGraph(ctx context.Context, request *obsv1.S
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	resp := &cliobsv1.GraphResponse{}
+	resp := &obs1.GraphResponse{}
 	for _, node := range g.ServiceDependencyGraph.Nodes() {
-		resp.Nodes = append(resp.Nodes, &cliobsv1.GraphNode{
+		resp.Nodes = append(resp.Nodes, &obs1.GraphNode{
 			Id: node,
 		})
 	}
 	for _, edge := range g.ServiceDependencyGraph.Edges() {
-		resp.Edges = append(resp.Edges, &cliobsv1.GraphEdge{
+		resp.Edges = append(resp.Edges, &obs1.GraphEdge{
 			From: edge.From,
 			To:   edge.To,
 		})
@@ -74,7 +85,7 @@ func (s *Server) GetServiceDependencyGraph(ctx context.Context, request *obsv1.S
 	return resp, nil
 }
 
-func (s *Server) LogHistory(ctx context.Context, request *cliobsv1.LogRequest) (*cliobsv1.LogResponse, error) {
+func (s *Server) LogHistory(ctx context.Context, request *obs1.LogRequest) (*obs1.LogResponse, error) {
 	return nil, nil
 }
 
@@ -82,7 +93,7 @@ func (s *Server) sendLogToClients(logEntry *agentsv1.Log) {
 	s.logChannel <- logEntry
 }
 
-func (s *Server) Logs(empty *emptypb.Empty, server cliobsv1.Web_LogsServer) error {
+func (s *Server) Logs(empty *emptypb.Empty, server web.Web_LogsServer) error {
 	for logEntry := range s.logChannel {
 		if err := server.Send(logEntry); err != nil {
 			return err
@@ -101,7 +112,7 @@ func NewServer(c *Configuration, w *configurations.Workspace) (*Server, error) {
 		gRPC:       grpcServer,
 		logChannel: make(chan *agentsv1.Log, bufferSize),
 	}
-	cliobsv1.RegisterWebServer(grpcServer, &s)
+	web.RegisterWebServer(grpcServer, &s)
 	reflection.Register(grpcServer)
 	agents.RegisterLogCallback(s.sendLogToClients)
 	return &s, nil

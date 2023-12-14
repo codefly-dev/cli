@@ -1,8 +1,14 @@
 {
   "details": {
-    "path": "/project/logs",
+    "path": "/project/{project}/inventory",
     "method": "GET",
-    "importedOperationId": "GET /project/logs"
+    "importedOperationId": "GET /project/{project}/inventory",
+    "pathParams": [
+      {
+        "key": "project",
+        "value": "convergence"
+      }
+    ]
   },
   "requests": [
     {

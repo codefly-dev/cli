@@ -6,12 +6,12 @@
     "queryParams": [
       {
         "key": "from",
-        "value": "Terrace",
+        "value": "payment",
         "ignored": true
       },
       {
         "key": "to",
-        "value": "Administrator European Monetary Unit (E.M.U.-6) Group",
+        "value": "Checking Account",
         "ignored": true
       }
     ]
@@ -24,5 +24,5 @@
   "operationType": "unary",
   "invokerName": "rest",
   "typeHint": "GET",
-  "importStreamId": "f5efea68-0ae1-4bfe-afde-78b622c93a65"
+  "importStreamId": "0d6a68cd-f2b9-4a80-9456-7a8b4b897580"
 }

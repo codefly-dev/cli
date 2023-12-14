@@ -44,8 +44,8 @@ type SingleTracker struct {
 }
 
 func (t *SingleTracker) Stop() {
-	t.Lock()
-	defer t.Unlock()
+	t.RWMutex.Lock()
+	defer t.RWMutex.Unlock()
 	if t.cancel != nil {
 		t.cancel()
 	}
@@ -74,11 +74,11 @@ func (t *SingleTracker) Start(ctx context.Context, events chan<- ServiceEvent) e
 				if t.Runtime == nil {
 					continue
 				}
-				t.RLock()
+				t.RWMutex.RLock()
 				if t.stopping {
 					return
 				}
-				t.RUnlock()
+				t.RWMutex.RUnlock()
 				req, err := t.Runtime.Information(ctx, &runtime.InformationRequest{})
 				if err != nil {
 					logger.Debugf("cannot get status from runtime: %v", err)
@@ -90,29 +90,29 @@ func (t *SingleTracker) Start(ctx context.Context, events chan<- ServiceEvent) e
 						Unique: t.Tracked.Unique(),
 						Event:  "RestartWanted",
 					}
-					t.Lock()
+					t.RWMutex.Lock()
 					t.stopping = true
-					t.Unlock()
+					t.RWMutex.Unlock()
 				}
 				if t.Tracked == nil {
 					return
 				}
 				status, err := t.Tracked.GetStatus(ctx)
 				if err == nil {
-					t.Lock()
+					t.RWMutex.Lock()
 					t.status = status
-					t.Unlock()
+					t.RWMutex.Unlock()
 				}
 				usage, err := t.Tracked.GetUsage(ctx)
 				if err == nil {
-					t.Lock()
+					t.RWMutex.Lock()
 					t.usage = usage
-					t.Unlock()
+					t.RWMutex.Unlock()
 				} else {
 					logger.TODO("cant get usage ")
-					t.Lock()
+					t.RWMutex.Lock()
 					t.usage = &Usage{}
-					t.Unlock()
+					t.RWMutex.Unlock()
 				}
 			}
 		}
@@ -164,9 +164,9 @@ func (t *ServiceTracker) OnHold(ctx context.Context, service *configurations.Ser
 	if err != nil {
 		return logger.Wrapf(err, "cannot start on-hold")
 	}
-	t.Lock()
+	t.RWMutex.Lock()
 	t.current[service.Unique()] = tracker
-	t.Unlock()
+	t.RWMutex.Unlock()
 	return nil
 }
 
@@ -184,16 +184,16 @@ func (t *ServiceTracker) Track(ctx context.Context, service *configurations.Serv
 	if err != nil {
 		return logger.Wrapf(err, "cannot start tracker")
 	}
-	t.Lock()
+	t.RWMutex.Lock()
 	//t.trackers[service.Unique()] = &runtime.TrackerList{Trackers: trackers}
 	t.current[service.Unique()] = tracker
-	t.Unlock()
+	t.RWMutex.Unlock()
 	return nil
 }
 
 func (t *ServiceTracker) Untrack(service *configurations.Service) error {
-	t.Lock()
-	defer t.Unlock()
+	t.RWMutex.Lock()
+	defer t.RWMutex.Unlock()
 	unique := service.Unique()
 	if v, ok := t.current[unique]; ok {
 		v.Stop()
