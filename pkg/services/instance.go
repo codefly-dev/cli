@@ -6,7 +6,7 @@ import (
 	"github.com/codefly-dev/core/agents/services"
 
 	"github.com/codefly-dev/core/configurations"
-	servicev1 "github.com/codefly-dev/core/generated/v1/go/proto/services"
+	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
 	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
 	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
 	"github.com/codefly-dev/core/shared"
@@ -23,7 +23,7 @@ type Instance struct {
 
 	Location string
 
-	ServiceIdentity *servicev1.ServiceIdentity
+	ServiceIdentity *basev1.ServiceIdentity
 
 	Runtime *services.RuntimeAgent
 	Factory *services.FactoryAgent
@@ -112,17 +112,18 @@ Factory wrapper
 */
 
 func (s *Instance) SoloFactoryInit(ctx context.Context) error {
-	// Need some refactoring between Instance and Service in Application
-	req := &servicev1.InitRequest{
-		Debug:    shared.IsDebug(),
-		Location: s.Location,
-		Identity: s.ServiceIdentity,
-	}
-	_, err := s.FactoryInit(ctx, req)
-	return err
+	//// Need some refactoring between Instance and Service in Application
+	//req := &servicev1.InitRequest{
+	//	Debug:    shared.IsDebug(),
+	//	Location: s.Location,
+	//	Identity: s.ServiceIdentity,
+	//}
+	//_, err := s.FactoryInit(ctx, req)
+	//return err
+	return nil
 }
 
-func (s *Instance) FactoryInit(ctx context.Context, r *servicev1.InitRequest) (*factoryv1.InitResponse, error) {
+func (s *Instance) FactoryInit(ctx context.Context, r *runtimev1.InitRequest) (*factoryv1.InitResponse, error) {
 	return nil, nil
 }
 
@@ -174,22 +175,23 @@ Runtime wrapper
 */
 
 func (s *Instance) SoloRuntimeInit(ctx context.Context) error {
-	// Need some refactoring between Instance and Service in Application
-	req := &servicev1.InitRequest{
-		Debug:    shared.IsDebug(),
-		Location: s.Location,
-		Identity: s.ServiceIdentity,
-	}
-	_, err := s.RuntimeInit(ctx, req)
-	return err
+	return nil
+	//// Need some refactoring between Instance and Service in Application
+	//req := &servicev1.InitRequest{
+	//	Debug:    shared.IsDebug(),
+	//	Location: s.Location,
+	//	Identity: s.ServiceIdentity,
+	//}
+	//_, err := s.RuntimeInit(ctx, req)
+	//return err
 }
 
-func (s *Instance) RuntimeInit(ctx context.Context, r *servicev1.InitRequest) (*runtimev1.InitResponse, error) {
+func (s *Instance) RuntimeInit(ctx context.Context, r *runtimev1.InitRequest) (*runtimev1.InitResponse, error) {
 	resp, err := s.Runtime.Init(ctx, r)
 	if err != nil {
 		return nil, s.Logger.Wrapf(err, "cannot init runtime")
 	}
-	if resp.Status.State != servicev1.InitStatus_READY {
+	if resp.Status.State != runtimev1.InitStatus_READY {
 		return nil, s.Logger.Errorf("runtime is not ready: %v", resp.Status.Message)
 
 	}

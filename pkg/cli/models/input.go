@@ -22,6 +22,8 @@ func (m input) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
+		case tea.KeySpace:
+			m.input += " "
 		case tea.KeyRunes:
 			m.input += string(msg.Runes)
 		case tea.KeyBackspace:

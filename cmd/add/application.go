@@ -24,9 +24,11 @@ var ApplicationCmd = &cobra.Command{
 		logger := shared.GetLogger(ctx).With("Add application")
 		if interactive {
 			logger.Oops("Interactive mode not implemented yet")
+			return
 		}
 		if len(args) != 1 {
 			logger.Oops("You must provide a name for the application as the single argument")
+			return
 		}
 		addApplication(args[0])
 	},

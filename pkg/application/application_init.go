@@ -4,9 +4,6 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services"
-	"github.com/codefly-dev/core/agents"
-	"github.com/codefly-dev/core/agents/endpoints"
-	servicev1 "github.com/codefly-dev/core/generated/v1/go/proto/services"
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -39,69 +36,69 @@ func (app *Application) RuntimeInit(ctx context.Context) error {
 }
 
 func (app *Application) FactoryInitService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.GetLogger(ctx).With("applications.FactoryInitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
-	if instance.Initialized {
-		return nil
-	}
-
-	group, err := GetEndpointDependencyGroup(ctx, instance.Configuration)
-	if err != nil {
-		return logger.Wrapf(err, "cannot get application group endpoint")
-	}
-
-	logger.Debugf("group: %v", endpoints.CondensedOutput(group))
-	ShowEndpointManagerState(ctx)
-	req := &servicev1.InitRequest{
-		Debug:                   shared.IsDebug(),
-		Location:                instance.Location,
-		Identity:                instance.ServiceIdentity,
-		DependencyEndpointGroup: group,
-	}
-
-	init, err := instance.FactoryInit(ctx, req)
-	if err != nil {
-		return logger.Wrapf(err, "cannot init factory")
-	}
-
-	err = app.EndpointManager.Add(ctx, instance.Configuration, init.Endpoints)
-	if err != nil {
-		return logger.Wrapf(err, "cannot add endpoints")
-	}
-	instance.Initialized = true
+	//logger := shared.GetLogger(ctx).With("applications.FactoryInitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
+	//if instance.Initialized {
+	//	return nil
+	//}
+	//
+	//group, err := GetEndpointDependencyGroup(ctx, instance.Configuration)
+	//if err != nil {
+	//	return logger.Wrapf(err, "cannot get application group endpoint")
+	//}
+	//
+	//logger.Debugf("group: %v", endpoints.CondensedOutput(group))
+	//ShowEndpointManagerState(ctx)
+	//req := &factoryv1.InitRequest{
+	//	Debug:                   shared.IsDebug(),
+	//	Location:                instance.Location,
+	//	Identity:                instance.ServiceIdentity,
+	//	DependencyEndpointGroup: group,
+	//}
+	//
+	//init, err := instance.FactoryInit(ctx, req)
+	//if err != nil {
+	//	return logger.Wrapf(err, "cannot init factory")
+	//}
+	//
+	//err = app.EndpointManager.Add(ctx, instance.Configuration, init.Endpoints)
+	//if err != nil {
+	//	return logger.Wrapf(err, "cannot add endpoints")
+	//}
+	//instance.Initialized = true
 	return nil
 }
 
 func (app *Application) RuntimeInitService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.GetLogger(ctx).With("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
-	if instance.Initialized {
-		return nil
-	}
-	group, err := GetEndpointDependencyGroup(ctx, instance.Configuration)
-	if err != nil {
-		return logger.Wrapf(err, "cannot get application group endpoint")
-	}
-
-	req := &servicev1.InitRequest{
-		Debug:                   shared.IsDebug(),
-		Location:                instance.Location,
-		Identity:                instance.ServiceIdentity,
-		DependencyEndpointGroup: group,
-	}
-
-	init, err := instance.RuntimeInit(ctx, req)
-	if err != nil {
-		logger.Debugf("ERROR: %v", err)
-		return logger.Wrapf(err, "cannot init: something dramatic happened")
-	}
-
-	if init.Status.State == agents.InitError {
-		return logger.Errorf("cannot init service: %v", init.Status.Message)
-	}
-
-	err = app.EndpointManager.Add(ctx, instance.Configuration, init.Endpoints)
-	if err != nil {
-		return logger.Wrapf(err, "cannot add endpoints")
-	}
-	instance.Initialized = true
+	//logger := shared.GetLogger(ctx).With("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
+	//if instance.Initialized {
+	//	return nil
+	//}
+	//group, err := GetEndpointDependencyGroup(ctx, instance.Configuration)
+	//if err != nil {
+	//	return logger.Wrapf(err, "cannot get application group endpoint")
+	//}
+	//
+	//req := &runtimev1.InitRequest{
+	//	Debug:                   shared.IsDebug(),
+	//	Location:                instance.Location,
+	//	Identity:                instance.ServiceIdentity,
+	//	DependencyEndpointGroup: group,
+	//}
+	//
+	//init, err := instance.RuntimeInit(ctx, req)
+	//if err != nil {
+	//	logger.Debugf("ERROR: %v", err)
+	//	return logger.Wrapf(err, "cannot init: something dramatic happened")
+	//}
+	//
+	//if init.Status.State == agents.InitError {
+	//	return logger.Errorf("cannot init service: %v", init.Status.Message)
+	//}
+	//
+	//err = app.EndpointManager.Add(ctx, instance.Configuration, init.Endpoints)
+	//if err != nil {
+	//	return logger.Wrapf(err, "cannot add endpoints")
+	//}
+	//instance.Initialized = true
 	return nil
 }

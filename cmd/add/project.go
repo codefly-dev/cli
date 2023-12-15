@@ -24,9 +24,11 @@ var ProjectCmd = &cobra.Command{
 		logger := shared.GetLogger(ctx).With("Add project")
 		if interactive {
 			logger.Oops("Interactive mode not implemented yet")
+			return
 		}
 		if len(args) != 1 {
 			logger.Oops("You must provide a name for the project as the single argument")
+			return
 		}
 		addProject(args[0])
 	},
@@ -45,7 +47,7 @@ func addProject(name string) {
 	addDescription := models.Confirm("Do you want to add a short description?", false)
 	var desc string
 	if addDescription {
-		desc = models.Input("Description", "Make some magic 🪄")
+		desc = models.Input("Description", "")
 	}
 	action, err := actionsproject.NewActionAddProject(ctx, &actionsproject.AddProject{
 		Workspace:   workspace.Name,
