@@ -10,7 +10,7 @@ var PartialCmd = &cobra.Command{
 	Short: "Run an partial",
 	Run: func(cmd *cobra.Command, args []string) {
 		//	ctx := shared.NewContext()
-		//	logger := shared.GetLogger(ctx).With("run.PartialCmd")
+		//	w := wool.Get(ctx).In("run.PartialCmd")
 		//	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		//	defer stop()
 		//

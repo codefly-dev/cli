@@ -7,6 +7,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -25,8 +26,12 @@ var ReplayCmd = &cobra.Command{
 
 func replayCodefly(track string) {
 	ctx := shared.NewContext()
-	logger := shared.GetLogger(ctx).With("Replay")
+	w := wool.Get(ctx).In("Replay")
 	tracker := actions.NewActionTracker(track)
+
+	// Optionally override the directory
+	tracker.WithDir(dir)
+
 	steps, err := tracker.GetActions(ctx)
 	shared.UnexpectedExitOnError(err, "cannot get actions")
 	logger.DebugMe("Replaying #%d steps", len(steps))
@@ -39,9 +44,10 @@ func replayCodefly(track string) {
 }
 
 var track string
+var dir string
 
 func init() {
-	ReplayCmd.Flags().StringVar(&track, "track", "", "Replayialize codefly with demo project")
-	ReplayCmd.Flags().BoolVar(&override, "override", false, "Override existing configuration")
+	ReplayCmd.Flags().StringVar(&track, "track", "", "Replay codefly tracks")
+	ReplayCmd.Flags().StringVar(&dir, "dir", "", "Replay codefly tracks")
 	RootCmd.AddCommand(ReplayCmd)
 }

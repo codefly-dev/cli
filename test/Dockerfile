@@ -3,7 +3,15 @@
 
 FROM golang:alpine
 WORKDIR /home
-ADD go.mod go.sum ./
+
+COPY go.mod go.sum ./
 RUN go mod download
-ADD . .
-RUN ./scripts/build/install.sh
+COPY scripts ./scripts
+COPY main.go ./
+COPY cmd ./cmd
+COPY generated ./generated
+COPY pkg ./pkg
+RUN /home/scripts/build/install.sh
+RUN codefly init --with-default
+COPY test/tracks ./tracks
+RUN codefly replay --dir=tracks --track=plaform

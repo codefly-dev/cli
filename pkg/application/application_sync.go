@@ -5,13 +5,12 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents/endpoints"
-	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
-
-	"github.com/codefly-dev/core/shared"
+	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+	"github.com/codefly-dev/core/wool"
 )
 
 func (app *Application) Sync(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.Sync<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Sync<%s>", app.Configuration.Name)
 	logger.Debugf("current")
 	for _, service := range app.Plan.Services {
 		err := app.SyncService(ctx, service)
@@ -23,7 +22,7 @@ func (app *Application) Sync(ctx context.Context) error {
 }
 
 func (app *Application) SyncService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.GetLogger(ctx).With("applications.SyncService<%s>", instance.Configuration.Name)
+	w := wool.Get(ctx).In("applications.SyncService<%s>", instance.Configuration.Name)
 	if instance.Runtime == nil {
 		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}

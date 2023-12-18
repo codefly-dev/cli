@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-cd generated && git pull && buf generate
+cd generated && buf generate

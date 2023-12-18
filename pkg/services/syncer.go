@@ -5,8 +5,8 @@ import (
 
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
-	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
-	"github.com/codefly-dev/core/shared"
+	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+	"github.com/codefly-dev/core/wool"
 )
 
 type Syncer struct {
@@ -18,7 +18,7 @@ func NewSyncer(app *configurations.Application) (*Syncer, error) {
 }
 
 func (r *Syncer) Sync(ctx context.Context, conf *configurations.Service) error {
-	logger := shared.GetLogger(ctx).With("services.Syncer.Sync<%s>", conf.Name)
+	w := wool.Get(ctx).In("services.Syncer.Sync<%s>", conf.Name)
 	logger.Debugf("refreshing service")
 
 	f, err := services.LoadFactory(ctx, conf)

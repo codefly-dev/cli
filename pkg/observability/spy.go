@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/agents"
-	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
-	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
-	"github.com/codefly-dev/core/shared"
+	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
+	"github.com/codefly-dev/core/wool"
 )
 
 type Spy struct {
@@ -16,7 +16,7 @@ type Spy struct {
 
 type Storage interface {
 	StartSession(session *basev1.Session) error
-	AddLog(log *agentsv1.Log) // Agent callback
+	AddLog(log *agentv1.Log) // Agent callback
 	Close()
 }
 
@@ -25,7 +25,7 @@ func (s *Spy) Close() {
 }
 
 func (s *Spy) Activate(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("development.SpyActivate")
+	w := wool.Get(ctx).In("development.SpyActivate")
 	storage, err := NewSqliteStorage()
 	if err != nil {
 		return logger.Wrapf(err, "cannot create storage")
@@ -42,7 +42,7 @@ func (s *Spy) Activate(ctx context.Context) error {
 }
 
 func NewSpy(ctx context.Context, session *basev1.Session) (*Spy, error) {
-	logger := shared.GetLogger(ctx).With("development.NewSpy")
+	w := wool.Get(ctx).In("development.NewSpy")
 	storage, err := NewSqliteStorage()
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create storage")

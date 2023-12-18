@@ -6,10 +6,8 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/agents/services"
-
-	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
-
-	"github.com/codefly-dev/core/shared"
+	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	"github.com/codefly-dev/core/wool"
 )
 
 type RestartTracker struct {
@@ -19,7 +17,7 @@ type RestartTracker struct {
 }
 
 func (t *RestartTracker) Start(ctx context.Context, events chan<- ServiceEvent) error {
-	logger := shared.GetLogger(ctx).With("monitoring.RestartTracker")
+	w := wool.Get(ctx).In("monitoring.RestartTracker")
 	logger.Debugf("runtime wants to restart -- will ping the runtime for started status")
 	ticker := time.NewTicker(1 * time.Second)
 	go func() {

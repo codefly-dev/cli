@@ -6,15 +6,15 @@ import (
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents/endpoints"
 	"github.com/codefly-dev/core/configurations"
-	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
-	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
+	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+	"github.com/codefly-dev/core/wool"
 
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
 
 func (app *Application) Deploy(ctx context.Context, env *configurations.Environment) error {
-	logger := shared.GetLogger(ctx).With("applications.Deploy<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Deploy<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		err := app.DeployService(ctx, service, env)
 		if err != nil {
@@ -25,7 +25,7 @@ func (app *Application) Deploy(ctx context.Context, env *configurations.Environm
 }
 
 func (app *Application) DeployService(ctx context.Context, instance *services.Instance, env *configurations.Environment) error {
-	logger := shared.GetLogger(ctx).With("applications.DeployService<%s>", instance.Configuration.Name)
+	w := wool.Get(ctx).In("applications.DeployService<%s>", instance.Configuration.Name)
 	if instance.Runtime == nil {
 		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}

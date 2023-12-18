@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 )
 
 type SourceImporter interface {
@@ -15,7 +16,7 @@ type LocalSourceImporter struct {
 }
 
 func (l *LocalSourceImporter) Analyze(ctx context.Context) (*Recommendation, error) {
-	logger := shared.GetLogger(ctx).With("import.LocalSourceImporter.Analyze")
+	w := wool.Get(ctx).In("import.LocalSourceImporter.Analyze")
 	recommendations, err := Analyze(ctx, l.dir)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot analyze directory")
@@ -24,7 +25,7 @@ func (l *LocalSourceImporter) Analyze(ctx context.Context) (*Recommendation, err
 }
 
 func (l *LocalSourceImporter) Import(ctx context.Context, target string) error {
-	logger := shared.GetLogger(ctx).With("import.LocalSourceImporter.Import")
+	w := wool.Get(ctx).In("import.LocalSourceImporter.Import")
 	err := shared.CopyDirectory(ctx, l.dir, target)
 	if err != nil {
 		return logger.Wrapf(err, "cannot copy directory")

@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/shared"
 
@@ -33,6 +34,8 @@ func Execute() {
 	shared.SetTodo(todo)
 	shared.SetOverride(override)
 
+	cli.SetWithDefault(withDefault)
+
 	if tracker != "" {
 		actions.InitActionTracker(tracker)
 	}
@@ -42,11 +45,12 @@ func Execute() {
 
 // Origin of the World
 var (
-	debug    bool
-	todo     bool
-	trace    bool
-	override bool
-	tracker  string
+	debug       bool
+	trace       bool
+	todo        bool
+	override    bool
+	withDefault bool
+	tracker     string
 )
 
 func init() {
@@ -98,8 +102,10 @@ func init() {
 
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
+	RootCmd.PersistentFlags().BoolVar(&withDefault, "with-default", false, "Use default option instead of prompt")
 	RootCmd.PersistentFlags().BoolVar(&todo, "todo", false, "Print TODOs")
 	RootCmd.PersistentFlags().BoolVar(&override, "override", false, "Replace all")
 	RootCmd.PersistentFlags().StringVar(&tracker, "track", "", "Tracker of actions -- advanced usage")
+
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }

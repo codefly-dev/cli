@@ -5,17 +5,17 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/wool"
 
 	services2 "github.com/codefly-dev/cli/pkg/services"
-	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
+	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
 
 	"github.com/briandowns/spinner"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
 
 func (app *Application) Update(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.Update<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Update<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		err := app.UpdateService(ctx, service)
 		if err != nil {
@@ -26,7 +26,7 @@ func (app *Application) Update(ctx context.Context) error {
 }
 
 func (app *Application) UpdateService(ctx context.Context, service *services2.Instance) error {
-	logger := shared.GetLogger(ctx).With("applications.UpdateService<%s>", service.Configuration.Name)
+	w := wool.Get(ctx).In("applications.UpdateService<%s>", service.Configuration.Name)
 	golor.Println(`#(bold,cyan)[Updating {{.Name}}]`, service.Configuration)
 	s := spinner.New(spinner.CharSets[9], 100*time.Millisecond) // Build our new spinner
 	s.Start()

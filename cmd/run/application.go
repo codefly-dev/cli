@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +40,7 @@ var ApplicationCmd = &cobra.Command{
 }
 
 func run(ctx context.Context, project *configurations.Project, config *configurations.Application) {
-	logger := shared.GetLogger(ctx).With("run.ApplicationCmd")
+	w := wool.Get(ctx).In("run.ApplicationCmd")
 
 	// Create a context that is cancelled on os.Interrupt or os.Kill
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)

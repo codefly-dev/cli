@@ -3,8 +3,8 @@ package observability
 import (
 	"time"
 
-	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
-	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
+	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 
 	"github.com/codefly-dev/core/configurations"
 	"github.com/google/uuid"
@@ -51,8 +51,8 @@ func ToApplicationSnapshots(applications []string) []*basev1.ApplicationSnapshot
 }
 
 // NewLog creates a new Log instance.
-func NewLog(at time.Time, application, service, message string, kind agentsv1.Log_Kind) *agentsv1.Log {
-	return &agentsv1.Log{
+func NewLog(at time.Time, application, service, message string, kind agentv1.Log_Kind) *agentv1.Log {
+	return &agentv1.Log{
 		At:          timestamppb.New(at),
 		Application: application,
 		Service:     service,

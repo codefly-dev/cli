@@ -7,12 +7,12 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"golang.org/x/mod/modfile"
 )
 
 func RecommendedGoDependencies(ctx context.Context, dir string) ([]*configurations.Agent, error) {
-	logger := shared.GetLogger(ctx).With("RecommendedGoDependencies<%s>", dir)
+	w := wool.Get(ctx).In("RecommendedGoDependencies<%s>", dir)
 	// Parse the go.mod file
 	content, err := os.ReadFile(path.Join(dir, "go.mod"))
 	if err != nil {

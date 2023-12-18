@@ -5,14 +5,14 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents/endpoints"
-	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
+	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+	"github.com/codefly-dev/core/wool"
 
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
 
 func (app *Application) Build(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.Build<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Build<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		err := app.BuildService(ctx, service)
 		if err != nil {
@@ -23,7 +23,7 @@ func (app *Application) Build(ctx context.Context) error {
 }
 
 func (app *Application) BuildService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.GetLogger(ctx).With("applications.BuildService<%s>", instance.Configuration.Name)
+	w := wool.Get(ctx).In("applications.BuildService<%s>", instance.Configuration.Name)
 	if instance.Factory == nil {
 		return logger.Errorf("runtime for instance <%s> is not initialized, run first app.Init()", instance.Configuration.Name)
 	}

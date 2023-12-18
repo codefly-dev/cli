@@ -5,8 +5,8 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
-	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
-	"github.com/codefly-dev/core/shared"
+	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	"github.com/codefly-dev/core/wool"
 )
 
 type ServiceEnvironment struct {
@@ -44,7 +44,7 @@ func (e *Environment) AddNetworkMappings(ctx context.Context, service *services.
 }
 
 func (e *Environment) NetworkMappingsFor(ctx context.Context, name string) ([]*runtimev1.NetworkMapping, error) {
-	logger := shared.GetLogger(ctx).With("NetworkMappingsFor")
+	w := wool.Get(ctx).In("NetworkMappingsFor")
 	if env, ok := e.services[name]; ok {
 		return env.mappings, nil
 	}
@@ -52,7 +52,7 @@ func (e *Environment) NetworkMappingsFor(ctx context.Context, name string) ([]*r
 }
 
 func NetworkMappingsFor(ctx context.Context, refs []*configurations.ServiceDependency) ([]*runtimev1.NetworkMapping, error) {
-	logger := shared.GetLogger(ctx).With("NetworkMappingsFor")
+	w := wool.Get(ctx).In("NetworkMappingsFor")
 	var mappings []*runtimev1.NetworkMapping
 	for _, ref := range refs {
 		env := GetEnvironment(ref.Application)

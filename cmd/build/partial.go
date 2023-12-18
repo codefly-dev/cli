@@ -7,6 +7,7 @@ import (
 	"os/signal"
 
 	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/application"
@@ -21,7 +22,7 @@ var PartialCmd = &cobra.Command{
 	Short: "Build an partial",
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := shared.NewContext()
-		logger := shared.GetLogger(ctx).With("build.PartialCmd")
+		w := wool.Get(ctx).In("build.PartialCmd")
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 

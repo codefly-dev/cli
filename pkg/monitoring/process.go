@@ -9,9 +9,8 @@ import (
 	"strings"
 	"syscall"
 
-	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
-
-	"github.com/codefly-dev/core/shared"
+	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	"github.com/codefly-dev/core/wool"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
@@ -55,7 +54,7 @@ func (p *TrackedProcess) Kill() error {
 }
 
 func (p *TrackedProcess) GetStatus(ctx context.Context) (ProcessState, error) {
-	logger := shared.GetLogger(ctx).With("TrackedProcess.State<%d>", p.PID)
+	w := wool.Get(ctx).In("TrackedProcess.State<%d>", p.PID)
 	// Check for PID
 	proc, err := os.FindProcess(p.PID)
 	if err != nil {
@@ -75,7 +74,7 @@ func (p *TrackedProcess) GetStatus(ctx context.Context) (ProcessState, error) {
 }
 
 func (p *TrackedProcess) GetUsage(ctx context.Context) (*Usage, error) {
-	logger := shared.GetLogger(ctx).With("TrackedProcess.Usage<%d>", p.PID)
+	w := wool.Get(ctx).In("TrackedProcess.Usage<%d>", p.PID)
 	proc, err := process.NewProcess(int32(p.PID))
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot create process")
@@ -119,7 +118,7 @@ func parseState(out string) (string, bool) {
 }
 
 func findState(ctx context.Context, pid int) (ProcessState, error) {
-	logger := shared.GetLogger(ctx).With("TrackedProcess.State<%d>", pid)
+	w := wool.Get(ctx).In("TrackedProcess.State<%d>", pid)
 	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "state=")
 	var out bytes.Buffer
 	cmd.Stdout = &out

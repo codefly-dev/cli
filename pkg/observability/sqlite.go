@@ -9,23 +9,23 @@ import (
 	"log"
 	"time"
 
-	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
+	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	"github.com/codefly-dev/core/wool"
 
-	agentsv1 "github.com/codefly-dev/core/generated/v1/go/proto/agents"
-	"github.com/codefly-dev/core/shared"
+	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "modernc.org/sqlite"
 )
 
 type Sqlite struct {
 	db           *sql.DB
-	logBuffer    []*agentsv1.Log
+	logBuffer    []*agentv1.Log
 	flushChannel chan bool
 	clean        func(db *sql.DB)
 	session      *basev1.Session
 }
 
-func (storage *Sqlite) AddLog(log *agentsv1.Log) {
+func (storage *Sqlite) AddLog(log *agentv1.Log) {
 	storage.logBuffer = append(storage.logBuffer, log)
 	// Optionally, add logic here to handle buffer size limits
 }
@@ -73,7 +73,7 @@ func (storage *Sqlite) StartSession(ctx context.Context, session *basev1.Session
 type Clean func()
 
 func NewSqliteStorage() (Storage, error) {
-	//logger := shared.GetLogger(ctx).With("development.SqliteInit")
+	//w := wool.Get(ctx).In("development.SqliteInit")
 	//ws, err := configurations.Current()
 	//if err != nil {
 	//	return nil, err
@@ -128,7 +128,7 @@ func (storage *Sqlite) initSession(ctx context.Context, session *basev1.Session)
 }
 
 func (storage *Sqlite) initPartialSession(ctx context.Context, session *basev1.Session) error {
-	logger := shared.GetLogger(ctx).With("development.initPartialSession")
+	w := wool.Get(ctx).In("development.initPartialSession")
 
 	fmt.Println("PROJECT ID", session.GetPartial().Project.Uuid)
 	err := storage.addProjectSnapshot(ctx, session.GetPartial().Project)
@@ -159,7 +159,7 @@ func (storage *Sqlite) initPartialSession(ctx context.Context, session *basev1.S
 }
 
 func (storage *Sqlite) addProjectSnapshot(ctx context.Context, project *basev1.ProjectSnapshot) error {
-	logger := shared.GetLogger(ctx).With("development.SqliteAddProjectSnapshot")
+	w := wool.Get(ctx).In("development.SqliteAddProjectSnapshot")
 	_, err := storage.db.Exec("INSERT INTO project_snapshot (id, name) VALUES (?, ?)", project.Uuid, project.Name)
 	if err != nil {
 		return logger.Wrapf(err, "cannot add project snapshot")
@@ -169,7 +169,7 @@ func (storage *Sqlite) addProjectSnapshot(ctx context.Context, project *basev1.P
 }
 
 func (storage *Sqlite) addPartialSnapshot(ctx context.Context, partial *basev1.PartialSnapshot) error {
-	logger := shared.GetLogger(ctx).With("development.SqliteAddPartialSnapshot")
+	w := wool.Get(ctx).In("development.SqliteAddPartialSnapshot")
 
 	stmt, err := storage.db.Prepare(`INSERT INTO partial_snapshot (id, name, project_id) VALUES (?, ?, ?)`)
 	if err != nil {
@@ -186,7 +186,7 @@ func (storage *Sqlite) addPartialSnapshot(ctx context.Context, partial *basev1.P
 	return nil
 }
 
-func insertLogs(ctx context.Context, db *sql.DB, sessionID string, logs []*agentsv1.Log) error {
+func insertLogs(ctx context.Context, db *sql.DB, sessionID string, logs []*agentv1.Log) error {
 	// Start a transaction
 	tx, err := db.Begin()
 	if err != nil {

@@ -8,10 +8,10 @@ import (
 	"github.com/codefly-dev/cli/pkg/monitoring"
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents"
-	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
+	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 )
 
@@ -59,7 +59,7 @@ func (p *Plan) Show() string {
 }
 
 func NewApplication(ctx context.Context, loader *Loader) (*Application, error) {
-	logger := shared.GetLogger(ctx).With("applications.NewApplication<%s>", loader.application.Name)
+	w := wool.Get(ctx).In("applications.NewApplication<%s>", loader.application.Name)
 	events := make(chan monitoring.ServiceEvent)
 	serviceTracker, err := monitoring.NewServiceTracker(events)
 	if err != nil {
@@ -96,7 +96,7 @@ func (app *Application) Restart(ctx context.Context, unique string) error {
 	if !ok {
 		return fmt.Errorf("unknow service unique identifier: %s", unique)
 	}
-	logger := shared.GetLogger(ctx).With("applications.Restart<%s>", service.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Restart<%s>", service.Configuration.Name)
 
 	golor.Println(`#(bold,cyan)[Restarting {{.Name}}]`, map[string]any{"Name": service.Configuration.Name})
 
@@ -128,7 +128,7 @@ func (app *Application) Restart(ctx context.Context, unique string) error {
 }
 
 func (app *Application) Stop(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.Stop<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Stop<%s>", app.Configuration.Name)
 	logger.Debugf("stopping")
 	var exitOrder []*services.Instance
 	exitOrder = append(exitOrder, app.Plan.Services...)
@@ -148,7 +148,7 @@ func (app *Application) Stop(ctx context.Context) error {
 }
 
 func (app *Application) StopService(ctx context.Context, service *services.Instance) error {
-	logger := shared.GetLogger(ctx).With("applications.StopService<%s>", service.Configuration.Name)
+	w := wool.Get(ctx).In("applications.StopService<%s>", service.Configuration.Name)
 	if service.Runtime == nil {
 		return logger.Errorf("runtime for service <%s> is not initialized, run first app.Init()", service.Configuration.Name)
 	}
@@ -173,7 +173,7 @@ func (app *Application) StopService(ctx context.Context, service *services.Insta
 }
 
 func (app *Application) Listen(ctx context.Context) {
-	logger := shared.GetLogger(ctx).With("applications.Listen<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Listen<%s>", app.Configuration.Name)
 	for event := range app.events {
 		switch event.Event {
 		case "RestartWanted":
@@ -198,7 +198,7 @@ func (app *Application) MakeVerbose() {
 }
 
 func Load(ctx context.Context, project *configurations.Project, app *configurations.Application, mode Mode) (*Application, error) {
-	logger := shared.GetLogger(ctx).With("application.Load<%s/%s>", project.Name, app.Name)
+	w := wool.Get(ctx).In("application.Load<%s/%s>", project.Name, app.Name)
 	logger.Debugf("calling loader")
 	loader, err := NewLoader(project, app, mode)
 	if err != nil {

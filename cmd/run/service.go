@@ -49,7 +49,7 @@ var ServiceCmd = &cobra.Command{
 func runService(ctx context.Context, service *configurations.Service) error {
 	return services.Run(ctx, service)
 
-	//	logger := shared.GetLogger(ctx).With("run.ServiceCmd")
+	//	w := wool.Get(ctx).In("run.ServiceCmd")
 	//
 	//	// Create a context that is cancelled on os.Interrupt or os.Kill
 	//	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)

@@ -6,7 +6,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli/display"
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 )
 
@@ -36,7 +36,7 @@ type Loader struct {
 }
 
 func (l *Loader) Load(ctx context.Context) (*Application, error) {
-	logger := shared.GetLogger(ctx).With("applications.Loader<%s::%s>", l.application.Name, l.project.Name)
+	w := wool.Get(ctx).In("applications.Loader<%s::%s>", l.application.Name, l.project.Name)
 	display.ApplicationLoading(l.application)
 	logger.Debugf("loading application")
 	for _, ref := range l.application.Services {
@@ -99,7 +99,7 @@ func (l *Loader) Load(ctx context.Context) (*Application, error) {
 }
 
 func (l *Loader) LoadServiceConfiguration(ctx context.Context, ref *configurations.ServiceReference) (*configurations.Service, error) {
-	//logger := shared.GetLogger(ctx).With("application.Loader.LoadServiceConfiguration<%s>", ref.Name)
+	//w := wool.Get(ctx).In("application.Loader.LoadServiceConfiguration<%s>", ref.Name)
 	//name := ref.Name
 	//if svc, ok := l.configurations[name]; ok {
 	//	logger.Tracef("service <%s> already loaded", name)

@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/golor"
 )
 
@@ -58,12 +59,14 @@ func DefaultInput(def bool) string {
 	return "(y/N)"
 }
 
-func Confirm(s string, def bool) bool {
-
+func Confirm(s string, defaultValue bool) bool {
+	if cli.WithDefault() {
+		return defaultValue
+	}
 	p := tea.NewProgram(ConfirmModel{
 		Message:   s,
-		Options:   DefaultInput(def),
-		confirmed: def,
+		Options:   DefaultInput(defaultValue),
+		confirmed: defaultValue,
 	})
 	mod, err := p.Run()
 	if err != nil {

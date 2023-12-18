@@ -10,6 +10,7 @@ import (
 	actionsapplication "github.com/codefly-dev/core/actions/application"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
@@ -21,7 +22,7 @@ var ApplicationCmd = &cobra.Command{
 
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := shared.NewContext()
-		logger := shared.GetLogger(ctx).With("Add application")
+		w := wool.Get(ctx).In("Add application")
 		if interactive {
 			logger.Oops("Interactive mode not implemented yet")
 			return

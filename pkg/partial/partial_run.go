@@ -5,13 +5,13 @@ import (
 	"sync"
 
 	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 )
 
 // Run runs the applications of the partial
 // Each application run is blocking so we need to go-routine them
 func (p *Partial) Run(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("partial.Run")
+	w := wool.Get(ctx).In("partial.Run")
 	for _, app := range p.Applications {
 		err := app.Configure(ctx)
 		if err != nil {

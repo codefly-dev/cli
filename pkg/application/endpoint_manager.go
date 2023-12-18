@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/agents/endpoints"
-	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
+	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
@@ -19,7 +20,7 @@ type EndpointHolder struct {
 }
 
 func (p *EndpointHolder) AccessibleFrom(ctx context.Context, app string) bool {
-	logger := shared.GetLogger(ctx).With("applications.EndpointHolder.AccessibleFrom<%s>", p.endpoint.Name)
+	w := wool.Get(ctx).In("applications.EndpointHolder.AccessibleFrom<%s>", p.endpoint.Name)
 	logger.Debugf("visibility of endpoint <%s>: <%s> | access from app %v", p.endpoint.Name, p.endpoint.Visibility, app)
 	if p.endpoint.Visibility == "" || p.endpoint.Visibility == "private" {
 		return p.application == app
@@ -42,7 +43,7 @@ type ServiceEndpointManager struct {
 }
 
 func (s *ServiceEndpointManager) Add(ctx context.Context, endpoint *basev1.Endpoint) error {
-	logger := shared.GetLogger(ctx).With("applications.ServiceEndpointManager.Add<%s>", s.service.Unique())
+	w := wool.Get(ctx).In("applications.ServiceEndpointManager.Add<%s>", s.service.Unique())
 	logger.Debugf("adding endpoint: %s", endpoints.Destination(endpoint))
 	api, err := endpoints.WhichAPIFromEndpoint(endpoint)
 	if err != nil {
@@ -67,7 +68,7 @@ func (s *ServiceEndpointManager) Add(ctx context.Context, endpoint *basev1.Endpo
 }
 
 func (s *ServiceEndpointManager) Get(ctx context.Context, ref *configurations.EndpointReference) (*basev1.Endpoint, error) {
-	logger := shared.GetLogger(ctx).With("applications.ServiceEndpointManager.Get<%s>", s.service.Name)
+	w := wool.Get(ctx).In("applications.ServiceEndpointManager.Get<%s>", s.service.Name)
 	for _, holder := range s.endpoints {
 		if holder.endpoint.Name == ref.Name {
 			return holder.endpoint, nil
@@ -77,7 +78,7 @@ func (s *ServiceEndpointManager) Get(ctx context.Context, ref *configurations.En
 }
 
 func (s *ServiceEndpointManager) ServiceGroupEndpoints(ctx context.Context, dep *configurations.ServiceDependency) (*basev1.ServiceEndpointGroup, error) {
-	logger := shared.GetLogger(ctx).With("applications.ServiceEndpointManager.ServiceGroupEndpoints<%s>", s.service.Name)
+	w := wool.Get(ctx).In("applications.ServiceEndpointManager.ServiceGroupEndpoints<%s>", s.service.Name)
 	logger.TODO("visibility")
 	var es []*basev1.Endpoint
 	for _, holder := range s.endpoints {
@@ -111,7 +112,7 @@ type ApplicationEndpointManager struct {
 }
 
 func (m *ApplicationEndpointManager) Get(ctx context.Context, name string, ref *configurations.EndpointReference) (*basev1.Endpoint, error) {
-	logger := shared.GetLogger(ctx).With("applications.ApplicationEndpointManager.Get")
+	w := wool.Get(ctx).In("applications.ApplicationEndpointManager.Get")
 	for _, svc := range m.services {
 		if svc.service.Name == name {
 			return svc.Get(ctx, ref)
@@ -141,7 +142,7 @@ func (m *ApplicationEndpointManager) ServiceEndpointManager(name string) (*Servi
 }
 
 func (m *ApplicationEndpointManager) Add(ctx context.Context, service *configurations.Service, endpoints []*basev1.Endpoint) error {
-	logger := shared.GetLogger(ctx).With("applications.ApplicationEndpointManager.Add<%s>", service.Name)
+	w := wool.Get(ctx).In("applications.ApplicationEndpointManager.Add<%s>", service.Name)
 	for _, endpoint := range endpoints {
 		logger.Debugf("adding endpoint: %s | visibility <%s>", endpoint.Name, endpoint.Visibility)
 		svc, err := m.GetServiceEndpointManager(service)
@@ -157,7 +158,7 @@ func (m *ApplicationEndpointManager) Add(ctx context.Context, service *configura
 }
 
 func GetEndpoints(ctx context.Context, configuration *configurations.Service) ([]*basev1.Endpoint, error) {
-	logger := shared.GetLogger(ctx).With("applications.GetEndpointDependencyGroup<%s>", configuration.Name)
+	w := wool.Get(ctx).In("applications.GetEndpointDependencyGroup<%s>", configuration.Name)
 	app, err := GetApplicationEndpointManager(ctx, configuration.Application)
 	if err != nil {
 		return nil, logger.Wrapf(err, "cannot get application endpoint manager")
@@ -174,7 +175,7 @@ func GetEndpoints(ctx context.Context, configuration *configurations.Service) ([
 }
 
 func GetEndpointDependencyGroup(ctx context.Context, service *configurations.Service) (*basev1.EndpointGroup, error) {
-	logger := shared.GetLogger(ctx).With("applications.GetEndpointDependencyGroup<%s>", service.Name)
+	w := wool.Get(ctx).In("applications.GetEndpointDependencyGroup<%s>", service.Name)
 	// We want to find the dependencies for this service
 	target := &configurations.ServiceDependency{Name: service.Name, Application: service.Application}
 	logger.Debugf("looking in the endpoint manager dependencies for %s", target)
@@ -228,7 +229,7 @@ func init() {
 }
 
 func GetApplicationEndpointManager(ctx context.Context, name string) (*ApplicationEndpointManager, error) {
-	logger := shared.GetLogger(ctx).With("applications.GetApplicationEndpointManager<%s>", name)
+	w := wool.Get(ctx).In("applications.GetApplicationEndpointManager<%s>", name)
 	for _, manager := range managers {
 		if manager.application.Name == name {
 			return manager, nil
@@ -239,7 +240,7 @@ func GetApplicationEndpointManager(ctx context.Context, name string) (*Applicati
 }
 
 func LoadApplicationEndpointManager(name string) (*ApplicationEndpointManager, error) {
-	//logger := shared.GetLogger(ctx).With("applications.LoadApplicationEndpointManager<%s>", name)
+	//w := wool.Get(ctx).In("applications.LoadApplicationEndpointManager<%s>", name)
 	//config, err := configurations.LoadApplicationFromName(name)
 	//if err != nil {
 	//	return nil, logger.Wrapf(err, "cannot load application")
@@ -266,7 +267,7 @@ func NewApplicationEndpointManager(ctx context.Context, app *configurations.Appl
 }
 
 func ShowEndpointManagerState(ctx context.Context) {
-	logger := shared.GetLogger(ctx).With("applications.ShowEndpointManagerState")
+	w := wool.Get(ctx).In("applications.ShowEndpointManagerState")
 	var es []string
 	for _, manager := range managers {
 		es = append(es, fmt.Sprintf("- Application: %s", manager.application.Name))

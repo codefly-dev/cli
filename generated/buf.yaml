@@ -3,6 +3,7 @@ deps:
   - buf.build/grpc-ecosystem/grpc-gateway
   - buf.build/googleapis/googleapis
   - buf.build/bufbuild/protovalidate
+  - buf.build/codefly-dev/proto
 lint:
   use:
     - DEFAULT

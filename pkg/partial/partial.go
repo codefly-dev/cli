@@ -8,6 +8,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli/display"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 )
 
 type Partial struct {
@@ -16,7 +17,7 @@ type Partial struct {
 }
 
 func NewPartial(ctx context.Context, project *configurations.Project, partial *configurations.Partial, mode application.Mode) (*Partial, error) {
-	logger := shared.GetLogger(ctx).With("partial.NewPartial<%s>", partial.Name)
+	w := wool.Get(ctx).In("partial.NewPartial<%s>", partial.Name)
 	configurations.SetMode(configurations.ModePartial)
 	display.PartialLoading(partial)
 	p := &Partial{Configuration: partial}

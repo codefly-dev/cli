@@ -124,7 +124,7 @@ require (
 	lukechampine.com/uint128 v1.3.0 // indirect
 	modernc.org/cc/v3 v3.41.0 // indirect
 	modernc.org/ccgo/v3 v3.16.15 // indirect
-	modernc.org/libc v1.37.5 // indirect
+	modernc.org/libc v1.37.6 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.7.2 // indirect
 	modernc.org/opt v0.1.3 // indirect
@@ -140,7 +140,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/glamour v0.6.0
 	github.com/charmbracelet/lipgloss v0.9.1
-	github.com/codefly-dev/core v0.0.51
+	github.com/codefly-dev/core v0.0.54
 	github.com/codefly-dev/golor v0.0.10
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/golang-migrate/migrate/v4 v4.16.2

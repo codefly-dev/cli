@@ -4,11 +4,13 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/core/configurations"
-	basev1 "github.com/codefly-dev/core/generated/v1/go/proto/base"
-	factoryv1 "github.com/codefly-dev/core/generated/v1/go/proto/services/factory"
-	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
+
+	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -45,7 +47,7 @@ const (
 )
 
 func NewServiceInstance(conf *configurations.Service, app *configurations.Application) (*Instance, error) {
-	//logger := shared.GetLogger(ctx).With("service.Instance<%s>", conf.Name)
+	//w := wool.Get(ctx).In("service.Instance<%s>", conf.Name)
 	//ref, err := conf.Reference()
 	//if err != nil {
 	//	return nil, logger.Wrapf(err, "cannot get reference")
@@ -84,7 +86,7 @@ func NewServiceInstance(conf *configurations.Service, app *configurations.Applic
 }
 
 func (s *Instance) LoadFactory(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.LoadFactory<%s>", s.Unique())
+	w := wool.Get(ctx).In("applications.LoadFactory<%s>", s.Unique())
 	factory, err := services.LoadFactory(ctx, s.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot load factory")
@@ -94,7 +96,7 @@ func (s *Instance) LoadFactory(ctx context.Context) error {
 }
 
 func (s *Instance) LoadRuntime(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.LoadRuntime<%s>", s.Unique())
+	w := wool.Get(ctx).In("applications.LoadRuntime<%s>", s.Unique())
 	runtime, err := services.LoadRuntime(ctx, s.Configuration)
 	if err != nil {
 		return logger.Wrapf(err, "cannot load factory")
@@ -203,7 +205,7 @@ func (s *Instance) Configure(ctx context.Context, r *runtimev1.ConfigureRequest)
 }
 
 func (s *Instance) Start(ctx context.Context, r *runtimev1.StartRequest) (*runtimev1.StartResponse, error) {
-	logger := shared.GetLogger(ctx).With("applications.Start<%s>", s.Unique())
+	w := wool.Get(ctx).In("applications.Start<%s>", s.Unique())
 	logger.Tracef("starting!")
 	return s.Runtime.Start(ctx, r)
 }

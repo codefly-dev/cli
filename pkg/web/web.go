@@ -5,7 +5,7 @@ import (
 
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 )
 
@@ -39,7 +39,7 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 }
 
 func (server *CodeflyServer) Start(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("CodeflyServer.Start")
+	w := wool.Get(ctx).In("CodeflyServer.Start")
 	golor.Println(`#(blue)[Starting server...]`)
 	go func() {
 		err := server.rest.Run(ctx)

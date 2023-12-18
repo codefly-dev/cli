@@ -4,11 +4,11 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 )
 
 func Analyze(ctx context.Context, dir string) (*Recommendation, error) {
-	logger := shared.GetLogger(ctx).With("imports.Analyze")
+	w := wool.Get(ctx).In("imports.Analyze")
 	recommenders := []Recommender{CheckDockerCompose, CheckDocker}
 	for _, r := range recommenders {
 		rec, err := r(ctx, dir)

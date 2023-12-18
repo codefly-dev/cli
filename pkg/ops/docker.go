@@ -100,7 +100,7 @@ package ops
 //	for scanner.Scan() {
 //		var output DockerOutput
 //		if err := json.Unmarshal(scanner.Bytes(), &output); err != nil {
-//			d.logger.Error("Error decoding JSON:", err)
+//			d.logger.Errorf("Errorf decoding JSON:", err)
 //			continue
 //		}
 //
@@ -108,8 +108,8 @@ package ops
 //			d.logger.Info(strings.TrimSpace(output.Stream))
 //		}
 //
-//		if output.Error != "" {
-//			d.logger.Error("BUILD", fmt.Errorf("%s: %s", output.Error, output.ErrorDetail.Message))
+//		if output.Errorf != "" {
+//			d.logger.Errorf("BUILD", fmt.Errorf("%s: %s", output.Errorf, output.ErrorDetail.Message))
 //		}
 //	}
 //
@@ -135,7 +135,7 @@ package ops
 //		Code    int    `json:"code"`
 //		Message string `json:"message"`
 //	} `json:"errorDetail"`
-//	Error string `json:"error"`
+//	Errorf string `json:"error"`
 //}
 //
 //// Adds a single file to the tar writer

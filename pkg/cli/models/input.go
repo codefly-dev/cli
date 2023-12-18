@@ -5,6 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -47,10 +48,13 @@ func (m input) View() string {
 	return fmt.Sprintf("%s:\n%s", m.Message, m.input)
 }
 
-func Input(msg string, suggestion string) string {
+func Input(msg string, defaultValue string) string {
+	if cli.WithDefault() {
+		return defaultValue
+	}
 	p := tea.NewProgram(input{
 		Message: msg,
-		input:   suggestion,
+		input:   defaultValue,
 	})
 	mod, err := p.Run()
 	shared.UnexpectedExitOnError(err, "cannot run input prompt")

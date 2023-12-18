@@ -4,12 +4,12 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 )
 
 // FactoryInit the application components
 func (app *Application) FactoryInit(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.Init<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Init<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		logger.Debugf("init %v", service.Unique())
 		app.uniques[service.Configuration.Unique()] = service
@@ -23,7 +23,7 @@ func (app *Application) FactoryInit(ctx context.Context) error {
 
 // RuntimeInit the application components
 func (app *Application) RuntimeInit(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.Init<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Init<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		logger.Debugf("init %v", service.Unique())
 		app.uniques[service.Configuration.Unique()] = service
@@ -36,7 +36,7 @@ func (app *Application) RuntimeInit(ctx context.Context) error {
 }
 
 func (app *Application) FactoryInitService(ctx context.Context, instance *services.Instance) error {
-	//logger := shared.GetLogger(ctx).With("applications.FactoryInitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
+	//w := wool.Get(ctx).In("applications.FactoryInitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
 	//if instance.Initialized {
 	//	return nil
 	//}
@@ -69,7 +69,7 @@ func (app *Application) FactoryInitService(ctx context.Context, instance *servic
 }
 
 func (app *Application) RuntimeInitService(ctx context.Context, instance *services.Instance) error {
-	//logger := shared.GetLogger(ctx).With("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
+	//w := wool.Get(ctx).In("applications.InitService<%s::%v>", instance.Configuration.Name, instance.Configuration.Agent.Identifier)
 	//if instance.Initialized {
 	//	return nil
 	//}

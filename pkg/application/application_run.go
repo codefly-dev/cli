@@ -4,14 +4,13 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services"
-	runtimev1 "github.com/codefly-dev/core/generated/v1/go/proto/services/runtime"
-
-	"github.com/codefly-dev/core/shared"
+	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	"github.com/codefly-dev/core/wool"
 )
 
 // Run is a blocking call to run the applications
 func (app *Application) Run(ctx context.Context) error {
-	logger := shared.GetLogger(ctx).With("applications.Run<%s>", app.Configuration.Name)
+	w := wool.Get(ctx).In("applications.Run<%s>", app.Configuration.Name)
 	for _, service := range app.Plan.Services {
 		logger.Debugf("starting service %v", service.Configuration.Name)
 		err := app.StartService(ctx, service)
@@ -27,7 +26,7 @@ func (app *Application) Run(ctx context.Context) error {
 // StartService starts the service in a non-blocking way
 // Response has the tracker: this is how we detect re-start
 func (app *Application) StartService(ctx context.Context, instance *services.Instance) error {
-	logger := shared.GetLogger(ctx).With("applications.StartService<%s>", instance.Configuration.Name)
+	w := wool.Get(ctx).In("applications.StartService<%s>", instance.Configuration.Name)
 
 	if !instance.Ready {
 		return logger.Errorf("service is not ready")

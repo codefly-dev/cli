@@ -6,6 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
@@ -19,7 +20,7 @@ var ServiceCmd = &cobra.Command{
 	Short: "Build an service",
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
-		logger := shared.GetLogger(ctx).With("build.ServiceCmd")
+		w := wool.Get(ctx).In("build.ServiceCmd")
 		if len(args) == 0 {
 			logger.Oops("Please provide a service name")
 			os.Exit(1)

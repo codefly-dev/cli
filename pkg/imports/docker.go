@@ -9,10 +9,11 @@ import (
 	"github.com/codefly-dev/cli/pkg/imports/frameworks"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 )
 
 func CheckDocker(ctx context.Context, dir string) (*Recommendation, error) {
-	logger := shared.GetLogger(ctx).With("CheckDocker<%s>", dir)
+	w := wool.Get(ctx).In("CheckDocker<%s>", dir)
 	file := path.Join(dir, "Dockerfile")
 	if !shared.FileExists(file) {
 		return nil, nil
@@ -67,7 +68,7 @@ func recommendedMain(ctx context.Context, cmds []dockerfile.Command) (*MainServi
 }
 
 func RecommendBaseFromDocker(ctx context.Context, image string) (*MainServiceRecommendation, error) {
-	logger := shared.GetLogger(ctx).With("RecommendBaseFromDocker<%s>", image)
+	w := wool.Get(ctx).In("RecommendBaseFromDocker<%s>", image)
 	logger.TODO("IMPLEMENT PYTHON")
 	return NewGoBase([]AgentRecommendation{
 		{Name: "codefly.ai/go:latest", Description: "Go base image", Reason: "Go is awesome"},
