@@ -1,41 +1,30 @@
 package deploy
 
-import (
-	"context"
+// // ApplicationCmd represents the run command
+// var ApplicationCmd = &cobra.Command{
+// 	Use:   "application",
+// 	Short: "Deploy an application",
 
-	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/golor"
-	"github.com/spf13/cobra"
-)
+// 	Run: func(cmd *cobra.Command, args []string) {
+// 		ctx := context.Background()
+// 		project := common.Project(ctx)
+// 		config := common.Application(ctx)
 
-// ApplicationCmd represents the run command
-var ApplicationCmd = &cobra.Command{
-	Use:   "application",
-	Short: "Deploy an application",
+// 		configurations.SetMode(configurations.ModeApplication)
+// 		app, err := application.Load(ctx, project, config, application.FactoryMode)
+// 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
 
-	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
-		project := common.Project(ctx)
-		config := common.Application(ctx)
+// 		golor.Println(`#(blue,bold)[Deploying applications]: #(italic,white)[{{.Configuration.Name}}]`, app)
 
-		configurations.SetMode(configurations.ModeApplication)
-		app, err := application.Load(ctx, project, config, application.FactoryMode)
-		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
+// 		env, err := project.FindEnvironment(environment)
+// 		shared.UnexpectedExitOnError(err, "cannot find environment <%s>", environment)
 
-		golor.Println(`#(blue,bold)[Deploying applications]: #(italic,white)[{{.Configuration.Name}}]`, app)
+// 		err = app.Deploy(ctx, env)
+// 		shared.UnexpectedExitOnError(err, "cannot deploy applications")
+// 	},
+// }
 
-		env, err := project.FindEnvironment(environment)
-		shared.UnexpectedExitOnError(err, "cannot find environment <%s>", environment)
-
-		err = app.Deploy(ctx, env)
-		shared.UnexpectedExitOnError(err, "cannot deploy applications")
-	},
-}
-
-func init() {
-	ApplicationCmd.Flags().BoolVar(&current, "current", false, "Deploy the current application")
-	ApplicationCmd.Flags().StringVar(&environment, "environment", "", "Deploy the application in the given environment")
-}
+// func init() {
+// 	ApplicationCmd.Flags().BoolVar(&current, "current", false, "Deploy the current application")
+// 	ApplicationCmd.Flags().StringVar(&environment, "environment", "", "Deploy the application in the given environment")
+// }

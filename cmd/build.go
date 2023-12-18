@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"github.com/codefly-dev/cli/cmd/build"
 	"github.com/spf13/cobra"
 )
 
@@ -12,7 +11,7 @@ var BuildCmd = &cobra.Command{
 }
 
 func init() {
-	BuildCmd.AddCommand(build.PartialCmd)
-	BuildCmd.AddCommand(build.ApplicationCmd)
-	BuildCmd.AddCommand(build.ServiceCmd)
+	// BuildCmd.AddCommand(build.PartialCmd)
+	// BuildCmd.AddCommand(build.ApplicationCmd)
+	// BuildCmd.AddCommand(build.ServiceCmd)
 }

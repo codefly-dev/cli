@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"github.com/codefly-dev/cli/cmd/update"
 	"github.com/spf13/cobra"
 )
 
@@ -12,6 +11,6 @@ var UpdateCmd = &cobra.Command{
 }
 
 func init() {
-	UpdateCmd.AddCommand(update.ApplicationCmd)
-	UpdateCmd.AddCommand(update.ServiceCmd)
+	// UpdateCmd.AddCommand(update.ApplicationCmd)
+	// UpdateCmd.AddCommand(update.ServiceCmd)
 }

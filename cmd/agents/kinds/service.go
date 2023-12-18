@@ -25,7 +25,7 @@ var ServiceCmd = &cobra.Command{
 		provider.WithLogger(common.CLI())
 		defer provider.Done()
 
-		ctx = provider.NewContext()
+		ctx = provider.WithContext(ctx)
 
 		serviceInfo(ctx, agentInput)
 	},

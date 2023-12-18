@@ -3,10 +3,7 @@ package services
 import (
 	"context"
 
-	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
-	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
-	"github.com/codefly-dev/core/wool"
 )
 
 type Syncer struct {
@@ -18,13 +15,13 @@ func NewSyncer(app *configurations.Application) (*Syncer, error) {
 }
 
 func (r *Syncer) Sync(ctx context.Context, conf *configurations.Service) error {
-	w := wool.Get(ctx).In("services.Syncer.Sync<%s>", conf.Name)
-	logger.Debugf("refreshing service")
-
-	f, err := services.LoadFactory(ctx, conf)
-	if err != nil {
-		return logger.Errorf("cannot load factory: %v", err)
-	}
+	//w := wool.Get(ctx).In("services.Syncer.Sync<%s>", conf.Name)
+	//logger.Debuf("refreshing service")
+	//
+	//f, err := services.LoadFactory(ctx, conf)
+	//if err != nil {
+	//	return logger.Errorf("cannot load factory: %v", err)
+	//}
 
 	//domain := r.ApplicationConfiguration.ServiceDomain(conf.Name)
 	//
@@ -39,12 +36,12 @@ func (r *Syncer) Sync(ctx context.Context, conf *configurations.Service) error {
 	//if err != nil {
 	//	return logger.Wrapf(err, "cannot initialize factory")
 	//}
-
-	_, err = f.Sync(ctx, &factoryv1.SyncRequest{
-		// Address: path.Join(r.ApplicationConfiguration.NewDir(), conf.Name),
-	})
-	if err != nil {
-		return logger.Errorf("cannot sync service: %v", err)
-	}
+	//
+	//_, err = f.Sync(ctx, &factoryv1.SyncRequest{
+	//	// Address: path.Join(r.ApplicationConfiguration.NewDir(), conf.Name),
+	//})
+	//if err != nil {
+	//	return logger.Errorf("cannot sync service: %v", err)
+	//}
 	return nil
 }

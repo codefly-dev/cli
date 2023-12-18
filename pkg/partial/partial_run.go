@@ -21,7 +21,7 @@ func (p *Partial) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	errs := make(chan error)
 	for _, app := range p.Applications {
-		logger.Debugf("Loading application: %s", app.Configuration.Name)
+		logger.Debuf("Loading application: %s", app.Configuration.Name)
 		wg.Add(1)
 		go func(app *application.Application) {
 			defer wg.Done()

@@ -1,6 +1,7 @@
 package add
 
 import (
+	"context"
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -10,7 +11,6 @@ import (
 	actionsapplication "github.com/codefly-dev/core/actions/application"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
@@ -22,22 +22,19 @@ var ApplicationCmd = &cobra.Command{
 
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := shared.NewContext()
-		w := wool.Get(ctx).In("Add application")
 		if interactive {
-			logger.Oops("Interactive mode not implemented yet")
-			return
+			cli.Error("Interactive mode not implemented yet")
+			cli.Exit()
 		}
 		if len(args) != 1 {
-			logger.Oops("You must provide a name for the application as the single argument")
+			cli.Error("You must provide a name for the application as the single argument")
 			return
 		}
-		addApplication(args[0])
+		addApplication(ctx, args[0])
 	},
 }
 
-func addApplication(name string) {
-	ctx := shared.NewContext()
-
+func addApplication(ctx context.Context, name string) {
 	project := common.Project(ctx)
 
 	if project.ExistsApplication(name) {

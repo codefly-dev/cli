@@ -13,22 +13,19 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	web "github.com/codefly-dev/cli/generated/go/web/v1"
-	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 
 	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
 	observabilityv1 "github.com/codefly-dev/core/generated/go/observability/v1"
 
-	"github.com/codefly-dev/cli/pkg/application"
 	"github.com/codefly-dev/golor"
 	"google.golang.org/grpc"
 )
 
 type Configuration struct {
-	EndpointGrpc       string
-	EndpointRest       string
-	RunningApplication *application.Application
+	EndpointGrpc string
+	EndpointRest string
 }
 
 type Server struct {
@@ -114,7 +111,6 @@ func NewServer(c *Configuration, w *configurations.Workspace) (*Server, error) {
 	}
 	web.RegisterWebServer(grpcServer, &s)
 	reflection.Register(grpcServer)
-	agents.RegisterLogCallback(s.sendLogToClients)
 	return &s, nil
 }
 

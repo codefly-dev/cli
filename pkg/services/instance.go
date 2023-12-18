@@ -11,12 +11,9 @@ import (
 	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
 	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
 	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
-	"github.com/codefly-dev/core/shared"
 )
 
 type Instance struct {
-	Logger *shared.Logger
-
 	Configuration *configurations.Service
 	Application   *configurations.Application
 
@@ -50,7 +47,7 @@ func NewServiceInstance(conf *configurations.Service, app *configurations.Applic
 	//w := wool.Get(ctx).In("service.Instance<%s>", conf.Name)
 	//ref, err := conf.Reference()
 	//if err != nil {
-	//	return nil, logger.Wrapf(err, "cannot get reference")
+	//	return nil, w.Wrapf(err, "cannot get reference")
 	//}
 	//id := configurations.Identity(conf)
 	//identity := &servicev1.ServiceIdentity{
@@ -61,7 +58,7 @@ func NewServiceInstance(conf *configurations.Service, app *configurations.Applic
 	//}
 	//location := path.Join(app.Dir(opts...), conf.Name)
 	//instance := &Instance{
-	//	Logger:        logger,
+	//	w:        w,
 	//	Configuration: conf,
 	//	Application:   app,
 	//
@@ -70,36 +67,36 @@ func NewServiceInstance(conf *configurations.Service, app *configurations.Applic
 	//
 	//	Quiet:                      ref.RunningOptions.Quiet,
 	//	Persistence:                ref.RunningOptions.Persistence,
-	//	CommunicationServerManager: communicate.NewServerManager(logger),
+	//	CommunicationServerManager: communicate.NewServerManager(w),
 	//	Reference:                  ref,
 	//}
 	//err = instance.LoadFactory()
 	//if err != nil {
-	//	return nil, logger.Wrapf(err, "cannot create factory")
+	//	return nil, w.Wrapf(err, "cannot create factory")
 	//}
 	//err = instance.LoadRuntime()
 	//if err != nil {
-	//	return nil, logger.Wrapf(err, "cannot create runtime")
+	//	return nil, w.Wrapf(err, "cannot create runtime")
 	//}
 	//return instance, nil
 	return nil, nil
 }
 
 func (s *Instance) LoadFactory(ctx context.Context) error {
-	w := wool.Get(ctx).In("applications.LoadFactory<%s>", s.Unique())
+	w := wool.Get(ctx).In("Instance::LoadFactory", wool.ThisField(s))
 	factory, err := services.LoadFactory(ctx, s.Configuration)
 	if err != nil {
-		return logger.Wrapf(err, "cannot load factory")
+		return w.Wrapf(err, "cannot load factory")
 	}
 	s.Factory = factory
 	return nil
 }
 
 func (s *Instance) LoadRuntime(ctx context.Context) error {
-	w := wool.Get(ctx).In("applications.LoadRuntime<%s>", s.Unique())
+	w := wool.Get(ctx).In("Instance::LoadFactory", wool.ThisField(s))
 	runtime, err := services.LoadRuntime(ctx, s.Configuration)
 	if err != nil {
-		return logger.Wrapf(err, "cannot load factory")
+		return w.Wrapf(err, "cannot load factory")
 	}
 	s.Runtime = runtime
 	return nil
@@ -142,17 +139,6 @@ func (s *Instance) Sync(ctx context.Context, r *factoryv1.SyncRequest) (*factory
 	return nil, nil
 }
 
-// SoloBuild should really be used for debugging only
-func (s *Instance) SoloBuild(ctx context.Context) error {
-	err := s.SoloFactoryInit(ctx)
-	if err != nil {
-		return s.Logger.Wrapf(err, "cannot init runtime")
-	}
-	req := &factoryv1.BuildRequest{}
-	_, err = s.Build(ctx, req)
-	return err
-}
-
 func (s *Instance) Build(ctx context.Context, r *factoryv1.BuildRequest) (*factoryv1.BuildResponse, error) {
 	return s.Factory.Build(ctx, r)
 }
@@ -175,37 +161,3 @@ func (s *Instance) IsReplica() bool {
 /*
 Runtime wrapper
 */
-
-func (s *Instance) SoloRuntimeInit(ctx context.Context) error {
-	return nil
-	//// Need some refactoring between Instance and Service in Application
-	//req := &servicev1.InitRequest{
-	//	Debug:    shared.IsDebug(),
-	//	Location: s.Location,
-	//	Identity: s.ServiceIdentity,
-	//}
-	//_, err := s.RuntimeInit(ctx, req)
-	//return err
-}
-
-func (s *Instance) RuntimeInit(ctx context.Context, r *runtimev1.InitRequest) (*runtimev1.InitResponse, error) {
-	resp, err := s.Runtime.Init(ctx, r)
-	if err != nil {
-		return nil, s.Logger.Wrapf(err, "cannot init runtime")
-	}
-	if resp.Status.State != runtimev1.InitStatus_READY {
-		return nil, s.Logger.Errorf("runtime is not ready: %v", resp.Status.Message)
-
-	}
-	return resp, nil
-}
-
-func (s *Instance) Configure(ctx context.Context, r *runtimev1.ConfigureRequest) (*runtimev1.ConfigureResponse, error) {
-	return s.Runtime.Configure(ctx, r)
-}
-
-func (s *Instance) Start(ctx context.Context, r *runtimev1.StartRequest) (*runtimev1.StartResponse, error) {
-	w := wool.Get(ctx).In("applications.Start<%s>", s.Unique())
-	logger.Tracef("starting!")
-	return s.Runtime.Start(ctx, r)
-}

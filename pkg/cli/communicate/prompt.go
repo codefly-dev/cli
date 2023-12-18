@@ -2,7 +2,6 @@ package communicate
 
 import (
 	"context"
-	"fmt"
 
 	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 	"github.com/codefly-dev/core/wool"
@@ -15,8 +14,8 @@ func NewPrompt() *Prompt {
 }
 
 func (h *Prompt) Answer(ctx context.Context, q *agentv1.Question) (*agentv1.Answer, error) {
-	w := wool.Get(ctx).In("communicate")
-	logger.Debugf("Processing request: %v", q)
+	w := wool.Get(ctx).In("communicate.Answer")
+	w.Debug("processing", wool.RequestField(q))
 	switch v := q.Value.(type) {
 	case *agentv1.Question_Display:
 
@@ -24,6 +23,6 @@ func (h *Prompt) Answer(ctx context.Context, q *agentv1.Question) (*agentv1.Answ
 	case *agentv1.Question_Confirm:
 		return Confirm(q.Message, v.Confirm)
 	default:
-		return nil, fmt.Errorf("unknown question type: %v", q.Value)
+		return nil, w.NewError("unknown question type: %v", q.Value)
 	}
 }

@@ -22,7 +22,7 @@ func NewPartial(ctx context.Context, project *configurations.Project, partial *c
 	display.PartialLoading(partial)
 	p := &Partial{Configuration: partial}
 	for _, name := range partial.Applications {
-		logger.Debugf("Loading application: %s", name)
+		logger.Debuf("Loading application: %s", name)
 		// Get config
 		//config, err := configurations.LoadApplicationFromName(name)
 		//if err != nil {

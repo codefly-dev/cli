@@ -1,6 +1,7 @@
 package add
 
 import (
+	"context"
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -9,8 +10,6 @@ import (
 	"github.com/codefly-dev/core/actions/actions"
 	actionsproject "github.com/codefly-dev/core/actions/project"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/wool"
-
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
@@ -22,21 +21,19 @@ var ProjectCmd = &cobra.Command{
 
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := shared.NewContext()
-		w := wool.Get(ctx).In("Add project")
 		if interactive {
-			logger.Oops("Interactive mode not implemented yet")
-			return
+			cli.Error("Interactive mode not implemented yet")
+			cli.Exit()
 		}
 		if len(args) != 1 {
-			logger.Oops("You must provide a name for the project as the single argument")
-			return
+			cli.Error("You must provide a name for the project as the single argument")
+			cli.Exit()
 		}
-		addProject(args[0])
+		addProject(ctx, args[0])
 	},
 }
 
-func addProject(name string) {
-	ctx := shared.NewContext()
+func addProject(ctx context.Context, name string) {
 	workspace := common.Workspace(ctx)
 
 	if workspace.ExistsProject(name) {

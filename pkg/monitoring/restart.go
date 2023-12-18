@@ -18,7 +18,6 @@ type RestartTracker struct {
 
 func (t *RestartTracker) Start(ctx context.Context, events chan<- ServiceEvent) error {
 	w := wool.Get(ctx).In("monitoring.RestartTracker")
-	logger.Debugf("runtime wants to restart -- will ping the runtime for started status")
 	ticker := time.NewTicker(1 * time.Second)
 	go func() {
 		for {
@@ -28,11 +27,11 @@ func (t *RestartTracker) Start(ctx context.Context, events chan<- ServiceEvent) 
 			}
 			req, err := t.runtime.Information(ctx, &runtimev1.InformationRequest{})
 			if err != nil {
-				logger.Debugf("cannot get status from runtime: %v", err)
+				w.Debug("cannot get status from runtime", wool.ErrField(err))
 				continue
 			}
 			if req.Status == services.RestartWantedState {
-				logger.Debugf("restart wanted: sending restart wanted message")
+				w.Debug("restart wanted: sending restart wanted message")
 				events <- ServiceEvent{
 					Unique: t.unique,
 					Event:  "RestartWanted",

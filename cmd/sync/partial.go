@@ -1,60 +1,46 @@
 package sync
 
-import (
-	"context"
-	"fmt"
-	"os"
-	"os/signal"
+// // PartialCmd represents the run command
+// var PartialCmd = &cobra.Command{
+// 	Use:   "partial",
+// 	Short: "Sync a partial",
 
-	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/application"
-	"github.com/codefly-dev/cli/pkg/partial"
-	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/golor"
-	"github.com/spf13/cobra"
-)
+// 	Run: func(cmd *cobra.Command, args []string) {
 
-// PartialCmd represents the run command
-var PartialCmd = &cobra.Command{
-	Use:   "partial",
-	Short: "Sync a partial",
+// 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+// 		defer stop()
 
-	Run: func(cmd *cobra.Command, args []string) {
+// 		// errs := make(chan error)
 
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		defer stop()
+// 		if len(args) == 0 {
+// 			fmt.Println("Please provide a partial name")
+// 			os.Exit(0)
+// 		}
+// 		name := args[0]
 
-		// errs := make(chan error)
+// 		project := common.Project(ctx)
 
-		if len(args) == 0 {
-			fmt.Println("Please provide a partial name")
-			os.Exit(0)
-		}
-		name := args[0]
+// 		conf, err := project.GetPartial(name)
+// 		if err != nil {
+// 			fmt.Printf("Cannot find partial <%s> in project <%s>\n", name, project.Name)
+// 			os.Exit(1)
+// 		}
 
-		project := common.Project(ctx)
+// 		part, err := partial.NewPartial(ctx, project, conf, application.FactoryMode)
+// 		shared.ExitOnError(err, "<%s>", conf.Name)
 
-		conf, err := project.GetPartial(name)
-		if err != nil {
-			fmt.Printf("Cannot find partial <%s> in project <%s>\n", name, project.Name)
-			os.Exit(1)
-		}
+// 		if initOnly {
+// 			return
+// 		}
 
-		part, err := partial.NewPartial(ctx, project, conf, application.FactoryMode)
-		shared.ExitOnError(err, "<%s>", conf.Name)
+// 		err = part.Sync(ctx)
+// 		shared.UnexpectedExitOnError(err, "cannot sync partial")
 
-		if initOnly {
-			return
-		}
+// 		golor.Println(`#(blue,bold)[Syncing partial done]`)
+// 	},
+// }
 
-		err = part.Sync(ctx)
-		shared.UnexpectedExitOnError(err, "cannot sync partial")
-
-		golor.Println(`#(blue,bold)[Syncing partial done]`)
-	},
-}
-
-func init() {
-	PartialCmd.Flags().BoolVar(&current, "current", false, "Run the current partial")
-	PartialCmd.Flags().BoolVar(&initOnly, "init-only", false, "Only initialize the partial")
-}
+// func init() {
+// 	PartialCmd.Flags().BoolVar(&current, "current", false, "Run the current partial")
+// 	PartialCmd.Flags().BoolVar(&initOnly, "init-only", false, "Only initialize the partial")
+// }

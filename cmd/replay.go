@@ -7,7 +7,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +25,7 @@ var ReplayCmd = &cobra.Command{
 
 func replayCodefly(track string) {
 	ctx := shared.NewContext()
-	w := wool.Get(ctx).In("Replay")
+	// w := wool.Get(ctx).In("Replay")
 	tracker := actions.NewActionTracker(track)
 
 	// Optionally override the directory
@@ -34,7 +33,6 @@ func replayCodefly(track string) {
 
 	steps, err := tracker.GetActions(ctx)
 	shared.UnexpectedExitOnError(err, "cannot get actions")
-	logger.DebugMe("Replaying #%d steps", len(steps))
 	for _, action := range steps {
 		fmt.Println("Running action equivalent to:", action.Command())
 		_, err := actions.Run(ctx, action)

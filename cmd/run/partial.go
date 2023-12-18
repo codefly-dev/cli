@@ -93,20 +93,19 @@ var PartialCmd = &cobra.Command{
 		//		}
 		//	}
 		//cleanup:
-		//	logger.Debugf("Clearing agents")
+		//	logger.Debuf("Clearing agents")
 		//	agents.ClearAgents()
 		//	fmt.Println("Cleaning up...")
 		//	if initOnly {
 		//		return
 		//	}
-		//	//logger.Debugf("Stopping partial <%s>", conf.Name)
+		//	//logger.Debuf("Stopping partial <%s>", conf.Name)
 		//	//err = partial.Stop(ctx)
 		//	//shared.ExitOnError(err, "cannot stop partial")
 	},
 }
 
 func init() {
-	PartialCmd.Flags().BoolVar(&server, "server", false, "Run the web server")
 	PartialCmd.Flags().BoolVar(&current, "current", false, "Run the current application")
 	PartialCmd.Flags().BoolVar(&initOnly, "init-only", false, "Run only the application init step")
 	PartialCmd.Flags().BoolVar(&configureOnly, "configure-only", false, "Run only the application configure step")

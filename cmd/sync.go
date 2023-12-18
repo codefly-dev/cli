@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"github.com/codefly-dev/cli/cmd/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -12,7 +11,7 @@ var SyncCmd = &cobra.Command{
 }
 
 func init() {
-	SyncCmd.AddCommand(sync.PartialCmd)
-	SyncCmd.AddCommand(sync.ApplicationCmd)
-	SyncCmd.AddCommand(sync.ServiceCmd)
+	// SyncCmd.AddCommand(sync.PartialCmd)
+	// SyncCmd.AddCommand(sync.ApplicationCmd)
+	// SyncCmd.AddCommand(sync.ServiceCmd)
 }

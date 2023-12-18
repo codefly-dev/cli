@@ -3,9 +3,9 @@ package web
 import (
 	"context"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 )
 
@@ -39,12 +39,11 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 }
 
 func (server *CodeflyServer) Start(ctx context.Context) error {
-	w := wool.Get(ctx).In("CodeflyServer.Start")
 	golor.Println(`#(blue)[Starting server...]`)
 	go func() {
 		err := server.rest.Run(ctx)
 		if err != nil {
-			logger.Oops("got: %v", err)
+			cli.ExitOnError(err, "cannot start rest server")
 		}
 	}()
 	return server.server.Run(ctx)

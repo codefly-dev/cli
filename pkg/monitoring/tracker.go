@@ -52,17 +52,17 @@ func (t *SingleTracker) Stop() {
 }
 
 func NewSingleTracker(ctx context.Context, service *configurations.Service, runtime services.Runtime, tracker *runtimev1.Tracker) (*SingleTracker, error) {
-	w := wool.Get(ctx).In("monitoring.NewSingleTracker<%s>", service.Name)
+	w := wool.Get(ctx).In("monitoring.NewSingleTracker", wool.NameField(service.Name))
 	tracked, err := NewTracked(service, tracker)
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot create tracked")
+		return nil, w.Wrapf(err, "cannot create tracked")
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	return &SingleTracker{Tracked: tracked, Runtime: runtime, ctx: ctx, cancel: cancel}, nil
 }
 
 func (t *SingleTracker) Start(ctx context.Context, events chan<- ServiceEvent) error {
-	w := wool.Get(ctx).In("monitoring.SingleTracker.Start")
+	w := wool.Get(ctx).In("monitoring.SingleTracker::Start")
 	ticker := time.NewTicker(1 * time.Second)
 	go func() {
 		for {
@@ -80,11 +80,11 @@ func (t *SingleTracker) Start(ctx context.Context, events chan<- ServiceEvent) e
 				t.RWMutex.RUnlock()
 				req, err := t.Runtime.Information(ctx, &runtimev1.InformationRequest{})
 				if err != nil {
-					logger.Debugf("cannot get status from runtimev1: %v", err)
+					w.Debug("cannot get status from runtime", wool.ErrField(err))
 					continue
 				}
 				if req.Status == services.RestartWantedState {
-					logger.Debugf("runtimev1 wants to restart")
+					w.Debug("runtimev1 wants to restart")
 					events <- ServiceEvent{
 						Unique: t.Tracked.Unique(),
 						Event:  "RestartWanted",
@@ -108,7 +108,6 @@ func (t *SingleTracker) Start(ctx context.Context, events chan<- ServiceEvent) e
 					t.usage = usage
 					t.RWMutex.Unlock()
 				} else {
-					logger.TODO("cant get usage ")
 					t.RWMutex.Lock()
 					t.usage = &Usage{}
 					t.RWMutex.Unlock()
@@ -156,12 +155,12 @@ type ServiceTracker struct {
 }
 
 func (t *ServiceTracker) OnHold(ctx context.Context, service *configurations.Service, runtime services.Runtime) error {
-	w := wool.Get(ctx).In("monitoring.ServiceTracker.OnHold<%s>", service.Name)
+	w := wool.Get(ctx).In("monitoring.ServiceTracker::OnHold", wool.NameField(service.Name))
 	tracker := &RestartTracker{unique: service.Unique(), runtime: runtime}
 	// Start errors first or start working in a non-blocking way
 	err := tracker.Start(ctx, t.events)
 	if err != nil {
-		return logger.Wrapf(err, "cannot start on-hold")
+		return w.Wrapf(err, "cannot start on-hold")
 	}
 	t.RWMutex.Lock()
 	t.current[service.Unique()] = tracker
@@ -170,10 +169,10 @@ func (t *ServiceTracker) OnHold(ctx context.Context, service *configurations.Ser
 }
 
 func (t *ServiceTracker) Track(ctx context.Context, service *configurations.Service, runtime services.Runtime, trackers []*runtimev1.Tracker) error {
-	w := wool.Get(ctx).In("monitoring.ServiceTracker.Track<%s>", service.Name)
+	w := wool.Get(ctx).In("ServiceTracker::", wool.NameField(service.Name))
 	tracker, err := CreateTracker(ctx, service, runtime, trackers)
 	if err != nil {
-		return logger.Wrapf(err, "cannot create tracker")
+		return w.Wrapf(err, "cannot create tracker")
 	}
 	if tracker == nil {
 		return nil
@@ -181,7 +180,7 @@ func (t *ServiceTracker) Track(ctx context.Context, service *configurations.Serv
 	// Start errors first or start working in a non-blocking way
 	err = tracker.Start(ctx, t.events)
 	if err != nil {
-		return logger.Wrapf(err, "cannot start tracker")
+		return w.Wrapf(err, "cannot start tracker")
 	}
 	t.RWMutex.Lock()
 	//t.trackers[service.Unique()] = &runtimev1.TrackerList{Trackers: trackers}

@@ -121,7 +121,7 @@ func runService(ctx context.Context, service *configurations.Service) error {
 	//	if initOnly || configureOnly {
 	//		return
 	//	}
-	//	logger.Debugf("Stopping service <%s>", config.Name)
+	//	logger.Debuf("Stopping service <%s>", config.Name)
 	//	err = app.Stop(ctx)
 	//	shared.ExitOnError(err, "cannot stop service")
 

@@ -54,7 +54,7 @@ func (p *TrackedProcess) Kill() error {
 }
 
 func (p *TrackedProcess) GetStatus(ctx context.Context) (ProcessState, error) {
-	w := wool.Get(ctx).In("TrackedProcess.State<%d>", p.PID)
+	w := wool.Get(ctx).In("TrackedProcess::GetStatus", wool.Field("pid", p.PID))
 	// Check for PID
 	proc, err := os.FindProcess(p.PID)
 	if err != nil {
@@ -66,7 +66,7 @@ func (p *TrackedProcess) GetStatus(ctx context.Context) (ProcessState, error) {
 	if err == nil {
 		state, err := findState(ctx, p.PID)
 		if err != nil {
-			return Unknown, logger.Wrapf(err, "cannot check if proc is defunct")
+			return Unknown, w.Wrapf(err, "cannot check if proc is defunct")
 		}
 		return state, nil
 	}
@@ -74,22 +74,22 @@ func (p *TrackedProcess) GetStatus(ctx context.Context) (ProcessState, error) {
 }
 
 func (p *TrackedProcess) GetUsage(ctx context.Context) (*Usage, error) {
-	w := wool.Get(ctx).In("TrackedProcess.Usage<%d>", p.PID)
+	w := wool.Get(ctx).In("TrackedProcess.GetUsage", wool.Field("pid", p.PID))
 	proc, err := process.NewProcess(int32(p.PID))
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot create process")
+		return nil, w.Wrapf(err, "cannot create process")
 	}
 
 	// Get CPU percent
 	cpuPercent, err := proc.CPUPercent()
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot get cpu percent")
+		return nil, w.Wrapf(err, "cannot get cpu percent")
 	}
 
 	// Get memory info
 	memInfo, err := proc.MemoryInfo()
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot get memory info")
+		return nil, w.Wrapf(err, "cannot get memory info")
 	}
 	return &Usage{
 		CPU:    cpuPercent,
@@ -118,7 +118,7 @@ func parseState(out string) (string, bool) {
 }
 
 func findState(ctx context.Context, pid int) (ProcessState, error) {
-	w := wool.Get(ctx).In("TrackedProcess.State<%d>", pid)
+	w := wool.Get(ctx).In("findState", wool.Field("pid", pid))
 	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "state=")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -128,7 +128,7 @@ func findState(ctx context.Context, pid int) (ProcessState, error) {
 	}
 	state, tts := parseState(out.String())
 	if tts {
-		logger.Debugf("process %d is in TTS", pid)
+		w.Debug("process is in TTS state")
 	}
 	switch state {
 	case "R":
@@ -152,6 +152,6 @@ func findState(ctx context.Context, pid int) (ProcessState, error) {
 	case "W":
 		return Waking, nil
 	default:
-		return Unknown, fmt.Errorf("unknown state: %s", out.String())
+		return Unknown, w.Error("unknown state: %s", out.String())
 	}
 }

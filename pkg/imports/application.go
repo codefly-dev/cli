@@ -19,7 +19,7 @@ type Importer struct {
 
 func ImportApplication(imp *Importer) error {
 	//logger := shared.GetBaseLogger(ctx).With("import.ImportApplication")
-	//logger.Debugf("Importing applications to <%s>", imp.ProjectName())
+	//logger.Debuf("Importing applications to <%s>", imp.ProjectName())
 	//err := imp.ApplicationImporter.Fetch()
 	//if err != nil {
 	//	return err
@@ -66,7 +66,7 @@ func ImportApplication(imp *Importer) error {
 	//	return logger.Wrapf(err, "cannot get base agent")
 	//}
 	//for _, input := range inputs {
-	//	logger.Debugf("creating service <%s>", input.Name)
+	//	logger.Debuf("creating service <%s>", input.Name)
 	//	err := services.Add(input)
 	//	if err != nil {
 	//		return logger.Wrapf(err, "cannot create service")
