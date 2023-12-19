@@ -2,6 +2,7 @@ package add
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -25,15 +26,40 @@ var ProjectCmd = &cobra.Command{
 			cli.Error("Interactive mode not implemented yet")
 			cli.Exit()
 		}
-		if len(args) != 1 {
-			cli.Error("You must provide a name for the project as the single argument")
-			cli.Exit()
+		if len(args) == 1 {
+			newProject(ctx, args[0])
+		} else {
+			// Find in Path and add to workspace
+			dir, err := configurations.FindUp[configurations.Project](ctx)
+			cli.ExitOnError(err, "Cannot find project in path")
+			if dir == nil {
+				cli.Error("No project found in path")
+			}
+			addProject(ctx, *dir)
+
 		}
-		addProject(ctx, args[0])
 	},
 }
 
-func addProject(ctx context.Context, name string) {
+func addProject(ctx context.Context, dir string) {
+	project, err := configurations.LoadProjectFromDirUnsafe(ctx, dir)
+	cli.ExitOnError(err, "Cannot load project from dir")
+	workspace := common.Workspace(ctx)
+	if workspace.ExistsProject(project.Name) {
+		cli.Error("Project <{{.}}> already exists", project.Name)
+		cli.Exit()
+	}
+	confirm := models.Confirm(fmt.Sprintf("Do you want to add project <%s> to your workspace?", project.Name), true)
+	if !confirm {
+		cli.Header(2, "Received loud and clear!")
+	}
+	err = workspace.AddProject(ctx, project)
+	cli.ExitOnError(err, "Cannot add project to workspace")
+	cli.Header(2, "Project <{{.Name}}> added to workspace", project)
+
+}
+
+func newProject(ctx context.Context, name string) {
 	workspace := common.Workspace(ctx)
 
 	if workspace.ExistsProject(name) {
