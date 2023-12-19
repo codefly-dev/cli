@@ -14,7 +14,7 @@ require (
 	github.com/shirou/gopsutil/v3 v3.23.11
 	github.com/spf13/cobra v1.8.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20231212172506-995d672761c0
-	google.golang.org/grpc v1.60.0
+	google.golang.org/grpc v1.60.1
 	google.golang.org/protobuf v1.31.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -43,14 +43,14 @@ require (
 	github.com/go-logr/logr v1.3.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-openapi/analysis v0.21.4 // indirect
-	github.com/go-openapi/errors v0.20.4 // indirect
-	github.com/go-openapi/jsonpointer v0.20.0 // indirect
-	github.com/go-openapi/jsonreference v0.20.2 // indirect
-	github.com/go-openapi/loads v0.21.2 // indirect
-	github.com/go-openapi/spec v0.20.11 // indirect
-	github.com/go-openapi/strfmt v0.21.9 // indirect
-	github.com/go-openapi/swag v0.22.4 // indirect
+	github.com/go-openapi/analysis v0.21.5 // indirect
+	github.com/go-openapi/errors v0.21.0 // indirect
+	github.com/go-openapi/jsonpointer v0.20.1 // indirect
+	github.com/go-openapi/jsonreference v0.20.3 // indirect
+	github.com/go-openapi/loads v0.21.3 // indirect
+	github.com/go-openapi/spec v0.20.12 // indirect
+	github.com/go-openapi/strfmt v0.21.10 // indirect
+	github.com/go-openapi/swag v0.22.5 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
@@ -120,7 +120,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.21.0 // indirect
 	go.opentelemetry.io/otel/trace v1.21.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/crypto v0.16.0 // indirect
+	golang.org/x/crypto v0.17.0 // indirect
 	golang.org/x/exp v0.0.0-20231214170342-aacd6d4b4611 // indirect
 	golang.org/x/net v0.19.0 // indirect
 	golang.org/x/sync v0.5.0 // indirect
@@ -149,7 +149,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/glamour v0.6.0
 	github.com/charmbracelet/lipgloss v0.9.1
-	github.com/codefly-dev/core v0.0.57
+	github.com/codefly-dev/core v0.0.58
 	github.com/codefly-dev/golor v0.0.10
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/golang-migrate/migrate/v4 v4.16.2
