@@ -16,24 +16,24 @@ package build
 
 // 		name := args[0]
 // 		reference, err := configurations.ParseServiceReference(name)
-// 		shared.UnexpectedExitOnError(err, "<%s>", name)
+// 		cli.ExitOnError(err, "<%s>", name)
 
 // 		var app *configurations.Application
 // 		//if reference.Application == "" {
 // 		//	app = common.ApplicationConfiguration(true)
 // 		//} else {
 // 		//	app, err = configurations.LoadApplicationFromName(reference.Application, configurations.WithProject(project))
-// 		//	shared.UnexpectedExitOnError(err, "<%s>", reference.Application)
+// 		//	cli.ExitOnError(err, "<%s>", reference.Application)
 // 		//}
 
 // 		conf, err := app.LoadServiceFromName(ctx, reference.Name)
-// 		shared.UnexpectedExitOnError(err, "<%s>", name)
+// 		cli.ExitOnError(err, "<%s>", name)
 
 // 		instance, err := services.NewServiceInstance(conf, app)
-// 		shared.UnexpectedExitOnError(err, "<%s>", name)
+// 		cli.ExitOnError(err, "<%s>", name)
 
 // 		err = instance.SoloBuild(ctx)
-// 		shared.UnexpectedExitOnError(err, "cannot build")
+// 		cli.ExitOnError(err, "cannot build")
 
 // 		agents.ClearAgents()
 // 	},

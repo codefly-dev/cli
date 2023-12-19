@@ -24,10 +24,10 @@ package build
 // 			os.Exit(1)
 // 		}
 // 		part, err := partial.NewPartial(ctx, project, conf, application.FactoryMode)
-// 		shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
+// 		cli.ExitOnError(err, "<%s>", conf.Name)
 
 // 		err = part.Build(ctx)
-// 		shared.UnexpectedExitOnError(err, "cannot build partial")
+// 		cli.ExitOnError(err, "cannot build partial")
 
 // 		logger.Debuf("Clearing agents")
 // 		agents.ClearAgents()

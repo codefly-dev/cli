@@ -31,7 +31,7 @@ var PartialCmd = &cobra.Command{
 		//	}
 		//
 		//	partial, err := partial.NewPartial(ctx, project, conf, application.RuntimeMode)
-		//	shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
+		//	cli.ExitOnError(err, "<%s>", conf.Name)
 		//
 		//	session := observability.NewPartialSession(conf)
 		//	spy, err := observability.NewSpy(ctx, session)
@@ -59,14 +59,14 @@ var PartialCmd = &cobra.Command{
 		//		goto cleanup
 		//	}
 		//	err = partial.Configure(ctx)
-		//	shared.UnexpectedExitOnError(err, "cannot configure partial")
+		//	cli.ExitOnError(err, "cannot configure partial")
 		//
 		//	if configureOnly {
 		//		goto cleanup
 		//	}
 		//
 		//	err = spy.Activate(ctx)
-		//	shared.UnexpectedExitOnError(err, "cannot activate spy")
+		//	cli.ExitOnError(err, "cannot activate spy")
 		//
 		//	go func() {
 		//		errs <- partial.Run(ctx)

@@ -18,10 +18,10 @@ package update
 
 // 		configurations.SetMode(configurations.ModeApplication)
 // 		app, err := application.Load(ctx, project, config, application.FactoryMode)
-// 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
+// 		cli.ExitOnError(err, "<%s>", config.Name)
 
 // 		err = app.Update(ctx)
-// 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
+// 		cli.ExitOnError(err, "<%s>", config.Name)
 // 	},
 // }
 

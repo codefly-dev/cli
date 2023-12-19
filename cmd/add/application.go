@@ -60,14 +60,14 @@ func addApplication(ctx context.Context, name string) {
 		Description: desc,
 		Project:     project.Name,
 	})
-	shared.UnexpectedExitOnError(err, "cannot create action")
+	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)
 	if err != nil {
-		shared.UnexpectedExitOnError(err, "cannot add application")
+		cli.ExitOnError(err, "cannot add application")
 	}
 	app, err := actions.As[configurations.Application](out)
 	if err != nil {
-		shared.UnexpectedExitOnError(err, "cannot add application")
+		cli.ExitOnError(err, "cannot add application")
 	}
 	cli.Header(2, "Application <{{.Name}}> added and is now active", app)
 }

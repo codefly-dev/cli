@@ -12,15 +12,15 @@ package deploy
 
 // 		configurations.SetMode(configurations.ModeApplication)
 // 		app, err := application.Load(ctx, project, config, application.FactoryMode)
-// 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
+// 		cli.ExitOnError(err, "<%s>", config.Name)
 
 // 		golor.Println(`#(blue,bold)[Deploying applications]: #(italic,white)[{{.Configuration.Name}}]`, app)
 
 // 		env, err := project.FindEnvironment(environment)
-// 		shared.UnexpectedExitOnError(err, "cannot find environment <%s>", environment)
+// 		cli.ExitOnError(err, "cannot find environment <%s>", environment)
 
 // 		err = app.Deploy(ctx, env)
-// 		shared.UnexpectedExitOnError(err, "cannot deploy applications")
+// 		cli.ExitOnError(err, "cannot deploy applications")
 // 	},
 // }
 

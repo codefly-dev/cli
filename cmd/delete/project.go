@@ -33,7 +33,7 @@ func deleteProject(name string) {
 	confirm := models.Confirm(golor.Sprintf("Delete the project <{{.}}>?", name), false)
 	if confirm {
 		err := w.DeleteProject(ctx, name)
-		shared.UnexpectedExitOnError(err, "cannot delete project")
+		cli.ExitOnError(err, "cannot delete project")
 		cli.Header(2, "Project <{{.}}> deleted", name)
 	}
 }

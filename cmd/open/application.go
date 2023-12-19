@@ -4,6 +4,7 @@ import (
 	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
@@ -17,7 +18,7 @@ var ApplicationCmd = &cobra.Command{
 		application := common.Application(ctx)
 		c := exec.Command(editor, application.Dir())
 		err := c.Run()
-		shared.UnexpectedExitOnError(err, "cannot open application")
+		cli.ExitOnError(err, "cannot open application")
 	},
 }
 

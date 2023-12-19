@@ -34,7 +34,7 @@ package sync
 // 		}
 
 // 		err = part.Sync(ctx)
-// 		shared.UnexpectedExitOnError(err, "cannot sync partial")
+// 		cli.ExitOnError(err, "cannot sync partial")
 
 // 		golor.Println(`#(blue,bold)[Syncing partial done]`)
 // 	},

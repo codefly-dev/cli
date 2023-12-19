@@ -32,11 +32,11 @@ func replayCodefly(track string) {
 	tracker.WithDir(dir)
 
 	steps, err := tracker.GetActions(ctx)
-	shared.UnexpectedExitOnError(err, "cannot get actions")
+	cli.ExitOnError(err, "cannot get actions")
 	for _, action := range steps {
 		fmt.Println("Running action equivalent to:", action.Command())
 		_, err := actions.Run(ctx, action)
-		shared.UnexpectedExitOnError(err, "cannot run action")
+		cli.ExitOnError(err, "cannot run action")
 	}
 
 }

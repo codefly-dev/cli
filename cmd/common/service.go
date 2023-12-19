@@ -3,13 +3,14 @@ package common
 import (
 	"context"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 )
 
 func Service(ctx context.Context) *configurations.Service {
 	service, err := configurations.LoadServiceFromPath(ctx)
-	shared.UnexpectedExitOnError(err, "cannot load application from path")
+	cli.ExitOnError(err, "cannot load application from path")
 	if service != nil {
 		return service
 	}
@@ -21,6 +22,6 @@ func Service(ctx context.Context) *configurations.Service {
 	}
 
 	service, err = app.LoadActiveService(ctx)
-	shared.UnexpectedExitOnError(err, "cannot get current service")
+	cli.ExitOnError(err, "cannot get current service")
 	return service
 }

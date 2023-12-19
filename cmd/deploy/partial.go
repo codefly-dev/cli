@@ -24,13 +24,13 @@ package deploy
 // 			os.Exit(1)
 // 		}
 // 		part, err := partial.NewPartial(ctx, project, conf, application.FactoryMode)
-// 		shared.UnexpectedExitOnError(err, "<%s>", conf.Name)
+// 		cli.ExitOnError(err, "<%s>", conf.Name)
 
 // 		env, err := project.FindEnvironment(environment)
-// 		shared.UnexpectedExitOnError(err, "cannot find environment <%s>", environment)
+// 		cli.ExitOnError(err, "cannot find environment <%s>", environment)
 
 // 		err = part.Deploy(ctx, env)
-// 		shared.UnexpectedExitOnError(err, "cannot deploy partial")
+// 		cli.ExitOnError(err, "cannot deploy partial")
 
 // 		logger.Debuf("Clearing agents")
 // 		agents.ClearAgents()

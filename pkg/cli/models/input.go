@@ -6,7 +6,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/shared"
 )
 
 type input struct {
@@ -57,7 +56,7 @@ func Input(msg string, defaultValue string) string {
 		input:   defaultValue,
 	})
 	mod, err := p.Run()
-	shared.UnexpectedExitOnError(err, "cannot run input prompt")
+	cli.ExitOnError(err, "cannot run input prompt")
 	m := mod.(input)
 	if m.stopped {
 		os.Exit(0)

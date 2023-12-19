@@ -38,5 +38,5 @@ func deleteApplication(name string) {
 	if confirm {
 	}
 	err := project.DeleteApplication(ctx, name)
-	shared.UnexpectedExitOnError(err, "cannot delete application")
+	cli.ExitOnError(err, "cannot delete application")
 }

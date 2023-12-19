@@ -25,9 +25,9 @@ func switchApplication() {
 	ctx := shared.NewContext()
 	project := common.Project(ctx)
 	application, err := project.LoadActiveApplication(ctx)
-	shared.UnexpectedExitOnError(err, "cannot get active application")
+	cli.ExitOnError(err, "cannot get active application")
 	all, err := project.LoadApplications(ctx)
-	shared.UnexpectedExitOnError(err, "cannot get applications")
+	cli.ExitOnError(err, "cannot get applications")
 	if len(all) == 1 {
 		cli.Header(2, "You have only one application")
 		return
@@ -48,7 +48,7 @@ func switchApplication() {
 		})
 	}
 	selected, err := models.Select("Make this application active", entries)
-	shared.UnexpectedExitOnError(err, "cannot select application")
+	cli.ExitOnError(err, "cannot select application")
 
 	if selected.Identifier == application.Name {
 		cli.Header(2, "Active application is already: {{.Name}}", application)
@@ -59,12 +59,12 @@ func switchApplication() {
 		Name:    selected.Identifier,
 		Project: project.Name,
 	})
-	shared.UnexpectedExitOnError(err, "cannot create action")
+	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)
-	shared.UnexpectedExitOnError(err, "cannot set active application")
+	cli.ExitOnError(err, "cannot set active application")
 
 	now, err := actions.As[configurations.Application](out)
-	shared.UnexpectedExitOnError(err, "cannot get active application")
+	cli.ExitOnError(err, "cannot get active application")
 
 	cli.Header(2, "Active application is now: {{.Name}}", now)
 

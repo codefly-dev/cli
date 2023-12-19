@@ -4,6 +4,7 @@ import (
 	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
@@ -17,7 +18,7 @@ var ServiceCmd = &cobra.Command{
 		service := common.Service(ctx)
 		c := exec.Command(editor, service.Dir())
 		err := c.Run()
-		shared.UnexpectedExitOnError(err, "cannot open service")
+		cli.ExitOnError(err, "cannot open service")
 	},
 }
 

@@ -24,14 +24,14 @@ package sync
 // 		configurations.SetMode(configurations.ModeApplication)
 // 		app, err := application.Load(ctx, project, config, application.FactoryMode)
 
-// 		shared.UnexpectedExitOnError(err, "<%s>", config.Name)
+// 		cli.ExitOnError(err, "<%s>", config.Name)
 
 // 		//others, err := project.OtherApplications(config)
-// 		//shared.UnexpectedExitOnError(err, "cannot get other applications")
+// 		//cli.ExitOnError(err, "cannot get other applications")
 // 		//for _, other := range others {
 // 		//	logger.Debuf("not loading other application -- this is what partial are for: %v", other.Name)
 // 		//	// otherApp, err := application.Load(other, project)
-// 		//	// shared.UnexpectedExitOnError(err, "<%s>", other.Name)
+// 		//	// cli.ExitOnError(err, "<%s>", other.Name)
 // 		//	// app.AddDependency(otherApp)
 // 		//}
 // 		//
@@ -39,7 +39,7 @@ package sync
 // 		//golor.Println(`#(blue,bold)[Syncing application]: #(italic,white)[{{.Configuration.Name}}]`, app)
 
 // 		err = app.Sync(ctx)
-// 		shared.UnexpectedExitOnError(err, "cannot sync application")
+// 		cli.ExitOnError(err, "cannot sync application")
 // 	},
 // }
 

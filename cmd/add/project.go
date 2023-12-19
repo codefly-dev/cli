@@ -78,14 +78,14 @@ func newProject(ctx context.Context, name string) {
 		Name:        name,
 		Description: desc,
 	})
-	shared.UnexpectedExitOnError(err, "cannot create action")
+	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)
 	if err != nil {
-		shared.UnexpectedExitOnError(err, "cannot add project")
+		cli.ExitOnError(err, "cannot add project")
 	}
 	project, err := actions.As[configurations.Project](out)
 	if err != nil {
-		shared.UnexpectedExitOnError(err, "cannot add project")
+		cli.ExitOnError(err, "cannot add project")
 	}
 	cli.Header(2, "Project <{{.Name}}> added and is now active", project)
 }

@@ -16,7 +16,7 @@ var ApplicationCmd = &cobra.Command{
 		//#(bold,cyan)[Very excited you decided to import an applications in codefly to 🚀!]`)
 		//		path := configurations.SolveDir(path)
 		//		importer, err := cli.NewApplicationImporter(path)
-		//		shared.UnexpectedExitOnError(err, "cannot create applications importer")
+		//		cli.ExitOnError(err, "cannot create applications importer")
 		//		baseImporter := &cli.ServicePrompt{}
 		//		err = imports.ImportApplication(&imports.Importer{
 		//			ApplicationImporter: importer,

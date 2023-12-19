@@ -26,7 +26,7 @@ func switchProject() {
 	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
 	all, err := workspace.LoadProjects(ctx)
-	shared.UnexpectedExitOnError(err, "cannot get projects")
+	cli.ExitOnError(err, "cannot get projects")
 	if len(all) == 1 {
 		cli.Header(2, "You have only one project")
 		return
@@ -47,7 +47,7 @@ func switchProject() {
 		})
 	}
 	selected, err := models.Select("Make this project active", entries)
-	shared.UnexpectedExitOnError(err, "cannot select project")
+	cli.ExitOnError(err, "cannot select project")
 
 	if selected.Identifier == project.Name {
 		cli.Header(2, "Active project is already: {{.Name}}", project)
@@ -57,12 +57,12 @@ func switchProject() {
 	action, err := projectactions.NewActionSetProjectActive(ctx, &projectactions.SetProjectActive{
 		Name: selected.Identifier,
 	})
-	shared.UnexpectedExitOnError(err, "cannot create action")
+	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)
-	shared.UnexpectedExitOnError(err, "cannot set active project")
+	cli.ExitOnError(err, "cannot set active project")
 
 	project, err = actions.As[configurations.Project](out)
-	shared.UnexpectedExitOnError(err, "cannot get active project")
+	cli.ExitOnError(err, "cannot get active project")
 
 	cli.Header(2, "Active project is now: {{.Name}}", project)
 

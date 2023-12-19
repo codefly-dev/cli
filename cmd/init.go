@@ -11,7 +11,6 @@ import (
 	"github.com/codefly-dev/core/configurations"
 	v1actions "github.com/codefly-dev/core/generated/go/actions/v1"
 	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -38,7 +37,7 @@ func initCodefly() {
 	// Check if codefly is already initialized
 	isInitialized, err := configurations.IsInitialized(ctx)
 
-	shared.UnexpectedExitOnError(err, "cannot check if codefly is initialized")
+	cli.ExitOnError(err, "cannot check if codefly is initialized")
 	if isInitialized && !override {
 		cli.Warning(`codefly is already initialized.
 Use --override to reinitialize codefly.`)
@@ -65,9 +64,9 @@ Use --override to reinitialize codefly.`)
 	})
 
 	out, err := actions.Run(ctx, action)
-	shared.UnexpectedExitOnError(err, "cannot create default workspace")
+	cli.ExitOnError(err, "cannot create default workspace")
 	_, err = actions.As[configurations.Workspace](out)
-	shared.UnexpectedExitOnError(err, "cannot get default workspace")
+	cli.ExitOnError(err, "cannot get default workspace")
 
 	cli.Header(2, `✅ Created a default workspace configuration at ~/.codefly/codefly.yaml.`)
 }

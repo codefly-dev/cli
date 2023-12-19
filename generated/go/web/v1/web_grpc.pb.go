@@ -8,6 +8,7 @@ package observabilityv1
 
 import (
 	context "context"
+
 	v1 "github.com/codefly-dev/core/generated/go/base/v1"
 	v11 "github.com/codefly-dev/core/generated/go/observability/v1"
 	grpc "google.golang.org/grpc"

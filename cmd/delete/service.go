@@ -36,7 +36,7 @@ func deleteService(name string) {
 		display.New().WithProject(project).WithApplication(app).With("Service", name)), false)
 	if confirm {
 		err := app.DeleteService(ctx, name)
-		shared.UnexpectedExitOnError(err, "cannot delete service")
+		cli.ExitOnError(err, "cannot delete service")
 		cli.Header(2, "Service <{{.}}> deleted!", name)
 	} else {
 		cli.Header(2, "Abort! Heard loud and clear.")

@@ -24,7 +24,7 @@ var ContextCmd = &cobra.Command{
 			cli.Header(2, "⚡️ Active application <{{.}}>", *app)
 
 			app, err := project.LoadActiveApplication(ctx)
-			shared.UnexpectedExitOnError(err, "cannot load active application")
+			cli.ExitOnError(err, "cannot load active application")
 			if service := app.ActiveService(ctx); service == nil {
 				cli.Header(2, "🔥 No active service")
 				return

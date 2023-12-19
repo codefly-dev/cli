@@ -4,6 +4,7 @@ import (
 	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
@@ -17,7 +18,7 @@ var ProjectCmd = &cobra.Command{
 		project := common.Project(ctx)
 		c := exec.Command(editor, project.Dir())
 		err := c.Run()
-		shared.UnexpectedExitOnError(err, "cannot open project")
+		cli.ExitOnError(err, "cannot open project")
 
 	},
 }
