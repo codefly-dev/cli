@@ -104,7 +104,7 @@ func local_request_Web_GetProjects_0(ctx context.Context, marshaler runtime.Mars
 }
 
 func request_Web_GetProjectInventory_0(ctx context.Context, marshaler runtime.Marshaler, client WebClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
-	var protoReq ProjectInventoryRequest
+	var protoReq ProjectRequest
 	var metadata runtime.ServerMetadata
 
 	var (
@@ -130,7 +130,7 @@ func request_Web_GetProjectInventory_0(ctx context.Context, marshaler runtime.Ma
 }
 
 func local_request_Web_GetProjectInventory_0(ctx context.Context, marshaler runtime.Marshaler, server WebServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
-	var protoReq ProjectInventoryRequest
+	var protoReq ProjectRequest
 	var metadata runtime.ServerMetadata
 
 	var (
@@ -156,7 +156,7 @@ func local_request_Web_GetProjectInventory_0(ctx context.Context, marshaler runt
 }
 
 func request_Web_GetProjectServiceDependencyGraph_0(ctx context.Context, marshaler runtime.Marshaler, client WebClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
-	var protoReq ServiceDependencyGraphRequest
+	var protoReq ProjectRequest
 	var metadata runtime.ServerMetadata
 
 	var (
@@ -182,7 +182,7 @@ func request_Web_GetProjectServiceDependencyGraph_0(ctx context.Context, marshal
 }
 
 func local_request_Web_GetProjectServiceDependencyGraph_0(ctx context.Context, marshaler runtime.Marshaler, server WebServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
-	var protoReq ServiceDependencyGraphRequest
+	var protoReq ProjectRequest
 	var metadata runtime.ServerMetadata
 
 	var (
@@ -203,6 +203,58 @@ func local_request_Web_GetProjectServiceDependencyGraph_0(ctx context.Context, m
 	}
 
 	msg, err := server.GetProjectServiceDependencyGraph(ctx, &protoReq)
+	return msg, metadata, err
+
+}
+
+func request_Web_GetProjectPublicApplicationsDependencyGraph_0(ctx context.Context, marshaler runtime.Marshaler, client WebClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var protoReq ProjectRequest
+	var metadata runtime.ServerMetadata
+
+	var (
+		val string
+		ok  bool
+		err error
+		_   = err
+	)
+
+	val, ok = pathParams["project"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "project")
+	}
+
+	protoReq.Project, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "project", err)
+	}
+
+	msg, err := client.GetProjectPublicApplicationsDependencyGraph(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+
+}
+
+func local_request_Web_GetProjectPublicApplicationsDependencyGraph_0(ctx context.Context, marshaler runtime.Marshaler, server WebServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var protoReq ProjectRequest
+	var metadata runtime.ServerMetadata
+
+	var (
+		val string
+		ok  bool
+		err error
+		_   = err
+	)
+
+	val, ok = pathParams["project"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "project")
+	}
+
+	protoReq.Project, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "project", err)
+	}
+
+	msg, err := server.GetProjectPublicApplicationsDependencyGraph(ctx, &protoReq)
 	return msg, metadata, err
 
 }
@@ -420,6 +472,31 @@ func RegisterWebHandlerServer(ctx context.Context, mux *runtime.ServeMux, server
 
 	})
 
+	mux.Handle("GET", pattern_Web_GetProjectPublicApplicationsDependencyGraph_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/observability.v1.Web/GetProjectPublicApplicationsDependencyGraph", runtime.WithHTTPPathPattern("/overall/project/{project}/public-applications-graph"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_Web_GetProjectPublicApplicationsDependencyGraph_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+
+		forward_Web_GetProjectPublicApplicationsDependencyGraph_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+
+	})
+
 	mux.Handle("GET", pattern_Web_LogHistory_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -631,6 +708,28 @@ func RegisterWebHandlerClient(ctx context.Context, mux *runtime.ServeMux, client
 
 	})
 
+	mux.Handle("GET", pattern_Web_GetProjectPublicApplicationsDependencyGraph_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/GetProjectPublicApplicationsDependencyGraph", runtime.WithHTTPPathPattern("/overall/project/{project}/public-applications-graph"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_Web_GetProjectPublicApplicationsDependencyGraph_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+
+		forward_Web_GetProjectPublicApplicationsDependencyGraph_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+
+	})
+
 	mux.Handle("GET", pattern_Web_LogHistory_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -731,6 +830,8 @@ var (
 
 	pattern_Web_GetProjectServiceDependencyGraph_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 1, 2, 2}, []string{"overall", "project", "service-dependency-graph"}, ""))
 
+	pattern_Web_GetProjectPublicApplicationsDependencyGraph_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 1, 2, 2}, []string{"overall", "project", "public-applications-graph"}, ""))
+
 	pattern_Web_LogHistory_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"overall", "project", "logs", "history"}, ""))
 
 	pattern_Web_GetActive_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"active", "project", "information"}, ""))
@@ -748,6 +849,8 @@ var (
 	forward_Web_GetProjectInventory_0 = runtime.ForwardResponseMessage
 
 	forward_Web_GetProjectServiceDependencyGraph_0 = runtime.ForwardResponseMessage
+
+	forward_Web_GetProjectPublicApplicationsDependencyGraph_0 = runtime.ForwardResponseMessage
 
 	forward_Web_LogHistory_0 = runtime.ForwardResponseMessage
 

@@ -5,6 +5,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
+import { GraphResponse } from "../../observability/v1/dependencies_pb.js";
 
 /**
  * @generated from message observability.v1.GetProjectsResponse
@@ -44,76 +45,39 @@ export class GetProjectsResponse extends Message<GetProjectsResponse> {
 }
 
 /**
- * @generated from message observability.v1.ProjectInventoryRequest
+ * @generated from message observability.v1.ProjectRequest
  */
-export class ProjectInventoryRequest extends Message<ProjectInventoryRequest> {
+export class ProjectRequest extends Message<ProjectRequest> {
   /**
    * @generated from field: string project = 1;
    */
   project = "";
 
-  constructor(data?: PartialMessage<ProjectInventoryRequest>) {
+  constructor(data?: PartialMessage<ProjectRequest>) {
     super();
     proto3.util.initPartial(data, this);
   }
 
   static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "observability.v1.ProjectInventoryRequest";
+  static readonly typeName = "observability.v1.ProjectRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "project", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ProjectInventoryRequest {
-    return new ProjectInventoryRequest().fromBinary(bytes, options);
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ProjectRequest {
+    return new ProjectRequest().fromBinary(bytes, options);
   }
 
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ProjectInventoryRequest {
-    return new ProjectInventoryRequest().fromJson(jsonValue, options);
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ProjectRequest {
+    return new ProjectRequest().fromJson(jsonValue, options);
   }
 
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ProjectInventoryRequest {
-    return new ProjectInventoryRequest().fromJsonString(jsonString, options);
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ProjectRequest {
+    return new ProjectRequest().fromJsonString(jsonString, options);
   }
 
-  static equals(a: ProjectInventoryRequest | PlainMessage<ProjectInventoryRequest> | undefined, b: ProjectInventoryRequest | PlainMessage<ProjectInventoryRequest> | undefined): boolean {
-    return proto3.util.equals(ProjectInventoryRequest, a, b);
-  }
-}
-
-/**
- * @generated from message observability.v1.ServiceDependencyGraphRequest
- */
-export class ServiceDependencyGraphRequest extends Message<ServiceDependencyGraphRequest> {
-  /**
-   * @generated from field: string project = 1;
-   */
-  project = "";
-
-  constructor(data?: PartialMessage<ServiceDependencyGraphRequest>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "observability.v1.ServiceDependencyGraphRequest";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "project", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ServiceDependencyGraphRequest {
-    return new ServiceDependencyGraphRequest().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ServiceDependencyGraphRequest {
-    return new ServiceDependencyGraphRequest().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ServiceDependencyGraphRequest {
-    return new ServiceDependencyGraphRequest().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: ServiceDependencyGraphRequest | PlainMessage<ServiceDependencyGraphRequest> | undefined, b: ServiceDependencyGraphRequest | PlainMessage<ServiceDependencyGraphRequest> | undefined): boolean {
-    return proto3.util.equals(ServiceDependencyGraphRequest, a, b);
+  static equals(a: ProjectRequest | PlainMessage<ProjectRequest> | undefined, b: ProjectRequest | PlainMessage<ProjectRequest> | undefined): boolean {
+    return proto3.util.equals(ProjectRequest, a, b);
   }
 }
 
@@ -151,6 +115,43 @@ export class GetAgentInformationRequest extends Message<GetAgentInformationReque
 
   static equals(a: GetAgentInformationRequest | PlainMessage<GetAgentInformationRequest> | undefined, b: GetAgentInformationRequest | PlainMessage<GetAgentInformationRequest> | undefined): boolean {
     return proto3.util.equals(GetAgentInformationRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message observability.v1.MultiGraphResponse
+ */
+export class MultiGraphResponse extends Message<MultiGraphResponse> {
+  /**
+   * @generated from field: repeated observability.v1.GraphResponse graphs = 1;
+   */
+  graphs: GraphResponse[] = [];
+
+  constructor(data?: PartialMessage<MultiGraphResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v1.MultiGraphResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "graphs", kind: "message", T: GraphResponse, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MultiGraphResponse {
+    return new MultiGraphResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): MultiGraphResponse {
+    return new MultiGraphResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): MultiGraphResponse {
+    return new MultiGraphResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: MultiGraphResponse | PlainMessage<MultiGraphResponse> | undefined, b: MultiGraphResponse | PlainMessage<MultiGraphResponse> | undefined): boolean {
+    return proto3.util.equals(MultiGraphResponse, a, b);
   }
 }
 

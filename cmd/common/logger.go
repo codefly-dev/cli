@@ -27,18 +27,23 @@ func CLI() *CLILogger {
 }
 
 func (logger *CLILogger) Process(msg *wool.Log) {
+	if msg.Level < wool.GlobalLogLevel() {
+		return
+	}
 	switch msg.Level {
 	case wool.TRACE:
-		cli.Debug(fmt.Sprintf("%s: %s", msg.Header, msg.Message))
+		cli.Trace(fmt.Sprintf("%s", msg))
+	case wool.DEBUG:
+		cli.Debug(fmt.Sprintf("%s", msg))
 	case wool.WARN:
 		cli.Warning(msg.Message)
 	default:
-		fmt.Println(msg.Message)
+		fmt.Printf("%s\n", msg)
 	}
 }
 
 func (logger *CLILogger) ProcessWithSource(msg *wool.Log, source *wool.Identifier) {
-	fmt.Println("IDENTIFIER", source, msg)
+	fmt.Println("TODO: THIS COMES FROM AGENTS -- ADD FORMATTER IDENTIFIER", source, msg)
 }
 
 func (logger *CLILogger) Oops(format string, args ...any) {

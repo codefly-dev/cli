@@ -27,10 +27,10 @@ var RootCmd = &cobra.Command{
 func Execute() {
 	_ = RootCmd.ParseFlags(os.Args)
 	if debug {
-		wool.SetLogLevel(wool.DEBUG)
+		wool.SetGlobalLogLevel(wool.DEBUG)
 	}
 	if trace {
-		wool.SetLogLevel(wool.TRACE)
+		wool.SetGlobalLogLevel(wool.TRACE)
 	}
 	//wool.SetTODO(todo)
 	//wool.SetOverride(override)

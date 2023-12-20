@@ -31,6 +31,12 @@ func Warning(s string, templates ...any) {
 	fmt.Println(style.Render(golor.Sprintf(fmt.Sprintf("⚠️ #(bold,magenta)[%s]", s), templates...)))
 }
 
+func Trace(s string, templates ...any) {
+	// Render a block of text.
+	style := lipgloss.NewStyle()
+	fmt.Println(style.Render(golor.Sprintf(fmt.Sprintf("#(green)[TRACE %s]", s), templates...)))
+}
+
 func Debug(s string, templates ...any) {
 	// Render a block of text.
 	style := lipgloss.NewStyle()

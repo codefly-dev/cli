@@ -12,15 +12,15 @@ import (
 )
 
 func RecommendedGoDependencies(ctx context.Context, dir string) ([]*configurations.Agent, error) {
-	w := wool.Get(ctx).In("RecommendedGoDependencies<%s>", dir)
+	w := wool.Get(ctx).In("RecommendedGoDependencies", wool.DirField(dir))
 	// Parse the go.mod file
 	content, err := os.ReadFile(path.Join(dir, "go.mod"))
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot read go.mod")
+		return nil, w.Wrapf(err, "cannot read go.mod")
 	}
 	modFile, err := modfile.Parse("go.mod", content, nil)
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot parse go.mod")
+		return nil, w.Wrapf(err, "cannot parse go.mod")
 	}
 
 	agents := make(map[configurations.Agent]bool)

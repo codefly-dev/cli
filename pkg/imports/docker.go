@@ -21,19 +21,19 @@ func CheckDocker(ctx context.Context, dir string) (*Recommendation, error) {
 	// Parse the Dockerfile
 	cmds, err := dockerfile.ParseFile(file)
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot parse Dockerfile")
+		return nil, w.Wrapf(err, "cannot parse Dockerfile")
 	}
 	main, err := recommendedMain(ctx, cmds)
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot recommend bases")
+		return nil, w.Wrapf(err, "cannot recommend bases")
 	}
 	inc, err := includes(dir, cmds)
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot recommend includes")
+		return nil, w.Wrapf(err, "cannot recommend includes")
 	}
 	dependencies, err := recommendedDependencies(ctx, dir, main.Kind)
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot recommend dependencies")
+		return nil, w.Wrapf(err, "cannot recommend dependencies")
 	}
 	rec := &Recommendation{
 		Main: ServiceRecommendation{
@@ -69,7 +69,7 @@ func recommendedMain(ctx context.Context, cmds []dockerfile.Command) (*MainServi
 
 func RecommendBaseFromDocker(ctx context.Context, image string) (*MainServiceRecommendation, error) {
 	w := wool.Get(ctx).In("RecommendBaseFromDocker<%s>", image)
-	logger.TODO("IMPLEMENT PYTHON")
+	w.TODO("IMPLEMENT PYTHON")
 	return NewGoBase([]AgentRecommendation{
 		{Name: "codefly.ai/go:latest", Description: "Go base image", Reason: "Go is awesome"},
 		{Name: "codefly.ai/go-grpc:latest", Description: "Go with gRPC/REST", Reason: "Get a lot more done with less code"},

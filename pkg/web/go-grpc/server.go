@@ -83,7 +83,7 @@ func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*web.Ge
 	}, nil
 }
 
-func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectInventoryRequest) (*basev1.Project, error) {
+func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectRequest) (*basev1.Project, error) {
 	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -95,26 +95,30 @@ func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectIn
 	return view, nil
 }
 
-func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *web.ServiceDependencyGraphRequest) (*observabilityv1.GraphResponse, error) {
+func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *web.ProjectRequest) (*observabilityv1.GraphResponse, error) {
 	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	g, err := architecture.NewDependencyGraph(ctx, project)
+	g, err := architecture.LoadServiceGraph(ctx, project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	resp := &observabilityv1.GraphResponse{}
-	for _, node := range g.ServiceDependencyGraph.Nodes() {
-		resp.Nodes = append(resp.Nodes, &observabilityv1.GraphNode{
-			Id: node,
-		})
+	return architecture.ToGraphResponse(g), nil
+}
+
+func (s *Server) GetProjectPublicApplicationsDependencyGraph(ctx context.Context, request *web.ProjectRequest) (*web.MultiGraphResponse, error) {
+	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
-	for _, edge := range g.ServiceDependencyGraph.Edges() {
-		resp.Edges = append(resp.Edges, &observabilityv1.GraphEdge{
-			From: edge.From,
-			To:   edge.To,
-		})
+	gs, err := architecture.LoadPublicApplicationGraph(ctx, project)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	resp := &web.MultiGraphResponse{}
+	for _, g := range gs {
+		resp.Graphs = append(resp.Graphs, architecture.ToGraphResponse(g))
 	}
 	return resp, nil
 }

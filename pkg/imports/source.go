@@ -3,7 +3,6 @@ package imports
 import (
 	"context"
 
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -19,17 +18,17 @@ func (l *LocalSourceImporter) Analyze(ctx context.Context) (*Recommendation, err
 	w := wool.Get(ctx).In("import.LocalSourceImporter.Analyze")
 	recommendations, err := Analyze(ctx, l.dir)
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot analyze directory")
+		return nil, w.Wrapf(err, "cannot analyze directory")
 	}
 	return recommendations, nil
 }
 
-func (l *LocalSourceImporter) Import(ctx context.Context, target string) error {
-	w := wool.Get(ctx).In("import.LocalSourceImporter.Import")
-	err := shared.CopyDirectory(ctx, l.dir, target)
-	if err != nil {
-		return logger.Wrapf(err, "cannot copy directory")
-	}
+func (l *LocalSourceImporter) Import(context.Context, string) error {
+	//w := wool.Get(ctx).In("import.LocalSourceImporter.Import")
+	//err := shared.Copy(ctx, l.dir, target)
+	//if err != nil {
+	//	return w.Wrapf(err, "cannot copy directory")
+	//}
 	return nil
 }
 

@@ -227,6 +227,36 @@
         ]
       }
     },
+    "/overall/project/{project}/public-applications-graph": {
+      "get": {
+        "operationId": "Web_GetProjectPublicApplicationsDependencyGraph",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1MultiGraphResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
+    },
     "/overall/project/{project}/service-dependency-graph": {
       "get": {
         "operationId": "Web_GetProjectServiceDependencyGraph",
@@ -601,6 +631,18 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/v1Log"
+          }
+        }
+      }
+    },
+    "v1MultiGraphResponse": {
+      "type": "object",
+      "properties": {
+        "graphs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GraphResponse"
           }
         }
       }

@@ -22,7 +22,7 @@ func CheckDockerCompose(ctx context.Context, dir string) (*Recommendation, error
 		ConfigFiles: []types.ConfigFile{{Filename: dockerfile}},
 	})
 	if err != nil {
-		return nil, logger.Wrapf(err, "cannot load docker-compose.yml")
+		return nil, w.Wrapf(err, "cannot load docker-compose.yml")
 	}
 
 	// Print parsed services

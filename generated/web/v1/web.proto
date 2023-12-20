@@ -21,16 +21,16 @@ message GetProjectsResponse {
   repeated string projects = 1;
 }
 
-message ProjectInventoryRequest {
-  string project = 1;
-}
-
-message ServiceDependencyGraphRequest {
+message ProjectRequest {
   string project = 1;
 }
 
 message GetAgentInformationRequest {
   string agent = 1;
+}
+
+message MultiGraphResponse {
+  repeated GraphResponse graphs = 1;
 }
 
 /* Active information
@@ -60,15 +60,21 @@ service Web {
   }
 
 
-  rpc GetProjectInventory(ProjectInventoryRequest) returns (base.v1.Project) {
+  rpc GetProjectInventory(ProjectRequest) returns (base.v1.Project) {
     option (google.api.http) = {
       get: "/overall/project/{project}/inventory"
     };
   }
 
-  rpc GetProjectServiceDependencyGraph(ServiceDependencyGraphRequest) returns (GraphResponse) {
+  rpc GetProjectServiceDependencyGraph(ProjectRequest) returns (GraphResponse) {
     option (google.api.http) = {
       get: "/overall/project/{project}/service-dependency-graph"
+    };
+  }
+
+  rpc GetProjectPublicApplicationsDependencyGraph(ProjectRequest) returns (MultiGraphResponse) {
+    option (google.api.http) = {
+      get: "/overall/project/{project}/public-applications-graph"
     };
   }
 

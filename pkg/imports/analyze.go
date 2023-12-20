@@ -13,7 +13,7 @@ func Analyze(ctx context.Context, dir string) (*Recommendation, error) {
 	for _, r := range recommenders {
 		rec, err := r(ctx, dir)
 		if err != nil {
-			return nil, logger.Wrapf(err, "error checking with <%V>", r)
+			return nil, w.Wrapf(err, "error checking with <%V>", r)
 		}
 		if rec != nil {
 			rec.Name = filepath.Base(dir)
