@@ -154,3 +154,52 @@ export class GetAgentInformationRequest extends Message<GetAgentInformationReque
   }
 }
 
+/**
+ * @generated from message observability.v1.ActiveResponse
+ */
+export class ActiveResponse extends Message<ActiveResponse> {
+  /**
+   * @generated from field: string project = 1;
+   */
+  project = "";
+
+  /**
+   * @generated from field: string application = 2;
+   */
+  application = "";
+
+  /**
+   * @generated from field: string service = 3;
+   */
+  service = "";
+
+  constructor(data?: PartialMessage<ActiveResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v1.ActiveResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "application", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "service", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ActiveResponse {
+    return new ActiveResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ActiveResponse {
+    return new ActiveResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ActiveResponse {
+    return new ActiveResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ActiveResponse | PlainMessage<ActiveResponse> | undefined, b: ActiveResponse | PlainMessage<ActiveResponse> | undefined): boolean {
+    return proto3.util.equals(ActiveResponse, a, b);
+  }
+}
+

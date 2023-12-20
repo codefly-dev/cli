@@ -27,8 +27,10 @@ const (
 	Web_GetProjects_FullMethodName                      = "/observability.v1.Web/GetProjects"
 	Web_GetProjectInventory_FullMethodName              = "/observability.v1.Web/GetProjectInventory"
 	Web_GetProjectServiceDependencyGraph_FullMethodName = "/observability.v1.Web/GetProjectServiceDependencyGraph"
-	Web_Logs_FullMethodName                             = "/observability.v1.Web/Logs"
 	Web_LogHistory_FullMethodName                       = "/observability.v1.Web/LogHistory"
+	Web_GetActive_FullMethodName                        = "/observability.v1.Web/GetActive"
+	Web_Logs_FullMethodName                             = "/observability.v1.Web/Logs"
+	Web_ActiveLogHistory_FullMethodName                 = "/observability.v1.Web/ActiveLogHistory"
 )
 
 // WebClient is the client API for Web service.
@@ -39,8 +41,10 @@ type WebClient interface {
 	GetProjects(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetProjectsResponse, error)
 	GetProjectInventory(ctx context.Context, in *ProjectInventoryRequest, opts ...grpc.CallOption) (*v11.Project, error)
 	GetProjectServiceDependencyGraph(ctx context.Context, in *ServiceDependencyGraphRequest, opts ...grpc.CallOption) (*v12.GraphResponse, error)
-	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
 	LogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
+	GetActive(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ActiveResponse, error)
+	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
+	ActiveLogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
 }
 
 type webClient struct {
@@ -87,6 +91,24 @@ func (c *webClient) GetProjectServiceDependencyGraph(ctx context.Context, in *Se
 	return out, nil
 }
 
+func (c *webClient) LogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error) {
+	out := new(v12.LogResponse)
+	err := c.cc.Invoke(ctx, Web_LogHistory_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *webClient) GetActive(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ActiveResponse, error) {
+	out := new(ActiveResponse)
+	err := c.cc.Invoke(ctx, Web_GetActive_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *webClient) Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error) {
 	stream, err := c.cc.NewStream(ctx, &Web_ServiceDesc.Streams[0], Web_Logs_FullMethodName, opts...)
 	if err != nil {
@@ -119,9 +141,9 @@ func (x *webLogsClient) Recv() (*v12.Log, error) {
 	return m, nil
 }
 
-func (c *webClient) LogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error) {
+func (c *webClient) ActiveLogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error) {
 	out := new(v12.LogResponse)
-	err := c.cc.Invoke(ctx, Web_LogHistory_FullMethodName, in, out, opts...)
+	err := c.cc.Invoke(ctx, Web_ActiveLogHistory_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -136,8 +158,10 @@ type WebServer interface {
 	GetProjects(context.Context, *emptypb.Empty) (*GetProjectsResponse, error)
 	GetProjectInventory(context.Context, *ProjectInventoryRequest) (*v11.Project, error)
 	GetProjectServiceDependencyGraph(context.Context, *ServiceDependencyGraphRequest) (*v12.GraphResponse, error)
-	Logs(*emptypb.Empty, Web_LogsServer) error
 	LogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
+	GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error)
+	Logs(*emptypb.Empty, Web_LogsServer) error
+	ActiveLogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
 	mustEmbedUnimplementedWebServer()
 }
 
@@ -157,11 +181,17 @@ func (UnimplementedWebServer) GetProjectInventory(context.Context, *ProjectInven
 func (UnimplementedWebServer) GetProjectServiceDependencyGraph(context.Context, *ServiceDependencyGraphRequest) (*v12.GraphResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetProjectServiceDependencyGraph not implemented")
 }
+func (UnimplementedWebServer) LogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method LogHistory not implemented")
+}
+func (UnimplementedWebServer) GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetActive not implemented")
+}
 func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
 	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
 }
-func (UnimplementedWebServer) LogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method LogHistory not implemented")
+func (UnimplementedWebServer) ActiveLogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ActiveLogHistory not implemented")
 }
 func (UnimplementedWebServer) mustEmbedUnimplementedWebServer() {}
 
@@ -248,6 +278,42 @@ func _Web_GetProjectServiceDependencyGraph_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Web_LogHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(v12.LogRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WebServer).LogHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Web_LogHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WebServer).LogHistory(ctx, req.(*v12.LogRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Web_GetActive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WebServer).GetActive(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Web_GetActive_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WebServer).GetActive(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Web_Logs_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(emptypb.Empty)
 	if err := stream.RecvMsg(m); err != nil {
@@ -269,20 +335,20 @@ func (x *webLogsServer) Send(m *v12.Log) error {
 	return x.ServerStream.SendMsg(m)
 }
 
-func _Web_LogHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Web_ActiveLogHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(v12.LogRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(WebServer).LogHistory(ctx, in)
+		return srv.(WebServer).ActiveLogHistory(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: Web_LogHistory_FullMethodName,
+		FullMethod: Web_ActiveLogHistory_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(WebServer).LogHistory(ctx, req.(*v12.LogRequest))
+		return srv.(WebServer).ActiveLogHistory(ctx, req.(*v12.LogRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -313,6 +379,14 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "LogHistory",
 			Handler:    _Web_LogHistory_Handler,
+		},
+		{
+			MethodName: "GetActive",
+			Handler:    _Web_GetActive_Handler,
+		},
+		{
+			MethodName: "ActiveLogHistory",
+			Handler:    _Web_ActiveLogHistory_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

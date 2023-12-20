@@ -15,6 +15,7 @@ import "google/api/annotations.proto";
 
 import "google/protobuf/timestamp.proto";
 
+/* Overall information */
 
 message GetProjectsResponse {
   repeated string projects = 1;
@@ -32,45 +33,74 @@ message GetAgentInformationRequest {
   string agent = 1;
 }
 
+/* Active information
+*/
 
+message ActiveResponse {
+  string project = 1;
+  string application = 2;
+  string service = 3;
+}
 
 service Web {
 
+  /* Overall information
+  */
+
   rpc GetAgentInformation(GetAgentInformationRequest) returns (agent.v1.AgentInformation) {
     option (google.api.http) = {
-      get: "/agent/{agent}/information"
+      get: "/overall/agent/{agent}/information"
     };
   }
 
   rpc GetProjects(google.protobuf.Empty) returns (GetProjectsResponse) {
     option (google.api.http) = {
-      get: "/project/information"
+      get: "/overall/project/information"
     };
   }
 
 
   rpc GetProjectInventory(ProjectInventoryRequest) returns (base.v1.Project) {
     option (google.api.http) = {
-      get: "/project/{project}/inventory"
+      get: "/overall/project/{project}/inventory"
     };
   }
 
   rpc GetProjectServiceDependencyGraph(ServiceDependencyGraphRequest) returns (GraphResponse) {
     option (google.api.http) = {
-      get: "/project/{project}/service-dependency-graph"
+      get: "/overall/project/{project}/service-dependency-graph"
+    };
+  }
+
+
+  rpc LogHistory(LogRequest) returns (LogResponse) {
+    option (google.api.http) = {
+      get: "/overall/project/logs/history"
+    };
+  }
+
+  /* Active information
+  */
+
+  rpc GetActive(google.protobuf.Empty) returns (ActiveResponse) {
+    option (google.api.http) = {
+      get: "/active/project/information"
     };
   }
 
   rpc Logs(google.protobuf.Empty)  returns (stream observability.v1.Log) {
     option (google.api.http) = {
-      get: "/project/logs"
+      get: "/active/project/logs"
     };
   }
 
-  rpc LogHistory(LogRequest) returns (LogResponse) {
+
+  rpc ActiveLogHistory(LogRequest) returns (LogResponse) {
     option (google.api.http) = {
-      get: "/project/logs/history"
+      get: "/active/project/logs/history"
     };
   }
+
+
 
 }

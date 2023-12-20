@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	web "github.com/codefly-dev/cli/generated/go/web/v1"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/architecture"
@@ -37,6 +38,27 @@ type Server struct {
 	logChannel chan *observabilityv1.Log
 	workspace  *configurations.Workspace
 }
+
+/* Active information */
+
+func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*web.ActiveResponse, error) {
+	active, err := common.LoadActiveContext(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &web.ActiveResponse{
+		Project:     active.Project,
+		Application: active.Application,
+		Service:     active.Service,
+	}, nil
+
+}
+
+func (s *Server) ActiveLogHistory(ctx context.Context, request *observabilityv1.LogRequest) (*observabilityv1.LogResponse, error) {
+	return nil, status.Error(codes.Internal, "TBI")
+}
+
+/* Overall information */
 
 func (s *Server) GetAgentInformation(ctx context.Context, request *web.GetAgentInformationRequest) (*agentv1.AgentInformation, error) {
 	agent, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, request.Agent)

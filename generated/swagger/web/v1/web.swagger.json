@@ -16,44 +16,14 @@
     "application/json"
   ],
   "paths": {
-    "/agent/{agent}/information": {
+    "/active/project/information": {
       "get": {
-        "operationId": "Web_GetAgentInformation",
+        "operationId": "Web_GetActive",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1AgentInformation"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpcStatus"
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "agent",
-            "in": "path",
-            "required": true,
-            "type": "string"
-          }
-        ],
-        "tags": [
-          "Web"
-        ]
-      }
-    },
-    "/project/information": {
-      "get": {
-        "operationId": "Web_GetProjects",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/v1GetProjectsResponse"
+              "$ref": "#/definitions/v1ActiveResponse"
             }
           },
           "default": {
@@ -68,7 +38,7 @@
         ]
       }
     },
-    "/project/logs": {
+    "/active/project/logs": {
       "get": {
         "operationId": "Web_Logs",
         "responses": {
@@ -99,7 +69,97 @@
         ]
       }
     },
-    "/project/logs/history": {
+    "/active/project/logs/history": {
+      "get": {
+        "operationId": "Web_ActiveLogHistory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1LogResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
+    },
+    "/overall/agent/{agent}/information": {
+      "get": {
+        "operationId": "Web_GetAgentInformation",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1AgentInformation"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
+    },
+    "/overall/project/information": {
+      "get": {
+        "operationId": "Web_GetProjects",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetProjectsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Web"
+        ]
+      }
+    },
+    "/overall/project/logs/history": {
       "get": {
         "operationId": "Web_LogHistory",
         "responses": {
@@ -137,7 +197,7 @@
         ]
       }
     },
-    "/project/{project}/inventory": {
+    "/overall/project/{project}/inventory": {
       "get": {
         "operationId": "Web_GetProjectInventory",
         "responses": {
@@ -167,7 +227,7 @@
         ]
       }
     },
-    "/project/{project}/service-dependency-graph": {
+    "/overall/project/{project}/service-dependency-graph": {
       "get": {
         "operationId": "Web_GetProjectServiceDependencyGraph",
         "responses": {
@@ -199,15 +259,6 @@
     }
   },
   "definitions": {
-    "LogKind": {
-      "type": "string",
-      "enum": [
-        "UNKNOWN",
-        "AGENT",
-        "SERVICE"
-      ],
-      "default": "UNKNOWN"
-    },
     "protobufAny": {
       "type": "object",
       "properties": {
@@ -250,6 +301,37 @@
         }
       }
     },
+    "v1ActiveResponse": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "application": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        }
+      }
+    },
+    "v1Agent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/v1AgentKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "publisher": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
     "v1AgentInformation": {
       "type": "object",
       "properties": {
@@ -278,6 +360,14 @@
           "type": "string"
         }
       }
+    },
+    "v1AgentKind": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "SERVICE"
+      ],
+      "default": "UNKNOWN"
     },
     "v1Application": {
       "type": "object",
@@ -472,12 +562,21 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/definitions/LogKind"
+          "$ref": "#/definitions/v1LogKind"
         },
         "message": {
           "type": "string"
         }
       }
+    },
+    "v1LogKind": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "AGENT",
+        "SERVICE"
+      ],
+      "default": "UNKNOWN"
     },
     "v1LogResponse": {
       "type": "object",
@@ -635,6 +734,9 @@
         },
         "application": {
           "type": "string"
+        },
+        "agent": {
+          "$ref": "#/definitions/v1Agent"
         },
         "endpoints": {
           "type": "array",
