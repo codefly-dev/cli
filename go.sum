@@ -31,10 +31,6 @@ github.com/charmbracelet/lipgloss v0.9.1 h1:PNyd3jvaJbg4jRHKWXnCj1akQm4rh8dbEzN1
 github.com/charmbracelet/lipgloss v0.9.1/go.mod h1:1mPmG4cxScwUQALAAnacHaigiiHB9Pmr+v1VEawJl6I=
 github.com/cheggaaa/pb/v3 v3.1.4 h1:DN8j4TVVdKu3WxVwcRKu0sG00IIU6FewoABZzXbRQeo=
 github.com/cheggaaa/pb/v3 v3.1.4/go.mod h1:6wVjILNBaXMs8c21qRiaUM8BR82erfgau1DQ4iUXmSA=
-github.com/codefly-dev/core v0.0.63 h1:1sUs6kMhiY42Tzff8bRygWHSdi/iyjwLB1xGdfzGr94=
-github.com/codefly-dev/core v0.0.63/go.mod h1:nZt0T9QJOyLEreTZhG1lHK8oPh/K1ZVaKD9fG2Ppa+o=
-github.com/codefly-dev/core v0.0.64 h1:Q1lRA8wrWz8J3QBhnrNaTC5gZKIuajoSD6m7nH9I3gw=
-github.com/codefly-dev/core v0.0.64/go.mod h1:nZt0T9QJOyLEreTZhG1lHK8oPh/K1ZVaKD9fG2Ppa+o=
 github.com/codefly-dev/core v0.0.65 h1:pDbpS9RKZmfU4kDpTJxcX5XNq/GWyx5SykGxtUQSo/c=
 github.com/codefly-dev/core v0.0.65/go.mod h1:nZt0T9QJOyLEreTZhG1lHK8oPh/K1ZVaKD9fG2Ppa+o=
 github.com/codefly-dev/golor v0.0.10 h1:eqNxY3aSVbXDWo+3S9fcRynCEStPNo033owzwvzziOQ=
