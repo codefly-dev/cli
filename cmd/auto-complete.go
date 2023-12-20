@@ -3,7 +3,7 @@ package cmd
 import (
 	"os"
 
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +24,10 @@ var CompletionCmd = &cobra.Command{
 			err = cmd.Root().GenFishCompletion(os.Stdout, true)
 		case "powershell":
 			err = cmd.Root().GenPowerShellCompletionWithDesc(os.Stdout)
+		default:
+			cli.Error("Unsupported shell type <{{.}}>.", args[0])
+			cli.Exit()
 		}
-		shared.ExitOnError(err, "cannot generate completion script")
+		cli.ExitOnError(err, "cannot generate completion script")
 	},
 }

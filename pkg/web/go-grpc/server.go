@@ -13,11 +13,13 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	web "github.com/codefly-dev/cli/generated/go/web/v1"
+	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 
 	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
 	observabilityv1 "github.com/codefly-dev/core/generated/go/observability/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 
 	"github.com/codefly-dev/golor"
 	"google.golang.org/grpc"
@@ -34,6 +36,19 @@ type Server struct {
 	gRPC       *grpc.Server
 	logChannel chan *observabilityv1.Log
 	workspace  *configurations.Workspace
+}
+
+func (s *Server) GetAgentInformation(ctx context.Context, request *web.GetAgentInformationRequest) (*agentv1.AgentInformation, error) {
+	agent, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, request.Agent)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	loaded, err := services.LoadAgent(ctx, agent)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return loaded.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
+
 }
 
 func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*web.GetProjectsResponse, error) {

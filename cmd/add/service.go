@@ -1,8 +1,6 @@
 package add
 
 import (
-	"context"
-
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
@@ -22,13 +20,6 @@ var ServiceCmd = &cobra.Command{
 	Short: "Add an service",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
-
-		provider := wool.New(ctx, configurations.CLI.AsResource())
-		provider.WithLogger(common.CLI())
-		defer provider.Done()
-
-		ctx = provider.WithContext(ctx)
 
 		if interactive {
 			common.CLI().Oops("Interactive mode not implemented yet")
@@ -39,12 +30,16 @@ var ServiceCmd = &cobra.Command{
 		if agent == "" {
 			common.CLI().Oops("You must provide an agent for the service, use --agent=<agent>, for example --agent=python, --agent=go, --agent=nextjs or more advanced agent. See TODO")
 		}
-		addService(ctx, args[0], agent)
+		name := args[0]
+		addService(name, agent)
 	},
 }
 
-func addService(ctx context.Context, name string, agentInput string) {
+func addService(name string, agentInput string) {
+	ctx, done := common.NewContext()
+	defer done()
 	defer agents.ClearAgents()
+
 	w := wool.Get(ctx).In("cmd.add.service")
 
 	project := common.Project(ctx)

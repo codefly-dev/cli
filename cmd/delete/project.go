@@ -4,7 +4,6 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
@@ -16,7 +15,8 @@ var ProjectCmd = &cobra.Command{
 
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
-			shared.Exit("You must provide a name for the project as the single argument")
+			cli.Error("You must provide a name for the project as the single argument")
+			cli.Exit()
 		}
 		name := args[0]
 		deleteProject(name)
@@ -24,7 +24,9 @@ var ProjectCmd = &cobra.Command{
 }
 
 func deleteProject(name string) {
-	ctx := shared.NewContext()
+	ctx, done := common.NewContext()
+	defer done()
+
 	w := common.Workspace(ctx)
 	if !w.ExistsProject(name) {
 		cli.Error("Project <{{.}}> does not exist in workspace", name)

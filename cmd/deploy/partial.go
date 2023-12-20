@@ -5,7 +5,14 @@ package deploy
 // 	Use:   "partial",
 // 	Short: "Deploy an partial",
 // 	Run: func(cmd *cobra.Command, args []string) {
-// 		ctx := shared.NewContext()
+// 	ctx := context.Background()
+
+//provider := wool.New(ctx, configurations.CLI.AsResource())
+//
+//provider.WithLogger(common.CLI())
+//defer provider.Done()
+//
+//ctx = provider.WithContext(ctx)
 // 		w := wool.Get(ctx).In("deploy.PartialCmd")
 // 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 // 		defer stop()

@@ -7,7 +7,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -17,22 +16,15 @@ var ProjectCmd = &cobra.Command{
 	Short: "Update a project",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
-
-		provider := wool.New(ctx, configurations.CLI.AsResource())
-
-		provider.WithLogger(common.CLI())
-		defer provider.Done()
-
-		ctx = provider.WithContext(ctx)
-
-		project := common.Project(ctx)
-		updateProject(ctx, project)
-
+		project := common.Project(context.Background())
+		updateProject(project)
 	},
 }
 
-func updateProject(ctx context.Context, project *configurations.Project) {
+func updateProject(project *configurations.Project) {
+	ctx, done := common.NewContext()
+	defer done()
+
 	apps, err := project.LoadApplications(ctx)
 	cli.ExitOnError(err, "cannot load applications")
 	for _, app := range apps {

@@ -8,9 +8,9 @@ package observabilityv1
 
 import (
 	context "context"
-
-	v1 "github.com/codefly-dev/core/generated/go/base/v1"
-	v11 "github.com/codefly-dev/core/generated/go/observability/v1"
+	v11 "github.com/codefly-dev/core/generated/go/base/v1"
+	v12 "github.com/codefly-dev/core/generated/go/observability/v1"
+	v1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -23,6 +23,7 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
+	Web_GetAgentInformation_FullMethodName              = "/observability.v1.Web/GetAgentInformation"
 	Web_GetProjects_FullMethodName                      = "/observability.v1.Web/GetProjects"
 	Web_GetProjectInventory_FullMethodName              = "/observability.v1.Web/GetProjectInventory"
 	Web_GetProjectServiceDependencyGraph_FullMethodName = "/observability.v1.Web/GetProjectServiceDependencyGraph"
@@ -34,11 +35,12 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WebClient interface {
+	GetAgentInformation(ctx context.Context, in *GetAgentInformationRequest, opts ...grpc.CallOption) (*v1.AgentInformation, error)
 	GetProjects(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetProjectsResponse, error)
-	GetProjectInventory(ctx context.Context, in *ProjectInventoryRequest, opts ...grpc.CallOption) (*v1.Project, error)
-	GetProjectServiceDependencyGraph(ctx context.Context, in *ServiceDependencyGraphRequest, opts ...grpc.CallOption) (*v11.GraphResponse, error)
+	GetProjectInventory(ctx context.Context, in *ProjectInventoryRequest, opts ...grpc.CallOption) (*v11.Project, error)
+	GetProjectServiceDependencyGraph(ctx context.Context, in *ServiceDependencyGraphRequest, opts ...grpc.CallOption) (*v12.GraphResponse, error)
 	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
-	LogHistory(ctx context.Context, in *v11.LogRequest, opts ...grpc.CallOption) (*v11.LogResponse, error)
+	LogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
 }
 
 type webClient struct {
@@ -47,6 +49,15 @@ type webClient struct {
 
 func NewWebClient(cc grpc.ClientConnInterface) WebClient {
 	return &webClient{cc}
+}
+
+func (c *webClient) GetAgentInformation(ctx context.Context, in *GetAgentInformationRequest, opts ...grpc.CallOption) (*v1.AgentInformation, error) {
+	out := new(v1.AgentInformation)
+	err := c.cc.Invoke(ctx, Web_GetAgentInformation_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *webClient) GetProjects(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetProjectsResponse, error) {
@@ -58,8 +69,8 @@ func (c *webClient) GetProjects(ctx context.Context, in *emptypb.Empty, opts ...
 	return out, nil
 }
 
-func (c *webClient) GetProjectInventory(ctx context.Context, in *ProjectInventoryRequest, opts ...grpc.CallOption) (*v1.Project, error) {
-	out := new(v1.Project)
+func (c *webClient) GetProjectInventory(ctx context.Context, in *ProjectInventoryRequest, opts ...grpc.CallOption) (*v11.Project, error) {
+	out := new(v11.Project)
 	err := c.cc.Invoke(ctx, Web_GetProjectInventory_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
@@ -67,8 +78,8 @@ func (c *webClient) GetProjectInventory(ctx context.Context, in *ProjectInventor
 	return out, nil
 }
 
-func (c *webClient) GetProjectServiceDependencyGraph(ctx context.Context, in *ServiceDependencyGraphRequest, opts ...grpc.CallOption) (*v11.GraphResponse, error) {
-	out := new(v11.GraphResponse)
+func (c *webClient) GetProjectServiceDependencyGraph(ctx context.Context, in *ServiceDependencyGraphRequest, opts ...grpc.CallOption) (*v12.GraphResponse, error) {
+	out := new(v12.GraphResponse)
 	err := c.cc.Invoke(ctx, Web_GetProjectServiceDependencyGraph_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
@@ -92,7 +103,7 @@ func (c *webClient) Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.Ca
 }
 
 type Web_LogsClient interface {
-	Recv() (*v11.Log, error)
+	Recv() (*v12.Log, error)
 	grpc.ClientStream
 }
 
@@ -100,16 +111,16 @@ type webLogsClient struct {
 	grpc.ClientStream
 }
 
-func (x *webLogsClient) Recv() (*v11.Log, error) {
-	m := new(v11.Log)
+func (x *webLogsClient) Recv() (*v12.Log, error) {
+	m := new(v12.Log)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
 	return m, nil
 }
 
-func (c *webClient) LogHistory(ctx context.Context, in *v11.LogRequest, opts ...grpc.CallOption) (*v11.LogResponse, error) {
-	out := new(v11.LogResponse)
+func (c *webClient) LogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error) {
+	out := new(v12.LogResponse)
 	err := c.cc.Invoke(ctx, Web_LogHistory_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
@@ -121,11 +132,12 @@ func (c *webClient) LogHistory(ctx context.Context, in *v11.LogRequest, opts ...
 // All implementations must embed UnimplementedWebServer
 // for forward compatibility
 type WebServer interface {
+	GetAgentInformation(context.Context, *GetAgentInformationRequest) (*v1.AgentInformation, error)
 	GetProjects(context.Context, *emptypb.Empty) (*GetProjectsResponse, error)
-	GetProjectInventory(context.Context, *ProjectInventoryRequest) (*v1.Project, error)
-	GetProjectServiceDependencyGraph(context.Context, *ServiceDependencyGraphRequest) (*v11.GraphResponse, error)
+	GetProjectInventory(context.Context, *ProjectInventoryRequest) (*v11.Project, error)
+	GetProjectServiceDependencyGraph(context.Context, *ServiceDependencyGraphRequest) (*v12.GraphResponse, error)
 	Logs(*emptypb.Empty, Web_LogsServer) error
-	LogHistory(context.Context, *v11.LogRequest) (*v11.LogResponse, error)
+	LogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
 	mustEmbedUnimplementedWebServer()
 }
 
@@ -133,19 +145,22 @@ type WebServer interface {
 type UnimplementedWebServer struct {
 }
 
+func (UnimplementedWebServer) GetAgentInformation(context.Context, *GetAgentInformationRequest) (*v1.AgentInformation, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetAgentInformation not implemented")
+}
 func (UnimplementedWebServer) GetProjects(context.Context, *emptypb.Empty) (*GetProjectsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetProjects not implemented")
 }
-func (UnimplementedWebServer) GetProjectInventory(context.Context, *ProjectInventoryRequest) (*v1.Project, error) {
+func (UnimplementedWebServer) GetProjectInventory(context.Context, *ProjectInventoryRequest) (*v11.Project, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetProjectInventory not implemented")
 }
-func (UnimplementedWebServer) GetProjectServiceDependencyGraph(context.Context, *ServiceDependencyGraphRequest) (*v11.GraphResponse, error) {
+func (UnimplementedWebServer) GetProjectServiceDependencyGraph(context.Context, *ServiceDependencyGraphRequest) (*v12.GraphResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetProjectServiceDependencyGraph not implemented")
 }
 func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
 	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
 }
-func (UnimplementedWebServer) LogHistory(context.Context, *v11.LogRequest) (*v11.LogResponse, error) {
+func (UnimplementedWebServer) LogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method LogHistory not implemented")
 }
 func (UnimplementedWebServer) mustEmbedUnimplementedWebServer() {}
@@ -159,6 +174,24 @@ type UnsafeWebServer interface {
 
 func RegisterWebServer(s grpc.ServiceRegistrar, srv WebServer) {
 	s.RegisterService(&Web_ServiceDesc, srv)
+}
+
+func _Web_GetAgentInformation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAgentInformationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WebServer).GetAgentInformation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Web_GetAgentInformation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WebServer).GetAgentInformation(ctx, req.(*GetAgentInformationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _Web_GetProjects_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -224,7 +257,7 @@ func _Web_Logs_Handler(srv interface{}, stream grpc.ServerStream) error {
 }
 
 type Web_LogsServer interface {
-	Send(*v11.Log) error
+	Send(*v12.Log) error
 	grpc.ServerStream
 }
 
@@ -232,12 +265,12 @@ type webLogsServer struct {
 	grpc.ServerStream
 }
 
-func (x *webLogsServer) Send(m *v11.Log) error {
+func (x *webLogsServer) Send(m *v12.Log) error {
 	return x.ServerStream.SendMsg(m)
 }
 
 func _Web_LogHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(v11.LogRequest)
+	in := new(v12.LogRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -249,7 +282,7 @@ func _Web_LogHistory_Handler(srv interface{}, ctx context.Context, dec func(inte
 		FullMethod: Web_LogHistory_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(WebServer).LogHistory(ctx, req.(*v11.LogRequest))
+		return srv.(WebServer).LogHistory(ctx, req.(*v12.LogRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -261,6 +294,10 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "observability.v1.Web",
 	HandlerType: (*WebServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetAgentInformation",
+			Handler:    _Web_GetAgentInformation_Handler,
+		},
 		{
 			MethodName: "GetProjects",
 			Handler:    _Web_GetProjects_Handler,

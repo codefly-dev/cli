@@ -6,7 +6,14 @@ package update
 // 	Short: "Update an service",
 
 // 	Run: func(cmd *cobra.Command, args []string) {
-// 		ctx := shared.NewContext()
+// 	ctx := context.Background()
+//
+//provider := wool.New(ctx, configurations.CLI.AsResource())
+//
+//provider.WithLogger(common.CLI())
+//defer provider.Done()
+//
+//ctx = provider.WithContext(ctx)
 // 		service := common.Service(ctx)
 
 // 		_, err := services.Load(ctx, service)

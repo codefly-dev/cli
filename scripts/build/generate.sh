@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-cd generated && buf generate
+cd generated && buf mod update && buf generate

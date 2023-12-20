@@ -5,7 +5,6 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
 )
 
 func Application(ctx context.Context) *configurations.Application {
@@ -21,7 +20,8 @@ func Application(ctx context.Context) *configurations.Application {
 	cli.ExitOnError(err, "cannot get current project")
 
 	if project.ActiveApplication() == nil {
-		shared.Exit("couldn't find an application to run from active project")
+		cli.Error("couldn't find an application to run from active project")
+		cli.Exit()
 
 	}
 	app, err = project.LoadActiveApplication(ctx)

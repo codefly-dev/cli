@@ -3,16 +3,18 @@ package services
 import (
 	"context"
 
+	"github.com/charmbracelet/glamour"
 	clicommunicate "github.com/codefly-dev/cli/pkg/cli/communicate"
 
-	"github.com/charmbracelet/glamour"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	actionservice "github.com/codefly-dev/core/actions/service"
 	"github.com/codefly-dev/core/agents/communicate"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
+	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -39,21 +41,26 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return w.Wrapf(err, "cannot load service instance")
 	}
 
+	info, err := instance.Agent.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
+	if err != nil {
+
+	}
+	// README
+	rendered, err := glamour.Render(info.ReadMe, "dark")
+	if err != nil {
+		return w.Wrapf(err, "cannot render info README")
+	}
+	cli.Paginate(rendered)
+
 	if instance.Factory == nil {
 		cli.Header(2, "🎉 We are done!", service)
 		return nil
 	}
 	cli.Header(2, "Service <{{.Name}}> has a factory", service)
-	init, err := instance.Factory.Init(ctx)
+	_, err = instance.Factory.Init(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 	}
-	// README
-	rendered, err := glamour.Render(init.ReadMe, "dark")
-	if err != nil {
-		return w.Wrapf(err, "cannot render readme")
-	}
-	cli.Paginate(rendered)
 
 	// Communicate always
 	err = communicate.Do[factoryv1.CreateRequest](ctx, instance.Factory, clicommunicate.NewPrompt())

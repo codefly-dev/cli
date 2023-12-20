@@ -1,12 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 
 	"github.com/spf13/cobra"
 )
@@ -26,21 +27,23 @@ var RootCmd = &cobra.Command{
 func Execute() {
 	_ = RootCmd.ParseFlags(os.Args)
 	if debug {
-		shared.SetLogLevel(shared.Debug)
+		wool.SetLogLevel(wool.DEBUG)
 	}
 	if trace {
-		shared.SetLogLevel(shared.Trace)
+		wool.SetLogLevel(wool.TRACE)
 	}
-	shared.SetTodo(todo)
-	shared.SetOverride(override)
-
+	//wool.SetTODO(todo)
+	//wool.SetOverride(override)
+	//
 	cli.SetWithDefault(withDefault)
 
 	if tracker != "" {
-		actions.InitActionTracker(tracker)
+		tracker, err := actions.NewActionTracker(context.Background(), tracker)
+		cli.ExitOnError(err, "cannot create action tracker")
+		actions.SetActionTracker(tracker)
 	}
 
-	shared.ExitOnError(RootCmd.Execute(), "cannot execute command")
+	cli.ExitOnError(RootCmd.Execute(), "cannot execute command")
 }
 
 // Origin of the World

@@ -2,14 +2,11 @@ package run
 
 import (
 	"context"
-	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/cli/display"
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -18,31 +15,37 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Run a service",
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := shared.NewContext()
-		app := common.Application(ctx)
-		if app == nil {
-			cli.Error("No application found where you are running the command: use the name of the service as argument")
-		}
-		// Without argument, run the current service
-		var service *configurations.Service
-		var err error
-		if len(args) == 0 {
-			service = common.Service(ctx)
-			if service == nil {
-				cli.Error("No service found where you are running the command: use the name of the service as argument")
-				os.Exit(0)
-			}
-		} else {
-			shared.GetLogger(ctx).TODO("WE NEED TO HAVE THE FULL GRAPH OF PROJECTS/APPLICATIONS/SERVICES")
-			service, err = app.LoadServiceFromName(ctx, args[0])
-			shared.ExitOnError(err, "cannot load service <%s>", args[0])
-		}
+		ctx := context.Background()
 
-		cli.Header(2, "Running service <{{.Service.Name}}> in application <{{.Application.Name}}>",
-			display.New().WithApplication(app).WithService(service))
+		provider := wool.New(ctx, configurations.CLI.AsResource())
 
-		err = runService(ctx, service)
-		shared.ExitOnError(err, "cannot run service <%s>", service.Name)
+		provider.WithLogger(common.CLI())
+		defer provider.Done()
+
+		ctx = provider.WithContext(ctx)
+		//app := common.Application(ctx)
+		//if app == nil {
+		//	cli.Error("No application found where you are running the command: use the name of the service as argument")
+		//}
+		//// Without argument, run the current service
+		//var service *configurations.Service
+		//var err error
+		//if len(args) == 0 {
+		//	service = common.Service(ctx)
+		//	if service == nil {
+		//		cli.Error("No service found where you are running the command: use the name of the service as argument")
+		//		os.Exit(0)
+		//	}
+		//} else {
+		//	service, err = app.LoadServiceFromName(ctx, args[0])
+		//	shared.ExitOnError(err, "cannot load service <%s>", args[0])
+		//}
+		//
+		//cli.Header(2, "Running service <{{.Service.Name}}> in application <{{.Application.Name}}>",
+		//	display.New().WithApplication(app).WithService(service))
+		//
+		//err = runService(ctx, service)
+		//shared.ExitOnError(err, "cannot run service <%s>", service.Name)
 	},
 }
 

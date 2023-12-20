@@ -3,6 +3,7 @@ package observability.v1;
 
 import "base/v1/endpoint.proto";
 import "base/v1/project.proto";
+import "services/agent/v1/agent.proto";
 
 import "observability/v1/inventory.proto";
 import "observability/v1/dependencies.proto";
@@ -27,7 +28,19 @@ message ServiceDependencyGraphRequest {
   string project = 1;
 }
 
+message GetAgentInformationRequest {
+  string agent = 1;
+}
+
+
+
 service Web {
+
+  rpc GetAgentInformation(GetAgentInformationRequest) returns (agent.v1.AgentInformation) {
+    option (google.api.http) = {
+      get: "/agent/{agent}/information"
+    };
+  }
 
   rpc GetProjects(google.protobuf.Empty) returns (GetProjectsResponse) {
     option (google.api.http) = {

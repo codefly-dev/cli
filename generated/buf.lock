@@ -9,8 +9,8 @@ deps:
   - remote: buf.build
     owner: codefly-dev
     repository: proto
-    commit: 386e0e4b9ff24c0d93564eaa277ea27f
-    digest: shake256:10af8afb791d68779885731f591d511ae18bd320738f45c5afb0fc128fe479b05f49742d3e43e9b82cb428b8f884677119708d3d25fd14b520e98d2585c099ab
+    commit: f0e935e66b704ed18ff6915f3e4d29a0
+    digest: shake256:4e45fb9e26b97adc6c400a9cb3605b848efb92c796c44bf4d5372c964ea96c62e3e3175ae648c8fd7c4f6744b4d81bc8dc75c7e932c7091da6392361dbf7d15e
   - remote: buf.build
     owner: googleapis
     repository: googleapis

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
-	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +15,7 @@ var ReplayCmd = &cobra.Command{
 	Use:   "replay",
 	Short: "Replay",
 	Run: func(cmd *cobra.Command, args []string) {
+
 		if track == "" {
 			cli.Error("You must provide a track to replay")
 			os.Exit(0)
@@ -24,9 +25,11 @@ var ReplayCmd = &cobra.Command{
 }
 
 func replayCodefly(track string) {
-	ctx := shared.NewContext()
-	// w := wool.Get(ctx).In("Replay")
-	tracker := actions.NewActionTracker(track)
+	ctx, done := common.NewContext()
+	defer done()
+
+	tracker, err := actions.NewActionTracker(ctx, track)
+	cli.ExitOnError(err, "cannot create action tracker")
 
 	// Optionally override the directory
 	tracker.WithDir(dir)

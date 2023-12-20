@@ -1,13 +1,15 @@
 package _switch
 
 import (
+	"context"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	actions "github.com/codefly-dev/core/actions/actions"
 	projectactions "github.com/codefly-dev/core/actions/project"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +24,14 @@ var ProjectCmd = &cobra.Command{
 
 func switchProject() {
 	// Workspace
-	ctx := shared.NewContext()
+	ctx := context.Background()
+
+	provider := wool.New(ctx, configurations.CLI.AsResource())
+
+	provider.WithLogger(common.CLI())
+	defer provider.Done()
+
+	ctx = provider.WithContext(ctx)
 	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
 	all, err := workspace.LoadProjects(ctx)

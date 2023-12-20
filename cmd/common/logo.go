@@ -26,9 +26,12 @@ func isInITerm() bool {
 func Logo() {
 	golor.Println(`#(bold,white)[Welcome to codefly.ai!]`)
 	if isInITerm() {
-		dir := configurations.HomeDir()
+		dir, err := configurations.HomeDir()
+		if err != nil {
+			return
+		}
 		p := fmt.Sprintf("%s/.codefly/media/dragonfly.png", dir)
-		err := imgcat(p)
+		err = imgcat(p)
 		if err == nil {
 			return
 		}

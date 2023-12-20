@@ -6,8 +6,8 @@ import (
 	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/web"
-	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
 
@@ -16,8 +16,9 @@ var ServerCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Server for codefly",
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx, done := common.NewContext()
+		defer done()
 
-		ctx := shared.NewContext()
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
 
@@ -25,11 +26,12 @@ var ServerCmd = &cobra.Command{
 
 		workspace := common.Workspace(ctx)
 		if workspace == nil {
-			shared.Exit("No workspace found")
+			cli.Error("No workspace found")
+			cli.Exit()
 		}
 		go func() {
 			w, err := web.NewServer(web.ServerData{Workspace: workspace})
-			shared.ExitOnError(err, "cannot create applications server")
+			cli.ExitOnError(err, "cannot create web server")
 			errs <- w.Start(ctx)
 		}()
 

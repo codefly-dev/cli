@@ -117,3 +117,40 @@ export class ServiceDependencyGraphRequest extends Message<ServiceDependencyGrap
   }
 }
 
+/**
+ * @generated from message observability.v1.GetAgentInformationRequest
+ */
+export class GetAgentInformationRequest extends Message<GetAgentInformationRequest> {
+  /**
+   * @generated from field: string agent = 1;
+   */
+  agent = "";
+
+  constructor(data?: PartialMessage<GetAgentInformationRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v1.GetAgentInformationRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "agent", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetAgentInformationRequest {
+    return new GetAgentInformationRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetAgentInformationRequest {
+    return new GetAgentInformationRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetAgentInformationRequest {
+    return new GetAgentInformationRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetAgentInformationRequest | PlainMessage<GetAgentInformationRequest> | undefined, b: GetAgentInformationRequest | PlainMessage<GetAgentInformationRequest> | undefined): boolean {
+    return proto3.util.equals(GetAgentInformationRequest, a, b);
+  }
+}
+

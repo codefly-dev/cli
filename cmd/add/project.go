@@ -11,7 +11,6 @@ import (
 	"github.com/codefly-dev/core/actions/actions"
 	actionsproject "github.com/codefly-dev/core/actions/project"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
 
@@ -21,27 +20,31 @@ var ProjectCmd = &cobra.Command{
 	Short: "Add an project",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := shared.NewContext()
+
 		if interactive {
 			cli.Error("Interactive mode not implemented yet")
 			cli.Exit()
 		}
 		if len(args) == 1 {
-			newProject(ctx, args[0])
+			name := args[0]
+			newProject(name)
 		} else {
 			// Find in Path and add to workspace
-			dir, err := configurations.FindUp[configurations.Project](ctx)
+			dir, err := configurations.FindUp[configurations.Project](context.Background())
 			cli.ExitOnError(err, "Cannot find project in path")
 			if dir == nil {
 				cli.Error("No project found in path")
 			}
-			addProject(ctx, *dir)
+			addProject(*dir)
 
 		}
 	},
 }
 
-func addProject(ctx context.Context, dir string) {
+func addProject(dir string) {
+	ctx, done := common.NewContext()
+	defer done()
+
 	project, err := configurations.LoadProjectFromDirUnsafe(ctx, dir)
 	cli.ExitOnError(err, "Cannot load project from dir")
 	workspace := common.Workspace(ctx)
@@ -59,7 +62,10 @@ func addProject(ctx context.Context, dir string) {
 
 }
 
-func newProject(ctx context.Context, name string) {
+func newProject(name string) {
+	ctx, done := common.NewContext()
+	defer done()
+
 	workspace := common.Workspace(ctx)
 
 	if workspace.ExistsProject(name) {

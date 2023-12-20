@@ -5,7 +5,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/display"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
@@ -17,7 +16,8 @@ var ServiceCmd = &cobra.Command{
 
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
-			shared.Exit("You must provide a name for the service as the single argument")
+			cli.Error("You must provide a name for the service as the single argument")
+			cli.Exit()
 		}
 		name := args[0]
 		deleteService(name)
@@ -25,7 +25,9 @@ var ServiceCmd = &cobra.Command{
 }
 
 func deleteService(name string) {
-	ctx := shared.NewContext()
+	ctx, done := common.NewContext()
+	defer done()
+
 	project := common.Project(ctx)
 	app := common.Application(ctx)
 	if !app.ExistsService(name) {

@@ -5,7 +5,14 @@ package run
 // 	Use:   "application",
 // 	Short: "Run an application",
 // 	Run: func(cmd *cobra.Command, args []string) {
-// 		ctx := shared.NewContext()
+// 	ctx := context.Background()
+//
+//provider := wool.New(ctx, configurations.CLI.AsResource())
+//
+//provider.WithLogger(common.CLI())
+//defer provider.Done()
+//
+//ctx = provider.WithContext(ctx)
 // 		project := common.Project(ctx)
 
 // 		var app *configurations.Application

@@ -16,6 +16,36 @@
     "application/json"
   ],
   "paths": {
+    "/agent/{agent}/information": {
+      "get": {
+        "operationId": "Web_GetAgentInformation",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1AgentInformation"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Web"
+        ]
+      }
+    },
     "/project/information": {
       "get": {
         "operationId": "Web_GetProjects",
@@ -220,6 +250,35 @@
         }
       }
     },
+    "v1AgentInformation": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Capability"
+          }
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Language"
+          }
+        },
+        "protocols": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Protocol"
+          }
+        },
+        "readMe": {
+          "type": "string"
+        }
+      }
+    },
     "v1Application": {
       "type": "object",
       "properties": {
@@ -254,6 +313,23 @@
           "$ref": "#/definitions/v1ProjectSnapshot"
         }
       }
+    },
+    "v1Capability": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/v1CapabilityType"
+        }
+      }
+    },
+    "v1CapabilityType": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "FACTORY",
+        "RUNTIME"
+      ],
+      "default": "UNKNOWN"
     },
     "v1Endpoint": {
       "type": "object",
@@ -363,6 +439,24 @@
         "TRACE"
       ],
       "default": "GET"
+    },
+    "v1Language": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/v1LanguageType"
+        }
+      }
+    },
+    "v1LanguageType": {
+      "type": "string",
+      "enum": [
+        "GO",
+        "PYTHON",
+        "JAVASCRIPT",
+        "TYPESCRIPT"
+      ],
+      "default": "GO"
     },
     "v1Log": {
       "type": "object",
@@ -475,6 +569,22 @@
           "type": "string"
         }
       }
+    },
+    "v1Protocol": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/v1ProtocolType"
+        }
+      }
+    },
+    "v1ProtocolType": {
+      "type": "string",
+      "enum": [
+        "HTTP",
+        "GRPC"
+      ],
+      "default": "HTTP"
     },
     "v1RPC": {
       "type": "object",

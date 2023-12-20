@@ -1,10 +1,14 @@
 package _view
 
 import (
+	"context"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/display"
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +23,14 @@ var ApplicationsCmd = &cobra.Command{
 
 func viewApplications() {
 	// Workspace
-	ctx := shared.NewContext()
+	ctx := context.Background()
+
+	provider := wool.New(ctx, configurations.CLI.AsResource())
+
+	provider.WithLogger(common.CLI())
+	defer provider.Done()
+
+	ctx = provider.WithContext(ctx)
 	project := common.Project(ctx)
 
 	active := project.ActiveApplication()
@@ -30,7 +41,10 @@ func viewApplications() {
 		}
 		others = append(others, other.Name)
 	}
-	shared.ExitIf(len(others) == 0, "No applications found")
+	if len(others) == 0 {
+		cli.Header(2, "No applications found")
+		cli.Exit()
+	}
 	cli.Header(1, "Applications in project <{{.Project.Name}}>", display.New().WithProject(project))
 	cli.Header(2, "Active: <{{.Active}}>", display.New().With("Active", active))
 	if len(others) == 0 {

@@ -1,7 +1,6 @@
 package kinds
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -19,19 +18,14 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Get service information",
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
-
-		provider := wool.New(ctx, configurations.CLI.AsResource())
-		provider.WithLogger(common.CLI())
-		defer provider.Done()
-
-		ctx = provider.WithContext(ctx)
-
-		serviceInfo(ctx, agentInput)
+		serviceInfo(agentInput)
 	},
 }
 
-func serviceInfo(ctx context.Context, input string) {
+func serviceInfo(input string) {
+	ctx, done := common.NewContext()
+	defer done()
+
 	defer agents.ClearAgents()
 	w := wool.Get(ctx).In("cmd.info.agentInput.service")
 

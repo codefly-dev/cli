@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 )
 
@@ -46,7 +46,7 @@ func Error(s string, templates ...any) {
 func ExitOnError(err error, format string, args ...any) {
 	if err != nil {
 		Error(format, args...)
-		if shared.IsDebug() {
+		if wool.IsDebug() {
 			Error(err.Error())
 		}
 		Exit()
