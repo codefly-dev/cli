@@ -32,7 +32,7 @@ func initCodefly() {
 	provider.WithLogger(common.CLI())
 	defer provider.Done()
 
-	ctx = provider.WithContext(ctx)
+	ctx = provider.Inject(ctx)
 
 	// Check if codefly is already initialized
 	isInitialized, err := configurations.IsInitialized(ctx)

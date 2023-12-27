@@ -23,7 +23,7 @@ var ProjectCmd = &cobra.Command{
 		provider.WithLogger(common.CLI())
 		defer provider.Done()
 
-		ctx = provider.WithContext(ctx)
+		ctx = provider.Inject(ctx)
 		project := common.Project(ctx)
 		c := exec.Command(editor, project.Dir())
 		err := c.Run()

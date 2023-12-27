@@ -1,6 +1,7 @@
 package kinds
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -18,27 +19,28 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Get service information",
 	Run: func(cmd *cobra.Command, args []string) {
-		serviceInfo(agentInput)
+		ctx, done := common.NewContext()
+		defer done()
+
+		serviceInfo(ctx, agentInput)
 	},
 }
 
-func serviceInfo(input string) {
-	ctx, done := common.NewContext()
-	defer done()
-
+func serviceInfo(ctx context.Context, input string) {
 	defer agents.ClearAgents()
 	w := wool.Get(ctx).In("cmd.info.agentInput.service")
+	ctx = w.Inject(ctx)
 
-	conf, err := configurations.ParseAgent(w.Context(), configurations.ServiceAgent, input)
+	conf, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, input)
 	cli.ExitOnError(err, "Cannot parse agentInput")
 
 	cli.Header(1, "Fetching information about Service Agent <{{.Name}}> information", conf)
 
-	agent, err := services.LoadAgent(w.Context(), conf)
+	agent, err := services.LoadAgent(ctx, conf)
 	cli.ExitOnError(err, "Cannot load agentInput")
 	cli.Header(2, "Successfully loaded service agent <{{.Name}}>", conf)
 
-	info, err := agent.GetAgentInformation(w.Context(), &agentv1.AgentInformationRequest{})
+	info, err := agent.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 	cli.ExitOnError(err, "Cannot get agent information")
 	fmt.Println(info)
 

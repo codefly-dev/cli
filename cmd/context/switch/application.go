@@ -1,15 +1,12 @@
 package _switch
 
 import (
-	"context"
-
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	actions "github.com/codefly-dev/core/actions/actions"
 	applicationactions "github.com/codefly-dev/core/actions/application"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -23,15 +20,9 @@ var ApplicationCmd = &cobra.Command{
 }
 
 func switchApplication() {
-	// Workspace
-	ctx := context.Background()
+	ctx, done := common.NewContext()
+	defer done()
 
-	provider := wool.New(ctx, configurations.CLI.AsResource())
-
-	provider.WithLogger(common.CLI())
-	defer provider.Done()
-
-	ctx = provider.WithContext(ctx)
 	project := common.Project(ctx)
 	application, err := project.LoadActiveApplication(ctx)
 	cli.ExitOnError(err, "cannot get active application")

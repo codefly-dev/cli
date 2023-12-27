@@ -3,50 +3,78 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 )
 
-func Header(level int, s string, templates ...any) {
+func View(style string, s string, args ...any) string {
+	// Templates or not?
+	withTemplates := strings.Contains(s, "{{")
+	var view string
+
+	if !withTemplates {
+		view = fmt.Sprintf(s, args...)
+		view = fmt.Sprintf("%s[%s]", style, view)
+		view = golor.Sprintf(view)
+	} else {
+		view = fmt.Sprintf("%s[%s]", style, s)
+		view = golor.Sprintf(view, args...)
+	}
+	return view
+}
+
+func Header(level int, s string, args ...any) {
 	if len(s) == 0 {
 		return
 	}
+	var theme string
 	switch level {
 	case 1:
-		// Render a block of text.
-		style := lipgloss.NewStyle()
-		fmt.Println(style.Render(golor.Sprintf(fmt.Sprintf("#(bold,blue)[%s]", s), templates...)))
+		theme = "#(white)"
 	case 2:
-		// Render a block of text.
-		style := lipgloss.NewStyle()
-		fmt.Println(style.Render(golor.Sprintf(fmt.Sprintf("#(white)[%s]", s), templates...)))
+		theme = "#(bold,blue)"
 	}
+	style := lipgloss.NewStyle()
+	fmt.Println(style.Render(View(theme, s, args...)))
 }
 
-func Warning(s string, templates ...any) {
-	// Render a block of text.
+func Warning(s string, args ...any) {
+	theme := "⚠️ #(bold,magenta)"
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(golor.Sprintf(fmt.Sprintf("⚠️ #(bold,magenta)[%s]", s), templates...)))
+	fmt.Println(style.Render(View(theme, s, args...)))
 }
 
-func Trace(s string, templates ...any) {
-	// Render a block of text.
+func Trace(s string, args ...any) {
+	theme := "#(italic,green)"
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(golor.Sprintf(fmt.Sprintf("#(green)[TRACE %s]", s), templates...)))
+	fmt.Println(style.Render(View(theme, s, args...)))
 }
 
-func Debug(s string, templates ...any) {
-	// Render a block of text.
+func Debug(s string, args ...any) {
+	theme := "#(green)"
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(golor.Sprintf(fmt.Sprintf("#(bold,green)[DEBUG %s]", s), templates...)))
+	fmt.Println(style.Render(View(theme, s, args...)))
 }
 
-func Error(s string, templates ...any) {
-	// Render a block of text.
+func Info(s string, args ...any) {
+	theme := "#(magenta)"
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(golor.Sprintf(fmt.Sprintf("☠️ #(bold,red)[%s]", s), templates...)))
+	fmt.Println(style.Render(View(theme, s, args...)))
+}
+
+func Error(s string, args ...any) {
+	theme := "☠️ #(bold,red)"
+	style := lipgloss.NewStyle()
+	fmt.Println(style.Render(View(theme, s, args...)))
+}
+
+func Focus(s string, args ...any) {
+	theme := "#(bold,red)"
+	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
+	fmt.Println(style.Render(View(theme, s, args...)))
 }
 
 func ExitOnError(err error, format string, args ...any) {

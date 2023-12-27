@@ -30,6 +30,7 @@ const (
 	Web_GetProjectPublicApplicationsDependencyGraph_FullMethodName = "/observability.v1.Web/GetProjectPublicApplicationsDependencyGraph"
 	Web_LogHistory_FullMethodName                                  = "/observability.v1.Web/LogHistory"
 	Web_GetActive_FullMethodName                                   = "/observability.v1.Web/GetActive"
+	Web_GetRunningInformation_FullMethodName                       = "/observability.v1.Web/GetRunningInformation"
 	Web_Logs_FullMethodName                                        = "/observability.v1.Web/Logs"
 	Web_ActiveLogHistory_FullMethodName                            = "/observability.v1.Web/ActiveLogHistory"
 )
@@ -45,6 +46,7 @@ type WebClient interface {
 	GetProjectPublicApplicationsDependencyGraph(ctx context.Context, in *ProjectRequest, opts ...grpc.CallOption) (*MultiGraphResponse, error)
 	LogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
 	GetActive(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ActiveResponse, error)
+	GetRunningInformation(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RunningInformationResponse, error)
 	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
 	ActiveLogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
 }
@@ -120,6 +122,15 @@ func (c *webClient) GetActive(ctx context.Context, in *emptypb.Empty, opts ...gr
 	return out, nil
 }
 
+func (c *webClient) GetRunningInformation(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RunningInformationResponse, error) {
+	out := new(RunningInformationResponse)
+	err := c.cc.Invoke(ctx, Web_GetRunningInformation_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *webClient) Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error) {
 	stream, err := c.cc.NewStream(ctx, &Web_ServiceDesc.Streams[0], Web_Logs_FullMethodName, opts...)
 	if err != nil {
@@ -172,6 +183,7 @@ type WebServer interface {
 	GetProjectPublicApplicationsDependencyGraph(context.Context, *ProjectRequest) (*MultiGraphResponse, error)
 	LogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
 	GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error)
+	GetRunningInformation(context.Context, *emptypb.Empty) (*RunningInformationResponse, error)
 	Logs(*emptypb.Empty, Web_LogsServer) error
 	ActiveLogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
 	mustEmbedUnimplementedWebServer()
@@ -201,6 +213,9 @@ func (UnimplementedWebServer) LogHistory(context.Context, *v12.LogRequest) (*v12
 }
 func (UnimplementedWebServer) GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetActive not implemented")
+}
+func (UnimplementedWebServer) GetRunningInformation(context.Context, *emptypb.Empty) (*RunningInformationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetRunningInformation not implemented")
 }
 func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
 	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
@@ -347,6 +362,24 @@ func _Web_GetActive_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Web_GetRunningInformation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WebServer).GetRunningInformation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Web_GetRunningInformation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WebServer).GetRunningInformation(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Web_Logs_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(emptypb.Empty)
 	if err := stream.RecvMsg(m); err != nil {
@@ -420,6 +453,10 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetActive",
 			Handler:    _Web_GetActive_Handler,
+		},
+		{
+			MethodName: "GetRunningInformation",
+			Handler:    _Web_GetRunningInformation_Handler,
 		},
 		{
 			MethodName: "ActiveLogHistory",

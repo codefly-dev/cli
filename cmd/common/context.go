@@ -14,6 +14,6 @@ func NewContext() (context.Context, func()) {
 
 	provider.WithLogger(CLI())
 
-	ctx = provider.WithContext(ctx)
+	ctx = provider.Inject(ctx)
 	return ctx, provider.Done
 }

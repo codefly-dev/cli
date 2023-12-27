@@ -1,27 +1,33 @@
 package update
 
-// // ServiceCmd represents the run command
-// var ServiceCmd = &cobra.Command{
-// 	Use:   "service",
-// 	Short: "Update an service",
+import (
+	"context"
 
-// 	Run: func(cmd *cobra.Command, args []string) {
-// 	ctx := context.Background()
-//
-//provider := wool.New(ctx, configurations.CLI.AsResource())
-//
-//provider.WithLogger(common.CLI())
-//defer provider.Done()
-//
-//ctx = provider.WithContext(ctx)
-// 		service := common.Service(ctx)
+	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/configurations"
+	"github.com/spf13/cobra"
+)
 
-// 		_, err := services.Load(ctx, service)
-// 		shared.ExitOnError(err, "cannot load service")
+// ServiceCmd represents the run command
+var ServiceCmd = &cobra.Command{
+	Use:   "service",
+	Short: "Update a service",
 
-// 	},
-// }
+	Run: func(cmd *cobra.Command, args []string) {
+		service := common.Service(context.Background())
+		updateService(service)
+	},
+}
 
-// func init() {
-// 	ServiceCmd.Flags().BoolVarP(&current, "current", "c", false, "update current application")
-// }
+func updateService(service *configurations.Service) {
+	ctx, done := common.NewContext()
+	defer done()
+
+	svc := common.Service(ctx)
+
+	cli.Header(2, "Updating service <{{.Name}}>", svc)
+	err := services.UpdateAgent(ctx, svc)
+	cli.ExitOnError(err, "cannot update service")
+}

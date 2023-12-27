@@ -57,7 +57,7 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return nil
 	}
 	cli.Header(2, "Service <{{.Name}}> has a factory", service)
-	_, err = instance.Factory.Init(ctx)
+	_, err = instance.Factory.Load(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 	}

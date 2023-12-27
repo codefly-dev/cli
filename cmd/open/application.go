@@ -23,7 +23,7 @@ var ApplicationCmd = &cobra.Command{
 		provider.WithLogger(common.CLI())
 		defer provider.Done()
 
-		ctx = provider.WithContext(ctx)
+		ctx = provider.Inject(ctx)
 		application := common.Application(ctx)
 		c := exec.Command(editor, application.Dir())
 		err := c.Run()

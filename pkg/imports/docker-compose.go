@@ -12,7 +12,7 @@ import (
 )
 
 func CheckDockerCompose(ctx context.Context, dir string) (*Recommendation, error) {
-	w := wool.Get(ctx).In("CheckDockerCompose<%s>", dir)
+	w := wool.Get(ctx).In("CheckDockerCompose<%s>", wool.DirField(dir))
 	dockerfile := path.Join(dir, "docker-compose.yml")
 	if !shared.FileExists(dockerfile) {
 		return nil, nil

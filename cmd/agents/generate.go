@@ -1,26 +1,42 @@
 package agents
 
 import (
+	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/agents/generator"
+	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
 // GenerateCmd represents the run command
 var GenerateCmd = &cobra.Command{
 	Use:   "generate",
-	Short: "agentInput generation",
+	Short: "generate service template",
 	Run: func(cmd *cobra.Command, args []string) {
-		//ctx := shared.NewContext()
-		//w := wool.Get(ctx).In("agents.GenerateCmd")
-		//p, err := configurations.SolveDir(service)
-		//
-		//logger.Debuf("generating service agentInput from existing source at: %s", p)
-		//err := generator.GenerateServiceTemplate(ctx, p)
-		//shared.ExitOnError(err, "cannot create service")
+		err := generateService(servicePath)
+		cli.ExitOnError(err, "cannot generate service")
 	},
 }
 
-var service string
+var servicePath string
+
+func generateService(p string) error {
+	ctx, done := common.NewContext()
+	defer done()
+	w := wool.Get(ctx).In("agents.GenerateCmd")
+	p, err := configurations.SolveDir(p)
+	if err != nil {
+		return w.Wrapf(err, "cannot solve path")
+	}
+
+	err = generator.GenerateServiceTemplate(ctx, p)
+	if err != nil {
+		return w.Wrapf(err, "cannot generate service template")
+	}
+	return nil
+}
 
 func init() {
-	GenerateCmd.PersistentFlags().StringVar(&service, "service", "", "NewDir to the code to turn into library")
+	GenerateCmd.PersistentFlags().StringVar(&servicePath, "service", "", "NewDir to the code to turn into library")
 }

@@ -23,7 +23,7 @@ var ServiceCmd = &cobra.Command{
 		provider.WithLogger(common.CLI())
 		defer provider.Done()
 
-		ctx = provider.WithContext(ctx)
+		ctx = provider.Inject(ctx)
 		service := common.Service(ctx)
 		c := exec.Command(editor, service.Dir())
 		err := c.Run()

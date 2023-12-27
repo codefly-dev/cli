@@ -14,6 +14,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	web "github.com/codefly-dev/cli/generated/go/web/v1"
+	"github.com/codefly-dev/cli/pkg/services/runner"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
@@ -37,6 +38,24 @@ type Server struct {
 	gRPC       *grpc.Server
 	logChannel chan *observabilityv1.Log
 	workspace  *configurations.Workspace
+}
+
+func (s *Server) GetRunningInformation(ctx context.Context, empty *emptypb.Empty) (*web.RunningInformationResponse, error) {
+	infos, err := runner.AgentPIDs(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	var running []*web.RunningInformation
+	for _, info := range infos {
+		running = append(running, &web.RunningInformation{
+			Application: info.Application,
+			Service:     info.Service,
+			AgentPid:    int32(info.AgentPID),
+		})
+	}
+	return &web.RunningInformationResponse{
+		Running: running,
+	}, nil
 }
 
 /* Active information */

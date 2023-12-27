@@ -1,4 +1,4 @@
-package display
+package templates
 
 import (
 	"github.com/codefly-dev/core/configurations"

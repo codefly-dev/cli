@@ -13,7 +13,7 @@ import (
 )
 
 func CheckDocker(ctx context.Context, dir string) (*Recommendation, error) {
-	w := wool.Get(ctx).In("CheckDocker<%s>", dir)
+	w := wool.Get(ctx).In("CheckDocker<%s>", wool.DirField(dir))
 	file := path.Join(dir, "Dockerfile")
 	if !shared.FileExists(file) {
 		return nil, nil

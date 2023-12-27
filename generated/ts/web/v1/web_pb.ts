@@ -6,6 +6,7 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
 import { GraphResponse } from "../../observability/v1/dependencies_pb.js";
+import { Tracker } from "../../services/runtime/v1/tracker_pb.js";
 
 /**
  * @generated from message observability.v1.GetProjectsResponse
@@ -201,6 +202,98 @@ export class ActiveResponse extends Message<ActiveResponse> {
 
   static equals(a: ActiveResponse | PlainMessage<ActiveResponse> | undefined, b: ActiveResponse | PlainMessage<ActiveResponse> | undefined): boolean {
     return proto3.util.equals(ActiveResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message observability.v1.RunningInformation
+ */
+export class RunningInformation extends Message<RunningInformation> {
+  /**
+   * @generated from field: string application = 1;
+   */
+  application = "";
+
+  /**
+   * @generated from field: string service = 2;
+   */
+  service = "";
+
+  /**
+   * @generated from field: int32 agent_pid = 3;
+   */
+  agentPid = 0;
+
+  /**
+   * @generated from field: repeated services.runtime.v1.Tracker trackers = 4;
+   */
+  trackers: Tracker[] = [];
+
+  constructor(data?: PartialMessage<RunningInformation>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v1.RunningInformation";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "application", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "service", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "agent_pid", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "trackers", kind: "message", T: Tracker, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunningInformation {
+    return new RunningInformation().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RunningInformation {
+    return new RunningInformation().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RunningInformation {
+    return new RunningInformation().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RunningInformation | PlainMessage<RunningInformation> | undefined, b: RunningInformation | PlainMessage<RunningInformation> | undefined): boolean {
+    return proto3.util.equals(RunningInformation, a, b);
+  }
+}
+
+/**
+ * @generated from message observability.v1.RunningInformationResponse
+ */
+export class RunningInformationResponse extends Message<RunningInformationResponse> {
+  /**
+   * @generated from field: repeated observability.v1.RunningInformation running = 1;
+   */
+  running: RunningInformation[] = [];
+
+  constructor(data?: PartialMessage<RunningInformationResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v1.RunningInformationResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "running", kind: "message", T: RunningInformation, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunningInformationResponse {
+    return new RunningInformationResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RunningInformationResponse {
+    return new RunningInformationResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RunningInformationResponse {
+    return new RunningInformationResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RunningInformationResponse | PlainMessage<RunningInformationResponse> | undefined, b: RunningInformationResponse | PlainMessage<RunningInformationResponse> | undefined): boolean {
+    return proto3.util.equals(RunningInformationResponse, a, b);
   }
 }
 

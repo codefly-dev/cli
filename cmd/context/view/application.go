@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/cli/display"
+	"github.com/codefly-dev/cli/pkg/cli/templates"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
@@ -30,7 +30,7 @@ func viewApplications() {
 	provider.WithLogger(common.CLI())
 	defer provider.Done()
 
-	ctx = provider.WithContext(ctx)
+	ctx = provider.Inject(ctx)
 	project := common.Project(ctx)
 
 	active := project.ActiveApplication()
@@ -45,12 +45,12 @@ func viewApplications() {
 		cli.Header(2, "No applications found")
 		cli.Exit()
 	}
-	cli.Header(1, "Applications in project <{{.Project.Name}}>", display.New().WithProject(project))
-	cli.Header(2, "Active: <{{.Active}}>", display.New().With("Active", active))
+	cli.Header(1, "Applications in project <{{.Project.Name}}>", templates.New().WithProject(project))
+	cli.Header(2, "Active: <{{.Active}}>", templates.New().With("Active", active))
 	if len(others) == 0 {
 		return
 	}
 	for _, other := range others {
-		cli.Header(2, "<{{.Other}}>", display.New().With("Other", other))
+		cli.Header(2, "<{{.Other}}>", templates.New().With("Other", other))
 	}
 }

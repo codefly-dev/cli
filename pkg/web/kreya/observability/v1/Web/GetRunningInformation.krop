@@ -1,0 +1,13 @@
+{
+  "details": {
+    "methodFqn": "observability.v1.Web.GetRunningInformation"
+  },
+  "requests": [
+    {
+      "location": "GetRunningInformation-request.json"
+    }
+  ],
+  "operationType": "unary",
+  "invokerName": "grpc",
+  "importStreamId": "1ccb1567-44fe-4e42-8dc6-b43d887f4aee"
+}

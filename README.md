@@ -7,9 +7,40 @@
 
 ![](docs/media/dragonfly.png)
 
+
+
+
+
+# Development
+
 ## Requirements
 
-- https://github.com/usvc/semver [Optional: to use ./scripts/dev/tag.sh]
+### Automatic versioning of CLI and agents
+
+`scripts/publish.sh` uses `semver` to automatically version the CLI.
+
+- https://github.com/usvc/semver
+
+### Debugging of Agents
+
+It can be very handy to be able to "drop in" into the agent code and debug it.
+
+To do so:
+
+- run the CLI with a breakpoint
+- get the PID of the agent from the log
+- set a breakpoint in the agent code
+- attach the process in the IDE with your agent code
+- let the magic happens!
+
+> Note: this process will be the same to allow debugging into the client code: CLI exposes an endpoint with the PID of the client process.
+
+This is by far the best experience to advance debugging! I would say 99% of developers don't know about this is even possible.
+
+
+
+
+# OLD
 
 
 TODO: golang ci lint

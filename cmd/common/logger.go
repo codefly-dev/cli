@@ -1,10 +1,10 @@
 package common
 
 import (
-	"bytes"
 	"fmt"
 	"hash/fnv"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -26,24 +26,50 @@ func CLI() *CLILogger {
 	return cliLogger
 }
 
-func (logger *CLILogger) Process(msg *wool.Log) {
-	if msg.Level < wool.GlobalLogLevel() {
+func (logger *CLILogger) Process(log *wool.Log) {
+	if log.Level < wool.GlobalLogLevel() {
 		return
 	}
-	switch msg.Level {
+	switch log.Level {
 	case wool.TRACE:
-		cli.Trace(fmt.Sprintf("%s", msg))
+		cli.Trace(fmt.Sprintf("%s", log))
 	case wool.DEBUG:
-		cli.Debug(fmt.Sprintf("%s", msg))
+		cli.Debug(fmt.Sprintf("%s", log))
+	case wool.INFO:
+		cli.Info(fmt.Sprintf("%s", log))
 	case wool.WARN:
-		cli.Warning(msg.Message)
+		cli.Warning(fmt.Sprintf("%s", log))
+	case wool.ERROR:
+		cli.Error(fmt.Sprintf("%s", log))
+	case wool.FOCUS:
+		cli.Focus(fmt.Sprintf("%s", log))
 	default:
-		fmt.Printf("%s\n", msg)
+		fmt.Printf("%s\n", log)
 	}
 }
 
-func (logger *CLILogger) ProcessWithSource(msg *wool.Log, source *wool.Identifier) {
-	fmt.Println("TODO: THIS COMES FROM AGENTS -- ADD FORMATTER IDENTIFIER", source, msg)
+func (logger *CLILogger) ProcessWithSource(log *wool.Log, source *wool.Identifier) {
+	if log.Level < wool.GlobalLogLevel() {
+		return
+	}
+	if source.IsSystem() {
+		logger.Process(log)
+		return
+	}
+	Log(source, log)
+}
+
+func Log(identifier *wool.Identifier, log *wool.Log) {
+	sep := "|"
+	if log.Level == wool.FORWARD {
+		sep = ">>"
+	}
+	style := GetBaseStyle(identifier.Unique)
+	if log.Level == wool.FOCUS {
+		style = style.Copy()
+		style.Border(lipgloss.RoundedBorder())
+	}
+	fmt.Println(style.Render(fmt.Sprintf("%s %s %s", identifier.Unique, sep, log)))
 }
 
 func (logger *CLILogger) Oops(format string, args ...any) {
@@ -86,76 +112,34 @@ func hashString(s string) uint32 {
 	return h.Sum32()
 }
 
-func (cp *ColorPicker) PickStyle(app string, service string) lipgloss.Style {
-	hashApp := hashString(app)
-	hashService := hashString(service)
+func (cp *ColorPicker) PickStyle(unique string) lipgloss.Style {
+	// Split in "/"
+	parts := strings.Split(unique, "/")
+	if len(parts) != 2 {
+		return lipgloss.NewStyle()
+	}
+	hashApp := hashString(parts[0])
+	hashService := hashString(parts[1])
 
-	fgColor := cp.foregroundColors[hashApp%uint32(len(cp.foregroundColors))]
-	bgColor := cp.backgroundColors[hashService%uint32(len(cp.backgroundColors))]
+	fgColor := cp.foregroundColors[hashService%uint32(len(cp.foregroundColors))]
+	bgColor := cp.backgroundColors[hashApp%uint32(len(cp.backgroundColors))]
 
 	return lipgloss.NewStyle().
 		Foreground(fgColor).
 		Background(bgColor)
 }
 
-type ServerFormatter struct {
-	buffer bytes.Buffer
-	picker *ColorPicker
-	debug  bool
-	styles map[string]lipgloss.Style
+var styles map[string]lipgloss.Style
+
+func init() {
+	styles = map[string]lipgloss.Style{}
 }
 
-func NewServerFormatter() *ServerFormatter {
-	return &ServerFormatter{
-		picker: NewColorPicker(),
-		styles: make(map[string]lipgloss.Style),
+func GetBaseStyle(unique string) lipgloss.Style {
+	if style, ok := styles[unique]; ok {
+		return style
 	}
-}
-
-func (out *ServerFormatter) Write(p []byte) (n int, err error) {
-	fmt.Println("got log", string(p))
-	n, err = out.buffer.Write(p)
-	if err != nil {
-		return
-	}
-	defer out.buffer.Reset()
-
-	// var log LogMessage
-	// err = json.Unmarshal(out.buffer.Bytes(), &log)
-	// if err != nil {
-	// 	fmt.Printf("got error unmarshalling log: %v\n", err)
-	// 	return
-	// }
-	// err = json.Unmarshal([]byte(log.RawMessage), &log.Message)
-	// if err != nil {
-	// 	log.Message = LogMessageContent{}
-	// }
-
-	// message := log.Message.Msg
-	// if message == "" {
-	// 	return
-	// }
-
-	// mgLog := createManagementLog(&log)
-	// // Send the management Log to registered callbacks
-	// for _, callback := range out.callbacks {
-	// 	callback(mgLog)
-	// }
-
-	// unique := fmt.Sprintf("%s/%s", log.Message.Application, log.Message.Service)
-
-	// var style lipgloss.Style
-	// var ok bool
-	// if style, ok = out.styles[unique]; !ok {
-	// 	out.styles[unique] = out.picker.PickStyle(log.Message.Application, log.Message.Service)
-	// }
-
-	// // debug me bool
-	// if log.Message.Level == "debug-me" {
-	// 	style = style.Copy().Background(lipgloss.Color("#FFD700")) // gold
-	// }
-	// sender := fmt.Sprintf("%s/%s", log.Message.Application, log.Message.Service)
-
-	// fmt.Println(style.Render(fmt.Sprintf("[%s] %s", sender, message)))
-	return
+	style := NewColorPicker().PickStyle(unique)
+	styles[unique] = style
+	return style
 }

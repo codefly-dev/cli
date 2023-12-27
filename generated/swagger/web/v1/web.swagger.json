@@ -107,6 +107,28 @@
         ]
       }
     },
+    "/active/project/running-information": {
+      "get": {
+        "operationId": "Web_GetRunningInformation",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RunningInformationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Web"
+        ]
+      }
+    },
     "/overall/agent/{agent}/information": {
       "get": {
         "operationId": "Web_GetAgentInformation",
@@ -451,6 +473,14 @@
       ],
       "default": "UNKNOWN"
     },
+    "v1DockerTracker": {
+      "type": "object",
+      "properties": {
+        "containerId": {
+          "type": "string"
+        }
+      }
+    },
     "v1Endpoint": {
       "type": "object",
       "properties": {
@@ -656,7 +686,8 @@
         "domain": {
           "type": "string"
         }
-      }
+      },
+      "title": "Organization represents the owner of a software system\nThe Domain corresponds to a URI for that organization\nA Github organization URL is a good example of this"
     },
     "v1PartialSnapshot": {
       "type": "object",
@@ -676,6 +707,18 @@
             "type": "object",
             "$ref": "#/definitions/v1ApplicationSnapshot"
           }
+        }
+      }
+    },
+    "v1ProcessTracker": {
+      "type": "object",
+      "properties": {
+        "PID": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "type": {
+          "type": "string"
         }
       }
     },
@@ -765,6 +808,40 @@
         }
       }
     },
+    "v1RunningInformation": {
+      "type": "object",
+      "properties": {
+        "application": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "agentPid": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "trackers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Tracker"
+          }
+        }
+      }
+    },
+    "v1RunningInformationResponse": {
+      "type": "object",
+      "properties": {
+        "running": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1RunningInformation"
+          }
+        }
+      }
+    },
     "v1Service": {
       "type": "object",
       "properties": {
@@ -787,7 +864,8 @@
             "$ref": "#/definitions/v1Endpoint"
           }
         }
-      }
+      },
+      "title": "Service is the fundamental \"live\" computing unit of a system\nIt belongs to an application\nIt is \"hosted\" by an agent\nIt has a set of endpoints"
     },
     "v1Session": {
       "type": "object",
@@ -809,6 +887,20 @@
     },
     "v1TcpAPI": {
       "type": "object"
+    },
+    "v1Tracker": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "processTracker": {
+          "$ref": "#/definitions/v1ProcessTracker"
+        },
+        "dockerTracker": {
+          "$ref": "#/definitions/v1DockerTracker"
+        }
+      }
     }
   }
 }
