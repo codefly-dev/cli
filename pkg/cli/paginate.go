@@ -58,13 +58,12 @@ func (m paginatedText) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m paginatedText) View() string {
 	var b strings.Builder
-	b.WriteString("\n  Paginator Example\n\n")
 	start, end := m.paginator.GetSliceBounds(len(m.items))
 	for _, item := range m.items[start:end] {
 		b.WriteString("  • " + item + "\n\n")
 	}
 	b.WriteString("  " + m.paginator.View())
-	b.WriteString("\n\n  h/l ←/→ page • q/Enter: done\n")
+	b.WriteString("\n  h/l ←/→ page • q/Enter: done\n")
 	return b.String()
 }
 

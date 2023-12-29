@@ -108,31 +108,31 @@ service Web {
 
   rpc GetActive(google.protobuf.Empty) returns (ActiveResponse) {
     option (google.api.http) = {
-      get: "/active/information"
+      get: "/active/project/information"
     };
   }
 
   rpc GetRunningInformation(google.protobuf.Empty) returns (RunningInformationResponse) {
     option (google.api.http) = {
-      get: "/active/running-information"
+      get: "/active/project/running-information"
     };
   }
 
   rpc GetNetworkMappings(google.protobuf.Empty) returns (NetworkResponse) {
     option (google.api.http) = {
-      get: "/active/network-mappings"
+      get: "/active/project/network-mappings"
     };
   }
 
   rpc Logs(google.protobuf.Empty)  returns (stream observability.v1.Log) {
     option (google.api.http) = {
-      get: "/active/logs"
+      get: "/active/project/logs"
     };
   }
 
   rpc ActiveLogHistory(LogRequest) returns (LogResponse) {
     option (google.api.http) = {
-      get: "/active/logs/history"
+      get: "/active/project/logs/history"
     };
   }
 

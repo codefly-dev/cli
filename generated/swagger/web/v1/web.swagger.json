@@ -16,7 +16,7 @@
     "application/json"
   ],
   "paths": {
-    "/active/information": {
+    "/active/project/information": {
       "get": {
         "operationId": "Web_GetActive",
         "responses": {
@@ -38,7 +38,7 @@
         ]
       }
     },
-    "/active/logs": {
+    "/active/project/logs": {
       "get": {
         "operationId": "Web_Logs",
         "responses": {
@@ -69,7 +69,7 @@
         ]
       }
     },
-    "/active/logs/history": {
+    "/active/project/logs/history": {
       "get": {
         "operationId": "Web_ActiveLogHistory",
         "responses": {
@@ -107,7 +107,7 @@
         ]
       }
     },
-    "/active/network-mappings": {
+    "/active/project/network-mappings": {
       "get": {
         "operationId": "Web_GetNetworkMappings",
         "responses": {
@@ -129,7 +129,7 @@
         ]
       }
     },
-    "/active/running-information": {
+    "/active/project/running-information": {
       "get": {
         "operationId": "Web_GetRunningInformation",
         "responses": {
