@@ -18,7 +18,7 @@ var ContextCmd = &cobra.Command{
 		// Determine what we are working on
 		project := common.Project(ctx)
 		cli.Header(2, "⭐️ Active project <{{.Name}}>", project)
-		if app := project.ActiveApplication(); app == nil {
+		if app := project.ActiveApplication(ctx); app == nil {
 			cli.Header(2, "⚡️ No active application")
 			return
 		} else {
@@ -39,4 +39,5 @@ var ContextCmd = &cobra.Command{
 
 func init() {
 	ContextCmd.AddCommand(context.SwitchCmd)
+	ContextCmd.AddCommand(context.ViewCmd)
 }

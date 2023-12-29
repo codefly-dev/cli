@@ -66,10 +66,10 @@ func switchProject() {
 
 	cli.Header(2, "Active project is now: {{.Name}}", project)
 
-	activeApplication := project.ActiveApplication()
+	activeApplication := project.ActiveApplication(ctx)
 	if activeApplication == nil {
 		return
 	}
-	cli.Header(2, "Active application is now: {{.}}", project.ActiveApplication())
+	cli.Header(2, "Active application is now: {{.}}", project.ActiveApplication(ctx))
 
 }

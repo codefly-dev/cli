@@ -17,7 +17,7 @@ import (
 // ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Add an service",
+	Short: "Add a service",
 
 	Run: func(cmd *cobra.Command, args []string) {
 

@@ -14,4 +14,5 @@ var SwitchCmd = &cobra.Command{
 func init() {
 	SwitchCmd.AddCommand(switch_.ProjectCmd)
 	SwitchCmd.AddCommand(switch_.ApplicationCmd)
+	SwitchCmd.AddCommand(switch_.ServiceCmd)
 }

@@ -33,7 +33,7 @@ func viewApplications() {
 	ctx = provider.Inject(ctx)
 	project := common.Project(ctx)
 
-	active := project.ActiveApplication()
+	active := project.ActiveApplication(ctx)
 	var others []string
 	for _, other := range project.Applications {
 		if shared.PointerEqual(active, other.Name) {
@@ -46,11 +46,13 @@ func viewApplications() {
 		cli.Exit()
 	}
 	cli.Header(1, "Applications in project <{{.Project.Name}}>", templates.New().WithProject(project))
-	cli.Header(2, "Active: <{{.Active}}>", templates.New().With("Active", active))
+
+	cli.Header(2, "Active: <{{.Other.Active}}>", templates.New().With("Active", active))
 	if len(others) == 0 {
 		return
 	}
+	cli.Header(2, "Others:")
 	for _, other := range others {
-		cli.Header(2, "<{{.Other}}>", templates.New().With("Other", other))
+		cli.Header(2, "<{{.Other.Service}}>", templates.New().With("Service", other))
 	}
 }

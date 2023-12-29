@@ -13,7 +13,6 @@ var AddCmd = &cobra.Command{
 
 func init() {
 	AddCmd.AddCommand(add.ProjectCmd)
-	AddCmd.AddCommand(add.PartialCmd)
 	AddCmd.AddCommand(add.ApplicationCmd)
 	AddCmd.AddCommand(add.ServiceCmd)
 }

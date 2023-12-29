@@ -36,7 +36,6 @@ var ServiceCmd = &cobra.Command{
 			if workspace == nil {
 				cli.Error("No workspace found: can't run server")
 			} else {
-
 				go func() {
 					w, err := web.NewServer(web.ServerData{Workspace: workspace})
 					cli.ExitOnError(err, "cannot create web server")
@@ -46,7 +45,12 @@ var ServiceCmd = &cobra.Command{
 
 			go func() {
 				service := common.Service(ctx)
-				errs <- runService(ctx, service)
+				if standAlone {
+					errs <- runService(ctx, service)
+				} else {
+					project := common.Project(ctx)
+					errs <- runServiceFlow(ctx, project, service)
+				}
 			}()
 		}
 
@@ -55,6 +59,8 @@ var ServiceCmd = &cobra.Command{
 			select {
 			case err := <-errs:
 				cli.ExitOnError(err, "Got service run error: %v\n", err)
+				// TODO: get rid when flow works
+				errs <- nil
 				break loop
 			case <-ctx.Done():
 				cli.Header(2, "Got context.Cancel: Exiting...")
@@ -70,17 +76,27 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
+func runServiceFlow(ctx context.Context, project *configurations.Project, service *configurations.Service) error {
+	w := wool.Get(ctx).In("runService", wool.ThisField(service))
+	r, err := runner.NewFlow(ctx, project, service)
+	if err != nil {
+		return w.Wrap(err)
+	}
+	return r.Start(ctx)
+}
+
 func runService(ctx context.Context, service *configurations.Service) error {
 	w := wool.Get(ctx).In("runService", wool.ThisField(service))
 	r, err := runner.New(ctx, service)
 	if err != nil {
 		return w.Wrap(err)
 	}
-
 	return r.Start(ctx)
-
 }
+
+var standAlone bool
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&withServer, "server", true, "Run service server")
+	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Run service as standalone, i.e. without its dependencies")
 }

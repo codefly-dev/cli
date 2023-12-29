@@ -19,7 +19,7 @@ func Application(ctx context.Context) *configurations.Application {
 	project, err := w.LoadActiveProject(ctx)
 	cli.ExitOnError(err, "cannot get current project")
 
-	if project.ActiveApplication() == nil {
+	if project.ActiveApplication(ctx) == nil {
 		cli.Error("couldn't find an application to run from active project")
 		cli.Exit()
 
