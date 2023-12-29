@@ -2,7 +2,12 @@ package add
 
 import (
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/cli/models"
+	"github.com/codefly-dev/golor"
 
+	"github.com/codefly-dev/core/actions/actions"
+	actionsservice "github.com/codefly-dev/core/actions/service"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
@@ -29,42 +34,95 @@ func addServiceDependency() {
 	w := wool.Get(ctx).In("cmd.add.serviceDependency")
 
 	project := common.Project(ctx)
-	w.Trace("project", wool.Field("project", project))
+	w.Trace("project", wool.Field("project", project.Name))
 	app := common.Application(ctx)
-	w.Trace("app", wool.Field("app", app))
+	w.Trace("app", wool.Field("app", app.Name))
 	service := common.Service(ctx)
-	w.Trace("service", wool.Field("service", service))
+	w.Trace("service", wool.Field("service", service.Name))
 
-	//
-	//if app.ExistsService(name) && !override {
-	//	common.CLI().Oops("Service <{{.}}> already exists", name)
-	//}
-	//
-	//w.Debug("input", wool.Field("agent", agent))
-	//agent, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, agentInput)
-	//cli.ExitOnError(err, "Cannot parse agent")
-	//
-	//confirm := models.Confirm(golor.Sprintf("Confirm adding a service in your application <{{.Name}}>?", app), true)
-	//if !confirm {
-	//	cli.Header(2, "Received loud and clear!")
-	//	cli.Exit()
-	//}
-	//
-	//input := &actionsservice.AddService{
-	//	Name:        name,
-	//	Project:     project.Name,
-	//	Application: app.Name,
-	//	Agent:       agent.Proto(),
-	//	Override:    override,
-	//}
-	//
-	//addDescription := models.Confirm("Do you want to add a short description?", false)
-	//if addDescription {
-	//	input.Description = models.Input("Description", "Make some magic 🪄")
-	//
-	//}
-	//
-	//err = services.Add(ctx, input)
-	//cli.ExitOnError(err, "Cannot add service")
+	confirm := models.Confirm(golor.Sprintf("Confirm adding a service dependency for <{{.Name}}>?", service), true)
+	if !confirm {
+		cli.Header(2, "Received loud and clear!")
+		cli.Exit()
+	}
+	// First all services in the same application
+	inAppServices := app.Services
+
+	// only 1 service means must be in another app
+	if len(inAppServices) > 1 {
+		var entries []*models.Entry
+		for _, p := range inAppServices {
+			if p.Name == service.Name {
+				continue
+			}
+			entries = append(entries, &models.Entry{
+				Identifier: p.Name,
+			})
+		}
+		// Or another application
+		otherApplication := ">> In another application"
+		entries = append(entries, &models.Entry{
+			Identifier: otherApplication,
+		})
+		selected, err := models.Select("Select the dependency or >> In another application", entries)
+		cli.ExitOnError(err, "cannot select service dependency")
+
+		if selected.Identifier != otherApplication {
+			action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
+				Name:                  service.Name,
+				Project:               project.Name,
+				Application:           app.Name,
+				DependencyName:        selected.Identifier,
+				DependencyApplication: app.Name,
+			})
+			cli.ExitOnError(err, "cannot create action")
+			_, err = actions.Run(ctx, action)
+			cli.ExitOnError(err, "cannot add service dependency")
+			cli.Header(2, "Service dependency added")
+			return
+		}
+	}
+	allApps := project.Applications
+	if len(allApps) == 1 {
+		cli.Error("No other application found")
+		return
+	}
+	var entries []*models.Entry
+	for _, p := range allApps {
+		if p.Name == app.Name {
+			continue
+		}
+		entries = append(entries, &models.Entry{
+			Identifier: p.Name,
+		})
+	}
+	selected, err := models.Select("Select the application for the dependent service", entries)
+	cli.ExitOnError(err, "cannot select application")
+
+	otherApp, err := project.LoadApplicationFromName(ctx, selected.Identifier)
+	cli.ExitOnError(err, "cannot load application")
+	entries = []*models.Entry{}
+	for _, p := range otherApp.Services {
+		if p.Name == service.Name {
+			continue
+		}
+		entries = append(entries, &models.Entry{
+			Identifier: p.Name,
+		})
+	}
+	selected, err = models.Select("Select the dependent service", entries)
+	cli.ExitOnError(err, "cannot select service")
+
+	action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
+		Name:                  service.Name,
+		Project:               project.Name,
+		Application:           app.Name,
+		DependencyName:        selected.Identifier,
+		DependencyApplication: otherApp.Name,
+	})
+	cli.ExitOnError(err, "cannot create action")
+	_, err = actions.Run(ctx, action)
+	cli.ExitOnError(err, "cannot add service dependency")
+	cli.Header(2, "Service dependency added")
 
 }

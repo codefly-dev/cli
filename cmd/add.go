@@ -15,4 +15,5 @@ func init() {
 	AddCmd.AddCommand(add.ProjectCmd)
 	AddCmd.AddCommand(add.ApplicationCmd)
 	AddCmd.AddCommand(add.ServiceCmd)
+	AddCmd.AddCommand(add.ServiceDependencyCmd)
 }
