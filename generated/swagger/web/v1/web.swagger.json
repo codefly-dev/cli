@@ -345,6 +345,9 @@
         "tcp": {
           "$ref": "#/definitions/v1TcpAPI"
         },
+        "http": {
+          "$ref": "#/definitions/v1HttpAPI"
+        },
         "rest": {
           "$ref": "#/definitions/v1RestAPI"
         },
@@ -535,10 +538,20 @@
         "id": {
           "type": "string"
         },
-        "value": {
-          "type": "boolean"
+        "type": {
+          "$ref": "#/definitions/v1GraphNodeType"
         }
-      }
+      },
+      "title": "GraphNode represents a node in an architecture graph\nType can be \"application\", \"service\" or \"endpoint\""
+    },
+    "v1GraphNodeType": {
+      "type": "string",
+      "enum": [
+        "APPLICATION",
+        "SERVICE",
+        "ENDPOINT"
+      ],
+      "default": "APPLICATION"
     },
     "v1GraphResponse": {
       "type": "object",
@@ -589,6 +602,9 @@
         "TRACE"
       ],
       "default": "GET"
+    },
+    "v1HttpAPI": {
+      "type": "object"
     },
     "v1Language": {
       "type": "object",
