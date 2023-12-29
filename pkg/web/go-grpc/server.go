@@ -40,6 +40,12 @@ type Server struct {
 	workspace  *configurations.Workspace
 }
 
+func (s *Server) GetNetworkMappings(ctx context.Context, empty *emptypb.Empty) (*web.NetworkResponse, error) {
+	return &web.NetworkResponse{
+		Mappings: runner.GetNetworkMappings(),
+	}, nil
+}
+
 func (s *Server) GetRunningInformation(ctx context.Context, empty *emptypb.Empty) (*web.RunningInformationResponse, error) {
 	infos, err := runner.AgentPIDs(ctx)
 	if err != nil {

@@ -6,6 +6,7 @@ import "base/v1/project.proto";
 
 import "services/agent/v1/agent.proto";
 import "services/runtime/v1/tracker.proto";
+import "services/runtime/v1/runtime.proto";
 
 import "observability/v1/inventory.proto";
 import "observability/v1/dependencies.proto";
@@ -48,11 +49,15 @@ message RunningInformation {
   string application = 1;
   string service = 2;
   int32 agent_pid = 3;
-  repeated services.runtime.v1.Tracker trackers = 4;
+  repeated service.runtime.v1.Tracker trackers = 4;
 }
 
 message RunningInformationResponse {
   repeated RunningInformation running = 1;
+}
+
+message NetworkResponse {
+  repeated service.runtime.v1.NetworkMapping mappings = 1;
 }
 
 service Web {
@@ -103,25 +108,31 @@ service Web {
 
   rpc GetActive(google.protobuf.Empty) returns (ActiveResponse) {
     option (google.api.http) = {
-      get: "/active/project/information"
+      get: "/active/information"
     };
   }
 
   rpc GetRunningInformation(google.protobuf.Empty) returns (RunningInformationResponse) {
     option (google.api.http) = {
-      get: "/active/project/running-information"
+      get: "/active/running-information"
+    };
+  }
+
+  rpc GetNetworkMappings(google.protobuf.Empty) returns (NetworkResponse) {
+    option (google.api.http) = {
+      get: "/active/network-mappings"
     };
   }
 
   rpc Logs(google.protobuf.Empty)  returns (stream observability.v1.Log) {
     option (google.api.http) = {
-      get: "/active/project/logs"
+      get: "/active/logs"
     };
   }
 
   rpc ActiveLogHistory(LogRequest) returns (LogResponse) {
     option (google.api.http) = {
-      get: "/active/project/logs/history"
+      get: "/active/logs/history"
     };
   }
 

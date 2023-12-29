@@ -13,11 +13,10 @@ import (
 )
 
 type FlowRunner struct {
-	managers        []*RunManager
-	dependencies    *architecture.Graph
-	endpoints       map[string][]*basev1.Endpoint
-	networkMappings map[string][]*runtimev1.NetworkMapping
-	actions         chan runners.Action
+	managers     []*RunManager
+	dependencies *architecture.Graph
+	endpoints    map[string][]*basev1.Endpoint
+	actions      chan runners.Action
 }
 
 func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service) (*FlowRunner, error) {
@@ -63,11 +62,10 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	}
 	managers = append(managers, manager)
 	return &FlowRunner{
-		managers:        managers,
-		endpoints:       make(map[string][]*basev1.Endpoint),
-		networkMappings: make(map[string][]*runtimev1.NetworkMapping),
-		dependencies:    g,
-		actions:         make(chan runners.Action, 1),
+		managers:     managers,
+		endpoints:    make(map[string][]*basev1.Endpoint),
+		dependencies: g,
+		actions:      make(chan runners.Action, 1),
 	}, nil
 }
 
@@ -150,7 +148,6 @@ func (flow *FlowRunner) Init(ctx context.Context) error {
 			return w.Wrapf(err, "cannot init service <%s>", manager.Unique())
 		}
 		w.Debug("init", wool.Field("for", manager.Unique()), wool.NullableField("endpoint dependencies", configurations.MakeEndpointSummary(dependenciesEndpoints)))
-		flow.networkMappings[manager.Unique()] = manager.init.NetworkMappings
 	}
 	return nil
 }
@@ -190,7 +187,7 @@ func (flow *FlowRunner) DependenciesNetworkMappings(unique string) ([]*runtimev1
 	dependencies := flow.dependencies.Antecedents(unique)
 	var mappings []*runtimev1.NetworkMapping
 	for _, dependency := range dependencies {
-		mappingsForDependency := flow.networkMappings[dependency]
+		mappingsForDependency := GetNetworkMappingsFor(dependency)
 		mappings = append(mappings, mappingsForDependency...)
 	}
 	w.Debug("getting dependencies network mappings", wool.SliceCountField(mappings), wool.Field("for", unique), wool.NullableField("dependencies", dependencies))

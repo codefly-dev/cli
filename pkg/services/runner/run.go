@@ -139,6 +139,7 @@ func (manager *RunManager) Init(ctx context.Context) error {
 		return w.NewError("cannot Init service instance")
 	}
 	manager.init = init
+	SetNetworkMappings(manager.Unique(), manager.init.NetworkMappings)
 	return nil
 }
 

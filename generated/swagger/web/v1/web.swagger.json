@@ -16,7 +16,7 @@
     "application/json"
   ],
   "paths": {
-    "/active/project/information": {
+    "/active/information": {
       "get": {
         "operationId": "Web_GetActive",
         "responses": {
@@ -29,7 +29,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -38,7 +38,7 @@
         ]
       }
     },
-    "/active/project/logs": {
+    "/active/logs": {
       "get": {
         "operationId": "Web_Logs",
         "responses": {
@@ -51,7 +51,7 @@
                   "$ref": "#/definitions/v1Log"
                 },
                 "error": {
-                  "$ref": "#/definitions/rpcStatus"
+                  "$ref": "#/definitions/googlerpcStatus"
                 }
               },
               "title": "Stream result of v1Log"
@@ -60,7 +60,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -69,7 +69,7 @@
         ]
       }
     },
-    "/active/project/logs/history": {
+    "/active/logs/history": {
       "get": {
         "operationId": "Web_ActiveLogHistory",
         "responses": {
@@ -82,7 +82,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -107,7 +107,29 @@
         ]
       }
     },
-    "/active/project/running-information": {
+    "/active/network-mappings": {
+      "get": {
+        "operationId": "Web_GetNetworkMappings",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1NetworkResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googlerpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Web"
+        ]
+      }
+    },
+    "/active/running-information": {
       "get": {
         "operationId": "Web_GetRunningInformation",
         "responses": {
@@ -120,7 +142,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -142,7 +164,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -172,7 +194,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -194,7 +216,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -232,7 +254,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -262,7 +284,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -292,7 +314,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/rpcStatus"
+              "$ref": "#/definitions/googlerpcStatus"
             }
           }
         },
@@ -311,16 +333,7 @@
     }
   },
   "definitions": {
-    "protobufAny": {
-      "type": "object",
-      "properties": {
-        "@type": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": {}
-    },
-    "rpcStatus": {
+    "googlerpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -338,6 +351,15 @@
           }
         }
       }
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
     },
     "v1API": {
       "type": "object",
@@ -689,6 +711,41 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/v1GraphResponse"
+          }
+        }
+      }
+    },
+    "v1NetworkMapping": {
+      "type": "object",
+      "properties": {
+        "application": {
+          "type": "string",
+          "title": "Application name"
+        },
+        "service": {
+          "type": "string",
+          "title": "Service name"
+        },
+        "endpoint": {
+          "$ref": "#/definitions/v1Endpoint"
+        },
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "List of addresses to map to"
+        }
+      }
+    },
+    "v1NetworkResponse": {
+      "type": "object",
+      "properties": {
+        "mappings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1NetworkMapping"
           }
         }
       }

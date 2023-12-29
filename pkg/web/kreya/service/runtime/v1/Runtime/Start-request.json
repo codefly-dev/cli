@@ -1,0 +1,42 @@
+{
+  "networkMappings": [
+    {
+      "application": "Soft Intelligent Vermont",
+      "service": "open-source Beauty Configuration",
+      "endpoint": {
+        "name": "{{ faker.name.last_name }}",
+        "description": "Rubber contextually-based Garden & Health",
+        "visibility": "Avon impactful",
+        "api": {
+          "tcp": {}
+        },
+        "application": "US Dollar Generic Fresh Keyboard Sharable",
+        "service": "Director Generic Cotton Chicken Sleek",
+        "namespace": "Burkina Faso Summit Program"
+      },
+      "addresses": [
+        "Steel Rand",
+        "quantifying Manor payment"
+      ]
+    },
+    {
+      "application": "Incredible Cotton Shoes interfaces repurpose",
+      "service": "Buckinghamshire",
+      "endpoint": {
+        "name": "{{ faker.name.last_name }}",
+        "description": "connecting SCSI Jamaican Dollar",
+        "visibility": "Architect invoice primary",
+        "api": {
+          "tcp": {}
+        },
+        "application": "Auto Loan Account",
+        "service": "multi-byte",
+        "namespace": "Trail"
+      },
+      "addresses": [
+        "responsive",
+        "seize Internal"
+      ]
+    }
+  ]
+}

@@ -31,6 +31,7 @@ const (
 	Web_LogHistory_FullMethodName                                  = "/observability.v1.Web/LogHistory"
 	Web_GetActive_FullMethodName                                   = "/observability.v1.Web/GetActive"
 	Web_GetRunningInformation_FullMethodName                       = "/observability.v1.Web/GetRunningInformation"
+	Web_GetNetworkMappings_FullMethodName                          = "/observability.v1.Web/GetNetworkMappings"
 	Web_Logs_FullMethodName                                        = "/observability.v1.Web/Logs"
 	Web_ActiveLogHistory_FullMethodName                            = "/observability.v1.Web/ActiveLogHistory"
 )
@@ -47,6 +48,7 @@ type WebClient interface {
 	LogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
 	GetActive(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ActiveResponse, error)
 	GetRunningInformation(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RunningInformationResponse, error)
+	GetNetworkMappings(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*NetworkResponse, error)
 	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
 	ActiveLogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
 }
@@ -131,6 +133,15 @@ func (c *webClient) GetRunningInformation(ctx context.Context, in *emptypb.Empty
 	return out, nil
 }
 
+func (c *webClient) GetNetworkMappings(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*NetworkResponse, error) {
+	out := new(NetworkResponse)
+	err := c.cc.Invoke(ctx, Web_GetNetworkMappings_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *webClient) Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error) {
 	stream, err := c.cc.NewStream(ctx, &Web_ServiceDesc.Streams[0], Web_Logs_FullMethodName, opts...)
 	if err != nil {
@@ -184,6 +195,7 @@ type WebServer interface {
 	LogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
 	GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error)
 	GetRunningInformation(context.Context, *emptypb.Empty) (*RunningInformationResponse, error)
+	GetNetworkMappings(context.Context, *emptypb.Empty) (*NetworkResponse, error)
 	Logs(*emptypb.Empty, Web_LogsServer) error
 	ActiveLogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
 	mustEmbedUnimplementedWebServer()
@@ -216,6 +228,9 @@ func (UnimplementedWebServer) GetActive(context.Context, *emptypb.Empty) (*Activ
 }
 func (UnimplementedWebServer) GetRunningInformation(context.Context, *emptypb.Empty) (*RunningInformationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRunningInformation not implemented")
+}
+func (UnimplementedWebServer) GetNetworkMappings(context.Context, *emptypb.Empty) (*NetworkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNetworkMappings not implemented")
 }
 func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
 	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
@@ -380,6 +395,24 @@ func _Web_GetRunningInformation_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Web_GetNetworkMappings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WebServer).GetNetworkMappings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Web_GetNetworkMappings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WebServer).GetNetworkMappings(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Web_Logs_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(emptypb.Empty)
 	if err := stream.RecvMsg(m); err != nil {
@@ -457,6 +490,10 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRunningInformation",
 			Handler:    _Web_GetRunningInformation_Handler,
+		},
+		{
+			MethodName: "GetNetworkMappings",
+			Handler:    _Web_GetNetworkMappings_Handler,
 		},
 		{
 			MethodName: "ActiveLogHistory",

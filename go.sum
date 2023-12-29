@@ -43,6 +43,10 @@ github.com/codefly-dev/core v0.0.80 h1:lV3SEcU+T6QzCRU0MbRlXjYYdg9ARY/c2CrWluwBX
 github.com/codefly-dev/core v0.0.80/go.mod h1:nZt0T9QJOyLEreTZhG1lHK8oPh/K1ZVaKD9fG2Ppa+o=
 github.com/codefly-dev/core v0.0.81 h1:aLp+RXQ7Eeqytt06IusLlcSM9IBM1yV0K6QqvGEUqfQ=
 github.com/codefly-dev/core v0.0.81/go.mod h1:nZt0T9QJOyLEreTZhG1lHK8oPh/K1ZVaKD9fG2Ppa+o=
+github.com/codefly-dev/core v0.0.82 h1:7unsId8jy2de4H29qCBoclBjVz8y7MWtHoAhtOkphcc=
+github.com/codefly-dev/core v0.0.82/go.mod h1:nZt0T9QJOyLEreTZhG1lHK8oPh/K1ZVaKD9fG2Ppa+o=
+github.com/codefly-dev/core v0.0.84 h1:aqK9CHT9No/qya94t+/3SNqG1ZqMkBAj/I+Pwa7jB6w=
+github.com/codefly-dev/core v0.0.84/go.mod h1:nZt0T9QJOyLEreTZhG1lHK8oPh/K1ZVaKD9fG2Ppa+o=
 github.com/codefly-dev/golor v0.0.11-0.20231227143431-08c801cc2617 h1:uboAy+TBzccGLW4UheZxlh6jGPgio805mczrv+w13y0=
 github.com/codefly-dev/golor v0.0.11-0.20231227143431-08c801cc2617/go.mod h1:sl/u/K1l7J0Pr3xyVZp8fOJYQItKKst1No9JqgzLLoY=
 github.com/compose-spec/compose-go v1.20.2 h1:u/yfZHn4EaHGdidrZycWpxXgFffjYULlTbRfJ51ykjQ=

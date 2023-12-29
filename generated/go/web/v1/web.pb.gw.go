@@ -331,6 +331,24 @@ func local_request_Web_GetRunningInformation_0(ctx context.Context, marshaler ru
 
 }
 
+func request_Web_GetNetworkMappings_0(ctx context.Context, marshaler runtime.Marshaler, client WebClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var protoReq emptypb.Empty
+	var metadata runtime.ServerMetadata
+
+	msg, err := client.GetNetworkMappings(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+
+}
+
+func local_request_Web_GetNetworkMappings_0(ctx context.Context, marshaler runtime.Marshaler, server WebServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var protoReq emptypb.Empty
+	var metadata runtime.ServerMetadata
+
+	msg, err := server.GetNetworkMappings(ctx, &protoReq)
+	return msg, metadata, err
+
+}
+
 func request_Web_Logs_0(ctx context.Context, marshaler runtime.Marshaler, client WebClient, req *http.Request, pathParams map[string]string) (Web_LogsClient, runtime.ServerMetadata, error) {
 	var protoReq emptypb.Empty
 	var metadata runtime.ServerMetadata
@@ -548,7 +566,7 @@ func RegisterWebHandlerServer(ctx context.Context, mux *runtime.ServeMux, server
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/observability.v1.Web/GetActive", runtime.WithHTTPPathPattern("/active/project/information"))
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/observability.v1.Web/GetActive", runtime.WithHTTPPathPattern("/active/information"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -573,7 +591,7 @@ func RegisterWebHandlerServer(ctx context.Context, mux *runtime.ServeMux, server
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/observability.v1.Web/GetRunningInformation", runtime.WithHTTPPathPattern("/active/project/running-information"))
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/observability.v1.Web/GetRunningInformation", runtime.WithHTTPPathPattern("/active/running-information"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -587,6 +605,31 @@ func RegisterWebHandlerServer(ctx context.Context, mux *runtime.ServeMux, server
 		}
 
 		forward_Web_GetRunningInformation_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+
+	})
+
+	mux.Handle("GET", pattern_Web_GetNetworkMappings_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/observability.v1.Web/GetNetworkMappings", runtime.WithHTTPPathPattern("/active/network-mappings"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_Web_GetNetworkMappings_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+
+		forward_Web_GetNetworkMappings_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 
 	})
 
@@ -605,7 +648,7 @@ func RegisterWebHandlerServer(ctx context.Context, mux *runtime.ServeMux, server
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/observability.v1.Web/ActiveLogHistory", runtime.WithHTTPPathPattern("/active/project/logs/history"))
+		annotatedContext, err = runtime.AnnotateIncomingContext(ctx, mux, req, "/observability.v1.Web/ActiveLogHistory", runtime.WithHTTPPathPattern("/active/logs/history"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -801,7 +844,7 @@ func RegisterWebHandlerClient(ctx context.Context, mux *runtime.ServeMux, client
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/GetActive", runtime.WithHTTPPathPattern("/active/project/information"))
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/GetActive", runtime.WithHTTPPathPattern("/active/information"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -823,7 +866,7 @@ func RegisterWebHandlerClient(ctx context.Context, mux *runtime.ServeMux, client
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/GetRunningInformation", runtime.WithHTTPPathPattern("/active/project/running-information"))
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/GetRunningInformation", runtime.WithHTTPPathPattern("/active/running-information"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -839,13 +882,35 @@ func RegisterWebHandlerClient(ctx context.Context, mux *runtime.ServeMux, client
 
 	})
 
+	mux.Handle("GET", pattern_Web_GetNetworkMappings_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		var err error
+		var annotatedContext context.Context
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/GetNetworkMappings", runtime.WithHTTPPathPattern("/active/network-mappings"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_Web_GetNetworkMappings_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+
+		forward_Web_GetNetworkMappings_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+
+	})
+
 	mux.Handle("GET", pattern_Web_Logs_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/Logs", runtime.WithHTTPPathPattern("/active/project/logs"))
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/Logs", runtime.WithHTTPPathPattern("/active/logs"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -867,7 +932,7 @@ func RegisterWebHandlerClient(ctx context.Context, mux *runtime.ServeMux, client
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
 		var err error
 		var annotatedContext context.Context
-		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/ActiveLogHistory", runtime.WithHTTPPathPattern("/active/project/logs/history"))
+		annotatedContext, err = runtime.AnnotateContext(ctx, mux, req, "/observability.v1.Web/ActiveLogHistory", runtime.WithHTTPPathPattern("/active/logs/history"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -899,13 +964,15 @@ var (
 
 	pattern_Web_LogHistory_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"overall", "project", "logs", "history"}, ""))
 
-	pattern_Web_GetActive_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"active", "project", "information"}, ""))
+	pattern_Web_GetActive_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"active", "information"}, ""))
 
-	pattern_Web_GetRunningInformation_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"active", "project", "running-information"}, ""))
+	pattern_Web_GetRunningInformation_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"active", "running-information"}, ""))
 
-	pattern_Web_Logs_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"active", "project", "logs"}, ""))
+	pattern_Web_GetNetworkMappings_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"active", "network-mappings"}, ""))
 
-	pattern_Web_ActiveLogHistory_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"active", "project", "logs", "history"}, ""))
+	pattern_Web_Logs_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"active", "logs"}, ""))
+
+	pattern_Web_ActiveLogHistory_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"active", "logs", "history"}, ""))
 )
 
 var (
@@ -924,6 +991,8 @@ var (
 	forward_Web_GetActive_0 = runtime.ForwardResponseMessage
 
 	forward_Web_GetRunningInformation_0 = runtime.ForwardResponseMessage
+
+	forward_Web_GetNetworkMappings_0 = runtime.ForwardResponseMessage
 
 	forward_Web_Logs_0 = runtime.ForwardResponseStream
 

@@ -1,0 +1,15 @@
+{
+  "mode": "START",
+  "stage": "digital 4th generation challenge",
+  "channel": {
+    "kind": "contingency"
+  },
+  "answer": {
+    "done": true,
+    "round": 67,
+    "error": "Greens EXE",
+    "confirm": {
+      "confirmed": false
+    }
+  }
+}

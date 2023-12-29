@@ -7,6 +7,7 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3 } from "@bufbuild/protobuf";
 import { GraphResponse } from "../../observability/v1/dependencies_pb.js";
 import { Tracker } from "../../services/runtime/v1/tracker_pb.js";
+import { NetworkMapping } from "../../services/runtime/v1/runtime_pb.js";
 
 /**
  * @generated from message observability.v1.GetProjectsResponse
@@ -225,7 +226,7 @@ export class RunningInformation extends Message<RunningInformation> {
   agentPid = 0;
 
   /**
-   * @generated from field: repeated services.runtime.v1.Tracker trackers = 4;
+   * @generated from field: repeated service.runtime.v1.Tracker trackers = 4;
    */
   trackers: Tracker[] = [];
 
@@ -294,6 +295,43 @@ export class RunningInformationResponse extends Message<RunningInformationRespon
 
   static equals(a: RunningInformationResponse | PlainMessage<RunningInformationResponse> | undefined, b: RunningInformationResponse | PlainMessage<RunningInformationResponse> | undefined): boolean {
     return proto3.util.equals(RunningInformationResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message observability.v1.NetworkResponse
+ */
+export class NetworkResponse extends Message<NetworkResponse> {
+  /**
+   * @generated from field: repeated service.runtime.v1.NetworkMapping mappings = 1;
+   */
+  mappings: NetworkMapping[] = [];
+
+  constructor(data?: PartialMessage<NetworkResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v1.NetworkResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "mappings", kind: "message", T: NetworkMapping, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): NetworkResponse {
+    return new NetworkResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): NetworkResponse {
+    return new NetworkResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): NetworkResponse {
+    return new NetworkResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: NetworkResponse | PlainMessage<NetworkResponse> | undefined, b: NetworkResponse | PlainMessage<NetworkResponse> | undefined): boolean {
+    return proto3.util.equals(NetworkResponse, a, b);
   }
 }
 
