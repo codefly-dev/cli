@@ -40,9 +40,9 @@ type Server struct {
 	workspace  *configurations.Workspace
 }
 
-func (s *Server) GetNetworkMappings(ctx context.Context, empty *emptypb.Empty) (*web.NetworkResponse, error) {
-	return &web.NetworkResponse{
-		Mappings: runner.GetNetworkMappings(),
+func (s *Server) GetAddresses(ctx context.Context, req *web.GetAddressesRequest) (*web.GetAddressesResponse, error) {
+	return &web.GetAddressesResponse{
+		Addresses: runner.GetAddressesForEndpoint(req.Application, req.Service, req.Endpoint),
 	}, nil
 }
 

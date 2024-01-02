@@ -187,7 +187,7 @@ func (flow *FlowRunner) DependenciesNetworkMappings(unique string) ([]*runtimev1
 	dependencies := flow.dependencies.Antecedents(unique)
 	var mappings []*runtimev1.NetworkMapping
 	for _, dependency := range dependencies {
-		mappingsForDependency := GetNetworkMappingsFor(dependency)
+		mappingsForDependency := GetNetworkMappingsForService(dependency)
 		mappings = append(mappings, mappingsForDependency...)
 	}
 	w.Debug("getting dependencies network mappings", wool.SliceCountField(mappings), wool.Field("for", unique), wool.NullableField("dependencies", dependencies))

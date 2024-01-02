@@ -6,8 +6,6 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
 import { GraphResponse } from "../../observability/v1/dependencies_pb.js";
-import { Tracker } from "../../services/runtime/v1/tracker_pb.js";
-import { NetworkMapping } from "../../services/runtime/v1/runtime_pb.js";
 
 /**
  * @generated from message observability.v1.GetProjectsResponse
@@ -225,11 +223,6 @@ export class RunningInformation extends Message<RunningInformation> {
    */
   agentPid = 0;
 
-  /**
-   * @generated from field: repeated service.runtime.v1.Tracker trackers = 4;
-   */
-  trackers: Tracker[] = [];
-
   constructor(data?: PartialMessage<RunningInformation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -241,7 +234,6 @@ export class RunningInformation extends Message<RunningInformation> {
     { no: 1, name: "application", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "service", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "agent_pid", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
-    { no: 4, name: "trackers", kind: "message", T: Tracker, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunningInformation {
@@ -299,39 +291,88 @@ export class RunningInformationResponse extends Message<RunningInformationRespon
 }
 
 /**
- * @generated from message observability.v1.NetworkResponse
+ * @generated from message observability.v1.GetAddressesRequest
  */
-export class NetworkResponse extends Message<NetworkResponse> {
+export class GetAddressesRequest extends Message<GetAddressesRequest> {
   /**
-   * @generated from field: repeated service.runtime.v1.NetworkMapping mappings = 1;
+   * @generated from field: string application = 1;
    */
-  mappings: NetworkMapping[] = [];
+  application = "";
 
-  constructor(data?: PartialMessage<NetworkResponse>) {
+  /**
+   * @generated from field: string service = 2;
+   */
+  service = "";
+
+  /**
+   * @generated from field: string endpoint = 3;
+   */
+  endpoint = "";
+
+  constructor(data?: PartialMessage<GetAddressesRequest>) {
     super();
     proto3.util.initPartial(data, this);
   }
 
   static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "observability.v1.NetworkResponse";
+  static readonly typeName = "observability.v1.GetAddressesRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "mappings", kind: "message", T: NetworkMapping, repeated: true },
+    { no: 1, name: "application", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "service", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "endpoint", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): NetworkResponse {
-    return new NetworkResponse().fromBinary(bytes, options);
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetAddressesRequest {
+    return new GetAddressesRequest().fromBinary(bytes, options);
   }
 
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): NetworkResponse {
-    return new NetworkResponse().fromJson(jsonValue, options);
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetAddressesRequest {
+    return new GetAddressesRequest().fromJson(jsonValue, options);
   }
 
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): NetworkResponse {
-    return new NetworkResponse().fromJsonString(jsonString, options);
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetAddressesRequest {
+    return new GetAddressesRequest().fromJsonString(jsonString, options);
   }
 
-  static equals(a: NetworkResponse | PlainMessage<NetworkResponse> | undefined, b: NetworkResponse | PlainMessage<NetworkResponse> | undefined): boolean {
-    return proto3.util.equals(NetworkResponse, a, b);
+  static equals(a: GetAddressesRequest | PlainMessage<GetAddressesRequest> | undefined, b: GetAddressesRequest | PlainMessage<GetAddressesRequest> | undefined): boolean {
+    return proto3.util.equals(GetAddressesRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message observability.v1.GetAddressesResponse
+ */
+export class GetAddressesResponse extends Message<GetAddressesResponse> {
+  /**
+   * @generated from field: repeated string addresses = 1;
+   */
+  addresses: string[] = [];
+
+  constructor(data?: PartialMessage<GetAddressesResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v1.GetAddressesResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "addresses", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetAddressesResponse {
+    return new GetAddressesResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetAddressesResponse {
+    return new GetAddressesResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetAddressesResponse {
+    return new GetAddressesResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetAddressesResponse | PlainMessage<GetAddressesResponse> | undefined, b: GetAddressesResponse | PlainMessage<GetAddressesResponse> | undefined): boolean {
+    return proto3.util.equals(GetAddressesResponse, a, b);
   }
 }
 

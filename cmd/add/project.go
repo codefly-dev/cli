@@ -1,7 +1,6 @@
 package add
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -28,38 +27,8 @@ var ProjectCmd = &cobra.Command{
 		if len(args) == 1 {
 			name := args[0]
 			newProject(name)
-		} else {
-			// Find in Path and add to workspace
-			dir, err := configurations.FindUp[configurations.Project](context.Background())
-			cli.ExitOnError(err, "Cannot find project in path")
-			if dir == nil {
-				cli.Error("No project found in path")
-			}
-			addProject(*dir)
-
 		}
 	},
-}
-
-func addProject(dir string) {
-	ctx, done := common.NewContext()
-	defer done()
-
-	project, err := configurations.LoadProjectFromDirUnsafe(ctx, dir)
-	cli.ExitOnError(err, "Cannot load project from dir")
-	workspace := common.Workspace(ctx)
-	if workspace.ExistsProject(project.Name) {
-		cli.Error("Project <{{.}}> already exists", project.Name)
-		cli.Exit()
-	}
-	confirm := models.Confirm(fmt.Sprintf("Do you want to add project <%s> to your workspace?", project.Name), true)
-	if !confirm {
-		cli.Header(2, "Received loud and clear!")
-	}
-	err = workspace.AddProject(ctx, project)
-	cli.ExitOnError(err, "Cannot add project to workspace")
-	cli.Header(2, "Project <{{.Name}}> added to workspace", project)
-
 }
 
 func newProject(name string) {
@@ -72,17 +41,16 @@ func newProject(name string) {
 		cli.Error("Project <{{.}}> already exists", name)
 		os.Exit(0)
 	}
-
-	// Asks for Description
-	addDescription := models.Confirm("Do you want to add a short description?", false)
-	var desc string
-	if addDescription {
-		desc = models.Input("Description", "")
+	confirm := models.Confirm(fmt.Sprintf("Do you want to add project <%s> in the current folder?", name), true)
+	if !confirm {
+		cli.Header(2, "Received loud and clear!")
 	}
+	cur, err := os.Getwd()
+	cli.ExitOnError(err, "Cannot get current directory")
 	action, err := actionsproject.NewActionAddProject(ctx, &actionsproject.AddProject{
-		Workspace:   workspace.Name,
-		Name:        name,
-		Description: desc,
+		Workspace: workspace.Name,
+		Name:      name,
+		Path:      cur,
 	})
 	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)

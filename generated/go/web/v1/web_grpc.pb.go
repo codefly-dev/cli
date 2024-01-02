@@ -31,7 +31,7 @@ const (
 	Web_LogHistory_FullMethodName                                  = "/observability.v1.Web/LogHistory"
 	Web_GetActive_FullMethodName                                   = "/observability.v1.Web/GetActive"
 	Web_GetRunningInformation_FullMethodName                       = "/observability.v1.Web/GetRunningInformation"
-	Web_GetNetworkMappings_FullMethodName                          = "/observability.v1.Web/GetNetworkMappings"
+	Web_GetAddresses_FullMethodName                                = "/observability.v1.Web/GetAddresses"
 	Web_Logs_FullMethodName                                        = "/observability.v1.Web/Logs"
 	Web_ActiveLogHistory_FullMethodName                            = "/observability.v1.Web/ActiveLogHistory"
 )
@@ -48,7 +48,7 @@ type WebClient interface {
 	LogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
 	GetActive(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ActiveResponse, error)
 	GetRunningInformation(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RunningInformationResponse, error)
-	GetNetworkMappings(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*NetworkResponse, error)
+	GetAddresses(ctx context.Context, in *GetAddressesRequest, opts ...grpc.CallOption) (*GetAddressesResponse, error)
 	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
 	ActiveLogHistory(ctx context.Context, in *v12.LogRequest, opts ...grpc.CallOption) (*v12.LogResponse, error)
 }
@@ -133,9 +133,9 @@ func (c *webClient) GetRunningInformation(ctx context.Context, in *emptypb.Empty
 	return out, nil
 }
 
-func (c *webClient) GetNetworkMappings(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*NetworkResponse, error) {
-	out := new(NetworkResponse)
-	err := c.cc.Invoke(ctx, Web_GetNetworkMappings_FullMethodName, in, out, opts...)
+func (c *webClient) GetAddresses(ctx context.Context, in *GetAddressesRequest, opts ...grpc.CallOption) (*GetAddressesResponse, error) {
+	out := new(GetAddressesResponse)
+	err := c.cc.Invoke(ctx, Web_GetAddresses_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +195,7 @@ type WebServer interface {
 	LogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
 	GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error)
 	GetRunningInformation(context.Context, *emptypb.Empty) (*RunningInformationResponse, error)
-	GetNetworkMappings(context.Context, *emptypb.Empty) (*NetworkResponse, error)
+	GetAddresses(context.Context, *GetAddressesRequest) (*GetAddressesResponse, error)
 	Logs(*emptypb.Empty, Web_LogsServer) error
 	ActiveLogHistory(context.Context, *v12.LogRequest) (*v12.LogResponse, error)
 	mustEmbedUnimplementedWebServer()
@@ -229,8 +229,8 @@ func (UnimplementedWebServer) GetActive(context.Context, *emptypb.Empty) (*Activ
 func (UnimplementedWebServer) GetRunningInformation(context.Context, *emptypb.Empty) (*RunningInformationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRunningInformation not implemented")
 }
-func (UnimplementedWebServer) GetNetworkMappings(context.Context, *emptypb.Empty) (*NetworkResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetNetworkMappings not implemented")
+func (UnimplementedWebServer) GetAddresses(context.Context, *GetAddressesRequest) (*GetAddressesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetAddresses not implemented")
 }
 func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
 	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
@@ -395,20 +395,20 @@ func _Web_GetRunningInformation_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Web_GetNetworkMappings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+func _Web_GetAddresses_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAddressesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(WebServer).GetNetworkMappings(ctx, in)
+		return srv.(WebServer).GetAddresses(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: Web_GetNetworkMappings_FullMethodName,
+		FullMethod: Web_GetAddresses_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(WebServer).GetNetworkMappings(ctx, req.(*emptypb.Empty))
+		return srv.(WebServer).GetAddresses(ctx, req.(*GetAddressesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -492,8 +492,8 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Web_GetRunningInformation_Handler,
 		},
 		{
-			MethodName: "GetNetworkMappings",
-			Handler:    _Web_GetNetworkMappings_Handler,
+			MethodName: "GetAddresses",
+			Handler:    _Web_GetAddresses_Handler,
 		},
 		{
 			MethodName: "ActiveLogHistory",

@@ -1,0 +1,8 @@
+name: here
+organization:
+    name: codefly.ai
+    domain: github.com/codefly-dev
+domain: github.com/codefly-dev/here
+applications: []
+providers: []
+environments: []

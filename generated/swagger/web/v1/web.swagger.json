@@ -107,14 +107,14 @@
         ]
       }
     },
-    "/active/project/network-mappings": {
+    "/active/project/network-mapping/{application}/{service}/{endpoint}": {
       "get": {
-        "operationId": "Web_GetNetworkMappings",
+        "operationId": "Web_GetAddresses",
         "responses": {
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/v1NetworkResponse"
+              "$ref": "#/definitions/v1GetAddressesResponse"
             }
           },
           "default": {
@@ -124,6 +124,26 @@
             }
           }
         },
+        "parameters": [
+          {
+            "name": "application",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "service",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "endpoint",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
         "tags": [
           "Web"
         ]
@@ -498,14 +518,6 @@
       ],
       "default": "UNKNOWN"
     },
-    "v1DockerTracker": {
-      "type": "object",
-      "properties": {
-        "containerId": {
-          "type": "string"
-        }
-      }
-    },
     "v1Endpoint": {
       "type": "object",
       "properties": {
@@ -529,6 +541,17 @@
         },
         "namespace": {
           "type": "string"
+        }
+      }
+    },
+    "v1GetAddressesResponse": {
+      "type": "object",
+      "properties": {
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -715,41 +738,6 @@
         }
       }
     },
-    "v1NetworkMapping": {
-      "type": "object",
-      "properties": {
-        "application": {
-          "type": "string",
-          "title": "Application name"
-        },
-        "service": {
-          "type": "string",
-          "title": "Service name"
-        },
-        "endpoint": {
-          "$ref": "#/definitions/v1Endpoint"
-        },
-        "addresses": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "title": "List of addresses to map to"
-        }
-      }
-    },
-    "v1NetworkResponse": {
-      "type": "object",
-      "properties": {
-        "mappings": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/v1NetworkMapping"
-          }
-        }
-      }
-    },
     "v1Organization": {
       "type": "object",
       "properties": {
@@ -780,18 +768,6 @@
             "type": "object",
             "$ref": "#/definitions/v1ApplicationSnapshot"
           }
-        }
-      }
-    },
-    "v1ProcessTracker": {
-      "type": "object",
-      "properties": {
-        "PID": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "type": {
-          "type": "string"
         }
       }
     },
@@ -893,13 +869,6 @@
         "agentPid": {
           "type": "integer",
           "format": "int32"
-        },
-        "trackers": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/v1Tracker"
-          }
         }
       }
     },
@@ -960,20 +929,6 @@
     },
     "v1TcpAPI": {
       "type": "object"
-    },
-    "v1Tracker": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "processTracker": {
-          "$ref": "#/definitions/v1ProcessTracker"
-        },
-        "dockerTracker": {
-          "$ref": "#/definitions/v1DockerTracker"
-        }
-      }
     }
   }
 }

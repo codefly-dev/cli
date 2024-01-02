@@ -1,10 +1,10 @@
 {
   "details": {
-    "methodFqn": "observability.v1.Web.GetNetworkMappings"
+    "methodFqn": "observability.v1.Web.GetAddresses"
   },
   "requests": [
     {
-      "location": "GetNetworkMappings-request.json"
+      "location": "GetAddresses-request.json"
     }
   ],
   "operationType": "unary",

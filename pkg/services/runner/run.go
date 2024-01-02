@@ -20,9 +20,11 @@ RunManager is responsible for the life-cycle of a service
 - Actions channel to affect life-cycle of the service (start, stop, restart)
 */
 type RunManager struct {
-	service             *configurations.Service
-	runner              *Runner
-	actions             chan runners.Action
+	service  *configurations.Service
+	runner   *Runner
+	initOnly bool
+	actions  chan runners.Action
+
 	loaded              *runtimev1.LoadResponse
 	init                *runtimev1.InitResponse
 	dependencyEndpoints []*basev1.Endpoint
@@ -57,6 +59,8 @@ func (manager *RunManager) Start(ctx context.Context) error {
 				err := manager.Init(ctx)
 				if err != nil {
 					w.Debug("cannot initialize service")
+					manager.actions <- runners.Action{Type: runners.Noop}
+				} else if manager.initOnly {
 					manager.actions <- runners.Action{Type: runners.Noop}
 				} else {
 					manager.actions <- runners.Action{Type: runners.Start}
@@ -155,10 +159,6 @@ func (manager *RunManager) Run(ctx context.Context) error {
 	if start.Status.State != runtimev1.StartStatus_STARTED {
 		return w.Wrapf(fmt.Errorf(start.Status.Message), "cannot start service instance")
 	}
-	err = manager.runner.Observe(ctx, start.Trackers)
-	if err != nil {
-		return w.Wrapf(err, "cannot observe service instance")
-	}
 
 	w.Debug("start", wool.ResponseField(start).Trace())
 	return nil
@@ -223,19 +223,8 @@ func (manager *RunManager) WithNetworkMappings(mappings []*runtimev1.NetworkMapp
 	return manager
 }
 
-func (runner *Runner) Observe(ctx context.Context, trackers []*runtimev1.Tracker) error {
-	w := wool.Get(ctx).In("service.Observe", wool.ThisField(runner.instance.Service))
-
-	events, err := runners.Track(ctx, trackers)
-	if err != nil {
-		return w.Wrapf(err, "cannot create tracker")
-	}
-	go func() {
-		for event := range events {
-			runner.events <- event
-		}
-	}()
-	return nil
+func (manager *RunManager) InitOnly(only bool) {
+	manager.initOnly = only
 }
 
 func (runner *Runner) Stop(ctx context.Context) error {

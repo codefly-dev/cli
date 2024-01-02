@@ -44,23 +44,15 @@ func addApplication(name string) {
 		os.Exit(0)
 	}
 
-	confirm := models.Confirm(golor.Sprintf("Do you want to add an application in your project <{{.Name}}>?", project), true)
+	confirm := models.Confirm(golor.Sprintf("Add an application in your project <{{.Name}}>?", project), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		os.Exit(0)
 	}
 
-	// Asks for Description
-	addDescription := models.Confirm("Do you want to add a short description?", false)
-	var desc string
-	if addDescription {
-		desc = models.Input("Description", "Make some magic 🪄")
-	}
-
 	action, err := actionsapplication.NewActionAddApplication(ctx, &actionsapplication.AddApplication{
-		Name:        name,
-		Description: desc,
-		Project:     project.Name,
+		Name:    name,
+		Project: project.Name,
 	})
 	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)

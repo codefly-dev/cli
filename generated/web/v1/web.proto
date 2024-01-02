@@ -5,7 +5,6 @@ import "base/v1/endpoint.proto";
 import "base/v1/project.proto";
 
 import "services/agent/v1/agent.proto";
-import "services/runtime/v1/tracker.proto";
 import "services/runtime/v1/runtime.proto";
 
 import "observability/v1/inventory.proto";
@@ -49,15 +48,20 @@ message RunningInformation {
   string application = 1;
   string service = 2;
   int32 agent_pid = 3;
-  repeated service.runtime.v1.Tracker trackers = 4;
 }
 
 message RunningInformationResponse {
   repeated RunningInformation running = 1;
 }
 
-message NetworkResponse {
-  repeated service.runtime.v1.NetworkMapping mappings = 1;
+message GetAddressesRequest {
+  string application = 1;
+  string service = 2;
+  string endpoint = 3;
+}
+
+message GetAddressesResponse {
+  repeated string addresses = 1;
 }
 
 service Web {
@@ -118,9 +122,9 @@ service Web {
     };
   }
 
-  rpc GetNetworkMappings(google.protobuf.Empty) returns (NetworkResponse) {
+  rpc GetAddresses(GetAddressesRequest) returns (GetAddressesResponse) {
     option (google.api.http) = {
-      get: "/active/project/network-mappings"
+      get: "/active/project/network-mapping/{application}/{service}/{endpoint}"
     };
   }
 
@@ -135,7 +139,5 @@ service Web {
       get: "/active/project/logs/history"
     };
   }
-
-
 
 }

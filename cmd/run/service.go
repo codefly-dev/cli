@@ -88,6 +88,7 @@ func runServiceFlow(ctx context.Context, project *configurations.Project, servic
 func runService(ctx context.Context, service *configurations.Service) error {
 	w := wool.Get(ctx).In("runService", wool.ThisField(service))
 	r, err := runner.New(ctx, service)
+	r.InitOnly(initOnly)
 	if err != nil {
 		return w.Wrap(err)
 	}
@@ -99,4 +100,5 @@ var standAlone bool
 func init() {
 	ServiceCmd.Flags().BoolVar(&withServer, "server", true, "Run service server")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Run service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 }
