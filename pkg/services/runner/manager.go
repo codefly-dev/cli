@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/cli/pkg/services"
+	agentservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
 	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
 	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
@@ -14,16 +15,34 @@ import (
 	"github.com/codefly-dev/core/wool"
 )
 
+type ActionType int
+
+const (
+	Noop ActionType = iota
+	Load
+	Init
+	Start   // Start the service
+	Stop    // Stop the service
+	Restart // Restart the service
+)
+
+// Action represents an action to be taken on a service by the runner
+type Action struct {
+	Type   ActionType
+	Unique string
+	Only   bool
+}
+
 /*
-RunManager is responsible for the life-cycle of a service
+Manager is responsible for the life-cycle of a service
 - Runner is a wrapping around a service instance
 - Actions channel to affect life-cycle of the service (start, stop, restart)
 */
-type RunManager struct {
+type Manager struct {
 	service  *configurations.Service
 	runner   *Runner
 	initOnly bool
-	actions  chan runners.Action
+	actions  chan Action
 
 	loaded              *runtimev1.LoadResponse
 	init                *runtimev1.InitResponse
@@ -31,82 +50,16 @@ type RunManager struct {
 	networkMappings     []*runtimev1.NetworkMapping
 }
 
-func (manager *RunManager) Unique() string {
-	return manager.runner.instance.Service.Unique()
+func (manager *Manager) Unique() string {
+	return manager.service.Unique()
 }
 
-func New(ctx context.Context, service *configurations.Service) (*RunManager, error) {
-	// Use buffer of size 1: more difficult but makes sure the logic is sound
-	manager := &RunManager{service: service, actions: make(chan runners.Action, 1)}
-	// Create a runner
-	err := manager.Load(ctx)
-	if err != nil {
-		return nil, err
-	}
+func New(ctx context.Context, service *configurations.Service, actions chan Action) (*Manager, error) {
+	manager := &Manager{service: service, actions: actions}
 	return manager, nil
 }
 
-// Start handles the life-cycle of the service
-func (manager *RunManager) Start(ctx context.Context) error {
-	w := wool.Get(ctx).In("service.Start", wool.ThisField(manager))
-	manager.actions <- runners.Action{Type: runners.Init}
-	for {
-		select {
-		case action := <-manager.actions:
-			switch action.Type {
-			case runners.Noop:
-			case runners.Init:
-				err := manager.Init(ctx)
-				if err != nil {
-					w.Debug("cannot initialize service")
-					manager.actions <- runners.Action{Type: runners.Noop}
-				} else if manager.initOnly {
-					manager.actions <- runners.Action{Type: runners.Noop}
-				} else {
-					manager.actions <- runners.Action{Type: runners.Start}
-				}
-			case runners.Start:
-				err := manager.Run(ctx)
-				if err != nil {
-					w.Debug("cannot start service")
-				}
-				manager.actions <- runners.Action{Type: runners.Noop}
-			case runners.Restart:
-				w.Info("restarting")
-				err := manager.Stop()
-				if err != nil {
-					return w.Wrapf(err, "can't stop")
-				}
-				// Create new runner
-				err = manager.Load(ctx)
-				if err != nil {
-					return w.Wrapf(err, "can't create new runner")
-				}
-				manager.actions <- runners.Action{Type: runners.Init}
-			default:
-				return w.NewError("unknown action type")
-			}
-		case <-ctx.Done():
-			return manager.Stop()
-		}
-	}
-}
-
-func (manager *RunManager) Stop() error {
-	// New context for stopping!
-	ctx := context.Background()
-	w := wool.Get(ctx).In("service.Stop", wool.ThisField(manager))
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	ctx = w.Inject(ctx)
-	err := manager.runner.Stop(ctx)
-	if err != nil {
-		return w.Wrapf(err, "cannot stop service")
-	}
-	return nil
-}
-
-func (manager *RunManager) Load(ctx context.Context) error {
+func (manager *Manager) Load(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(manager.service))
 	instance, err := services.Load(ctx, manager.service)
 	if err != nil {
@@ -130,12 +83,13 @@ func (manager *RunManager) Load(ctx context.Context) error {
 	if err != nil {
 		return w.Wrapf(err, "cannot follow service instance")
 	}
+
 	manager.loaded = loaded
 	return nil
 }
 
 // Init the service
-func (manager *RunManager) Init(ctx context.Context) error {
+func (manager *Manager) Init(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Init", wool.ThisField(manager))
 	req := &runtimev1.InitRequest{DependenciesEndpoints: manager.dependencyEndpoints}
 	init, err := manager.runner.instance.Runtime.Init(ctx, req)
@@ -143,13 +97,12 @@ func (manager *RunManager) Init(ctx context.Context) error {
 		return w.NewError("cannot Init service instance")
 	}
 	manager.init = init
-	SetNetworkMappings(manager.Unique(), manager.init.NetworkMappings)
 	return nil
 }
 
 // Run the Start of a service and setup monitoring
 // Events can trigger actions
-func (manager *RunManager) Run(ctx context.Context) error {
+func (manager *Manager) Run(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Run", wool.ThisField(manager))
 	req := &runtimev1.StartRequest{NetworkMappings: manager.networkMappings}
 	start, err := manager.runner.instance.Runtime.Start(ctx, req)
@@ -159,8 +112,21 @@ func (manager *RunManager) Run(ctx context.Context) error {
 	if start.Status.State != runtimev1.StartStatus_STARTED {
 		return w.Wrapf(fmt.Errorf(start.Status.Message), "cannot start service instance")
 	}
-
 	w.Debug("start", wool.ResponseField(start).Trace())
+	return nil
+}
+
+func (manager *Manager) Stop() error {
+	// New context for stopping!
+	ctx := context.Background()
+	w := wool.Get(ctx).In("service.Stop", wool.ThisField(manager))
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ctx = w.Inject(ctx)
+	err := manager.runner.Stop(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot stop service")
+	}
 	return nil
 }
 
@@ -170,7 +136,7 @@ Runner is a wrapper around a service instance:
 - collects events from the service instance observability
 */
 type Runner struct {
-	instance *services.ServiceInstance
+	instance *services.Instance
 	events   chan runners.Event
 }
 
@@ -191,7 +157,7 @@ func (runner *Runner) Listen(ctx context.Context) error {
 
 // Follow calls the agent for information and generate a channel of events for the service:
 // - Handle restart
-func (manager *RunManager) Follow(ctx context.Context) error {
+func (manager *Manager) Follow(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Follow", wool.ThisField(manager.runner.instance.Service))
 
 	go func() {
@@ -202,9 +168,9 @@ func (manager *RunManager) Follow(ctx context.Context) error {
 				manager.runner.events <- runners.Event{Err: err}
 				return
 			}
-			if info.DesiredState == services.DesiredRestart {
+			if info.DesiredState == agentservices.DesiredRestart {
 				w.Info("want a restart")
-				manager.actions <- runners.Action{Type: runners.Restart}
+				manager.actions <- Action{Type: Restart, Unique: manager.Unique()}
 			}
 			time.Sleep(1000 * time.Millisecond)
 		}
@@ -212,19 +178,22 @@ func (manager *RunManager) Follow(ctx context.Context) error {
 	return nil
 }
 
-func (manager *RunManager) WithEndpointDependencies(endpoints []*basev1.Endpoint) *RunManager {
+func (manager *Manager) WithEndpointDependencies(endpoints []*basev1.Endpoint) *Manager {
 	manager.dependencyEndpoints = endpoints
 	return manager
-
 }
 
-func (manager *RunManager) WithNetworkMappings(mappings []*runtimev1.NetworkMapping) *RunManager {
+func (manager *Manager) WithNetworkMappings(mappings []*runtimev1.NetworkMapping) *Manager {
 	manager.networkMappings = mappings
 	return manager
 }
 
-func (manager *RunManager) InitOnly(only bool) {
+func (manager *Manager) InitOnly(only bool) {
 	manager.initOnly = only
+}
+
+func (manager *Manager) Sync(ctx context.Context) error {
+	return nil
 }
 
 func (runner *Runner) Stop(ctx context.Context) error {

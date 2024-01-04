@@ -14,16 +14,15 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	web "github.com/codefly-dev/cli/generated/go/web/v1"
+	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/services/runner"
 	"github.com/codefly-dev/core/agents/services"
-	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 
 	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
 	observabilityv1 "github.com/codefly-dev/core/generated/go/observability/v1"
 	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 
-	"github.com/codefly-dev/golor"
 	"google.golang.org/grpc"
 )
 
@@ -41,8 +40,12 @@ type Server struct {
 }
 
 func (s *Server) GetAddresses(ctx context.Context, req *web.GetAddressesRequest) (*web.GetAddressesResponse, error) {
+	flow := runner.CurrentFlow()
+	if flow == nil {
+		return nil, status.Error(codes.Internal, "nothing running")
+	}
 	return &web.GetAddressesResponse{
-		Addresses: runner.GetAddressesForEndpoint(req.Application, req.Service, req.Endpoint),
+		Addresses: flow.GetAddressesForEndpoint(req.Application, req.Service, req.Endpoint),
 	}, nil
 }
 
@@ -181,8 +184,6 @@ func NewServer(c *Configuration, w *configurations.Workspace) (*Server, error) {
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	golor.Println(`#(blue,bold)[🚀 Starting codefly gRPC server at]: #(italic,white)[{{ .EndpointGrpc }}]`,
-		map[string]string{"EndpointGrpc": s.config.EndpointGrpc})
 	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)

@@ -2,39 +2,58 @@ package runner
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
+	"github.com/codefly-dev/cli/pkg/architecture"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/network"
-	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
 	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
-	"github.com/codefly-dev/core/runners"
 	"github.com/codefly-dev/core/wool"
 )
 
-type FlowRunner struct {
-	managers     []*RunManager
-	dependencies *architecture.Graph
-	endpoints    map[string][]*basev1.Endpoint
-	actions      chan runners.Action
+var currentFlow *Flow
+
+func CurrentFlow() *Flow {
+	return currentFlow
 }
 
-func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service) (*FlowRunner, error) {
+type Flow struct {
+	managers     []*Manager
+	dependencies *architecture.Graph
+	actions      chan Action
+
+	endpoints       map[string][]*basev1.Endpoint
+	networkMappings map[string][]*runtimev1.NetworkMapping
+
+	initOnly   bool
+	standAlone bool
+}
+
+func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
+	actions := make(chan Action, 100)
+
 	// Get dependency graph
 	g, err := architecture.LoadServiceGraph(ctx, project)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	// Create manager for all services required by this service
-	uniques := g.TopologicalSortFrom(service.Unique())
-	w.Debug("service dependencies", wool.NameField(service.Name), wool.Field("dependencies", uniques))
+	// Create manager for all services required by this service if not standalone
+	var required []string
+	if !standAlone {
+		required = g.TopologicalSortFrom(service.Unique())
+		w.Debug("service dependencies", wool.NameField(service.Name), wool.Field("dependencies", required))
+		cli.Info("Running <%s> with these dependent services: %s", service.Name, strings.Join(required, ", "))
+	}
 
-	var managers []*RunManager
+	var managers []*Manager
 
-	for _, unique := range uniques {
+	for _, unique := range required {
 		info, err := configurations.ParseServiceUnique(unique)
-		w.Info("creating run manager", wool.Field("for", unique))
+		w.Debug("creating run manager", wool.Field("for", unique))
 		if err != nil {
 			return nil, w.Wrap(err)
 		}
@@ -46,7 +65,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		if err != nil {
 			return nil, w.Wrap(err)
 		}
-		manager, err := New(ctx, svc)
+		manager, err := New(ctx, svc, actions)
 		if err != nil {
 			return nil, w.Wrap(err)
 		}
@@ -56,65 +75,82 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	// Now add the current one
 
 	w.Info("creating run manager", wool.Field("for", service.Unique()))
-	manager, err := New(ctx, service)
+	manager, err := New(ctx, service, actions)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
 	managers = append(managers, manager)
-	return &FlowRunner{
-		managers:     managers,
-		endpoints:    make(map[string][]*basev1.Endpoint),
-		dependencies: g,
-		actions:      make(chan runners.Action, 1),
-	}, nil
+	flow := &Flow{
+		managers:        managers,
+		dependencies:    g,
+		actions:         actions,
+		endpoints:       make(map[string][]*basev1.Endpoint),
+		networkMappings: make(map[string][]*runtimev1.NetworkMapping),
+	}
+	currentFlow = flow
+	return flow, nil
 }
 
-// Start for the FloRunner works exactly like the RunManager except we don't run all managers, only the required ones
+func (action Action) To(t ActionType) Action {
+	return Action{Type: t, Unique: action.Unique, Only: action.Only}
+}
+
+// Start for the  works exactly like the Manager except we don't run all managers, only the required ones
 // TODO: Fix logic with unit tests
-func (flow *FlowRunner) Start(ctx context.Context) error {
+func (flow *Flow) Start(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Start")
 	w.Debug("sending init")
-	flow.actions <- runners.Action{Type: runners.Init}
+	flow.actions <- Action{Type: Load}
 	for {
 		select {
 		case action := <-flow.actions:
 			switch action.Type {
-			case runners.Noop:
+			case Noop:
 				w.Debug("received noop")
-			case runners.Init:
-				w.Debug("received init")
-				err := flow.Init(ctx)
+			case Load:
+				w.Debug("received load")
+				err := flow.Load(ctx, action)
+				if err != nil {
+					return w.Wrapf(err, "cannot load service")
+				}
+				flow.actions <- action.To(Init)
+			case Init:
+				w.Focus("received init", wool.Field("action", action))
+				err := flow.Init(ctx, action)
 				if err != nil {
 					w.Debug("cannot initialize service")
-					flow.actions <- runners.Action{Type: runners.Noop}
+				} else if flow.initOnly {
+					w.Debug("not doing anything")
 				} else {
 					w.Debug("sending start")
-					flow.actions <- runners.Action{Type: runners.Start}
+					flow.actions <- action.To(Start)
 				}
-			case runners.Start:
+			case Start:
 				w.Debug("received start")
-				err := flow.Run(ctx)
+				err := flow.Run(ctx, action)
 				if err != nil {
-					w.Debug("cannot start service")
+					w.Debug("cannot start service", wool.ErrField(err))
 				}
-				flow.actions <- runners.Action{Type: runners.Noop}
-			case runners.Restart:
-				w.Debug("restarting")
-				err := flow.Stop()
+			case Restart:
+				w.Debug("received restart")
+				err := flow.Manager(action).Stop()
 				if err != nil {
-					return w.Wrapf(err, "can't stop")
+					w.Debug("cannot stop service", wool.ErrField(err))
 				}
-				// Create new runner
-				err = flow.Load(ctx)
+				init := action.To(Init)
+				init.Only = true
+				flow.actions <- init
+			case Stop:
+				err := flow.Stop(action)
 				if err != nil {
-					return w.Wrapf(err, "can't create new runner")
+					return w.Wrapf(err, "cannot stop service")
 				}
-				flow.actions <- runners.Action{Type: runners.Init}
+
 			default:
-				return w.NewError("unknown action type")
+				return w.NewError(fmt.Sprintf("unknown action type: %v", action.Type))
 			}
 		case <-ctx.Done():
-			return flow.Stop()
+			return flow.Stop(Action{Type: Stop})
 		}
 	}
 }
@@ -122,23 +158,48 @@ func (flow *FlowRunner) Start(ctx context.Context) error {
 // Load loads the service
 // Request: No dependencies
 // Response: Endpoints
-func (flow *FlowRunner) Load(ctx context.Context) error {
-	w := wool.Get(ctx).In("FlowRunner.Load")
-	for _, manager := range flow.managers {
+func (flow *Flow) Load(ctx context.Context, action Action) error {
+	w := wool.Get(ctx).In("Flow.Load")
+	for _, manager := range flow.Managers(action) {
 		err := manager.Load(ctx)
 		if err != nil {
-			return w.Wrapf(err, "cannot load service <%s>", manager.runner.instance.Service.Unique())
+			return w.Wrapf(err, "cannot load service <%s>", manager.Unique())
 		}
 		flow.endpoints[manager.Unique()] = manager.loaded.Endpoints
 	}
 	return nil
 }
 
+func (flow *Flow) Managers(action Action) []*Manager {
+	if action.Unique == "" {
+		return flow.managers
+	}
+	if action.Only {
+		return []*Manager{flow.Manager(action)}
+	}
+	for i, manager := range flow.managers {
+		if manager.Unique() == action.Unique {
+			return flow.managers[i:]
+		}
+	}
+	return nil
+}
+
+func (flow *Flow) Manager(action Action) *Manager {
+	for _, manager := range flow.managers {
+		if manager.Unique() == action.Unique {
+			return manager
+		}
+	}
+	return nil
+}
+
 // Init runs all init
 // Init Request: Endpoint group
-func (flow *FlowRunner) Init(ctx context.Context) error {
-	w := wool.Get(ctx).In("FlowRunner.Init")
-	for _, manager := range flow.managers {
+func (flow *Flow) Init(ctx context.Context, action Action) error {
+	w := wool.Get(ctx).In("Flow.Init", wool.Field("for", action.Unique))
+	for _, manager := range flow.Managers(action) {
+		w.Focus("INIT", wool.Field("for", manager.Unique()))
 		dependenciesEndpoints, err := flow.DependenciesEndpoints(manager.Unique())
 		if err != nil {
 			return w.Wrapf(err, "cannot get endpoint group for <%s>", manager.Unique())
@@ -147,14 +208,17 @@ func (flow *FlowRunner) Init(ctx context.Context) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot init service <%s>", manager.Unique())
 		}
+		flow.SetNetworkMappings(manager.Unique(), manager.init.NetworkMappings)
 		w.Debug("init", wool.Field("for", manager.Unique()), wool.NullableField("endpoint dependencies", configurations.MakeEndpointSummary(dependenciesEndpoints)))
+
 	}
 	return nil
 }
 
-func (flow *FlowRunner) Run(ctx context.Context) error {
-	w := wool.Get(ctx).In("FlowRunner.Run")
-	for _, manager := range flow.managers {
+func (flow *Flow) Run(ctx context.Context, action Action) error {
+	w := wool.Get(ctx).In("Flow.Run", wool.Field("for", action.Unique))
+	for _, manager := range flow.Managers(action) {
+		w.Debug("RUN")
 		dependenciesNetworkMappings, err := flow.DependenciesNetworkMappings(manager.Unique())
 		if err != nil {
 			return w.Wrapf(err, "cannot get network mappings for <%s>", manager.Unique())
@@ -163,14 +227,25 @@ func (flow *FlowRunner) Run(ctx context.Context) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot run service <%s>", manager.Unique())
 		}
-		w.Debug("run", wool.Field("for", manager.Unique()), wool.NullableField("network mappings", network.MakeNetworkMappingSummary(dependenciesNetworkMappings)))
+		w.Trace("run", wool.Field("for", manager.Unique()), wool.NullableField("network mappings", network.MakeNetworkMappingSummary(dependenciesNetworkMappings)))
 	}
 	return nil
 
 }
 
-func (flow *FlowRunner) DependenciesEndpoints(unique string) ([]*basev1.Endpoint, error) {
-	w := wool.Get(context.Background()).In("FlowRunner.DependenciesEndpoints")
+func (flow *Flow) Stop(action Action) error {
+	for _, manager := range flow.Managers(action) {
+		err := manager.Stop()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+
+}
+
+func (flow *Flow) DependenciesEndpoints(unique string) ([]*basev1.Endpoint, error) {
+	w := wool.Get(context.Background()).In("Flow.DependenciesEndpoints")
 	// Gather all endpoints from the direct dependencies
 	dependencies := flow.dependencies.Antecedents(unique)
 	var endpoints []*basev1.Endpoint
@@ -181,26 +256,43 @@ func (flow *FlowRunner) DependenciesEndpoints(unique string) ([]*basev1.Endpoint
 	return endpoints, nil
 }
 
-func (flow *FlowRunner) DependenciesNetworkMappings(unique string) ([]*runtimev1.NetworkMapping, error) {
-	w := wool.Get(context.Background()).In("FlowRunner.DependenciesNetworkMappings")
+func (flow *Flow) DependenciesNetworkMappings(unique string) ([]*runtimev1.NetworkMapping, error) {
+	w := wool.Get(context.Background()).In("Flow.DependenciesNetworkMappings")
 	// Gather all mappings from the direct dependencies
 	dependencies := flow.dependencies.Antecedents(unique)
 	var mappings []*runtimev1.NetworkMapping
 	for _, dependency := range dependencies {
-		mappingsForDependency := GetNetworkMappingsForService(dependency)
+		mappingsForDependency := flow.GetNetworkMappingsForService(dependency)
 		mappings = append(mappings, mappingsForDependency...)
 	}
 	w.Debug("getting dependencies network mappings", wool.SliceCountField(mappings), wool.Field("for", unique), wool.NullableField("dependencies", dependencies))
 	return mappings, nil
 }
 
-func (flow *FlowRunner) Stop() error {
-	for _, manager := range flow.managers {
-		err := manager.Stop()
-		if err != nil {
-			return err
+func (flow *Flow) InitOnly(only bool) {
+	flow.initOnly = only
+}
+
+func (flow *Flow) StandAlone(alone bool) {
+	flow.standAlone = alone
+}
+
+func (flow *Flow) GetNetworkMappingsForService(unique string) []*runtimev1.NetworkMapping {
+	return flow.networkMappings[unique]
+}
+
+func (flow *Flow) GetAddressesForEndpoint(application string, service string, endpoint string) []string {
+	unique := configurations.ServiceUnique(application, service)
+	nm := flow.networkMappings[unique]
+	var addresses []string
+	for _, mapping := range nm {
+		if mapping.Endpoint.Name == endpoint {
+			addresses = append(addresses, mapping.Addresses...)
 		}
 	}
-	return nil
+	return addresses
+}
 
+func (flow *Flow) SetNetworkMappings(unique string, mappings []*runtimev1.NetworkMapping) {
+	flow.networkMappings[unique] = mappings
 }

@@ -45,12 +45,8 @@ var ServiceCmd = &cobra.Command{
 
 			go func() {
 				service := common.Service(ctx)
-				if standAlone {
-					errs <- runService(ctx, service)
-				} else {
-					project := common.Project(ctx)
-					errs <- runServiceFlow(ctx, project, service)
-				}
+				project := common.Project(ctx)
+				errs <- runService(ctx, project, service, standAlone)
 			}()
 		}
 
@@ -76,18 +72,12 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func runServiceFlow(ctx context.Context, project *configurations.Project, service *configurations.Service) error {
+func runService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) error {
 	w := wool.Get(ctx).In("runService", wool.ThisField(service))
-	r, err := runner.NewFlow(ctx, project, service)
+	r, err := runner.NewFlow(ctx, project, service, standAlone)
 	if err != nil {
 		return w.Wrap(err)
 	}
-	return r.Start(ctx)
-}
-
-func runService(ctx context.Context, service *configurations.Service) error {
-	w := wool.Get(ctx).In("runService", wool.ThisField(service))
-	r, err := runner.New(ctx, service)
 	r.InitOnly(initOnly)
 	if err != nil {
 		return w.Wrap(err)

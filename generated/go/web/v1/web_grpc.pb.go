@@ -8,6 +8,7 @@ package observabilityv1
 
 import (
 	context "context"
+
 	v11 "github.com/codefly-dev/core/generated/go/base/v1"
 	v12 "github.com/codefly-dev/core/generated/go/observability/v1"
 	v1 "github.com/codefly-dev/core/generated/go/services/agent/v1"

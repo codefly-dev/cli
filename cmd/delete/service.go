@@ -5,6 +5,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/cli/pkg/cli/templates"
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
@@ -39,6 +40,8 @@ func deleteService(name string) {
 	if confirm {
 		err := app.DeleteService(ctx, name)
 		cli.ExitOnError(err, "cannot delete service")
+		err = project.DeleteServiceDependencies(ctx, &configurations.ServiceReference{Application: app.Name, Name: name})
+		cli.ExitOnError(err, "cannot delete service dependencies")
 		cli.Header(2, "Service <{{.}}> deleted!", name)
 	} else {
 		cli.Header(2, "Abort! Heard loud and clear.")

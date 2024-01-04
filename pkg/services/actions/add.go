@@ -1,16 +1,16 @@
-package services
+package actions
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/glamour"
-	clicommunicate "github.com/codefly-dev/cli/pkg/cli/communicate"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/actions/actions"
 	actionservice "github.com/codefly-dev/core/actions/service"
-	"github.com/codefly-dev/core/agents/communicate"
-	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
 	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
@@ -50,25 +50,23 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 	if err != nil {
 		return w.Wrapf(err, "cannot render info README")
 	}
-	cli.Paginate(rendered)
+	// Paginate if long
+	if len(strings.Split(rendered, "\n")) > 10 {
+		cli.Paginate(rendered)
+	} else {
+		fmt.Println(rendered)
+	}
 
 	if instance.Factory == nil {
 		cli.Header(2, "🎉 We are done!", service)
 		return nil
 	}
-	cli.Header(2, "Service <{{.Name}}> has a factory", service)
 	_, err = instance.Factory.Load(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 	}
 
-	// Communicate always
-	err = communicate.Do[factoryv1.CreateRequest](ctx, instance.Factory, clicommunicate.NewPrompt())
-	if err != nil {
-		return w.Wrapf(err, "cannot communicate")
-	}
-
-	_, err = instance.Factory.Create(ctx)
+	_, err = instance.Factory.Create(ctx, &factoryv1.CreateRequest{})
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 

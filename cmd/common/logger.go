@@ -36,9 +36,9 @@ func (logger *CLILogger) Process(log *wool.Log) {
 	case wool.DEBUG:
 		cli.Debug(fmt.Sprintf("%s", log))
 	case wool.INFO:
-		cli.Info(fmt.Sprintf("%s", log))
+		cli.Info(log.Message)
 	case wool.WARN:
-		cli.Warning(fmt.Sprintf("%s", log))
+		cli.Warning(log.Message)
 	case wool.ERROR:
 		cli.Error(fmt.Sprintf("%s", log))
 	case wool.FOCUS:

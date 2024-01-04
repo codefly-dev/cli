@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/spf13/cobra"
 )
