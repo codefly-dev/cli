@@ -2,12 +2,15 @@ package services
 
 import (
 	"context"
+	"time"
 
+	"github.com/briandowns/spinner"
 	"github.com/codefly-dev/core/agents/services"
 
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/wool"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	clicommunicate "github.com/codefly-dev/cli/pkg/cli/communicate"
 	"github.com/codefly-dev/core/agents/communicate"
 
@@ -66,6 +69,11 @@ func (instance *FactoryInstance) Create(ctx context.Context, req *factoryv1.Crea
 		return &factoryv1.CreateResponse{Status: &factoryv1.CreateStatus{Status: factoryv1.CreateStatus_ERROR, Message: err.Error()}},
 			w.Wrapf(err, "cannot communicate")
 	}
+	cli.Header(1, "Going to work!")
+	s := spinner.New(spinner.CharSets[11], 100*time.Millisecond) // Use different character sets and duration
+	s.Start()                                                    // Start the spinner
+	defer s.Stop()                                               //
+
 	return instance.Factory.Create(ctx, req)
 }
 

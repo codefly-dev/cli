@@ -115,7 +115,7 @@ func (flow *Flow) Start(ctx context.Context) error {
 				}
 				flow.actions <- action.To(Init)
 			case Init:
-				w.Focus("received init", wool.Field("action", action))
+				w.Debug("received init", wool.Field("action", action))
 				err := flow.Init(ctx, action)
 				if err != nil {
 					w.Debug("cannot initialize service")
@@ -199,7 +199,6 @@ func (flow *Flow) Manager(action Action) *Manager {
 func (flow *Flow) Init(ctx context.Context, action Action) error {
 	w := wool.Get(ctx).In("Flow.Init", wool.Field("for", action.Unique))
 	for _, manager := range flow.Managers(action) {
-		w.Focus("INIT", wool.Field("for", manager.Unique()))
 		dependenciesEndpoints, err := flow.DependenciesEndpoints(manager.Unique())
 		if err != nil {
 			return w.Wrapf(err, "cannot get endpoint group for <%s>", manager.Unique())
