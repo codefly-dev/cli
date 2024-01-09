@@ -51,7 +51,7 @@ func switchApplication() {
 	cli.ExitOnError(err, "cannot select application")
 
 	if selected.Identifier == application.Name {
-		cli.Header(2, "Active application is already: {{.Name}}", application)
+		cli.Header(2, "Active application is already: <%s>", application.Name)
 		return
 	}
 
@@ -66,6 +66,6 @@ func switchApplication() {
 	now, err := actions.As[configurations.Application](out)
 	cli.ExitOnError(err, "cannot get active application")
 
-	cli.Header(2, "Active application is now: {{.Name}}", now)
+	cli.Header(2, "Active application is now: <%s>", now.Name)
 
 }

@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 
-	web "github.com/codefly-dev/cli/generated/go/web/v1"
+	web "github.com/codefly-dev/cli/generated/go/web/v0"
 	"github.com/codefly-dev/golor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"

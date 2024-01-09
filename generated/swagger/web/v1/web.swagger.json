@@ -432,6 +432,13 @@
     "v1AgentInformation": {
       "type": "object",
       "properties": {
+        "runtimeRequirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Runtime"
+          }
+        },
         "capabilities": {
           "type": "array",
           "items": {
@@ -439,18 +446,18 @@
             "$ref": "#/definitions/v1Capability"
           }
         },
-        "languages": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/v1Language"
-          }
-        },
         "protocols": {
           "type": "array",
           "items": {
             "type": "object",
             "$ref": "#/definitions/v1Protocol"
+          }
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Language"
           }
         },
         "readMe": {
@@ -883,6 +890,24 @@
           }
         }
       }
+    },
+    "v1Runtime": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/v1RuntimeType"
+        }
+      }
+    },
+    "v1RuntimeType": {
+      "type": "string",
+      "enum": [
+        "UNKNOWN",
+        "DOCKER",
+        "GO",
+        "NPM"
+      ],
+      "default": "UNKNOWN"
     },
     "v1Service": {
       "type": "object",

@@ -13,15 +13,15 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	web "github.com/codefly-dev/cli/generated/go/web/v1"
+	web "github.com/codefly-dev/cli/generated/go/web/v0"
 	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/services/runner"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
 
-	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
-	observabilityv1 "github.com/codefly-dev/core/generated/go/observability/v1"
-	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
+	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	observabilityv0 "github.com/codefly-dev/core/generated/go/observability/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
 
 	"google.golang.org/grpc"
 )
@@ -35,7 +35,7 @@ type Server struct {
 	web.UnsafeWebServer
 	config     *Configuration
 	gRPC       *grpc.Server
-	logChannel chan *observabilityv1.Log
+	logChannel chan *observabilityv0.Log
 	workspace  *configurations.Workspace
 }
 
@@ -82,13 +82,13 @@ func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*web.Acti
 
 }
 
-func (s *Server) ActiveLogHistory(ctx context.Context, request *observabilityv1.LogRequest) (*observabilityv1.LogResponse, error) {
+func (s *Server) ActiveLogHistory(ctx context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
 	return nil, status.Error(codes.Internal, "TBI")
 }
 
 /* Overall information */
 
-func (s *Server) GetAgentInformation(ctx context.Context, request *web.GetAgentInformationRequest) (*agentv1.AgentInformation, error) {
+func (s *Server) GetAgentInformation(ctx context.Context, request *web.GetAgentInformationRequest) (*agentv0.AgentInformation, error) {
 	agent, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, request.Agent)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -97,7 +97,7 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *web.GetAgentI
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return loaded.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
+	return loaded.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 
 }
 
@@ -111,7 +111,7 @@ func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*web.Ge
 	}, nil
 }
 
-func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectRequest) (*basev1.Project, error) {
+func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectRequest) (*basev0.Project, error) {
 	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -123,7 +123,7 @@ func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectRe
 	return view, nil
 }
 
-func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *web.ProjectRequest) (*observabilityv1.GraphResponse, error) {
+func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *web.ProjectRequest) (*observabilityv0.GraphResponse, error) {
 	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -151,11 +151,11 @@ func (s *Server) GetProjectPublicApplicationsDependencyGraph(ctx context.Context
 	return resp, nil
 }
 
-func (s *Server) LogHistory(ctx context.Context, request *observabilityv1.LogRequest) (*observabilityv1.LogResponse, error) {
+func (s *Server) LogHistory(ctx context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
 	return nil, nil
 }
 
-func (s *Server) sendLogToClients(logEntry *observabilityv1.Log) {
+func (s *Server) sendLogToClients(logEntry *observabilityv0.Log) {
 	s.logChannel <- logEntry
 }
 
@@ -176,7 +176,7 @@ func NewServer(c *Configuration, w *configurations.Workspace) (*Server, error) {
 		config:     c,
 		workspace:  w,
 		gRPC:       grpcServer,
-		logChannel: make(chan *observabilityv1.Log, bufferSize),
+		logChannel: make(chan *observabilityv0.Log, bufferSize),
 	}
 	web.RegisterWebServer(grpcServer, &s)
 	reflection.Register(grpcServer)

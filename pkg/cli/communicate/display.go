@@ -5,17 +5,17 @@ package communicate
 import (
 	"fmt"
 
-	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
+	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/codefly-dev/golor"
 )
 
-func Display(msg *agentv1.Message, data *agentv1.Display) (*agentv1.Answer, error) {
+func Display(msg *agentv0.Message, data *agentv0.Display) (*agentv0.Answer, error) {
 	// Render a block of text.
 	var style = lipgloss.NewStyle().
 		Margin(1, 2, 1, 2)
 
 	fmt.Println(style.Render(golor.Sprintf(msg.Message, data.Data)))
-	return &agentv1.Answer{}, nil
+	return &agentv0.Answer{}, nil
 }

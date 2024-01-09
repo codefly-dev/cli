@@ -27,7 +27,7 @@ func updateService(service *configurations.Service) {
 
 	svc := common.Service(ctx)
 
-	cli.Header(2, "Updating service <{{.Name}}>", svc)
+	cli.Header(2, "Updating service <%s>", svc.Name)
 	err := services.UpdateAgent(ctx, svc)
 	cli.ExitOnError(err, "cannot update service")
 }

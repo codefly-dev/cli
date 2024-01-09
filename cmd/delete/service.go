@@ -1,12 +1,12 @@
 package delete
 
 import (
+	"fmt"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	"github.com/codefly-dev/cli/pkg/cli/templates"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
 
@@ -31,18 +31,17 @@ func deleteService(name string) {
 
 	project := common.Project(ctx)
 	app := common.Application(ctx)
-	if !app.ExistsService(name) {
-		cli.Error("Service <{{.Other.Service}}> does not exist in application <{{.Application.Name}}>", templates.New().WithProject(project).WithApplication(app).With("Service", name))
+	if !app.ExistsService(ctx, name) {
+		cli.Error("Service <%s> does not exist in application <%s>", name, app.Name)
 		return
 	}
-	confirm := models.Confirm(golor.Sprintf("Confirm deletion of service <{{.Other.Service}}> in application <{{.Application.Name}}> in project <{{.Project.Name}}>?",
-		templates.New().WithProject(project).WithApplication(app).With("Service", name)), false)
+	confirm := models.Confirm(fmt.Sprintf("Confirm deletion of service <%s> in application <%s> in project <%s>?", name, app.Name, project.Name), false)
 	if confirm {
 		err := app.DeleteService(ctx, name)
 		cli.ExitOnError(err, "cannot delete service")
 		err = project.DeleteServiceDependencies(ctx, &configurations.ServiceReference{Application: app.Name, Name: name})
 		cli.ExitOnError(err, "cannot delete service dependencies")
-		cli.Header(2, "Service <{{.}}> deleted!", name)
+		cli.Header(2, "Service <%s> deleted!", name)
 	} else {
 		cli.Header(2, "Abort! Heard loud and clear.")
 	}

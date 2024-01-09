@@ -14,13 +14,13 @@ import (
 	clicommunicate "github.com/codefly-dev/cli/pkg/cli/communicate"
 	"github.com/codefly-dev/core/agents/communicate"
 
-	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 
-	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 
 	"github.com/codefly-dev/core/configurations"
-	v1agent "github.com/codefly-dev/core/generated/go/services/agent/v1"
-	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+	v0agent "github.com/codefly-dev/core/generated/go/services/agent/v0"
+	factoryv0 "github.com/codefly-dev/core/generated/go/services/factory/v0"
 )
 
 type ProcessInfo struct {
@@ -47,26 +47,26 @@ type RuntimeInstance struct {
 
 // Factory methods
 
-func (instance *FactoryInstance) Load(ctx context.Context) (*factoryv1.LoadResponse, error) {
-	init := &factoryv1.LoadRequest{
+func (instance *FactoryInstance) Load(ctx context.Context) (*factoryv0.LoadResponse, error) {
+	init := &factoryv0.LoadRequest{
 		Debug: wool.IsDebug(),
-		Identity: &basev1.ServiceIdentity{
-			Name:        instance.Name,
-			Application: instance.Application,
-			Domain:      instance.Domain,
-			Namespace:   instance.Namespace,
-			Location:    instance.Dir(),
+		Identity: &basev0.ServiceIdentity{
+			Name:        instance.Service.Name,
+			Application: instance.Service.Application,
+			Domain:      instance.Service.Domain,
+			Namespace:   instance.Service.Namespace,
+			Location:    instance.Service.Dir(),
 		},
 	}
 	return instance.Factory.Load(ctx, init)
 
 }
 
-func (instance *FactoryInstance) Create(ctx context.Context, req *factoryv1.CreateRequest) (*factoryv1.CreateResponse, error) {
-	w := wool.Get(ctx).In("FactoryInstance::Create", wool.NameField(instance.Unique()))
-	err := communicate.Do[factoryv1.CreateRequest](ctx, instance.Factory, clicommunicate.NewPrompt())
+func (instance *FactoryInstance) Create(ctx context.Context, req *factoryv0.CreateRequest) (*factoryv0.CreateResponse, error) {
+	w := wool.Get(ctx).In("FactoryInstance::Create", wool.NameField(instance.Service.Unique()))
+	err := communicate.Do[factoryv0.CreateRequest](ctx, instance.Factory, clicommunicate.NewPrompt())
 	if err != nil {
-		return &factoryv1.CreateResponse{Status: &factoryv1.CreateStatus{Status: factoryv1.CreateStatus_ERROR, Message: err.Error()}},
+		return &factoryv0.CreateResponse{Status: &factoryv0.CreateStatus{Status: factoryv0.CreateStatus_ERROR, Message: err.Error()}},
 			w.Wrapf(err, "cannot communicate")
 	}
 	cli.Header(1, "Going to work!")
@@ -77,12 +77,12 @@ func (instance *FactoryInstance) Create(ctx context.Context, req *factoryv1.Crea
 	return instance.Factory.Create(ctx, req)
 }
 
-func (instance *FactoryInstance) Sync(ctx context.Context, req *factoryv1.SyncRequest) (*factoryv1.SyncResponse, error) {
-	w := wool.Get(ctx).In("FactoryInstance::Sync", wool.NameField(instance.Unique()))
+func (instance *FactoryInstance) Sync(ctx context.Context, req *factoryv0.SyncRequest) (*factoryv0.SyncResponse, error) {
+	w := wool.Get(ctx).In("FactoryInstance::Sync", wool.NameField(instance.Service.Unique()))
 	// Communicate always
-	err := communicate.Do[factoryv1.SyncRequest](ctx, instance.Factory, clicommunicate.NewPrompt())
+	err := communicate.Do[factoryv0.SyncRequest](ctx, instance.Factory, clicommunicate.NewPrompt())
 	if err != nil {
-		return &factoryv1.SyncResponse{Status: &factoryv1.SyncStatus{Status: factoryv1.SyncStatus_ERROR, Message: err.Error()}},
+		return &factoryv0.SyncResponse{Status: &factoryv0.SyncStatus{Status: factoryv0.SyncStatus_ERROR, Message: err.Error()}},
 			w.Wrapf(err, "cannot communicate")
 	}
 	return instance.Factory.Sync(ctx, req)
@@ -90,15 +90,15 @@ func (instance *FactoryInstance) Sync(ctx context.Context, req *factoryv1.SyncRe
 
 // Runtime methods
 
-func (instance *RuntimeInstance) Load(ctx context.Context) (*runtimev1.LoadResponse, error) {
-	init := &runtimev1.LoadRequest{
+func (instance *RuntimeInstance) Load(ctx context.Context) (*runtimev0.LoadResponse, error) {
+	init := &runtimev0.LoadRequest{
 		Debug: wool.IsDebug(),
-		Identity: &basev1.ServiceIdentity{
-			Name:        instance.Name,
-			Application: instance.Application,
-			Domain:      instance.Domain,
-			Namespace:   instance.Namespace,
-			Location:    instance.Dir(),
+		Identity: &basev0.ServiceIdentity{
+			Name:        instance.Service.Name,
+			Application: instance.Service.Application,
+			Domain:      instance.Service.Domain,
+			Namespace:   instance.Service.Namespace,
+			Location:    instance.Service.Dir(),
 		},
 	}
 	return instance.Runtime.Load(ctx, init)
@@ -119,19 +119,19 @@ func Load(ctx context.Context, service *configurations.Service) (*Instance, erro
 	}
 	instance.ProcessInfo.AgentPID = proc.PID
 
-	info, err := agent.GetAgentInformation(ctx, &v1agent.AgentInformationRequest{})
+	info, err := agent.GetAgentInformation(ctx, &v0agent.AgentInformationRequest{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get agent information")
 	}
 
 	for _, capability := range info.Capabilities {
 		switch capability.Type {
-		case v1agent.Capability_FACTORY:
+		case v0agent.Capability_FACTORY:
 			err = instance.LoadFactory(ctx, service)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot provide factory")
 			}
-		case v1agent.Capability_RUNTIME:
+		case v0agent.Capability_RUNTIME:
 			err = instance.LoadRuntime(ctx, service)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot provide runtime")

@@ -68,8 +68,6 @@ func recommendedMain(ctx context.Context, cmds []dockerfile.Command) (*MainServi
 }
 
 func RecommendBaseFromDocker(ctx context.Context, image string) (*MainServiceRecommendation, error) {
-	w := wool.Get(ctx).In("RecommendBaseFromDocker<%s>", image)
-	w.TODO("IMPLEMENT PYTHON")
 	return NewGoBase([]AgentRecommendation{
 		{Name: "codefly.ai/go:latest", Description: "Go base image", Reason: "Go is awesome"},
 		{Name: "codefly.ai/go-grpc:latest", Description: "Go with gRPC/REST", Reason: "Get a lot more done with less code"},

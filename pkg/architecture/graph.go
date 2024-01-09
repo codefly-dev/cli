@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	observabilityv1 "github.com/codefly-dev/core/generated/go/observability/v1"
+	observabilityv0 "github.com/codefly-dev/core/generated/go/observability/v0"
 )
 
 type Graph struct {
@@ -88,20 +88,20 @@ func (g *Graph) Edges() []Edge {
 	return edges
 }
 
-func ToType(t any) observabilityv1.GraphNode_Type {
-	return observabilityv1.GraphNode_Type(observabilityv1.GraphNode_Type_value[strings.ToUpper(t.(string))])
+func ToType(t any) observabilityv0.GraphNode_Type {
+	return observabilityv0.GraphNode_Type(observabilityv0.GraphNode_Type_value[strings.ToUpper(t.(string))])
 }
 
-func ToGraphResponse(g *Graph) *observabilityv1.GraphResponse {
-	resp := &observabilityv1.GraphResponse{}
+func ToGraphResponse(g *Graph) *observabilityv0.GraphResponse {
+	resp := &observabilityv0.GraphResponse{}
 	for _, node := range g.Nodes() {
-		resp.Nodes = append(resp.Nodes, &observabilityv1.GraphNode{
+		resp.Nodes = append(resp.Nodes, &observabilityv0.GraphNode{
 			Id:   node.ID,
 			Type: ToType(node.Type),
 		})
 	}
 	for _, edge := range g.Edges() {
-		resp.Edges = append(resp.Edges, &observabilityv1.GraphEdge{
+		resp.Edges = append(resp.Edges, &observabilityv0.GraphEdge{
 			From: edge.From,
 			To:   edge.To,
 		})

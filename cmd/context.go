@@ -17,12 +17,12 @@ var ContextCmd = &cobra.Command{
 
 		// Determine what we are working on
 		project := common.Project(ctx)
-		cli.Header(2, "⭐️ Active project <{{.Name}}>", project)
+		cli.Header(2, "⭐️ Active project <%s>", project.Name)
 		if app := project.ActiveApplication(ctx); app == nil {
 			cli.Header(2, "⚡️ No active application")
 			return
 		} else {
-			cli.Header(2, "⚡️ Active application <{{.}}>", *app)
+			cli.Header(2, "⚡️ Active application <%s>", *app)
 
 			app, err := project.LoadActiveApplication(ctx)
 			cli.ExitOnError(err, "cannot load active application")
@@ -30,7 +30,7 @@ var ContextCmd = &cobra.Command{
 				cli.Header(2, "🔥 No active service")
 				return
 			} else {
-				cli.Header(2, "🔥 Active service <{{.}}>", *service)
+				cli.Header(2, "🔥 Active service <%s>", *service)
 			}
 
 		}

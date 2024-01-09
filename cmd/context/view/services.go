@@ -5,7 +5,6 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/cli/templates"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
@@ -27,16 +26,21 @@ func viewServices() {
 
 	provider := wool.New(ctx, configurations.CLI.AsResource())
 
-	provider.WithLogger(common.CLI())
+	provider.WithLogger(cli.GetLogger())
 	defer provider.Done()
 
 	ctx = provider.Inject(ctx)
 	app := common.Application(ctx)
+	ViewServices(ctx, app)
+
+}
+
+func ViewServices(ctx context.Context, app *configurations.Application) {
 	if len(app.Services) == 0 {
 		cli.Header(2, "No services found")
 		cli.Exit()
 	}
-	cli.Header(1, "Services in application <{{.Name}}>", app)
+	cli.Header(1, "Services in application <%s>", app.Name)
 
 	active := app.ActiveService(ctx)
 
@@ -44,12 +48,12 @@ func viewServices() {
 		cli.Header(2, "No active service")
 		cli.Header(2, "Services:")
 		for _, other := range app.Services {
-			cli.Header(2, "<{{.Name}}>", other)
+			cli.Header(2, "<%s>", other)
 		}
 		return
 	}
 
-	cli.Header(2, "Active: <{{.Other.Active}}>", templates.New().With("Active", active))
+	cli.Header(2, "Active: <%s>", *active)
 
 	var others []string
 	for _, other := range app.Services {
@@ -63,6 +67,6 @@ func viewServices() {
 	}
 	cli.Header(2, "Others:")
 	for _, other := range others {
-		cli.Header(2, "<{{.Other.Name}}>", templates.New().With("Name", other))
+		cli.Header(2, "<%s>", other)
 	}
 }

@@ -38,7 +38,7 @@ func newProject(name string) {
 	workspace := common.Workspace(ctx)
 
 	if workspace.ExistsProject(name) {
-		cli.Error("Project <{{.}}> already exists", name)
+		cli.Error("Project <%s> already exists", name)
 		os.Exit(0)
 	}
 	confirm := models.Confirm(fmt.Sprintf("Do you want to add project <%s> in the current folder?", name), true)
@@ -61,7 +61,7 @@ func newProject(name string) {
 	if err != nil {
 		cli.ExitOnError(err, "cannot add project")
 	}
-	cli.Header(2, "Project <{{.Name}}> added and is now active", project)
+	cli.Header(2, "Project <%s> added and is now active", project.Name)
 }
 
 func init() {

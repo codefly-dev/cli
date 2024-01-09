@@ -1,6 +1,8 @@
 package add
 
 import (
+	"fmt"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
@@ -11,7 +13,6 @@ import (
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/wool"
-	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
 
@@ -23,13 +24,13 @@ var ServiceCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 
 		if interactive {
-			common.CLI().Oops("Interactive mode not implemented yet")
+			cli.GetLogger().Oops("Interactive mode not implemented yet")
 		}
 		if len(args) != 1 {
-			common.CLI().Oops("You must provide a name for the application as the single argument")
+			cli.GetLogger().Oops("You must provide a name for the application as the single argument")
 		}
 		if agentInput == "" {
-			common.CLI().Oops("You must provide an agent for the service, use --agent=<agent>, for example --agent=python, --agent=go, --agent=nextjs or more advanced agent. See TODO")
+			cli.GetLogger().Oops("You must provide an agent for the service, use --agent=<agent>, for example --agent=python, --agent=go, --agent=nextjs or more advanced agent. See TODO")
 		}
 		name := args[0]
 		addService(name, agentInput)
@@ -46,8 +47,20 @@ func addService(name string, agentInput string) {
 	project := common.Project(ctx)
 	app := common.Application(ctx)
 
-	if app.ExistsService(name) && !override {
-		common.CLI().Oops("Service <{{.}}> already exists", name)
+	// Parse service to see if we need to change organization
+	parsed, err := configurations.ParseService(name)
+	cli.ExitOnError(err, "Cannot parse service name")
+
+	if parsed.Application != "" {
+		name = parsed.Name
+		if parsed.Application != app.Name {
+			app, err = project.LoadApplicationFromName(ctx, parsed.Application)
+			cli.ExitOnError(err, "Cannot load application")
+		}
+	}
+
+	if app.ExistsService(ctx, name) && !override {
+		cli.GetLogger().Oops("Service <%s> already exists", name)
 	}
 
 	w.Debug("input", wool.Field("agent", agentInput))
@@ -66,7 +79,7 @@ func addService(name string, agentInput string) {
 		cli.ExitOnError(err, "Cannot download agent")
 	}
 
-	confirm := models.Confirm(golor.Sprintf("Confirm adding a service in your application <{{.Name}}>?", app), true)
+	confirm := models.Confirm(fmt.Sprintf("Confirm adding a service <%s> in application <%s>?", name, app.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		cli.Exit()

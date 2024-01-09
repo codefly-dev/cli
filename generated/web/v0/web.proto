@@ -1,21 +1,22 @@
 syntax = "proto3";
-package observability.v1;
+package observability.v0;
 
-import "base/v1/endpoint.proto";
-import "base/v1/project.proto";
+import "base/v0/endpoint.proto";
+import "base/v0/project.proto";
 
-import "services/agent/v1/agent.proto";
-import "services/runtime/v1/runtime.proto";
+import "services/agent/v0/agent.proto";
+import "services/runtime/v0/runtime.proto";
 
-import "observability/v1/inventory.proto";
-import "observability/v1/dependencies.proto";
-import "observability/v1/logs.proto";
+import "observability/v0/inventory.proto";
+import "observability/v0/dependencies.proto";
+import "observability/v0/logs.proto";
 
 import "google/protobuf/empty.proto";
 import "google/api/annotations.proto";
 
 
 import "google/protobuf/timestamp.proto";
+
 
 /* Overall information */
 
@@ -66,10 +67,14 @@ message GetAddressesResponse {
 
 service Web {
 
+
+
+
+
   /* Overall information
   */
 
-  rpc GetAgentInformation(GetAgentInformationRequest) returns (agent.v1.AgentInformation) {
+  rpc GetAgentInformation(GetAgentInformationRequest) returns (services.agent.v0.AgentInformation) {
     option (google.api.http) = {
       get: "/overall/agent/{agent}/information"
     };
@@ -82,7 +87,7 @@ service Web {
   }
 
 
-  rpc GetProjectInventory(ProjectRequest) returns (base.v1.Project) {
+  rpc GetProjectInventory(ProjectRequest) returns (base.v0.Project) {
     option (google.api.http) = {
       get: "/overall/project/{project}/inventory"
     };
@@ -128,7 +133,7 @@ service Web {
     };
   }
 
-  rpc Logs(google.protobuf.Empty)  returns (stream observability.v1.Log) {
+  rpc Logs(google.protobuf.Empty)  returns (stream observability.v0.Log) {
     option (google.api.http) = {
       get: "/active/project/logs"
     };

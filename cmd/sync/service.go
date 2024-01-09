@@ -41,7 +41,7 @@ func syncService() error {
 		return w.Wrap(err)
 	}
 	f.InitOnly(initOnly)
-	return f.StartSync(ctx)
+	return f.Start(ctx, factory.Sync)
 }
 
 func init() {

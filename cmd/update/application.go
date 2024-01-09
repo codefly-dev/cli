@@ -10,7 +10,7 @@ package update
 
 //provider := wool.New(ctx, configurations.CLI.AsResource())
 //
-//provider.WithLogger(common.CLI())
+//provider.WithLogger(cli.GetLogger())
 //defer provider.Done()
 //
 //ctx = provider.WithContext(ctx)

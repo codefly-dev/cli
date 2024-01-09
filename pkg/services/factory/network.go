@@ -2,16 +2,16 @@ package factory
 
 import (
 	"github.com/codefly-dev/core/configurations"
-	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 )
 
-var networkMappings = map[string][]*runtimev1.NetworkMapping{}
+var networkMappings = map[string][]*runtimev0.NetworkMapping{}
 
-func SetNetworkMappings(unique string, mappings []*runtimev1.NetworkMapping) {
+func SetNetworkMappings(unique string, mappings []*runtimev0.NetworkMapping) {
 	networkMappings[unique] = mappings
 }
 
-func GetNetworkMappingsForService(unique string) []*runtimev1.NetworkMapping {
+func GetNetworkMappingsForService(unique string) []*runtimev0.NetworkMapping {
 	return networkMappings[unique]
 }
 

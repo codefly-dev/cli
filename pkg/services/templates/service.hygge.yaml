@@ -1,2 +1,2 @@
 kind: service
-name: {{.Name}}
+name: %s

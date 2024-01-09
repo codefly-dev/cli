@@ -1,11 +1,6 @@
 package observability
 
 import (
-	"context"
-	"database/sql"
-	"embed"
-
-	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "modernc.org/sqlite"
 )
@@ -13,13 +8,13 @@ import (
 //
 //type Sqlite struct {
 //	db           *sql.DB
-//	logBuffer    []*agentv1.Log
+//	logBuffer    []*agentv0.Log
 //	flushChannel chan bool
 //	clean        func(db *sql.DB)
-//	session      *basev1.Session
+//	session      *basev0.Session
 //}
 //
-//func (storage *Sqlite) AddLog(log *agentv1.Log) {
+//func (storage *Sqlite) AddLog(log *agentv0.Log) {
 //	storage.logBuffer = append(storage.logBuffer, log)
 //	// Optionally, add logic here to handle buffer size limits
 //}
@@ -54,7 +49,7 @@ import (
 //	storage.clean(storage.db)
 //}
 //
-//func (storage *Sqlite) StartSession(ctx context.Context, session *basev1.Session) error {
+//func (storage *Sqlite) StartSession(ctx context.Context, session *basev0.Session) error {
 //	storage.session = session
 //	err := storage.initSession(ctx, session)
 //	if err != nil {
@@ -112,16 +107,16 @@ import (
 //	return nil, nil
 //}
 //
-//func (storage *Sqlite) initSession(ctx context.Context, session *basev1.Session) error {
+//func (storage *Sqlite) initSession(ctx context.Context, session *basev0.Session) error {
 //	switch session.Session.(type) {
-//	case *basev1.Session_Partial:
+//	case *basev0.Session_Partial:
 //		return storage.initPartialSession(ctx, session)
 //	default:
 //		return errors.New("TBI")
 //	}
 //}
 //
-//func (storage *Sqlite) initPartialSession(ctx context.Context, session *basev1.Session) error {
+//func (storage *Sqlite) initPartialSession(ctx context.Context, session *basev0.Session) error {
 //	w := wool.Get(ctx).In("development.initPartialSession")
 //
 //	fmt.Println("PROJECT ID", session.GetPartial().Project.Uuid)
@@ -152,7 +147,7 @@ import (
 //	return nil
 //}
 //
-//func (storage *Sqlite) addProjectSnapshot(ctx context.Context, project *basev1.ProjectSnapshot) error {
+//func (storage *Sqlite) addProjectSnapshot(ctx context.Context, project *basev0.ProjectSnapshot) error {
 //	w := wool.Get(ctx).In("development.SqliteAddProjectSnapshot")
 //	_, err := storage.db.Exec("INSERT INTO project_snapshot (id, name) VALUES (?, ?)", project.Uuid, project.Name)
 //	if err != nil {
@@ -162,7 +157,7 @@ import (
 //	return nil
 //}
 //
-//func (storage *Sqlite) addPartialSnapshot(ctx context.Context, partial *basev1.PartialSnapshot) error {
+//func (storage *Sqlite) addPartialSnapshot(ctx context.Context, partial *basev0.PartialSnapshot) error {
 //	w := wool.Get(ctx).In("development.SqliteAddPartialSnapshot")
 //
 //	stmt, err := storage.db.Prepare(`INSERT INTO partial_snapshot (id, name, project_id) VALUES (?, ?, ?)`)
@@ -179,34 +174,34 @@ import (
 //	log.Println("PartialSnapshot added successfully")
 //	return nil
 //}
-
-func insertLogs(ctx context.Context, db *sql.DB, sessionID string, logs []*agentv1.Log) error {
-	// Start a transaction
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-
-	// Prepare the insert statement
-	stmt, err := tx.Prepare("INSERT INTO logs (session_id, at, application, service, kind, message) VALUES (?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer stmt.Close()
-
-	// Insert each log in the batch
-	for _, log := range logs {
-		_, err = stmt.Exec(sessionID, log.At.AsTime(), log.Application, log.Service, log.Kind, log.Message)
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
-	}
-
-	// Commit the transaction
-	return tx.Commit()
-}
-
-//go:embed db
-var migrations embed.FS
+//
+//func insertLogs(ctx context.Context, db *sql.DB, sessionID string, logs []*agentv0.Log) error {
+//	// Start a transaction
+//	tx, err := db.Begin()
+//	if err != nil {
+//		return err
+//	}
+//
+//	// Prepare the insert statement
+//	stmt, err := tx.Prepare("INSERT INTO logs (session_id, at, application, service, kind, message) VALUES (?, ?, ?, ?, ?, ?)")
+//	if err != nil {
+//		tx.Rollback()
+//		return err
+//	}
+//	defer stmt.Close()
+//
+//	// Insert each log in the batch
+//	for _, log := range logs {
+//		_, err = stmt.Exec(sessionID, log.At.AsTime(), log.Application, log.Service, log.Kind, log.Message)
+//		if err != nil {
+//			tx.Rollback()
+//			return err
+//		}
+//	}
+//
+//	// Commit the transaction
+//	return tx.Commit()
+//}
+//
+////go:embed db
+//var migrations embed.FS

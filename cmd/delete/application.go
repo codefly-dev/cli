@@ -1,11 +1,11 @@
 package delete
 
 import (
+	"fmt"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	"github.com/codefly-dev/cli/pkg/cli/templates"
-	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
 
@@ -31,12 +31,10 @@ func deleteApplication(name string) {
 
 	project := common.Project(ctx)
 	if !project.ExistsApplication(name) {
-		cli.Error("Application <{{.Application}}> does not exist in project<{{.Project.Name}}>",
-			templates.New().WithProject(project))
+		cli.Error("Application <%s> does not exist in project <%s>", name, project.Name)
 		return
 	}
-	confirm := models.Confirm(golor.Sprintf("Do you want to delete the application <{{.Project.Name}} in project <{{.other.application}}>?",
-		templates.New().WithProject(project).With("application", name)), false)
+	confirm := models.Confirm(fmt.Sprintf("Do you want to delete the application <%s> in project <%s>?", name, project.Name), false)
 	if confirm {
 	}
 	err := project.DeleteApplication(ctx, name)

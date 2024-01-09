@@ -1,0 +1,44 @@
+syntax = "proto3";
+package platform;
+
+import "base/v0/project.proto";
+import "base/v0/service.proto";
+import "base/v0/endpoint.proto";
+
+import "services/agent/v0/agent.proto";
+import "services/runtime/v0/runtime.proto";
+
+import "observability/v0/inventory.proto";
+import "observability/v0/dependencies.proto";
+import "observability/v0/logs.proto";
+
+import "google/protobuf/empty.proto";
+import "google/api/annotations.proto";
+
+
+import "google/protobuf/timestamp.proto";
+
+message BuildInformation {
+  string project = 1;
+  string application = 2;
+  string service = 3;
+  string run_hash = 4;
+  string endpoints_hash = 5;
+}
+
+message LatestBuildInformationRequest {
+  string project = 1;
+  string application = 2;
+  string service = 3;
+}
+
+message BuildInformationResponse {
+  bool success = 1;
+  base.v0.Version version = 2;
+  enum Type {
+    PATCH = 0;
+    MINOR = 1;
+    MAJOR = 2;
+  }
+  Type type = 3;
+}

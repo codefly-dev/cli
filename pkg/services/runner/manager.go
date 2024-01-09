@@ -9,8 +9,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/services"
 	agentservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
-	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
-	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 	"github.com/codefly-dev/core/runners"
 	"github.com/codefly-dev/core/wool"
 )
@@ -44,10 +44,10 @@ type Manager struct {
 	initOnly bool
 	actions  chan Action
 
-	loaded              *runtimev1.LoadResponse
-	init                *runtimev1.InitResponse
-	dependencyEndpoints []*basev1.Endpoint
-	networkMappings     []*runtimev1.NetworkMapping
+	loaded              *runtimev0.LoadResponse
+	init                *runtimev0.InitResponse
+	dependencyEndpoints []*basev0.Endpoint
+	networkMappings     []*runtimev0.NetworkMapping
 }
 
 func (manager *Manager) Unique() string {
@@ -91,7 +91,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 // Init the service
 func (manager *Manager) Init(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Init", wool.ThisField(manager))
-	req := &runtimev1.InitRequest{DependenciesEndpoints: manager.dependencyEndpoints}
+	req := &runtimev0.InitRequest{DependenciesEndpoints: manager.dependencyEndpoints}
 	init, err := manager.runner.instance.Runtime.Init(ctx, req)
 	if err != nil {
 		return w.NewError("cannot Init service instance")
@@ -104,12 +104,12 @@ func (manager *Manager) Init(ctx context.Context) error {
 // Events can trigger actions
 func (manager *Manager) Run(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Run", wool.ThisField(manager))
-	req := &runtimev1.StartRequest{NetworkMappings: manager.networkMappings}
+	req := &runtimev0.StartRequest{NetworkMappings: manager.networkMappings}
 	start, err := manager.runner.instance.Runtime.Start(ctx, req)
 	if err != nil {
 		return w.Wrapf(err, "cannot start service instance")
 	}
-	if start.Status.State != runtimev1.StartStatus_STARTED {
+	if start.Status.State != runtimev0.StartStatus_STARTED {
 		return w.Wrapf(fmt.Errorf(start.Status.Message), "cannot start service instance")
 	}
 	w.Debug("start", wool.ResponseField(start).Trace())
@@ -162,7 +162,7 @@ func (manager *Manager) Follow(ctx context.Context) error {
 
 	go func() {
 		for {
-			info, err := manager.runner.instance.Runtime.Information(ctx, &runtimev1.InformationRequest{})
+			info, err := manager.runner.instance.Runtime.Information(ctx, &runtimev0.InformationRequest{})
 			w.Trace("info", wool.ResponseField(info))
 			if err != nil {
 				manager.runner.events <- runners.Event{Err: err}
@@ -178,12 +178,12 @@ func (manager *Manager) Follow(ctx context.Context) error {
 	return nil
 }
 
-func (manager *Manager) WithEndpointDependencies(endpoints []*basev1.Endpoint) *Manager {
+func (manager *Manager) WithEndpointDependencies(endpoints []*basev0.Endpoint) *Manager {
 	manager.dependencyEndpoints = endpoints
 	return manager
 }
 
-func (manager *Manager) WithNetworkMappings(mappings []*runtimev1.NetworkMapping) *Manager {
+func (manager *Manager) WithNetworkMappings(mappings []*runtimev0.NetworkMapping) *Manager {
 	manager.networkMappings = mappings
 	return manager
 }
@@ -198,7 +198,7 @@ func (manager *Manager) Sync(ctx context.Context) error {
 
 func (runner *Runner) Stop(ctx context.Context) error {
 	cli.Header(2, "Stopping service %s", runner.instance.Service.Name)
-	_, err := runner.instance.Runtime.Stop(ctx, &runtimev1.StopRequest{})
+	_, err := runner.instance.Runtime.Stop(ctx, &runtimev0.StopRequest{})
 	if err != nil {
 		return err
 	}

@@ -20,7 +20,7 @@ var ServiceDependencyCmd = &cobra.Command{
 
 	Run: func(cmd *cobra.Command, args []string) {
 		if interactive {
-			common.CLI().Oops("Interactive mode not implemented yet")
+			cli.GetLogger().Oops("Interactive mode not implemented yet")
 		}
 		addServiceDependency()
 	},
@@ -40,7 +40,7 @@ func addServiceDependency() {
 	service := common.Service(ctx)
 	w.Trace("service", wool.Field("service", service.Name))
 
-	confirm := models.Confirm(golor.Sprintf("Confirm adding a service dependency for <{{.Name}}>?", service), true)
+	confirm := models.Confirm(golor.Sprintf("Confirm adding a service dependency for <%s>?", service), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		cli.Exit()

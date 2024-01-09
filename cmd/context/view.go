@@ -9,6 +9,9 @@ import (
 var ViewCmd = &cobra.Command{
 	Use:   "view",
 	Short: "View active context",
+	Run: func(cmd *cobra.Command, args []string) {
+		view_.ViewApplications(view_.ViewServices)
+	},
 }
 
 func init() {

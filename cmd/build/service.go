@@ -1,40 +1,56 @@
 package build
 
-// // ServiceCmd represents the build command
-// var ServiceCmd = &cobra.Command{
-// 	Use:   "service",
-// 	Short: "Build an service",
-// 	Run: func(cmd *cobra.Command, args []string) {
-// 		ctx := context.Background()
-// 		w := wool.Get(ctx).In("build.ServiceCmd")
-// 		if len(args) == 0 {
-// 			logger.Oops("Please provide a service name")
-// 			os.Exit(1)
-// 		}
+import (
+	"context"
+	"os"
+	"os/signal"
 
-// 		//project := common.Project(ctx)
+	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/services/factory"
+	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/runners"
+	"github.com/codefly-dev/core/wool"
+	"github.com/spf13/cobra"
+)
 
-// 		name := args[0]
-// 		reference, err := configurations.ParseServiceReference(name)
-// 		cli.ExitOnError(err, "<%s>", name)
+// ServiceCmd represents the build command
+var ServiceCmd = &cobra.Command{
+	Use:   "service",
+	Short: "Build an service",
+	Run: func(cmd *cobra.Command, args []string) {
 
-// 		var app *configurations.Application
-// 		//if reference.Application == "" {
-// 		//	app = common.ApplicationConfiguration(true)
-// 		//} else {
-// 		//	app, err = configurations.LoadApplicationFromName(reference.Application, configurations.WithProject(project))
-// 		//	cli.ExitOnError(err, "<%s>", reference.Application)
-// 		//}
+		ctx, done := common.NewContext()
+		defer done()
 
-// 		conf, err := app.LoadServiceFromName(ctx, reference.Name)
-// 		cli.ExitOnError(err, "<%s>", name)
+		// Check Docker is running
+		if !runners.DockerRunning(ctx) {
+			cli.ExitWithMessage("Docker is not running: please start Docker")
+		}
 
-// 		instance, err := services.NewServiceInstance(conf, app)
-// 		cli.ExitOnError(err, "<%s>", name)
+		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		defer stop()
 
-// 		err = instance.SoloBuild(ctx)
-// 		cli.ExitOnError(err, "cannot build")
+		defer agents.ClearAgents()
 
-// 		agents.ClearAgents()
-// 	},
-// }
+		service := common.Service(ctx)
+		project := common.Project(ctx)
+		err := buildService(ctx, project, service)
+		cli.ExitOnError(err, "Got service build error: %v\n", err)
+
+	},
+}
+
+func buildService(ctx context.Context, project *configurations.Project, service *configurations.Service) error {
+	w := wool.Get(ctx).In("cmd.build.service")
+	flow, err := factory.NewFlow(ctx, project, service)
+	if err != nil {
+		return w.Wrapf(err, "cannot create flow")
+	}
+	err = flow.Start(ctx, factory.Build)
+	if err != nil {
+		return w.Wrapf(err, "cannot build flow")
+	}
+	return nil
+}

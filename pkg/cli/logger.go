@@ -1,4 +1,4 @@
-package common
+package cli
 
 import (
 	"fmt"
@@ -7,48 +7,53 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/wool"
 )
 
-type CLILogger struct {
+type Logger struct {
 }
 
-var cliLogger *CLILogger
+var cliLogger *Logger
 
 func init() {
-	cliLogger = &CLILogger{}
+	cliLogger = &Logger{}
 	agents.AddProcessor(cliLogger)
 }
 
-func CLI() *CLILogger {
+func GetLogger() *Logger {
 	return cliLogger
 }
 
-func (logger *CLILogger) Process(log *wool.Log) {
+var maxUnique int
+
+func RegisterLoggingResource(unique string) {
+	maxUnique = max(maxUnique, len(unique))
+}
+
+func (logger *Logger) Process(log *wool.Log) {
 	if log.Level < wool.GlobalLogLevel() {
 		return
 	}
 	switch log.Level {
 	case wool.TRACE:
-		cli.Trace(fmt.Sprintf("%s", log))
+		Trace(fmt.Sprintf("%s", log))
 	case wool.DEBUG:
-		cli.Debug(fmt.Sprintf("%s", log))
+		Debug(fmt.Sprintf("%s", log))
 	case wool.INFO:
-		cli.Info(log.Message)
+		Info(log.Message)
 	case wool.WARN:
-		cli.Warning(log.Message)
+		Warning(log.Message)
 	case wool.ERROR:
-		cli.Error(fmt.Sprintf("%s", log))
+		Error(fmt.Sprintf("%s", log))
 	case wool.FOCUS:
-		cli.Focus(fmt.Sprintf("%s", log))
+		Focus(fmt.Sprintf("%s", log))
 	default:
 		fmt.Printf("%s\n", log)
 	}
 }
 
-func (logger *CLILogger) ProcessWithSource(log *wool.Log, source *wool.Identifier) {
+func (logger *Logger) ProcessWithSource(log *wool.Log, source *wool.Identifier) {
 	if log.Level < wool.GlobalLogLevel() {
 		return
 	}
@@ -59,8 +64,12 @@ func (logger *CLILogger) ProcessWithSource(log *wool.Log, source *wool.Identifie
 	Log(source, log)
 }
 
+func padRight(str string, length int) string {
+	return fmt.Sprintf("%-*s", length, str)
+}
+
 func Log(identifier *wool.Identifier, log *wool.Log) {
-	sep := "|"
+	sep := "||"
 	if log.Level == wool.FORWARD {
 		sep = ">>"
 	}
@@ -69,11 +78,11 @@ func Log(identifier *wool.Identifier, log *wool.Log) {
 		style = style.Copy()
 		style.Border(lipgloss.RoundedBorder())
 	}
-	fmt.Println(style.Render(fmt.Sprintf("%s %s %s", identifier.Unique, sep, log)))
+	fmt.Println(style.Render(fmt.Sprintf("%s %s %s", padRight(identifier.Unique, maxUnique), sep, log)))
 }
 
-func (logger *CLILogger) Oops(format string, args ...any) {
-	cli.Error(format, args...)
+func (logger *Logger) Oops(format string, args ...any) {
+	Error(format, args...)
 	os.Exit(1)
 }
 

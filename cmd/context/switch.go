@@ -9,6 +9,9 @@ import (
 var SwitchCmd = &cobra.Command{
 	Use:   "switch",
 	Short: "Switch active context",
+	Run: func(cmd *cobra.Command, args []string) {
+		switch_.Service()
+	},
 }
 
 func init() {

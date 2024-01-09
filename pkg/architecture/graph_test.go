@@ -3,7 +3,7 @@ package architecture_test
 import (
 	"testing"
 
-	"github.com/codefly-dev/core/architecture"
+	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -3,17 +3,17 @@ package observability
 import (
 	"context"
 
-	observabilityv1 "github.com/codefly-dev/core/generated/go/observability/v1"
+	observabilityv0 "github.com/codefly-dev/core/generated/go/observability/v0"
 )
 
 type Spy struct {
-	Session *observabilityv1.Session
+	Session *observabilityv0.Session
 	Storage Storage
 }
 
 type Storage interface {
-	StartSession(session *observabilityv1.Session) error
-	AddLog(log *observabilityv1.Log) // Agent callback
+	StartSession(session *observabilityv0.Session) error
+	AddLog(log *observabilityv0.Log) // Agent callback
 	Close()
 }
 
@@ -37,7 +37,7 @@ func (s *Spy) Activate(context.Context) error {
 	return nil
 }
 
-func NewSpy(ctx context.Context, session *observabilityv1.Session) (*Spy, error) {
+func NewSpy(ctx context.Context, session *observabilityv0.Session) (*Spy, error) {
 	//w := wool.Get(ctx).In("development.NewSpy")
 	//storage, err := NewSqliteStorage()
 	//if err != nil {

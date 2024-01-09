@@ -7,10 +7,10 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
-	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 )
 
-func LoadProject(ctx context.Context, project *configurations.Project) (*basev1.Project, error) {
+func LoadProject(ctx context.Context, project *configurations.Project) (*basev0.Project, error) {
 	w := wool.Get(ctx).In("overview.LoadProject")
 	out := project.Proto()
 	apps, err := project.LoadApplications(ctx)
@@ -27,7 +27,7 @@ func LoadProject(ctx context.Context, project *configurations.Project) (*basev1.
 	return out, nil
 }
 
-func LoadApplication(ctx context.Context, app *configurations.Application) (*basev1.Application, error) {
+func LoadApplication(ctx context.Context, app *configurations.Application) (*basev0.Application, error) {
 	w := wool.Get(ctx).In("overview.LoadApplication")
 	out := app.Proto()
 	svcs, err := app.LoadServices(ctx)
@@ -44,7 +44,7 @@ func LoadApplication(ctx context.Context, app *configurations.Application) (*bas
 	return out, nil
 }
 
-func LoadService(ctx context.Context, service *configurations.Service) (*basev1.Service, error) {
+func LoadService(ctx context.Context, service *configurations.Service) (*basev0.Service, error) {
 	w := wool.Get(ctx).In("overview.LoadService")
 	out := service.Proto()
 	// Get endpoints from services

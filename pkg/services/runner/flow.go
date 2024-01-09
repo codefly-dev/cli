@@ -9,8 +9,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/network"
 	"github.com/codefly-dev/core/configurations"
-	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
-	runtimev1 "github.com/codefly-dev/core/generated/go/services/runtime/v1"
+	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -25,11 +25,35 @@ type Flow struct {
 	dependencies *architecture.Graph
 	actions      chan Action
 
-	endpoints       map[string][]*basev1.Endpoint
-	networkMappings map[string][]*runtimev1.NetworkMapping
+	endpoints       map[string][]*basev0.Endpoint
+	networkMappings map[string][]*runtimev0.NetworkMapping
 
 	initOnly   bool
 	standAlone bool
+}
+
+func (flow *Flow) Managers(action Action) []*Manager {
+	if action.Unique == "" {
+		return flow.managers
+	}
+	if action.Only {
+		return []*Manager{flow.Manager(action)}
+	}
+	for i, manager := range flow.managers {
+		if manager.Unique() == action.Unique {
+			return flow.managers[i:]
+		}
+	}
+	return nil
+}
+
+func (flow *Flow) Manager(action Action) *Manager {
+	for _, manager := range flow.managers {
+		if manager.Unique() == action.Unique {
+			return manager
+		}
+	}
+	return nil
 }
 
 func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*Flow, error) {
@@ -52,6 +76,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	var managers []*Manager
 
 	for _, unique := range required {
+		cli.RegisterLoggingResource(unique)
 		info, err := configurations.ParseServiceUnique(unique)
 		w.Debug("creating run manager", wool.Field("for", unique))
 		if err != nil {
@@ -76,6 +101,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 
 	w.Info("creating run manager", wool.Field("for", service.Unique()))
 	manager, err := New(ctx, service, actions)
+	cli.RegisterLoggingResource(service.Unique())
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -84,8 +110,8 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		managers:        managers,
 		dependencies:    g,
 		actions:         actions,
-		endpoints:       make(map[string][]*basev1.Endpoint),
-		networkMappings: make(map[string][]*runtimev1.NetworkMapping),
+		endpoints:       make(map[string][]*basev0.Endpoint),
+		networkMappings: make(map[string][]*runtimev0.NetworkMapping),
 	}
 	currentFlow = flow
 	return flow, nil
@@ -170,30 +196,6 @@ func (flow *Flow) Load(ctx context.Context, action Action) error {
 	return nil
 }
 
-func (flow *Flow) Managers(action Action) []*Manager {
-	if action.Unique == "" {
-		return flow.managers
-	}
-	if action.Only {
-		return []*Manager{flow.Manager(action)}
-	}
-	for i, manager := range flow.managers {
-		if manager.Unique() == action.Unique {
-			return flow.managers[i:]
-		}
-	}
-	return nil
-}
-
-func (flow *Flow) Manager(action Action) *Manager {
-	for _, manager := range flow.managers {
-		if manager.Unique() == action.Unique {
-			return manager
-		}
-	}
-	return nil
-}
-
 // Init runs all init
 // Init Request: Endpoint group
 func (flow *Flow) Init(ctx context.Context, action Action) error {
@@ -243,11 +245,11 @@ func (flow *Flow) Stop(action Action) error {
 
 }
 
-func (flow *Flow) DependenciesEndpoints(unique string) ([]*basev1.Endpoint, error) {
+func (flow *Flow) DependenciesEndpoints(unique string) ([]*basev0.Endpoint, error) {
 	w := wool.Get(context.Background()).In("Flow.DependenciesEndpoints")
 	// Gather all endpoints from the direct dependencies
 	dependencies := flow.dependencies.Antecedents(unique)
-	var endpoints []*basev1.Endpoint
+	var endpoints []*basev0.Endpoint
 	for _, dependency := range dependencies {
 		endpoints = append(endpoints, flow.endpoints[dependency]...)
 	}
@@ -255,11 +257,11 @@ func (flow *Flow) DependenciesEndpoints(unique string) ([]*basev1.Endpoint, erro
 	return endpoints, nil
 }
 
-func (flow *Flow) DependenciesNetworkMappings(unique string) ([]*runtimev1.NetworkMapping, error) {
+func (flow *Flow) DependenciesNetworkMappings(unique string) ([]*runtimev0.NetworkMapping, error) {
 	w := wool.Get(context.Background()).In("Flow.DependenciesNetworkMappings")
 	// Gather all mappings from the direct dependencies
 	dependencies := flow.dependencies.Antecedents(unique)
-	var mappings []*runtimev1.NetworkMapping
+	var mappings []*runtimev0.NetworkMapping
 	for _, dependency := range dependencies {
 		mappingsForDependency := flow.GetNetworkMappingsForService(dependency)
 		mappings = append(mappings, mappingsForDependency...)
@@ -276,7 +278,7 @@ func (flow *Flow) StandAlone(alone bool) {
 	flow.standAlone = alone
 }
 
-func (flow *Flow) GetNetworkMappingsForService(unique string) []*runtimev1.NetworkMapping {
+func (flow *Flow) GetNetworkMappingsForService(unique string) []*runtimev0.NetworkMapping {
 	return flow.networkMappings[unique]
 }
 
@@ -292,6 +294,6 @@ func (flow *Flow) GetAddressesForEndpoint(application string, service string, en
 	return addresses
 }
 
-func (flow *Flow) SetNetworkMappings(unique string, mappings []*runtimev1.NetworkMapping) {
+func (flow *Flow) SetNetworkMappings(unique string, mappings []*runtimev0.NetworkMapping) {
 	flow.networkMappings[unique] = mappings
 }

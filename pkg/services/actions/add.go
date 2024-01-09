@@ -12,8 +12,8 @@ import (
 	"github.com/codefly-dev/core/actions/actions"
 	actionservice "github.com/codefly-dev/core/actions/service"
 	"github.com/codefly-dev/core/configurations"
-	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
-	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
+	factoryv0 "github.com/codefly-dev/core/generated/go/services/factory/v0"
 
 	"github.com/codefly-dev/core/wool"
 )
@@ -34,14 +34,14 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return w.Wrapf(err, "cannot add service")
 	}
 
-	cli.Header(2, "Service <{{.Name}}> added and is now active", service)
+	cli.Header(2, "Service <%s> added and is now active", service.Name)
 
 	instance, err := services.Load(ctx, service)
 	if err != nil {
 		return w.Wrapf(err, "cannot load service instance")
 	}
 
-	info, err := instance.Agent.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
+	info, err := instance.Agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 	if err != nil {
 
 	}
@@ -51,14 +51,14 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return w.Wrapf(err, "cannot render info README")
 	}
 	// Paginate if long
-	if len(strings.Split(rendered, "\n")) > 10 {
+	if len(strings.Split(rendered, "\n")) > 50 {
 		cli.Paginate(rendered)
 	} else {
 		fmt.Println(rendered)
 	}
 
 	if instance.Factory == nil {
-		cli.Header(2, "🎉 We are done!", service)
+		cli.Header(2, "🎉 We are done!")
 		return nil
 	}
 	_, err = instance.Factory.Load(ctx)
@@ -66,7 +66,7 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return w.Wrapf(err, "cannot create service instance")
 	}
 
-	_, err = instance.Factory.Create(ctx, &factoryv1.CreateRequest{})
+	_, err = instance.Factory.Create(ctx, &factoryv0.CreateRequest{})
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 

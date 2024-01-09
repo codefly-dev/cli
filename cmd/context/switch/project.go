@@ -50,7 +50,7 @@ func switchProject() {
 	cli.ExitOnError(err, "cannot select project")
 
 	if selected.Identifier == project.Name {
-		cli.Header(2, "Active project is already: {{.Name}}", project)
+		cli.Header(2, "Active project is already: <%s>", project.Name)
 		return
 	}
 
@@ -64,12 +64,12 @@ func switchProject() {
 	project, err = actions.As[configurations.Project](out)
 	cli.ExitOnError(err, "cannot get active project")
 
-	cli.Header(2, "Active project is now: {{.Name}}", project)
+	cli.Header(2, "Active project is now: <%s>", project.Name)
 
 	activeApplication := project.ActiveApplication(ctx)
 	if activeApplication == nil {
 		return
 	}
-	cli.Header(2, "Active application is now: {{.}}", project.ActiveApplication(ctx))
+	cli.Header(2, "Active application is now: <%s>", *activeApplication)
 
 }

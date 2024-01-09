@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/codefly-dev/core/wool"
@@ -11,18 +10,9 @@ import (
 )
 
 func View(style string, s string, args ...any) string {
-	// Templates or not?
-	withTemplates := strings.Contains(s, "{{")
-	var view string
-
-	if !withTemplates {
-		view = fmt.Sprintf(s, args...)
-		view = fmt.Sprintf("%s[%s]", style, view)
-		view = golor.Sprintf(view)
-	} else {
-		view = fmt.Sprintf("%s[%s]", style, s)
-		view = golor.Sprintf(view, args...)
-	}
+	view := fmt.Sprintf(s, args...)
+	view = fmt.Sprintf("%s[%s]", style, view)
+	view = golor.Sprintf(view)
 	return view
 }
 
@@ -85,6 +75,11 @@ func ExitOnError(err error, format string, args ...any) {
 		}
 		Exit()
 	}
+}
+
+func ExitWithMessage(format string, args ...any) {
+	Error(format, args...)
+	Exit()
 }
 
 func Exit() {

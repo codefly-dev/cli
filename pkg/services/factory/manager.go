@@ -5,8 +5,8 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/configurations"
-	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
-	factoryv1 "github.com/codefly-dev/core/generated/go/services/factory/v1"
+	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	factoryv0 "github.com/codefly-dev/core/generated/go/services/factory/v0"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -17,12 +17,14 @@ const (
 	Load
 	Init
 	Sync // Sync the service
+	Build
 )
 
 // Action represents an action to be taken on a service by the runner
 type Action struct {
 	Type   ActionType
 	Unique string
+	Only   bool
 }
 
 /*
@@ -36,9 +38,11 @@ type Manager struct {
 	instance *services.Instance
 	actions  chan Action
 
-	loaded              *factoryv1.LoadResponse
-	init                *factoryv1.InitResponse
-	dependencyEndpoints []*basev1.Endpoint
+	loaded *factoryv0.LoadResponse
+	init   *factoryv0.InitResponse
+	build  *factoryv0.BuildResponse
+
+	dependencyEndpoints []*basev0.Endpoint
 }
 
 func (manager *Manager) Unique() string {
@@ -76,7 +80,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 // Init the service
 func (manager *Manager) Init(ctx context.Context) error {
 	w := wool.Get(ctx).In("factory.manager::Init", wool.ThisField(manager))
-	req := &factoryv1.InitRequest{DependenciesEndpoints: manager.dependencyEndpoints}
+	req := &factoryv0.InitRequest{DependenciesEndpoints: manager.dependencyEndpoints}
 	init, err := manager.instance.Factory.Init(ctx, req)
 	if err != nil {
 		return w.NewError("cannot Init service instance")
@@ -87,7 +91,7 @@ func (manager *Manager) Init(ctx context.Context) error {
 
 func (manager *Manager) Sync(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Run", wool.ThisField(manager))
-	req := &factoryv1.SyncRequest{}
+	req := &factoryv0.SyncRequest{}
 	sync, err := manager.instance.Factory.Sync(ctx, req)
 	if err != nil {
 		return w.Wrapf(err, "cannot sync service instance")
@@ -96,8 +100,19 @@ func (manager *Manager) Sync(ctx context.Context) error {
 	return nil
 }
 
-func (manager *Manager) WithEndpointDependencies(endpoints []*basev1.Endpoint) *Manager {
+func (manager *Manager) WithEndpointDependencies(endpoints []*basev0.Endpoint) *Manager {
 	manager.dependencyEndpoints = endpoints
 	return manager
 
+}
+
+func (manager *Manager) Build(ctx context.Context) error {
+	w := wool.Get(ctx).In("service.Build", wool.ThisField(manager))
+	req := &factoryv0.BuildRequest{}
+	build, err := manager.instance.Factory.Build(ctx, req)
+	if err != nil {
+		return w.Wrapf(err, "cannot build service instance")
+	}
+	manager.build = build
+	return nil
 }

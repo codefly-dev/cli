@@ -25,7 +25,7 @@ var CompletionCmd = &cobra.Command{
 		case "powershell":
 			err = cmd.Root().GenPowerShellCompletionWithDesc(os.Stdout)
 		default:
-			cli.Error("Unsupported shell type <{{.}}>.", args[0])
+			cli.Error("Unsupported shell type <%s>.", args[0])
 			cli.Exit()
 		}
 		cli.ExitOnError(err, "cannot generate completion script")

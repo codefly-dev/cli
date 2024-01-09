@@ -6,7 +6,7 @@ import (
 )
 
 func PartialLoading(p *configurations.Partial) {
-	golor.Println(`#(blue)[Loading partial #bold[{{.Name}}] with applications]
+	golor.Println(`#(blue)[Loading partial #bold[%s] with applications]
 {{- range .Applications }}
-#(white,bold)[- {{.}}]{{end}}`, p)
+#(white,bold)[- %s]{{end}}`, p)
 }

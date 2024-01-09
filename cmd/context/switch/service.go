@@ -14,16 +14,19 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Switch active service",
 	Run: func(cmd *cobra.Command, args []string) {
-		switchService()
+		Service()
 	},
 }
 
-func switchService() {
+func Service() {
 	ctx, done := common.NewContext()
 	defer done()
 
+start:
+
 	project := common.Project(ctx)
 	app, err := project.LoadActiveApplication(ctx)
+
 	cli.ExitOnError(err, "cannot get active application")
 	all, err := app.LoadServices(ctx)
 	cli.ExitOnError(err, "cannot get services")
@@ -31,8 +34,9 @@ func switchService() {
 		cli.Header(2, "No service found")
 		return
 	}
-	if len(all) == 1 {
-		cli.Header(2, "You have only one service: <%s>. It is active by default.", all[0].Name)
+	apps := project.Applications
+	if len(all) == 1 && len(apps) == 1 {
+		cli.Header(2, "You have only one service and one application: <%s>. It is active by default.", all[0].Name)
 		return
 	}
 	active, _ := app.LoadActiveService(ctx)
@@ -54,12 +58,24 @@ func switchService() {
 			Description: p.Description,
 		})
 	}
+	entries = append(entries, &models.Entry{
+		Identifier: ">> In other application",
+	})
 	selected, err := models.Select("Make this service active", entries)
 	cli.ExitOnError(err, "cannot select service")
 
+	if selected.Identifier == ">> In other application" {
+		switchApplication()
+		goto start
+	}
+
 	if active != nil && selected.Identifier == active.Name {
-		cli.Header(2, "Active service is already: %s", active.Name)
+		cli.Header(2, "All set!")
 		return
+	}
+
+	if selected.Identifier == ">> In other application" {
+
 	}
 
 	action, err := serviceactions.NewActionSetServiceActive(ctx, &serviceactions.SetServiceActive{

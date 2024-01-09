@@ -40,11 +40,11 @@ func addApplication(name string) {
 	project := common.Project(ctx)
 
 	if project.ExistsApplication(name) {
-		cli.Error("Application <{{.}}> already exists", name)
+		cli.Error("Application <%s> already exists", name)
 		os.Exit(0)
 	}
 
-	confirm := models.Confirm(golor.Sprintf("Add an application in your project <{{.Name}}>?", project), true)
+	confirm := models.Confirm(golor.Sprintf("Add an application in your project <%s>?", project), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		os.Exit(0)
@@ -63,7 +63,7 @@ func addApplication(name string) {
 	if err != nil {
 		cli.ExitOnError(err, "cannot add application")
 	}
-	cli.Header(2, "Application <{{.Name}}> added and is now active", app)
+	cli.Header(2, "Application <%s> added and is now active", app.Name)
 }
 
 func init() {

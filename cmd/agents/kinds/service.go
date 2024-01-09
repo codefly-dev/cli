@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/configurations"
-	agentv1 "github.com/codefly-dev/core/generated/go/services/agent/v1"
+	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -34,13 +34,13 @@ func serviceInfo(ctx context.Context, input string) {
 	conf, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, input)
 	cli.ExitOnError(err, "Cannot parse agentInput")
 
-	cli.Header(1, "Fetching information about Service Agent <{{.Name}}> information", conf)
+	cli.Header(1, "Fetching information about Service Agent <%s> information", conf)
 
 	agent, err := services.LoadAgent(ctx, conf)
 	cli.ExitOnError(err, "Cannot load agentInput")
-	cli.Header(2, "Successfully loaded service agent <{{.Name}}>", conf)
+	cli.Header(2, "Successfully loaded service agent <%s>", conf)
 
-	info, err := agent.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
+	info, err := agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 	cli.ExitOnError(err, "Cannot get agent information")
 	fmt.Println(info)
 

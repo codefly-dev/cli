@@ -28,11 +28,11 @@ func updateProject(project *configurations.Project) {
 	apps, err := project.LoadApplications(ctx)
 	cli.ExitOnError(err, "cannot load applications")
 	for _, app := range apps {
-		cli.Header(1, "Updating application <{{.Name}}>", app)
+		cli.Header(1, "Updating application <%s>", app.Name)
 		svcs, err := app.LoadServices(ctx)
 		cli.ExitOnError(err, "cannot load services")
 		for _, svc := range svcs {
-			cli.Header(2, "Updating service <{{.Name}}>", svc)
+			cli.Header(2, "Updating service <%s>", svc.Name)
 			err := services.UpdateAgent(ctx, svc)
 			cli.ExitOnError(err, "cannot update service")
 		}

@@ -3,14 +3,13 @@ package cmd
 import (
 	"context"
 
-	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/actions/actions"
 	actionworkspace "github.com/codefly-dev/core/actions/workspace"
 	"github.com/codefly-dev/core/configurations"
-	v1actions "github.com/codefly-dev/core/generated/go/actions/v1"
-	basev1 "github.com/codefly-dev/core/generated/go/base/v1"
+	v0actions "github.com/codefly-dev/core/generated/go/actions/v0"
+	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -29,7 +28,7 @@ func initCodefly() {
 
 	provider := wool.New(ctx, configurations.CLI.AsResource())
 
-	provider.WithLogger(common.CLI())
+	provider.WithLogger(cli.GetLogger())
 	defer provider.Done()
 
 	ctx = provider.Inject(ctx)
@@ -53,12 +52,12 @@ Use --override to reinitialize codefly.`)
 	orgName := models.Input("Organization name", "McFly.dev")
 	orgDomain := models.Input("Organization domain", configurations.ToOrganizationDomain(orgName))
 
-	org := &basev1.Organization{
+	org := &basev0.Organization{
 		Name:   orgName,
 		Domain: orgDomain,
 	}
 
-	action, err := actionworkspace.NewActionAddWorkspace(ctx, &v1actions.AddWorkspace{
+	action, err := actionworkspace.NewActionAddWorkspace(ctx, &v0actions.AddWorkspace{
 		Organization: org,
 		Name:         "default",
 	})
