@@ -1,6 +1,7 @@
 package add
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -9,7 +10,6 @@ import (
 	"github.com/codefly-dev/core/actions/actions"
 	actionsapplication "github.com/codefly-dev/core/actions/application"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/golor"
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +44,7 @@ func addApplication(name string) {
 		os.Exit(0)
 	}
 
-	confirm := models.Confirm(golor.Sprintf("Add an application in your project <%s>?", project), true)
+	confirm := models.Confirm(fmt.Sprintf("Add an application in your project <%s>?", project.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		os.Exit(0)

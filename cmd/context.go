@@ -26,11 +26,19 @@ var ContextCmd = &cobra.Command{
 
 			app, err := project.LoadActiveApplication(ctx)
 			cli.ExitOnError(err, "cannot load active application")
-			if service := app.ActiveService(ctx); service == nil {
-				cli.Header(2, "🔥 No active service")
+			if active := app.ActiveService(ctx); active == nil {
+				cli.Header(2, "🔥 No active active")
 				return
 			} else {
-				cli.Header(2, "🔥 Active service <%s>", *service)
+				cli.Header(2, "🔥 Active service <%s>", *active)
+				service, err := app.LoadActiveService(ctx)
+				cli.ExitOnError(err, "cannot load active active")
+				if len(service.Dependencies) > 0 {
+					cli.Header(2, "🚀 Dependencies")
+					for _, dep := range service.Dependencies {
+						cli.Header(2, "🚀 Dependency <%s>", dep.Unique())
+					}
+				}
 			}
 
 		}

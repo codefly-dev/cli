@@ -44,10 +44,12 @@ type Manager struct {
 	initOnly bool
 	actions  chan Action
 
-	loaded              *runtimev0.LoadResponse
-	init                *runtimev0.InitResponse
+	loaded *runtimev0.LoadResponse
+	init   *runtimev0.InitResponse
+
 	dependencyEndpoints []*basev0.Endpoint
 	networkMappings     []*runtimev0.NetworkMapping
+	providerInfos       []*basev0.ProviderInformation
 }
 
 func (manager *Manager) Unique() string {
@@ -64,6 +66,12 @@ func (manager *Manager) Load(ctx context.Context) error {
 	instance, err := services.Load(ctx, manager.service)
 	if err != nil {
 		return w.Wrapf(err, "cannot load service instance")
+	}
+
+	// Check that we have the proper runtime
+	err = runners.CheckForRuntimes(ctx, instance.Info.RuntimeRequirements)
+	if err != nil {
+		return err
 	}
 
 	w.Debug("loaded agent", wool.Field("agent-pid", instance.ProcessInfo.AgentPID))
@@ -91,7 +99,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 // Init the service
 func (manager *Manager) Init(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Init", wool.ThisField(manager))
-	req := &runtimev0.InitRequest{DependenciesEndpoints: manager.dependencyEndpoints}
+	req := &runtimev0.InitRequest{DependenciesEndpoints: manager.dependencyEndpoints, ProviderInfos: manager.providerInfos}
 	init, err := manager.runner.instance.Runtime.Init(ctx, req)
 	if err != nil {
 		return w.NewError("cannot Init service instance")
@@ -194,6 +202,11 @@ func (manager *Manager) InitOnly(only bool) {
 
 func (manager *Manager) Sync(ctx context.Context) error {
 	return nil
+}
+
+func (manager *Manager) WithProviderInfos(infos []*basev0.ProviderInformation) *Manager {
+	manager.providerInfos = infos
+	return manager
 }
 
 func (runner *Runner) Stop(ctx context.Context) error {

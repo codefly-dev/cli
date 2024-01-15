@@ -1,10 +1,11 @@
 package add
 
 import (
+	"fmt"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	"github.com/codefly-dev/golor"
 
 	"github.com/codefly-dev/core/actions/actions"
 	actionsservice "github.com/codefly-dev/core/actions/service"
@@ -40,7 +41,7 @@ func addServiceDependency() {
 	service := common.Service(ctx)
 	w.Trace("service", wool.Field("service", service.Name))
 
-	confirm := models.Confirm(golor.Sprintf("Confirm adding a service dependency for <%s>?", service), true)
+	confirm := models.Confirm(fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		cli.Exit()

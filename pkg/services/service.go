@@ -29,9 +29,13 @@ type ProcessInfo struct {
 
 type Instance struct {
 	*configurations.Service
-	Agent   services.Agent
+
+	Agent services.Agent
+	Info  *v0agent.AgentInformation
+
 	Factory *FactoryInstance
 	Runtime *RuntimeInstance
+
 	ProcessInfo
 }
 
@@ -137,8 +141,8 @@ func Load(ctx context.Context, service *configurations.Service) (*Instance, erro
 				return nil, w.Wrapf(err, "cannot provide runtime")
 			}
 		}
-
 	}
+	instance.Info = info
 	return instance, nil
 }
 

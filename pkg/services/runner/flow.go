@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/provider"
 	"github.com/codefly-dev/core/agents/network"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
@@ -23,13 +24,18 @@ func CurrentFlow() *Flow {
 type Flow struct {
 	managers     []*Manager
 	dependencies *architecture.Graph
-	actions      chan Action
+	provider     *provider.Provider
+
+	actions chan Action
 
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*runtimev0.NetworkMapping
 
 	initOnly   bool
 	standAlone bool
+
+	// convenient
+	services map[string]*configurations.Service
 }
 
 func (flow *Flow) Managers(action Action) []*Manager {
@@ -58,6 +64,15 @@ func (flow *Flow) Manager(action Action) *Manager {
 
 func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
+
+	services := map[string]*configurations.Service{service.Unique(): service}
+
+	prov, err := provider.New(ctx, project)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
+	// TODO: Playbook implementation
 	actions := make(chan Action, 100)
 
 	// Get dependency graph
@@ -65,6 +80,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+
 	// Create manager for all services required by this service if not standalone
 	var required []string
 	if !standAlone {
@@ -90,6 +106,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		if err != nil {
 			return nil, w.Wrap(err)
 		}
+		services[unique] = svc
 		manager, err := New(ctx, svc, actions)
 		if err != nil {
 			return nil, w.Wrap(err)
@@ -108,7 +125,9 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	managers = append(managers, manager)
 	flow := &Flow{
 		managers:        managers,
+		services:        services,
 		dependencies:    g,
+		provider:        prov,
 		actions:         actions,
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*runtimev0.NetworkMapping),
@@ -144,7 +163,7 @@ func (flow *Flow) Start(ctx context.Context) error {
 				w.Debug("received init", wool.Field("action", action))
 				err := flow.Init(ctx, action)
 				if err != nil {
-					w.Debug("cannot initialize service")
+					w.Debug("cannot initialize service", wool.ErrField(err))
 				} else if flow.initOnly {
 					w.Debug("not doing anything")
 				} else {
@@ -197,17 +216,31 @@ func (flow *Flow) Load(ctx context.Context, action Action) error {
 }
 
 // Init runs all init
-// Init Request: Endpoint group
+// Init Request:
+// - dependency endpoints
+// - provider information
 func (flow *Flow) Init(ctx context.Context, action Action) error {
 	w := wool.Get(ctx).In("Flow.Init", wool.Field("for", action.Unique))
 	for _, manager := range flow.Managers(action) {
+		// Endpoints
 		dependenciesEndpoints, err := flow.DependenciesEndpoints(manager.Unique())
 		if err != nil {
 			return w.Wrapf(err, "cannot get endpoint group for <%s>", manager.Unique())
 		}
-		err = manager.WithEndpointDependencies(dependenciesEndpoints).Init(ctx)
+		// Provider InfoSource
+		providerInfos, err := flow.GetProviderInfos(ctx, manager.service)
+		if err != nil {
+			return w.Wrapf(err, "cannot get provider info for <%s>", manager.Unique())
+		}
+		manager.WithEndpointDependencies(dependenciesEndpoints).WithProviderInfos(providerInfos)
+		err = manager.Init(ctx)
 		if err != nil {
 			return w.Wrapf(err, "cannot init service <%s>", manager.Unique())
+		}
+		// Add the Provider Infos from the service
+		if len(manager.init.ServiceProviderInfos) > 0 {
+			w.Debug("sharing provider infos", wool.Field("for", manager.Unique()))
+			flow.provider.Share(ctx, manager.init.ServiceProviderInfos)
 		}
 		flow.SetNetworkMappings(manager.Unique(), manager.init.NetworkMappings)
 		w.Debug("init", wool.Field("for", manager.Unique()), wool.NullableField("endpoint dependencies", configurations.MakeEndpointSummary(dependenciesEndpoints)))
@@ -219,12 +252,12 @@ func (flow *Flow) Init(ctx context.Context, action Action) error {
 func (flow *Flow) Run(ctx context.Context, action Action) error {
 	w := wool.Get(ctx).In("Flow.Run", wool.Field("for", action.Unique))
 	for _, manager := range flow.Managers(action) {
-		w.Debug("RUN")
 		dependenciesNetworkMappings, err := flow.DependenciesNetworkMappings(manager.Unique())
 		if err != nil {
 			return w.Wrapf(err, "cannot get network mappings for <%s>", manager.Unique())
 		}
-		err = manager.WithNetworkMappings(dependenciesNetworkMappings).Run(ctx)
+		manager.WithNetworkMappings(dependenciesNetworkMappings)
+		err = manager.Run(ctx)
 		if err != nil {
 			return w.Wrapf(err, "cannot run service <%s>", manager.Unique())
 		}
@@ -296,4 +329,28 @@ func (flow *Flow) GetAddressesForEndpoint(application string, service string, en
 
 func (flow *Flow) SetNetworkMappings(unique string, mappings []*runtimev0.NetworkMapping) {
 	flow.networkMappings[unique] = mappings
+}
+
+// GetProviderInfos get the infos for the service and from all the direct dependencies
+func (flow *Flow) GetProviderInfos(ctx context.Context, service *configurations.Service) ([]*basev0.ProviderInformation, error) {
+	infos, err := flow.provider.GetProviderInformation(ctx, service)
+	if err != nil {
+		return nil, err
+	}
+	for _, dep := range flow.Antecedents(service) {
+		depInfos, err := flow.provider.GetSharedProviderInformation(ctx, dep)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, depInfos...)
+	}
+	return infos, nil
+}
+
+func (flow *Flow) Antecedents(service *configurations.Service) []*configurations.Service {
+	var res []*configurations.Service
+	for _, dep := range flow.dependencies.Antecedents(service.Unique()) {
+		res = append(res, flow.services[dep])
+	}
+	return res
 }
