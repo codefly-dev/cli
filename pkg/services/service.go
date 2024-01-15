@@ -166,16 +166,31 @@ func (instance *Instance) LoadRuntime(ctx context.Context, service *configuratio
 	return nil
 }
 
-func UpdateAgent(ctx context.Context, service *configurations.Service) error {
+type AgentUpdate struct {
+	Name string
+	From string
+	To   string
+}
+
+type UpdateInformation struct {
+	*AgentUpdate
+}
+
+func UpdateAgent(ctx context.Context, service *configurations.Service) (*UpdateInformation, error) {
 	w := wool.Get(ctx).In("ServiceInstance::Update")
+	agentVersion := service.Agent.Version
+	info := &UpdateInformation{}
 	// Fetch the latest agent version
 	err := manager.PinToLatestRelease(ctx, service.Agent)
 	if err != nil {
-		return w.Wrap(err)
+		return nil, w.Wrap(err)
+	}
+	if service.Agent.Version != agentVersion {
+		info.AgentUpdate = &AgentUpdate{Name: service.Agent.Name, From: agentVersion, To: service.Agent.Version}
 	}
 	err = service.Save(ctx)
 	if err != nil {
-		return w.Wrap(err)
+		return nil, w.Wrap(err)
 	}
-	return nil
+	return info, nil
 }

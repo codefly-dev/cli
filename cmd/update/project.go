@@ -33,8 +33,11 @@ func updateProject(project *configurations.Project) {
 		cli.ExitOnError(err, "cannot load services")
 		for _, svc := range svcs {
 			cli.Header(2, "Updating service <%s>", svc.Name)
-			err := services.UpdateAgent(ctx, svc)
+			update, err := services.UpdateAgent(ctx, svc)
 			cli.ExitOnError(err, "cannot update service")
+			if update.AgentUpdate != nil {
+				cli.Header(2, "Updating agent <%s> version: %s -> %s", update.AgentUpdate.Name, update.AgentUpdate.From, update.AgentUpdate.To)
+			}
 		}
 	}
 }
