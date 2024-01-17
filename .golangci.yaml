@@ -13,7 +13,6 @@ run:
 
   # Files and directories to include in linting
   include:
-    - "cmd/"
     - "pkg/"
 
 # Output settings
