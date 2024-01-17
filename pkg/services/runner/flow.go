@@ -89,6 +89,8 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		w.Debug("service dependencies", wool.NameField(service.Name), wool.Field("dependencies", required))
 		cli.Info("Running <%s> with these dependent services: %s", service.Name, strings.Join(required, ", "))
 	}
+	// We run in the proper order
+	slices.Reverse(required)
 
 	var managers []*Manager
 
@@ -125,9 +127,6 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	}
 	managers = append(managers, manager)
 
-	// We run in the proper order
-	slices.Reverse(managers)
-
 	flow := &Flow{
 		managers:        managers,
 		services:        services,
@@ -141,7 +140,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	for _, m := range managers {
 		orders = append(orders, m.Unique())
 	}
-	w.Focus("ORDER", wool.Field("order", orders))
+	w.Debug("running", wool.Field("order", orders))
 	currentFlow = flow
 	return flow, nil
 }
@@ -285,7 +284,7 @@ func (flow *Flow) Stop(action Action) error {
 	for _, manager := range flow.Managers(action) {
 		err := manager.Stop()
 		if err != nil {
-			return err
+			cli.Error("cannot stop service <%s>: %v", manager.Unique(), err)
 		}
 	}
 	return nil
