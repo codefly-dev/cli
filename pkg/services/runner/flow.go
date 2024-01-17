@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/architecture"
@@ -123,6 +124,10 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		return nil, w.Wrap(err)
 	}
 	managers = append(managers, manager)
+
+	// We run in the proper order
+	slices.Reverse(managers)
+
 	flow := &Flow{
 		managers:        managers,
 		services:        services,
@@ -132,6 +137,11 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*runtimev0.NetworkMapping),
 	}
+	var orders []string
+	for _, m := range managers {
+		orders = append(orders, m.Unique())
+	}
+	w.Focus("ORDER", wool.Field("order", orders))
 	currentFlow = flow
 	return flow, nil
 }
@@ -220,7 +230,7 @@ func (flow *Flow) Load(ctx context.Context, action Action) error {
 // - dependency endpoints
 // - provider information
 func (flow *Flow) Init(ctx context.Context, action Action) error {
-	w := wool.Get(ctx).In("Flow.Init", wool.Field("for", action.Unique))
+	w := wool.Get(ctx).In("Flow.Init")
 	for _, manager := range flow.Managers(action) {
 		// Endpoints
 		dependenciesEndpoints, err := flow.DependenciesEndpoints(manager.Unique())
@@ -232,14 +242,18 @@ func (flow *Flow) Init(ctx context.Context, action Action) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot get provider info for <%s>", manager.Unique())
 		}
-		manager.WithEndpointDependencies(dependenciesEndpoints).WithProviderInfos(providerInfos)
+		if len(providerInfos) > 0 {
+			w.Focus("SHARING provider infos", wool.Field("for", manager.Unique()))
+		}
+		manager.WithEndpointDependencies(dependenciesEndpoints)
+		manager.WithProviderInfos(providerInfos)
 		err = manager.Init(ctx)
 		if err != nil {
 			return w.Wrapf(err, "cannot init service <%s>", manager.Unique())
 		}
 		// Add the Provider Infos from the service
 		if len(manager.init.ServiceProviderInfos) > 0 {
-			w.Debug("sharing provider infos", wool.Field("for", manager.Unique()))
+			w.Focus("EXPORTING provider infos", wool.Field("for", manager.Unique()))
 			flow.provider.Share(ctx, manager.init.ServiceProviderInfos)
 		}
 		flow.SetNetworkMappings(manager.Unique(), manager.init.NetworkMappings)
@@ -250,7 +264,7 @@ func (flow *Flow) Init(ctx context.Context, action Action) error {
 }
 
 func (flow *Flow) Run(ctx context.Context, action Action) error {
-	w := wool.Get(ctx).In("Flow.Run", wool.Field("for", action.Unique))
+	w := wool.Get(ctx).In("Flow.Run")
 	for _, manager := range flow.Managers(action) {
 		dependenciesNetworkMappings, err := flow.DependenciesNetworkMappings(manager.Unique())
 		if err != nil {
