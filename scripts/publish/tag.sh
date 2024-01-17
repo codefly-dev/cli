@@ -1,5 +1,16 @@
 #!/bin/bash
 
+echo "Are you sure you want to proceed? (Y/n)"
+read -r confirm
+if [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]
+then
+    echo "Publishing."
+    # Add the operations you want to perform here
+else
+    echo "Operation cancelled."
+    exit
+fi
+
 # Usage: ./tag.sh <new_version>
 
 YAML_FILE="cmd/info.yaml"

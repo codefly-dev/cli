@@ -6,6 +6,7 @@ import (
 
 	"github.com/briandowns/spinner"
 	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/runners"
 
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/wool"
@@ -143,6 +144,11 @@ func Load(ctx context.Context, service *configurations.Service) (*Instance, erro
 		}
 	}
 	instance.Info = info
+	// Check the runtime requirements
+	err = runners.CheckForRuntimes(ctx, info.RuntimeRequirements)
+	if err != nil {
+		return nil, w.Wrapf(err, "missing some runtimes")
+	}
 	return instance, nil
 }
 
