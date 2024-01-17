@@ -3,6 +3,7 @@ package factory
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/architecture"
@@ -55,6 +56,8 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	// Create manager for all services required by this service
 	uniques := g.TopologicalSortFrom(service.Unique())
 	w.Debug("service dependencies", wool.NameField(service.Name), wool.Field("dependencies", uniques))
+
+	slices.Reverse(uniques)
 
 	var managers []*Manager
 
