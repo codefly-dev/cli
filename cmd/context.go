@@ -15,28 +15,25 @@ var ContextCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		// Determine what we are working on
-		project := common.Project(ctx)
-		cli.Header(2, "⭐️ Active project <%s>", project.Name)
-		if app := project.ActiveApplication(ctx); app == nil {
+		active, err := common.LoadActiveContext(ctx)
+		cli.ExitOnError(err, "cannot load active context")
+
+		cli.Header(2, "⭐️ Active project <%s>", active.Project.Name)
+		if active.Application == nil {
 			cli.Header(2, "⚡️ No active application")
 			return
 		} else {
-			cli.Header(2, "⚡️ Active application <%s>", *app)
-
-			app, err := project.LoadActiveApplication(ctx)
-			cli.ExitOnError(err, "cannot load active application")
-			if active := app.ActiveService(ctx); active == nil {
-				cli.Header(2, "🔥 No active active")
+			cli.Header(2, "⚡️ Active application <%s>", active.Application.Name)
+			if active.Service == nil {
+				cli.Header(2, "🔥 No active service")
 				return
 			} else {
-				cli.Header(2, "🔥 Active service <%s>", *active)
-				service, err := app.LoadActiveService(ctx)
+				cli.Header(2, "🔥 Active service <%s>", active.Service.Name)
 				cli.ExitOnError(err, "cannot load active active")
-				if len(service.Dependencies) > 0 {
-					cli.Header(2, "🚀 Dependencies")
-					for _, dep := range service.Dependencies {
-						cli.Header(2, "🚀 Dependency <%s>", dep.Unique())
+				if len(active.Service.Dependencies) > 0 {
+					cli.Header(2, "  🚀 Service dependencies")
+					for _, dep := range active.Service.Dependencies {
+						cli.Header(2, "   👉 <%s>", dep.Unique())
 					}
 				}
 			}

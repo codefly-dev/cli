@@ -7,6 +7,9 @@
 package v0
 
 import (
+	reflect "reflect"
+	sync "sync"
+
 	v02 "github.com/codefly-dev/core/generated/go/base/v0"
 	v0 "github.com/codefly-dev/core/generated/go/observability/v0"
 	v01 "github.com/codefly-dev/core/generated/go/services/agent/v0"
@@ -16,8 +19,6 @@ import (
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	_ "google.golang.org/protobuf/types/known/timestamppb"
-	reflect "reflect"
-	sync "sync"
 )
 
 const (

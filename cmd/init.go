@@ -1,8 +1,7 @@
 package cmd
 
 import (
-	"context"
-
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/actions/actions"
@@ -10,7 +9,6 @@ import (
 	"github.com/codefly-dev/core/configurations"
 	v0actions "github.com/codefly-dev/core/generated/go/actions/v0"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
-	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -24,14 +22,8 @@ var InitCmd = &cobra.Command{
 }
 
 func initCodefly() {
-	ctx := context.Background()
-
-	provider := wool.New(ctx, configurations.CLI.AsResource())
-
-	provider.WithLogger(cli.GetLogger())
-	defer provider.Done()
-
-	ctx = provider.Inject(ctx)
+	ctx, done := common.NewContext()
+	defer done()
 
 	// Check if codefly is already initialized
 	isInitialized, err := configurations.IsInitialized(ctx)
@@ -49,8 +41,9 @@ Use --override to reinitialize codefly.`)
 
 	cli.Header(2, "Let's start by creating an organization - don't worry you can change that easily later on.")
 
-	orgName := models.Input("Organization name", "McFly.dev")
-	orgDomain := models.Input("Organization domain", configurations.ToOrganizationDomain(orgName))
+	orgDomain := models.Input("Organization domain", "github.com/codefly-dev")
+
+	orgName := models.Input("Organization name", configurations.ToOrganizationName(orgDomain))
 
 	org := &basev0.Organization{
 		Name:   orgName,

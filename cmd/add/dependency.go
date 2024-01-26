@@ -10,7 +10,6 @@ import (
 	"github.com/codefly-dev/core/actions/actions"
 	actionsservice "github.com/codefly-dev/core/actions/service"
 	"github.com/codefly-dev/core/agents"
-	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -32,14 +31,10 @@ func addServiceDependency() {
 	defer done()
 	defer agents.ClearAgents()
 
-	w := wool.Get(ctx).In("cmd.add.serviceDependency")
-
+	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
-	w.Trace("project", wool.Field("project", project.Name))
 	app := common.Application(ctx)
-	w.Trace("app", wool.Field("app", app.Name))
 	service := common.Service(ctx)
-	w.Trace("service", wool.Field("service", service.Name))
 
 	confirm := models.Confirm(fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
 	if !confirm {
@@ -72,9 +67,10 @@ func addServiceDependency() {
 			action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
 				Name:                  service.Name,
 				Project:               project.Name,
+				Workspace:             workspace.Name,
 				Application:           app.Name,
-				DependencyName:        selected.Identifier,
 				DependencyApplication: app.Name,
+				DependencyName:        selected.Identifier,
 			})
 			cli.ExitOnError(err, "cannot create action")
 			_, err = actions.Run(ctx, action)
@@ -117,9 +113,10 @@ func addServiceDependency() {
 	action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
 		Name:                  service.Name,
 		Project:               project.Name,
+		Workspace:             workspace.Name,
 		Application:           app.Name,
-		DependencyName:        selected.Identifier,
 		DependencyApplication: otherApp.Name,
+		DependencyName:        selected.Identifier,
 	})
 	cli.ExitOnError(err, "cannot create action")
 	_, err = actions.Run(ctx, action)

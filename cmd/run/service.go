@@ -5,10 +5,9 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/codefly-dev/cli/pkg/services/runner"
-
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
@@ -19,7 +18,7 @@ import (
 // ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Run a service",
+	Short: "Start a service",
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx, done := common.NewContext()
 		defer done()
@@ -74,21 +73,27 @@ var ServiceCmd = &cobra.Command{
 
 func runService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) error {
 	w := wool.Get(ctx).In("runService", wool.ThisField(service))
-	r, err := runner.NewFlow(ctx, project, service, standAlone)
+	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.RunMode)
 	if err != nil {
 		return w.Wrap(err)
 	}
-	r.InitOnly(initOnly)
+	flow.WithStandAlone(standAlone)
+	err = flow.Load(ctx)
 	if err != nil {
 		return w.Wrap(err)
 	}
-	return r.Start(ctx)
+	err = flow.Start(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot start service %s", service.Unique())
+	}
+	return nil
+
 }
 
 var standAlone bool
 
 func init() {
-	ServiceCmd.Flags().BoolVar(&withServer, "server", true, "Run service server")
-	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Run service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().BoolVar(&withServer, "server", true, "Start service server")
+	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Start service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 }

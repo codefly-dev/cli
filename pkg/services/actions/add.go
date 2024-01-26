@@ -13,7 +13,7 @@ import (
 	actionservice "github.com/codefly-dev/core/actions/service"
 	"github.com/codefly-dev/core/configurations"
 	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
-	factoryv0 "github.com/codefly-dev/core/generated/go/services/factory/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 
 	"github.com/codefly-dev/core/wool"
 )
@@ -41,6 +41,11 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return w.Wrapf(err, "cannot load service instance")
 	}
 
+	err = instance.LoadBuilder(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot load service instance")
+	}
+
 	info, err := instance.Agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 	if err != nil {
 
@@ -57,16 +62,12 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		fmt.Println(rendered)
 	}
 
-	if instance.Factory == nil {
-		cli.Header(2, "🎉 We are done!")
-		return nil
-	}
-	_, err = instance.Factory.Load(ctx)
+	_, err = instance.Builder.Load(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 	}
 
-	_, err = instance.Factory.Create(ctx, &factoryv0.CreateRequest{})
+	_, err = instance.Builder.Create(ctx, &builderv0.CreateRequest{})
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 

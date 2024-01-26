@@ -2,7 +2,7 @@ package ops
 
 //
 //func Deploy(ctx context.Context, app *applications.ApplicationOld) error {
-//	// Runtime units
+//	// Runner units
 //	us, err := app.LoadUnits(ctx)
 //	if err != nil {
 //		return fmt.Errorf("cannot load units: %w", err)

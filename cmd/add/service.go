@@ -44,6 +44,7 @@ func addService(name string, agentInput string) {
 
 	w := wool.Get(ctx).In("cmd.add.service")
 
+	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
 	app := common.Application(ctx)
 
@@ -88,6 +89,7 @@ func addService(name string, agentInput string) {
 	input := &actionsservice.AddService{
 		Name:        name,
 		Project:     project.Name,
+		Workspace:   workspace.Name,
 		Application: app.Name,
 		Agent:       agent.Proto(),
 		Override:    override,

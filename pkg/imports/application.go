@@ -75,7 +75,7 @@ func ImportApplication(imp *Importer) error {
 	//
 	//// Load an sync
 	//golor.Println(`#(white,bold)[We are syncing the applications].`)
-	//app, err := application.Load(project, conf, application.FactoryMode)
+	//app, err := application.Load(project, conf, application.BuilderMode)
 	//if err != nil {
 	//	return logger.Wrapf(err, "cannot load applications")
 	//}

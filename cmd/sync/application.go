@@ -5,7 +5,7 @@ package sync
 // 	Use:   "application",
 // 	Short: "Sync an application",
 
-// 	Run: func(cmd *cobra.Command, args []string) {
+// 	Start: func(cmd *cobra.Command, args []string) {
 
 // 		ctx := context.Background()
 // 		project := common.Project(ctx)
@@ -22,7 +22,7 @@ package sync
 // 		//}
 
 // 		configurations.SetMode(configurations.ModeApplication)
-// 		app, err := application.Load(ctx, project, config, application.FactoryMode)
+// 		app, err := application.Load(ctx, project, config, application.BuilderMode)
 
 // 		cli.ExitOnError(err, "<%s>", config.Name)
 
@@ -44,5 +44,5 @@ package sync
 // }
 
 // func init() {
-// 	ApplicationCmd.Flags().BoolVar(&current, "current", false, "Run the current application")
+// 	ApplicationCmd.Flags().BoolVar(&current, "current", false, "Start the current application")
 // }

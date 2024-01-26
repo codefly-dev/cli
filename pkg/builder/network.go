@@ -1,17 +1,16 @@
-package factory
+package builder
 
 import (
 	"github.com/codefly-dev/core/configurations"
-	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 )
 
-var networkMappings = map[string][]*runtimev0.NetworkMapping{}
+var networkMappings = map[string][]*basev0.NetworkMapping{}
 
-func SetNetworkMappings(unique string, mappings []*runtimev0.NetworkMapping) {
+func SetNetworkMappings(unique string, mappings []*basev0.NetworkMapping) {
 	networkMappings[unique] = mappings
 }
 
-func GetNetworkMappingsForService(unique string) []*runtimev0.NetworkMapping {
+func GetNetworkMappingsForService(unique string) []*basev0.NetworkMapping {
 	return networkMappings[unique]
 }
 

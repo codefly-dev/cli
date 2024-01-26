@@ -49,7 +49,7 @@ func (m ConfirmModel) View() string {
 	// Render a block of text.
 	style := lipgloss.NewStyle().
 		Margin(1, 2, 1, 2)
-	return style.Render(golor.Sprintf("#(bold,magenta)[{{.Message}} {{.Options}} ]", m))
+	return style.Render(golor.Template(m).Sprintf("#(bold,magenta)[{{.Message}} {{.Options}} ]"))
 }
 
 func DefaultInput(def bool) string {

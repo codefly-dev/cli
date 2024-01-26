@@ -25,7 +25,7 @@ func ShowApplication(app *configurations.Application, current bool, indent strin
 }
 
 func application(d ApplicationDisplay) {
-	golor.Println(`  #(blue)[{{.Indent}}{{.Action}} <{{.Application.Name}}{{.Current}}>]`, d)
+	golor.Template(d).Println(`  #(blue)[{{.Indent}}{{.Action}} <{{.Application.Name}}{{.Current}}>]`)
 	for _, svc := range d.Application.Services {
 		displayService(svc, d.Indent+"  - ")
 	}

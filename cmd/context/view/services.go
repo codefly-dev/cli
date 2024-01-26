@@ -6,7 +6,6 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -42,7 +41,7 @@ func ViewServices(ctx context.Context, app *configurations.Application) {
 	}
 	cli.Header(1, "Services in application <%s>", app.Name)
 
-	active := app.ActiveService(ctx)
+	active := common.Service(ctx)
 
 	if active == nil {
 		cli.Header(2, "No active service")
@@ -57,7 +56,7 @@ func ViewServices(ctx context.Context, app *configurations.Application) {
 
 	var others []string
 	for _, other := range app.Services {
-		if shared.PointerEqual(active, other.Name) {
+		if active.Name == other.Name {
 			continue
 		}
 		others = append(others, other.Name)

@@ -26,8 +26,8 @@ func NewHttpServer(c *Configuration) (*HttpServer, error) {
 }
 
 func (s *HttpServer) Run(ctx context.Context) error {
-	golor.Println(`#(blue,bold)[🚀 Starting codefly REST server at]: #(italic,white)[{{ .EndpointRest }}]`,
-		map[string]string{"EndpointRest": s.config.EndpointRest})
+	golor.Template(s.config).Println(`#(blue,bold)[🚀 Starting codefly REST server at]: #(italic,white)[{{ .EndpointRest }}]`)
+
 	gwMux := runtime.NewServeMux()
 
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
@@ -40,7 +40,7 @@ func (s *HttpServer) Run(ctx context.Context) error {
 	// Register gRPC-Gateway on the main mux
 	// Set up CORS
 	gwHandler := cors.Default().Handler(gwSocket)
-	// Serve static assets for Next.js app
+	// Serve static assets for Work.js app
 	// Add a new http.ServeMux
 
 	mux := http.NewServeMux()

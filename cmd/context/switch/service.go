@@ -23,12 +23,11 @@ func Service() {
 	defer done()
 
 start:
-
+	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
-	app, err := project.LoadActiveApplication(ctx)
+	application := common.Application(ctx)
 
-	cli.ExitOnError(err, "cannot get active application")
-	all, err := app.LoadServices(ctx)
+	all, err := application.LoadServices(ctx)
 	cli.ExitOnError(err, "cannot get services")
 	if len(all) == 0 {
 		cli.Header(2, "No service found")
@@ -39,7 +38,8 @@ start:
 		cli.Header(2, "You have only one service and one application: <%s>. It is active by default.", all[0].Name)
 		return
 	}
-	active, _ := app.LoadActiveService(ctx)
+
+	active := common.Service(ctx)
 
 	var entries []*models.Entry
 	if active != nil {
@@ -80,8 +80,9 @@ start:
 
 	action, err := serviceactions.NewActionSetServiceActive(ctx, &serviceactions.SetServiceActive{
 		Name:        selected.Identifier,
-		Application: app.Name,
+		Application: application.Name,
 		Project:     project.Name,
+		Workspace:   workspace.Name,
 	})
 	cli.ExitOnError(err, "cannot create action")
 

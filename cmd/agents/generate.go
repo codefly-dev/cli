@@ -25,7 +25,7 @@ func generateService(p string) error {
 	ctx, done := common.NewContext()
 	defer done()
 	w := wool.Get(ctx).In("agents.GenerateCmd")
-	p, err := configurations.SolveDir(p)
+	p, err := configurations.SolvePath(p)
 	if err != nil {
 		return w.Wrapf(err, "cannot solve path")
 	}

@@ -29,7 +29,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -51,7 +51,7 @@
                   "$ref": "#/definitions/v0Log"
                 },
                 "error": {
-                  "$ref": "#/definitions/googlerpcStatus"
+                  "$ref": "#/definitions/rpcStatus"
                 }
               },
               "title": "Stream result of v0Log"
@@ -60,7 +60,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -82,7 +82,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -120,7 +120,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -162,7 +162,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -184,7 +184,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -214,7 +214,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -236,7 +236,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -274,7 +274,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -304,7 +304,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -334,7 +334,7 @@
           "default": {
             "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/googlerpcStatus"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -353,7 +353,16 @@
     }
   },
   "definitions": {
-    "googlerpcStatus": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
       "type": "object",
       "properties": {
         "code": {
@@ -371,15 +380,6 @@
           }
         }
       }
-    },
-    "protobufAny": {
-      "type": "object",
-      "properties": {
-        "@type": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": {}
     },
     "v0API": {
       "type": "object",
@@ -462,6 +462,13 @@
         },
         "readMe": {
           "type": "string"
+        },
+        "providerInfos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v0ProviderInfoDetail"
+          }
         }
       }
     },
@@ -520,7 +527,7 @@
       "type": "string",
       "enum": [
         "UNKNOWN",
-        "FACTORY",
+        "BUILDER",
         "RUNTIME"
       ],
       "default": "UNKNOWN"
@@ -531,6 +538,15 @@
         "name": {
           "type": "string"
         },
+        "service": {
+          "type": "string"
+        },
+        "application": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
         "description": {
           "type": "string"
         },
@@ -539,15 +555,6 @@
         },
         "api": {
           "$ref": "#/definitions/v0API"
-        },
-        "application": {
-          "type": "string"
-        },
-        "service": {
-          "type": "string"
-        },
-        "namespace": {
-          "type": "string"
         }
       }
     },
@@ -627,9 +634,11 @@
     "v0GrpcAPI": {
       "type": "object",
       "properties": {
-        "proto": {
-          "type": "string",
-          "format": "byte"
+        "service": {
+          "type": "string"
+        },
+        "application": {
+          "type": "string"
         },
         "rpcs": {
           "type": "array",
@@ -637,6 +646,10 @@
             "type": "object",
             "$ref": "#/definitions/v0RPC"
           }
+        },
+        "proto": {
+          "type": "string",
+          "format": "byte"
         }
       }
     },
@@ -829,6 +842,35 @@
       ],
       "default": "HTTP"
     },
+    "v0ProviderInfoDetail": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v0ProviderInfoField"
+          }
+        }
+      }
+    },
+    "v0ProviderInfoField": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
     "v0RPC": {
       "type": "object",
       "properties": {
@@ -840,30 +882,46 @@
     "v0RestAPI": {
       "type": "object",
       "properties": {
-        "openapi": {
-          "type": "string",
-          "format": "byte"
+        "service": {
+          "type": "string"
         },
-        "routes": {
+        "application": {
+          "type": "string"
+        },
+        "groups": {
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/v0RestRoute"
+            "$ref": "#/definitions/v0RestRouteGroup"
           }
+        },
+        "openapi": {
+          "type": "string",
+          "format": "byte"
         }
       }
     },
     "v0RestRoute": {
       "type": "object",
       "properties": {
-        "methods": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/v0HTTPMethod"
-          }
+        "method": {
+          "$ref": "#/definitions/v0HTTPMethod"
         },
         "path": {
           "type": "string"
+        }
+      },
+      "title": "RestRoute represents the data of the route itself\nIt is usually found through a Route group"
+    },
+    "v0RestRouteGroup": {
+      "type": "object",
+      "properties": {
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v0RestRoute"
+          }
         }
       }
     },
@@ -908,7 +966,9 @@
         "UNKNOWN",
         "DOCKER",
         "GO",
-        "NPM"
+        "NPM",
+        "PYTHON",
+        "PYTHON_POETRY"
       ],
       "default": "UNKNOWN"
     },
@@ -916,23 +976,28 @@
       "type": "object",
       "properties": {
         "name": {
-          "type": "string"
+          "type": "string",
+          "title": "Name of the service"
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "title": "Short description of the the service"
         },
         "application": {
-          "type": "string"
+          "type": "string",
+          "title": "Application to which the service belongs"
         },
         "agent": {
-          "$ref": "#/definitions/v0Agent"
+          "$ref": "#/definitions/v0Agent",
+          "title": "Agent that represents the service"
         },
         "endpoints": {
           "type": "array",
           "items": {
             "type": "object",
             "$ref": "#/definitions/v0Endpoint"
-          }
+          },
+          "title": "Endpoints exposed by the service"
         }
       },
       "title": "Service is the fundamental \"live\" computing unit of a system\nIt belongs to an application\nIt is \"hosted\" by an agent\nIt has a set of endpoints"

@@ -2,9 +2,8 @@ package services
 
 import (
 	"context"
-	"time"
+	"fmt"
 
-	"github.com/briandowns/spinner"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/runners"
 
@@ -20,8 +19,8 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 
 	"github.com/codefly-dev/core/configurations"
-	v0agent "github.com/codefly-dev/core/generated/go/services/agent/v0"
-	factoryv0 "github.com/codefly-dev/core/generated/go/services/factory/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 )
 
 type ProcessInfo struct {
@@ -32,17 +31,18 @@ type Instance struct {
 	*configurations.Service
 
 	Agent services.Agent
-	Info  *v0agent.AgentInformation
+	Info  *agentv0.AgentInformation
 
-	Factory *FactoryInstance
+	Builder *BuilderInstance
 	Runtime *RuntimeInstance
 
 	ProcessInfo
+	Capabilities []*agentv0.Capability
 }
 
-type FactoryInstance struct {
+type BuilderInstance struct {
 	*configurations.Service
-	services.Factory
+	services.Builder
 }
 
 type RuntimeInstance struct {
@@ -50,10 +50,10 @@ type RuntimeInstance struct {
 	services.Runtime
 }
 
-// Factory methods
+// Builder methods
 
-func (instance *FactoryInstance) Load(ctx context.Context) (*factoryv0.LoadResponse, error) {
-	init := &factoryv0.LoadRequest{
+func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
+	init := &builderv0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
 			Name:        instance.Service.Name,
@@ -63,39 +63,42 @@ func (instance *FactoryInstance) Load(ctx context.Context) (*factoryv0.LoadRespo
 			Location:    instance.Service.Dir(),
 		},
 	}
-	return instance.Factory.Load(ctx, init)
+	return instance.Builder.Load(ctx, init)
 
 }
 
-func (instance *FactoryInstance) Create(ctx context.Context, req *factoryv0.CreateRequest) (*factoryv0.CreateResponse, error) {
-	w := wool.Get(ctx).In("FactoryInstance::Create", wool.NameField(instance.Service.Unique()))
-	err := communicate.Do[factoryv0.CreateRequest](ctx, instance.Factory, clicommunicate.NewPrompt())
+func (instance *BuilderInstance) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {
+	w := wool.Get(ctx).In("BuilderInstance::Create", wool.NameField(instance.Service.Unique()))
+	err := communicate.Do[builderv0.CreateRequest](ctx, instance.Builder, clicommunicate.NewPrompt())
 	if err != nil {
-		return &factoryv0.CreateResponse{Status: &factoryv0.CreateStatus{Status: factoryv0.CreateStatus_ERROR, Message: err.Error()}},
+		return &builderv0.CreateResponse{Status: &builderv0.CreateStatus{Status: builderv0.CreateStatus_ERROR, Message: err.Error()}},
 			w.Wrapf(err, "cannot communicate")
 	}
 	cli.Header(1, "Going to work!")
-	s := spinner.New(spinner.CharSets[11], 100*time.Millisecond) // Use different character sets and duration
-	s.Start()                                                    // Start the spinner
-	defer s.Stop()                                               //
+	s := cli.Spinner()
+	defer s.Stop()
+	// Start the spinner
+	defer s.Stop() //
 
-	return instance.Factory.Create(ctx, req)
+	return instance.Builder.Create(ctx, req)
 }
 
-func (instance *FactoryInstance) Sync(ctx context.Context, req *factoryv0.SyncRequest) (*factoryv0.SyncResponse, error) {
-	w := wool.Get(ctx).In("FactoryInstance::Sync", wool.NameField(instance.Service.Unique()))
+func (instance *BuilderInstance) Sync(ctx context.Context, req *builderv0.SyncRequest) (*builderv0.SyncResponse, error) {
+	w := wool.Get(ctx).In("BuilderInstance::Sync", wool.NameField(instance.Service.Unique()))
 	// Communicate always
-	err := communicate.Do[factoryv0.SyncRequest](ctx, instance.Factory, clicommunicate.NewPrompt())
+	err := communicate.Do[builderv0.SyncRequest](ctx, instance.Builder, clicommunicate.NewPrompt())
 	if err != nil {
-		return &factoryv0.SyncResponse{Status: &factoryv0.SyncStatus{Status: factoryv0.SyncStatus_ERROR, Message: err.Error()}},
+		return &builderv0.SyncResponse{Status: &builderv0.SyncStatus{Status: builderv0.SyncStatus_ERROR, Message: err.Error()}},
 			w.Wrapf(err, "cannot communicate")
 	}
-	return instance.Factory.Sync(ctx, req)
+	return instance.Builder.Sync(ctx, req)
 }
 
-// Runtime methods
+// Runner methods
 
 func (instance *RuntimeInstance) Load(ctx context.Context) (*runtimev0.LoadResponse, error) {
+	w := wool.Get(ctx).In("RuntimeInstance::Load", wool.NameField(instance.Service.Unique()))
+	w.Focus("sending load")
 	init := &runtimev0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
@@ -124,52 +127,56 @@ func Load(ctx context.Context, service *configurations.Service) (*Instance, erro
 	}
 	instance.ProcessInfo.AgentPID = proc.PID
 
-	info, err := agent.GetAgentInformation(ctx, &v0agent.AgentInformationRequest{})
+	info, err := agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get agent information")
 	}
 
-	for _, capability := range info.Capabilities {
-		switch capability.Type {
-		case v0agent.Capability_FACTORY:
-			err = instance.LoadFactory(ctx, service)
-			if err != nil {
-				return nil, w.Wrapf(err, "cannot provide factory")
-			}
-		case v0agent.Capability_RUNTIME:
-			err = instance.LoadRuntime(ctx, service)
-			if err != nil {
-				return nil, w.Wrapf(err, "cannot provide runtime")
-			}
-		}
-	}
+	instance.Capabilities = info.Capabilities
+
 	instance.Info = info
-	// Check the runtime requirements
-	err = runners.CheckForRuntimes(ctx, info.RuntimeRequirements)
-	if err != nil {
-		return nil, w.Wrapf(err, "missing some runtimes")
-	}
 	return instance, nil
 }
 
-func (instance *Instance) LoadFactory(ctx context.Context, service *configurations.Service) error {
-	w := wool.Get(ctx).In("ServiceInstance::LoadFactory", wool.NameField(service.Unique()))
-	factory, err := services.LoadFactory(ctx, service)
+func (instance *Instance) LoadBuilder(ctx context.Context) error {
+	w := wool.Get(ctx).In("ServiceInstance::LoadBuilder", wool.NameField(instance.Service.Unique()))
+	err := instance.CheckCapabilities(agentv0.Capability_BUILDER)
 	if err != nil {
-		return w.Wrapf(err, "cannot load factory")
+		return w.Wrapf(err, "missing builder capability")
 	}
-	instance.Factory = &FactoryInstance{Service: service, Factory: factory}
+	builder, err := services.LoadBuilder(ctx, instance.Service)
+	if err != nil {
+		return w.Wrapf(err, "cannot load builder")
+	}
+	instance.Builder = &BuilderInstance{Service: instance.Service, Builder: builder}
 	return nil
 }
 
-func (instance *Instance) LoadRuntime(ctx context.Context, service *configurations.Service) error {
-	w := wool.Get(ctx).In("ServiceInstance::LoadRuntime", wool.NameField(service.Unique()))
-	runtime, err := services.LoadRuntime(ctx, service)
+func (instance *Instance) LoadRuntime(ctx context.Context) error {
+	w := wool.Get(ctx).In("ServiceInstance::LoadRuntime", wool.NameField(instance.Service.Unique()))
+	err := instance.CheckCapabilities(agentv0.Capability_RUNTIME)
+	if err != nil {
+		return w.Wrapf(err, "missing builder capability")
+	}
+	err = runners.CheckForRuntimes(ctx, instance.Info.RuntimeRequirements)
+	if err != nil {
+		return w.Wrapf(err, "missing some runtimes")
+	}
+	runtime, err := services.LoadRuntime(ctx, instance.Service)
 	if err != nil {
 		return w.Wrapf(err, "cannot load runtime")
 	}
-	instance.Runtime = &RuntimeInstance{Service: service, Runtime: runtime}
+	instance.Runtime = &RuntimeInstance{Service: instance.Service, Runtime: runtime}
 	return nil
+}
+
+func (instance *Instance) CheckCapabilities(capability agentv0.Capability_Type) error {
+	for _, c := range instance.Capabilities {
+		if c.Type == capability {
+			return nil
+		}
+	}
+	return fmt.Errorf("missing capability %s", capability.Type)
 }
 
 type AgentUpdate struct {

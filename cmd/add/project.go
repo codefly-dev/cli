@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/core/actions/actions"
 	actionsproject "github.com/codefly-dev/core/actions/project"
 	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/providers"
 	"github.com/spf13/cobra"
 )
 
@@ -62,6 +63,12 @@ func newProject(name string) {
 		cli.ExitOnError(err, "cannot add project")
 	}
 	cli.Header(2, "Project <%s> added and is now active", project.Name)
+
+	_, err = providers.New(ctx, project)
+	cli.ExitOnError(err, "cannot create provider")
+
+	// TODO:
+	// Setup Version Control
 }
 
 func init() {

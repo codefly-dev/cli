@@ -5,7 +5,7 @@ package update
 // 	Use:   "application",
 // 	Short: "Update an application",
 
-// 	Run: func(cmd *cobra.Command, args []string) {
+// 	Start: func(cmd *cobra.Command, args []string) {
 // 	ctx := context.Background()
 
 //provider := wool.New(ctx, configurations.CLI.AsResource())
@@ -24,7 +24,7 @@ package update
 // #(blue,bold)[Ctrl-C anytime to exit...]`, config)
 
 // 		configurations.SetMode(configurations.ModeApplication)
-// 		app, err := application.Load(ctx, project, config, application.FactoryMode)
+// 		app, err := application.Load(ctx, project, config, application.BuilderMode)
 // 		cli.ExitOnError(err, "<%s>", config.Name)
 
 // 		err = app.Update(ctx)

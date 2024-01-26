@@ -38,5 +38,7 @@ func deleteProject(name string) {
 		err := w.DeleteProject(ctx, name)
 		cli.ExitOnError(err, "cannot delete project")
 		cli.Header(2, "Project <%s> deleted", name)
+	} else {
+		cli.Header(2, "Abort! Heard loud and clear.")
 	}
 }

@@ -1,16 +1,16 @@
 package models
 
 import (
-	"fmt"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/golor"
 )
 
 type input struct {
 	Message string
-	input   string
+	Input   string
 	stopped bool
 }
 
@@ -23,12 +23,12 @@ func (m input) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeySpace:
-			m.input += " "
+			m.Input += " "
 		case tea.KeyRunes:
-			m.input += string(msg.Runes)
+			m.Input += string(msg.Runes)
 		case tea.KeyBackspace:
-			if len(m.input) > 0 {
-				m.input = m.input[:len(m.input)-1]
+			if len(m.Input) > 0 {
+				m.Input = m.Input[:len(m.Input)-1]
 			}
 		case tea.KeyEnter:
 			return m, tea.Quit
@@ -44,7 +44,7 @@ func (m input) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m input) View() string {
-	return fmt.Sprintf("%s:\n%s", m.Message, m.input)
+	return golor.Template(m).Sprintf("#blue[{{.Message}}]:\n#white[{{.Input}}]")
 }
 
 func Input(msg string, defaultValue string) string {
@@ -53,13 +53,13 @@ func Input(msg string, defaultValue string) string {
 	}
 	p := tea.NewProgram(input{
 		Message: msg,
-		input:   defaultValue,
+		Input:   defaultValue,
 	})
 	mod, err := p.Run()
-	cli.ExitOnError(err, "cannot run input prompt")
+	cli.ExitOnError(err, "cannot run Input prompt")
 	m := mod.(input)
 	if m.stopped {
 		os.Exit(0)
 	}
-	return m.input
+	return m.Input
 }

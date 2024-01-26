@@ -23,9 +23,9 @@ func switchApplication() {
 	ctx, done := common.NewContext()
 	defer done()
 
+	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
-	application, err := project.LoadActiveApplication(ctx)
-	cli.ExitOnError(err, "cannot get active application")
+	application := common.Application(ctx)
 	all, err := project.LoadApplications(ctx)
 	cli.ExitOnError(err, "cannot get applications")
 	if len(all) == 1 {
@@ -56,8 +56,9 @@ func switchApplication() {
 	}
 
 	action, err := applicationactions.NewActionSetApplicationActive(ctx, &applicationactions.SetApplicationActive{
-		Name:    selected.Identifier,
-		Project: project.Name,
+		Name:      selected.Identifier,
+		Project:   project.Name,
+		Workspace: workspace.Name,
 	})
 	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)

@@ -12,7 +12,7 @@ type ServiceDisplay struct {
 }
 
 func displayService(svc *configurations.ServiceReference, indent string) {
-	golor.Println(`{{.Indent}}#(white,bold)[{{.Service.Name}}]`, &ServiceDisplay{Service: svc, Action: "Service", Indent: indent})
+	golor.Template(ServiceDisplay{Service: svc, Action: "Service", Indent: indent}).Println(`{{.Indent}}#(white,bold)[{{.Service.Name}}]`)
 }
 
 type DestinationExistsMessage struct {

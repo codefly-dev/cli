@@ -49,13 +49,9 @@ func switchProject() {
 	selected, err := models.Select("Make this project active", entries)
 	cli.ExitOnError(err, "cannot select project")
 
-	if selected.Identifier == project.Name {
-		cli.Header(2, "Active project is already: <%s>", project.Name)
-		return
-	}
-
 	action, err := projectactions.NewActionSetProjectActive(ctx, &projectactions.SetProjectActive{
-		Name: selected.Identifier,
+		Name:      selected.Identifier,
+		Workspace: workspace.Name,
 	})
 	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)
@@ -66,10 +62,7 @@ func switchProject() {
 
 	cli.Header(2, "Active project is now: <%s>", project.Name)
 
-	activeApplication := project.ActiveApplication(ctx)
-	if activeApplication == nil {
-		return
-	}
-	cli.Header(2, "Active application is now: <%s>", *activeApplication)
+	activeApplication := common.Application(ctx)
+	cli.Header(2, "Active application is now: <%s>", activeApplication.Name)
 
 }

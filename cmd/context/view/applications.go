@@ -33,8 +33,7 @@ func ViewApplications(detail Details) {
 	ctx = provider.Inject(ctx)
 	project := common.Project(ctx)
 
-	active, err := project.LoadActiveApplication(ctx)
-	cli.ExitOnError(err, "cannot load active application")
+	active := common.Application(ctx)
 	var others []string
 	for _, other := range project.Applications {
 		if active.Name == other.Name {
@@ -57,7 +56,7 @@ func ViewApplications(detail Details) {
 			continue
 		}
 		app, err := project.LoadApplicationFromName(ctx, other)
-		cli.ExitOnError(err, "cannot load application")
+		cli.ExitOnError(err, "cannot load active")
 		detail(ctx, app)
 	}
 }

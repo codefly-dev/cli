@@ -9,14 +9,22 @@ import (
 	"github.com/codefly-dev/golor"
 )
 
-func View(style string, s string, args ...any) string {
-	view := fmt.Sprintf(s, args...)
-	view = fmt.Sprintf("%s[%s]", style, view)
-	view = golor.Sprintf(view)
-	return view
+// Deal with templates the same way as golor
+
+type Wrapper struct {
+	template any
 }
 
-func Header(level int, s string, args ...any) {
+func (wrapper *Wrapper) View(style string, s string, args ...any) string {
+	view := fmt.Sprintf("%s[%s]", style, s)
+	return golor.Template(wrapper.template).Sprintf(view, args...)
+}
+
+func Template(t any) *Wrapper {
+	return &Wrapper{template: t}
+}
+
+func (wrapper *Wrapper) Header(level int, s string, args ...any) {
 	if len(s) == 0 {
 		return
 	}
@@ -28,43 +36,78 @@ func Header(level int, s string, args ...any) {
 		theme = "#(bold,blue)"
 	}
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(View(theme, s, args...)))
+	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+}
+
+func Header(level int, s string, args ...any) {
+	wrapper := &Wrapper{}
+	wrapper.Header(level, s, args...)
+}
+
+func (wrapper *Wrapper) Warning(s string, args ...any) {
+	theme := "⚠️ #(bold,magenta)"
+	style := lipgloss.NewStyle()
+	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
 }
 
 func Warning(s string, args ...any) {
-	theme := "⚠️ #(bold,magenta)"
+	wrapper := &Wrapper{}
+	wrapper.Warning(s, args...)
+}
+
+func (wrapper *Wrapper) Trace(s string, args ...any) {
+	theme := "#(italic,green)"
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(View(theme, s, args...)))
+	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
 }
 
 func Trace(s string, args ...any) {
-	theme := "#(italic,green)"
+	wrapper := &Wrapper{}
+	wrapper.Trace(s, args...)
+}
+
+func (wrapper *Wrapper) Debug(s string, args ...any) {
+	theme := "#(green)"
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(View(theme, s, args...)))
+	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
 }
 
 func Debug(s string, args ...any) {
-	theme := "#(green)"
+	wrapper := &Wrapper{}
+	wrapper.Debug(s, args...)
+}
+
+func (wrapper *Wrapper) Info(s string, args ...any) {
+	theme := "#(magenta)"
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(View(theme, s, args...)))
+	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
 }
 
 func Info(s string, args ...any) {
-	theme := "#(magenta)"
+	wrapper := &Wrapper{}
+	wrapper.Info(s, args...)
+}
+
+func (wrapper *Wrapper) Error(s string, args ...any) {
+	theme := "☠️ #(bold,red)"
 	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(View(theme, s, args...)))
+	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
 }
 
 func Error(s string, args ...any) {
-	theme := "☠️ #(bold,red)"
-	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(View(theme, s, args...)))
+	wrapper := &Wrapper{}
+	wrapper.Error(s, args...)
+}
+
+func (wrapper *Wrapper) Focus(s string, args ...any) {
+	theme := "#(bold,red)"
+	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
+	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
 }
 
 func Focus(s string, args ...any) {
-	theme := "#(bold,red)"
-	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
-	fmt.Println(style.Render(View(theme, s, args...)))
+	wrapper := &Wrapper{}
+	wrapper.Focus(s, args...)
 }
 
 func ExitOnError(err error, format string, args ...any) {
@@ -73,6 +116,13 @@ func ExitOnError(err error, format string, args ...any) {
 		if wool.IsDebug() {
 			Error(err.Error())
 		}
+		Exit()
+	}
+}
+
+func ExitIf(b bool, format string, args ...any) {
+	if b {
+		Error(format, args...)
 		Exit()
 	}
 }

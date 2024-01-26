@@ -31,7 +31,7 @@ func TestPublicApplicationGraph(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(gs))
 
-	groups := map[string]*architecture.Graph{}
+	groups := map[string]*architecture.DAG{}
 	for _, g := range gs {
 		groups[g.Name] = g
 	}
@@ -96,9 +96,6 @@ func TestPublicApplicationGraph(t *testing.T) {
 	// web -> web/gateway -> web/gateway/rest (+2)
 	// web -> web/gateway -> web/gateway/grpc (+1)
 	assert.Equal(t, 6, len(web.Nodes()))
-
-	t.Log(web.Nodes())
-	t.Log(web.Edges())
 
 	{
 		expectedWebEdges := []*architecture.Edge{

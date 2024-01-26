@@ -31,6 +31,17 @@ func deleteService(name string) {
 
 	project := common.Project(ctx)
 	app := common.Application(ctx)
+
+	// Parse service to see if we need to change organization
+	parsed, err := configurations.ParseService(name)
+	cli.ExitOnError(err, "Cannot parse service name")
+	name = parsed.Name
+
+	if parsed.Application != "" && parsed.Application != app.Name {
+		app, err = project.LoadApplicationFromName(ctx, parsed.Application)
+		cli.ExitOnError(err, "Cannot load application")
+	}
+
 	if !app.ExistsService(ctx, name) {
 		cli.Error("Service <%s> does not exist in application <%s>", name, app.Name)
 		return

@@ -52,6 +52,10 @@ func LoadService(ctx context.Context, service *configurations.Service) (*basev0.
 	if err != nil {
 		return nil, w.Wrapf(err, "failed to load service: %s", service.Name)
 	}
+	err = instance.LoadRuntime(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "failed to load service: %s", service.Name)
+	}
 	init, err := instance.Runtime.Load(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "failed to init service: %s", service.Name)

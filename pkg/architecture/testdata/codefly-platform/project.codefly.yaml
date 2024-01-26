@@ -1,8 +1,0 @@
-name: codefly-platform
-domain: github.com/codefly-ai/codefly-platform
-organization:
-  name: codefly.ai
-applications:
-    - name: management*
-    - name: web
-    - name: billing

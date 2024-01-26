@@ -3,7 +3,6 @@ package sync
 import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services/factory"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
@@ -35,15 +34,19 @@ func syncService() error {
 	w.Trace("app", wool.Field("app", app.Name))
 	service := common.Service(ctx)
 	w.Trace("service", wool.Field("service", service.Name))
-
-	f, err := factory.NewFlow(ctx, project, service)
-	if err != nil {
-		return w.Wrap(err)
-	}
-	f.InitOnly(initOnly)
-	return f.Start(ctx, factory.Sync)
+	//
+	//f, err := builder2.NewFlow(ctx, project, service, standAlone)
+	//if err != nil {
+	//	return w.Wrap(err)
+	//}
+	//f.InitOnly(initOnly)
+	//return f.Start(ctx, builder2.Sync)
+	return nil
 }
 
+var standAlone bool
+
 func init() {
-	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Only run the init phase")
+	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Start service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 }

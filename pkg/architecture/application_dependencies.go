@@ -12,10 +12,10 @@ import (
 Overview builds a dependency graph of the application and its services.
 */
 
-func LoadPublicApplicationGraph(ctx context.Context, project *configurations.Project) ([]*Graph, error) {
+func LoadPublicApplicationGraph(ctx context.Context, project *configurations.Project) ([]*DAG, error) {
 	w := wool.Get(ctx).In("LoadApplicationGraph")
-	//graph := NewGraph(project.Name)
-	var gs []*Graph
+	//graph := NewDAG(project.Name)
+	var gs []*DAG
 	for _, appRef := range project.Applications {
 		app, err := project.LoadApplicationFromReference(ctx, appRef)
 		if err != nil {
@@ -28,15 +28,15 @@ func LoadPublicApplicationGraph(ctx context.Context, project *configurations.Pro
 		if len(endpoints) == 0 {
 			continue
 		}
-		g := NewGraph(app.Name)
-		g.AddTypedNode(app.Unique(), configurations.APPLICATION)
+		g := NewDAG(app.Name)
+		g.AddNode(app.Unique()).WithType(configurations.APPLICATION)
 		// Add one edge for each of the service endpoint
 		for _, endpoint := range endpoints {
 			service := configurations.ServiceUnique(app.Name, endpoint.Service)
-			g.AddTypedNode(service, configurations.SERVICE)
+			g.AddNode(service).WithType(configurations.SERVICE)
 			g.AddEdge(app.Unique(), service)
 			e := configurations.FromProtoEndpoint(endpoint)
-			g.AddTypedNode(e.Unique(), configurations.ENDPOINT)
+			g.AddNode(e.Unique()).WithType(configurations.ENDPOINT)
 			g.AddEdge(service, e.Unique())
 		}
 		gs = append(gs, g)

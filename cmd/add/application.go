@@ -37,6 +37,7 @@ func addApplication(name string) {
 	ctx, done := common.NewContext()
 	defer done()
 
+	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
 
 	if project.ExistsApplication(name) {
@@ -51,8 +52,9 @@ func addApplication(name string) {
 	}
 
 	action, err := actionsapplication.NewActionAddApplication(ctx, &actionsapplication.AddApplication{
-		Name:    name,
-		Project: project.Name,
+		Name:      name,
+		Project:   project.Name,
+		Workspace: workspace.Name,
 	})
 	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)

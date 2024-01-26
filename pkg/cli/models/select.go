@@ -56,11 +56,11 @@ func (entry *Entry) String() string {
 	if entry.Current {
 		display += " (active)"
 	}
-	return golor.Sprintf(`#(blue,bold)[{{.}}]`, display)
+	return golor.Template(display).Sprintf(`#(blue,bold)[{{.}}]`)
 }
 
 func (m selection) View() string {
-	s := golor.Sprintf(`#(blue,bold)[{{.Message}}]`, m)
+	s := golor.Template(m).Sprintf(`#(blue,bold)[{{.Message}}]`)
 	s += "\n"
 	for i, entry := range m.entries {
 		cursor := " " // no cursor

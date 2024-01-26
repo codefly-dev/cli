@@ -69,7 +69,7 @@ Note: I don't include `go.work` anymore in the repo so you can order your direct
 For the previous layout, `go.work` looks like this:
 
 ```go
-go 1.21.3
+go 1.21.5
 
 use (
 .
@@ -102,6 +102,12 @@ Inside each agent you want to build, run:
 
 To use private repositories, TODO docs based on
 https://medium.com/@joeponzio/how-to-use-a-private-github-repo-as-a-go-module-442fbedc80c9
+
+
+# TODO: Will be in the main docs
+# HERE WE WANT README FOR CLI DEVELOPERS
+
+## Tracks
 
 
 ## Getting started

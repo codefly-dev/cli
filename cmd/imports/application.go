@@ -10,7 +10,7 @@ var ApplicationCmd = &cobra.Command{
 	Short: "Import an applications",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		//		logger := shared.GetBaseLogger(ctx).With("import.ApplicationCmd.Run")
+		//		logger := shared.GetBaseLogger(ctx).With("import.ApplicationCmd.Start")
 		//		defer logger.Catch()
 		//		golor.Println(`
 		//#(bold,cyan)[Very excited you decided to import an applications in codefly to 🚀!]`)
