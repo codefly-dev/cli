@@ -36,7 +36,7 @@ func addServiceDependency() {
 	app := common.Application(ctx)
 	service := common.Service(ctx)
 
-	confirm := models.Confirm(fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
+	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		cli.Exit()

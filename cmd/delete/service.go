@@ -46,7 +46,7 @@ func deleteService(name string) {
 		cli.Error("Service <%s> does not exist in application <%s>", name, app.Name)
 		return
 	}
-	confirm := models.Confirm(fmt.Sprintf("Confirm deletion of service <%s> in application <%s> in project <%s>?", name, app.Name, project.Name), false)
+	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm deletion of service <%s> in application <%s> in project <%s>?", name, app.Name, project.Name), false)
 	if confirm {
 		err := app.DeleteService(ctx, name)
 		cli.ExitOnError(err, "cannot delete service")

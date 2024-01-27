@@ -45,7 +45,7 @@ func addApplication(name string) {
 		os.Exit(0)
 	}
 
-	confirm := models.Confirm(fmt.Sprintf("Add an application in your project <%s>?", project.Name), true)
+	confirm := models.Confirm(ctx, fmt.Sprintf("Add an application in your project <%s>?", project.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		os.Exit(0)

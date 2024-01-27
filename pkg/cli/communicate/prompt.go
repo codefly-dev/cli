@@ -21,7 +21,7 @@ func (h *Prompt) Answer(ctx context.Context, q *agentv0.Question) (*agentv0.Answ
 
 		return Display(q.Message, v.Display)
 	case *agentv0.Question_Confirm:
-		return Confirm(q.Message, v.Confirm)
+		return Confirm(ctx, q.Message, v.Confirm)
 	case *agentv0.Question_Input:
 		return Input(q.Message, v.Input)
 	default:

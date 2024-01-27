@@ -1,10 +1,11 @@
 package models
 
 import (
-	"os"
+	"context"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/golor"
 )
@@ -49,7 +50,8 @@ func (m ConfirmModel) View() string {
 	// Render a block of text.
 	style := lipgloss.NewStyle().
 		Margin(1, 2, 1, 2)
-	return style.Render(golor.Template(m).Sprintf("#(bold,magenta)[{{.Message}} {{.Options}} ]"))
+	return style.Render(golor.Template(m).Sprintf(`
+#(bold,magenta)[{{.Message}} {{.Options}} ]`))
 }
 
 func DefaultInput(def bool) string {
@@ -59,7 +61,7 @@ func DefaultInput(def bool) string {
 	return "(y/N)"
 }
 
-func Confirm(s string, defaultValue bool) bool {
+func Confirm(ctx context.Context, s string, defaultValue bool) bool {
 	if cli.WithDefault() {
 		return defaultValue
 	}
@@ -74,7 +76,9 @@ func Confirm(s string, defaultValue bool) bool {
 	}
 	m := mod.(ConfirmModel)
 	if m.stopped {
-		os.Exit(0)
+		cli.Header(1, "TODO: fix cancel")
+		common.Cancel(ctx)
+		cli.Exit()
 	}
 	return m.confirmed
 }

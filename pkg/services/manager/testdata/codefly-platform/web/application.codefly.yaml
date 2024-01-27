@@ -1,0 +1,7 @@
+kind: application
+name: web
+project: codefly-platform
+domain: github.com/codefly-ai/codefly-platform/web
+services:
+    - name: gateway
+    - name: frontend

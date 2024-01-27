@@ -1,0 +1,7 @@
+kind: application
+name: billing
+project: codefly-platform
+domain: github.com/codefly-ai/codefly-platform/management
+services:
+    - name: accounts
+    - name: no_dependencies

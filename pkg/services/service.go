@@ -176,7 +176,7 @@ func (instance *Instance) CheckCapabilities(capability agentv0.Capability_Type) 
 			return nil
 		}
 	}
-	return fmt.Errorf("missing capability %s", capability.Type)
+	return fmt.Errorf("missing capability %v", capability)
 }
 
 type AgentUpdate struct {

@@ -1,7 +1,10 @@
 package add
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -33,13 +36,42 @@ var ServiceCmd = &cobra.Command{
 			cli.GetLogger().Oops("You must provide an agent for the service, use --agent=<agent>, for example --agent=python, --agent=go, --agent=nextjs or more advanced agent. See TODO")
 		}
 		name := args[0]
-		addService(name, agentInput)
+
+		ctx, done := common.NewContext()
+		defer done()
+
+		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		defer stop()
+
+		errs := make(chan error, 1) // Buffered channel
+
+		go func() {
+			errs <- addService(ctx, name, agentInput)
+		}()
+	loop:
+		for {
+			select {
+			case err := <-errs:
+				cli.ExitOnError(err, "Got service add error: %v\n", err)
+				// TODO: get rid when flow works
+				errs <- nil
+				break loop
+			case <-ctx.Done():
+				cli.Header(2, "Got context.Cancel: Exiting...")
+				cli.Header(1, "TODO: Cleanup")
+				break loop
+			}
+		}
+		stopped := <-errs
+		if stopped != nil {
+			cli.Error("Got error while stopping: %v", stopped)
+			return
+		}
+		cli.Header(1, "Service added successfully")
 	},
 }
 
-func addService(name string, agentInput string) {
-	ctx, done := common.NewContext()
-	defer done()
+func addService(ctx context.Context, name string, agentInput string) error {
 	defer agents.ClearAgents()
 
 	w := wool.Get(ctx).In("cmd.add.service")
@@ -50,13 +82,17 @@ func addService(name string, agentInput string) {
 
 	// Parse service to see if we need to change organization
 	parsed, err := configurations.ParseService(name)
-	cli.ExitOnError(err, "Cannot parse service name")
+	if err != nil {
+		return w.Wrapf(err, "cannot parse service name")
+	}
 
 	if parsed.Application != "" {
 		name = parsed.Name
 		if parsed.Application != app.Name {
 			app, err = project.LoadApplicationFromName(ctx, parsed.Application)
-			cli.ExitOnError(err, "Cannot load application")
+			if err != nil {
+				return w.Wrapf(err, "cannot load application")
+			}
 		}
 	}
 
@@ -66,21 +102,27 @@ func addService(name string, agentInput string) {
 
 	w.Debug("input", wool.Field("agent", agentInput))
 	agent, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, agentInput)
-	cli.ExitOnError(err, "Cannot parse agent")
+	if err != nil {
+		return w.Wrapf(err, "cannot parse agent")
+	}
 
 	// Pin to latest if needed
 	if agent.Version == "latest" {
 		err = manager.PinToLatestRelease(ctx, agent)
-		cli.ExitOnError(err, "Cannot pin to latest release")
+		if err != nil {
+			return w.Wrapf(err, "cannot pin to latest release")
+		}
 	}
 
 	// Download the agent if required
 	if !manager.Downloaded(agent) {
 		err = manager.Download(ctx, agent)
-		cli.ExitOnError(err, "Cannot download agent")
+		if err != nil {
+			return w.Wrapf(err, "cannot download agent")
+		}
 	}
 
-	confirm := models.Confirm(fmt.Sprintf("Confirm adding a service <%s> in application <%s>?", name, app.Name), true)
+	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service <%s> in application <%s>?", name, app.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		cli.Exit()
@@ -95,14 +137,17 @@ func addService(name string, agentInput string) {
 		Override:    override,
 	}
 
-	addDescription := models.Confirm("Do you want to add a short description?", false)
+	addDescription := models.Confirm(ctx, "Do you want to add a short description?", false)
 	if addDescription {
 		input.Description = models.Input("Description", "Make some magic 🪄")
 
 	}
 
 	err = actions.Add(ctx, input)
-	cli.ExitOnError(err, "Cannot add service")
+	if err != nil {
+		return w.Wrapf(err, "cannot add service")
+	}
+	return nil
 
 }
 

@@ -42,7 +42,7 @@ func newProject(name string) {
 		cli.Error("Project <%s> already exists", name)
 		os.Exit(0)
 	}
-	confirm := models.Confirm(fmt.Sprintf("Do you want to add project <%s> in the current folder?", name), true)
+	confirm := models.Confirm(ctx, fmt.Sprintf("Do you want to add project <%s> in the current folder?", name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 	}

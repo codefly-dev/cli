@@ -42,12 +42,13 @@ var ServiceCmd = &cobra.Command{
 				}()
 			}
 
-			go func() {
-				service := common.Service(ctx)
-				project := common.Project(ctx)
-				errs <- runService(ctx, project, service, standAlone)
-			}()
 		}
+
+		go func() {
+			service := common.Service(ctx)
+			project := common.Project(ctx)
+			errs <- runService(ctx, project, service, standAlone)
+		}()
 
 	loop:
 		for {

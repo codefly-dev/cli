@@ -33,7 +33,7 @@ func deleteProject(name string) {
 		cli.Error("Project <%s>> does not exist in workspace", name)
 		return
 	}
-	confirm := models.Confirm(fmt.Sprintf("Delete the project <%s>?", name), false)
+	confirm := models.Confirm(ctx, fmt.Sprintf("Delete the project <%s>?", name), false)
 	if confirm {
 		err := w.DeleteProject(ctx, name)
 		cli.ExitOnError(err, "cannot delete project")
