@@ -27,8 +27,6 @@ type Manager struct {
 
 	playbook *Playbook
 
-	actions *ActionManager
-
 	Runner *Runner
 
 	initOnly bool

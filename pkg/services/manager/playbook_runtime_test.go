@@ -45,7 +45,8 @@ func (a *initThenUpdated) GetExecutor(ctx context.Context, action manager.Action
 var _ manager.ExecutorManager = &initThenUpdated{}
 
 type initThenPropagate struct {
-	onInit bool
+	onInit      bool
+	onlyService string
 }
 
 func execOnInitThenPropagate() *initThenPropagate {
@@ -58,7 +59,13 @@ func (a *initThenPropagate) GetExecutor(ctx context.Context, action manager.Acti
 			a.onInit = false
 			return manager.OnInit(), nil
 		}
-		return manager.RequirePropagation(), nil
+		if a.onlyService == "" {
+			return manager.RequirePropagation(), nil
+		}
+		if action.Service == a.onlyService {
+			return manager.RequirePropagation(), nil
+		}
+		return manager.IndependentUpdate(), nil
 	}, nil
 }
 
@@ -79,7 +86,6 @@ func setup(t *testing.T, executor manager.ExecutorManager) setupData {
 	// - accounts -> management/organization
 	// web:
 	// - frontend -> gateway
-	// - gateway  -> management/organization
 	// - gateway  -> billing/accounts
 
 	ctx := context.Background()

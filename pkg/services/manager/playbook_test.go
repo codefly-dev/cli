@@ -107,7 +107,7 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 
 }
 
-func TestPlaybookRunMoreDependencies(t *testing.T) {
+func TestPlaybookRunTwoDependencies(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, execOnInit())
 	// "Create"
@@ -115,9 +115,6 @@ func TestPlaybookRunMoreDependencies(t *testing.T) {
 	start := "web/gateway"
 	accounts := "billing/accounts"
 	org := "management/organization"
-
-	err := data.policy.Restrict(ctx, start)
-	assert.NoError(t, err)
 
 	{
 		playbook, err := manager.NewPlaybook(ctx, data.world)
@@ -171,9 +168,6 @@ func TestPlaybookRunNoDependenciesWithRestart(t *testing.T) {
 
 	start := "billing/no_dependencies"
 
-	err := data.policy.Restrict(ctx, start)
-	assert.NoError(t, err)
-
 	playbook, err := manager.NewPlaybook(ctx, data.world)
 
 	playbook.WithPolicy(data.policy)
@@ -205,7 +199,6 @@ signalled:
 
 	// Now we will send a new action
 	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
-		fmt.Println("GOT", action)
 		return action.Type == manager.RuntimeStart
 	})
 
@@ -217,7 +210,7 @@ signalled:
 	assert.Equal(t, expected, playbook.Executed())
 }
 
-func TestPlaybookRunOneDependenciesWithRestartNoPropagation(t *testing.T) {
+func TestPlaybookRunOneDependencyWithRestartNoPropagation(t *testing.T) {
 	ctx := context.Background()
 	wool.SetGlobalLogLevel(wool.DEBUG)
 	data := setup(t, execOnInitThenUpdated())
@@ -275,7 +268,7 @@ signalled:
 	assert.Equal(t, expected, executed)
 }
 
-func TestPlaybookRunOneDependenciesWithRestartWithPropagation(t *testing.T) {
+func TestPlaybookRunOneDependencyWithRestartWithPropagation(t *testing.T) {
 	ctx, done := common.NewContext()
 	defer done()
 
@@ -323,8 +316,6 @@ signalled:
 		return action.Type == manager.RuntimeStart && action.Service == start
 	})
 
-	// Send Init action on org
-	// Except org::init start::init org::start start::start
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
 	assert.NoError(t, err)
 
@@ -332,5 +323,126 @@ signalled:
 	// New ones
 	executed = playbook.Executed()[len(executed):]
 	expected = createCombinedActionsWithRound(2, []string{org, start}, manager.RuntimeInit, manager.RuntimeStart)
+	assert.Equal(t, expected, executed)
+}
+
+func TestPlaybookRunTwoDependenciesWithRestartWithPropagation(t *testing.T) {
+	ctx, done := common.NewContext()
+	defer done()
+
+	wool.SetGlobalLogLevel(wool.DEBUG)
+	data := setup(t, execOnInitThenPropagate())
+
+	start := "web/gateway"
+	accounts := "billing/accounts"
+	org := "management/organization"
+
+	playbook, err := manager.NewPlaybook(ctx, data.world)
+
+	playbook.WithPolicy(data.policy)
+
+	playbook.WithSignallerFunc(func(_ *manager.Playbook, action manager.Action) *manager.Signal {
+		if action.Type == manager.RuntimeStart && action.Service == start {
+			return &manager.Signal{}
+		}
+		return nil
+	})
+
+	// Run
+	stopped := make(chan error)
+	go func() {
+		// We don't stop YET
+		stopped <- playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+	}()
+
+	// Block on signal
+	for {
+		select {
+		case <-playbook.Signals():
+			goto signalled
+		}
+	}
+signalled:
+	expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
+	executed := playbook.Executed()
+	assert.Equal(t, expected, executed)
+
+	// Now we will send a new action from the dependency of start
+	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+		return action.Type == manager.RuntimeStart && action.Service == start
+	})
+
+	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
+	assert.NoError(t, err)
+
+	<-stopped
+	// New ones
+	executed = playbook.Executed()[len(executed):]
+	// We propagate all
+
+	// Not great, order is correct but we finish org/accounts before start
+	// Need some recursive...
+	expected = createCombinedActionsWithRound(2, []string{org, accounts}, manager.RuntimeInit, manager.RuntimeStart)
+	expected = append(expected, createActionsWithRound(2, start, manager.RuntimeInit, manager.RuntimeStart)...)
+	assert.Equal(t, expected, executed)
+}
+
+func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddle(t *testing.T) {
+	ctx, done := common.NewContext()
+	defer done()
+
+	start := "web/gateway"
+	accounts := "billing/accounts"
+	org := "management/organization"
+
+	wool.SetGlobalLogLevel(wool.DEBUG)
+	exec := execOnInitThenPropagate()
+	exec.onlyService = org
+
+	data := setup(t, exec)
+
+	playbook, err := manager.NewPlaybook(ctx, data.world)
+
+	playbook.WithPolicy(data.policy)
+
+	playbook.WithSignallerFunc(func(_ *manager.Playbook, action manager.Action) *manager.Signal {
+		if action.Type == manager.RuntimeStart && action.Service == start {
+			return &manager.Signal{}
+		}
+		return nil
+	})
+
+	// Run
+	stopped := make(chan error)
+	go func() {
+		// We don't stop YET
+		stopped <- playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+	}()
+
+	// Block on signal
+	for {
+		select {
+		case <-playbook.Signals():
+			goto signalled
+		}
+	}
+signalled:
+	expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
+	executed := playbook.Executed()
+	assert.Equal(t, expected, executed)
+
+	// Now we will send a new action from the dependency of start
+	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+		return action.Type == manager.RuntimeStart && action.Service == accounts // We don't propagate all the way
+	})
+
+	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
+	assert.NoError(t, err)
+
+	<-stopped
+	// New ones
+	executed = playbook.Executed()[len(executed):]
+	// We don't propagate to start
+	expected = createCombinedActionsWithRound(2, []string{org, accounts}, manager.RuntimeInit, manager.RuntimeStart)
 	assert.Equal(t, expected, executed)
 }

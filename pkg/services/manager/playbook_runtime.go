@@ -48,19 +48,19 @@ func (policy *RuntimeStartPolicy) Execute(ctx context.Context, action Action) ([
 
 func (policy *RuntimeStartPolicy) BasicNext(ctx context.Context, change *OutputProperty, action Action, nextType ActionType) ([]Action, error) {
 	w := wool.Get(ctx).In("RuntimeStartPolicy.BasicNext")
-	var next []Action
 	w.Debug("computing next action with output", wool.Field("property", change))
 	if change.OnInit {
 		required, err := policy.dependencies.OrderTo(ctx, action.Service)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot get required")
 		}
-		next = append(next, action.NextFor(nextType, required...)...)
+		next := action.NextFor(nextType, required...)
 		next = append(next, action.Next(nextType))
+		return next, nil
 	}
 	if change.IndependentUpdate {
-		next = append(next, action.Next(nextType))
-
+		next := []Action{action.Next(nextType)}
+		return next, nil
 	}
 	if change.UpdateWithRequiredPropagation {
 		w.Focus("propagating", wool.Field("service", action.Service))
@@ -70,12 +70,13 @@ func (policy *RuntimeStartPolicy) BasicNext(ctx context.Context, change *OutputP
 		}
 		// We execute the same action on all dependents
 		w.Focus("propagating", wool.Field("service", action.Service), wool.Field("deps", deps))
-		next = append(next, action.NextFor(action.Type, deps...)...)
+		next := action.NextFor(action.Type, deps...)
 		next = append(next, action.Next(nextType))
 		next = append(next, action.NextFor(nextType, deps...)...)
 		w.Focus("propagating", wool.Field("service", action.Service), wool.Field("next", next))
+		return next, nil
 	}
-	return next, nil
+	return nil, nil
 }
 
 func (policy *RuntimeStartPolicy) Restrict(ctx context.Context, unique string) error {

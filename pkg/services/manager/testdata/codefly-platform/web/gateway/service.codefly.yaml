@@ -10,8 +10,6 @@ agent:
     version: 0.0.6
     publisher: codefly.ai
 dependencies:
-    - name: organization
-      application: management
     - name: accounts
       application: billing
 endpoints:

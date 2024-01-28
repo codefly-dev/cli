@@ -20,6 +20,9 @@ type Runner struct {
 	instance *services.Instance
 
 	playbook *Playbook
+
+	isStarted bool
+
 	// Requires
 	requires []string
 
@@ -56,6 +59,13 @@ func NewRunner(ctx context.Context, instance *services.Instance, playbook *Playb
 func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
 
+	if runner.isStarted {
+		err := runner.Stop(ctx)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot stop service instance")
+		}
+	}
+
 	resp, err := runner.instance.Runtime.Load(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
@@ -74,6 +84,15 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 
 func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
+
+	// Make sure we don't init something already-started
+	if runner.isStarted {
+		err := runner.Stop(ctx)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot stop service instance")
+		}
+	}
+
 	// Build the request
 
 	env, err := runner.playbook.world.Env.Proto()
@@ -115,6 +134,15 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
+
+	// Make sure we don't start something already-started
+	if runner.isStarted {
+		err := runner.Stop(ctx)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot stop service instance")
+		}
+	}
+
 	w.Debug("start")
 	// Build the request
 
@@ -131,13 +159,14 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for load")
 	}
 	w.Debug("outputProperty", wool.Field("outputProperty", outputProperty))
+	runner.isStarted = true
 	return outputProperty, nil
 }
 
 func (runner *Runner) Stop(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
 	// Build the request
-
+	runner.isStarted = false
 	_, err := runner.instance.Runtime.Stop(ctx, &runtimev0.StopRequest{})
 	if err != nil {
 		return w.Wrapf(err, "cannot stop service instance")
