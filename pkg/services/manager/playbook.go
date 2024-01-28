@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"sync"
 
 	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/core/wool"
@@ -12,7 +13,7 @@ type PlaybookPolicy interface {
 	ExecutorManager
 	// Execute and determines what to do next
 	Execute(ctx context.Context, action Action) ([]Action, error)
-	// Restrict the dependencies
+	// Restrict the Dependencies
 	Restrict(ctx context.Context, service string) error
 }
 
@@ -20,7 +21,10 @@ type Playbook struct {
 	dependencies *architecture.ServiceDependencies
 	policy       PlaybookPolicy
 
-	actions  *ActionManager
+	world *World
+
+	actions *ActionManager
+
 	executed []Action
 
 	signaller *Signaller
@@ -29,11 +33,18 @@ type Playbook struct {
 
 	// Convenient
 	stopper
+
+	// Consistency
+	lock sync.RWMutex
+	// mostly for testing
+	stopLock sync.RWMutex
 }
 
 type stopper func(ctx context.Context, action Action) bool
 
 func (playbook *Playbook) WithStopping(policy stopper) *Playbook {
+	playbook.stopLock.Lock()
+	defer playbook.stopLock.Unlock()
 	playbook.stopper = policy
 	return playbook
 }
@@ -49,11 +60,11 @@ func (playbook *Playbook) WithSignallerFunc(signaller CreateSignalFunc) *Playboo
 	return playbook
 }
 
-func NewPlaybook(ctx context.Context, dependencies *architecture.ServiceDependencies) (*Playbook, error) {
+func NewPlaybook(ctx context.Context, world *World) (*Playbook, error) {
 	return &Playbook{
-		dependencies: dependencies,
-		actions:      NewActionManager(),
-		signaller:    NewSignaller(),
+		world:     world,
+		actions:   NewActionManager(),
+		signaller: NewSignaller(),
 	}, nil
 }
 
@@ -66,23 +77,48 @@ func (playbook *Playbook) Restrict(ctx context.Context, service string) error {
 	return nil
 }
 
+func (playbook *Playbook) Seed(ctx context.Context, action Action) error {
+	w := wool.Get(ctx).In("Playbook.Start")
+	w.Debug("sending action", wool.Field("action", action.String()))
+	playbook.actions.bumpRound()
+	playbook.actions.send(ctx, action)
+	return nil
+}
+
 func (playbook *Playbook) Start(ctx context.Context, action Action) error {
 	w := wool.Get(ctx).In("Playbook.Start")
 	err := playbook.Restrict(ctx, action.Service)
 	if err != nil {
 		return w.Wrapf(err, "cannot restrict policy")
 	}
-	w.Debug("sending action", wool.Field("action", action.String()))
-	playbook.actions.Send(ctx, action)
+	err = playbook.Seed(ctx, action)
+	if err != nil {
+		return w.Wrapf(err, "cannot seed")
+	}
 	return playbook.Work(ctx)
 }
 
+// Executed returns the list of actions that were executed
+// Since it is public, we lock
 func (playbook *Playbook) Executed() []Action {
-	return playbook.executed
+	playbook.lock.RLock()
+	var out []Action
+	for _, action := range playbook.executed {
+		out = append(out, action)
+	}
+	playbook.lock.RUnlock()
+	return out
 }
 
 func (playbook *Playbook) stop(ctx context.Context, action Action) bool {
-	return playbook.stopper != nil && playbook.stopper(ctx, action)
+	playbook.stopLock.RLock()
+	defer playbook.stopLock.RUnlock()
+	if playbook.stopper == nil {
+		return false
+	}
+	stop := playbook.stopper(ctx, action)
+	return stop
+
 }
 
 func (playbook *Playbook) ignore(ctx context.Context, action Action) bool {
@@ -90,7 +126,8 @@ func (playbook *Playbook) ignore(ctx context.Context, action Action) bool {
 }
 
 func (playbook *Playbook) previouslyExecuted(ctx context.Context, action Action) bool {
-	for _, a := range playbook.executed {
+	executed := playbook.Executed()
+	for _, a := range executed {
 		if a == action {
 			return true
 		}
@@ -107,8 +144,8 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 			w.Info("context cancelled")
 			return nil
 		case group := <-playbook.actions.Group():
-			w.Focus("received group", wool.Field("group", group.String()))
-			plan := group.NewActionPlan()
+			w.Debug("received group", wool.Field("group", group.String()))
+			plan := playbook.actions.NewActionPlan()
 			for _, action := range group.actions {
 				if playbook.ignore(ctx, action) {
 					w.Debug("ignoring action", wool.Field("action", action))
@@ -125,23 +162,24 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 					return w.Wrapf(err, "invalid execution for action: %v", action)
 				}
 				// Do not add the "Create one"
-				if action.Type != RuntimeCreate {
-					playbook.executed = append(playbook.executed, action)
-				}
-				w.Focus("action", wool.Field("action", action))
+
+				w.Debug("action", wool.Field("action", action))
+
+				plan.Add(ctx, next...)
+
+				playbook.record(action)
 
 				playbook.signal(ctx, action)
 
-				plan.Add(next...)
 				if playbook.stop(ctx, action) {
 					w.Info("stopping", wool.Field("action", action))
 					return nil
 				}
-				w.Focus("done with action", wool.Field("action", action))
+				w.Debug("done with action", wool.Field("action", action))
 			}
 			// Done looping on actions
-			playbook.actions.Send(ctx, plan.actions...)
-			w.Focus("done with action group", wool.Field("group", group.String()))
+			playbook.actions.send(ctx, plan.actions...)
+			w.Debug("done with action group", wool.Field("group", group.String()))
 		}
 	}
 }
@@ -165,4 +203,12 @@ func (playbook *Playbook) Signals() chan Signal {
 // ActionManager mostly for testing
 func (playbook *Playbook) ActionManager() *ActionManager {
 	return playbook.actions
+}
+
+func (playbook *Playbook) record(action Action) {
+	playbook.lock.Lock()
+	defer playbook.lock.Unlock()
+	if action.Type != RuntimeCreate {
+		playbook.executed = append(playbook.executed, action)
+	}
 }

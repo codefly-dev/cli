@@ -98,7 +98,7 @@ func (instance *BuilderInstance) Sync(ctx context.Context, req *builderv0.SyncRe
 
 func (instance *RuntimeInstance) Load(ctx context.Context) (*runtimev0.LoadResponse, error) {
 	w := wool.Get(ctx).In("RuntimeInstance::Load", wool.NameField(instance.Service.Unique()))
-	w.Focus("sending load")
+	w.Debug("sending load")
 	init := &runtimev0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{

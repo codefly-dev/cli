@@ -29,21 +29,45 @@ type initThenUpdated struct {
 }
 
 func execOnInitThenUpdated() *initThenUpdated {
-	return &initThenUpdated{}
+	return &initThenUpdated{onInit: true}
 }
 
 func (a *initThenUpdated) GetExecutor(ctx context.Context, action manager.Action) (manager.OutputProcessorFunc, error) {
 	return func(ctx context.Context) (*manager.OutputProperty, error) {
-		return manager.OnInit(), nil
+		if a.onInit {
+			a.onInit = false
+			return manager.OnInit(), nil
+		}
+		return manager.IndependentUpdate(), nil
 	}, nil
 }
 
 var _ manager.ExecutorManager = &initThenUpdated{}
 
+type initThenPropagate struct {
+	onInit bool
+}
+
+func execOnInitThenPropagate() *initThenPropagate {
+	return &initThenPropagate{onInit: true}
+}
+
+func (a *initThenPropagate) GetExecutor(ctx context.Context, action manager.Action) (manager.OutputProcessorFunc, error) {
+	return func(ctx context.Context) (*manager.OutputProperty, error) {
+		if a.onInit {
+			a.onInit = false
+			return manager.OnInit(), nil
+		}
+		return manager.RequirePropagation(), nil
+	}, nil
+}
+
+var _ manager.ExecutorManager = &initThenPropagate{}
+
 type setupData struct {
-	project      *configurations.Project
-	dependencies *architecture.ServiceDependencies
-	policy       *manager.RuntimeStartPolicy
+	project *configurations.Project
+	world   *manager.World
+	policy  *manager.RuntimeStartPolicy
 }
 
 func setup(t *testing.T, executor manager.ExecutorManager) setupData {
@@ -71,10 +95,14 @@ func setup(t *testing.T, executor manager.ExecutorManager) setupData {
 	runtimeStartPolicy, err := manager.NewRuntimeStartPolicy(ctx, dependencies, executor)
 	assert.NoError(t, err)
 
+	world := &manager.World{
+		Dependencies: dependencies,
+	}
+
 	return setupData{
-		project:      project,
-		dependencies: dependencies,
-		policy:       runtimeStartPolicy,
+		project: project,
+		world:   world,
+		policy:  runtimeStartPolicy,
 	}
 }
 
@@ -86,12 +114,12 @@ func createActions(service string, types ...manager.ActionType) []manager.Action
 	return actions
 }
 
-func unwrap(actions []manager.Action) []manager.Action {
-	var out []manager.Action
-	for _, action := range actions {
-		out = append(out, manager.Action{Type: action.Type, Service: action.Service})
+func createActionsWithRound(round int, service string, types ...manager.ActionType) []manager.Action {
+	var actions []manager.Action
+	for _, action := range types {
+		actions = append(actions, manager.Action{Type: action, Service: service, Round: round})
 	}
-	return out
+	return actions
 }
 
 func createCombinedActions(services []string, types ...manager.ActionType) []manager.Action {
@@ -99,6 +127,16 @@ func createCombinedActions(services []string, types ...manager.ActionType) []man
 	for _, action := range types {
 		for _, service := range services {
 			actions = append(actions, manager.Action{Type: action, Service: service})
+		}
+	}
+	return actions
+}
+
+func createCombinedActionsWithRound(round int, services []string, types ...manager.ActionType) []manager.Action {
+	var actions []manager.Action
+	for _, action := range types {
+		for _, service := range services {
+			actions = append(actions, manager.Action{Type: action, Service: service, Round: round})
 		}
 	}
 	return actions
@@ -116,15 +154,15 @@ func TestRunPolicyNoDependencies(t *testing.T) {
 
 	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
 	assert.NoError(t, err)
-	assert.Equal(t, createActions(start, manager.RuntimeLoad), unwrap(actions), "Expected no action to be triggered")
+	assert.Equal(t, createActions(start, manager.RuntimeLoad), actions, "Expected no action to be triggered")
 
 	actions, err = data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeLoad, Service: start})
 	assert.NoError(t, err)
-	assert.Equal(t, createActions(start, manager.RuntimeInit), unwrap(actions), "Expected no action to be triggered")
+	assert.Equal(t, createActions(start, manager.RuntimeInit), actions, "Expected no action to be triggered")
 
 	actions, err = data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeInit, Service: start})
 	assert.NoError(t, err)
-	assert.Equal(t, createActions(start, manager.RuntimeStart), unwrap(actions), "Expected no action to be triggered")
+	assert.Equal(t, createActions(start, manager.RuntimeStart), actions, "Expected no action to be triggered")
 }
 
 func TestRunPolicyOneDependency(t *testing.T) {
@@ -140,5 +178,5 @@ func TestRunPolicyOneDependency(t *testing.T) {
 
 	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
 	assert.NoError(t, err)
-	assert.Equal(t, createCombinedActions([]string{org, start}, manager.RuntimeLoad), unwrap(actions), "Expected no action to be triggered")
+	assert.Equal(t, createCombinedActions([]string{org, start}, manager.RuntimeLoad), actions, "Expected no action to be triggered")
 }

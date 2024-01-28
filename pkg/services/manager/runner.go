@@ -19,8 +19,7 @@ Runner is a wrapper around a service instance to fit the outputProperty interfac
 type Runner struct {
 	instance *services.Instance
 
-	actions *ActionManager
-
+	playbook *Playbook
 	// Requires
 	requires []string
 
@@ -28,12 +27,11 @@ type Runner struct {
 	outputPropertyForLoad  *RunnerLoadManager
 	outputPropertyForInit  *RunnerInitManager
 	outputPropertyForStart *RunnerStartManager
-	world                  *World
 }
 
-func NewRunner(ctx context.Context, instance *services.Instance, world *World, actions *ActionManager) (*Runner, error) {
+func NewRunner(ctx context.Context, instance *services.Instance, playbook *Playbook) (*Runner, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(instance))
-	dependents, err := world.dependencies.DirectRequires(ctx, instance.Unique())
+	dependents, err := playbook.world.Dependencies.DirectRequires(ctx, instance.Unique())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get direct requires")
 	}
@@ -43,10 +41,11 @@ func NewRunner(ctx context.Context, instance *services.Instance, world *World, a
 	}
 	w.Debug("requires", wool.Field("requires", uniques))
 	runner := &Runner{
-		instance:               instance,
-		requires:               uniques,
-		world:                  world,
-		actions:                actions,
+		instance: instance,
+		requires: uniques,
+
+		playbook: playbook,
+
 		outputPropertyForLoad:  NewRunnerLoadManager(instance.Unique()),
 		outputPropertyForInit:  NewRunnerInitManager(instance.Unique()),
 		outputPropertyForStart: NewRunnerStartManager(instance.Unique()),
@@ -77,17 +76,17 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
 	// Build the request
 
-	env, err := runner.world.env.Proto()
+	env, err := runner.playbook.world.Env.Proto()
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	// provider information
+	// Provider information
 	var infos []*basev0.ProviderInformation
 	for _, req := range runner.instance.ProviderDependencies {
-		info, err := runner.world.provider.GetProjectProviderInformation(ctx, req)
+		info, err := runner.playbook.world.Provider.GetProjectProviderInformation(ctx, req)
 		if err != nil {
-			return nil, w.Wrapf(err, "cannot get provider information")
+			return nil, w.Wrapf(err, "cannot get Provider information")
 		}
 		infos = append(infos, info)
 	}
@@ -116,7 +115,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
-	w.Focus("start")
+	w.Debug("start")
 	// Build the request
 
 	_, err := runner.instance.Runtime.Start(ctx, &runtimev0.StartRequest{})
@@ -161,7 +160,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				return
 			}
 			if info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
-				w.Focus("received a request to change state", wool.Field("state", info.DesiredState.Stage))
+				w.Debug("received a request to change state", wool.Field("state", info.DesiredState.Stage))
 				action := Action{Service: runner.Unique()}
 				switch info.DesiredState.Stage {
 				case runtimev0.DesiredState_LOAD:
@@ -171,8 +170,12 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				case runtimev0.DesiredState_START:
 					action.Type = RuntimeStart
 				}
-				w.Focus("send action", wool.Field("action", action))
-				runner.actions.Send(ctx, action)
+				w.Debug("send action", wool.Field("action", action))
+				err = runner.playbook.Seed(ctx, action)
+				if err != nil {
+					w.Error("cannot seed", wool.ErrField(err))
+					return
+				}
 			}
 			time.Sleep(1000 * time.Millisecond)
 		}

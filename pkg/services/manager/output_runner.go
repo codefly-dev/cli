@@ -65,7 +65,7 @@ func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) e
 
 // RunnerInitOutput looks at:
 // - network mappings
-// - provider infos
+// - Provider infos
 type RunnerInitOutput struct {
 	networkMappings []*basev0.NetworkMapping
 	providerInfos   []*basev0.ProviderInformation
@@ -97,7 +97,7 @@ func (b *RunnerInitManager) Set(ctx context.Context, output *RunnerInitOutput) e
 
 	providerInfoHash, err := configurations.ProviderInformationHash(output.providerInfos...)
 	if err != nil {
-		return w.Wrapf(err, "cannot compute provider info hash")
+		return w.Wrapf(err, "cannot compute Provider info hash")
 	}
 
 	networkMappingHash, err := configurations.NetworkMappingHash(output.networkMappings...)

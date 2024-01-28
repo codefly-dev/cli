@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/core/wool"
@@ -24,11 +25,11 @@ const (
 type Action struct {
 	Type    ActionType
 	Service string
-	round   int
+	Round   int
 }
 
 func (action *Action) String() string {
-	return fmt.Sprintf("%s:%s (%d)", action.Type, action.Service, action.round)
+	return fmt.Sprintf("%s:%s (%d)", action.Type, action.Service, action.Round)
 }
 
 type ActionGroup struct {
@@ -36,41 +37,32 @@ type ActionGroup struct {
 	round   int
 }
 
-func (g *ActionGroup) NewActionPlan() *ActionPlan {
-	return NewActionPlan()
-}
-
-func NewActionPlan() *ActionPlan {
-	return &ActionPlan{
-		known: make(map[Action]bool),
-	}
-}
-
 func (g *ActionGroup) String() string {
 	var actions []string
 	for _, action := range g.actions {
 		actions = append(actions, action.String())
 	}
-	return fmt.Sprintf("[%s] (round %d)", strings.Join(actions, " -> "), g.round)
+	return fmt.Sprintf("[%s] (Round %d)", strings.Join(actions, " -> "), g.round)
 }
 
 func (action *Action) Next(t ActionType) Action {
 	return Action{
 		Type:    t,
 		Service: action.Service,
-		round:   action.round,
+		Round:   action.Round,
 	}
 }
 
 func (action *Action) NextFor(t ActionType, services ...architecture.Service) []Action {
 	var out []Action
 	for _, service := range services {
-		out = append(out, Action{Type: t, Service: service.Unique, round: action.round})
+		out = append(out, Action{Type: t, Service: service.Unique, Round: action.Round})
 	}
 	return out
 }
 
 type ActionManager struct {
+	sync.Mutex
 	actions chan ActionGroup
 	round   int
 }
@@ -82,26 +74,46 @@ func NewActionManager() *ActionManager {
 	}
 }
 
+func (manager *ActionManager) Round() int {
+	manager.Lock()
+	defer manager.Unlock()
+	return manager.round
+}
+
+func (manager *ActionManager) bumpRound() {
+	manager.Lock()
+	manager.round++
+	manager.Unlock()
+}
+
 // Send actions as a group
-func (manager *ActionManager) Send(ctx context.Context, actions ...Action) {
+func (manager *ActionManager) send(ctx context.Context, actions ...Action) {
 	if len(actions) == 0 {
 		return
 	}
 	w := wool.Get(ctx).In("ActionManager:Send")
-	manager.round++
+	round := manager.Round()
 	for i := range actions {
-		actions[i].round = manager.round
+		actions[i].Round = round
 	}
-	group := ActionGroup{actions: actions, round: manager.round}
-	w.Debug("sending actions", wool.Field("actions", group.String()))
+	group := ActionGroup{actions: actions, round: round}
+	w.Debug("sending actions", wool.Field("actions", group))
 	go func() {
 		manager.actions <- group
 	}()
-	w.Focus("sent actions", wool.Field("actions", group.String()))
+	w.Debug("sent actions", wool.Field("actions", group))
 }
 
 func (manager *ActionManager) Group() chan ActionGroup {
 	return manager.actions
+}
+
+func (manager *ActionManager) NewActionPlan() *ActionPlan {
+	round := manager.Round()
+	return &ActionPlan{
+		round: round,
+		known: make(map[Action]bool),
+	}
 }
 
 type ActionPlan struct {
@@ -110,12 +122,17 @@ type ActionPlan struct {
 	known   map[Action]bool
 }
 
-func (plan *ActionPlan) Add(actions ...Action) {
+func (plan *ActionPlan) Add(ctx context.Context, actions ...Action) {
+	w := wool.Get(ctx).In("ActionPlan:Add")
+	w.Debug("considering actions in plan", wool.Field("actions", actions))
 	for _, action := range actions {
-		action.round = plan.round
+		action.Round = plan.round
 		if _, ok := plan.known[action]; !ok {
-			plan.actions = append(plan.actions, actions...)
+			w.Debug("adding action to plan", wool.Field("action", action.String()))
+			plan.actions = append(plan.actions, action)
 			plan.known[action] = true
+		} else {
+			w.Debug("action already known", wool.Field("action", action.String()))
 		}
 	}
 }

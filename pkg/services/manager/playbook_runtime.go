@@ -26,7 +26,7 @@ func (policy *RuntimeStartPolicy) Execute(ctx context.Context, action Action) ([
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty")
 	}
-	w.Focus("got outputProperty", wool.Field("outputProperty", outputProperty))
+	w.Debug("got outputProperty", wool.Field("outputProperty", outputProperty))
 	if !outputProperty.Valid() {
 		return nil, w.NewError("invalid outputProperty: only one of the property of output must be true: %v", outputProperty)
 	}
@@ -49,6 +49,7 @@ func (policy *RuntimeStartPolicy) Execute(ctx context.Context, action Action) ([
 func (policy *RuntimeStartPolicy) BasicNext(ctx context.Context, change *OutputProperty, action Action, nextType ActionType) ([]Action, error) {
 	w := wool.Get(ctx).In("RuntimeStartPolicy.BasicNext")
 	var next []Action
+	w.Debug("computing next action with output", wool.Field("property", change))
 	if change.OnInit {
 		required, err := policy.dependencies.OrderTo(ctx, action.Service)
 		if err != nil {
@@ -62,12 +63,17 @@ func (policy *RuntimeStartPolicy) BasicNext(ctx context.Context, change *OutputP
 
 	}
 	if change.UpdateWithRequiredPropagation {
-		next = append(next, action.Next(nextType))
+		w.Focus("propagating", wool.Field("service", action.Service))
 		deps, err := policy.dependencies.DirectDependents(ctx, action.Service)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot get required")
 		}
+		// We execute the same action on all dependents
+		w.Focus("propagating", wool.Field("service", action.Service), wool.Field("deps", deps))
+		next = append(next, action.NextFor(action.Type, deps...)...)
+		next = append(next, action.Next(nextType))
 		next = append(next, action.NextFor(nextType, deps...)...)
+		w.Focus("propagating", wool.Field("service", action.Service), wool.Field("next", next))
 	}
 	return next, nil
 }
@@ -76,7 +82,7 @@ func (policy *RuntimeStartPolicy) Restrict(ctx context.Context, unique string) e
 	w := wool.Get(ctx).In("RuntimeStartPolicy.Restrict")
 	dependencies, err := policy.dependencies.Restrict(ctx, unique)
 	if err != nil {
-		return w.Wrapf(err, "cannot get dependencies")
+		return w.Wrapf(err, "cannot get Dependencies")
 	}
 	policy.dependencies = dependencies
 	w.Debug("restricted", wool.Field("graph", policy.dependencies.Print()))
