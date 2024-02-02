@@ -9,7 +9,7 @@ agent:
     name: krakend
     version: 0.0.6
     publisher: codefly.ai
-dependencies:
+service-dependencies:
     - name: accounts
       application: billing
 endpoints:

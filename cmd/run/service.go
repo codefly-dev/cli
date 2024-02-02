@@ -8,8 +8,8 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/cli/pkg/web"
-	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
@@ -18,15 +18,13 @@ import (
 // ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Start a service",
+	Short: "Begin a service",
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx, done := common.NewContext()
 		defer done()
 
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
-
-		defer agents.ClearAgents()
 
 		errs := make(chan error, 1) // Buffered channel
 
@@ -44,10 +42,12 @@ var ServiceCmd = &cobra.Command{
 
 		}
 
+		service := common.Service(ctx)
+		project := common.Project(ctx)
+		flow, err := initRunService(ctx, project, service, standAlone)
+		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
-			service := common.Service(ctx)
-			project := common.Project(ctx)
-			errs <- runService(ctx, project, service, standAlone)
+			errs <- runService(ctx, flow)
 		}()
 
 	loop:
@@ -55,7 +55,6 @@ var ServiceCmd = &cobra.Command{
 			select {
 			case err := <-errs:
 				cli.ExitOnError(err, "Got service run error: %v\n", err)
-				// TODO: get rid when flow works
 				errs <- nil
 				break loop
 			case <-ctx.Done():
@@ -64,6 +63,8 @@ var ServiceCmd = &cobra.Command{
 			}
 		}
 		stopped := <-errs
+		err = cleanRunService(flow)
+		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
 			cli.Error("Got error while stopping service: %v", stopped)
 			return
@@ -72,20 +73,30 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func runService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) error {
+func initRunService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("runService", wool.ThisField(service))
 	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.RunMode)
 	if err != nil {
-		return w.Wrap(err)
+		return nil, w.Wrap(err)
 	}
 	flow.WithStandAlone(standAlone)
 	err = flow.Load(ctx)
 	if err != nil {
-		return w.Wrap(err)
+		return nil, w.Wrap(err)
 	}
-	err = flow.Start(ctx)
+	return flow, nil
+}
+
+func cleanRunService(flow *manager.Flow) error {
+	services.ClearAgents()
+	return flow.Stop()
+}
+
+func runService(ctx context.Context, flow *manager.Flow) error {
+	w := wool.Get(ctx).In("runService")
+	err := flow.Start(ctx)
 	if err != nil {
-		return w.Wrapf(err, "cannot start service %s", service.Unique())
+		return w.Wrapf(err, "cannot start service")
 	}
 	return nil
 
@@ -94,7 +105,7 @@ func runService(ctx context.Context, project *configurations.Project, service *c
 var standAlone bool
 
 func init() {
-	ServiceCmd.Flags().BoolVar(&withServer, "server", true, "Start service server")
-	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Start service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().BoolVar(&withServer, "server", true, "Begin service server")
+	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 }

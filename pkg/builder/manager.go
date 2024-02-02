@@ -94,7 +94,7 @@ package builder
 //}
 //
 //func (manager *Manager) Sync(ctx context.Context) error {
-//	w := wool.Get(ctx).In("service.Start", wool.ThisField(manager))
+//	w := wool.Get(ctx).In("service.Begin", wool.ThisField(manager))
 //	req := &builderv0.SyncRequest{}
 //	sync, err := manager.instance.Builder.Sync(ctx, req)
 //	if err != nil {
@@ -117,7 +117,7 @@ package builder
 //	w := wool.Get(ctx).In("service.Build", wool.ThisField(manager))
 //	req := &builderv0.BuildRequest{}
 //	spinner := cli.Spinner()
-//	defer spinner.Stop()
+//	defer spinner.StopIfNeeded()
 //	build, err := manager.instance.Builder.Build(ctx, req)
 //	if err != nil {
 //		return w.Wrapf(err, "cannot build service instance")
@@ -133,7 +133,7 @@ package builder
 //	w := wool.Get(ctx).In("service.Deploy", wool.ThisField(manager))
 //	req := &builderv0.DeploymentRequest{Deployments: manager.deployments, Environment: manager.deploymentEnv.Proto()}
 //	spinner := cli.Spinner()
-//	defer spinner.Stop()
+//	defer spinner.StopIfNeeded()
 //	deploy, err := manager.instance.Builder.Deploy(ctx, req)
 //	if err != nil {
 //		return w.Wrapf(err, "cannot build service instance")

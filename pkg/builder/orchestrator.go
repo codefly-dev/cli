@@ -3,7 +3,7 @@ package builder
 import (
 	"context"
 
-	"github.com/codefly-dev/cli/pkg/services"
+	"github.com/codefly-dev/cli/pkg/services/services"
 )
 
 var instances map[string]*services.Instance

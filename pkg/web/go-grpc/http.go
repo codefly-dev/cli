@@ -21,7 +21,7 @@ type HttpServer struct {
 
 func NewHttpServer(c *Configuration) (*HttpServer, error) {
 	server := &HttpServer{config: c}
-	// Start HTTP server (and proxy calls to gRPC server endpoint)
+	// Begin HTTP server (and proxy calls to gRPC server endpoint)
 	return server, nil
 }
 
@@ -57,7 +57,7 @@ func (s *HttpServer) Run(ctx context.Context) error {
 	mux.Handle("/", http.StripPrefix("/", fileServer))
 
 	golor.Println(`Serving #(bold,blue)[codefly] webserver at http://localhost:10001`)
-	// Start HTTP server (and proxy calls to gRPC server endpoint)
+	// Begin HTTP server (and proxy calls to gRPC server endpoint)
 
 	handler := cors.Default().Handler(mux)
 	err = http.ListenAndServe(s.config.EndpointRest, handler)

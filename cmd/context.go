@@ -30,9 +30,9 @@ var ContextCmd = &cobra.Command{
 			} else {
 				cli.Header(2, "🔥 Active service <%s>", active.Service.Name)
 				cli.ExitOnError(err, "cannot load active active")
-				if len(active.Service.Dependencies) > 0 {
+				if len(active.Service.ServiceDependencies) > 0 {
 					cli.Header(2, "  🚀 Service dependencies")
-					for _, dep := range active.Service.Dependencies {
+					for _, dep := range active.Service.ServiceDependencies {
 						cli.Header(2, "   👉 <%s>", dep.Unique())
 					}
 				}

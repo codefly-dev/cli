@@ -24,13 +24,21 @@ func CurrentFlow() *Flow {
 
 type Flow struct {
 	project *configurations.Project
-	origin  *configurations.Service
 
+	// Where we start
+	origin *configurations.Service
+
+	// The world
+	world *World
+
+	// What we do
 	playbook *Playbook
-	world    *World
+	policy   PlaybookPolicy
+
+	// How we keep track of state
+	sharedState *StateManager
 
 	managers []*Manager
-	policy   PlaybookPolicy
 
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
@@ -96,10 +104,17 @@ func (flow *Flow) Load(ctx context.Context) error {
 
 	if flow.standAlone {
 		w.Debug("running in stand-alone Mode")
-
 	}
+	// Manage share state
+	sharedState, err := NewStateManager(ctx, flow.world.Provider, flow.world.Dependencies)
+	if err != nil {
+		return w.Wrapf(err, "cannot create shared state manager")
+	}
+	flow.sharedState = sharedState
+
 	var playbook *Playbook
-	if flow.world.Mode == RunMode {
+	switch flow.world.Mode {
+	case RunMode:
 		policy, err := NewRuntimeStartPolicy(ctx, flow.world.Dependencies, flow)
 		if err != nil {
 			return w.Wrapf(err, "cannot create policy")
@@ -110,6 +125,35 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
+	case BuildMode:
+		policy, err := NewBuildPolicy(ctx, flow.world.Dependencies, flow)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStopping(func(ctx context.Context, action Action) bool {
+			return action.Service == flow.origin.Unique() && action.Type == BuilderBuild
+		})
+	case SyncMode:
+		policy, err := NewSyncPolicy(ctx, flow.world.Dependencies, flow)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStopping(func(ctx context.Context, action Action) bool {
+			return action.Service == flow.origin.Unique() && action.Type == BuilderSync
+		})
+
 	}
 	flow.playbook = playbook
 
@@ -153,7 +197,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		flow.services[unique] = svc
 		// Register source to handle "pretty" logging
 		cli.RegisterLoggingResource(unique)
-		manager, err := New(ctx, svc, flow.playbook)
+		manager, err := New(ctx, svc, flow.playbook, flow.sharedState)
 		if err != nil {
 			return w.Wrap(err)
 		}
@@ -163,7 +207,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 	// Now add the current one
 
 	w.Info("creating run manager", wool.Field("for", flow.origin.Unique()))
-	manager, err := New(ctx, flow.origin, flow.playbook)
+	manager, err := New(ctx, flow.origin, flow.playbook, flow.sharedState)
 	cli.RegisterLoggingResource(flow.origin.Unique())
 	if err != nil {
 		return w.Wrap(err)
@@ -186,7 +230,7 @@ func (flow *Flow) WithPolicy(policy PlaybookPolicy) *Flow {
 }
 
 func (flow *Flow) Start(ctx context.Context) error {
-	w := wool.Get(ctx).In("Runner")
+	w := wool.Get(ctx).In("flow.Begin")
 
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
@@ -195,7 +239,37 @@ func (flow *Flow) Start(ctx context.Context) error {
 		})
 	}
 
-	err := flow.playbook.Start(ctx, Action{Type: RuntimeCreate, Service: flow.origin.Unique()})
+	err := flow.playbook.Begin(ctx, Action{Type: RuntimeBegin, Service: flow.origin.Unique()})
+	if err != nil {
+		return w.Wrapf(err, "cannot start playbook")
+	}
+	return nil
+}
+
+func (flow *Flow) Build(ctx context.Context) error {
+	w := wool.Get(ctx).In("flow.Sync")
+	// In stand-alone Mode, we set an ignore policy
+	if flow.standAlone {
+		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
+			return action.Service != flow.origin.Unique()
+		})
+	}
+	err := flow.playbook.Begin(ctx, Action{Type: BuilderBegin, Service: flow.origin.Unique()})
+	if err != nil {
+		return w.Wrapf(err, "cannot start playbook")
+	}
+	return nil
+}
+
+func (flow *Flow) Sync(ctx context.Context) error {
+	w := wool.Get(ctx).In("flow.Sync")
+	// In stand-alone Mode, we set an ignore policy
+	if flow.standAlone {
+		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
+			return action.Service != flow.origin.Unique()
+		})
+	}
+	err := flow.playbook.Begin(ctx, Action{Type: BuilderBegin, Service: flow.origin.Unique()})
 	if err != nil {
 		return w.Wrapf(err, "cannot start playbook")
 	}
@@ -214,7 +288,7 @@ func (flow *Flow) Manager(unique string) (*Manager, error) {
 func (flow *Flow) Stop() error {
 	// Don't call on a possibly Done context
 	stoppedContext, done := common.NewContext()
-	w := wool.Get(stoppedContext).In("Stop")
+	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
 	var res error
 	for _, manager := range flow.managers {
@@ -234,7 +308,7 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 		return nil, w.Wrap(err)
 	}
 	switch action.Type {
-	case RuntimeCreate:
+	case RuntimeBegin:
 		return func(ctx context.Context) (*OutputProperty, error) {
 			return OnInit(), nil
 		}, nil
@@ -244,6 +318,19 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 		return manager.Runner.Init, nil
 	case RuntimeStart:
 		return manager.Runner.Start, nil
+	case BuilderBegin:
+		return func(ctx context.Context) (*OutputProperty, error) {
+			return OnInit(), nil
+		}, nil
+	case BuilderLoad:
+		return manager.Builder.Load, nil
+	case BuilderInit:
+		return manager.Builder.Init, nil
+	case BuilderBuild:
+		return manager.Builder.Build, nil
+	case BuilderSync:
+		return manager.Builder.Sync, nil
+
 	default:
 		return nil, w.NewError("unknown action type %s", action.Type)
 	}

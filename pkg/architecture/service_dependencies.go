@@ -174,7 +174,7 @@ func loadServiceGraph(ctx context.Context, project *configurations.Project) (*DA
 				return nil, w.Wrapf(err, "cannot load service <%s>", serviceRef.Name)
 			}
 			graph.AddNode(service.Unique()).WithType(configurations.SERVICE)
-			for _, dep := range service.Dependencies {
+			for _, dep := range service.ServiceDependencies {
 				graph.AddNode(dep.Unique()).WithType(configurations.SERVICE)
 				graph.AddEdge(dep.Unique(), service.Unique())
 			}

@@ -7,8 +7,8 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/cli/pkg/web"
-	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/spf13/cobra"
 )
@@ -24,7 +24,7 @@ var ServiceCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
 
-		defer agents.ClearAgents()
+		defer services.ClearAgents()
 
 		errs := make(chan error, 1) // Buffered channel
 
@@ -74,7 +74,7 @@ func deployService(ctx context.Context, project *configurations.Project, service
 	//	return w.Wrap(err)
 	//}
 	//flow.WithDeploymentEnvironment(&configurations.Environment{Name: env})
-	//err = flow.Start(ctx, builder2.Deploy)
+	//err = flow.Begin(ctx, builder2.Deploy)
 	//if err != nil {
 	//	return w.Wrap(err)
 	//}

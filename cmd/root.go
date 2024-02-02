@@ -85,7 +85,7 @@ func init() {
 	// Installation
 	RootCmd.AddCommand(InstallCmd)
 
-	// Start
+	// Begin
 	RootCmd.AddCommand(RunCmd)
 
 	// Build

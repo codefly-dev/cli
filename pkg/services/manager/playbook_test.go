@@ -14,7 +14,7 @@ import (
 func TestPlaybookRunNoDependencies(t *testing.T) {
 	ctx := context.Background()
 	wool.SetGlobalLogLevel(wool.DEBUG)
-	data := setup(t, execOnInit())
+	data := setup(t, manager.RuntimeStart, execOnInit())
 	// "Create"
 
 	start := "billing/no_dependencies"
@@ -23,13 +23,13 @@ func TestPlaybookRunNoDependencies(t *testing.T) {
 
 	playbook.WithPolicy(data.policy)
 
-	// Stop after run
+	// StopIfNeeded after run
 	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart
 	})
 
 	// Run
-	err = playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+	err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	assert.NoError(t, err)
 
 	expected := createActionsWithRound(1, start, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
@@ -44,7 +44,7 @@ func TestPlaybookRunNoDependencies(t *testing.T) {
 func TestPlaybookRunNoDependenciesWithSignaller(t *testing.T) {
 	ctx := context.Background()
 	wool.SetGlobalLogLevel(wool.DEBUG)
-	data := setup(t, execOnInit())
+	data := setup(t, manager.RuntimeStart, execOnInit())
 	// "Create"
 
 	start := "billing/no_dependencies"
@@ -66,7 +66,7 @@ func TestPlaybookRunNoDependenciesWithSignaller(t *testing.T) {
 	// Run
 	go func() {
 		// We don't stop
-		_ = playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		_ = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
 	// Block on signal
@@ -82,7 +82,7 @@ func TestPlaybookRunNoDependenciesWithSignaller(t *testing.T) {
 
 func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 	ctx := context.Background()
-	data := setup(t, execOnInit())
+	data := setup(t, manager.RuntimeStart, execOnInit())
 	// "Create"
 
 	start := "billing/accounts"
@@ -94,13 +94,13 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 	playbook, err := manager.NewPlaybook(ctx, data.world)
 	playbook.WithPolicy(data.policy)
 
-	// Stop after run
+	// StopIfNeeded after run
 	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == start
 	})
 
 	// Run
-	err = playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+	err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	assert.NoError(t, err)
 	expected := createCombinedActionsWithRound(1, []string{org, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
 	assert.Equal(t, expected, playbook.Executed())
@@ -109,7 +109,7 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 
 func TestPlaybookRunTwoDependencies(t *testing.T) {
 	ctx := context.Background()
-	data := setup(t, execOnInit())
+	data := setup(t, manager.RuntimeStart, execOnInit())
 	// "Create"
 
 	start := "web/gateway"
@@ -124,7 +124,7 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 			return action.Type == manager.RuntimeLoad && action.Service == start
 		})
 
-		err = playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 		assert.NoError(t, err)
 		expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad)
 		assert.Equal(t, expected, playbook.Executed())
@@ -138,7 +138,7 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 			return action.Type == manager.RuntimeInit && action.Service == start
 		})
 
-		err = playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 		assert.NoError(t, err)
 		expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad, manager.RuntimeInit)
 		assert.Equal(t, expected, playbook.Executed())
@@ -152,7 +152,7 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 			return action.Type == manager.RuntimeStart && action.Service == start
 		})
 
-		err = playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 		assert.NoError(t, err)
 		expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
 		assert.Equal(t, expected, playbook.Executed())
@@ -164,7 +164,7 @@ func TestPlaybookRunNoDependenciesWithRestart(t *testing.T) {
 	ctx, done := common.NewContext()
 	defer done()
 	wool.SetGlobalLogLevel(wool.DEBUG)
-	data := setup(t, execOnInitThenUpdated())
+	data := setup(t, manager.RuntimeStart, execOnInitThenUpdated())
 
 	start := "billing/no_dependencies"
 
@@ -182,7 +182,7 @@ func TestPlaybookRunNoDependenciesWithRestart(t *testing.T) {
 	stopped := make(chan error)
 	go func() {
 		// We don't stop YET
-		stopped <- playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
 	expected := createActionsWithRound(1, start, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
@@ -213,7 +213,7 @@ signalled:
 func TestPlaybookRunOneDependencyWithRestartNoPropagation(t *testing.T) {
 	ctx := context.Background()
 	wool.SetGlobalLogLevel(wool.DEBUG)
-	data := setup(t, execOnInitThenUpdated())
+	data := setup(t, manager.RuntimeStart, execOnInitThenUpdated())
 
 	start := "billing/accounts"
 	org := "management/organization"
@@ -236,7 +236,7 @@ func TestPlaybookRunOneDependencyWithRestartNoPropagation(t *testing.T) {
 	stopped := make(chan error)
 	go func() {
 		// We don't stop YET
-		stopped <- playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
 	expected := createCombinedActionsWithRound(1, []string{org, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
@@ -273,7 +273,7 @@ func TestPlaybookRunOneDependencyWithRestartWithPropagation(t *testing.T) {
 	defer done()
 
 	wool.SetGlobalLogLevel(wool.DEBUG)
-	data := setup(t, execOnInitThenPropagate())
+	data := setup(t, manager.RuntimeStart, execOnInitThenPropagate())
 
 	start := "billing/accounts"
 	org := "management/organization"
@@ -296,7 +296,7 @@ func TestPlaybookRunOneDependencyWithRestartWithPropagation(t *testing.T) {
 	stopped := make(chan error)
 	go func() {
 		// We don't stop YET
-		stopped <- playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
 	// Block on signal
@@ -331,7 +331,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagation(t *testing.T) {
 	defer done()
 
 	wool.SetGlobalLogLevel(wool.DEBUG)
-	data := setup(t, execOnInitThenPropagate())
+	data := setup(t, manager.RuntimeStart, execOnInitThenPropagate())
 
 	start := "web/gateway"
 	accounts := "billing/accounts"
@@ -352,7 +352,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagation(t *testing.T) {
 	stopped := make(chan error)
 	go func() {
 		// We don't stop YET
-		stopped <- playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
 	// Block on signal
@@ -399,7 +399,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddle(t *testing
 	exec := execOnInitThenPropagate()
 	exec.onlyService = org
 
-	data := setup(t, exec)
+	data := setup(t, manager.RuntimeStart, exec)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
 
@@ -416,7 +416,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddle(t *testing
 	stopped := make(chan error)
 	go func() {
 		// We don't stop YET
-		stopped <- playbook.Start(ctx, manager.Action{Type: manager.RuntimeCreate, Service: start})
+		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
 	// Block on signal

@@ -51,10 +51,6 @@ message RunningInformation {
   int32 agent_pid = 3;
 }
 
-message RunningInformationResponse {
-  repeated RunningInformation running = 1;
-}
-
 message GetAddressesRequest {
   string application = 1;
   string service = 2;
@@ -121,11 +117,6 @@ service Web {
     };
   }
 
-  rpc GetRunningInformation(google.protobuf.Empty) returns (RunningInformationResponse) {
-    option (google.api.http) = {
-      get: "/active/project/running-information"
-    };
-  }
 
   rpc GetAddresses(GetAddressesRequest) returns (GetAddressesResponse) {
     option (google.api.http) = {

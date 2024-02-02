@@ -8,7 +8,7 @@ agent:
     name: go-grpc
     version: 0.0.16
     publisher: codefly.ai
-dependencies:
+service-dependencies:
   - name: organization
     application: management
 endpoints:

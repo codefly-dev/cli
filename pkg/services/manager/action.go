@@ -13,14 +13,20 @@ import (
 type ActionType string
 
 const (
-	RuntimeCreate ActionType = "runtime-create"
-	RuntimeLoad   ActionType = "runtime-load"
-	RuntimeInit   ActionType = "runtime-init"
-	RuntimeStart  ActionType = "runtime-run"
-	RuntimeStop   ActionType = "runtime-stop"
+	RuntimeBegin ActionType = "runtime-begin"
+	RuntimeLoad  ActionType = "runtime-load"
+	RuntimeInit  ActionType = "runtime-init"
+	RuntimeStart ActionType = "runtime-run"
+	RuntimeStop  ActionType = "runtime-stop"
+
+	BuilderBegin ActionType = "builder-begin"
+	BuilderLoad  ActionType = "builder-load"
+	BuilderInit  ActionType = "builder-init"
+	BuilderBuild ActionType = "builder-build"
+	BuilderSync  ActionType = "builder-sync"
 )
 
-// Implement some kind of state machine
+// Implement some kind of sharedState machine
 
 type Action struct {
 	Type    ActionType

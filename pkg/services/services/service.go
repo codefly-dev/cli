@@ -48,6 +48,8 @@ type BuilderInstance struct {
 type RuntimeInstance struct {
 	*configurations.Service
 	services.Runtime
+
+	IsHotReloading bool
 }
 
 // Builder methods
@@ -71,13 +73,13 @@ func (instance *BuilderInstance) Create(ctx context.Context, req *builderv0.Crea
 	w := wool.Get(ctx).In("BuilderInstance::Create", wool.NameField(instance.Service.Unique()))
 	err := communicate.Do[builderv0.CreateRequest](ctx, instance.Builder, clicommunicate.NewPrompt())
 	if err != nil {
-		return &builderv0.CreateResponse{Status: &builderv0.CreateStatus{Status: builderv0.CreateStatus_ERROR, Message: err.Error()}},
+		return &builderv0.CreateResponse{State: &builderv0.CreateStatus{State: builderv0.CreateStatus_ERROR, Message: err.Error()}},
 			w.Wrapf(err, "cannot communicate")
 	}
 	cli.Header(1, "Going to work!")
 	s := cli.Spinner()
 	defer s.Stop()
-	// Start the spinner
+	// Begin the spinner
 	defer s.Stop() //
 
 	return instance.Builder.Create(ctx, req)
@@ -88,7 +90,7 @@ func (instance *BuilderInstance) Sync(ctx context.Context, req *builderv0.SyncRe
 	// Communicate always
 	err := communicate.Do[builderv0.SyncRequest](ctx, instance.Builder, clicommunicate.NewPrompt())
 	if err != nil {
-		return &builderv0.SyncResponse{Status: &builderv0.SyncStatus{Status: builderv0.SyncStatus_ERROR, Message: err.Error()}},
+		return &builderv0.SyncResponse{State: &builderv0.SyncStatus{State: builderv0.SyncStatus_ERROR, Message: err.Error()}},
 			w.Wrapf(err, "cannot communicate")
 	}
 	return instance.Builder.Sync(ctx, req)
@@ -144,7 +146,7 @@ func (instance *Instance) LoadBuilder(ctx context.Context) error {
 	if err != nil {
 		return w.Wrapf(err, "missing builder capability")
 	}
-	builder, err := services.LoadBuilder(ctx, instance.Service)
+	builder, err := LoadBuilder(ctx, instance.Service)
 	if err != nil {
 		return w.Wrapf(err, "cannot load builder")
 	}
@@ -162,11 +164,20 @@ func (instance *Instance) LoadRuntime(ctx context.Context) error {
 	if err != nil {
 		return w.Wrapf(err, "missing some runtimes")
 	}
-	runtime, err := services.LoadRuntime(ctx, instance.Service)
+	runtime, err := LoadRuntime(ctx, instance.Service)
 	if err != nil {
 		return w.Wrapf(err, "cannot load runtime")
 	}
-	instance.Runtime = &RuntimeInstance{Service: instance.Service, Runtime: runtime}
+	// native hot-reload
+	var hotReload bool
+	for _, c := range instance.Capabilities {
+		if c.Type == agentv0.Capability_HOT_RELOAD {
+			hotReload = true
+			break
+		}
+	}
+
+	instance.Runtime = &RuntimeInstance{Service: instance.Service, Runtime: runtime, IsHotReloading: hotReload}
 	return nil
 }
 

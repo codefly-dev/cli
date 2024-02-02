@@ -10,9 +10,9 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/cli/pkg/services/actions"
+	"github.com/codefly-dev/cli/pkg/services/services"
 
 	actionsservice "github.com/codefly-dev/core/actions/service"
-	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/wool"
@@ -72,7 +72,7 @@ var ServiceCmd = &cobra.Command{
 }
 
 func addService(ctx context.Context, name string, agentInput string) error {
-	defer agents.ClearAgents()
+	defer services.ClearAgents()
 
 	w := wool.Get(ctx).In("cmd.add.service")
 

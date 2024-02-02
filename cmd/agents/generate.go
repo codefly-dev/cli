@@ -4,7 +4,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/generator"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -25,7 +25,7 @@ func generateService(p string) error {
 	ctx, done := common.NewContext()
 	defer done()
 	w := wool.Get(ctx).In("agents.GenerateCmd")
-	p, err := configurations.SolvePath(p)
+	p, err := shared.SolvePath(p)
 	if err != nil {
 		return w.Wrapf(err, "cannot solve path")
 	}

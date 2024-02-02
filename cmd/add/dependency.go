@@ -6,10 +6,10 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
+	"github.com/codefly-dev/cli/pkg/services/services"
 
 	"github.com/codefly-dev/core/actions/actions"
 	actionsservice "github.com/codefly-dev/core/actions/service"
-	"github.com/codefly-dev/core/agents"
 	"github.com/spf13/cobra"
 )
 
@@ -29,7 +29,7 @@ var ServiceDependencyCmd = &cobra.Command{
 func addServiceDependency() {
 	ctx, done := common.NewContext()
 	defer done()
-	defer agents.ClearAgents()
+	defer services.ClearAgents()
 
 	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)

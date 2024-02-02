@@ -149,28 +149,6 @@
         ]
       }
     },
-    "/active/project/running-information": {
-      "get": {
-        "operationId": "Web_GetRunningInformation",
-        "responses": {
-          "200": {
-            "description": "A successful response.",
-            "schema": {
-              "$ref": "#/definitions/v0RunningInformationResponse"
-            }
-          },
-          "default": {
-            "description": "An unexpected error response.",
-            "schema": {
-              "$ref": "#/definitions/rpcStatus"
-            }
-          }
-        },
-        "tags": [
-          "Web"
-        ]
-      }
-    },
     "/overall/agent/{agent}/information": {
       "get": {
         "operationId": "Web_GetAgentInformation",
@@ -528,9 +506,11 @@
       "enum": [
         "UNKNOWN",
         "BUILDER",
-        "RUNTIME"
+        "RUNTIME",
+        "HOT_RELOAD"
       ],
-      "default": "UNKNOWN"
+      "default": "UNKNOWN",
+      "title": "- HOT_RELOAD: Hot Reload is a runtime where a running process will NOT be restarted"
     },
     "v0Endpoint": {
       "type": "object",
@@ -921,33 +901,6 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/v0RestRoute"
-          }
-        }
-      }
-    },
-    "v0RunningInformation": {
-      "type": "object",
-      "properties": {
-        "application": {
-          "type": "string"
-        },
-        "service": {
-          "type": "string"
-        },
-        "agentPid": {
-          "type": "integer",
-          "format": "int32"
-        }
-      }
-    },
-    "v0RunningInformationResponse": {
-      "type": "object",
-      "properties": {
-        "running": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/v0RunningInformation"
           }
         }
       }

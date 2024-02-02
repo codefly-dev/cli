@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/services/services"
+
 	"github.com/charmbracelet/glamour"
 
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services"
 	"github.com/codefly-dev/core/actions/actions"
 	actionservice "github.com/codefly-dev/core/actions/service"
 	"github.com/codefly-dev/core/configurations"

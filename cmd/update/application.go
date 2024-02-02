@@ -5,7 +5,7 @@ package update
 // 	Use:   "application",
 // 	Short: "Update an application",
 
-// 	Start: func(cmd *cobra.Command, args []string) {
+// 	Begin: func(cmd *cobra.Command, args []string) {
 // 	ctx := context.Background()
 
 //provider := wool.New(ctx, configurations.CLI.AsResource())

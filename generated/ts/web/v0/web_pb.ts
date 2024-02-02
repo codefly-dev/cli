@@ -254,43 +254,6 @@ export class RunningInformation extends Message<RunningInformation> {
 }
 
 /**
- * @generated from message observability.v0.RunningInformationResponse
- */
-export class RunningInformationResponse extends Message<RunningInformationResponse> {
-  /**
-   * @generated from field: repeated observability.v0.RunningInformation running = 1;
-   */
-  running: RunningInformation[] = [];
-
-  constructor(data?: PartialMessage<RunningInformationResponse>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "observability.v0.RunningInformationResponse";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "running", kind: "message", T: RunningInformation, repeated: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunningInformationResponse {
-    return new RunningInformationResponse().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RunningInformationResponse {
-    return new RunningInformationResponse().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RunningInformationResponse {
-    return new RunningInformationResponse().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: RunningInformationResponse | PlainMessage<RunningInformationResponse> | undefined, b: RunningInformationResponse | PlainMessage<RunningInformationResponse> | undefined): boolean {
-    return proto3.util.equals(RunningInformationResponse, a, b);
-  }
-}
-
-/**
  * @generated from message observability.v0.GetAddressesRequest
  */
 export class GetAddressesRequest extends Message<GetAddressesRequest> {

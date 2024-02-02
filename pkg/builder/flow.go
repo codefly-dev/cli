@@ -130,7 +130,7 @@ package builder
 //	return Action{Type: t, Unique: action.Unique, Only: action.Only}
 //}
 //
-//func (flow *Flow) Start(ctx context.Context, afterLoad ActionType) error {
+//func (flow *Flow) Begin(ctx context.Context, afterLoad ActionType) error {
 //	w := wool.Get(ctx).In("flow")
 //	w.Debug("sending load")
 //	flow.actions <- Action{Type: Load}
@@ -182,7 +182,7 @@ package builder
 //				return w.NewError(fmt.Sprintf("unknown action type: <%v>", action.Type))
 //			}
 //		case <-ctx.Done():
-//			return flow.Stop()
+//			return flow.StopIfNeeded()
 //		}
 //	}
 //}
@@ -232,7 +232,7 @@ package builder
 //
 //// GetProviderInfos get the infos for the service and from all the direct dependencies
 //func (flow *Flow) GetProviderInfos(ctx context.Context, service *configurations.Service) ([]*basev0.ProviderInformation, error) {
-//	infos, err := flow.provider.GetProviderInformation(ctx, service)
+//	infos, err := flow.provider.GetServiceDepependenciesProviderInformation(ctx, service)
 //	if err != nil {
 //		return nil, err
 //	}
@@ -295,9 +295,9 @@ package builder
 //	return nil
 //}
 //
-//func (flow *Flow) Stop() error {
+//func (flow *Flow) StopIfNeeded() error {
 //	//for _, manager := range flow.managers {
-//	//	err := manager.Stop()
+//	//	err := manager.StopIfNeeded()
 //	//	if err != nil {
 //	//		return err
 //	//	}

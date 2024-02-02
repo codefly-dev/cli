@@ -35,7 +35,7 @@ func LoadPublicApplicationGraph(ctx context.Context, project *configurations.Pro
 			service := configurations.ServiceUnique(app.Name, endpoint.Service)
 			g.AddNode(service).WithType(configurations.SERVICE)
 			g.AddEdge(app.Unique(), service)
-			e := configurations.FromProtoEndpoint(endpoint)
+			e := configurations.EndpointFromProto(endpoint)
 			g.AddNode(e.Unique()).WithType(configurations.ENDPOINT)
 			g.AddEdge(service, e.Unique())
 		}

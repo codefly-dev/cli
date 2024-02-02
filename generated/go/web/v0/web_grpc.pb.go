@@ -8,7 +8,6 @@ package v0
 
 import (
 	context "context"
-
 	v01 "github.com/codefly-dev/core/generated/go/base/v0"
 	v02 "github.com/codefly-dev/core/generated/go/observability/v0"
 	v0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
@@ -31,7 +30,6 @@ const (
 	Web_GetProjectPublicApplicationsDependencyGraph_FullMethodName = "/observability.v0.Web/GetProjectPublicApplicationsDependencyGraph"
 	Web_LogHistory_FullMethodName                                  = "/observability.v0.Web/LogHistory"
 	Web_GetActive_FullMethodName                                   = "/observability.v0.Web/GetActive"
-	Web_GetRunningInformation_FullMethodName                       = "/observability.v0.Web/GetRunningInformation"
 	Web_GetAddresses_FullMethodName                                = "/observability.v0.Web/GetAddresses"
 	Web_Logs_FullMethodName                                        = "/observability.v0.Web/Logs"
 	Web_ActiveLogHistory_FullMethodName                            = "/observability.v0.Web/ActiveLogHistory"
@@ -48,7 +46,6 @@ type WebClient interface {
 	GetProjectPublicApplicationsDependencyGraph(ctx context.Context, in *ProjectRequest, opts ...grpc.CallOption) (*MultiGraphResponse, error)
 	LogHistory(ctx context.Context, in *v02.LogRequest, opts ...grpc.CallOption) (*v02.LogResponse, error)
 	GetActive(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ActiveResponse, error)
-	GetRunningInformation(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RunningInformationResponse, error)
 	GetAddresses(ctx context.Context, in *GetAddressesRequest, opts ...grpc.CallOption) (*GetAddressesResponse, error)
 	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
 	ActiveLogHistory(ctx context.Context, in *v02.LogRequest, opts ...grpc.CallOption) (*v02.LogResponse, error)
@@ -125,15 +122,6 @@ func (c *webClient) GetActive(ctx context.Context, in *emptypb.Empty, opts ...gr
 	return out, nil
 }
 
-func (c *webClient) GetRunningInformation(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RunningInformationResponse, error) {
-	out := new(RunningInformationResponse)
-	err := c.cc.Invoke(ctx, Web_GetRunningInformation_FullMethodName, in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *webClient) GetAddresses(ctx context.Context, in *GetAddressesRequest, opts ...grpc.CallOption) (*GetAddressesResponse, error) {
 	out := new(GetAddressesResponse)
 	err := c.cc.Invoke(ctx, Web_GetAddresses_FullMethodName, in, out, opts...)
@@ -195,7 +183,6 @@ type WebServer interface {
 	GetProjectPublicApplicationsDependencyGraph(context.Context, *ProjectRequest) (*MultiGraphResponse, error)
 	LogHistory(context.Context, *v02.LogRequest) (*v02.LogResponse, error)
 	GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error)
-	GetRunningInformation(context.Context, *emptypb.Empty) (*RunningInformationResponse, error)
 	GetAddresses(context.Context, *GetAddressesRequest) (*GetAddressesResponse, error)
 	Logs(*emptypb.Empty, Web_LogsServer) error
 	ActiveLogHistory(context.Context, *v02.LogRequest) (*v02.LogResponse, error)
@@ -226,9 +213,6 @@ func (UnimplementedWebServer) LogHistory(context.Context, *v02.LogRequest) (*v02
 }
 func (UnimplementedWebServer) GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetActive not implemented")
-}
-func (UnimplementedWebServer) GetRunningInformation(context.Context, *emptypb.Empty) (*RunningInformationResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetRunningInformation not implemented")
 }
 func (UnimplementedWebServer) GetAddresses(context.Context, *GetAddressesRequest) (*GetAddressesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetAddresses not implemented")
@@ -378,24 +362,6 @@ func _Web_GetActive_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Web_GetRunningInformation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(WebServer).GetRunningInformation(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Web_GetRunningInformation_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(WebServer).GetRunningInformation(ctx, req.(*emptypb.Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _Web_GetAddresses_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetAddressesRequest)
 	if err := dec(in); err != nil {
@@ -487,10 +453,6 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetActive",
 			Handler:    _Web_GetActive_Handler,
-		},
-		{
-			MethodName: "GetRunningInformation",
-			Handler:    _Web_GetRunningInformation_Handler,
 		},
 		{
 			MethodName: "GetAddresses",

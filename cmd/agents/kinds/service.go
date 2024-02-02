@@ -6,8 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/agents"
-	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/configurations"
 	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
 	"github.com/codefly-dev/core/wool"
@@ -27,7 +26,7 @@ var ServiceCmd = &cobra.Command{
 }
 
 func serviceInfo(ctx context.Context, input string) {
-	defer agents.ClearAgents()
+	defer services.ClearAgents()
 	w := wool.Get(ctx).In("cmd.info.agentInput.service")
 	ctx = w.Inject(ctx)
 

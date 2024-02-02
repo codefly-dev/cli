@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/codefly-dev/cli/pkg/services/manager"
-
 	"google.golang.org/grpc/reflection"
 
 	"google.golang.org/grpc/codes"
@@ -17,7 +15,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	web "github.com/codefly-dev/cli/generated/go/web/v0"
 	"github.com/codefly-dev/cli/pkg/architecture"
-	"github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/configurations"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
@@ -49,24 +47,6 @@ func (s *Server) GetAddresses(ctx context.Context, req *web.GetAddressesRequest)
 	//	Addresses: flow.GetAddressesForEndpoint(req.Application, req.Service, req.Endpoint),
 	//}, nil
 	return nil, status.Error(codes.Internal, "TBI")
-}
-
-func (s *Server) GetRunningInformation(ctx context.Context, empty *emptypb.Empty) (*web.RunningInformationResponse, error) {
-	infos, err := manager.AgentPIDs(ctx)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-	var running []*web.RunningInformation
-	for _, info := range infos {
-		running = append(running, &web.RunningInformation{
-			Application: info.Application,
-			Service:     info.Service,
-			AgentPid:    int32(info.AgentPID),
-		})
-	}
-	return &web.RunningInformationResponse{
-		Running: running,
-	}, nil
 }
 
 /* Active information */

@@ -61,7 +61,6 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 func Service(ctx context.Context) *configurations.Service {
 	active, err := LoadActiveContext(ctx)
 	cli.ExitOnError(err, "cannot load active context")
-	cli.ExitIf(active.Service == nil, "no active service")
 	return active.Service
 }
 

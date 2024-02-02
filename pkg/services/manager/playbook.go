@@ -78,15 +78,15 @@ func (playbook *Playbook) Restrict(ctx context.Context, service string) error {
 }
 
 func (playbook *Playbook) Seed(ctx context.Context, action Action) error {
-	w := wool.Get(ctx).In("Playbook.Start")
+	w := wool.Get(ctx).In("Playbook.Begin")
 	w.Debug("sending action", wool.Field("action", action.String()))
 	playbook.actions.bumpRound()
 	playbook.actions.send(ctx, action)
 	return nil
 }
 
-func (playbook *Playbook) Start(ctx context.Context, action Action) error {
-	w := wool.Get(ctx).In("Playbook.Start")
+func (playbook *Playbook) Begin(ctx context.Context, action Action) error {
+	w := wool.Get(ctx).In("Playbook.Begin")
 	err := playbook.Restrict(ctx, action.Service)
 	if err != nil {
 		return w.Wrapf(err, "cannot restrict policy")
@@ -208,7 +208,7 @@ func (playbook *Playbook) ActionManager() *ActionManager {
 func (playbook *Playbook) record(action Action) {
 	playbook.lock.Lock()
 	defer playbook.lock.Unlock()
-	if action.Type != RuntimeCreate {
+	if action.Type != RuntimeBegin {
 		playbook.executed = append(playbook.executed, action)
 	}
 }

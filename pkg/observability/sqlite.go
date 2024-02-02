@@ -21,7 +21,7 @@ import (
 //
 //func (storage *Sqlite) flushLogsPeriodically() {
 //	ticker := time.NewTicker(1 * time.Second)
-//	defer ticker.Stop()
+//	defer ticker.StopIfNeeded()
 //
 //	for {
 //		select {
@@ -176,7 +176,7 @@ import (
 //}
 //
 //func insertLogs(ctx context.Context, db *sql.DB, sessionID string, logs []*agentv0.Log) error {
-//	// Start a transaction
+//	// Begin a transaction
 //	tx, err := db.Begin()
 //	if err != nil {
 //		return err
