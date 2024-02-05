@@ -1,0 +1,67 @@
+{
+  "environment": {
+    "name": "{{ faker.name.last_name }}",
+    "description": "Product British Indian Ocean Territory (Chagos Archipelago)",
+    "networkType": "DNS"
+  },
+  "networkMappings": [
+    {
+      "application": "Wooden Orchestrator",
+      "service": "Incredible Steel Fish",
+      "endpoint": {
+        "name": "{{ faker.name.last_name }}",
+        "service": "Freeway invoice",
+        "application": "Concrete Director",
+        "namespace": "Highway Orchestrator Directives",
+        "description": "feed primary quantify",
+        "visibility": "Papua New Guinea",
+        "api": {
+          "tcp": {}
+        }
+      },
+      "addresses": [
+        "Parkway",
+        "Investment Account Steel experiences"
+      ]
+    },
+    {
+      "application": "Intelligent Cotton Ball action-items Borders",
+      "service": "Bypass FTP digital",
+      "endpoint": {
+        "name": "{{ faker.name.last_name }}",
+        "service": "online",
+        "application": "deposit",
+        "namespace": "support methodology Ergonomic",
+        "description": "Generic Rubber Chicken Interactions Manager",
+        "visibility": "Seychelles",
+        "api": {
+          "tcp": {}
+        }
+      },
+      "addresses": [
+        "target generate mission-critical",
+        "transmit"
+      ]
+    }
+  ],
+  "dependenciesEndpoints": [
+    null,
+    null
+  ],
+  "providerInfos": [
+    {
+      "name": "{{ faker.name.last_name }}",
+      "origin": "Generic",
+      "data": {
+        "Functionality": "Outdoors teal Licensed Fresh Shoes"
+      }
+    },
+    {
+      "name": "{{ faker.name.last_name }}",
+      "origin": "Unbranded turquoise synthesizing",
+      "data": {
+        "Orchard application": "hacking static"
+      }
+    }
+  ]
+}

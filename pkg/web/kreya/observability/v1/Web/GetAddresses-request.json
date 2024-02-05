@@ -1,5 +1,0 @@
-{
-  "application": "management",
-  "service": "organization",
-  "endpoint": "grpc"
-}

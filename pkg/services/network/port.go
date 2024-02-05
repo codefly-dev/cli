@@ -128,12 +128,12 @@ func (r FixedStrategy) Reserve(ctx context.Context, host string, endpoints []*Ap
 	w := wool.Get(ctx).In("FixedStrategy.Reserve")
 	m := &ApplicationEndpointInstances{}
 	for _, endpoint := range endpoints {
-		api, err := configurations.WhichAPI(endpoint.Endpoint.Api)
+		api, err := configurations.APIAsStandard(endpoint.Endpoint.Api)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot get api")
 		}
 		port := ToPort(endpoint.Application, endpoint.Service, api)
-		w.Focus("reserving", wool.ApplicationField(endpoint.Application), wool.ServiceField(endpoint.Service), wool.Field("port", port))
+		w.Debug("reserving", wool.ApplicationField(endpoint.Application), wool.ServiceField(endpoint.Service), wool.Field("port", port))
 		w.Trace("port", wool.ThisField(endpoint), wool.Field("port", port))
 		m.ApplicationEndpointInstances = append(m.ApplicationEndpointInstances,
 			&ApplicationEndpointInstance{

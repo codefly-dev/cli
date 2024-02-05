@@ -13,6 +13,7 @@ import (
 
 type RunnerLoadOutput struct {
 	Endpoints []*basev0.Endpoint
+	Err       string
 }
 
 type RunnerLoadManager struct {
@@ -37,6 +38,11 @@ func (b *RunnerLoadManager) Process(ctx context.Context) (*OutputProperty, error
 
 func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) error {
 	w := wool.Get(ctx).In("RunnerLoadManager.Set", wool.NameField(b.unique))
+	// Handle error
+	if output.Err != "" {
+		b.processed = Pause()
+		return nil
+	}
 	// Compute a hash on the endpoints
 	hash, err := configurations.EndpointHash(ctx, output.Endpoints...)
 	if err != nil {

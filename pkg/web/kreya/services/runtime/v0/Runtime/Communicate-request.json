@@ -1,0 +1,15 @@
+{
+  "mode": "UNKNOWN",
+  "stage": "Concrete",
+  "channel": {
+    "kind": "Unbranded Plastic Shirt blue"
+  },
+  "answer": {
+    "done": true,
+    "round": 445,
+    "error": "empowering",
+    "confirm": {
+      "confirmed": true
+    }
+  }
+}

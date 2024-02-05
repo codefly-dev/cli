@@ -67,7 +67,7 @@ func (builder *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	w.Focus("loaded",
+	w.Debug("loaded",
 		wool.Field("endpoints", configurations.MakeEndpointSummary(resp.Endpoints)))
 
 	builder.endpoints = resp.Endpoints
@@ -93,7 +93,7 @@ func (builder *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 
 func (builder *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(builder.instance.Service))
-	w.Focus("init")
+	w.Debug("init")
 	// Build the request
 	env, err := builder.playbook.world.Env.Proto()
 	if err != nil {
@@ -127,12 +127,12 @@ func (builder *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 
 	err = builder.outputPropertyForInit.Set(ctx, &BuilderInitOutput{})
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot set outputProperty for load")
+		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
 
 	outputProperty, err := builder.outputPropertyForInit.Process(ctx)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot process outputProperty for load")
+		return nil, w.Wrapf(err, "cannot process outputProperty for init")
 	}
 
 	w.Debug("outputProperty", wool.Field("outputProperty", outputProperty))
@@ -148,7 +148,7 @@ func generateDNSNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoin
 		return nil, w.Wrapf(err, "cannot create default endpoint")
 	}
 	for _, endpoint := range endpoints {
-		w.Focus("exposing", wool.Field("destination", configurations.EndpointDestination(endpoint)))
+		w.Debug("exposing", wool.Field("destination", configurations.EndpointDestination(endpoint)))
 		err = pm.Expose(endpoint)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot add grpc endpoint to network manager")
@@ -162,13 +162,13 @@ func generateDNSNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoin
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create network mapping")
 	}
-	w.Focus("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
+	w.Debug("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
 	return networkMappings, nil
 }
 
 func (builder *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(builder.instance.Service))
-	w.Focus("init")
+	w.Debug("init")
 	// Build the request
 
 	dependenciesEndpoints, err := builder.sharedState.GetDependenciesEndpoints(ctx, builder.instance.Service)
@@ -184,19 +184,19 @@ func (builder *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	w.Focus("BUILD PROTO BASE")
+	w.Debug("BUILD PROTO BASE")
 	if resp.State != nil && resp.State.State != builderv0.BuildStatus_SUCCESS {
 		return nil, w.NewError("service instance is not ready")
 	}
 
 	err = builder.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot set outputProperty for load")
+		return nil, w.Wrapf(err, "cannot set outputProperty for build")
 	}
 
 	outputProperty, err := builder.outputPropertyForBuild.Process(ctx)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot process outputProperty for load")
+		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
 	w.Debug("outputProperty", wool.Field("outputProperty", outputProperty))
@@ -218,12 +218,12 @@ func (builder *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 
 	err = builder.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot set outputProperty for load")
+		return nil, w.Wrapf(err, "cannot set outputProperty for sync")
 	}
 
 	outputProperty, err := builder.outputPropertyForSync.Process(ctx)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot process outputProperty for load")
+		return nil, w.Wrapf(err, "cannot process outputProperty for sync")
 	}
 
 	w.Debug("outputProperty", wool.Field("outputProperty", outputProperty))

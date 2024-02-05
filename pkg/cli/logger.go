@@ -19,6 +19,7 @@ var cliLogger *Logger
 func init() {
 	cliLogger = &Logger{}
 	agents.AddProcessor(cliLogger)
+
 }
 
 func GetLogger() *Logger {
@@ -52,8 +53,7 @@ func (logger *Logger) Process(log *wool.Log) {
 		fmt.Printf("%s\n", log)
 	}
 }
-
-func (logger *Logger) ProcessWithSource(log *wool.Log, source *wool.Identifier) {
+func (logger *Logger) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 	if log.Level < wool.GlobalLogLevel() {
 		return
 	}

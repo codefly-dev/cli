@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 
@@ -33,10 +34,10 @@ var ServiceCmd = &cobra.Command{
 			if workspace == nil {
 				cli.Error("No workspace found: can't run server")
 			} else {
+				server, err := web.NewServer(web.ServerData{Workspace: workspace})
+				cli.ExitOnError(err, "cannot create web server")
 				go func() {
-					w, err := web.NewServer(web.ServerData{Workspace: workspace})
-					cli.ExitOnError(err, "cannot create web server")
-					errs <- w.Start(ctx)
+					errs <- server.Start(ctx)
 				}()
 			}
 
@@ -45,7 +46,11 @@ var ServiceCmd = &cobra.Command{
 		service := common.Service(ctx)
 		project := common.Project(ctx)
 		flow, err := initRunService(ctx, project, service, standAlone)
-		cli.ExitOnError(err, "Cannot initialize service")
+		if err != nil {
+			err = cleanRunService(flow)
+			err = errors.Unwrap(err)
+			cli.ExitOnError(err, "Cannot init flow")
+		}
 		go func() {
 			errs <- runService(ctx, flow)
 		}()
@@ -54,7 +59,7 @@ var ServiceCmd = &cobra.Command{
 		for {
 			select {
 			case err := <-errs:
-				cli.ExitOnError(err, "Got service run error: %v\n", err)
+				cli.Error("Got service run error: %v\n", errors.Unwrap(err))
 				errs <- nil
 				break loop
 			case <-ctx.Done():
@@ -66,7 +71,7 @@ var ServiceCmd = &cobra.Command{
 		err = cleanRunService(flow)
 		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
-			cli.Error("Got error while stopping service: %v", stopped)
+			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
 			return
 		}
 		cli.Header(1, "Service stopped successfully")
@@ -88,8 +93,9 @@ func initRunService(ctx context.Context, project *configurations.Project, servic
 }
 
 func cleanRunService(flow *manager.Flow) error {
+	err := flow.Stop()
 	services.ClearAgents()
-	return flow.Stop()
+	return err
 }
 
 func runService(ctx context.Context, flow *manager.Flow) error {

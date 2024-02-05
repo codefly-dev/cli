@@ -1,0 +1,10 @@
+{
+  "debug": true,
+  "identity": {
+    "name": "{{ faker.name.last_name }}",
+    "domain": "Rubber",
+    "application": "uniform",
+    "namespace": "North Dakota withdrawal grey",
+    "location": "Awesome"
+  }
+}

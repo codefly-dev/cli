@@ -1,0 +1,42 @@
+{
+  "otherNetworkMappings": [
+    {
+      "application": "Persevering",
+      "service": "Norfolk Island Investment Account",
+      "endpoint": {
+        "name": "{{ faker.name.last_name }}",
+        "service": "Square",
+        "application": "deposit generate",
+        "namespace": "Delaware copying",
+        "description": "IB orchid",
+        "visibility": "connecting payment",
+        "api": {
+          "tcp": {}
+        }
+      },
+      "addresses": [
+        "1080p Intelligent Soft Car application",
+        "database Republic of Korea payment"
+      ]
+    },
+    {
+      "application": "JBOD silver",
+      "service": "foreground",
+      "endpoint": {
+        "name": "{{ faker.name.last_name }}",
+        "service": "bleeding-edge auxiliary",
+        "application": "Balboa withdrawal",
+        "namespace": "CSS Plastic",
+        "description": "Incredible",
+        "visibility": "matrix Spring transition",
+        "api": {
+          "tcp": {}
+        }
+      },
+      "addresses": [
+        "Parkway",
+        "Virginia contingency Liaison"
+      ]
+    }
+  ]
+}

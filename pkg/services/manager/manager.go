@@ -72,7 +72,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 	switch manager.playbook.world.Mode {
 	case RunMode:
 		w.Debug("load runtime")
-		err = instance.LoadRuntime(ctx)
+		err = instance.LoadRuntime(ctx, true)
 		if err != nil {
 			return w.Wrapf(err, "cannot load service instance")
 		}
@@ -99,7 +99,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 
 func (manager *Manager) Stop(ctx context.Context) error {
 	if manager.playbook.world.Mode == RunMode {
-		return manager.Runner.StopIfNeeded(ctx)
+		return manager.Runner.Stop(ctx)
 	}
 	return nil
 }

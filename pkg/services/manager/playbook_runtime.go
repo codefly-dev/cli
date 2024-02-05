@@ -34,6 +34,9 @@ func (policy *RuntimeStartPolicy) Execute(ctx context.Context, action Action) ([
 	if !outputProperty.Valid() {
 		return nil, w.NewError("invalid outputProperty: only one of the property of output must be true: %v", outputProperty)
 	}
+	if outputProperty.Wait {
+		return []Action{action.Next(RuntimeFailing)}, nil
+	}
 
 	switch action.Type {
 	case RuntimeBegin:
@@ -44,6 +47,10 @@ func (policy *RuntimeStartPolicy) Execute(ctx context.Context, action Action) ([
 		return policy.BasicNext(ctx, outputProperty, action, RuntimeStart)
 	case RuntimeStart:
 		// We are good
+		return nil, nil
+	case RuntimeFailing:
+		// We wait
+		w.Info("Waiting for something new...")
 		return nil, nil
 	default:
 		return nil, w.NewError("unknown action type %s", action.Type)

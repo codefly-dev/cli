@@ -16,9 +16,11 @@ import (
 	"github.com/codefly-dev/core/configurations"
 )
 
+var agentsCache map[string]*coreservices.ServiceAgent
 var agentsPid map[string]int
 
 func init() {
+	agentsCache = make(map[string]*coreservices.ServiceAgent)
 	agentsPid = make(map[string]int)
 }
 
@@ -34,6 +36,10 @@ func LoadAgent(ctx context.Context, agent *configurations.Agent) (*coreservices.
 			return nil, w.Wrap(err)
 		}
 	}
+	if loaded, ok := agentsCache[agent.Unique()]; ok {
+		return loaded, nil
+	}
+
 	loaded, process, err := manager.Load[coreservices.ServiceAgentContext, coreservices.ServiceAgent](
 		ctx,
 		agent.Of(configurations.ServiceAgent),
@@ -45,6 +51,8 @@ func LoadAgent(ctx context.Context, agent *configurations.Agent) (*coreservices.
 
 	loaded.Agent = agent
 	loaded.ProcessInfo = process
+
+	agentsCache[agent.Unique()] = loaded
 	return loaded, nil
 }
 

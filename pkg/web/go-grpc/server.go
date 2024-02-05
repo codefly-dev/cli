@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"google.golang.org/grpc/reflection"
 
@@ -15,8 +18,11 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	web "github.com/codefly-dev/cli/generated/go/web/v0"
 	"github.com/codefly-dev/cli/pkg/architecture"
+	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
+	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/wool"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	observabilityv0 "github.com/codefly-dev/core/generated/go/observability/v0"
@@ -36,17 +42,17 @@ type Server struct {
 	gRPC       *grpc.Server
 	logChannel chan *observabilityv0.Log
 	workspace  *configurations.Workspace
+	Wool       *wool.Wool
 }
 
 func (s *Server) GetAddresses(ctx context.Context, req *web.GetAddressesRequest) (*web.GetAddressesResponse, error) {
-	//flow := runner.CurrentFlow()
-	//if flow == nil {
-	//	return nil, status.Error(codes.Internal, "nothing running")
-	//}
-	//return &web.GetAddressesResponse{
-	//	Addresses: flow.GetAddressesForEndpoint(req.Application, req.Service, req.Endpoint),
-	//}, nil
-	return nil, status.Error(codes.Internal, "TBI")
+	flow := manager.CurrentFlow()
+	if flow == nil {
+		return nil, status.Error(codes.Internal, "nothing running")
+	}
+	return &web.GetAddressesResponse{
+		Addresses: flow.GetAddressesForEndpoint(req.Application, req.Service, req.Endpoint),
+	}, nil
 }
 
 /* Active information */
@@ -129,8 +135,25 @@ func (s *Server) LogHistory(ctx context.Context, request *observabilityv0.LogReq
 	return nil, nil
 }
 
-func (s *Server) sendLogToClients(logEntry *observabilityv0.Log) {
-	s.logChannel <- logEntry
+func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
+	if source.IsSystem() {
+		return
+	}
+	service, err := configurations.ParseServiceUnique(source.Unique)
+	if err != nil {
+		s.Wool.Error("cannot parse service from source", wool.Field("source", source), wool.Field("error", err))
+		return
+	}
+	logEntry := &observabilityv0.Log{
+		At:          timestamppb.New(time.Now()),
+		Application: service.Application,
+		Service:     service.Name,
+		Message:     log.String(),
+		Kind:        observabilityv0.Log_SERVICE,
+	}
+	go func() {
+		s.logChannel <- logEntry
+	}()
 }
 
 func (s *Server) Logs(empty *emptypb.Empty, server web.Web_LogsServer) error {
@@ -138,7 +161,6 @@ func (s *Server) Logs(empty *emptypb.Empty, server web.Web_LogsServer) error {
 		if err := server.Send(logEntry); err != nil {
 			return err
 		}
-		// handle context cancellation or timeout if necessary
 	}
 	return nil
 }
@@ -158,6 +180,9 @@ func NewServer(c *Configuration, w *configurations.Workspace) (*Server, error) {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	w := wool.Get(ctx).In("webServer")
+	s.Wool = w
+	agents.AddProcessor(s)
 	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)

@@ -10,6 +10,7 @@ import (
 // RequirePropagation: underlying has been updated and needs to be propagated
 type OutputProperty struct {
 	OnInit                        bool
+	Wait                          bool
 	IndependentUpdate             bool
 	UpdateWithRequiredPropagation bool
 }
@@ -24,6 +25,9 @@ func (o *OutputProperty) String() string {
 	if o.UpdateWithRequiredPropagation {
 		return "UpdateWithRequiredPropagation"
 	}
+	if o.Wait {
+		return "Pause"
+	}
 	return "unknown"
 }
 
@@ -37,6 +41,9 @@ func (o *OutputProperty) Valid() bool {
 		trues++
 	}
 	if o.UpdateWithRequiredPropagation {
+		trues++
+	}
+	if o.Wait {
 		trues++
 	}
 	return trues == 1
@@ -58,6 +65,10 @@ func IndependentUpdate() *OutputProperty {
 
 func RequirePropagation() *OutputProperty {
 	return &OutputProperty{UpdateWithRequiredPropagation: true}
+}
+
+func Pause() *OutputProperty {
+	return &OutputProperty{Wait: true}
 }
 
 type ExecutorManager interface {

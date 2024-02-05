@@ -24,6 +24,26 @@ func (a *onInit) GetExecutor(ctx context.Context, action manager.Action) (manage
 	}, nil
 }
 
+// Pause: just once or panic
+type onExecWait struct {
+	loaded bool
+}
+
+func (o *onExecWait) GetExecutor(ctx context.Context, action manager.Action) (manager.OutputProcessorFunc, error) {
+	return func(ctx context.Context) (*manager.OutputProperty, error) {
+		if !o.loaded {
+			o.loaded = true
+			return manager.Pause(), nil
+		}
+		panic("should not be called")
+
+	}, nil
+}
+
+func execWait() *onExecWait {
+	return &onExecWait{}
+}
+
 type initThenUpdated struct {
 	onInit bool
 }
@@ -178,6 +198,10 @@ func TestRunPolicyNoDependencies(t *testing.T) {
 	actions, err = data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeInit, Service: start})
 	assert.NoError(t, err)
 	assert.Equal(t, createActions(start, manager.RuntimeStart), actions, "Expected no action to be triggered")
+
+	actions, err = data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeStart, Service: start})
+	assert.NoError(t, err)
+	assert.Equal(t, createActions(start), actions, "We are done")
 }
 
 func TestRunPolicyOneDependency(t *testing.T) {
@@ -194,4 +218,36 @@ func TestRunPolicyOneDependency(t *testing.T) {
 	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	assert.NoError(t, err)
 	assert.Equal(t, createCombinedActions([]string{org, start}, manager.RuntimeLoad), actions, "Expected no action to be triggered")
+}
+
+func TestRunPolicyNoDependencySimulateError(t *testing.T) {
+	ctx := context.Background()
+	data := setup(t, manager.RuntimeStart, execWait())
+	// "Create"
+
+	start := "billing/accounts"
+
+	err := data.policy.Restrict(ctx, start)
+	assert.NoError(t, err)
+
+	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeLoad, Service: start})
+	assert.NoError(t, err)
+	assert.Equal(t, createActions(start, manager.RuntimeFailing), actions, "Expected no action to be triggered")
+
+}
+
+func TestRunPolicyOneDependencySimulateError(t *testing.T) {
+	ctx := context.Background()
+	data := setup(t, manager.RuntimeStart, execWait())
+	// "Create"
+
+	start := "billing/accounts"
+	org := "management/organization"
+
+	err := data.policy.Restrict(ctx, start)
+	assert.NoError(t, err)
+
+	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeLoad, Service: org})
+	assert.NoError(t, err)
+	assert.Equal(t, createCombinedActions([]string{org}, manager.RuntimeFailing), actions, "Expected no action to be triggered")
 }

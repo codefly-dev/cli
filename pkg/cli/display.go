@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 )
 
@@ -94,9 +93,20 @@ func (wrapper *Wrapper) Error(s string, args ...any) {
 	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
 }
 
+func (wrapper *Wrapper) ErrorDetail(s string, args ...any) {
+	theme := "#(bold,red)"
+	style := lipgloss.NewStyle()
+	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+}
+
 func Error(s string, args ...any) {
 	wrapper := &Wrapper{}
 	wrapper.Error(s, args...)
+}
+
+func ErrorDetail(s string, args ...any) {
+	wrapper := &Wrapper{}
+	wrapper.ErrorDetail(s, args...)
 }
 
 func (wrapper *Wrapper) Focus(s string, args ...any) {
@@ -113,9 +123,7 @@ func Focus(s string, args ...any) {
 func ExitOnError(err error, format string, args ...any) {
 	if err != nil {
 		Error(format, args...)
-		if wool.IsDebug() {
-			Error(err.Error())
-		}
+		ErrorDetail(err.Error())
 		Exit()
 	}
 }

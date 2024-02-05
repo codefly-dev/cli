@@ -78,6 +78,7 @@ func (instance *BuilderInstance) Create(ctx context.Context, req *builderv0.Crea
 	}
 	cli.Header(1, "Going to work!")
 	s := cli.Spinner()
+	s.Start()
 	defer s.Stop()
 	// Begin the spinner
 	defer s.Stop() //
@@ -98,7 +99,7 @@ func (instance *BuilderInstance) Sync(ctx context.Context, req *builderv0.SyncRe
 
 // Runner methods
 
-func (instance *RuntimeInstance) Load(ctx context.Context) (*runtimev0.LoadResponse, error) {
+func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environment) (*runtimev0.LoadResponse, error) {
 	w := wool.Get(ctx).In("RuntimeInstance::Load", wool.NameField(instance.Service.Unique()))
 	w.Debug("sending load")
 	init := &runtimev0.LoadRequest{
@@ -110,24 +111,39 @@ func (instance *RuntimeInstance) Load(ctx context.Context) (*runtimev0.LoadRespo
 			Namespace:   instance.Service.Namespace,
 			Location:    instance.Service.Dir(),
 		},
+		Environment: env,
 	}
 	return instance.Runtime.Load(ctx, init)
 }
 
 // Loader
 
+// Instance Cache
+var instances = map[string]*Instance{}
+
+func init() {
+	instances = make(map[string]*Instance)
+}
+
 func Load(ctx context.Context, service *configurations.Service) (*Instance, error) {
 	w := wool.Get(ctx).In("services.Load", wool.ThisField(service))
-	agent, proc, err := manager.Load[services.ServiceAgentContext, services.ServiceAgent](ctx, service.Agent, service.Unique())
+
+	if service == nil {
+		return nil, w.NewError("service cannot be nil")
+	}
+	if instance, ok := instances[service.Unique()]; ok {
+		return instance, nil
+	}
+	agent, err := LoadAgent(ctx, service.Agent)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service agent")
+		return nil, w.Wrapf(err, "cannot load agent")
 	}
 	// Init capabilities
 	instance := &Instance{
 		Service: service,
 		Agent:   agent,
 	}
-	instance.ProcessInfo.AgentPID = proc.PID
+	instance.ProcessInfo.AgentPID = agent.ProcessInfo.PID
 
 	info, err := agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 	if err != nil {
@@ -137,11 +153,19 @@ func Load(ctx context.Context, service *configurations.Service) (*Instance, erro
 	instance.Capabilities = info.Capabilities
 
 	instance.Info = info
+
+	instances[service.Unique()] = instance
+
+	w.Debug("loaded agent", wool.Field("agent-pid", instance.ProcessInfo.AgentPID))
 	return instance, nil
 }
 
 func (instance *Instance) LoadBuilder(ctx context.Context) error {
 	w := wool.Get(ctx).In("ServiceInstance::LoadBuilder", wool.NameField(instance.Service.Unique()))
+	if builder, ok := buildersCache[instance.Service.Unique()]; ok {
+		instance.Builder = &BuilderInstance{Service: instance.Service, Builder: builder}
+		return nil
+	}
 	err := instance.CheckCapabilities(agentv0.Capability_BUILDER)
 	if err != nil {
 		return w.Wrapf(err, "missing builder capability")
@@ -151,18 +175,25 @@ func (instance *Instance) LoadBuilder(ctx context.Context) error {
 		return w.Wrapf(err, "cannot load builder")
 	}
 	instance.Builder = &BuilderInstance{Service: instance.Service, Builder: builder}
+
 	return nil
 }
 
-func (instance *Instance) LoadRuntime(ctx context.Context) error {
+func (instance *Instance) LoadRuntime(ctx context.Context, withRuntimeCheck bool) error {
 	w := wool.Get(ctx).In("ServiceInstance::LoadRuntime", wool.NameField(instance.Service.Unique()))
+	if runtime, ok := runtimesCache[instance.Service.Unique()]; ok {
+		instance.Runtime = &RuntimeInstance{Service: instance.Service, Runtime: runtime}
+		return nil
+	}
 	err := instance.CheckCapabilities(agentv0.Capability_RUNTIME)
 	if err != nil {
 		return w.Wrapf(err, "missing builder capability")
 	}
-	err = runners.CheckForRuntimes(ctx, instance.Info.RuntimeRequirements)
-	if err != nil {
-		return w.Wrapf(err, "missing some runtimes")
+	if withRuntimeCheck {
+		err = runners.CheckForRuntimes(ctx, instance.Info.RuntimeRequirements)
+		if err != nil {
+			return w.Wrapf(err, "missing some runtimes")
+		}
 	}
 	runtime, err := LoadRuntime(ctx, instance.Service)
 	if err != nil {
@@ -176,8 +207,8 @@ func (instance *Instance) LoadRuntime(ctx context.Context) error {
 			break
 		}
 	}
-
 	instance.Runtime = &RuntimeInstance{Service: instance.Service, Runtime: runtime, IsHotReloading: hotReload}
+
 	return nil
 }
 

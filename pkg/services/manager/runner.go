@@ -2,9 +2,11 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	"github.com/codefly-dev/core/shared"
 
 	"github.com/codefly-dev/cli/pkg/services/network"
 	"github.com/codefly-dev/cli/pkg/services/services"
@@ -42,6 +44,8 @@ type Runner struct {
 	outputPropertyForLoad  *RunnerLoadManager
 	outputPropertyForInit  *RunnerInitManager
 	outputPropertyForStart *RunnerStartManager
+
+	stopped chan struct{}
 }
 
 func NewRunner(ctx context.Context, instance *services.Instance, playbook *Playbook, sharedState *StateManager) (*Runner, error) {
@@ -57,6 +61,8 @@ func NewRunner(ctx context.Context, instance *services.Instance, playbook *Playb
 		outputPropertyForLoad:  NewRunnerLoadManager(instance.Unique()),
 		outputPropertyForInit:  NewRunnerInitManager(instance.Unique()),
 		outputPropertyForStart: NewRunnerStartManager(instance.Unique()),
+
+		stopped: make(chan struct{}),
 	}
 	return runner, nil
 }
@@ -64,12 +70,26 @@ func NewRunner(ctx context.Context, instance *services.Instance, playbook *Playb
 func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
 
-	resp, err := runner.instance.Runtime.Load(ctx)
+	resp, err := runner.instance.Runtime.Load(ctx, shared.Must(runner.playbook.world.Env.Proto()))
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		w.Warn(fmt.Sprintf("cannot load service instance %v", err))
+		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: err.Error()})
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot set outputProperty for load")
+		}
+		return runner.outputPropertyForLoad.Process(ctx)
+
+	}
+	if resp.Status.State != runtimev0.LoadStatus_READY {
+		w.Warn(fmt.Sprintf("cannot load service instance %v", resp.Status.Message))
+		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: resp.Status.Message})
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot set outputProperty for load")
+		}
+		return runner.outputPropertyForLoad.Process(ctx)
 	}
 
-	w.Focus("loaded",
+	w.Debug("loaded",
 		wool.Field("endpoints", configurations.MakeEndpointSummary(resp.Endpoints)))
 
 	runner.endpoints = resp.Endpoints
@@ -85,23 +105,17 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
-	err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Endpoints: resp.Endpoints})
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot set outputProperty for load")
-	}
-
-	outputProperty, err := runner.outputPropertyForLoad.Process(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot process outputProperty for load")
-	}
-
 	err = runner.sharedState.RecordEndpoints(ctx, runner.instance.Service, resp.Endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record endpoints")
 	}
 
-	w.Debug("outputProperty", wool.Field("outputProperty", outputProperty))
-	return outputProperty, nil
+	err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Endpoints: resp.Endpoints})
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot set outputProperty for load")
+	}
+
+	return runner.outputPropertyForLoad.Process(ctx)
 }
 
 func generatePortNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
@@ -113,7 +127,7 @@ func generatePortNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoi
 		return nil, w.Wrapf(err, "cannot create default endpoint")
 	}
 	for _, endpoint := range endpoints {
-		w.Focus("exposing", wool.Field("destination", configurations.EndpointDestination(endpoint)))
+		w.Debug("exposing", wool.Field("destination", configurations.EndpointDestination(endpoint)))
 		err = pm.Expose(endpoint)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot add grpc endpoint to network manager")
@@ -127,18 +141,13 @@ func generatePortNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoi
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create network mapping")
 	}
-	w.Focus("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
+	w.Debug("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
 	return networkMappings, nil
 }
 
 func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
-	w.Focus("init")
-	// Build the request
-	env, err := runner.playbook.world.Env.Proto()
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
-	}
+	w.Debug("init")
 
 	dependenciesEndpoints, err := runner.sharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
 	if err != nil {
@@ -153,7 +162,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	// Get all the shared provider info from the dependents
 
 	resp, err := runner.instance.Runtime.Init(ctx, &runtimev0.InitRequest{
-		Environment:           env,
 		NetworkMappings:       runner.networkMappings,
 		ProviderInfos:         infos,
 		DependenciesEndpoints: dependenciesEndpoints,
@@ -166,17 +174,17 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("service instance is not ready")
 	}
 
-	w.Focus("init",
+	w.Debug("init",
 		wool.Field("provider info", configurations.MakeProviderInformationSummary(resp.ServiceProviderInfos)))
 
 	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{})
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot set outputProperty for load")
+		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
 
 	outputProperty, err := runner.outputPropertyForInit.Process(ctx)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot process outputProperty for load")
+		return nil, w.Wrapf(err, "cannot process outputProperty for init")
 	}
 
 	err = runner.sharedState.RecordSharedProviderInfos(ctx, runner.instance.Service, resp.ServiceProviderInfos)
@@ -209,17 +217,21 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot start service instance")
 	}
+
 	if resp.Status.State != runtimev0.StartStatus_STARTED {
 		return nil, w.NewError("service instance is not started")
 	}
+
 	err = runner.outputPropertyForStart.Set(ctx, &RunnerStartOutput{})
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot set outputProperty for load")
+		return nil, w.Wrapf(err, "cannot set outputProperty for start")
 	}
+
 	outputProperty, err := runner.outputPropertyForLoad.Process(ctx)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot process outputProperty for load")
+		return nil, w.Wrapf(err, "cannot process outputProperty for start")
 	}
+
 	w.Debug("outputProperty", wool.Field("outputProperty", outputProperty))
 	runner.isStarted = true
 	return outputProperty, nil
@@ -227,18 +239,40 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 func (runner *Runner) StopIfNeeded(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
-	if !runner.isStarted || runner.instance.Runtime.IsHotReloading {
+	w.Debug("stopIfNeeded", wool.Field("isStarted", runner.isStarted), wool.Field("isHotReloading", runner.instance.Runtime.IsHotReloading))
+	if !runner.isStarted {
+		return nil
+	}
+	if runner.instance.Runtime.IsHotReloading {
 		return nil
 	}
 	w.Debug("stopping")
 	// Build the request
 	runner.isStarted = false
+	runner.stopped <- struct{}{}
+
 	_, err := runner.instance.Runtime.Stop(ctx, &runtimev0.StopRequest{})
 	if err != nil {
 		return w.Wrapf(err, "cannot stop service instance")
 	}
 	return nil
 
+}
+
+func (runner *Runner) Stop(ctx context.Context) error {
+	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
+	w.Debug("stopping")
+	// Build the request
+	runner.isStarted = false
+	go func() {
+		runner.stopped <- struct{}{}
+	}()
+
+	_, err := runner.instance.Runtime.Stop(ctx, &runtimev0.StopRequest{})
+	if err != nil {
+		return w.Wrapf(err, "cannot stop service instance")
+	}
+	return nil
 }
 
 // Follow calls the agent for information and generate a channel of events for the service:
@@ -248,31 +282,35 @@ func (runner *Runner) Follow(ctx context.Context) error {
 
 	go func() {
 		for {
-			info, err := runner.instance.Runtime.Information(ctx, &runtimev0.InformationRequest{})
-			w.Trace("info", wool.ResponseField(info))
-			if err != nil {
-				w.Error("cannot get information", wool.ErrField(err))
+			select {
+			case <-runner.stopped:
 				return
-			}
-			if info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
-				w.Debug("received a request to change sharedState", wool.Field("sharedState", info.DesiredState.Stage))
-				action := Action{Service: runner.Unique()}
-				switch info.DesiredState.Stage {
-				case runtimev0.DesiredState_LOAD:
-					action.Type = RuntimeLoad
-				case runtimev0.DesiredState_INIT:
-					action.Type = RuntimeInit
-				case runtimev0.DesiredState_START:
-					action.Type = RuntimeStart
-				}
-				w.Debug("send action", wool.Field("action", action))
-				err = runner.playbook.Seed(ctx, action)
+			default:
+				info, err := runner.instance.Runtime.Information(ctx, &runtimev0.InformationRequest{})
 				if err != nil {
-					w.Error("cannot seed", wool.ErrField(err))
+					w.Debug("cannot get information", wool.ErrField(err))
 					return
 				}
+				if info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
+					w.Debug("received a request to change sharedState", wool.Field("sharedState", info.DesiredState.Stage))
+					action := Action{Service: runner.Unique()}
+					switch info.DesiredState.Stage {
+					case runtimev0.DesiredState_LOAD:
+						action.Type = RuntimeLoad
+					case runtimev0.DesiredState_INIT:
+						action.Type = RuntimeInit
+					case runtimev0.DesiredState_START:
+						action.Type = RuntimeStart
+					}
+					w.Debug("sending action", wool.Field("action", action.Type))
+					err = runner.playbook.Seed(ctx, action)
+					if err != nil {
+						w.Error("cannot seed", wool.ErrField(err))
+						return
+					}
+				}
+				time.Sleep(1000 * time.Millisecond)
 			}
-			time.Sleep(1000 * time.Millisecond)
 		}
 	}()
 	return nil

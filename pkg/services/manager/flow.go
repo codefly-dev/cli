@@ -206,7 +206,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 
 	// Now add the current one
 
-	w.Info("creating run manager", wool.Field("for", flow.origin.Unique()))
+	w.Debug("creating run manager", wool.Field("for", flow.origin.Unique()))
 	manager, err := New(ctx, flow.origin, flow.playbook, flow.sharedState)
 	cli.RegisterLoggingResource(flow.origin.Unique())
 	if err != nil {
@@ -318,6 +318,10 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 		return manager.Runner.Init, nil
 	case RuntimeStart:
 		return manager.Runner.Start, nil
+	case RuntimeFailing:
+		return func(ctx context.Context) (*OutputProperty, error) {
+			return Pause(), nil
+		}, nil
 	case BuilderBegin:
 		return func(ctx context.Context) (*OutputProperty, error) {
 			return OnInit(), nil
@@ -347,6 +351,18 @@ func (flow *Flow) manager(service string) (*Manager, error) {
 		}
 	}
 	return nil, fmt.Errorf("no manager found for %s", service)
+}
+
+func (flow *Flow) GetAddressesForEndpoint(application string, service string, endpoint string) []string {
+	// We get that from the stateManager
+	var addresses []string
+	unique := configurations.ServiceUnique(application, service)
+	for _, np := range flow.sharedState.networkMappings[unique] {
+		if np.Endpoint.Name == endpoint {
+			addresses = append(addresses, np.Addresses...)
+		}
+	}
+	return addresses
 }
 
 var _ ExecutorManager = &Flow{}

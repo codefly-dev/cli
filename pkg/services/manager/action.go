@@ -13,11 +13,12 @@ import (
 type ActionType string
 
 const (
-	RuntimeBegin ActionType = "runtime-begin"
-	RuntimeLoad  ActionType = "runtime-load"
-	RuntimeInit  ActionType = "runtime-init"
-	RuntimeStart ActionType = "runtime-run"
-	RuntimeStop  ActionType = "runtime-stop"
+	RuntimeBegin   ActionType = "runtime-begin"
+	RuntimeLoad    ActionType = "runtime-load"
+	RuntimeInit    ActionType = "runtime-init"
+	RuntimeStart   ActionType = "runtime-run"
+	RuntimeStop    ActionType = "runtime-stop"
+	RuntimeFailing ActionType = "runtime-wait"
 
 	BuilderBegin ActionType = "builder-begin"
 	BuilderLoad  ActionType = "builder-load"

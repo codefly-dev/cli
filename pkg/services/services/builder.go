@@ -13,20 +13,16 @@ import (
 	"github.com/codefly-dev/core/configurations"
 )
 
-var buildersCache map[string]int
+var buildersCache map[string]*coreservices.BuilderAgent
 var buildersPid map[string]int
 
 func init() {
-	buildersCache = make(map[string]int)
+	buildersCache = make(map[string]*coreservices.BuilderAgent)
 	buildersPid = make(map[string]int)
 }
 
 func LoadBuilder(ctx context.Context, conf *configurations.Service) (*coreservices.BuilderAgent, error) {
 	w := wool.Get(ctx).In("services.LoadBuilder", wool.ThisField(conf))
-	if buildersCache[conf.Unique()] > 0 {
-		return nil, fmt.Errorf("already loaded")
-	}
-	buildersCache[conf.Unique()]++
 
 	if conf == nil {
 		return nil, fmt.Errorf("conf cannot be nil")
@@ -34,6 +30,11 @@ func LoadBuilder(ctx context.Context, conf *configurations.Service) (*coreservic
 	if conf.Agent == nil {
 		return nil, w.NewError("agent cannot be nil")
 	}
+
+	if builder, ok := buildersCache[conf.Unique()]; ok {
+		return builder, nil
+	}
+
 	builder, process, err := manager.Load[coreservices.ServiceBuilderAgentContext, coreservices.BuilderAgent](ctx, conf.Agent.Of(configurations.BuilderServiceAgent), conf.Unique())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service builder conf")
@@ -43,6 +44,10 @@ func LoadBuilder(ctx context.Context, conf *configurations.Service) (*coreservic
 
 	builder.Agent = conf.Agent
 	builder.ProcessInfo = process
+
+	w.Debug("loaded builder", wool.Field("builder-pid", process.PID))
+
+	buildersCache[conf.Unique()] = builder
 	return builder, nil
 }
 

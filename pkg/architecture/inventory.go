@@ -5,6 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services/services"
 
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/core/configurations"
@@ -53,15 +54,19 @@ func LoadService(ctx context.Context, service *configurations.Service) (*basev0.
 	if err != nil {
 		return nil, w.Wrapf(err, "failed to load service: %s", service.Name)
 	}
-	err = instance.LoadRuntime(ctx)
+
+	err = instance.LoadRuntime(ctx, false)
 	if err != nil {
 		return nil, w.Wrapf(err, "failed to load service: %s", service.Name)
 	}
-	init, err := instance.Runtime.Load(ctx)
+
+	init, err := instance.Runtime.Load(ctx, shared.Must(configurations.Local().Proto()))
 	if err != nil {
 		return nil, w.Wrapf(err, "failed to init service: %s", service.Name)
 	}
+
 	out.Agent = service.Agent.Proto()
+	w.Debug("loaded", wool.Field("endpoints", configurations.MakeEndpointSummary(init.Endpoints)))
 	out.Endpoints = init.Endpoints
 	return out, nil
 }

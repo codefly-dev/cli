@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/codefly-dev/cli/pkg/architecture"
@@ -11,6 +12,7 @@ import (
 type PlaybookPolicy interface {
 	// ExecutorManager handles action to result of action
 	ExecutorManager
+
 	// Execute and determines what to do next
 	Execute(ctx context.Context, action Action) ([]Action, error)
 	// Restrict the Dependencies
@@ -28,6 +30,8 @@ type Playbook struct {
 	executed []Action
 
 	signaller *Signaller
+
+	pause *PauseManager
 
 	ignorer IgnoreFunc
 
@@ -63,6 +67,7 @@ func (playbook *Playbook) WithSignallerFunc(signaller CreateSignalFunc) *Playboo
 func NewPlaybook(ctx context.Context, world *World) (*Playbook, error) {
 	return &Playbook{
 		world:     world,
+		pause:     NewPauseManager(),
 		actions:   NewActionManager(),
 		signaller: NewSignaller(),
 	}, nil
@@ -78,9 +83,10 @@ func (playbook *Playbook) Restrict(ctx context.Context, service string) error {
 }
 
 func (playbook *Playbook) Seed(ctx context.Context, action Action) error {
-	w := wool.Get(ctx).In("Playbook.Begin")
+	w := wool.Get(ctx).In("Playbook.Seed")
 	w.Debug("sending action", wool.Field("action", action.String()))
 	playbook.actions.bumpRound()
+	w.Debug("round", wool.Field("round", playbook.actions.round))
 	playbook.actions.send(ctx, action)
 	return nil
 }
@@ -135,6 +141,12 @@ func (playbook *Playbook) previouslyExecuted(ctx context.Context, action Action)
 	return false
 }
 
+func (playbook *Playbook) PauseIfNeeded(action Action) {
+	if action.Type == RuntimeFailing {
+		playbook.pause.Set(action)
+	}
+}
+
 func (playbook *Playbook) Work(ctx context.Context) error {
 	w := wool.Get(ctx).In("work")
 	w.Debug("waiting for groups")
@@ -147,6 +159,11 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 			w.Debug("received group", wool.Field("group", group.String()))
 			plan := playbook.actions.NewActionPlan()
 			for _, action := range group.actions {
+				if playbook.pause.Handle(action) {
+					w.Debug("discarding action", wool.Field("action", action))
+					continue
+				}
+
 				if playbook.ignore(ctx, action) {
 					w.Debug("ignoring action", wool.Field("action", action))
 					continue
@@ -156,18 +173,27 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 					continue
 				}
 
-				w.Debug("received action", wool.Field("action", action))
+				playbook.record(action)
+
+				w.Debug("executing action", wool.Field("action", action))
 				next, err := playbook.policy.Execute(ctx, action)
 				if err != nil {
 					return w.Wrapf(err, "invalid execution for action: %v", action)
 				}
-				// Do not add the "Create one"
 
-				w.Debug("action", wool.Field("action", action))
+				if p, ok := playbook.pause.IsPause(next); ok {
+					w.Warn(fmt.Sprintf("service %s failing, waiting for successful re-load", action.Service))
+					playbook.pause.Set(action)
+					// Record/Signal pause
+					playbook.record(*p)
+					playbook.signal(ctx, *p)
+
+					continue
+				}
+
+				w.Debug("after exec", wool.Field("next", next))
 
 				plan.Add(ctx, next...)
-
-				playbook.record(action)
 
 				playbook.signal(ctx, action)
 
@@ -176,6 +202,7 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 					return nil
 				}
 				w.Debug("done with action", wool.Field("action", action))
+
 			}
 			// Done looping on actions
 			playbook.actions.send(ctx, plan.actions...)

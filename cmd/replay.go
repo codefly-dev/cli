@@ -28,13 +28,14 @@ func replayCodefly(track string) {
 	ctx, done := common.NewContext()
 	defer done()
 
-	tracker, err := actions.NewActionTracker(ctx, track)
+	actionTracker, err := actions.NewActionTracker(ctx, track)
 	cli.ExitOnError(err, "cannot create action tracker")
+	actionTracker.Replay = true
 
 	// Optionally override the directory
-	tracker.WithDir(dir)
+	actionTracker.WithDir(dir)
 
-	steps, err := tracker.GetActions(ctx)
+	steps, err := actionTracker.GetActions(ctx)
 	cli.ExitOnError(err, "cannot get actions")
 	for _, action := range steps {
 		fmt.Println("Running action equivalent to:", action.Command())

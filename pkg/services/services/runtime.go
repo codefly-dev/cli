@@ -16,11 +16,11 @@ import (
 Loader
 */
 
-var runtimesCache map[string]int
+var runtimesCache map[string]*coreservices.RuntimeAgent
 var runtimesPid map[string]int
 
 func init() {
-	runtimesCache = make(map[string]int)
+	runtimesCache = make(map[string]*coreservices.RuntimeAgent)
 	runtimesPid = make(map[string]int)
 }
 
@@ -30,10 +30,9 @@ func LoadRuntime(ctx context.Context, service *configurations.Service) (*coreser
 		return nil, w.NewError("agent cannot be nil")
 	}
 
-	if runtimesCache[service.Unique()] > 0 {
-		return nil, w.NewError("already loaded")
+	if runtime, ok := runtimesCache[service.Unique()]; ok {
+		return runtime, nil
 	}
-	runtimesCache[service.Unique()]++
 
 	runtime, process, err := manager.Load[coreservices.ServiceRuntimeAgentContext, coreservices.RuntimeAgent](
 		ctx,
@@ -42,10 +41,16 @@ func LoadRuntime(ctx context.Context, service *configurations.Service) (*coreser
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service runtime agent")
 	}
+
 	runtimesPid[service.Unique()] = process.PID
 
 	runtime.Agent = service.Agent
 	runtime.ProcessInfo = process
+
+	w.Debug("loaded runtime", wool.Field("runtime-pid", process.PID))
+
+	runtimesCache[service.Unique()] = runtime
+
 	return runtime, nil
 }
 
