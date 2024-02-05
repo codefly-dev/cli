@@ -7,6 +7,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
+	"github.com/codefly-dev/cli/pkg/deployment"
 	"github.com/codefly-dev/core/actions/actions"
 	actionsproject "github.com/codefly-dev/core/actions/project"
 	"github.com/codefly-dev/core/configurations"
@@ -67,8 +68,10 @@ func newProject(name string) {
 	_, err = providers.New(ctx, project)
 	cli.ExitOnError(err, "cannot create provider")
 
-	// TODO:
 	// Setup Version Control
+	err = deployment.InitRepository(ctx, project)
+	cli.ExitOnError(err, "cannot initialize repository")
+
 }
 
 func init() {

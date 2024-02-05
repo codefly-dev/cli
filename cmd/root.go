@@ -103,6 +103,9 @@ func init() {
 	// Replay
 	RootCmd.AddCommand(ReplayCmd)
 
+	// Expose for local k8s development
+	RootCmd.AddCommand(ExposeCmd)
+
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
 	RootCmd.PersistentFlags().BoolVar(&withDefault, "with-default", false, "Use default option instead of prompt")

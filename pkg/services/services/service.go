@@ -55,11 +55,14 @@ type RuntimeInstance struct {
 // Builder methods
 
 func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
+	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
+	w.Focus("loading", wool.ProjectField(instance.Service.Project))
 	init := &builderv0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
 			Name:        instance.Service.Name,
 			Application: instance.Service.Application,
+			Project:     instance.Service.Project,
 			Domain:      instance.Service.Domain,
 			Namespace:   instance.Service.Namespace,
 			Location:    instance.Service.Dir(),
@@ -80,9 +83,6 @@ func (instance *BuilderInstance) Create(ctx context.Context, req *builderv0.Crea
 	s := cli.Spinner()
 	s.Start()
 	defer s.Stop()
-	// Begin the spinner
-	defer s.Stop() //
-
 	return instance.Builder.Create(ctx, req)
 }
 
@@ -107,6 +107,7 @@ func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environme
 		Identity: &basev0.ServiceIdentity{
 			Name:        instance.Service.Name,
 			Application: instance.Service.Application,
+			Project:     instance.Service.Project,
 			Domain:      instance.Service.Domain,
 			Namespace:   instance.Service.Namespace,
 			Location:    instance.Service.Dir(),

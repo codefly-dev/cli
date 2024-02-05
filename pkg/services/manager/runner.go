@@ -80,7 +80,7 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 		return runner.outputPropertyForLoad.Process(ctx)
 
 	}
-	if resp.Status.State != runtimev0.LoadStatus_READY {
+	if resp.Status != nil && resp.Status.State != runtimev0.LoadStatus_READY {
 		w.Warn(fmt.Sprintf("cannot load service instance %v", resp.Status.Message))
 		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: resp.Status.Message})
 		if err != nil {
@@ -170,7 +170,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	if resp.Status.State != runtimev0.InitStatus_READY {
+	if resp.Status != nil && resp.Status.State != runtimev0.InitStatus_READY {
 		return nil, w.NewError("service instance is not ready")
 	}
 
@@ -218,7 +218,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot start service instance")
 	}
 
-	if resp.Status.State != runtimev0.StartStatus_STARTED {
+	if resp.Status != nil && resp.Status.State != runtimev0.StartStatus_STARTED {
 		return nil, w.NewError("service instance is not started")
 	}
 

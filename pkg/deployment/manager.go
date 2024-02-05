@@ -29,3 +29,7 @@ func (l LocalManager) Deployments(ctx context.Context, project *configurations.P
 }
 
 var _ Manager = &LocalManager{}
+
+func NewLocalManager(ctx context.Context) (*LocalManager, error) {
+	return &LocalManager{}, nil
+}

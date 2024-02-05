@@ -9,6 +9,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/deployment"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	"github.com/codefly-dev/core/providers"
@@ -53,8 +54,10 @@ type Flow struct {
 type World struct {
 	Env          *configurations.Environment
 	Mode         Mode
+	Project      *configurations.Project
 	Dependencies *architecture.ServiceDependencies
 	Provider     *providers.Provider
+	Deployer     *deployment.LocalManager
 }
 
 func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, env *configurations.Environment, mode Mode) (*Flow, error) {
@@ -63,6 +66,11 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	services := map[string]*configurations.Service{service.Unique(): service}
 
 	provider, err := providers.New(ctx, project)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
+	deployer, err := deployment.NewLocalManager(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -77,7 +85,9 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		Env:          env,
 		Mode:         mode,
 		Dependencies: dependencies,
+		Project:      project,
 		Provider:     provider,
+		Deployer:     deployer,
 	}
 
 	// A Flow really handles creating actions and running them
@@ -152,6 +162,20 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithPolicy(policy)
 		playbook.WithStopping(func(ctx context.Context, action Action) bool {
 			return action.Service == flow.origin.Unique() && action.Type == BuilderSync
+		})
+	case DeployMode:
+		policy, err := NewDeployPolicy(ctx, flow.world.Dependencies, flow)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStopping(func(ctx context.Context, action Action) bool {
+			return action.Service == flow.origin.Unique() && action.Type == BuilderDeploy
 		})
 
 	}
@@ -276,6 +300,22 @@ func (flow *Flow) Sync(ctx context.Context) error {
 	return nil
 }
 
+func (flow *Flow) Deploy(ctx context.Context) error {
+	w := wool.Get(ctx).In("flow.Sync")
+	// In stand-alone Mode, we set an ignore policy
+	if flow.standAlone {
+		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
+			return action.Service != flow.origin.Unique()
+		})
+	}
+	err := flow.playbook.Begin(ctx, Action{Type: BuilderBegin, Service: flow.origin.Unique()})
+	if err != nil {
+		return w.Wrapf(err, "cannot start playbook")
+	}
+	return nil
+
+}
+
 func (flow *Flow) Manager(unique string) (*Manager, error) {
 	for _, manager := range flow.managers {
 		if manager.Unique() == unique {
@@ -334,9 +374,11 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 		return manager.Builder.Build, nil
 	case BuilderSync:
 		return manager.Builder.Sync, nil
+	case BuilderDeploy:
+		return manager.Builder.Deploy, nil
 
 	default:
-		return nil, w.NewError("unknown action type %s", action.Type)
+		return nil, w.NewError("unknown action type %s for executor", action.Type)
 	}
 }
 

@@ -14,9 +14,10 @@ import (
 type Mode string
 
 const (
-	RunMode   Mode = "run"
-	BuildMode Mode = "build"
-	SyncMode  Mode = "sync"
+	RunMode    Mode = "run"
+	SyncMode   Mode = "sync"
+	BuildMode  Mode = "build"
+	DeployMode Mode = "deploy"
 )
 
 /*
@@ -84,7 +85,8 @@ func (manager *Manager) Load(ctx context.Context) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot follow service instance")
 		}
-	case BuildMode, SyncMode:
+		return nil
+	case BuildMode, SyncMode, DeployMode:
 		err = instance.LoadBuilder(ctx)
 		if err != nil {
 			return w.Wrapf(err, "cannot load service builder instance")
@@ -93,8 +95,9 @@ func (manager *Manager) Load(ctx context.Context) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot create builder")
 		}
+		return nil
 	}
-	return nil
+	return w.NewError("unknown mode %s", manager.playbook.world.Mode)
 }
 
 func (manager *Manager) Stop(ctx context.Context) error {

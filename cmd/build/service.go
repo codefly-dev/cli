@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 
@@ -50,10 +51,10 @@ var ServiceCmd = &cobra.Command{
 			}
 		}
 		stopped := <-errs
-		err = flow.Stop()
+		err = cleanBuildService(flow)
 		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
-			cli.Error("Got error while stopping service: %v", stopped)
+			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
 			return
 		}
 		cli.Header(1, "Service stopped successfully")

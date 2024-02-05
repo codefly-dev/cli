@@ -20,11 +20,12 @@ const (
 	RuntimeStop    ActionType = "runtime-stop"
 	RuntimeFailing ActionType = "runtime-wait"
 
-	BuilderBegin ActionType = "builder-begin"
-	BuilderLoad  ActionType = "builder-load"
-	BuilderInit  ActionType = "builder-init"
-	BuilderBuild ActionType = "builder-build"
-	BuilderSync  ActionType = "builder-sync"
+	BuilderBegin  ActionType = "builder-begin"
+	BuilderLoad   ActionType = "builder-load"
+	BuilderInit   ActionType = "builder-init"
+	BuilderBuild  ActionType = "builder-build"
+	BuilderSync   ActionType = "builder-sync"
+	BuilderDeploy ActionType = "builder-deploy"
 )
 
 // Implement some kind of sharedState machine
