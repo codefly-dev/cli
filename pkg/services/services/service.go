@@ -56,7 +56,7 @@ type RuntimeInstance struct {
 
 func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
 	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
-	w.Focus("loading", wool.ProjectField(instance.Service.Project))
+	w.Debug("loading", wool.ProjectField(instance.Service.Project))
 	init := &builderv0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{

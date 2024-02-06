@@ -88,7 +88,7 @@ func (pm *ServiceManager) NetworkMapping(context.Context) ([]*basev0.NetworkMapp
 		address := instance.Address()
 		unique := configurations.ServiceUnique(instance.ApplicationEndpoint.Application, instance.ApplicationEndpoint.Service)
 		if url, ok := pm.external[unique]; ok {
-			w.Focus("external", wool.Field("url", url))
+			w.Debug("external", wool.Field("url", url))
 			address = url
 		}
 		nets = append(nets, &basev0.NetworkMapping{

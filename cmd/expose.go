@@ -63,7 +63,7 @@ func expose(ctx context.Context, project *configurations.Project) error {
 		port := strings.Split(url, ":")[1]
 		go func(service string, port string, namespace string) {
 			for {
-				w.Debug("exposing", wool.Field("service", service), wool.Field("port", port), wool.Field("namespace", namespace))
+				w.Info("exposing", wool.Field("service", service), wool.Field("port", port), wool.Field("namespace", namespace))
 				cmd := exec.CommandContext(ctx, "kubectl", "port-forward", "-n", namespace, k8sSvc, fmt.Sprintf("%s:8080", port))
 				err := cmd.Run()
 				if err != nil {

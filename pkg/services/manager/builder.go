@@ -152,7 +152,7 @@ func (builder *Builder) generateDNSNetworkMappings(ctx context.Context, endpoint
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get DNS provider information")
 	}
-	w.Focus("provider informations", wool.Field("got", info.Data))
+	w.Debug("provider informations", wool.Field("got", info.Data))
 	dns := map[string]string{}
 	for _, endpoint := range endpoints {
 		if endpoint.Visibility == configurations.VisibilityPublic {
@@ -160,7 +160,7 @@ func (builder *Builder) generateDNSNetworkMappings(ctx context.Context, endpoint
 			dns[e.Unique()] = info.Data[e.ServiceUnique()]
 		}
 	}
-	w.Focus("dns", wool.Field("got", dns))
+	w.Debug("dns", wool.Field("got", dns))
 	pm.WithExternalDNS(info.Data)
 
 	if err != nil {

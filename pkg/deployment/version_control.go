@@ -2,7 +2,6 @@ package deployment
 
 import (
 	"context"
-	"os/exec"
 	"path"
 
 	"github.com/codefly-dev/core/configurations"
@@ -40,12 +39,12 @@ func InitRepository(ctx context.Context, project *configurations.Project) error 
 		return w.Wrapf(err, "cannot initialize git repository for deployment")
 	}
 
-	// Use os/exec to add the submodule
-	cmd := exec.Command("git", "-C", project.Dir(), "submodule", "add", "./_deployments", "_deployments")
-	err = cmd.Run()
-	if err != nil {
-		return w.Wrapf(err, "cannot add _deployments as a submodule")
-	}
+	//Use os/exec to add the submodule
+	//cmd := exec.Command("git", "-C", project.Dir(), "submodule", "add", "./_deployments", "_deployments")
+	//err = cmd.Run()
+	//if err != nil {
+	//	return w.Wrapf(err, "cannot add _deployments as a submodule")
+	//}
 	return nil
 }
 
