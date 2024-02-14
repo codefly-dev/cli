@@ -22,6 +22,7 @@ type ApplicationEndpoint struct {
 	Service     string
 	Application string
 	Namespace   string
+	Replicas    int32
 	Endpoint    *basev0.Endpoint
 	PortBinding string // something like 8080/tcp
 }
@@ -36,6 +37,7 @@ func (e ApplicationEndpoint) Clone() ApplicationEndpoint {
 		Service:     e.Service,
 		Application: e.Application,
 		Namespace:   e.Namespace,
+		Replicas:    e.Replicas,
 		Endpoint:    e.Endpoint,
 		PortBinding: e.PortBinding,
 	}

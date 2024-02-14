@@ -24,7 +24,7 @@ var ProjectCmd = &cobra.Command{
 
 		if interactive {
 			cli.Error("Interactive mode not implemented yet")
-			cli.Exit()
+			cli.SuccessExit()
 		}
 		if len(args) == 1 {
 			name := args[0]

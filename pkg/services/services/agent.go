@@ -7,7 +7,7 @@ import (
 	"syscall"
 
 	"github.com/codefly-dev/core/agents/manager"
-	"github.com/hashicorp/go-plugin"
+	plugin "github.com/hashicorp/go-plugin"
 
 	"github.com/codefly-dev/core/wool"
 

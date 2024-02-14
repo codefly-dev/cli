@@ -54,7 +54,7 @@ type RuntimeInstance struct {
 
 // Builder methods
 
-func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
+func (instance *BuilderInstance) Load(ctx context.Context, env *basev0.Environment) (*builderv0.LoadResponse, error) {
 	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
 	w.Debug("loading", wool.ProjectField(instance.Service.Project))
 	init := &builderv0.LoadRequest{
@@ -67,6 +67,7 @@ func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadRespo
 			Namespace:   instance.Service.Namespace,
 			Location:    instance.Service.Dir(),
 		},
+		Environment: env,
 	}
 	return instance.Builder.Load(ctx, init)
 

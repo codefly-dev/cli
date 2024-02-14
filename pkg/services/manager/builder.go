@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 
@@ -23,16 +24,12 @@ type Builder struct {
 	endpoints       []*basev0.Endpoint
 	networkMappings []*basev0.NetworkMapping
 
-	// For "callbacks"
-	playbook *Playbook
-
-	// State
-	sharedState *StateManager
+	world *World
 
 	// Requires
 	requires []string
 
-	// outputProperty managers
+	// outputProperty hub
 	isStarted bool
 
 	outputPropertyForLoad  *BuilderLoadManager
@@ -41,15 +38,13 @@ type Builder struct {
 	outputPropertyForSync  *BuilderSyncManager
 }
 
-func NewBuilder(ctx context.Context, instance *services.Instance, playbook *Playbook, sharedState *StateManager) (*Builder, error) {
+func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(instance))
 	w.Debug("new")
 	builder := &Builder{
 		instance: instance,
 
-		playbook: playbook,
-
-		sharedState: sharedState,
+		world: world,
 
 		outputPropertyForLoad:  NewBuilderLoadManager(instance.Unique()),
 		outputPropertyForInit:  NewBuilderInitManager(instance.Unique()),
@@ -62,9 +57,15 @@ func NewBuilder(ctx context.Context, instance *services.Instance, playbook *Play
 func (builder *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(builder.instance.Service))
 
-	resp, err := builder.instance.Builder.Load(ctx)
+	// Build the request
+	env, err := builder.world.Env.Proto()
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot get env")
+	}
+
+	resp, err := builder.instance.Builder.Load(ctx, env)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot load builder instance")
 	}
 
 	w.Debug("loaded",
@@ -82,7 +83,7 @@ func (builder *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for load")
 	}
 
-	err = builder.sharedState.RecordEndpoints(ctx, builder.instance.Service, resp.Endpoints)
+	err = builder.world.SharedState.RecordEndpoints(ctx, builder.instance.Service, resp.Endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record endpoints")
 	}
@@ -94,35 +95,38 @@ func (builder *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 func (builder *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(builder.instance.Service))
 	w.Debug("init")
-	// Build the request
-	env, err := builder.playbook.world.Env.Proto()
+
+	dependenciesEndpoints, err := builder.world.SharedState.GetDependenciesEndpoints(ctx, builder.instance.Service)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot get depednencies")
 	}
 
-	dependenciesEndpoints, err := builder.sharedState.GetDependenciesEndpoints(ctx, builder.instance.Service)
+	infos, err := builder.world.SharedState.GetProviderInfos(ctx, builder.instance.Service)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot get provider")
 	}
 
-	infos, err := builder.sharedState.GetProviderInfos(ctx, builder.instance.Service)
+	networkMappings, err := builder.generateDNSNetworkMappings(ctx, builder.endpoints)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot generate network mappings")
 	}
-
-	// Get all the shared provider info from the dependents
 
 	resp, err := builder.instance.Builder.Init(ctx, &builderv0.InitRequest{
-		Environment:           env,
-		ProviderInfos:         infos,
-		DependenciesEndpoints: dependenciesEndpoints,
+		ProposedNetworkMappings: networkMappings,
+		ProviderInfos:           infos,
+		DependenciesEndpoints:   dependenciesEndpoints,
 	})
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot call init")
 	}
 
 	if resp.State != nil && resp.State.State != builderv0.InitStatus_SUCCESS {
 		return nil, w.NewError("service instance is not ready")
+	}
+
+	err = builder.world.SharedState.RecordNetworkMappings(ctx, builder.instance.Service, resp.NetworkMappings)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
 	err = builder.outputPropertyForInit.Set(ctx, &BuilderInitOutput{})
@@ -148,7 +152,7 @@ func (builder *Builder) generateDNSNetworkMappings(ctx context.Context, endpoint
 		return nil, w.Wrapf(err, "cannot create network manager")
 	}
 	// We gather public endpoints URL -- from provider info
-	info, err := builder.playbook.world.Provider.GetProjectProviderInformation(ctx, "dns")
+	info, err := builder.world.Provider.GetProjectProviderInformation(ctx, "dns")
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get DNS provider information")
 	}
@@ -187,16 +191,17 @@ func (builder *Builder) generateDNSNetworkMappings(ctx context.Context, endpoint
 
 func (builder *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(builder.instance.Service))
+	w.Info(fmt.Sprintf("Asking the agent a Build for %s", builder.instance.Unique()))
 	w.Debug("init")
 	// Build the request
 
 	resp, err := builder.instance.Builder.Build(ctx, &builderv0.BuildRequest{})
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot call build")
 	}
 
 	if resp.State != nil && resp.State.State != builderv0.BuildStatus_SUCCESS {
-		return nil, w.NewError("service instance is not ready")
+		return nil, w.NewError("call to build failed")
 	}
 
 	err = builder.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
@@ -242,25 +247,24 @@ func (builder *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 
 func (builder *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(builder.instance.Service))
+	w.Info(fmt.Sprintf("Asking the agent a Deployment for %s", builder.instance.Unique()))
 	w.Debug("deploy")
-	env, err := builder.playbook.world.Env.Proto()
+	env, err := builder.world.Env.Proto()
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	dependenciesEndpoints, err := builder.sharedState.GetDependenciesEndpoints(ctx, builder.instance.Service)
+	networkMappings, err := builder.world.SharedState.GetNetworkMappings(ctx, builder.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	networkMappings, err := builder.generateDNSNetworkMappings(ctx, dependenciesEndpoints)
-	// Get all the shared provider info from the dependents
-
+	deployments, err := builder.world.Deployer.Deployments(ctx, builder.world.Project, builder.world.Env)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot load service instance")
+	}
 	// Build the request
-	deployments, err := builder.playbook.world.Deployer.Deployments(ctx, builder.playbook.world.Project, builder.playbook.world.Env)
-	if err != nil {
 
-	}
 	resp, err := builder.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
 		Environment:     env,
 		Deployments:     deployments,

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/services/services"
 
@@ -28,11 +29,10 @@ Manager is responsible is a wrapper around a service instance:
 type Manager struct {
 	service *configurations.Service
 
-	// Passthrough
-	playbook    *Playbook
-	sharedState *StateManager
+	world *World
 
-	Runner  *Runner
+	Runner *Runner
+
 	Builder *Builder
 
 	initOnly bool
@@ -49,10 +49,10 @@ func (manager *Manager) Unique() string {
 	return manager.service.Unique()
 }
 
-func New(ctx context.Context, service *configurations.Service, playbook *Playbook, sharedState *StateManager) (*Manager, error) {
-	w := wool.Get(ctx).In("managers.New", wool.ThisField(service))
+func New(ctx context.Context, service *configurations.Service, world *World) (*Manager, error) {
+	w := wool.Get(ctx).In("hub.New", wool.ThisField(service))
 
-	manager := &Manager{service: service, playbook: playbook, sharedState: sharedState}
+	manager := &Manager{service: service, world: world}
 	err := manager.Load(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
@@ -61,7 +61,7 @@ func New(ctx context.Context, service *configurations.Service, playbook *Playboo
 }
 
 func (manager *Manager) Load(ctx context.Context) error {
-	w := wool.Get(ctx).In("managers.New", wool.ThisField(manager.service))
+	w := wool.Get(ctx).In("hub.New", wool.ThisField(manager.service))
 
 	instance, err := services.Load(ctx, manager.service)
 	if err != nil {
@@ -70,14 +70,14 @@ func (manager *Manager) Load(ctx context.Context) error {
 
 	w.Debug("load agent", wool.Field("agent-pid", instance.ProcessInfo.AgentPID))
 
-	switch manager.playbook.world.Mode {
+	switch manager.world.Mode {
 	case RunMode:
 		w.Debug("load runtime")
 		err = instance.LoadRuntime(ctx, true)
 		if err != nil {
 			return w.Wrapf(err, "cannot load service instance")
 		}
-		manager.Runner, err = NewRunner(ctx, instance, manager.playbook, manager.sharedState)
+		manager.Runner, err = NewRunner(ctx, instance, manager.world)
 		if err != nil {
 			return w.Wrapf(err, "cannot create runner")
 		}
@@ -91,18 +91,38 @@ func (manager *Manager) Load(ctx context.Context) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot load service builder instance")
 		}
-		manager.Builder, err = NewBuilder(ctx, instance, manager.playbook, manager.sharedState)
+		manager.Builder, err = NewBuilder(ctx, instance, manager.world)
 		if err != nil {
 			return w.Wrapf(err, "cannot create builder")
 		}
 		return nil
 	}
-	return w.NewError("unknown mode %s", manager.playbook.world.Mode)
+	return w.NewError("unknown mode %s", manager.world.Mode)
 }
 
 func (manager *Manager) Stop(ctx context.Context) error {
-	if manager.playbook.world.Mode == RunMode {
+	if manager.world.Mode == RunMode {
 		return manager.Runner.Stop(ctx)
 	}
 	return nil
+}
+
+func (manager *Manager) SetCallback(f Callback) {
+	if manager.Runner == nil {
+		return
+	}
+	manager.Runner.callback = f
+}
+
+type Hub struct {
+	managers []*Manager
+}
+
+func (hub *Hub) Manager(unique string) (*Manager, error) {
+	for _, manager := range hub.managers {
+		if manager.Unique() == unique {
+			return manager, nil
+		}
+	}
+	return nil, fmt.Errorf("no manager found for %s", unique)
 }

@@ -38,6 +38,10 @@ To do so:
 This is by far the best experience to advance debugging! I would say 99% of developers don't know about this is even possible.
 
 
+### Generating client code
+```shell
+gm generate gRPC -d --service management/build --destination pkg/builder/clients/builder --language go
+```
 
 
 # OLD

@@ -18,11 +18,11 @@ func NewSyncPolicy(ctx context.Context, dependencies *architecture.ServiceDepend
 
 func (policy *SyncPolicy) Execute(ctx context.Context, action Action) ([]Action, error) {
 	w := wool.Get(ctx).In("SyncPolicy.Execute", wool.Field("action", action))
-	changer, err := policy.GetExecutor(ctx, action)
+	executor, err := policy.GetExecutor(ctx, action)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot process changer")
+		return nil, w.Wrapf(err, "cannot process executor")
 	}
-	outputProperty, err := changer(ctx)
+	outputProperty, err := executor(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty")
 	}

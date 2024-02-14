@@ -32,7 +32,7 @@ var ServiceCmd = &cobra.Command{
 
 		service := common.Service(ctx)
 		project := common.Project(ctx)
-		flow, err := initBuildService(ctx, project, service, standAlone)
+		flow, err := initBuildService(ctx, project, service, standAlone, ci)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
 			errs <- buildService(ctx, flow)
@@ -57,13 +57,13 @@ var ServiceCmd = &cobra.Command{
 			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
 			return
 		}
-		cli.Header(1, "Service stopped successfully")
+		cli.Header(1, "Work done!")
 	},
 }
 
-func initBuildService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
+func initBuildService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool, ci bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("buildService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.BuildMode)
+	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.BuildMode, ci)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -91,7 +91,9 @@ func buildService(ctx context.Context, flow *manager.Flow) error {
 }
 
 var standAlone bool
+var ci bool
 
 func init() {
+	ServiceCmd.Flags().BoolVar(&ci, "ci", false, "CI Mode")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 }

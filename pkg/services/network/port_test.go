@@ -3,10 +3,9 @@ package network_test
 import (
 	"testing"
 
+	"github.com/brianvoe/gofakeit/v6"
 	"github.com/codefly-dev/cli/pkg/services/network"
 	"github.com/codefly-dev/core/configurations/standards"
-
-	"github.com/brianvoe/gofakeit/v6"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -36,7 +35,7 @@ func TestPortGeneration(t *testing.T) {
 		for j := 0; j < 10; j++ {
 			for _, api := range []string{standards.TCP, standards.HTTP, standards.GRPC} {
 				svc := gofakeit.Adjective()
-				v := network.ToPort(app, svc, api)
+				v := network.ToPort(app, svc, "test", api, 1)[0]
 				assert.GreaterOrEqual(t, v, 11000)
 				assert.LessOrEqual(t, v, 49999)
 				if appPart == nil {
@@ -45,15 +44,21 @@ func TestPortGeneration(t *testing.T) {
 				} else {
 					assert.Equal(t, *appPart, getApp(v))
 				}
-				assert.Equal(t, getLastDigit(v), network.APIInt(api))
+				assert.Equal(t, network.APIInt(api), getLastDigit(v))
 			}
 		}
 		appPart = nil
 	}
 }
 
-func TestBugNaming(t *testing.T) {
-	one := network.ToPort("test-application", "test", standards.GRPC)
-	two := network.ToPort("test-application", "go-test", standards.GRPC)
+func TestPortDifferentApp(t *testing.T) {
+	one := network.ToPort("test-application", "test", standards.GRPC, "grpc", 1)[0]
+	two := network.ToPort("test-application", "go-test", standards.GRPC, "grpc", 1)[0]
+	assert.NotEqual(t, one, two)
+}
+
+func TestPortDifferentNameName(t *testing.T) {
+	one := network.ToPort("guestbook", "redis", standards.TCP, "read", 1)[0]
+	two := network.ToPort("guestbook", "redis", standards.GRPC, "write", 1)[0]
 	assert.NotEqual(t, one, two)
 }

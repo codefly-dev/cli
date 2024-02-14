@@ -2,6 +2,7 @@ kind: service
 name: organization
 version: 0.0.0
 application: management
+project: codefly-platform
 namespace: default
 domain: github.com/codefly-ai/codefly-platform/management/organization
 agent:

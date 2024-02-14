@@ -57,14 +57,13 @@ var ServiceCmd = &cobra.Command{
 			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
 			return
 		}
-		cli.Header(1, "Service stopped successfully")
-		cli.Header(1, "Service stopped successfully")
+		cli.Header(1, "Work done!")
 	},
 }
 
 func initSyncService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("syncService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.SyncMode)
+	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.SyncMode, false)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

@@ -2,7 +2,6 @@ package manager
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -14,7 +13,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	"github.com/codefly-dev/core/providers"
 	"github.com/codefly-dev/core/wool"
-	"github.com/hashicorp/go-multierror"
+	multierror "github.com/hashicorp/go-multierror"
 )
 
 var currentFlow *Flow
@@ -39,7 +38,7 @@ type Flow struct {
 	// How we keep track of state
 	sharedState *StateManager
 
-	managers []*Manager
+	hub *Hub
 
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
@@ -49,26 +48,30 @@ type Flow struct {
 
 	// convenient
 	services map[string]*configurations.Service
+	ci       bool
 }
 
 type World struct {
-	Env          *configurations.Environment
-	Mode         Mode
-	Project      *configurations.Project
+	Env     *configurations.Environment
+	Mode    Mode
+	Project *configurations.Project
+
+	// DAG
 	Dependencies *architecture.ServiceDependencies
-	Provider     *providers.Provider
-	Deployer     *deployment.LocalManager
+
+	// Things to know
+	Provider *providers.Provider
+
+	// Things to share
+	SharedState *StateManager
+
+	Deployer *deployment.LocalManager
 }
 
-func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, env *configurations.Environment, mode Mode) (*Flow, error) {
+func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, env *configurations.Environment, mode Mode, ci bool) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
 
 	services := map[string]*configurations.Service{service.Unique(): service}
-
-	provider, err := providers.New(ctx, project)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
 
 	deployer, err := deployment.NewLocalManager(ctx)
 	if err != nil {
@@ -81,12 +84,23 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		return nil, w.Wrap(err)
 	}
 
+	provider, err := providers.New(ctx, project)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
+	stateManager, err := NewStateManager(ctx, provider, dependencies)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
 	world := &World{
 		Env:          env,
 		Mode:         mode,
-		Dependencies: dependencies,
 		Project:      project,
 		Provider:     provider,
+		SharedState:  stateManager,
+		Dependencies: dependencies,
 		Deployer:     deployer,
 	}
 
@@ -97,6 +111,8 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	flow := &Flow{
 		project: project,
 		origin:  service,
+
+		ci: ci,
 
 		services: services,
 
@@ -115,14 +131,13 @@ func (flow *Flow) Load(ctx context.Context) error {
 	if flow.standAlone {
 		w.Debug("running in stand-alone Mode")
 	}
-	// Manage share state
-	sharedState, err := NewStateManager(ctx, flow.world.Provider, flow.world.Dependencies)
-	if err != nil {
-		return w.Wrapf(err, "cannot create shared state manager")
-	}
-	flow.sharedState = sharedState
-
 	var playbook *Playbook
+
+	err := flow.InitManagers(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot initialize managers")
+	}
+
 	switch flow.world.Mode {
 	case RunMode:
 		policy, err := NewRuntimeStartPolicy(ctx, flow.world.Dependencies, flow)
@@ -136,7 +151,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		}
 		playbook.WithPolicy(policy)
 	case BuildMode:
-		policy, err := NewBuildPolicy(ctx, flow.world.Dependencies, flow)
+		policy, err := NewBuildPolicy(ctx, flow.hub, flow.world, flow.ci)
 		if err != nil {
 			return w.Wrapf(err, "cannot create policy")
 		}
@@ -181,69 +196,11 @@ func (flow *Flow) Load(ctx context.Context) error {
 	}
 	flow.playbook = playbook
 
-	// Create manager for all services required by this service if not standalone
-	var required []string
-	if !flow.standAlone {
-		order, err := flow.world.Dependencies.OrderTo(ctx, flow.origin.Unique())
-		if err != nil {
-			return w.Wrapf(err, "cannot order services")
-		}
-		for _, service := range order {
-			required = append(required, service.Unique)
-		}
-		w.Debug("service Dependencies", wool.NameField(flow.origin.Name), wool.Field("Dependencies", required))
-	}
-	if len(required) == 0 {
-		cli.Info("Running <%s>", flow.origin.Name)
-	} else {
-		cli.Info("Running <%s> with these dependent services: %s", flow.origin.Name, strings.Join(required, ", "))
-	}
-	// We run in the proper order
-	slices.Reverse(required)
-
-	var managers []*Manager
-
-	for _, unique := range required {
-		cli.RegisterLoggingResource(unique)
-		info, err := configurations.ParseServiceUnique(unique)
-		w.Debug("creating run manager", wool.Field("for", unique))
-		if err != nil {
-			return w.Wrap(err)
-		}
-		app, err := flow.project.LoadApplicationFromName(ctx, info.Application)
-		if err != nil {
-			return w.Wrap(err)
-		}
-		svc, err := app.LoadServiceFromName(ctx, info.Name)
-		if err != nil {
-			return w.Wrap(err)
-		}
-		flow.services[unique] = svc
-		// Register source to handle "pretty" logging
-		cli.RegisterLoggingResource(unique)
-		manager, err := New(ctx, svc, flow.playbook, flow.sharedState)
-		if err != nil {
-			return w.Wrap(err)
-		}
-		managers = append(managers, manager)
+	// Fix the callback
+	for _, manager := range flow.hub.managers {
+		manager.SetCallback(flow.playbook.Seed)
 	}
 
-	// Now add the current one
-
-	w.Debug("creating run manager", wool.Field("for", flow.origin.Unique()))
-	manager, err := New(ctx, flow.origin, flow.playbook, flow.sharedState)
-	cli.RegisterLoggingResource(flow.origin.Unique())
-	if err != nil {
-		return w.Wrap(err)
-	}
-	managers = append(managers, manager)
-	flow.managers = managers
-
-	var orders []string
-	for _, m := range managers {
-		orders = append(orders, m.Unique())
-	}
-	w.Debug("running", wool.Field("order", orders))
 	currentFlow = flow
 	return nil
 }
@@ -316,22 +273,16 @@ func (flow *Flow) Deploy(ctx context.Context) error {
 
 }
 
-func (flow *Flow) Manager(unique string) (*Manager, error) {
-	for _, manager := range flow.managers {
-		if manager.Unique() == unique {
-			return manager, nil
-		}
-	}
-	return nil, fmt.Errorf("no manager found for %s", unique)
-}
-
 func (flow *Flow) Stop() error {
+	if flow == nil {
+		return nil
+	}
 	// Don't call on a possibly Done context
 	stoppedContext, done := common.NewContext()
 	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
 	var res error
-	for _, manager := range flow.managers {
+	for _, manager := range flow.hub.managers {
 		err := manager.Stop(stoppedContext)
 		if err != nil {
 			w.Debug("got error", wool.ErrField(err))
@@ -343,7 +294,7 @@ func (flow *Flow) Stop() error {
 
 func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcessorFunc, error) {
 	w := wool.Get(ctx).In("GetExecutor", wool.Field("action", action))
-	manager, err := flow.manager(action.Service)
+	manager, err := flow.hub.Manager(action.Service)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -386,15 +337,6 @@ func (flow *Flow) WithStandAlone(alone bool) {
 	flow.standAlone = alone
 }
 
-func (flow *Flow) manager(service string) (*Manager, error) {
-	for _, manager := range flow.managers {
-		if manager.Unique() == service {
-			return manager, nil
-		}
-	}
-	return nil, fmt.Errorf("no manager found for %s", service)
-}
-
 func (flow *Flow) GetAddressesForEndpoint(application string, service string, endpoint string) []string {
 	// We get that from the stateManager
 	var addresses []string
@@ -405,6 +347,69 @@ func (flow *Flow) GetAddressesForEndpoint(application string, service string, en
 		}
 	}
 	return addresses
+}
+
+func (flow *Flow) InitManagers(ctx context.Context) error {
+	w := wool.Get(ctx).In("flow.InitManagers")
+	// Create manager for all services required by this service if not standalone
+	var required []string
+	if !flow.standAlone {
+		order, err := flow.world.Dependencies.OrderTo(ctx, flow.origin.Unique())
+		if err != nil {
+			return w.Wrapf(err, "cannot order services")
+		}
+		for _, service := range order {
+			required = append(required, service.Unique)
+		}
+		w.Debug("service Dependencies", wool.NameField(flow.origin.Name), wool.Field("Dependencies", required))
+	}
+	if len(required) == 0 {
+		cli.Info("Running <%s>", flow.origin.Name)
+	} else {
+		cli.Info("Running <%s> with these dependent services: %s", flow.origin.Name, strings.Join(required, ", "))
+	}
+	// We run in the proper order
+	slices.Reverse(required)
+
+	var managers []*Manager
+
+	for _, unique := range required {
+		cli.RegisterLoggingResource(unique)
+		info, err := configurations.ParseServiceUnique(unique)
+		w.Debug("creating run manager", wool.Field("for", unique))
+		if err != nil {
+			return w.Wrap(err)
+		}
+		app, err := flow.project.LoadApplicationFromName(ctx, info.Application)
+		if err != nil {
+			return w.Wrap(err)
+		}
+		svc, err := app.LoadServiceFromName(ctx, info.Name)
+		if err != nil {
+			return w.Wrap(err)
+		}
+		flow.services[unique] = svc
+		// Register source to handle "pretty" logging
+		cli.RegisterLoggingResource(unique)
+		manager, err := New(ctx, svc, flow.world)
+		if err != nil {
+			return w.Wrap(err)
+		}
+		managers = append(managers, manager)
+	}
+
+	// Now add the current one
+
+	w.Debug("creating run manager", wool.Field("for", flow.origin.Unique()))
+	manager, err := New(ctx, flow.origin, flow.world)
+	cli.RegisterLoggingResource(flow.origin.Unique())
+	if err != nil {
+		return w.Wrap(err)
+	}
+	managers = append(managers, manager)
+
+	flow.hub = &Hub{managers: managers}
+	return nil
 }
 
 var _ ExecutorManager = &Flow{}

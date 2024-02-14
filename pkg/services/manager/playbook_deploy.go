@@ -18,11 +18,11 @@ func NewDeployPolicy(ctx context.Context, dependencies *architecture.ServiceDepe
 
 func (policy *DeployPolicy) Execute(ctx context.Context, action Action) ([]Action, error) {
 	w := wool.Get(ctx).In("DeployPolicy.Execute", wool.Field("action", action))
-	changer, err := policy.GetExecutor(ctx, action)
+	executor, err := policy.GetExecutor(ctx, action)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot process changer")
+		return nil, w.Wrapf(err, "cannot process executor")
 	}
-	outputProperty, err := changer(ctx)
+	outputProperty, err := executor(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty")
 	}

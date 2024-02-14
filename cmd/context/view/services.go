@@ -37,7 +37,7 @@ func viewServices() {
 func ViewServices(ctx context.Context, app *configurations.Application) {
 	if len(app.Services) == 0 {
 		cli.Header(2, "No services found")
-		cli.Exit()
+		cli.SuccessExit()
 	}
 	cli.Header(1, "Services in application <%s>", app.Name)
 

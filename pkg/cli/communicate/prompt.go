@@ -24,6 +24,8 @@ func (h *Prompt) Answer(ctx context.Context, q *agentv0.Question) (*agentv0.Answ
 		return Confirm(ctx, q.Message, v.Confirm)
 	case *agentv0.Question_Input:
 		return Input(q.Message, v.Input)
+	case *agentv0.Question_Choice:
+		return Choice(q.Message, v.Choice)
 	default:
 		return nil, w.NewError("unknown question type: %v", q.Value)
 	}

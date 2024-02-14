@@ -84,7 +84,7 @@ func (playbook *Playbook) Restrict(ctx context.Context, service string) error {
 
 func (playbook *Playbook) Seed(ctx context.Context, action Action) error {
 	w := wool.Get(ctx).In("Playbook.Seed")
-	w.Debug("sending action", wool.Field("action", action.String()))
+	w.Focus("sending action", wool.Field("action", action.String()))
 	playbook.actions.bumpRound()
 	w.Debug("round", wool.Field("round", playbook.actions.round))
 	playbook.actions.send(ctx, action)
@@ -198,7 +198,7 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 				playbook.signal(ctx, action)
 
 				if playbook.stop(ctx, action) {
-					w.Info("stopping", wool.Field("action", action))
+					w.Debug("stopping", wool.Field("action", action))
 					return nil
 				}
 				w.Debug("done with action", wool.Field("action", action))

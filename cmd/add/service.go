@@ -125,7 +125,7 @@ func addService(ctx context.Context, name string, agentInput string) error {
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service <%s> in application <%s>?", name, app.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		cli.Exit()
+		cli.SuccessExit()
 	}
 
 	input := &actionsservice.AddService{

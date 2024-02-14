@@ -63,6 +63,7 @@ func (pm *ServiceManager) Expose(endpoint *basev0.Endpoint) error {
 			Service:     endpoint.Service,
 			Application: endpoint.Application,
 			Namespace:   endpoint.Namespace,
+			Replicas:    endpoint.Replicas,
 			Endpoint:    endpoint,
 		})
 	pm.ids[ToUnique(endpoint)]++

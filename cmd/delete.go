@@ -13,5 +13,6 @@ var DeleteCmd = &cobra.Command{
 
 func init() {
 	DeleteCmd.AddCommand(delete.ProjectCmd)
+	DeleteCmd.AddCommand(delete.ApplicationCmd)
 	DeleteCmd.AddCommand(delete.ServiceCmd)
 }

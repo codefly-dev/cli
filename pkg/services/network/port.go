@@ -65,13 +65,21 @@ func APIInt(api string) int {
 // APP-SVC-API
 // Between 1100(0) and 4999(9)
 // First 11 -> 49: hash app
-// Next 0 -> 99: hash svc
+// Next 0 -> 9: hash svc
+// Next 0 - 9: hash name + instance
 // Last Digit: API
 // 0: TCP
 // 1: HTTP/ REST
 // 2: gRPC
-func ToPort(app string, svc string, api string) int {
-	return HashInt(app, 11, 49)*1000 + HashInt(svc, 0, 99)*10 + APIInt(api)
+func ToPort(app string, svc string, name string, api string, instances int) []int {
+	appPart := HashInt(app, 11, 49) * 1000
+	svcPart := HashInt(svc, 0, 9) * 100
+	var ports []int
+	for i := 0; i < instances; i++ {
+		namePart := HashInt(fmt.Sprintf("%s%d", name, i), 0, 9) * 10
+		ports = append(ports, appPart+svcPart+namePart+APIInt(api))
+	}
+	return ports
 }
 
 func IsPortAvailable(port int) bool {
@@ -132,15 +140,17 @@ func (r FixedStrategy) Reserve(ctx context.Context, host string, endpoints []*Ap
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot get api")
 		}
-		port := ToPort(endpoint.Application, endpoint.Service, api)
-		w.Debug("reserving", wool.ApplicationField(endpoint.Application), wool.ServiceField(endpoint.Service), wool.Field("port", port))
-		w.Trace("port", wool.ThisField(endpoint), wool.Field("port", port))
-		m.ApplicationEndpointInstances = append(m.ApplicationEndpointInstances,
-			&ApplicationEndpointInstance{
-				ApplicationEndpoint: endpoint,
-				Port:                port,
-				Host:                host,
-			})
+		ports := ToPort(endpoint.Application, endpoint.Service, endpoint.Name, api, int(endpoint.Replicas))
+		for _, port := range ports {
+			w.Debug("reserving", wool.ApplicationField(endpoint.Application), wool.ServiceField(endpoint.Service), wool.Field("port", port))
+			w.Trace("port", wool.ThisField(endpoint), wool.Field("port", port))
+			m.ApplicationEndpointInstances = append(m.ApplicationEndpointInstances,
+				&ApplicationEndpointInstance{
+					ApplicationEndpoint: endpoint,
+					Port:                port,
+					Host:                host,
+				})
+		}
 	}
 	return m, nil
 }

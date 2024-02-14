@@ -45,7 +45,7 @@ var ServiceCmd = &cobra.Command{
 
 		service := common.Service(ctx)
 		project := common.Project(ctx)
-		flow, err := initRunService(ctx, project, service, standAlone)
+		flow, err := initRunService(ctx, project, service, standAlone, ci)
 		if err != nil {
 			err = cleanRunService(flow)
 			err = errors.Unwrap(err)
@@ -74,13 +74,13 @@ var ServiceCmd = &cobra.Command{
 			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
 			return
 		}
-		cli.Header(1, "Service stopped successfully")
+		cli.Header(1, "Work done!")
 	},
 }
 
-func initRunService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
+func initRunService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool, ci bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("runService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.RunMode)
+	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.RunMode, ci)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -109,9 +109,11 @@ func runService(ctx context.Context, flow *manager.Flow) error {
 }
 
 var standAlone bool
+var ci bool
 
 func init() {
-	ServiceCmd.Flags().BoolVar(&withServer, "server", true, "Begin service server")
+	ServiceCmd.Flags().BoolVar(&withServer, "server", false, "Begin service server")
+	ServiceCmd.Flags().BoolVar(&ci, "ci", false, "CI Mode")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 }

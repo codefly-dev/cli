@@ -26,7 +26,7 @@ var ServiceCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
 
-		defer services.ClearAgents()
+		cli.RegisterCleanup(services.ClearAgents)
 
 		errs := make(chan error, 1) // Buffered channel
 
@@ -60,13 +60,14 @@ var ServiceCmd = &cobra.Command{
 			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
 			return
 		}
-		cli.Header(1, "Service stopped successfully")
+		cli.Header(1, "Work done!")
+		cli.Done()
 	},
 }
 
 func initDeployService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.DeployMode)
+	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.DeployMode, false)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

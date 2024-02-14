@@ -26,19 +26,18 @@ type Runner struct {
 	instance *services.Instance
 
 	// API
-	endpoints       []*basev0.Endpoint
-	networkMappings []*basev0.NetworkMapping
+	endpoints []*basev0.Endpoint
 
-	// For "callbacks"
-	playbook *Playbook
+	// View of the world
+	world *World
 
-	// State
-	sharedState *StateManager
+	// Callback
+	callback Callback
 
 	// Requires
 	requires []string
 
-	// outputProperty managers
+	// outputProperty hub
 	isStarted bool
 
 	outputPropertyForLoad  *RunnerLoadManager
@@ -48,15 +47,15 @@ type Runner struct {
 	stopped chan struct{}
 }
 
-func NewRunner(ctx context.Context, instance *services.Instance, playbook *Playbook, sharedState *StateManager) (*Runner, error) {
+type Callback func(ctx context.Context, action Action) error
+
+func NewRunner(ctx context.Context, instance *services.Instance, world *World) (*Runner, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(instance))
 	w.Debug("new")
 	runner := &Runner{
 		instance: instance,
 
-		playbook: playbook,
-
-		sharedState: sharedState,
+		world: world,
 
 		outputPropertyForLoad:  NewRunnerLoadManager(instance.Unique()),
 		outputPropertyForInit:  NewRunnerInitManager(instance.Unique()),
@@ -70,9 +69,9 @@ func NewRunner(ctx context.Context, instance *services.Instance, playbook *Playb
 func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
 
-	resp, err := runner.instance.Runtime.Load(ctx, shared.Must(runner.playbook.world.Env.Proto()))
+	resp, err := runner.instance.Runtime.Load(ctx, shared.Must(runner.world.Env.Proto()))
 	if err != nil {
-		w.Warn(fmt.Sprintf("cannot load service instance %v", err))
+		w.Warn(fmt.Sprintf("cannot load rutime instance %v", err))
 		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: err.Error()})
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot set outputProperty for load")
@@ -81,7 +80,7 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 
 	}
 	if resp.Status != nil && resp.Status.State != runtimev0.LoadStatus_READY {
-		w.Warn(fmt.Sprintf("cannot load service instance %v", resp.Status.Message))
+		w.Warn(fmt.Sprintf("load returned error: %v", resp.Status.Message))
 		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: resp.Status.Message})
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot set outputProperty for load")
@@ -94,18 +93,7 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 
 	runner.endpoints = resp.Endpoints
 
-	networkMappings, err := generatePortNetworkMappings(ctx, resp.Endpoints)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot generate network mappings")
-	}
-	runner.networkMappings = networkMappings
-
-	err = runner.sharedState.RecordNetworkMappings(ctx, runner.instance.Service, runner.networkMappings)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot record network mappings")
-	}
-
-	err = runner.sharedState.RecordEndpoints(ctx, runner.instance.Service, resp.Endpoints)
+	err = runner.world.SharedState.RecordEndpoints(ctx, runner.instance.Service, resp.Endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record endpoints")
 	}
@@ -149,29 +137,38 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
 	w.Debug("init")
 
-	dependenciesEndpoints, err := runner.sharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
+	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot run init")
 	}
 
-	infos, err := runner.sharedState.GetProviderInfos(ctx, runner.instance.Service)
+	infos, err := runner.world.SharedState.GetProviderInfos(ctx, runner.instance.Service)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot get provider info")
 	}
 
 	// Get all the shared provider info from the dependents
 
+	networkMappings, err := generatePortNetworkMappings(ctx, runner.endpoints)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot generate network mappings")
+	}
+
 	resp, err := runner.instance.Runtime.Init(ctx, &runtimev0.InitRequest{
-		NetworkMappings:       runner.networkMappings,
-		ProviderInfos:         infos,
-		DependenciesEndpoints: dependenciesEndpoints,
+		ProposedNetworkMappings: networkMappings,
+		ProviderInfos:           infos,
+		DependenciesEndpoints:   dependenciesEndpoints,
 	})
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+		return nil, w.Wrapf(err, "cannot call init")
 	}
 
 	if resp.Status != nil && resp.Status.State != runtimev0.InitStatus_READY {
 		return nil, w.NewError("service instance is not ready")
+	}
+	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, resp.NetworkMappings)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
 	w.Debug("init",
@@ -187,7 +184,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for init")
 	}
 
-	err = runner.sharedState.RecordSharedProviderInfos(ctx, runner.instance.Service, resp.ServiceProviderInfos)
+	err = runner.world.SharedState.RecordSharedProviderInfos(ctx, runner.instance.Service, resp.ServiceProviderInfos)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared provider infos")
 	}
@@ -206,7 +203,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	// Build the request
-	networkMappings, err := runner.sharedState.GetNetworkMappings(ctx, runner.instance.Service)
+	networkMappings, err := runner.world.SharedState.GetNetworkMappings(ctx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
@@ -291,8 +288,8 @@ func (runner *Runner) Follow(ctx context.Context) error {
 					w.Debug("cannot get information", wool.ErrField(err))
 					return
 				}
-				if info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
-					w.Debug("received a request to change sharedState", wool.Field("sharedState", info.DesiredState.Stage))
+				if info.DesiredState != nil && info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
+					w.Focus("received a request to change sharedState", wool.Field("sharedState", info.DesiredState.Stage))
 					action := Action{Service: runner.Unique()}
 					switch info.DesiredState.Stage {
 					case runtimev0.DesiredState_LOAD:
@@ -302,8 +299,8 @@ func (runner *Runner) Follow(ctx context.Context) error {
 					case runtimev0.DesiredState_START:
 						action.Type = RuntimeStart
 					}
-					w.Debug("sending action", wool.Field("action", action.Type))
-					err = runner.playbook.Seed(ctx, action)
+					w.Focus("sending action", wool.Field("action", action.Type))
+					err = runner.callback(ctx, action)
 					if err != nil {
 						w.Error("cannot seed", wool.ErrField(err))
 						return

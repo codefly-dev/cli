@@ -8,6 +8,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/wool"
+	"github.com/fatih/color"
 
 	"github.com/spf13/cobra"
 )
@@ -18,8 +19,38 @@ var RootCmd = &cobra.Command{
 	Short: "🪄Codefly is magic",
 	Run: func(cmd *cobra.Command, args []string) {
 		common.Logo()
-		//context.ShowCurrent()
 	},
+}
+
+func init() {
+	// Define a custom help template with color
+	customHelpTemplate := color.New(color.FgCyan).Sprint("Usage:") + `
+{{.UseLine}}
+
+{{if .Long}}{{.Long | trimTrailingWhitespaces}}
+
+{{end}}{{if .HasExample}}` + color.New(color.FgCyan).Sprint("Examples:") + `
+{{.Example}}
+
+{{end}}{{if .HasAvailableSubCommands}}` + color.New(color.FgCyan).Sprint("Available Commands:") + `
+{{range .Commands}}{{if (and .IsAvailableCommand (not .IsAdditionalHelpTopicCommand))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}
+
+{{end}}{{if .HasAvailableLocalFlags}}` + color.New(color.FgCyan).Sprint("Flags:") + `
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}
+
+{{end}}{{if .HasAvailableInheritedFlags}}` + color.New(color.FgCyan).Sprint("Global Flags:") + `
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}
+
+{{end}}{{if .HasHelpSubCommands}}` + color.New(color.FgCyan).Sprint("Additional help topics:") + `
+{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}
+
+{{end}}
+`
+
+	// Set the custom help template
+	RootCmd.SetHelpTemplate(customHelpTemplate)
 }
 
 // Execute adds codefly-sdk child commands to the root command and sets flags appropriately.
@@ -32,9 +63,6 @@ func Execute() {
 	if trace {
 		wool.SetGlobalLogLevel(wool.TRACE)
 	}
-	//wool.SetTODO(todo)
-	//wool.SetOverride(override)
-	//
 	cli.SetWithDefault(withDefault)
 
 	if tracker != "" {
@@ -70,6 +98,9 @@ func init() {
 	RootCmd.AddCommand(InitCmd)
 	RootCmd.AddCommand(ContextCmd)
 	RootCmd.AddCommand(ListCmd)
+
+	// Generate client code
+	RootCmd.AddCommand(GenerateCmd)
 
 	// Import
 	RootCmd.AddCommand(ImportCmd)

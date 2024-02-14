@@ -39,7 +39,7 @@ func addServiceDependency() {
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		cli.Exit()
+		cli.SuccessExit()
 	}
 	// First all services in the same application
 	inAppServices := app.Services

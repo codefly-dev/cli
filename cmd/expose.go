@@ -56,14 +56,19 @@ func expose(ctx context.Context, project *configurations.Project) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot parse unique: %s", unique)
 		}
-		service, err := configurations.LoadServiceFromDirUnsafe(ctx, path.Join(project.Dir(), ref.Application, ref.Name))
+		dir := path.Join(project.Dir(), ref.Application, ref.Name)
+		w.Debug("exposing", wool.Field("dir", dir))
+		service, err := configurations.LoadServiceFromDirUnsafe(ctx, dir)
+		if err != nil {
+			return w.Wrapf(err, "cannot load service from dir: %s", dir)
+		}
 		namespace := service.Namespace
 		k8sSvc := fmt.Sprintf("svc/%s-%s", ref.Name, ref.Application)
 
 		port := strings.Split(url, ":")[1]
 		go func(service string, port string, namespace string) {
 			for {
-				w.Info("exposing", wool.Field("service", service), wool.Field("port", port), wool.Field("namespace", namespace))
+				w.Info(fmt.Sprintf("exposing %s on port %s", ref.Unique(), port), wool.Field("service", service), wool.Field("port", port), wool.Field("namespace", namespace))
 				cmd := exec.CommandContext(ctx, "kubectl", "port-forward", "-n", namespace, k8sSvc, fmt.Sprintf("%s:8080", port))
 				err := cmd.Run()
 				if err != nil {

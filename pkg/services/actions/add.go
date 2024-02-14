@@ -63,7 +63,7 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		fmt.Println(rendered)
 	}
 
-	_, err = instance.Builder.Load(ctx)
+	_, err = instance.Builder.Load(ctx, configurations.LocalProto())
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 	}

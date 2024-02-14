@@ -7,7 +7,7 @@ import (
 	"github.com/codefly-dev/core/configurations"
 	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 	"github.com/codefly-dev/core/wool"
-	"github.com/go-git/go-git/v5"
+	git "github.com/go-git/go-git/v5"
 )
 
 func Dir(ctx context.Context, project *configurations.Project) string {

@@ -22,7 +22,7 @@ var ApplicationCmd = &cobra.Command{
 
 		if interactive {
 			cli.Error("Interactive mode not implemented yet")
-			cli.Exit()
+			cli.SuccessExit()
 		}
 		if len(args) != 1 {
 			cli.Error("You must provide a name for the application as the single argument")

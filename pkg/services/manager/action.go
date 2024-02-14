@@ -83,15 +83,15 @@ func NewActionManager() *ActionManager {
 }
 
 func (manager *ActionManager) Round() int {
-	manager.Lock()
-	defer manager.Unlock()
+	manager.Mutex.Lock()
+	defer manager.Mutex.Unlock()
 	return manager.round
 }
 
 func (manager *ActionManager) bumpRound() {
-	manager.Lock()
+	manager.Mutex.Lock()
 	manager.round++
-	manager.Unlock()
+	manager.Mutex.Unlock()
 }
 
 // Send actions as a group

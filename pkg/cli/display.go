@@ -109,6 +109,20 @@ func ErrorDetail(s string, args ...any) {
 	wrapper.ErrorDetail(s, args...)
 }
 
+type Cleanup func()
+
+var cleanups []Cleanup
+
+func RegisterCleanup(cleanup Cleanup) {
+	cleanups = append(cleanups, cleanup)
+}
+
+func Done() {
+	for _, cleanup := range cleanups {
+		cleanup()
+	}
+}
+
 func (wrapper *Wrapper) Focus(s string, args ...any) {
 	theme := "#(bold,red)"
 	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
@@ -122,24 +136,26 @@ func Focus(s string, args ...any) {
 
 func ExitOnError(err error, format string, args ...any) {
 	if err != nil {
+		Done()
 		Error(format, args...)
 		ErrorDetail(err.Error())
-		Exit()
+		SuccessExit()
 	}
 }
 
 func ExitIf(b bool, format string, args ...any) {
 	if b {
 		Error(format, args...)
-		Exit()
+		SuccessExit()
 	}
 }
 
 func ExitWithMessage(format string, args ...any) {
+	Done()
 	Error(format, args...)
-	Exit()
+	SuccessExit()
 }
 
-func Exit() {
+func SuccessExit() {
 	os.Exit(0)
 }

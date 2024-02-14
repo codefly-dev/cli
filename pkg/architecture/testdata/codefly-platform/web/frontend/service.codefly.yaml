@@ -2,6 +2,7 @@ kind: service
 name: frontend
 version: 0.0.0
 application: web
+project: codefly-platform
 namespace: default
 domain: github.com/codefly-ai/codefly-platform/web/frontend
 agent:
