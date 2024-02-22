@@ -75,6 +75,7 @@ func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) e
 type RunnerInitOutput struct {
 	networkMappings []*basev0.NetworkMapping
 	providerInfos   []*basev0.ProviderInformation
+	failing         bool
 }
 
 type RunnerInitManager struct {
@@ -100,6 +101,10 @@ func (b *RunnerInitManager) Process(ctx context.Context) (*OutputProperty, error
 
 func (b *RunnerInitManager) Set(ctx context.Context, output *RunnerInitOutput) error {
 	w := wool.Get(ctx).In("RunnerInitManager.Set", wool.NameField(b.unique))
+	if output.failing {
+		b.processed = Pause()
+		return nil
+	}
 
 	providerInfoHash, err := configurations.ProviderInformationHash(output.providerInfos...)
 	if err != nil {

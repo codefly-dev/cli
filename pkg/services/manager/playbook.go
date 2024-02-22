@@ -84,7 +84,7 @@ func (playbook *Playbook) Restrict(ctx context.Context, service string) error {
 
 func (playbook *Playbook) Seed(ctx context.Context, action Action) error {
 	w := wool.Get(ctx).In("Playbook.Seed")
-	w.Focus("sending action", wool.Field("action", action.String()))
+	w.Focus("sending action", wool.Field("action", action.ShortString()))
 	playbook.actions.bumpRound()
 	w.Debug("round", wool.Field("round", playbook.actions.round))
 	playbook.actions.send(ctx, action)

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -104,10 +105,6 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		Deployer:     deployer,
 	}
 
-	// A Flow really handles creating actions and running them
-	// Non-buffered single channel for now to make sure we get the order correct
-	// TODO: smart parallelization
-
 	flow := &Flow{
 		project: project,
 		origin:  service,
@@ -122,6 +119,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
 	}
 	currentFlow = flow
+	fmt.Println("flow", flow)
 	return flow, nil
 }
 
@@ -212,7 +210,9 @@ func (flow *Flow) WithPolicy(policy PlaybookPolicy) *Flow {
 
 func (flow *Flow) Start(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Begin")
-
+	if flow == nil {
+		return w.NewError("cannot start nil flow")
+	}
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
 		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {

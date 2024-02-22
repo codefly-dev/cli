@@ -11,33 +11,33 @@ import (
 
 type BuildPolicy struct {
 	ExecutorManager
-	world        *World
-	builds       builder.Repository
-	org          builder.OrganizationRepository
+	world  *World
+	builds builder.Repository
+	//org          builder.OrganizationRepository
 	dependencies *architecture.ServiceDependencies
 }
 
 func NewBuildPolicy(ctx context.Context, hub *Hub, world *World, ci bool) (*BuildPolicy, error) {
-	w := wool.Get(ctx).In("NewBuildPolicy")
+	//w := wool.Get(ctx).In("NewBuildPolicy")
 	// Create a Build Executor
 	var repo builder.Repository
-	var org builder.OrganizationRepository
+	//var org platform.OrganizationRepository
 	var err error
 	if ci {
-		repo, err = builder.NewService(ctx)
-		if err != nil {
-			w.Warn("cannot create repository: bootstrap mode", wool.ErrField(err))
-		}
-		org, err = builder.NewOrganizationService(ctx)
-		if err != nil {
-			w.Warn("cannot create organization repository: bootstrap mode", wool.ErrField(err))
-		}
+		//repo, err = builder.NewService(ctx)
+		//if err != nil {
+		//	w.Warn("cannot create repository: bootstrap mode", wool.ErrField(err))
+		//}
+		//org, err = builder.NewOrganizationService(ctx)
+		//if err != nil {
+		//	w.Warn("cannot create organization repository: bootstrap mode", wool.ErrField(err))
+		//}
 	}
 	executorManager, err := NewBuildExecutor(ctx, hub, repo, ci)
 	if err != nil {
 		return nil, wool.Get(ctx).Wrapf(err, "cannot create BuildExecutor")
 	}
-	return &BuildPolicy{builds: repo, org: org, world: world, dependencies: world.Dependencies, ExecutorManager: executorManager}, nil
+	return &BuildPolicy{builds: repo, world: world, dependencies: world.Dependencies, ExecutorManager: executorManager}, nil
 }
 
 func (policy *BuildPolicy) Execute(ctx context.Context, action Action) ([]Action, error) {

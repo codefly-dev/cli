@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 
 	"github.com/codefly-dev/cli/pkg/services/network"
@@ -117,6 +120,18 @@ func (builder *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		DependenciesEndpoints:   dependenciesEndpoints,
 	})
 	if err != nil {
+		if grpcErr, ok := status.FromError(err); ok {
+			// Now grpcErr is the unwrapped gRPC error
+			// You can get the error code and message like this
+			code := grpcErr.Code()
+			message := grpcErr.Message()
+			w.Focus("grpc", wool.Field("code", code), wool.Field("message", message))
+
+			// Check if the error is a context cancelled error
+			if code == codes.Canceled {
+				return nil, nil
+			}
+		}
 		return nil, w.Wrapf(err, "cannot call init")
 	}
 

@@ -40,6 +40,10 @@ func (action *Action) String() string {
 	return fmt.Sprintf("%s:%s (%d)", action.Type, action.Service, action.Round)
 }
 
+func (action *Action) ShortString() string {
+	return fmt.Sprintf("%s:%s", action.Type, action.Service)
+}
+
 type ActionGroup struct {
 	actions []Action
 	round   int

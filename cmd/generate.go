@@ -13,4 +13,5 @@ var GenerateCmd = &cobra.Command{
 
 func init() {
 	GenerateCmd.AddCommand(generate.GRPCCmd)
+	GenerateCmd.AddCommand(generate.OpenAPICmd)
 }

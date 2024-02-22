@@ -96,6 +96,8 @@ func init() {
 
 	// Initialization and configuration
 	RootCmd.AddCommand(InitCmd)
+	RootCmd.AddCommand(LoginCmd)
+
 	RootCmd.AddCommand(ContextCmd)
 	RootCmd.AddCommand(ListCmd)
 

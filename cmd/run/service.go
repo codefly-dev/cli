@@ -47,8 +47,11 @@ var ServiceCmd = &cobra.Command{
 		project := common.Project(ctx)
 		flow, err := initRunService(ctx, project, service, standAlone, ci)
 		if err != nil {
-			err = cleanRunService(flow)
 			err = errors.Unwrap(err)
+			clearErr := cleanRunService(flow)
+			if clearErr != nil {
+				cli.Warning("Got error while cleaning up: %v", errors.Unwrap(clearErr))
+			}
 			cli.ExitOnError(err, "Cannot init flow")
 		}
 		go func() {
@@ -99,7 +102,9 @@ func cleanRunService(flow *manager.Flow) error {
 }
 
 func runService(ctx context.Context, flow *manager.Flow) error {
+	// Catch panic
 	w := wool.Get(ctx).In("runService")
+	defer w.Catch()
 	err := flow.Start(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot start service")

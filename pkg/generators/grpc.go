@@ -7,12 +7,12 @@ import (
 	"os"
 
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/agents/helpers/proto"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/configurations/languages"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	"github.com/codefly-dev/core/runners"
 	"github.com/codefly-dev/core/templates"
+	"github.com/codefly-dev/core/version"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -58,7 +58,7 @@ func getGRPCEndpoints(ctx context.Context, service *configurations.Service) ([]*
 func GenerateGRPC(ctx context.Context, language languages.Language, destination string, service string, endpoints ...*basev0.Endpoint) error {
 	w := wool.Get(ctx).In("generateGRPC", wool.Field("destination", destination))
 	// call the companion
-	image, err := proto.CompanionImage(ctx)
+	image, err := version.CompanionImage(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot get companion image")
 	}
