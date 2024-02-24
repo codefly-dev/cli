@@ -5,9 +5,10 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/codefly-dev/cli/pkg/generators"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/generators"
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/configurations/languages"

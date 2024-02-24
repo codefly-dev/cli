@@ -10,36 +10,18 @@ import (
 	"github.com/go-openapi/strfmt"
 )
 
-type OrganizationRepository interface {
+type Client struct {
+	API *api.WebAPI
 }
 
-type OrganizationRepo struct {
-	client *api.WebAPI
-}
-
-func NewPlatformService(ctx context.Context, token string) (*OrganizationRepo, error) {
+func NewPlatformService(ctx context.Context, token string) (*Client, error) {
 	w := wool.Get(ctx).In("NewService")
 
 	client, err := NewClient(ctx, token)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-
-	version, err := client.OrganizationService.OrganizationServiceVersion(nil)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-	w.Focus("version", wool.Field("version", version))
-
-	// Call the self API
-	self, err := client.OrganizationService.OrganizationServiceGetSelf(nil)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-
-	w.Focus("ID", wool.Field("who am I?", self.Payload.User.Name))
-
-	return &OrganizationRepo{client: client}, nil
+	return &Client{API: client}, nil
 }
 
 func NewClient(ctx context.Context, token string) (*api.WebAPI, error) {

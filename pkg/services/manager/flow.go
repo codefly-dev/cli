@@ -2,7 +2,6 @@ package manager
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -119,7 +118,6 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
 	}
 	currentFlow = flow
-	fmt.Println("flow", flow)
 	return flow, nil
 }
 
