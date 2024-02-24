@@ -52,7 +52,7 @@ Use --override to reinitialize codefly.`)
 
 	action, err := actionworkspace.NewActionAddWorkspace(ctx, &v0actions.AddWorkspace{
 		Organization: org,
-		Name:         "default",
+		Name:         configurations.LocalWorkspace,
 	})
 
 	out, err := actions.Run(ctx, action)

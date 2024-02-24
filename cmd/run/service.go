@@ -31,16 +31,11 @@ var ServiceCmd = &cobra.Command{
 
 		if withServer {
 			workspace := common.Workspace(ctx)
-			if workspace == nil {
-				cli.Error("No workspace found: can't run server")
-			} else {
-				server, err := web.NewServer(web.ServerData{Workspace: workspace})
-				cli.ExitOnError(err, "cannot create web server")
-				go func() {
-					errs <- server.Start(ctx)
-				}()
-			}
-
+			server, err := web.NewServer(web.ServerData{Workspace: workspace})
+			cli.ExitOnError(err, "cannot create web server")
+			go func() {
+				errs <- server.Start(ctx)
+			}()
 		}
 
 		service := common.Service(ctx)

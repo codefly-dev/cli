@@ -91,16 +91,38 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *web.GetAgentI
 
 func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*web.GetProjectsResponse, error) {
 	var projects []string
-	for _, project := range s.workspace.Projects {
-		projects = append(projects, project.Name)
+	if s.workspace == nil {
+		project := common.Project(ctx)
+		if project == nil {
+			return nil, status.Error(codes.Internal, "no project")
+		}
+		projects = []string{project.Name}
+	} else {
+		for _, project := range s.workspace.Projects {
+			projects = append(projects, project.Name)
+		}
 	}
 	return &web.GetProjectsResponse{
 		Projects: projects,
 	}, nil
 }
 
+func (s *Server) getProject(ctx context.Context, name string) (*configurations.Project, error) {
+	if s.workspace == nil {
+		project := common.Project(ctx)
+		if project == nil {
+			return nil, status.Error(codes.Internal, "no project")
+		}
+		if project.Name != name {
+			return nil, status.Error(codes.Internal, "project mismatch")
+		}
+		return project, nil
+	}
+	return s.workspace.LoadProjectFromName(ctx, name)
+}
+
 func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectRequest) (*basev0.Project, error) {
-	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
+	project, err := s.getProject(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -116,7 +138,7 @@ func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *
 }
 
 func (s *Server) GetProjectPublicApplicationsDependencyGraph(ctx context.Context, request *web.ProjectRequest) (*web.MultiGraphResponse, error) {
-	project, err := s.workspace.LoadProjectFromName(ctx, request.Project)
+	project, err := s.getProject(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
