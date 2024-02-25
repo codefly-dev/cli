@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/glamour v0.6.0
 	github.com/charmbracelet/lipgloss v0.9.1
-	github.com/codefly-dev/core v0.1.35
+	github.com/codefly-dev/core v0.1.36
 	github.com/codefly-dev/golor v0.1.2
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/fatih/color v1.16.0
@@ -33,7 +33,7 @@ require (
 	google.golang.org/grpc v1.62.0
 	google.golang.org/protobuf v1.32.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.29.1
+	modernc.org/sqlite v1.29.2
 )
 
 require (

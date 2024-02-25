@@ -63,6 +63,9 @@ func Execute() {
 	if trace {
 		wool.SetGlobalLogLevel(wool.TRACE)
 	}
+	if focus {
+		wool.SetGlobalLogLevel(wool.FOCUS)
+	}
 	cli.SetWithDefault(withDefault)
 
 	if tracker != "" {
@@ -76,6 +79,7 @@ func Execute() {
 
 // Origin of the World
 var (
+	focus       bool
 	debug       bool
 	trace       bool
 	todo        bool
@@ -139,6 +143,7 @@ func init() {
 	// Expose for local k8s development
 	RootCmd.AddCommand(ExposeCmd)
 
+	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
 	RootCmd.PersistentFlags().BoolVar(&withDefault, "with-default", false, "Use default option instead of prompt")
