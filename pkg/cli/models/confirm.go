@@ -78,7 +78,7 @@ func Confirm(ctx context.Context, s string, defaultValue bool) bool {
 	if m.stopped {
 		cli.Header(1, "TODO: fix cancel")
 		common.Cancel(ctx)
-		cli.SuccessExit()
+		cli.Exit()
 	}
 	return m.confirmed
 }

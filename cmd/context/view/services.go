@@ -35,9 +35,9 @@ func viewServices() {
 }
 
 func ViewServices(ctx context.Context, app *configurations.Application) {
-	if len(app.Services) == 0 {
+	if len(app.ServiceReferences) == 0 {
 		cli.Header(2, "No services found")
-		cli.SuccessExit()
+		cli.Exit()
 	}
 	cli.Header(1, "Services in application <%s>", app.Name)
 
@@ -46,7 +46,7 @@ func ViewServices(ctx context.Context, app *configurations.Application) {
 	if active == nil {
 		cli.Header(2, "No active service")
 		cli.Header(2, "Services:")
-		for _, other := range app.Services {
+		for _, other := range app.ServiceReferences {
 			cli.Header(2, "<%s>", other)
 		}
 		return
@@ -55,7 +55,7 @@ func ViewServices(ctx context.Context, app *configurations.Application) {
 	cli.Header(2, "Active: <%s>", *active)
 
 	var others []string
-	for _, other := range app.Services {
+	for _, other := range app.ServiceReferences {
 		if active.Name == other.Name {
 			continue
 		}

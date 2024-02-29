@@ -188,7 +188,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	if resp.Status != nil && resp.Status.State != runtimev0.InitStatus_READY {
-		w.Focus("init failed: waiting")
+		w.Debug("init failed: waiting")
 		err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true})
 		return runner.outputPropertyForInit.Process(ctx)
 
@@ -320,7 +320,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 					return
 				}
 				if info.DesiredState != nil && info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
-					w.Focus("received a request to change sharedState", wool.Field("sharedState", info.DesiredState.Stage))
+					w.Debug("received a request to change sharedState", wool.Field("sharedState", info.DesiredState.Stage))
 					action := Action{Service: runner.Unique()}
 					switch info.DesiredState.Stage {
 					case runtimev0.DesiredState_LOAD:

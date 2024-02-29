@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/core/wool"
 )
 
-func GRPC(ctx context.Context, project *configurations.Project, service *configurations.Service, language languages.Language, destination string) error {
+func GRPC(ctx context.Context, service *configurations.Service, language languages.Language, destination string) error {
 	w := wool.Get(ctx).In("generateGRPCs", wool.ThisField(service))
 	endpoints, err := getGRPCEndpoints(ctx, service)
 	if err != nil {
@@ -46,6 +46,6 @@ func getGRPCEndpoints(ctx context.Context, service *configurations.Service) ([]*
 			endpoints = append(endpoints, endpoint)
 		}
 	}
-	w.Debug("got endpoints", wool.ProjectField(service.Project), wool.Field("endpoints", configurations.MakeEndpointSummary(endpoints)))
+	w.Debug("got endpoints", wool.Field("endpoints", configurations.MakeEndpointSummary(endpoints)))
 	return endpoints, nil
 }

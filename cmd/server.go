@@ -27,7 +27,7 @@ var ServerCmd = &cobra.Command{
 		workspace := common.Workspace(ctx)
 		if workspace == nil {
 			cli.Error("No workspace found")
-			cli.SuccessExit()
+			cli.Exit()
 		}
 		go func() {
 			w, err := web.NewServer(web.ServerData{Workspace: workspace})

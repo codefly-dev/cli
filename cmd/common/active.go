@@ -27,19 +27,21 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 	if err != nil {
 		w.Warn("running without workspace: run `codefly init` for context magic")
 	}
+
 	active.Workspace = workspace
 	// Override path
 	project, err := configurations.LoadProjectFromPath(ctx)
 	if err != nil {
 		return nil, err
 	}
+	pathProjectOverride := project != nil
+
 	if project == nil {
-		if workspace == nil {
-			cli.ExitWithMessage("without workspace, codefly needs to be in a project folder")
-		}
-		project, err = workspace.LoadActiveProject(ctx)
-		if err != nil {
-			return nil, err
+		if workspace != nil {
+			project, err = workspace.LoadActiveProject(ctx)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	active.Project = project
@@ -47,13 +49,15 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 	if err != nil {
 		return nil, err
 	}
+	pathApplicationOverride := application != nil
 	if application == nil {
-		if workspace == nil {
-			cli.ExitWithMessage("without workspace, codefly needs to be in an application folder")
-		}
-		application, err = workspace.LoadActiveApplication(ctx, project.Name)
-		if err != nil {
-			return active, nil
+		if !pathProjectOverride && workspace != nil {
+			if project != nil {
+				application, err = workspace.LoadActiveApplication(ctx, project.Name)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	active.Application = application
@@ -63,12 +67,13 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 		return nil, err
 	}
 	if service == nil {
-		if workspace == nil {
-			cli.ExitWithMessage("without workspace, codefly needs to be in a service folder")
-		}
-		service, err = workspace.LoadActiveService(ctx, project.Name, application.Name)
-		if err != nil {
-			return active, nil
+		if !pathApplicationOverride && workspace != nil {
+			if project != nil && application != nil {
+				service, err = workspace.LoadActiveService(ctx, project.Name, application.Name)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	active.Service = service

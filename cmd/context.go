@@ -18,9 +18,13 @@ var ContextCmd = &cobra.Command{
 		active, err := common.LoadActiveContext(ctx)
 		cli.ExitOnError(err, "cannot load active context")
 
+		if active.Project == nil {
+			cli.Header(2, "☠️ No active project")
+			return
+		}
 		cli.Header(2, "⭐️ Active project <%s>", active.Project.Name)
 		if active.Application == nil {
-			cli.Header(2, "⚡️ No active application")
+			cli.Header(2, "☠️ No active application")
 			return
 		} else {
 			cli.Header(2, "⚡️ Active application <%s>", active.Application.Name)

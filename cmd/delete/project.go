@@ -17,7 +17,7 @@ var ProjectCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
 			cli.Error("You must provide a name for the project as the single argument")
-			cli.SuccessExit()
+			cli.Exit()
 		}
 		name := args[0]
 		deleteProject(name)
@@ -29,11 +29,15 @@ func deleteProject(name string) {
 	defer done()
 
 	workspace := common.Workspace(ctx)
-	if !workspace.ExistsProject(name) {
-		cli.Error("Project <%s>> does not exist in workspace", name)
+	if workspace == nil {
+		cli.Header(2, "Nothing to do. Just rm -rf .")
 		return
 	}
-	confirm := models.Confirm(ctx, fmt.Sprintf("Delete the project <%s>?", name), false)
+	if workspace.HasProject(name) {
+		cli.Header(2, "Nothing to do. Just rm -rf .")
+		return
+	}
+	confirm := models.Confirm(ctx, fmt.Sprintf("Delete the project from workspace <%s>?", name), false)
 	if confirm {
 		err := workspace.DeleteProject(ctx, name)
 		cli.ExitOnError(err, "cannot delete project")

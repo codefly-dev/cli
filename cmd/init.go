@@ -41,13 +41,13 @@ Use --override to reinitialize codefly.`)
 
 	cli.Header(2, "Let's start by creating an organization - don't worry you can change that easily later on.")
 
-	orgDomain := models.Input("Organization domain", "github.com/codefly-dev")
+	orgSvc := models.Input("Organization Source Control", "github.com/codefly-dev")
 
-	orgName := models.Input("Organization name", configurations.ToOrganizationName(orgDomain))
+	orgName := models.Input("Organization name", configurations.ToOrganizationName(orgSvc))
 
 	org := &basev0.Organization{
-		Name:   orgName,
-		Domain: orgDomain,
+		Name:                 orgName,
+		SourceVersionControl: orgSvc,
 	}
 
 	action, err := actionworkspace.NewActionAddWorkspace(ctx, &v0actions.AddWorkspace{

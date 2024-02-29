@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/codefly-dev/core/generators"
 	"github.com/codefly-dev/core/version"
 
 	"github.com/codefly-dev/core/builders"
@@ -52,8 +53,8 @@ func (g *Proto) Generate(ctx context.Context) error {
 		w.Debug("no proto change detected")
 		return nil
 	}
-	w.Info("detected changes to the proto: re-generating code", wool.DirField(g.Dir))
-	image, err := version.CompanionImage(ctx)
+	w.Info("proto files analyzed: re-generating code", wool.DirField(g.Dir))
+	image, err := generators.CompanionImage(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot get companion image")
 	}

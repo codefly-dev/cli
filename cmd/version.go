@@ -18,7 +18,7 @@ var VersionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Version of codefly",
 	Run: func(cmd *cobra.Command, args []string) {
-		data, err := fs.ReadFile(info, "info.yaml")
+		data, err := fs.ReadFile(infoFS, "info.yaml")
 		if err != nil {
 			log.Fatalf("error: %v", err)
 		}
@@ -34,4 +34,4 @@ var VersionCmd = &cobra.Command{
 }
 
 //go:embed info.yaml
-var info embed.FS
+var infoFS embed.FS

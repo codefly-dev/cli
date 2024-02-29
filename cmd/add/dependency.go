@@ -31,7 +31,6 @@ func addServiceDependency() {
 	defer done()
 	defer services.ClearAgents()
 
-	workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
 	app := common.Application(ctx)
 	service := common.Service(ctx)
@@ -39,10 +38,10 @@ func addServiceDependency() {
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		cli.SuccessExit()
+		cli.Exit()
 	}
 	// First all services in the same application
-	inAppServices := app.Services
+	inAppServices := app.ServiceReferences
 
 	// only 1 service means must be in another app
 	if len(inAppServices) > 1 {
@@ -66,8 +65,7 @@ func addServiceDependency() {
 		if selected.Identifier != otherApplication {
 			action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
 				Name:                  service.Name,
-				Project:               project.Name,
-				Workspace:             workspace.Name,
+				ProjectPath:           project.Dir(),
 				Application:           app.Name,
 				DependencyApplication: app.Name,
 				DependencyName:        selected.Identifier,
@@ -99,7 +97,7 @@ func addServiceDependency() {
 	otherApp, err := project.LoadApplicationFromName(ctx, selected.Identifier)
 	cli.ExitOnError(err, "cannot load application")
 	entries = []*models.Entry{}
-	for _, p := range otherApp.Services {
+	for _, p := range otherApp.ServiceReferences {
 		if p.Name == service.Name {
 			continue
 		}
@@ -112,8 +110,7 @@ func addServiceDependency() {
 
 	action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
 		Name:                  service.Name,
-		Project:               project.Name,
-		Workspace:             workspace.Name,
+		ProjectPath:           project.Dir(),
 		Application:           app.Name,
 		DependencyApplication: otherApp.Name,
 		DependencyName:        selected.Identifier,

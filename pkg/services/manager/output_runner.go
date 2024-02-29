@@ -44,7 +44,7 @@ func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) e
 		return nil
 	}
 	// Compute a hash on the endpoints
-	w.Focus("computing hash")
+	w.Debug("computing hash")
 	hash, err := configurations.EndpointHash(ctx, output.Endpoints...)
 	if err != nil {
 		return w.Wrapf(err, "cannot compute endpoints hash")
@@ -60,7 +60,7 @@ func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) e
 
 	// If the hash is different, we need to propagate
 	if hash != b.endpointsHash {
-		w.Focus("DETECTED A CHANGE")
+		w.Debug("detected a change")
 		b.processed = RequirePropagation()
 		return nil
 	}

@@ -18,7 +18,7 @@ var ServiceCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
 			cli.Error("You must provide a name for the service as the single argument")
-			cli.SuccessExit()
+			cli.Exit()
 		}
 		name := args[0]
 		deleteService(name)
@@ -49,12 +49,14 @@ func deleteService(name string) {
 	}
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm deletion of service <%s> in application <%s> in project <%s>?", name, app.Name, project.Name), false)
 	if confirm {
-		err := app.DeleteService(ctx, name)
+		err = app.DeleteService(ctx, name)
 		cli.ExitOnError(err, "cannot delete service")
 		err = project.DeleteServiceDependencies(ctx, &configurations.ServiceReference{Application: app.Name, Name: name})
 		cli.ExitOnError(err, "cannot delete service dependencies")
-		err = workspace.DeleteService(ctx, project.Name, app.Name, name)
-		cli.ExitOnError(err, "cannot delete service from workspace")
+		if workspace != nil && workspace.HasProject(project.Name) {
+			err = workspace.DeleteService(ctx, project.Name, app.Name, name)
+			cli.ExitOnError(err, "cannot delete service from workspace")
+		}
 		cli.Header(2, "Service <%s> deleted!", name)
 	} else {
 		cli.Header(2, "Abort! Heard loud and clear.")

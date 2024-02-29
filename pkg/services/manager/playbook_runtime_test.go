@@ -109,7 +109,7 @@ func setup(t *testing.T, actionType manager.ActionType, executor manager.Executo
 	// - gateway  -> billing/accounts
 
 	ctx := context.Background()
-	project, err := configurations.LoadProjectFromDirUnsafe(ctx, "testdata/codefly-platform")
+	project, err := configurations.LoadProjectFromDir(ctx, "testdata/codefly-platform")
 	assert.NoError(t, err)
 
 	dependencies, err := architecture.NewServiceDependencies(ctx, project)

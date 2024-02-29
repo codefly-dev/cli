@@ -76,7 +76,9 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	w := wool.Get(ctx).In("cmd.add.service")
 
-	workspace := common.Workspace(ctx)
+	// TODO context
+
+	//workspace := common.Workspace(ctx)
 	project := common.Project(ctx)
 	app := common.Application(ctx)
 
@@ -125,16 +127,14 @@ func addService(ctx context.Context, name string, agentInput string) error {
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service <%s> in application <%s>?", name, app.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		cli.SuccessExit()
+		cli.Exit()
 	}
 
 	input := &actionsservice.AddService{
-		Name:        name,
-		Project:     project.Name,
-		Workspace:   workspace.Name,
-		Application: app.Name,
-		Agent:       agent.Proto(),
-		Override:    override,
+		Name:            name,
+		ApplicationPath: app.Dir(),
+		Agent:           agent.Proto(),
+		Override:        override,
 	}
 
 	addDescription := models.Confirm(ctx, "Do you want to add a short description?", false)
@@ -147,6 +147,7 @@ func addService(ctx context.Context, name string, agentInput string) error {
 	if err != nil {
 		return w.Wrapf(err, "cannot add service")
 	}
+
 	return nil
 
 }

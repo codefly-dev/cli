@@ -56,16 +56,16 @@ type RuntimeInstance struct {
 
 func (instance *BuilderInstance) Load(ctx context.Context, env *basev0.Environment) (*builderv0.LoadResponse, error) {
 	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
-	w.Debug("loading", wool.ProjectField(instance.Service.Project))
+	w.Debug("loading", wool.ProjectField(instance.Service.Project), wool.ApplicationField(instance.Service.Application))
 	init := &builderv0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
-			Name:        instance.Service.Name,
-			Application: instance.Service.Application,
-			Project:     instance.Service.Project,
-			Domain:      instance.Service.Domain,
-			Namespace:   instance.Service.Namespace,
-			Location:    instance.Service.Dir(),
+			Name:                 instance.Service.Name,
+			Application:          instance.Service.Application,
+			Project:              instance.Service.Project,
+			SourceVersionControl: instance.Service.SourceVersionControl,
+			Namespace:            instance.Service.Namespace,
+			Location:             instance.Service.Dir(),
 		},
 		Environment: env,
 	}
@@ -106,12 +106,12 @@ func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environme
 	init := &runtimev0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
-			Name:        instance.Service.Name,
-			Application: instance.Service.Application,
-			Project:     instance.Service.Project,
-			Domain:      instance.Service.Domain,
-			Namespace:   instance.Service.Namespace,
-			Location:    instance.Service.Dir(),
+			Name:                 instance.Service.Name,
+			Application:          instance.Service.Application,
+			Project:              instance.Service.Project,
+			SourceVersionControl: instance.Service.SourceVersionControl,
+			Namespace:            instance.Service.Namespace,
+			Location:             instance.Service.Dir(),
 		},
 		Environment: env,
 	}

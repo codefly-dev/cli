@@ -39,6 +39,11 @@ var ServiceCmd = &cobra.Command{
 		}
 
 		service := common.Service(ctx)
+
+		if service == nil {
+			cli.Error("No service found: run inside a service folder or use workspace")
+			return
+		}
 		project := common.Project(ctx)
 		flow, err := initRunService(ctx, project, service, standAlone, ci)
 		if err != nil {
@@ -78,6 +83,9 @@ var ServiceCmd = &cobra.Command{
 
 func initRunService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool, ci bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("runService", wool.ThisField(service))
+	// Catch panic
+	defer w.Catch()
+
 	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.RunMode, ci)
 	if err != nil {
 		return nil, w.Wrap(err)

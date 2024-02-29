@@ -136,26 +136,30 @@ func Focus(s string, args ...any) {
 
 func ExitOnError(err error, format string, args ...any) {
 	if err != nil {
-		Done()
 		Error(format, args...)
 		ErrorDetail(err.Error())
-		SuccessExit()
+		ExitError()
 	}
 }
 
 func ExitIf(b bool, format string, args ...any) {
 	if b {
 		Error(format, args...)
-		SuccessExit()
+		ExitError()
 	}
 }
 
 func ExitWithMessage(format string, args ...any) {
-	Done()
 	Error(format, args...)
-	SuccessExit()
+	ExitError()
 }
 
-func SuccessExit() {
+func Exit() {
+	Done()
 	os.Exit(0)
+}
+
+func ExitError() {
+	Done()
+	os.Exit(1)
 }

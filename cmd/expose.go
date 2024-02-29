@@ -58,7 +58,7 @@ func expose(ctx context.Context, project *configurations.Project) error {
 		}
 		dir := path.Join(project.Dir(), ref.Application, ref.Name)
 		w.Debug("exposing", wool.Field("dir", dir))
-		service, err := configurations.LoadServiceFromDirUnsafe(ctx, dir)
+		service, err := configurations.LoadServiceFromDir(ctx, dir)
 		if err != nil {
 			return w.Wrapf(err, "cannot load service from dir: %s", dir)
 		}

@@ -39,15 +39,15 @@ var GRPCCmd = &cobra.Command{
 		cli.ExitOnError(err, "Cannot solve path")
 		language := languages.FromString(languageInput)
 		cli.ExitIf(language == languages.NotSupported, "Language not supported")
-		err = generateGRPC(ctx, project, service, language, destination)
+		err = generateGRPC(ctx, service, language, destination)
 		cli.ExitOnError(err, "Cannot generate gRPC client code")
 		cli.Header(1, "Work done!")
 		cli.Done()
 	},
 }
 
-func generateGRPC(ctx context.Context, project *configurations.Project, service *configurations.Service, language languages.Language, destination string) error {
-	return generators.GRPC(ctx, project, service, language, destination)
+func generateGRPC(ctx context.Context, service *configurations.Service, language languages.Language, destination string) error {
+	return generators.GRPC(ctx, service, language, destination)
 }
 
 func init() {

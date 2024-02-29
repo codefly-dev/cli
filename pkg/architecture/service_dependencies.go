@@ -168,7 +168,7 @@ func loadServiceGraph(ctx context.Context, project *configurations.Project) (*DA
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot load application <%s>", appRef.Name)
 		}
-		for _, serviceRef := range app.Services {
+		for _, serviceRef := range app.ServiceReferences {
 			service, err := app.LoadServiceFromReference(ctx, serviceRef)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot load service <%s>", serviceRef.Name)

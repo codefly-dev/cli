@@ -111,7 +111,8 @@ func init() {
 	// Import
 	RootCmd.AddCommand(ImportCmd)
 
-	// Add, Update and Sync
+	// New, Add, Update and Sync
+	RootCmd.AddCommand(CreateCmd)
 	RootCmd.AddCommand(AddCmd)
 	RootCmd.AddCommand(UpdateCmd)
 	RootCmd.AddCommand(SyncCmd)

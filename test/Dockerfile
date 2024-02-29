@@ -17,4 +17,3 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 USER appuser
 
 WORKDIR /home/appuser
-RUN codefly init --with-default

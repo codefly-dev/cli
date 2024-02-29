@@ -125,7 +125,7 @@ func (builder *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 			// You can get the error code and message like this
 			code := grpcErr.Code()
 			message := grpcErr.Message()
-			w.Focus("grpc", wool.Field("code", code), wool.Field("message", message))
+			w.Debug("grpc", wool.Field("code", code), wool.Field("message", message))
 
 			// Check if the error is a context cancelled error
 			if code == codes.Canceled {
@@ -168,22 +168,17 @@ func (builder *Builder) generateDNSNetworkMappings(ctx context.Context, endpoint
 	}
 	// We gather public endpoints URL -- from provider info
 	info, err := builder.world.Provider.GetProjectProviderInformation(ctx, "dns")
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get DNS provider information")
-	}
-	w.Debug("provider informations", wool.Field("got", info.Data))
-	dns := map[string]string{}
-	for _, endpoint := range endpoints {
-		if endpoint.Visibility == configurations.VisibilityPublic {
-			e := configurations.EndpointFromProto(endpoint)
-			dns[e.Unique()] = info.Data[e.ServiceUnique()]
+	if err == nil {
+		w.Debug("provider informations", wool.Field("got", info.Data))
+		dns := map[string]string{}
+		for _, endpoint := range endpoints {
+			if endpoint.Visibility == configurations.VisibilityPublic {
+				e := configurations.EndpointFromProto(endpoint)
+				dns[e.Unique()] = info.Data[e.ServiceUnique()]
+			}
 		}
-	}
-	w.Debug("dns", wool.Field("got", dns))
-	pm.WithExternalDNS(info.Data)
-
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create default endpoint")
+		w.Debug("dns", wool.Field("got", dns))
+		pm.WithExternalDNS(info.Data)
 	}
 	for _, endpoint := range endpoints {
 		w.Debug("exposing", wool.Field("destination", configurations.EndpointDestination(endpoint)))

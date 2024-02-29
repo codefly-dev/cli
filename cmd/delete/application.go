@@ -17,7 +17,7 @@ var ApplicationCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
 			cli.Error("You must provide a name for the application as the single argument")
-			cli.SuccessExit()
+			cli.Exit()
 		}
 		name := args[0]
 		deleteApplication(name)
@@ -39,8 +39,10 @@ func deleteApplication(name string) {
 	if confirm {
 		err := project.DeleteApplication(ctx, name)
 		cli.ExitOnError(err, "cannot delete application")
-		err = workspace.DeleteApplication(ctx, project.Name, name)
-		cli.ExitOnError(err, "cannot delete application from workspace")
+		if workspace == nil && workspace.HasProject(project.Name) {
+			err = workspace.DeleteApplication(ctx, project.Name, name)
+			cli.ExitOnError(err, "cannot delete application from workspace")
+		}
 		cli.Header(2, "Application <%s> deleted!", name)
 	} else {
 		cli.Header(2, "Abort! Heard loud and clear.")

@@ -22,7 +22,7 @@ var ApplicationCmd = &cobra.Command{
 
 		if interactive {
 			cli.Error("Interactive mode not implemented yet")
-			cli.SuccessExit()
+			cli.Exit()
 		}
 		if len(args) != 1 {
 			cli.Error("You must provide a name for the application as the single argument")
@@ -51,10 +51,12 @@ func addApplication(name string) {
 		os.Exit(0)
 	}
 
-	action, err := actionsapplication.NewActionAddApplication(ctx, &actionsapplication.AddApplication{
-		Name:      name,
-		Project:   project.Name,
-		Workspace: workspace.Name,
+	var action actions.Action
+	var err error
+
+	action, err = actionsapplication.NewActionAddApplication(ctx, &actionsapplication.AddApplication{
+		Name:        name,
+		ProjectPath: project.Dir(),
 	})
 	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action)
@@ -64,6 +66,21 @@ func addApplication(name string) {
 	app, err := actions.As[configurations.Application](out)
 	if err != nil {
 		cli.ExitOnError(err, "cannot add application")
+	}
+
+	if workspace != nil {
+		// Only add to workspace if application is known to workspace
+		if workspace.HasProject(project.Name) {
+			action, err = actionsapplication.NewActionAddApplicationToWorkspace(ctx, &actionsapplication.AddApplicationToWorkspace{
+				Name:      name,
+				Project:   project.Name,
+				Workspace: workspace.Name,
+			})
+			cli.ExitOnError(err, "cannot create action")
+			_, err = actions.Run(ctx, action)
+			cli.ExitOnError(err, "cannot add application to workspace")
+		}
+
 	}
 	cli.Header(2, "Application <%s> added and is now active", app.Name)
 }
