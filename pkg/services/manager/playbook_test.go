@@ -481,7 +481,7 @@ func TestErrorOnLoadNoDependencies(t *testing.T) {
 	playbook.WithPolicy(data.policy)
 
 	playbook.WithSignallerFunc(func(_ *manager.Playbook, action manager.Action) *manager.Signal {
-		if action.Type == manager.RuntimeFailing {
+		if action.Failed {
 			return &manager.Signal{}
 		}
 		return nil
@@ -502,7 +502,7 @@ func TestErrorOnLoadNoDependencies(t *testing.T) {
 		}
 	}
 signalled:
-	expected := createCombinedActionsWithRound(1, []string{start}, manager.RuntimeLoad, manager.RuntimeFailing)
+	expected := createCombinedActionsWithRound(1, []string{start}, manager.RuntimeLoad)
 	executed := playbook.Executed()
 	assert.Equal(t, expected, executed)
 
@@ -537,7 +537,7 @@ func TestErrorOnLoadOneDependency(t *testing.T) {
 	playbook.WithPolicy(data.policy)
 
 	playbook.WithSignallerFunc(func(_ *manager.Playbook, action manager.Action) *manager.Signal {
-		if action.Type == manager.RuntimeFailing {
+		if action.Failed {
 			return &manager.Signal{}
 		}
 		return nil
@@ -560,7 +560,7 @@ func TestErrorOnLoadOneDependency(t *testing.T) {
 signalled:
 	expected := createCombinedActionsWithRound(1, []string{org, start}, manager.RuntimeLoad)
 	// Fail at org
-	expected = append(expected, createActionsWithRound(1, org, manager.RuntimeInit, manager.RuntimeFailing)...)
+	expected = append(expected, createActionsWithRound(1, org, manager.RuntimeInit)...)
 	executed := playbook.Executed()
 	assert.Equal(t, expected, executed)
 

@@ -30,12 +30,31 @@ var ServiceCmd = &cobra.Command{
 
 		errs := make(chan error, 1) // Buffered channel
 
-		service := common.Service(ctx)
 		project := common.Project(ctx)
+		if project == nil {
+			cli.Error("Cannot find project")
+			cli.ExitError()
+		}
+		service := common.Service(ctx)
+		if service == nil {
+			cli.Error("Cannot find service")
+			cli.ExitError()
+		}
+
 		flow, err := initDeployService(ctx, project, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
-			errs <- deployService(ctx, flow)
+			err = deployService(ctx, flow)
+			if err != nil {
+				errs <- err
+			}
+			if apply {
+				err = kustomize(ctx, project, service)
+				if err != nil {
+					errs <- err
+				}
+			}
+			errs <- nil
 		}()
 		defer func(flow *manager.Flow) {
 
@@ -60,7 +79,7 @@ var ServiceCmd = &cobra.Command{
 			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
 			return
 		}
-		cli.Header(1, "Work done!")
+		cli.Header(1, "Deployment done!")
 		cli.Done()
 	},
 }
@@ -95,7 +114,9 @@ func deployService(ctx context.Context, flow *manager.Flow) error {
 }
 
 var standAlone bool
+var apply bool
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().BoolVar(&apply, "apply", false, "Apply the deployment")
 }

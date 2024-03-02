@@ -11,7 +11,7 @@ import (
 )
 
 func Dir(ctx context.Context, project *configurations.Project) string {
-	return path.Join(project.Dir(), "_deployments")
+	return path.Join(project.Dir(), "deployments")
 }
 
 func DirFor(ctx context.Context, project *configurations.Project, kind builderv0.DeploymentKind) string {

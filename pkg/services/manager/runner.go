@@ -69,7 +69,7 @@ func NewRunner(ctx context.Context, instance *services.Instance, world *World) (
 }
 
 func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
-	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
+	w := wool.Get(ctx).In("Runner.Load", wool.ThisField(runner.instance.Service))
 
 	env, err := runner.world.Env.Proto()
 	if err != nil {
@@ -155,7 +155,7 @@ func ContextCancelled(err error) bool {
 }
 
 func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
-	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
+	w := wool.Get(ctx).In("Runner.Init", wool.ThisField(runner.instance.Service))
 	w.Debug("init")
 
 	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
@@ -188,7 +188,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	if resp.Status != nil && resp.Status.State != runtimev0.InitStatus_READY {
-		w.Debug("init failed: waiting")
+		w.Focus("init failed: waiting")
 		err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true})
 		return runner.outputPropertyForInit.Process(ctx)
 
@@ -216,7 +216,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot record shared provider infos")
 	}
 
-	w.Debug("outputProperty", wool.Field("outputProperty", outputProperty))
 	return outputProperty, nil
 }
 

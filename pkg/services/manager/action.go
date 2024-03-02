@@ -13,12 +13,11 @@ import (
 type ActionType string
 
 const (
-	RuntimeBegin   ActionType = "runtime-begin"
-	RuntimeLoad    ActionType = "runtime-load"
-	RuntimeInit    ActionType = "runtime-init"
-	RuntimeStart   ActionType = "runtime-run"
-	RuntimeStop    ActionType = "runtime-stop"
-	RuntimeFailing ActionType = "runtime-wait"
+	RuntimeBegin ActionType = "runtime-begin"
+	RuntimeLoad  ActionType = "runtime-load"
+	RuntimeInit  ActionType = "runtime-init"
+	RuntimeStart ActionType = "runtime-run"
+	RuntimeStop  ActionType = "runtime-stop"
 
 	BuilderBegin  ActionType = "builder-begin"
 	BuilderLoad   ActionType = "builder-load"
@@ -33,6 +32,7 @@ const (
 type Action struct {
 	Type    ActionType
 	Service string
+	Failed  bool
 	Round   int
 }
 
@@ -71,6 +71,15 @@ func (action *Action) NextFor(t ActionType, services ...architecture.Service) []
 		out = append(out, Action{Type: t, Service: service.Unique, Round: action.Round})
 	}
 	return out
+}
+
+func (action *Action) Failing() Action {
+	return Action{
+		Type:    action.Type,
+		Service: action.Service,
+		Failed:  true,
+		Round:   action.Round,
+	}
 }
 
 type ActionManager struct {

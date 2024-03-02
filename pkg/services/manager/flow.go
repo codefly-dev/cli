@@ -296,6 +296,11 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	if action.Failed {
+		return func(ctx context.Context) (*OutputProperty, error) {
+			return Pause(), nil
+		}, nil
+	}
 	switch action.Type {
 	case RuntimeBegin:
 		return func(ctx context.Context) (*OutputProperty, error) {
@@ -307,10 +312,6 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 		return manager.Runner.Init, nil
 	case RuntimeStart:
 		return manager.Runner.Start, nil
-	case RuntimeFailing:
-		return func(ctx context.Context) (*OutputProperty, error) {
-			return Pause(), nil
-		}, nil
 	case BuilderBegin:
 		return func(ctx context.Context) (*OutputProperty, error) {
 			return OnInit(), nil

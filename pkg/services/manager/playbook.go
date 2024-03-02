@@ -141,12 +141,6 @@ func (playbook *Playbook) previouslyExecuted(ctx context.Context, action Action)
 	return false
 }
 
-func (playbook *Playbook) PauseIfNeeded(action Action) {
-	if action.Type == RuntimeFailing {
-		playbook.pause.Set(action)
-	}
-}
-
 func (playbook *Playbook) Work(ctx context.Context) error {
 	w := wool.Get(ctx).In("work")
 	w.Debug("waiting for groups")
@@ -156,10 +150,9 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 			w.Info("context cancelled")
 			return nil
 		case group := <-playbook.actions.Group():
-			w.Debug("received group", wool.Field("group", group.String()))
 			plan := playbook.actions.NewActionPlan()
 			for _, action := range group.actions {
-				if playbook.pause.Handle(action) {
+				if playbook.pause.Handle(ctx, action) {
 					w.Debug("discarding action", wool.Field("action", action))
 					continue
 				}
@@ -172,18 +165,19 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 					w.Debug("previously executed", wool.Field("action", action))
 					continue
 				}
+				w.Debug("executing action", wool.Field("action", action))
 
 				playbook.record(action)
 
-				w.Debug("executing action", wool.Field("action", action))
+				// This execute the action and obtain the next actions to run
+				// If some failure: next becomes []Action of type Failing
 				next, err := playbook.policy.Execute(ctx, action)
 				if err != nil {
 					return w.Wrapf(err, "invalid execution for action: %v", action)
 				}
 
-				if p, ok := playbook.pause.IsPause(next); ok {
+				if p, ok := playbook.pause.IsPause(ctx, next); ok {
 					w.Warn(fmt.Sprintf("service %s failing, waiting for successful re-load", action.Service))
-					playbook.pause.Set(action)
 					// Record/Signal pause
 					playbook.record(*p)
 					playbook.signal(ctx, *p)
@@ -206,7 +200,6 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 			}
 			// Done looping on actions
 			playbook.actions.send(ctx, plan.actions...)
-			w.Debug("done with action group", wool.Field("group", group.String()))
 		}
 	}
 }
@@ -235,7 +228,11 @@ func (playbook *Playbook) ActionManager() *ActionManager {
 func (playbook *Playbook) record(action Action) {
 	playbook.lock.Lock()
 	defer playbook.lock.Unlock()
-	if action.Type != RuntimeBegin {
-		playbook.executed = append(playbook.executed, action)
+	if action.Type == RuntimeBegin {
+		return
 	}
+	if action.Failed {
+		return
+	}
+	playbook.executed = append(playbook.executed, action)
 }

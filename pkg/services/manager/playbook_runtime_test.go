@@ -232,7 +232,8 @@ func TestRunPolicyNoDependencySimulateError(t *testing.T) {
 
 	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeLoad, Service: start})
 	assert.NoError(t, err)
-	assert.Equal(t, createActions(start, manager.RuntimeFailing), actions, "Expected no action to be triggered")
+	assert.Equal(t, 1, len(actions))
+	assert.True(t, actions[0].Failed)
 
 }
 
@@ -249,5 +250,6 @@ func TestRunPolicyOneDependencySimulateError(t *testing.T) {
 
 	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.RuntimeLoad, Service: org})
 	assert.NoError(t, err)
-	assert.Equal(t, createCombinedActions([]string{org}, manager.RuntimeFailing), actions, "Expected no action to be triggered")
+	assert.Equal(t, 1, len(actions))
+	assert.True(t, actions[0].Failed)
 }
