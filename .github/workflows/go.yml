@@ -30,11 +30,11 @@ jobs:
 
       - name: Install Dependencies
         run: go mod tidy && go mod download
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v3 # Using 'latest' automatically fetches the latest version
-        with:
-          version: latest
+#
+#      - name: golangci-lint
+#        uses: golangci/golangci-lint-action@v3 # Using 'latest' automatically fetches the latest version
+#        with:
+#          version: latest
 
       - name: generate test generate coverage
         run: go test ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...

@@ -2,8 +2,8 @@
 run:
   # Timeout for analysis, e.g. "5m", "10m30s" or "2h"
   deadline: 5m
-  build-tags:
-    - linux
+#  build-tags:
+#    - linux
 
   # Files and directories to exclude from linting
   skip-files:
@@ -12,8 +12,9 @@ run:
     - ".*_test\\.go"
 
   # Files and directories to include in linting
-  include:
-    - "pkg/"
+#  include:
+#    - "pkg/"
+#    - "cmd/"
 
 # Output settings
 output:
@@ -24,10 +25,11 @@ linters:
   enable:
     - gofmt
     - goimports
+    - gosimple
     - govet
-      #    - revive
-      #- gocritic
-      #- gosec
+    - revive
+    - gocritic
+    - gosec
     - errcheck
     - staticcheck
     - unused
@@ -35,8 +37,7 @@ linters:
     - goconst
     - gocyclo
     - misspell
-    #- prealloc
-    #- fieldalignment
+    - prealloc
 
   disable:
     - gochecknoinits
