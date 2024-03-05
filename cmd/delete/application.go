@@ -39,7 +39,7 @@ func deleteApplication(name string) {
 	if confirm {
 		err := project.DeleteApplication(ctx, name)
 		cli.ExitOnError(err, "cannot delete application")
-		if workspace == nil && workspace.HasProject(project.Name) {
+		if workspace != nil && workspace.HasProject(project.Name) {
 			err = workspace.DeleteApplication(ctx, project.Name, name)
 			cli.ExitOnError(err, "cannot delete application from workspace")
 		}

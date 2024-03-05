@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
+	"github.com/codefly-dev/core/builders"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
@@ -91,6 +92,13 @@ func initDeployService(ctx context.Context, project *configurations.Project, ser
 		return nil, w.Wrap(err)
 	}
 	flow.WithStandAlone(standAlone)
+	buildContext, err := builders.NewDockerBuilderContext(ctx, builders.DockerContext{
+		Repository: "621829027644.dkr.ecr.us-east-1.amazonaws.com/codefly-dev",
+	})
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	flow.WithBuildContext(buildContext)
 	err = flow.Load(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)

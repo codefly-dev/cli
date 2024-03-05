@@ -8,6 +8,7 @@ import (
 
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 	"github.com/codefly-dev/core/wool"
 )
@@ -125,4 +126,13 @@ func (hub *Hub) Manager(unique string) (*Manager, error) {
 		}
 	}
 	return nil, fmt.Errorf("no manager found for %s", unique)
+}
+
+func (hub *Hub) SetBuilderContext(builderContext *builderv0.BuildContext) {
+	for _, manager := range hub.managers {
+		if manager.Builder != nil {
+			manager.Builder.SetBuildContext(builderContext)
+		}
+	}
+
 }

@@ -535,6 +535,10 @@
         },
         "api": {
           "$ref": "#/definitions/v0API"
+        },
+        "replicas": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },
@@ -620,6 +624,9 @@
         "application": {
           "type": "string"
         },
+        "package": {
+          "type": "string"
+        },
         "rpcs": {
           "type": "array",
           "items": {
@@ -630,6 +637,9 @@
         "proto": {
           "type": "string",
           "format": "byte"
+        },
+        "secured": {
+          "type": "boolean"
         }
       }
     },
@@ -649,7 +659,12 @@
       "default": "GET"
     },
     "v0HttpAPI": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "secured": {
+          "type": "boolean"
+        }
+      }
     },
     "v0Language": {
       "type": "object",
@@ -738,21 +753,6 @@
         }
       }
     },
-    "v0Organization": {
-      "type": "object",
-      "properties": {
-        "ID": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "domain": {
-          "type": "string"
-        }
-      },
-      "title": "Organization represents the owner of a software system\nThe Domain corresponds to a URI for that organization\nA Github organization URL is a good example of this"
-    },
     "v0PartialSnapshot": {
       "type": "object",
       "properties": {
@@ -777,23 +777,32 @@
     "v0Project": {
       "type": "object",
       "properties": {
-        "organization": {
-          "$ref": "#/definitions/v0Organization"
+        "organizationId": {
+          "type": "string",
+          "description": "organization_id is the unique identifier of the organization owning the project."
+        },
+        "svc": {
+          "type": "string",
+          "description": "svc is the Source Version Control associated with the project."
         },
         "name": {
-          "type": "string"
+          "type": "string",
+          "description": "name is the name of the project."
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "description provides a brief explanation of the project."
         },
         "applications": {
           "type": "array",
           "items": {
             "type": "object",
             "$ref": "#/definitions/v0Application"
-          }
+          },
+          "description": "applications is a list of applications associated with the project."
         }
-      }
+      },
+      "description": "Project represents a software system owned by an Organization.\nThe Organization is identified by its unique ID.\nThe svc field represents the Source Version Control associated with the project.\nThe name field is the name of the project.\nThe description field provides a brief explanation of the project.\nThe applications field is a list of applications associated with the project."
     },
     "v0ProjectSnapshot": {
       "type": "object",
@@ -854,6 +863,9 @@
     "v0RPC": {
       "type": "object",
       "properties": {
+        "serviceName": {
+          "type": "string"
+        },
         "name": {
           "type": "string"
         }
@@ -878,6 +890,9 @@
         "openapi": {
           "type": "string",
           "format": "byte"
+        },
+        "secured": {
+          "type": "boolean"
         }
       }
     },
@@ -939,6 +954,10 @@
         "application": {
           "type": "string",
           "title": "Application to which the service belongs"
+        },
+        "project": {
+          "type": "string",
+          "title": "Project to which the service belongs"
         },
         "agent": {
           "$ref": "#/definitions/v0Agent",

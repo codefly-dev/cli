@@ -2,15 +2,15 @@ package cmd
 
 import (
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/cmd/context"
+	"github.com/codefly-dev/cli/cmd/workspace"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
-// ContextCmd represents the Context command
-var ContextCmd = &cobra.Command{
-	Use:   "context",
-	Short: "codefly context",
+// WorkspaceCmd represents the Workspace command
+var WorkspaceCmd = &cobra.Command{
+	Use:   "workspace",
+	Short: "codefly workspace",
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx, done := common.NewContext()
 		defer done()
@@ -47,6 +47,6 @@ var ContextCmd = &cobra.Command{
 }
 
 func init() {
-	ContextCmd.AddCommand(context.SwitchCmd)
-	ContextCmd.AddCommand(context.ViewCmd)
+	WorkspaceCmd.AddCommand(workspace.SwitchCmd)
+	WorkspaceCmd.AddCommand(workspace.ViewCmd)
 }

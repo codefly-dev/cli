@@ -10,20 +10,19 @@ import (
 // Manager maps project + environment to deployment details
 
 type Manager interface {
-	Deployments(ctx context.Context, project *configurations.Project, environment *configurations.Environment) ([]*builderv0.Deployment, error)
+	Deployment(ctx context.Context, project *configurations.Project, environment *configurations.Environment) (*builderv0.Deployment, error)
 }
 
 type LocalManager struct {
 }
 
-func (l LocalManager) Deployments(ctx context.Context, project *configurations.Project, environment *configurations.Environment) ([]*builderv0.Deployment, error) {
-	// For now, only deals with kustomize _deployments folder
-	return []*builderv0.Deployment{
-		{Deployment: &builderv0.Deployment_Kustomize{
+func (l LocalManager) Deployment(ctx context.Context, project *configurations.Project, environment *configurations.Environment) (*builderv0.Deployment, error) {
+	return &builderv0.Deployment{
+		Kind: &builderv0.Deployment_Kustomize{
 			Kustomize: &builderv0.KustomizeDeployment{
 				Destination: DirFor(ctx, project, builderv0.DeploymentKind_KUSTOMIZE),
 			},
-		}},
+		},
 	}, nil
 
 }

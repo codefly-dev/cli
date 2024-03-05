@@ -1,7 +1,7 @@
-package context
+package workspace
 
 import (
-	switch_ "github.com/codefly-dev/cli/cmd/context/switch"
+	switch_ "github.com/codefly-dev/cli/cmd/workspace/switch"
 	"github.com/spf13/cobra"
 )
 

@@ -37,6 +37,8 @@ var ServiceCmd = &cobra.Command{
 		}
 		name := args[0]
 
+		cli.RegisterCleanup(services.ClearAgents)
+
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -72,14 +74,14 @@ var ServiceCmd = &cobra.Command{
 }
 
 func addService(ctx context.Context, name string, agentInput string) error {
-	defer services.ClearAgents()
 
 	w := wool.Get(ctx).In("cmd.add.service")
 
 	// TODO context
 
 	//workspace := common.Workspace(ctx)
-	project := common.Project(ctx)
+	project := common.RequireProject(ctx)
+
 	app := common.Application(ctx)
 
 	// Parse service to see if we need to change organization
@@ -90,7 +92,16 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	if parsed.Application != "" {
 		name = parsed.Name
-		if parsed.Application != app.Name {
+		// Choice of creating an application if not present
+		created := false
+		if app == nil {
+			addApplication(name)
+			created = true
+			project, err = configurations.ReloadProject(ctx, project)
+			cli.ExitOnError(err, "cannot reload project")
+
+		}
+		if created || parsed.Application != app.Name {
 			app, err = project.LoadApplicationFromName(ctx, parsed.Application)
 			if err != nil {
 				return w.Wrapf(err, "cannot load application")

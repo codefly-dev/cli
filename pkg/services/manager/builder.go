@@ -22,6 +22,8 @@ Builder is a wrapper around a builder service instance to fit the outputProperty
 type Builder struct {
 	instance *services.Instance
 
+	builderContext *builderv0.BuildContext
+
 	// API
 	endpoints       []*basev0.Endpoint
 	networkMappings []*basev0.NetworkMapping
@@ -199,7 +201,7 @@ func (builder *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w.Focus("Build")
 
 	// Build the request
-	resp, err := builder.instance.Builder.Build(ctx, &builderv0.BuildRequest{})
+	resp, err := builder.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: builder.builderContext})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot call build")
 	}
@@ -261,16 +263,17 @@ func (builder *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	deployments, err := builder.world.Deployer.Deployments(ctx, builder.world.Project, builder.world.Env)
+	deployment, err := builder.world.Deployer.Deployment(ctx, builder.world.Project, builder.world.Env)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
 	// Build the request
-	w.Debug("deployments", wool.Field("deployments", deployments))
+	w.Debug("deployments", wool.Field("deployments", deployment))
 	resp, err := builder.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
 		Environment:     env,
-		Deployments:     deployments,
+		BuildContext:    builder.builderContext,
+		Deployment:      deployment,
 		NetworkMappings: networkMappings,
 	})
 	if err != nil {
@@ -295,4 +298,8 @@ func (builder *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 
 func (builder *Builder) Unique() string {
 	return builder.instance.Service.Unique()
+}
+
+func (builder *Builder) SetBuildContext(builderContext *builderv0.BuildContext) {
+	builder.builderContext = builderContext
 }

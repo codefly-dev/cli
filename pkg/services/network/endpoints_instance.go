@@ -54,7 +54,20 @@ func (m *ApplicationEndpointInstance) Name() string {
 	return strings.ToLower(m.ApplicationEndpoint.Service)
 }
 
-func (m *ApplicationEndpointInstance) Address() string {
+func (m *ApplicationEndpointInstance) Address(ctx context.Context) string {
+	if http := configurations.IsHTTP(ctx, m.ApplicationEndpoint.Endpoint.Api); http != nil {
+		if http.Secured {
+			return fmt.Sprintf("https://%s:%d", m.Host, m.Port)
+		}
+		return fmt.Sprintf("http://%s:%d", m.Host, m.Port)
+	}
+	if rest := configurations.IsRest(ctx, m.ApplicationEndpoint.Endpoint.Api); rest != nil {
+		if rest.Secured {
+			return fmt.Sprintf("https://%s:%d", m.Host, m.Port)
+		}
+		return fmt.Sprintf("http://%s:%d", m.Host, m.Port)
+	}
+
 	return fmt.Sprintf("%s:%d", m.Host, m.Port)
 }
 

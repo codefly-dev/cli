@@ -1,7 +1,7 @@
-package context
+package workspace
 
 import (
-	view_ "github.com/codefly-dev/cli/cmd/context/view"
+	view_ "github.com/codefly-dev/cli/cmd/workspace/view"
 	"github.com/spf13/cobra"
 )
 

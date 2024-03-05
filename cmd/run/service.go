@@ -27,6 +27,8 @@ var ServiceCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
 
+		cli.RegisterCleanup(services.ClearAgents)
+
 		errs := make(chan error, 1) // Buffered channel
 
 		if withServer {
@@ -48,10 +50,6 @@ var ServiceCmd = &cobra.Command{
 		flow, err := initRunService(ctx, project, service, standAlone, ci)
 		if err != nil {
 			err = errors.Unwrap(err)
-			clearErr := cleanRunService(flow)
-			if clearErr != nil {
-				cli.Warning("Got error while cleaning up: %v", errors.Unwrap(clearErr))
-			}
 			cli.ExitOnError(err, "Cannot init flow")
 		}
 		go func() {
@@ -71,13 +69,13 @@ var ServiceCmd = &cobra.Command{
 			}
 		}
 		stopped := <-errs
-		err = cleanRunService(flow)
-		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
 			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
-			return
 		}
+		err = stopService(ctx, flow)
+		cli.ExitOnError(err, "Cannot stop flow")
 		cli.Header(1, "Work done!")
+		cli.Exit()
 	},
 }
 
@@ -90,18 +88,18 @@ func initRunService(ctx context.Context, project *configurations.Project, servic
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	cli.RegisterCleanup(func() {
+		err := flow.Stop()
+		if err != nil {
+			cli.Warning("Got error while stopping: %v", errors.Unwrap(err))
+		}
+	})
 	flow.WithStandAlone(standAlone)
 	err = flow.Load(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
 	return flow, nil
-}
-
-func cleanRunService(flow *manager.Flow) error {
-	err := flow.Stop()
-	services.ClearAgents()
-	return err
 }
 
 func runService(ctx context.Context, flow *manager.Flow) error {
@@ -113,7 +111,21 @@ func runService(ctx context.Context, flow *manager.Flow) error {
 		return w.Wrapf(err, "cannot start service")
 	}
 	return nil
+}
 
+func stopService(ctx context.Context, flow *manager.Flow) error {
+	// Catch panic
+	w := wool.Get(ctx).In("stopService")
+	defer w.Catch()
+	if flow == nil {
+		return nil
+	}
+	w.Info("Stopping services")
+	err := flow.Stop()
+	if err != nil {
+		return w.Wrapf(err, "cannot stop service")
+	}
+	return nil
 }
 
 var standAlone bool

@@ -87,11 +87,26 @@ func Service(ctx context.Context) *configurations.Service {
 	return active.Service
 }
 
+func RequireService(ctx context.Context) *configurations.Service {
+	service := Service(ctx)
+	if service == nil {
+		cli.Error("No service found: run inside a service folder or use workspace")
+	}
+	return service
+}
+
 func Application(ctx context.Context) *configurations.Application {
 	active, err := LoadActiveContext(ctx)
 	cli.ExitOnError(err, "cannot load active context")
-	cli.ExitIf(active.Application == nil, "no active application")
 	return active.Application
+}
+
+func RequireApplication(ctx context.Context) *configurations.Application {
+	application := Application(ctx)
+	if application == nil {
+		cli.Error("No application found: run inside an application folder or use workspace")
+	}
+	return application
 }
 
 func Project(ctx context.Context) *configurations.Project {
@@ -99,6 +114,14 @@ func Project(ctx context.Context) *configurations.Project {
 	cli.ExitOnError(err, "cannot load active context")
 	cli.ExitIf(active.Project == nil, "no active project")
 	return active.Project
+}
+
+func RequireProject(ctx context.Context) *configurations.Project {
+	project := Project(ctx)
+	if project == nil {
+		cli.Error("No project found: run inside a project folder or use workspace")
+	}
+	return project
 }
 
 func Workspace(ctx context.Context) *configurations.Workspace {

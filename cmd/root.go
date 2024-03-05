@@ -102,7 +102,7 @@ func init() {
 	RootCmd.AddCommand(InitCmd)
 	RootCmd.AddCommand(LoginCmd)
 
-	RootCmd.AddCommand(ContextCmd)
+	RootCmd.AddCommand(WorkspaceCmd)
 	RootCmd.AddCommand(ListCmd)
 
 	// Generate client code
@@ -143,6 +143,9 @@ func init() {
 
 	// Expose for local k8s development
 	RootCmd.AddCommand(ExposeCmd)
+
+	// Clear things
+	RootCmd.AddCommand(ClearCmd)
 
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")

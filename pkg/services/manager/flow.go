@@ -11,6 +11,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/deployment"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 	"github.com/codefly-dev/core/providers"
 	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
@@ -49,6 +50,9 @@ type Flow struct {
 	// convenient
 	services map[string]*configurations.Service
 	ci       bool
+
+	// Helpers
+	BuilderContext *builderv0.BuildContext
 }
 
 type World struct {
@@ -160,6 +164,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithStopping(func(ctx context.Context, action Action) bool {
 			return action.Service == flow.origin.Unique() && action.Type == BuilderBuild
 		})
+		flow.hub.SetBuilderContext(flow.BuilderContext)
 	case SyncMode:
 		policy, err := NewSyncPolicy(ctx, flow.world.Dependencies, flow)
 		if err != nil {
@@ -188,6 +193,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithStopping(func(ctx context.Context, action Action) bool {
 			return action.Service == flow.origin.Unique() && action.Type == BuilderDeploy
 		})
+		flow.hub.SetBuilderContext(flow.BuilderContext)
 
 	}
 	flow.playbook = playbook
@@ -232,6 +238,9 @@ func (flow *Flow) Build(ctx context.Context) error {
 		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
 			return action.Service != flow.origin.Unique()
 		})
+	}
+	if flow.BuilderContext == nil {
+		return w.NewError("no build context")
 	}
 	err := flow.playbook.Begin(ctx, Action{Type: BuilderBegin, Service: flow.origin.Unique()})
 	if err != nil {
@@ -339,7 +348,14 @@ func (flow *Flow) WithStandAlone(alone bool) {
 func (flow *Flow) GetAddressesForEndpoint(application string, service string, endpoint string) []string {
 	// We get that from the stateManager
 	var addresses []string
+	if flow == nil || flow.sharedState == nil {
+		return addresses
+	}
 	unique := configurations.ServiceUnique(application, service)
+
+	if _, ok := flow.sharedState.networkMappings[unique]; !ok {
+		return addresses
+	}
 	for _, np := range flow.sharedState.networkMappings[unique] {
 		if np.Endpoint.Name == endpoint {
 			addresses = append(addresses, np.Addresses...)
@@ -409,6 +425,10 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 
 	flow.hub = &Hub{managers: managers}
 	return nil
+}
+
+func (flow *Flow) WithBuildContext(buildContext *builderv0.BuildContext) {
+	flow.BuilderContext = buildContext
 }
 
 var _ ExecutorManager = &Flow{}

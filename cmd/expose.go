@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path"
 	"strings"
 	"time"
 
@@ -56,9 +55,7 @@ func expose(ctx context.Context, project *configurations.Project) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot parse unique: %s", unique)
 		}
-		dir := path.Join(project.Dir(), ref.Application, ref.Name)
-		w.Debug("exposing", wool.Field("dir", dir))
-		service, err := configurations.LoadServiceFromDir(ctx, dir)
+		service, err := project.LoadService(ctx, ref)
 		if err != nil {
 			return w.Wrapf(err, "cannot load service from dir: %s", dir)
 		}

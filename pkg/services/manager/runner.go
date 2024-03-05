@@ -168,6 +168,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get provider info")
 	}
 
+	w.Focus("provider", wool.Field("infos", configurations.MakeProviderInformationSummary(infos)))
 	// Get all the shared provider info from the dependents
 
 	networkMappings, err := generatePortNetworkMappings(ctx, runner.endpoints)

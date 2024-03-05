@@ -35,6 +35,7 @@ func (s *StateManager) GetProviderInfos(ctx context.Context, service *configurat
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get Provider information")
 	}
+	// We get the shared information from the direct requirements
 	requires, err := s.dependencies.DirectRequires(ctx, service.Unique())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get direct requires")

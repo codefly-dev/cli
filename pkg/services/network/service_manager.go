@@ -81,12 +81,12 @@ func (pm *ServiceManager) Reserve(ctx context.Context) error {
 }
 
 // NetworkMapping returns the network mapping for the service to be passed back to codefly
-func (pm *ServiceManager) NetworkMapping(context.Context) ([]*basev0.NetworkMapping, error) {
+func (pm *ServiceManager) NetworkMapping(ctx context.Context) ([]*basev0.NetworkMapping, error) {
 	w := wool.Get(context.Background()).In("ServiceManager.NetworkMapping")
 	var nets []*basev0.NetworkMapping
 	// A bit weird, replace here
 	for _, instance := range pm.reserved.ApplicationEndpointInstances {
-		address := instance.Address()
+		address := instance.Address(ctx)
 		unique := configurations.ServiceUnique(instance.ApplicationEndpoint.Application, instance.ApplicationEndpoint.Service)
 		if url, ok := pm.external[unique]; ok {
 			w.Debug("external", wool.Field("url", url))
