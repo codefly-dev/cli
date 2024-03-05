@@ -50,8 +50,12 @@ func (s *Server) GetAddresses(ctx context.Context, req *web.GetAddressesRequest)
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
+	addresses, err := flow.GetAddressesForEndpoint(ctx, req.Application, req.Service, req.Endpoint)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 	return &web.GetAddressesResponse{
-		Addresses: flow.GetAddressesForEndpoint(req.Application, req.Service, req.Endpoint),
+		Addresses: addresses,
 	}, nil
 }
 

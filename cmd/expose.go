@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -50,7 +50,7 @@ func expose(ctx context.Context, project *configurations.Project) error {
 	if err != nil {
 		return w.Wrapf(err, "cannot get DNS provider information")
 	}
-	for unique, url := range info.Data {
+	for unique, u := range info.Data {
 		ref, err := configurations.ParseServiceUnique(unique)
 		if err != nil {
 			return w.Wrapf(err, "cannot parse unique: %s", unique)
@@ -62,7 +62,11 @@ func expose(ctx context.Context, project *configurations.Project) error {
 		namespace := service.Namespace
 		k8sSvc := fmt.Sprintf("svc/%s-%s", ref.Name, ref.Application)
 
-		port := strings.Split(url, ":")[1]
+		target, err := url.Parse(u)
+		if err != nil {
+			return w.Wrapf(err, "cannot parse URL: %s", u)
+		}
+		port := target.Port()
 		go func(service string, port string, namespace string) {
 			for {
 				w.Info(fmt.Sprintf("exposing %s on port %s", ref.Unique(), port), wool.Field("service", service), wool.Field("port", port), wool.Field("namespace", namespace))

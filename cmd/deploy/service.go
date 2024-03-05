@@ -27,8 +27,6 @@ var ServiceCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
 
-		cli.RegisterCleanup(services.ClearAgents)
-
 		errs := make(chan error, 1) // Buffered channel
 
 		project := common.Project(ctx)

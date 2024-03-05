@@ -65,7 +65,6 @@ func NewServiceAgent(conf *configurations.Agent, service coreservices.Agent) age
 }
 
 func ClearAgents() {
-	fmt.Println("clearing agents")
 	plugin.CleanupClients()
 	for _, loaded := range []map[string]int{agentsPid, runtimesPid, buildersPid} {
 		for _, pid := range loaded {

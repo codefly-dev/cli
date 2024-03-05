@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -117,6 +118,8 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		services: services,
 
 		world: world,
+
+		sharedState: stateManager,
 
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
@@ -345,23 +348,27 @@ func (flow *Flow) WithStandAlone(alone bool) {
 	flow.standAlone = alone
 }
 
-func (flow *Flow) GetAddressesForEndpoint(application string, service string, endpoint string) []string {
-	// We get that from the stateManager
-	var addresses []string
-	if flow == nil || flow.sharedState == nil {
-		return addresses
+func (flow *Flow) GetAddressesForEndpoint(ctx context.Context, application string, service string, endpoint string) ([]string, error) {
+	if flow == nil {
+		return nil, fmt.Errorf("cannot get addresses from nil flow")
 	}
+	if flow.SharedState() == nil {
+		return nil, fmt.Errorf("cannot get addresses from nil state")
+	}
+	// We get that from the stateManager
 	unique := configurations.ServiceUnique(application, service)
 
-	if _, ok := flow.sharedState.networkMappings[unique]; !ok {
-		return addresses
+	var addresses []string
+	mappings, ok := flow.SharedState().NetworkMappings(unique)
+	if !ok {
+		return nil, fmt.Errorf("cannot find network mappings for %s", unique)
 	}
-	for _, np := range flow.sharedState.networkMappings[unique] {
+	for _, np := range mappings {
 		if np.Endpoint.Name == endpoint {
 			addresses = append(addresses, np.Addresses...)
 		}
 	}
-	return addresses
+	return addresses, nil
 }
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
@@ -429,6 +436,10 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 
 func (flow *Flow) WithBuildContext(buildContext *builderv0.BuildContext) {
 	flow.BuilderContext = buildContext
+}
+
+func (flow *Flow) SharedState() *StateManager {
+	return flow.sharedState
 }
 
 var _ ExecutorManager = &Flow{}

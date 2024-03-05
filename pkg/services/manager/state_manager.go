@@ -96,3 +96,8 @@ func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *confi
 	s.networkMappings[service.Unique()] = mappings
 	return nil
 }
+
+func (s *StateManager) NetworkMappings(unique string) ([]*basev0.NetworkMapping, bool) {
+	mappings, ok := s.networkMappings[unique]
+	return mappings, ok
+}
