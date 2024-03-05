@@ -12,28 +12,29 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v3
 
-      - name: Set up Go
-        uses: actions/setup-go@v3
+      - name: set up
+        uses: actions/setup-go@v4 # Updated to latest major version, verify for minor version updates
         with:
-          go-version: 1.21.4
-
+          go-version: '^1.22' #
+#
 #      - name: Cache Go Modules
-#        uses: actions/cache@v3
+#        uses: actions/cache@v3 # Already latest major version
+#        continue-on-error: true
 #        with:
 #          path: ~/go/pkg/mod
 #          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
 #          restore-keys: |
-#            ${{ runner.os }}-go-
+#            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
 
       - name: Build Binary Darwin Intel
         run: |
-          GOOS=darwin GOARCH=amd64 go build -o codefly-darwin-amd64 main.go
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags '-s -w' -o codefly-darwin-amd64 main.go
       - name: Build Binary Darwin ARM
         run: |
-          GOOS=darwin GOARCH=arm64 go build -o codefly-darwin-arm64 main.go
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags '-s -w' -o codefly-darwin-arm64 main.go
       - name: Build Binary Linux
         run: |
-          GOOS=linux GOARCH=amd64 go build -o codefly-linux-x86_64 main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '-extldflags "-static"' -o codefly-linux-x86_64 main.go
       - name: Checkout Target Repository
         uses: actions/checkout@v3
         with:

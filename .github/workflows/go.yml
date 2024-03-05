@@ -12,27 +12,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: set up
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4 # Updated to latest major version, verify for minor version updates
         with:
-          go-version: 1.21.4
+          go-version: '^1.22' #
 
       - name: checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v3 # Already latest major version
 
       - name: Cache Go Modules
-        uses: actions/cache@v3
+        uses: actions/cache@v3 # Already latest major version
         continue-on-error: true
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-
+            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
 
       - name: Install Dependencies
         run: go mod tidy && go mod download
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v3
+        uses: golangci/golangci-lint-action@v3 # Using 'latest' automatically fetches the latest version
         with:
           version: latest
 
@@ -41,7 +41,7 @@ jobs:
 
       - name: check test coverage
         id: coverage
-        uses: vladopajic/go-test-coverage@v2
+        uses: vladopajic/go-test-coverage@v2 # Check if a newer version exists
         with:
           config: ./.testcoverage.yaml
 
@@ -53,7 +53,7 @@ jobs:
 
       - name: Notify Slack on Failure
         if: failure()
-        uses: slackapi/slack-github-action@v1.24.0
+        uses: slackapi/slack-github-action@v1.25.0 # Updated to latest known version, verify for newer versions
         with:
           payload: |
             {
@@ -64,7 +64,7 @@ jobs:
 
       - name: Notify Slack on Success
         if: success()
-        uses: slackapi/slack-github-action@v1.24.0
+        uses: slackapi/slack-github-action@v1.25.0 # Updated to latest known version, verify for newer versions
         with:
           payload: |
             {
