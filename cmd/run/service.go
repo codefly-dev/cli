@@ -88,12 +88,6 @@ func initRunService(ctx context.Context, project *configurations.Project, servic
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	cli.RegisterCleanup(func() {
-		err := flow.Stop()
-		if err != nil {
-			cli.Warning("Got error while stopping: %v", errors.Unwrap(err))
-		}
-	})
 	flow.WithStandAlone(standAlone)
 	err = flow.Load(ctx)
 	if err != nil {

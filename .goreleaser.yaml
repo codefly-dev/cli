@@ -18,7 +18,6 @@ builds:
     goarm:
       - 6
       - 7
-    buildmode: c-archive
 brews:
   - name: codefly
     description: "codefly CLI"
