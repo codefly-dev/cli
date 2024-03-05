@@ -49,7 +49,7 @@ jobs:
         run: go test -race ./... -v
 
       - name: build
-        run: ./scripts/build/install.sh
+        run: ./scripts/build/local.sh
 
       - name: Notify Slack on Failure
         if: failure()
