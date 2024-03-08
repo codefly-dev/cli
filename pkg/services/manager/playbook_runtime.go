@@ -59,6 +59,9 @@ func (policy *RuntimeStartPolicy) BasicNext(ctx context.Context, change *OutputP
 
 func (policy *RuntimeStartPolicy) Restrict(ctx context.Context, unique string) error {
 	w := wool.Get(ctx).In("RuntimeStartPolicy.Restrict")
+	if policy.dependencies == nil {
+		return nil
+	}
 	dependencies, err := policy.dependencies.Restrict(ctx, unique)
 	if err != nil {
 		return w.Wrapf(err, "cannot get Dependencies")

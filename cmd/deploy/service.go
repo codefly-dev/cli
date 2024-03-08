@@ -97,6 +97,12 @@ func initDeployService(ctx context.Context, project *configurations.Project, ser
 		return nil, w.Wrap(err)
 	}
 	flow.WithBuildContext(buildContext)
+
+	err = flow.InitManagers(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot initialize managers")
+	}
+
 	err = flow.Load(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)

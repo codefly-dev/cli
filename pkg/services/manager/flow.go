@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -73,6 +74,18 @@ type World struct {
 	Deployer *deployment.LocalManager
 }
 
+// NewEmptyFlow will run a single agent
+func NewEmptyFlow(ctx context.Context, mode Mode) (*Flow, error) {
+	world := &World{
+		Mode: mode,
+		Env:  configurations.Local(),
+	}
+	return &Flow{
+		world:    world,
+		services: make(map[string]*configurations.Service),
+	}, nil
+}
+
 func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, env *configurations.Environment, mode Mode, ci bool) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
 
@@ -135,11 +148,6 @@ func (flow *Flow) Load(ctx context.Context) error {
 		w.Debug("running in stand-alone Mode")
 	}
 	var playbook *Playbook
-
-	err := flow.InitManagers(ctx)
-	if err != nil {
-		return w.Wrapf(err, "cannot initialize managers")
-	}
 
 	switch flow.world.Mode {
 	case RunMode:
@@ -431,6 +439,44 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	managers = append(managers, manager)
 
 	flow.hub = &Hub{managers: managers}
+	return nil
+}
+
+func (flow *Flow) WithGoService(ctx context.Context, args ...string) error {
+	w := wool.Get(ctx).In("flow.WithGoService")
+	unique := "application/go"
+	cur, err := os.Getwd()
+	if err != nil {
+		return w.Wrapf(err, "can't get current dir")
+	}
+	agent, err := common.GetAgent(ctx, "codefly.dev/go-single:0.0.3")
+	if err != nil {
+		return w.Wrapf(err, "cannot get agent")
+	}
+	svc := &configurations.Service{
+		Name:        agent.Name,
+		Agent:       agent,
+		RuntimeSpec: map[string]any{"run-args": args},
+	}
+	w.Focus("running with args", wool.Field("args", args))
+	svc.WithDir(cur)
+
+	flow.origin = svc
+	flow.services[unique] = svc
+	cli.RegisterLoggingResource(unique)
+	return nil
+}
+
+func (flow *Flow) CreateManager(ctx context.Context) error {
+	w := wool.Get(ctx).In("flow.InitManagers")
+
+	w.Debug("creating run manager", wool.Field("for", flow.origin.Unique()))
+	manager, err := New(ctx, flow.origin, flow.world)
+	cli.RegisterLoggingResource(flow.origin.Unique())
+	if err != nil {
+		return w.Wrap(err)
+	}
+	flow.hub = &Hub{managers: []*Manager{manager}}
 	return nil
 }
 

@@ -11,9 +11,13 @@ func BasicNext(ctx context.Context, dependencies *architecture.ServiceDependenci
 	w := wool.Get(ctx).In("SyncPolicy.BasicNext")
 	w.Debug("computing next action with output", wool.Field("property", change))
 	if change.OnInit {
-		required, err := dependencies.OrderTo(ctx, action.Service)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot get required")
+		var required []architecture.Service
+		var err error
+		if dependencies != nil {
+			required, err = dependencies.OrderTo(ctx, action.Service)
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot get required")
+			}
 		}
 		next := action.NextFor(nextType, required...)
 		next = append(next, action.Next(nextType))
@@ -24,9 +28,13 @@ func BasicNext(ctx context.Context, dependencies *architecture.ServiceDependenci
 		return next, nil
 	}
 	if change.UpdateWithRequiredPropagation {
-		deps, err := dependencies.DirectDependents(ctx, action.Service)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot get required")
+		var deps []architecture.Service
+		var err error
+		if dependencies != nil {
+			deps, err = dependencies.DirectDependents(ctx, action.Service)
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot get required")
+			}
 		}
 		// We execute the same action on all dependents
 		w.Debug("propagating", wool.Field("service", action.Service), wool.Field("direct dependents", deps))

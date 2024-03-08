@@ -4,10 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/runners"
-
-	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -103,6 +102,10 @@ func (instance *BuilderInstance) Sync(ctx context.Context, req *builderv0.SyncRe
 func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environment) (*runtimev0.LoadResponse, error) {
 	w := wool.Get(ctx).In("RuntimeInstance::Load", wool.NameField(instance.Service.Unique()))
 	w.Debug("sending load")
+	additionalSpecs, err := configurations.ConvertSpec(instance.Service.RuntimeSpec)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot convert runtime spec")
+	}
 	init := &runtimev0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
@@ -113,7 +116,8 @@ func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environme
 			Namespace:            instance.Service.Namespace,
 			Location:             instance.Service.Dir(),
 		},
-		Environment: env,
+		Environment:     env,
+		AdditionalSpecs: additionalSpecs,
 	}
 	return instance.Runtime.Load(ctx, init)
 }

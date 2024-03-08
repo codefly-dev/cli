@@ -101,11 +101,12 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 
 	runner.endpoints = resp.Endpoints
 
-	err = runner.world.SharedState.RecordEndpoints(ctx, runner.instance.Service, resp.Endpoints)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot record endpoints")
+	if runner.world.SharedState != nil {
+		err = runner.world.SharedState.RecordEndpoints(ctx, runner.instance.Service, resp.Endpoints)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot record endpoints")
+		}
 	}
-
 	err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Endpoints: resp.Endpoints})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for load")
@@ -118,6 +119,9 @@ func generatePortNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoi
 	w := wool.Get(ctx).In("service.NewRunner")
 	w.Debug("endpoints", wool.NullableField("got", configurations.MakeEndpointSummary(endpoints)))
 
+	if len(endpoints) == 0 {
+		return nil, nil
+	}
 	pm, err := network.NewServicePortManager(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create default endpoint")
@@ -158,18 +162,21 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Runner.Init", wool.ThisField(runner.instance.Service))
 	w.Debug("init")
 
-	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot run init")
-	}
+	var dependenciesEndpoints []*basev0.Endpoint
+	var infos []*basev0.ProviderInformation
+	var err error
+	if runner.world.SharedState != nil {
+		dependenciesEndpoints, err = runner.world.SharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot run init")
+		}
+		infos, err = runner.world.SharedState.GetProviderInfos(ctx, runner.instance.Service)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot get provider info")
+		}
 
-	infos, err := runner.world.SharedState.GetProviderInfos(ctx, runner.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get provider info")
+		w.Focus("provider", wool.Field("infos", configurations.MakeProviderInformationSummary(infos)))
 	}
-
-	w.Focus("provider", wool.Field("infos", configurations.MakeProviderInformationSummary(infos)))
-	// Get all the shared provider info from the dependents
 
 	networkMappings, err := generatePortNetworkMappings(ctx, runner.endpoints)
 	if err != nil {
@@ -194,9 +201,16 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return runner.outputPropertyForInit.Process(ctx)
 
 	}
-	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, resp.NetworkMappings)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot record network mappings")
+	if runner.world.SharedState != nil {
+		err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, resp.NetworkMappings)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot record network mappings")
+		}
+
+		err = runner.world.SharedState.RecordSharedProviderInfos(ctx, runner.instance.Service, resp.ServiceProviderInfos)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot record shared provider infos")
+		}
 	}
 
 	w.Debug("init",
@@ -206,15 +220,9 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
-
 	outputProperty, err := runner.outputPropertyForInit.Process(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for init")
-	}
-
-	err = runner.world.SharedState.RecordSharedProviderInfos(ctx, runner.instance.Service, resp.ServiceProviderInfos)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot record shared provider infos")
 	}
 
 	return outputProperty, nil
@@ -230,9 +238,12 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	// Build the request
-	networkMappings, err := runner.world.SharedState.GetNetworkMappings(ctx, runner.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
+	var networkMappings []*basev0.NetworkMapping
+	if runner.world.SharedState != nil {
+		networkMappings, err = runner.world.SharedState.GetNetworkMappings(ctx, runner.instance.Service)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot load service instance")
+		}
 	}
 
 	w.Debug("starting", wool.Field("networkMappings", configurations.MakeNetworkMappingSummary(networkMappings)))

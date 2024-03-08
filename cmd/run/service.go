@@ -89,6 +89,10 @@ func initRunService(ctx context.Context, project *configurations.Project, servic
 		return nil, w.Wrap(err)
 	}
 	flow.WithStandAlone(standAlone)
+	err = flow.InitManagers(ctx)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
 	err = flow.Load(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -121,9 +125,6 @@ func stopService(ctx context.Context, flow *manager.Flow) error {
 	}
 	return nil
 }
-
-var standAlone bool
-var ci bool
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&withServer, "server", false, "Begin service server")
