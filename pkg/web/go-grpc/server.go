@@ -45,6 +45,21 @@ type Server struct {
 	Wool       *wool.Wool
 }
 
+func (s *Server) GetServiceProviderInformation(ctx context.Context, req *web.GetServiceProviderInfoRequest) (*web.GetServiceProviderInfoResponse, error) {
+	flow := manager.CurrentFlow()
+	if flow == nil {
+		return nil, status.Error(codes.Internal, "nothing running")
+	}
+	unique := configurations.ServiceUnique(req.Application, req.Service)
+	infos, err := flow.SharedState().GetSharedProviderInformation(ctx, unique)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &web.GetServiceProviderInfoResponse{
+		ProviderInfos: infos,
+	}, nil
+}
+
 func (s *Server) GetAddresses(ctx context.Context, req *web.GetAddressesRequest) (*web.GetAddressesResponse, error) {
 	flow := manager.CurrentFlow()
 	if flow == nil {

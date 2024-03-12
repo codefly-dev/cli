@@ -1,0 +1,4 @@
+{
+  "application": "counter-python-nextjs-postgres",
+  "service": "store"
+}

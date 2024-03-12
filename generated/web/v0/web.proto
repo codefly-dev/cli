@@ -3,6 +3,7 @@ package observability.v0;
 
 import "base/v0/endpoint.proto";
 import "base/v0/project.proto";
+import "base/v0/provider.proto";
 
 import "services/agent/v0/agent.proto";
 import "services/runtime/v0/runtime.proto";
@@ -61,11 +62,17 @@ message GetAddressesResponse {
   repeated string addresses = 1;
 }
 
+
+message GetServiceProviderInfoRequest {
+  string application = 1;
+  string service = 2;
+}
+
+message GetServiceProviderInfoResponse {
+  repeated base.v0.ProviderInformation provider_infos = 1;
+}
+
 service Web {
-
-
-
-
 
   /* Overall information
   */
@@ -121,6 +128,12 @@ service Web {
   rpc GetAddresses(GetAddressesRequest) returns (GetAddressesResponse) {
     option (google.api.http) = {
       get: "/active/project/network-mapping/{application}/{service}/{endpoint}"
+    };
+  }
+
+  rpc GetServiceProviderInformation(GetServiceProviderInfoRequest) returns (GetServiceProviderInfoResponse) {
+    option (google.api.http) = {
+      get: "/active/project/service-provider-information/{application}/{service}"
     };
   }
 

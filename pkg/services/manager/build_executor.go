@@ -58,6 +58,10 @@ func (h *BuildExecutorHelper) Build(ctx context.Context) (*OutputProperty, error
 }
 
 func NewBuildExecutor(ctx context.Context, hub *Hub, repo builder.Repository, ci bool) (*BuildExecutor, error) {
+	w := wool.Get(ctx).In("NewBuildExecutor")
+	if hub == nil {
+		return nil, w.NewError("hub cannot be nil")
+	}
 	var builders []*BuildExecutorHelper
 	for _, manager := range hub.managers {
 		builders = append(builders, &BuildExecutorHelper{manager: manager})

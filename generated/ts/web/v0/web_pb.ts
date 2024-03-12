@@ -6,6 +6,7 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3 } from "@bufbuild/protobuf";
 import { GraphResponse } from "../../observability/v0/dependencies_pb.js";
+import { ProviderInformation } from "../../base/v0/provider_pb.js";
 
 /**
  * @generated from message observability.v0.GetProjectsResponse
@@ -336,6 +337,86 @@ export class GetAddressesResponse extends Message<GetAddressesResponse> {
 
   static equals(a: GetAddressesResponse | PlainMessage<GetAddressesResponse> | undefined, b: GetAddressesResponse | PlainMessage<GetAddressesResponse> | undefined): boolean {
     return proto3.util.equals(GetAddressesResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message observability.v0.GetServiceProviderInfoRequest
+ */
+export class GetServiceProviderInfoRequest extends Message<GetServiceProviderInfoRequest> {
+  /**
+   * @generated from field: string application = 1;
+   */
+  application = "";
+
+  /**
+   * @generated from field: string service = 2;
+   */
+  service = "";
+
+  constructor(data?: PartialMessage<GetServiceProviderInfoRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v0.GetServiceProviderInfoRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "application", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "service", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetServiceProviderInfoRequest {
+    return new GetServiceProviderInfoRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetServiceProviderInfoRequest {
+    return new GetServiceProviderInfoRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetServiceProviderInfoRequest {
+    return new GetServiceProviderInfoRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetServiceProviderInfoRequest | PlainMessage<GetServiceProviderInfoRequest> | undefined, b: GetServiceProviderInfoRequest | PlainMessage<GetServiceProviderInfoRequest> | undefined): boolean {
+    return proto3.util.equals(GetServiceProviderInfoRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message observability.v0.GetServiceProviderInfoResponse
+ */
+export class GetServiceProviderInfoResponse extends Message<GetServiceProviderInfoResponse> {
+  /**
+   * @generated from field: repeated base.v0.ProviderInformation provider_infos = 1;
+   */
+  providerInfos: ProviderInformation[] = [];
+
+  constructor(data?: PartialMessage<GetServiceProviderInfoResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "observability.v0.GetServiceProviderInfoResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "provider_infos", kind: "message", T: ProviderInformation, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetServiceProviderInfoResponse {
+    return new GetServiceProviderInfoResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetServiceProviderInfoResponse {
+    return new GetServiceProviderInfoResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetServiceProviderInfoResponse {
+    return new GetServiceProviderInfoResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetServiceProviderInfoResponse | PlainMessage<GetServiceProviderInfoResponse> | undefined, b: GetServiceProviderInfoResponse | PlainMessage<GetServiceProviderInfoResponse> | undefined): boolean {
+    return proto3.util.equals(GetServiceProviderInfoResponse, a, b);
   }
 }
 

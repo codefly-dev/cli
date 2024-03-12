@@ -31,6 +31,7 @@ const (
 	Web_LogHistory_FullMethodName                                  = "/observability.v0.Web/LogHistory"
 	Web_GetActive_FullMethodName                                   = "/observability.v0.Web/GetActive"
 	Web_GetAddresses_FullMethodName                                = "/observability.v0.Web/GetAddresses"
+	Web_GetServiceProviderInformation_FullMethodName               = "/observability.v0.Web/GetServiceProviderInformation"
 	Web_Logs_FullMethodName                                        = "/observability.v0.Web/Logs"
 	Web_ActiveLogHistory_FullMethodName                            = "/observability.v0.Web/ActiveLogHistory"
 )
@@ -47,6 +48,7 @@ type WebClient interface {
 	LogHistory(ctx context.Context, in *v02.LogRequest, opts ...grpc.CallOption) (*v02.LogResponse, error)
 	GetActive(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ActiveResponse, error)
 	GetAddresses(ctx context.Context, in *GetAddressesRequest, opts ...grpc.CallOption) (*GetAddressesResponse, error)
+	GetServiceProviderInformation(ctx context.Context, in *GetServiceProviderInfoRequest, opts ...grpc.CallOption) (*GetServiceProviderInfoResponse, error)
 	Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error)
 	ActiveLogHistory(ctx context.Context, in *v02.LogRequest, opts ...grpc.CallOption) (*v02.LogResponse, error)
 }
@@ -131,6 +133,15 @@ func (c *webClient) GetAddresses(ctx context.Context, in *GetAddressesRequest, o
 	return out, nil
 }
 
+func (c *webClient) GetServiceProviderInformation(ctx context.Context, in *GetServiceProviderInfoRequest, opts ...grpc.CallOption) (*GetServiceProviderInfoResponse, error) {
+	out := new(GetServiceProviderInfoResponse)
+	err := c.cc.Invoke(ctx, Web_GetServiceProviderInformation_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *webClient) Logs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (Web_LogsClient, error) {
 	stream, err := c.cc.NewStream(ctx, &Web_ServiceDesc.Streams[0], Web_Logs_FullMethodName, opts...)
 	if err != nil {
@@ -184,6 +195,7 @@ type WebServer interface {
 	LogHistory(context.Context, *v02.LogRequest) (*v02.LogResponse, error)
 	GetActive(context.Context, *emptypb.Empty) (*ActiveResponse, error)
 	GetAddresses(context.Context, *GetAddressesRequest) (*GetAddressesResponse, error)
+	GetServiceProviderInformation(context.Context, *GetServiceProviderInfoRequest) (*GetServiceProviderInfoResponse, error)
 	Logs(*emptypb.Empty, Web_LogsServer) error
 	ActiveLogHistory(context.Context, *v02.LogRequest) (*v02.LogResponse, error)
 	mustEmbedUnimplementedWebServer()
@@ -216,6 +228,9 @@ func (UnimplementedWebServer) GetActive(context.Context, *emptypb.Empty) (*Activ
 }
 func (UnimplementedWebServer) GetAddresses(context.Context, *GetAddressesRequest) (*GetAddressesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetAddresses not implemented")
+}
+func (UnimplementedWebServer) GetServiceProviderInformation(context.Context, *GetServiceProviderInfoRequest) (*GetServiceProviderInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetServiceProviderInformation not implemented")
 }
 func (UnimplementedWebServer) Logs(*emptypb.Empty, Web_LogsServer) error {
 	return status.Errorf(codes.Unimplemented, "method Logs not implemented")
@@ -380,6 +395,24 @@ func _Web_GetAddresses_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Web_GetServiceProviderInformation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetServiceProviderInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WebServer).GetServiceProviderInformation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Web_GetServiceProviderInformation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WebServer).GetServiceProviderInformation(ctx, req.(*GetServiceProviderInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Web_Logs_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(emptypb.Empty)
 	if err := stream.RecvMsg(m); err != nil {
@@ -457,6 +490,10 @@ var Web_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetAddresses",
 			Handler:    _Web_GetAddresses_Handler,
+		},
+		{
+			MethodName: "GetServiceProviderInformation",
+			Handler:    _Web_GetServiceProviderInformation_Handler,
 		},
 		{
 			MethodName: "ActiveLogHistory",

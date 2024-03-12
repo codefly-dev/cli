@@ -71,13 +71,16 @@ func APIInt(api string) int {
 // 0: TCP
 // 1: HTTP/ REST
 // 2: gRPC
-func ToPort(app string, svc string, name string, api string, instances int) []int {
+func ToPort(ctx context.Context, app string, svc string, name string, api string, instances int) []int {
+	w := wool.Get(ctx).In("ToPort")
 	appPart := HashInt(app, 11, 49) * 1000
-	svcPart := HashInt(svc, 0, 9) * 100
+	svcPart := HashInt(app+svc, 0, 9) * 100
 	var ports []int
 	for i := 0; i < instances; i++ {
 		namePart := HashInt(fmt.Sprintf("%s%d", name, i), 0, 9) * 10
-		ports = append(ports, appPart+svcPart+namePart+APIInt(api))
+		w.Focus("port", wool.Field("app", appPart), wool.Field("svc", svcPart), wool.Field("name", namePart), wool.Field("api", APIInt(api)))
+		port := appPart + svcPart + namePart + APIInt(api)
+		ports = append(ports, port)
 	}
 	return ports
 }
@@ -140,7 +143,7 @@ func (r FixedStrategy) Reserve(ctx context.Context, host string, endpoints []*Ap
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot get api")
 		}
-		ports := ToPort(endpoint.Application, endpoint.Service, endpoint.Name, api, int(endpoint.Replicas))
+		ports := ToPort(ctx, endpoint.Application, endpoint.Service, endpoint.Name, api, int(endpoint.Replicas))
 		for _, port := range ports {
 			w.Debug("reserving", wool.ApplicationField(endpoint.Application), wool.ServiceField(endpoint.Service), wool.Field("port", port))
 			w.Trace("port", wool.ThisField(endpoint), wool.Field("port", port))

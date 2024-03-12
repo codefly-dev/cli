@@ -1,6 +1,7 @@
 package network_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/brianvoe/gofakeit/v6"
@@ -28,6 +29,7 @@ func getApp(num int) int {
 }
 
 func TestPortGeneration(t *testing.T) {
+	ctx := context.Background()
 	// first 3 digits: app
 	var appPart *int
 	for i := 0; i < 10; i++ {
@@ -35,7 +37,7 @@ func TestPortGeneration(t *testing.T) {
 		for j := 0; j < 10; j++ {
 			for _, api := range []string{standards.TCP, standards.HTTP, standards.GRPC} {
 				svc := gofakeit.Adjective()
-				v := network.ToPort(app, svc, "test", api, 1)[0]
+				v := network.ToPort(ctx, app, svc, "test", api, 1)[0]
 				assert.GreaterOrEqual(t, v, 11000)
 				assert.LessOrEqual(t, v, 49999)
 				if appPart == nil {
@@ -52,13 +54,22 @@ func TestPortGeneration(t *testing.T) {
 }
 
 func TestPortDifferentApp(t *testing.T) {
-	one := network.ToPort("test-application", "test", standards.GRPC, "grpc", 1)[0]
-	two := network.ToPort("test-application", "go-test", standards.GRPC, "grpc", 1)[0]
+	ctx := context.Background()
+	one := network.ToPort(ctx, "test-application", "test", standards.GRPC, "grpc", 1)[0]
+	two := network.ToPort(ctx, "test-application", "go-test", standards.GRPC, "grpc", 1)[0]
 	assert.NotEqual(t, one, two)
 }
 
 func TestPortDifferentNameName(t *testing.T) {
-	one := network.ToPort("guestbook", "redis", standards.TCP, "read", 1)[0]
-	two := network.ToPort("guestbook", "redis", standards.GRPC, "write", 1)[0]
+	ctx := context.Background()
+	one := network.ToPort(ctx, "guestbook", "redis", standards.TCP, "read", 1)[0]
+	two := network.ToPort(ctx, "guestbook", "redis", standards.GRPC, "write", 1)[0]
+	assert.NotEqual(t, one, two)
+}
+
+func TestPortDifferent(t *testing.T) {
+	ctx := context.Background()
+	one := network.ToPort(ctx, "counter-python-nextjs-postgres", "store", standards.TCP, "tpc", 1)[0]
+	two := network.ToPort(ctx, "customers", "store", standards.TCP, "tpc", 1)[0]
 	assert.NotEqual(t, one, two)
 }
