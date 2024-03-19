@@ -14,7 +14,10 @@ import (
 
 func LoadProject(ctx context.Context, project *configurations.Project) (*basev0.Project, error) {
 	w := wool.Get(ctx).In("overview.LoadProject")
-	out := project.Proto()
+	out, err := project.Proto()
+	if err != nil {
+		return nil, w.Wrapf(err, "failed to load project")
+	}
 	apps, err := project.LoadApplications(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "failed to load applications")

@@ -30,9 +30,9 @@ func (b *BuildExecutor) GetExecutor(ctx context.Context, action Action) (OutputP
 			return OnInit(), nil
 		}, nil
 	case BuilderLoad:
-		return manager.Builder.Load, nil
+		return manager.BuilderDoBuild, nil
 	case BuilderInit:
-		return manager.Builder.Init, nil
+		return manager.BuilderDoInit, nil
 	case BuilderBuild:
 		return helper.Build, nil
 	default:
@@ -42,7 +42,7 @@ func (b *BuildExecutor) GetExecutor(ctx context.Context, action Action) (OutputP
 
 func (b *BuildExecutor) Helper(action Action) (*BuildExecutorHelper, error) {
 	for _, bu := range b.builders {
-		if bu.manager.service.Unique() == action.Service {
+		if bu.manager.Unique() == action.Service {
 			return bu, nil
 		}
 	}
@@ -50,11 +50,11 @@ func (b *BuildExecutor) Helper(action Action) (*BuildExecutorHelper, error) {
 }
 
 type BuildExecutorHelper struct {
-	manager *Manager
+	manager IManager
 }
 
 func (h *BuildExecutorHelper) Build(ctx context.Context) (*OutputProperty, error) {
-	return h.manager.Builder.Build(ctx)
+	return h.manager.BuilderDoBuild(ctx)
 }
 
 func NewBuildExecutor(ctx context.Context, hub *Hub, repo builder.Repository, ci bool) (*BuildExecutor, error) {

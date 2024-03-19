@@ -16,12 +16,12 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	web "github.com/codefly-dev/cli/generated/go/web/v0"
 	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/configurations"
+	cli "github.com/codefly-dev/core/generated/go/cli/v0"
 	"github.com/codefly-dev/core/wool"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
@@ -37,7 +37,7 @@ type Configuration struct {
 }
 
 type Server struct {
-	web.UnsafeWebServer
+	cli.UnsafeCLIServer
 	config     *Configuration
 	gRPC       *grpc.Server
 	logChannel chan *observabilityv0.Log
@@ -45,7 +45,26 @@ type Server struct {
 	Wool       *wool.Wool
 }
 
-func (s *Server) GetServiceProviderInformation(ctx context.Context, req *web.GetServiceProviderInfoRequest) (*web.GetServiceProviderInfoResponse, error) {
+func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+
+func (s *Server) StopFlow(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty, error) {
+	err := manager.CurrentFlow().Stop()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.FlowStatus, error) {
+	ready := manager.CurrentFlow().Ready(ctx)
+	return &cli.FlowStatus{
+		Ready: ready,
+	}, nil
+}
+
+func (s *Server) GetServiceProviderInformation(ctx context.Context, req *cli.GetServiceProviderInfoRequest) (*cli.GetServiceProviderInfoResponse, error) {
 	flow := manager.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
@@ -55,33 +74,33 @@ func (s *Server) GetServiceProviderInformation(ctx context.Context, req *web.Get
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &web.GetServiceProviderInfoResponse{
+	return &cli.GetServiceProviderInfoResponse{
 		ProviderInfos: infos,
 	}, nil
 }
 
-func (s *Server) GetAddresses(ctx context.Context, req *web.GetAddressesRequest) (*web.GetAddressesResponse, error) {
+func (s *Server) GetAddresses(ctx context.Context, req *cli.GetAddressRequest) (*cli.GetAddressResponse, error) {
 	flow := manager.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
-	addresses, err := flow.GetAddressesForEndpoint(ctx, req.Application, req.Service, req.Endpoint)
+	address, err := flow.GetAddressForEndpoint(ctx, req.Application, req.Service, req.Endpoint)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &web.GetAddressesResponse{
-		Addresses: addresses,
+	return &cli.GetAddressResponse{
+		Address: address,
 	}, nil
 }
 
 /* Active information */
 
-func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*web.ActiveResponse, error) {
+func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*cli.ActiveResponse, error) {
 	active, err := common.LoadActiveContext(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &web.ActiveResponse{
+	return &cli.ActiveResponse{
 		Project:     active.Project.Name,
 		Application: active.Application.Name,
 		Service:     active.Service.Name,
@@ -95,7 +114,7 @@ func (s *Server) ActiveLogHistory(ctx context.Context, request *observabilityv0.
 
 /* Overall information */
 
-func (s *Server) GetAgentInformation(ctx context.Context, request *web.GetAgentInformationRequest) (*agentv0.AgentInformation, error) {
+func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentInformationRequest) (*agentv0.AgentInformation, error) {
 	agent, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, request.Agent)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -108,7 +127,7 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *web.GetAgentI
 
 }
 
-func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*web.GetProjectsResponse, error) {
+func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*cli.GetProjectsResponse, error) {
 	var projects []string
 	if s.workspace == nil {
 		project := common.Project(ctx)
@@ -121,7 +140,7 @@ func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*web.Ge
 			projects = append(projects, project.Name)
 		}
 	}
-	return &web.GetProjectsResponse{
+	return &cli.GetProjectsResponse{
 		Projects: projects,
 	}, nil
 }
@@ -140,7 +159,7 @@ func (s *Server) getProject(ctx context.Context, name string) (*configurations.P
 	return s.workspace.LoadProjectFromName(ctx, name)
 }
 
-func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectRequest) (*basev0.Project, error) {
+func (s *Server) GetProjectInventory(ctx context.Context, request *cli.ProjectRequest) (*basev0.Project, error) {
 	project, err := s.getProject(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -152,11 +171,11 @@ func (s *Server) GetProjectInventory(ctx context.Context, request *web.ProjectRe
 	return view, nil
 }
 
-func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *web.ProjectRequest) (*observabilityv0.GraphResponse, error) {
+func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *cli.ProjectRequest) (*observabilityv0.GraphResponse, error) {
 	return &observabilityv0.GraphResponse{}, nil
 }
 
-func (s *Server) GetProjectPublicApplicationsDependencyGraph(ctx context.Context, request *web.ProjectRequest) (*web.MultiGraphResponse, error) {
+func (s *Server) GetProjectPublicApplicationsDependencyGraph(ctx context.Context, request *cli.ProjectRequest) (*cli.MultiGraphResponse, error) {
 	project, err := s.getProject(ctx, request.Project)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -165,7 +184,7 @@ func (s *Server) GetProjectPublicApplicationsDependencyGraph(ctx context.Context
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	resp := &web.MultiGraphResponse{}
+	resp := &cli.MultiGraphResponse{}
 	for _, g := range gs {
 		resp.Graphs = append(resp.Graphs, architecture.ToGraphResponse(g))
 	}
@@ -197,7 +216,7 @@ func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 	}()
 }
 
-func (s *Server) Logs(empty *emptypb.Empty, server web.Web_LogsServer) error {
+func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {
 	for logEntry := range s.logChannel {
 		if err := server.Send(logEntry); err != nil {
 			return err
@@ -215,7 +234,7 @@ func NewServer(c *Configuration, w *configurations.Workspace) (*Server, error) {
 		gRPC:       grpcServer,
 		logChannel: make(chan *observabilityv0.Log, bufferSize),
 	}
-	web.RegisterWebServer(grpcServer, &s)
+	cli.RegisterCLIServer(grpcServer, &s)
 	reflection.Register(grpcServer)
 	return &s, nil
 }

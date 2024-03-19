@@ -1,5 +1,18 @@
 package builder
 
+import (
+	"context"
+
+	"github.com/codefly-dev/core/builders"
+	"github.com/codefly-dev/core/configurations"
+)
+
+func BuildContext(ctx context.Context, service *configurations.Service) (*builders.BuildContext, error) {
+	return builders.NewDockerBuilderContext(ctx, builders.DockerContext{
+		Repository: "codefly-dev",
+	})
+}
+
 type Repository interface {
 }
 

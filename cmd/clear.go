@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"log"
 	"os/exec"
 
+	"github.com/codefly-dev/core/runners"
 	"github.com/spf13/cobra"
 )
 
@@ -17,9 +19,19 @@ var ClearCmd = &cobra.Command{
 }
 
 func clearCommand() {
-	cmd := exec.Command("bash", "-c", "ps aux | grep codefly.dev | grep -v grep | awk '{print $2}' | xargs kill -9")
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "bash", "-c", "ps aux | grep codefly.dev | grep -v grep | awk '{print $2}' | xargs kill -9")
 	err := cmd.Run()
 	if err != nil {
-		log.Fatalf("cmd.Run() failed with %s\n", err)
+		log.Fatalf("can't clear all codefly processes %s\n", err)
 	}
+	docker, err := runners.NewDocker(ctx)
+	if err != nil {
+		log.Fatalf("can't create docker runner %s\n", err)
+	}
+	err = docker.KillAll(ctx)
+	if err != nil {
+		log.Fatalf("can't clear all codefly docker processes %s\n", err)
+	}
+
 }

@@ -68,6 +68,10 @@ func initSyncService(ctx context.Context, project *configurations.Project, servi
 		return nil, w.Wrap(err)
 	}
 	flow.WithStandAlone(standAlone)
+	err = flow.InitManagers(ctx)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
 	err = flow.Load(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)

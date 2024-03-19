@@ -59,12 +59,10 @@ func (instance *BuilderInstance) Load(ctx context.Context, env *basev0.Environme
 	init := &builderv0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
-			Name:                 instance.Service.Name,
-			Application:          instance.Service.Application,
-			Project:              instance.Service.Project,
-			SourceVersionControl: instance.Service.SourceVersionControl,
-			Namespace:            instance.Service.Namespace,
-			Location:             instance.Service.Dir(),
+			Name:        instance.Service.Name,
+			Application: instance.Service.Application,
+			Project:     instance.Service.Project,
+			Location:    instance.Service.Dir(),
 		},
 		Environment: env,
 	}
@@ -109,12 +107,10 @@ func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environme
 	init := &runtimev0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
-			Name:                 instance.Service.Name,
-			Application:          instance.Service.Application,
-			Project:              instance.Service.Project,
-			SourceVersionControl: instance.Service.SourceVersionControl,
-			Namespace:            instance.Service.Namespace,
-			Location:             instance.Service.Dir(),
+			Name:        instance.Service.Name,
+			Application: instance.Service.Application,
+			Project:     instance.Service.Project,
+			Location:    instance.Service.Dir(),
 		},
 		Environment:     env,
 		AdditionalSpecs: additionalSpecs,

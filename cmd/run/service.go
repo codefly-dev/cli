@@ -89,6 +89,7 @@ func initRunService(ctx context.Context, project *configurations.Project, servic
 		return nil, w.Wrap(err)
 	}
 	flow.WithStandAlone(standAlone)
+	flow.WithExcludeRoot(excludeRoot)
 	err = flow.InitManagers(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -130,5 +131,6 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&withServer, "server", false, "Begin service server")
 	ServiceCmd.Flags().BoolVar(&ci, "ci", false, "CI Mode")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 }

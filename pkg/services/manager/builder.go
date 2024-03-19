@@ -8,6 +8,8 @@ import (
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 
+	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/deployment"
 	"github.com/codefly-dev/cli/pkg/services/network"
 	"github.com/codefly-dev/cli/pkg/services/services"
 
@@ -21,8 +23,6 @@ Builder is a wrapper around a builder service instance to fit the outputProperty
 */
 type Builder struct {
 	instance *services.Instance
-
-	builderContext *builderv0.BuildContext
 
 	// API
 	endpoints       []*basev0.Endpoint
@@ -58,35 +58,35 @@ func NewBuilder(ctx context.Context, instance *services.Instance, world *World) 
 	return builder, nil
 }
 
-func (builder *Builder) Load(ctx context.Context) (*OutputProperty, error) {
-	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(builder.instance.Service))
+func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(b.instance.Service))
 
 	// Build the request
-	env, err := builder.world.Env.Proto()
+	env, err := b.world.Env.Proto()
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get env")
 	}
 
-	resp, err := builder.instance.Builder.Load(ctx, env)
+	resp, err := b.instance.Builder.Load(ctx, env)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load builder instance")
+		return nil, w.Wrapf(err, "cannot load b instance")
 	}
 
 	w.Debug("loaded", wool.Field("endpoints", configurations.MakeEndpointSummary(resp.Endpoints)))
 
-	builder.endpoints = resp.Endpoints
+	b.endpoints = resp.Endpoints
 
-	err = builder.outputPropertyForLoad.Set(ctx, &BuilderLoadOutput{Endpoints: resp.Endpoints})
+	err = b.outputPropertyForLoad.Set(ctx, &BuilderLoadOutput{Endpoints: resp.Endpoints})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for load")
 	}
 
-	outputProperty, err := builder.outputPropertyForLoad.Process(ctx)
+	outputProperty, err := b.outputPropertyForLoad.Process(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for load")
 	}
 
-	err = builder.world.SharedState.RecordEndpoints(ctx, builder.instance.Service, resp.Endpoints)
+	err = b.world.SharedState.RecordEndpoints(ctx, b.instance.Service, resp.Endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record endpoints")
 	}
@@ -94,26 +94,26 @@ func (builder *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-func (builder *Builder) Init(ctx context.Context) (*OutputProperty, error) {
-	w := wool.Get(ctx).In("Builder", wool.ThisField(builder.instance.Service))
+func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 	w.Focus("Init")
 
-	dependenciesEndpoints, err := builder.world.SharedState.GetDependenciesEndpoints(ctx, builder.instance.Service)
+	dependenciesEndpoints, err := b.world.SharedState.GetDependenciesEndpoints(ctx, b.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get depednencies")
 	}
 
-	infos, err := builder.world.SharedState.GetProviderInfos(ctx, builder.instance.Service)
+	infos, err := b.world.SharedState.GetProviderInfos(ctx, b.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get provider")
 	}
 
-	networkMappings, err := builder.generateDNSNetworkMappings(ctx, builder.endpoints)
+	networkMappings, err := b.generateDNSNetworkMappings(ctx, b.endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings")
 	}
 
-	resp, err := builder.instance.Builder.Init(ctx, &builderv0.InitRequest{
+	resp, err := b.instance.Builder.Init(ctx, &builderv0.InitRequest{
 		ProposedNetworkMappings: networkMappings,
 		ProviderInfos:           infos,
 		DependenciesEndpoints:   dependenciesEndpoints,
@@ -138,17 +138,22 @@ func (builder *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("service instance is not ready")
 	}
 
-	err = builder.world.SharedState.RecordNetworkMappings(ctx, builder.instance.Service, resp.NetworkMappings)
+	err = b.world.SharedState.RecordNetworkMappings(ctx, b.instance.Service, resp.NetworkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
-	err = builder.outputPropertyForInit.Set(ctx, &BuilderInitOutput{})
+	err = b.world.SharedState.RecordSharedProviderInfos(ctx, b.instance.Service, resp.ServiceProviderInfos)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record shared provider infos")
+	}
+
+	err = b.outputPropertyForInit.Set(ctx, &BuilderInitOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
 
-	outputProperty, err := builder.outputPropertyForInit.Process(ctx)
+	outputProperty, err := b.outputPropertyForInit.Process(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for init")
 	}
@@ -156,15 +161,19 @@ func (builder *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-func (builder *Builder) generateDNSNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
-	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(builder.instance.Service))
+func (b *Builder) generateDNSNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
+	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(b.instance.Service))
 	w.Debug("endpoints", wool.NullableField("got", configurations.MakeEndpointSummary(endpoints)))
-	pm, err := network.NewServiceDNSManager(ctx)
+	dnsManager, err := network.NewDNS(ctx, b.world.Project.Name)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create dns manager")
+	}
+	pm, err := network.NewServiceDNSManager(ctx, dnsManager)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create network manager")
 	}
 	// We gather public endpoints URL -- from provider info
-	info, err := builder.world.Provider.GetProjectProviderInformation(ctx, "dns")
+	info, err := b.world.Provider.GetProjectProviderInformation(ctx, "dns")
 	if err == nil {
 		w.Debug("provider informations", wool.Field("got", info.Data))
 		dns := map[string]string{}
@@ -196,12 +205,16 @@ func (builder *Builder) generateDNSNetworkMappings(ctx context.Context, endpoint
 	return networkMappings, nil
 }
 
-func (builder *Builder) Build(ctx context.Context) (*OutputProperty, error) {
-	w := wool.Get(ctx).In("Builder", wool.ThisField(builder.instance.Service))
+func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 	w.Focus("Build")
 
 	// Build the request
-	resp, err := builder.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: builder.builderContext})
+	buildContext, err := builder.BuildContext(ctx, b.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create build context")
+	}
+	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: buildContext})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot call build")
 	}
@@ -210,12 +223,12 @@ func (builder *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("call to build failed")
 	}
 
-	err = builder.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
+	err = b.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for build")
 	}
 
-	outputProperty, err := builder.outputPropertyForBuild.Process(ctx)
+	outputProperty, err := b.outputPropertyForBuild.Process(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
@@ -223,12 +236,11 @@ func (builder *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-func (builder *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
-	w := wool.Get(ctx).In("Builder", wool.ThisField(builder.instance.Service))
-	w.Focus("Sync")
+func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 
 	// Build the request
-	resp, err := builder.instance.Builder.Sync(ctx, &builderv0.SyncRequest{})
+	resp, err := b.instance.Builder.Sync(ctx, &builderv0.SyncRequest{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot sync service instance")
 	}
@@ -236,12 +248,12 @@ func (builder *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("service instance is not started")
 	}
 
-	err = builder.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})
+	err = b.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for sync")
 	}
 
-	outputProperty, err := builder.outputPropertyForSync.Process(ctx)
+	outputProperty, err := b.outputPropertyForSync.Process(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for sync")
 	}
@@ -249,31 +261,38 @@ func (builder *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-func (builder *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
-	w := wool.Get(ctx).In("Builder", wool.ThisField(builder.instance.Service))
+func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 	w.Focus("Deploy")
 
-	env, err := builder.world.Env.Proto()
+	env, err := b.world.Env.Proto()
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	networkMappings, err := builder.world.SharedState.GetNetworkMappings(ctx, builder.instance.Service)
+	networkMappings, err := b.world.SharedState.GetNetworkMappings(ctx, b.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	deployment, err := builder.world.Deployer.Deployment(ctx, builder.world.Project, builder.world.Env)
+	deploy, err := deployment.GetDeployment(ctx, b.world.Project, b.instance.Service, b.world.Env)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
 	// Build the request
-	w.Debug("deployments", wool.Field("deployments", deployment))
-	resp, err := builder.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
+	w.Debug("deployments", wool.Field("deployments", deploy))
+
+	// Build the request
+	buildContext, err := builder.BuildContext(ctx, b.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create build context")
+	}
+
+	resp, err := b.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
 		Environment:     env,
-		BuildContext:    builder.builderContext,
-		Deployment:      deployment,
+		BuildContext:    buildContext,
+		Deployment:      deploy,
 		NetworkMappings: networkMappings,
 	})
 	if err != nil {
@@ -283,12 +302,12 @@ func (builder *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("service instance is not started")
 	}
 
-	err = builder.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})
+	err = b.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for deploy")
 	}
 
-	outputProperty, err := builder.outputPropertyForSync.Process(ctx)
+	outputProperty, err := b.outputPropertyForSync.Process(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for deploy")
 	}
@@ -296,10 +315,6 @@ func (builder *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 
 }
 
-func (builder *Builder) Unique() string {
-	return builder.instance.Service.Unique()
-}
-
-func (builder *Builder) SetBuildContext(builderContext *builderv0.BuildContext) {
-	builder.builderContext = builderContext
+func (b *Builder) Unique() string {
+	return b.instance.Service.Unique()
 }

@@ -8,7 +8,6 @@ import (
 
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 	"github.com/codefly-dev/core/wool"
 )
@@ -21,6 +20,26 @@ const (
 	BuildMode  Mode = "build"
 	DeployMode Mode = "deploy"
 )
+
+type IManager interface {
+	Unique() string
+
+	// Builder
+	BuilderDoInit(ctx context.Context) (*OutputProperty, error)
+	BuilderDoLoad(ctx context.Context) (*OutputProperty, error)
+	BuilderDoBuild(ctx context.Context) (*OutputProperty, error)
+	BuilderDoSync(ctx context.Context) (*OutputProperty, error)
+	BuilderDoDeploy(ctx context.Context) (*OutputProperty, error)
+
+	// Runner
+	RunnerDoLoad(ctx context.Context) (*OutputProperty, error)
+	RunnerDoInit(ctx context.Context) (*OutputProperty, error)
+	RunnerDoStart(ctx context.Context) (*OutputProperty, error)
+
+	DoSetCallback(seed func(ctx context.Context, action Action) error)
+
+	Stop(ctx context.Context) error
+}
 
 /*
 Manager is responsible is a wrapper around a service instance:
@@ -44,6 +63,42 @@ type Manager struct {
 	dependencyEndpoints []*basev0.Endpoint
 	networkMappings     []*basev0.NetworkMapping
 	providerInfos       []*basev0.ProviderInformation
+}
+
+func (manager *Manager) BuilderDoInit(ctx context.Context) (*OutputProperty, error) {
+	return manager.Builder.Init(ctx)
+}
+
+func (manager *Manager) BuilderDoLoad(ctx context.Context) (*OutputProperty, error) {
+	return manager.Builder.Load(ctx)
+}
+
+func (manager *Manager) BuilderDoBuild(ctx context.Context) (*OutputProperty, error) {
+	return manager.Builder.Build(ctx)
+}
+
+func (manager *Manager) BuilderDoSync(ctx context.Context) (*OutputProperty, error) {
+	return manager.Builder.Sync(ctx)
+}
+
+func (manager *Manager) BuilderDoDeploy(ctx context.Context) (*OutputProperty, error) {
+	return manager.Builder.Deploy(ctx)
+}
+
+func (manager *Manager) RunnerDoLoad(ctx context.Context) (*OutputProperty, error) {
+	return manager.Runner.Load(ctx)
+}
+
+func (manager *Manager) RunnerDoInit(ctx context.Context) (*OutputProperty, error) {
+	return manager.Runner.Init(ctx)
+}
+
+func (manager *Manager) RunnerDoStart(ctx context.Context) (*OutputProperty, error) {
+	return manager.Runner.Start(ctx)
+}
+
+func (manager *Manager) DoSetCallback(callback func(ctx context.Context, action Action) error) {
+	manager.SetCallback(callback)
 }
 
 func (manager *Manager) Unique() string {
@@ -116,10 +171,10 @@ func (manager *Manager) SetCallback(f Callback) {
 }
 
 type Hub struct {
-	managers []*Manager
+	managers []IManager
 }
 
-func (hub *Hub) Manager(unique string) (*Manager, error) {
+func (hub *Hub) Manager(unique string) (IManager, error) {
 	for _, manager := range hub.managers {
 		if manager.Unique() == unique {
 			return manager, nil
@@ -128,11 +183,50 @@ func (hub *Hub) Manager(unique string) (*Manager, error) {
 	return nil, fmt.Errorf("no manager found for %s", unique)
 }
 
-func (hub *Hub) SetBuilderContext(builderContext *builderv0.BuildContext) {
-	for _, manager := range hub.managers {
-		if manager.Builder != nil {
-			manager.Builder.SetBuildContext(builderContext)
-		}
-	}
+type NoOpManager struct {
+	service *configurations.Service
+}
 
+func (n NoOpManager) Unique() string {
+	return n.service.Unique()
+}
+
+func (n NoOpManager) BuilderDoInit(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) BuilderDoLoad(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) BuilderDoBuild(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) BuilderDoSync(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) BuilderDoDeploy(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) RunnerDoLoad(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) RunnerDoInit(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) RunnerDoStart(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) DoSetCallback(seed func(ctx context.Context, action Action) error) {
+	return
+}
+
+func (n NoOpManager) Stop(ctx context.Context) error {
+	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -51,17 +52,23 @@ func expose(ctx context.Context, project *configurations.Project) error {
 		return w.Wrapf(err, "cannot get DNS provider information")
 	}
 	for unique, u := range info.Data {
+		if !strings.HasPrefix(u, "http") {
+			continue
+		}
 		ref, err := configurations.ParseServiceUnique(unique)
 		if err != nil {
 			return w.Wrapf(err, "cannot parse unique: %s", unique)
 		}
-		service, err := project.LoadService(ctx, ref)
-		if err != nil {
-			return w.Wrapf(err, "cannot load service from dir: %s", dir)
-		}
-		namespace := service.Namespace
+		//service, err := project.LoadService(ctx, ref)
+		//if err != nil {
+		//	return w.Wrapf(err, "cannot load service from dir: %s", dir)
+		//}
+		namespace := "default"
 		k8sSvc := fmt.Sprintf("svc/%s-%s", ref.Name, ref.Application)
+		//// Check if this service exists in this namespace
+		//_, err = exec.CommandContext(ctx, "kubectl", "get", "svc", k8sSvc, "-n", namespace).Output()
 
+		// Start a port forward
 		target, err := url.Parse(u)
 		if err != nil {
 			return w.Wrapf(err, "cannot parse URL: %s", u)

@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 
-	web "github.com/codefly-dev/cli/generated/go/web/v0"
+	cli "github.com/codefly-dev/core/generated/go/cli/v0"
 	"github.com/codefly-dev/golor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"
@@ -31,7 +31,7 @@ func (s *HttpServer) Run(ctx context.Context) error {
 	gwMux := runtime.NewServeMux()
 
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	err := web.RegisterWebHandlerFromEndpoint(ctx, gwMux, s.config.EndpointGrpc, opts)
+	err := cli.RegisterCLIHandlerFromEndpoint(ctx, gwMux, s.config.EndpointGrpc, opts)
 	if err != nil {
 		return err
 	}

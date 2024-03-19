@@ -12,56 +12,46 @@ import (
 )
 
 type Strategy interface {
-	Reserve(ctx context.Context, host string, endpoints []*ApplicationEndpoint) (*ApplicationEndpointInstances, error)
+	Reserve(ctx context.Context, host string, endpoints []*ApplicationMapping) (*ApplicationEndpointInstances, error)
 }
 
-// An ApplicationEndpoint takes a service Endpoint
+// An ApplicationMapping takes a service Endpoint
 // and embed it so it can be used across the applications
-type ApplicationEndpoint struct {
-	Name        string
-	Service     string
-	Application string
-	Namespace   string
-	Replicas    int32
+type ApplicationMapping struct {
 	Endpoint    *basev0.Endpoint
 	PortBinding string // something like 8080/tcp
 }
 
-func (e ApplicationEndpoint) Unique() string {
+func (e ApplicationMapping) Unique() string {
 	return ToUnique(e.Endpoint)
 }
 
-func (e ApplicationEndpoint) Clone() ApplicationEndpoint {
-	return ApplicationEndpoint{
-		Name:        e.Name,
-		Service:     e.Service,
-		Application: e.Application,
-		Namespace:   e.Namespace,
-		Replicas:    e.Replicas,
+func (e ApplicationMapping) Clone() ApplicationMapping {
+	return ApplicationMapping{
 		Endpoint:    e.Endpoint,
 		PortBinding: e.PortBinding,
 	}
 }
 
-// An ApplicationEndpointInstance is an instance of an ApplicationEndpoint
+// An ApplicationEndpointInstance is an instance of an ApplicationMapping
 type ApplicationEndpointInstance struct {
-	ApplicationEndpoint *ApplicationEndpoint
-	Port                int
-	Host                string
+	ApplicationMapping *ApplicationMapping
+	Port               int
+	Host               string
 }
 
 func (m *ApplicationEndpointInstance) Name() string {
-	return strings.ToLower(m.ApplicationEndpoint.Service)
+	return strings.ToLower(m.ApplicationMapping.Endpoint.Service)
 }
 
 func (m *ApplicationEndpointInstance) Address(ctx context.Context) string {
-	if http := configurations.IsHTTP(ctx, m.ApplicationEndpoint.Endpoint.Api); http != nil {
+	if http := configurations.IsHTTP(ctx, m.ApplicationMapping.Endpoint.Api); http != nil {
 		if http.Secured {
 			return fmt.Sprintf("https://%s:%d", m.Host, m.Port)
 		}
 		return fmt.Sprintf("http://%s:%d", m.Host, m.Port)
 	}
-	if rest := configurations.IsRest(ctx, m.ApplicationEndpoint.Endpoint.Api); rest != nil {
+	if rest := configurations.IsRest(ctx, m.ApplicationMapping.Endpoint.Api); rest != nil {
 		if rest.Secured {
 			return fmt.Sprintf("https://%s:%d", m.Host, m.Port)
 		}
@@ -76,11 +66,11 @@ func (m *ApplicationEndpointInstance) StringPort() string {
 }
 
 type ApplicationEndpointInstances struct {
-	ApplicationEndpointInstances []*ApplicationEndpointInstance
+	ApplicationMappingInstances []*ApplicationEndpointInstance
 }
 
 func (pm *ApplicationEndpointInstances) First() *ApplicationEndpointInstance {
-	return pm.ApplicationEndpointInstances[0]
+	return pm.ApplicationMappingInstances[0]
 }
 
 func ToEndpoint(endpoint *basev0.Endpoint) *configurations.Endpoint {
@@ -113,8 +103,8 @@ type Address struct {
 
 func (pm *ApplicationEndpointInstances) Address(endpoint *basev0.Endpoint) *Address {
 	// Returns the first one
-	for _, e := range pm.ApplicationEndpointInstances {
-		if ToUnique(e.ApplicationEndpoint.Endpoint) == ToUnique(endpoint) {
+	for _, e := range pm.ApplicationMappingInstances {
+		if ToUnique(e.ApplicationMapping.Endpoint) == ToUnique(endpoint) {
 			return &Address{
 				Host: e.Host,
 				Port: e.Port,

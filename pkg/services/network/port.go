@@ -66,23 +66,19 @@ func APIInt(api string) int {
 // Between 1100(0) and 4999(9)
 // First 11 -> 49: hash app
 // Next 0 -> 9: hash svc
-// Next 0 - 9: hash name + instance
+// Next 0 - 9: hash name
 // Last Digit: API
 // 0: TCP
 // 1: HTTP/ REST
 // 2: gRPC
-func ToPort(ctx context.Context, app string, svc string, name string, api string, instances int) []int {
+func ToPort(ctx context.Context, app string, svc string, name string, api string) int {
 	w := wool.Get(ctx).In("ToPort")
 	appPart := HashInt(app, 11, 49) * 1000
 	svcPart := HashInt(app+svc, 0, 9) * 100
-	var ports []int
-	for i := 0; i < instances; i++ {
-		namePart := HashInt(fmt.Sprintf("%s%d", name, i), 0, 9) * 10
-		w.Focus("port", wool.Field("app", appPart), wool.Field("svc", svcPart), wool.Field("name", namePart), wool.Field("api", APIInt(api)))
-		port := appPart + svcPart + namePart + APIInt(api)
-		ports = append(ports, port)
-	}
-	return ports
+	namePart := HashInt(name, 0, 9) * 10
+	w.Focus("port", wool.Field("app", appPart), wool.Field("svc", svcPart), wool.Field("name", namePart), wool.Field("api", APIInt(api)))
+	port := appPart + svcPart + namePart + APIInt(api)
+	return port
 }
 
 func IsPortAvailable(port int) bool {
@@ -135,25 +131,23 @@ func killProcess(pid string) error {
 	return nil
 }
 
-func (r FixedStrategy) Reserve(ctx context.Context, host string, endpoints []*ApplicationEndpoint) (*ApplicationEndpointInstances, error) {
+func (r FixedStrategy) Reserve(ctx context.Context, host string, mappings []*ApplicationMapping) (*ApplicationEndpointInstances, error) {
 	w := wool.Get(ctx).In("FixedStrategy.Reserve")
 	m := &ApplicationEndpointInstances{}
-	for _, endpoint := range endpoints {
-		api, err := configurations.APIAsStandard(endpoint.Endpoint.Api)
+	for _, mapping := range mappings {
+		api, err := configurations.APIAsStandard(mapping.Endpoint.Api)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot get api")
 		}
-		ports := ToPort(ctx, endpoint.Application, endpoint.Service, endpoint.Name, api, int(endpoint.Replicas))
-		for _, port := range ports {
-			w.Debug("reserving", wool.ApplicationField(endpoint.Application), wool.ServiceField(endpoint.Service), wool.Field("port", port))
-			w.Trace("port", wool.ThisField(endpoint), wool.Field("port", port))
-			m.ApplicationEndpointInstances = append(m.ApplicationEndpointInstances,
-				&ApplicationEndpointInstance{
-					ApplicationEndpoint: endpoint,
-					Port:                port,
-					Host:                host,
-				})
-		}
+		port := ToPort(ctx, mapping.Endpoint.Application, mapping.Endpoint.Service, mapping.Endpoint.Name, api)
+		w.Debug("reserving", wool.ApplicationField(mapping.Endpoint.Application), wool.ServiceField(mapping.Endpoint.Service), wool.Field("port", port))
+		w.Trace("port", wool.ThisField(mapping), wool.Field("port", port))
+		m.ApplicationMappingInstances = append(m.ApplicationMappingInstances,
+			&ApplicationEndpointInstance{
+				ApplicationMapping: mapping,
+				Port:               port,
+				Host:               host,
+			})
 	}
 	return m, nil
 }

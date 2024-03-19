@@ -10,10 +10,8 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/deployment"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 	"github.com/codefly-dev/core/providers"
 	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
@@ -46,15 +44,13 @@ type Flow struct {
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
 
-	initOnly   bool
-	standAlone bool
+	initOnly    bool
+	standAlone  bool
+	excludeRoot bool
+	ci          bool
 
 	// convenient
 	services map[string]*configurations.Service
-	ci       bool
-
-	// Helpers
-	BuilderContext *builderv0.BuildContext
 }
 
 type World struct {
@@ -70,8 +66,6 @@ type World struct {
 
 	// Things to share
 	SharedState *StateManager
-
-	Deployer *deployment.LocalManager
 }
 
 // NewEmptyFlow will run a single agent
@@ -90,11 +84,6 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	w := wool.Get(ctx).In("NewFlow")
 
 	services := map[string]*configurations.Service{service.Unique(): service}
-
-	deployer, err := deployment.NewLocalManager(ctx)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
 
 	// Get dependency graph
 	dependencies, err := architecture.NewServiceDependencies(ctx, project)
@@ -119,7 +108,6 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		Provider:     provider,
 		SharedState:  stateManager,
 		Dependencies: dependencies,
-		Deployer:     deployer,
 	}
 
 	flow := &Flow{
@@ -175,7 +163,6 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithStopping(func(ctx context.Context, action Action) bool {
 			return action.Service == flow.origin.Unique() && action.Type == BuilderBuild
 		})
-		flow.hub.SetBuilderContext(flow.BuilderContext)
 	case SyncMode:
 		policy, err := NewSyncPolicy(ctx, flow.world.Dependencies, flow)
 		if err != nil {
@@ -204,14 +191,13 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithStopping(func(ctx context.Context, action Action) bool {
 			return action.Service == flow.origin.Unique() && action.Type == BuilderDeploy
 		})
-		flow.hub.SetBuilderContext(flow.BuilderContext)
 
 	}
 	flow.playbook = playbook
 
 	// Fix the callback
 	for _, manager := range flow.hub.managers {
-		manager.SetCallback(flow.playbook.Seed)
+		manager.DoSetCallback(flow.playbook.Seed)
 	}
 
 	currentFlow = flow
@@ -249,9 +235,6 @@ func (flow *Flow) Build(ctx context.Context) error {
 		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
 			return action.Service != flow.origin.Unique()
 		})
-	}
-	if flow.BuilderContext == nil {
-		return w.NewError("no build context")
 	}
 	err := flow.playbook.Begin(ctx, Action{Type: BuilderBegin, Service: flow.origin.Unique()})
 	if err != nil {
@@ -327,56 +310,51 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 			return OnInit(), nil
 		}, nil
 	case RuntimeLoad:
-		return manager.Runner.Load, nil
+		return manager.RunnerDoLoad, nil
 	case RuntimeInit:
-		return manager.Runner.Init, nil
+		return manager.RunnerDoInit, nil
 	case RuntimeStart:
-		return manager.Runner.Start, nil
+		return manager.RunnerDoStart, nil
 	case BuilderBegin:
 		return func(ctx context.Context) (*OutputProperty, error) {
 			return OnInit(), nil
 		}, nil
 	case BuilderLoad:
-		return manager.Builder.Load, nil
+		return manager.BuilderDoLoad, nil
 	case BuilderInit:
-		return manager.Builder.Init, nil
+		return manager.BuilderDoInit, nil
 	case BuilderBuild:
-		return manager.Builder.Build, nil
+		return manager.BuilderDoBuild, nil
 	case BuilderSync:
-		return manager.Builder.Sync, nil
+		return manager.BuilderDoSync, nil
 	case BuilderDeploy:
-		return manager.Builder.Deploy, nil
+		return manager.BuilderDoDeploy, nil
 
 	default:
 		return nil, w.NewError("unknown action type %s for executor", action.Type)
 	}
 }
 
-func (flow *Flow) WithStandAlone(alone bool) {
-	flow.standAlone = alone
-}
-
-func (flow *Flow) GetAddressesForEndpoint(ctx context.Context, application string, service string, endpoint string) ([]string, error) {
+func (flow *Flow) GetAddressForEndpoint(ctx context.Context, application string, service string, endpoint string) (string, error) {
 	if flow == nil {
-		return nil, fmt.Errorf("cannot get addresses from nil flow")
+		return "", fmt.Errorf("cannot get addresses from nil flow")
 	}
 	if flow.SharedState() == nil {
-		return nil, fmt.Errorf("cannot get addresses from nil state")
+		return "", fmt.Errorf("cannot get addresses from nil state")
 	}
 	// We get that from the stateManager
 	unique := configurations.ServiceUnique(application, service)
 
-	var addresses []string
 	mappings, ok := flow.SharedState().NetworkMappings(unique)
 	if !ok {
-		return nil, fmt.Errorf("cannot find network mappings for %s", unique)
+		return "", fmt.Errorf("cannot find network mappings for %s", unique)
 	}
 	for _, np := range mappings {
 		if np.Endpoint.Name == endpoint {
-			addresses = append(addresses, np.Addresses...)
+			return np.Address, nil
 		}
 	}
-	return addresses, nil
+	return "", fmt.Errorf("cannot find network mappings for %s", unique)
 }
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
@@ -401,7 +379,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// We run in the proper order
 	slices.Reverse(required)
 
-	var managers []*Manager
+	var managers []IManager
 
 	for _, unique := range required {
 		cli.RegisterLoggingResource(unique)
@@ -429,14 +407,19 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	}
 
 	// Now add the current one
+	if !flow.excludeRoot {
+		w.Debug("creating run manager", wool.Field("for", flow.origin.Unique()))
+		manager, err := New(ctx, flow.origin, flow.world)
+		cli.RegisterLoggingResource(flow.origin.Unique())
+		if err != nil {
+			return w.Wrap(err)
+		}
+		managers = append(managers, manager)
+	} else {
+		// We use a NoOP Manager
+		managers = append(managers, &NoOpManager{service: flow.origin})
 
-	w.Debug("creating run manager", wool.Field("for", flow.origin.Unique()))
-	manager, err := New(ctx, flow.origin, flow.world)
-	cli.RegisterLoggingResource(flow.origin.Unique())
-	if err != nil {
-		return w.Wrap(err)
 	}
-	managers = append(managers, manager)
 
 	flow.hub = &Hub{managers: managers}
 	return nil
@@ -476,16 +459,34 @@ func (flow *Flow) CreateManager(ctx context.Context) error {
 	if err != nil {
 		return w.Wrap(err)
 	}
-	flow.hub = &Hub{managers: []*Manager{manager}}
+	flow.hub = &Hub{managers: []IManager{manager}}
 	return nil
 }
 
-func (flow *Flow) WithBuildContext(buildContext *builderv0.BuildContext) {
-	flow.BuilderContext = buildContext
+func (flow *Flow) Ready(ctx context.Context) bool {
+	// We want the origin to have ran
+	for _, action := range flow.playbook.Executed() {
+		if action.Service == flow.origin.Unique() && action.Type == RuntimeStart {
+			return true
+		}
+	}
+	return false
+}
+
+func (flow *Flow) WithStandAlone(alone bool) {
+	flow.standAlone = alone
+}
+
+func (flow *Flow) WithExcludeRoot(excludeRoot bool) {
+	flow.excludeRoot = excludeRoot
 }
 
 func (flow *Flow) SharedState() *StateManager {
 	return flow.sharedState
+}
+
+func (flow *Flow) Executed() []Action {
+	return flow.playbook.Executed()
 }
 
 var _ ExecutorManager = &Flow{}

@@ -22,6 +22,9 @@ func (policy *RuntimeStartPolicy) Execute(ctx context.Context, action Action) ([
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process executor")
 	}
+	if executor == nil {
+		return nil, nil
+	}
 	outputProperty, err := executor(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty")
