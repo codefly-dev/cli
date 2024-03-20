@@ -65,6 +65,8 @@ github.com/codefly-dev/core v0.1.49 h1:vIKXFyeQLDtLeOcLcQHWNGyt8HoEkLQ7JlgEUYaMa
 github.com/codefly-dev/core v0.1.49/go.mod h1:iPzGLkiRRlLzWNDzDQ7/EI1IY0TUBEZja4cvAoKTNHo=
 github.com/codefly-dev/core v0.1.52 h1:6cP9GBKCDujVgp72wdHqeFDyNdVcwEQdoDY5HdCbNa4=
 github.com/codefly-dev/core v0.1.52/go.mod h1:Ol7Piz5f1P4EYcnZrGUaX1tKt6SEXcEMXYawaY4pbzg=
+github.com/codefly-dev/core v0.1.56 h1:Um0qCb2nzmS71Rdtt9juNJHS2RuxZSDJbKe+yR8e318=
+github.com/codefly-dev/core v0.1.56/go.mod h1:syWTswKGbtTS58XSTuMPdaQxuH1RWEqOjfv17VBmtcE=
 github.com/codefly-dev/golor v0.1.2 h1:5PtDSbAWWgUKjk1W16AlUNZ3AO+GzNVOBjmWaLq5VC4=
 github.com/codefly-dev/golor v0.1.2/go.mod h1:sl/u/K1l7J0Pr3xyVZp8fOJYQItKKst1No9JqgzLLoY=
 github.com/compose-spec/compose-go v1.20.2 h1:u/yfZHn4EaHGdidrZycWpxXgFffjYULlTbRfJ51ykjQ=
@@ -92,6 +94,7 @@ github.com/docker/docker v25.0.3+incompatible h1:D5fy/lYmY7bvZa0XTZ5/UJPljor41F+
 github.com/docker/docker v25.0.3+incompatible/go.mod h1:eEKB0N0r5NX/I1kEveEz05bcu8tLC/8azJZsviup8Sk=
 github.com/docker/docker v25.0.4+incompatible h1:XITZTrq+52tZyZxUOtFIahUf3aH367FLxJzt9vZeAF8=
 github.com/docker/docker v25.0.4+incompatible/go.mod h1:eEKB0N0r5NX/I1kEveEz05bcu8tLC/8azJZsviup8Sk=
+github.com/docker/docker v25.0.5+incompatible/go.mod h1:eEKB0N0r5NX/I1kEveEz05bcu8tLC/8azJZsviup8Sk=
 github.com/docker/go-connections v0.5.0 h1:USnMq7hx7gwdVZq1L49hLXaFtUdTADjXGp+uj1Br63c=
 github.com/docker/go-connections v0.5.0/go.mod h1:ov60Kzw0kKElRwhNs9UlUHAE/F9Fe6GLaXnqyDdmEXc=
 github.com/docker/go-units v0.5.0 h1:69rxXcBk27SvSaaxTtLh/8llcHD8vYHT7WSdRZ/jvr4=
@@ -459,6 +462,7 @@ golang.org/x/crypto v0.21.0 h1:X31++rzVUdKhX5sWmSOFZxx8UW/ldWx55cbf08iNAMA=
 golang.org/x/crypto v0.21.0/go.mod h1:0BP7YvVV9gBbVKyeTG0Gyn+gZm94bibOW5BjDEYAOMs=
 golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 h1:LfspQV/FYTatPTr/3HzIcmiUFH7PGP+OQ6mgDYo3yuQ=
 golang.org/x/exp v0.0.0-20240222234643-814bf88cf225/go.mod h1:CxmFvTBINI24O/j8iY7H1xHzx2i4OsyguNBmN/uPtqc=
+golang.org/x/exp v0.0.0-20240318143956-a85f2c67cd81/go.mod h1:CQ1k9gNrJ50XIzaKCRR2hssIjF07kZFEiieALBM/ARQ=
 golang.org/x/mod v0.2.0/go.mod h1:s0Qsj1ACt9ePp/hMypM3fl4fZqREWJwdYDEqhRiZZUA=
 golang.org/x/mod v0.3.0/go.mod h1:s0Qsj1ACt9ePp/hMypM3fl4fZqREWJwdYDEqhRiZZUA=
 golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
@@ -554,10 +558,12 @@ google.golang.org/genproto/googleapis/api v0.0.0-20240304212257-790db918fca8 h1:
 google.golang.org/genproto/googleapis/api v0.0.0-20240304212257-790db918fca8/go.mod h1:O1cOfN1Cy6QEYr7VxtjOyP5AdAuR0aJ/MYZaaof623Y=
 google.golang.org/genproto/googleapis/api v0.0.0-20240311173647-c811ad7063a7 h1:oqta3O3AnlWbmIE3bFnWbu4bRxZjfbWCp0cKSuZh01E=
 google.golang.org/genproto/googleapis/api v0.0.0-20240311173647-c811ad7063a7/go.mod h1:VQW3tUculP/D4B+xVCo+VgSq8As6wA9ZjHl//pmk+6s=
+google.golang.org/genproto/googleapis/api v0.0.0-20240318140521-94a12d6c2237/go.mod h1:Z5Iiy3jtmioajWHDGFk7CeugTyHtPvMHA4UTmUkyalE=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20240304212257-790db918fca8 h1:IR+hp6ypxjH24bkMfEJ0yHR21+gwPWdV+/IBrPQyn3k=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20240304212257-790db918fca8/go.mod h1:UCOku4NytXMJuLQE5VuqA5lX3PcHCBo8pxNyvkf4xBs=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20240311173647-c811ad7063a7 h1:8EeVk1VKMD+GD/neyEHGmz7pFblqPjHoi+PGQIlLx2s=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20240311173647-c811ad7063a7/go.mod h1:WtryC6hu0hhx87FDGxWCDptyssuo68sk10vYjF+T9fY=
+google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237/go.mod h1:WtryC6hu0hhx87FDGxWCDptyssuo68sk10vYjF+T9fY=
 google.golang.org/grpc v1.62.1 h1:B4n+nfKzOICUXMgyrNd19h/I9oH0L1pizfk1d4zSgTk=
 google.golang.org/grpc v1.62.1/go.mod h1:IWTG0VlJLCh1SkC58F7np9ka9mx/WNkjl4PGJaiq+QE=
 google.golang.org/protobuf v1.26.0-rc.1/go.mod h1:jlhhOSvTdKEhbULTjvd4ARK9grFBp09yW+WbY/TyQbw=
