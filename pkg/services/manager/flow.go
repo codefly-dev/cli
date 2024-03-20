@@ -432,7 +432,7 @@ func (flow *Flow) WithGoService(ctx context.Context, args ...string) error {
 	if err != nil {
 		return w.Wrapf(err, "can't get current dir")
 	}
-	agent, err := common.GetAgent(ctx, "codefly.dev/go-single:0.0.5")
+	agent, err := common.GetAgent(ctx, "codefly.dev/go-single")
 	if err != nil {
 		return w.Wrapf(err, "cannot get agent")
 	}
