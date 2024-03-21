@@ -30,7 +30,7 @@ func (b *BuildExecutor) GetExecutor(ctx context.Context, action Action) (OutputP
 			return OnInit(), nil
 		}, nil
 	case BuilderLoad:
-		return manager.BuilderDoBuild, nil
+		return manager.BuilderDoLoad, nil
 	case BuilderInit:
 		return manager.BuilderDoInit, nil
 	case BuilderBuild:

@@ -214,6 +214,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
+
 	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: buildContext})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot call build")
