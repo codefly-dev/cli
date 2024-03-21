@@ -96,7 +96,7 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 
 func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
-	w.Focus("Init")
+	w.Debug("Init")
 
 	dependenciesEndpoints, err := b.world.SharedState.GetDependenciesEndpoints(ctx, b.instance.Service)
 	if err != nil {
@@ -207,7 +207,7 @@ func (b *Builder) generateDNSNetworkMappings(ctx context.Context, endpoints []*b
 
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
-	w.Focus("Build")
+	w.Debug("Build")
 
 	// Build the request
 	buildContext, err := builder.BuildContext(ctx, b.instance.Service)
@@ -263,7 +263,7 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 
 func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
-	w.Focus("Deploy")
+	w.Debug("Deploy")
 
 	env, err := b.world.Env.Proto()
 	if err != nil {

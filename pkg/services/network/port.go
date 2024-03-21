@@ -76,7 +76,7 @@ func ToPort(ctx context.Context, app string, svc string, name string, api string
 	appPart := HashInt(app, 11, 49) * 1000
 	svcPart := HashInt(app+svc, 0, 9) * 100
 	namePart := HashInt(name, 0, 9) * 10
-	w.Focus("port", wool.Field("app", appPart), wool.Field("svc", svcPart), wool.Field("name", namePart), wool.Field("api", APIInt(api)))
+	w.Debug("port", wool.Field("app", appPart), wool.Field("svc", svcPart), wool.Field("name", namePart), wool.Field("api", APIInt(api)))
 	port := appPart + svcPart + namePart + APIInt(api)
 	return port
 }

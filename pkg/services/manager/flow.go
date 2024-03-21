@@ -441,7 +441,7 @@ func (flow *Flow) WithGoService(ctx context.Context, args ...string) error {
 		Agent:       agent,
 		RuntimeSpec: map[string]any{"run-args": args},
 	}
-	w.Focus("running with args", wool.Field("args", args))
+	w.Debug("running with args", wool.Field("args", args))
 	svc.WithDir(cur)
 
 	flow.origin = svc

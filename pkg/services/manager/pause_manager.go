@@ -25,7 +25,7 @@ func (pause *PauseManager) IsPause(ctx context.Context, next []Action) (*Action,
 	}
 	if next[0].Failed {
 		failed := next[0]
-		w.Focus("got a failure", wool.Field("action", failed))
+		w.Debug("got a failure", wool.Field("action", failed))
 		pause.action = &failed
 		pause.spinner.Start()
 		return &next[0], true
@@ -39,14 +39,14 @@ func (pause *PauseManager) Handle(ctx context.Context, action Action) bool {
 		return false
 	}
 	w.Debug("received", wool.Field("action", action))
-	w.Focus("waiting for", wool.Field("action", pause.action))
+	w.Debug("waiting for", wool.Field("action", pause.action))
 	if pause.action.Service == action.Service && pause.action.Type == action.Type {
 		// This "un-pause"
-		w.Focus("un-pausing")
+		w.Debug("un-pausing")
 		pause.action = nil
 		pause.spinner.Stop()
 		return false
 	}
-	w.Focus("NOPE: GOT", wool.Field("action", action))
+	w.Debug("NOPE: GOT", wool.Field("action", action))
 	return true
 }

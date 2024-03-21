@@ -175,7 +175,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 			return nil, w.Wrapf(err, "cannot get provider info")
 		}
 
-		w.Focus("provider", wool.Field("infos", configurations.MakeProviderInformationSummary(infos)))
+		w.Debug("provider", wool.Field("infos", configurations.MakeProviderInformationSummary(infos)))
 	}
 
 	networkMappings, err := generatePortNetworkMappings(ctx, runner.endpoints)
@@ -196,7 +196,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	if resp.Status != nil && resp.Status.State != runtimev0.InitStatus_READY {
-		w.Focus("init failed: waiting")
+		w.Debug("init failed: waiting")
 		err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true})
 		return runner.outputPropertyForInit.Process(ctx)
 
