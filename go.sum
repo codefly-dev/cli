@@ -73,6 +73,8 @@ github.com/codefly-dev/core v0.1.58 h1:d763Aps7TsX42Ma8FC6a9kayMUpmjYDylKD6SFSZL
 github.com/codefly-dev/core v0.1.58/go.mod h1:syWTswKGbtTS58XSTuMPdaQxuH1RWEqOjfv17VBmtcE=
 github.com/codefly-dev/core v0.1.59 h1:2UXNphj7A7wW7miI2gZhqqBOFYlhrEK5XgVHZ3bCkCI=
 github.com/codefly-dev/core v0.1.59/go.mod h1:syWTswKGbtTS58XSTuMPdaQxuH1RWEqOjfv17VBmtcE=
+github.com/codefly-dev/core v0.1.60 h1:DIZublI9I1VGcZUAFKFphzSo12wubPEJnPGfWmcMD5c=
+github.com/codefly-dev/core v0.1.60/go.mod h1:syWTswKGbtTS58XSTuMPdaQxuH1RWEqOjfv17VBmtcE=
 github.com/codefly-dev/golor v0.1.2 h1:5PtDSbAWWgUKjk1W16AlUNZ3AO+GzNVOBjmWaLq5VC4=
 github.com/codefly-dev/golor v0.1.2/go.mod h1:sl/u/K1l7J0Pr3xyVZp8fOJYQItKKst1No9JqgzLLoY=
 github.com/compose-spec/compose-go v1.20.2 h1:u/yfZHn4EaHGdidrZycWpxXgFffjYULlTbRfJ51ykjQ=
@@ -614,6 +616,8 @@ modernc.org/libc v1.44.0 h1:71bbnKgb0mCg7GOOI/PHlzz7Bv6obELGNKnIEeowX8c=
 modernc.org/libc v1.44.0/go.mod h1:RRqfGVjvILF5AdNP3RPCiihj7+Dn2pIBrdlU60lA9vs=
 modernc.org/libc v1.46.0 h1:6Bgun/6X1rFufESfGSZ6iRJ2KqWj3zbwXoCSVnIv0Jc=
 modernc.org/libc v1.46.0/go.mod h1:eDI/RWXV8yvnoJ8Ddg/UaoSIIvvGgeq3ciBtRvh7i9A=
+modernc.org/libc v1.47.0 h1:BXrzId9fOOkBtS+uFQ5aZyVGmt7WcSEPrXF5Kwsho90=
+modernc.org/libc v1.47.0/go.mod h1:gzCncw0a74aCiVqHeWAYHHaW//fkSHHS/3S/gfhLlCI=
 modernc.org/mathutil v1.6.0 h1:fRe9+AmYlaej+64JsEEhoWuAYBkOtQiMEU7n/XgfYi4=
 modernc.org/mathutil v1.6.0/go.mod h1:Ui5Q9q1TR2gFm0AQRqQUaBWFLAhQpCwNcuhBOSedWPo=
 modernc.org/memory v1.7.2 h1:Klh90S215mmH8c9gO98QxQFsY+W451E8AnzjoE2ee1E=

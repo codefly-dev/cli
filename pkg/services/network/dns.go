@@ -15,9 +15,9 @@ type DNS struct {
 
 func (dns *DNS) ToService(e *basev0.Endpoint) string {
 	if dns.OrganizationID != "" {
-		return fmt.Sprintf("%s.%s.%s.%s.svc.cluster.local", e.Service, e.Application, dns.Project, dns.OrganizationID)
+		return fmt.Sprintf("%s.%s-%s-%s.svc.cluster.local", e.Service, dns.OrganizationID, dns.Project, e.Application)
 	}
-	return fmt.Sprintf("%s.%s.%s.svc.cluster.local", e.Service, e.Application, dns.Project)
+	return fmt.Sprintf("%s.%s-%s.svc.cluster.local", e.Service, dns.Project, e.Application)
 }
 
 func (dns *DNS) Reserve(_ context.Context, _ string, es []*ApplicationMapping) (*ApplicationEndpointInstances, error) {

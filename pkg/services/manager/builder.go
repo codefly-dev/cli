@@ -201,7 +201,7 @@ func (b *Builder) generateDNSNetworkMappings(ctx context.Context, endpoints []*b
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create network mapping")
 	}
-	w.Debug("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
+	w.Focus("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
 	return networkMappings, nil
 }
 
