@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
-	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -59,14 +58,14 @@ func expose(ctx context.Context, project *configurations.Project) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot parse unique: %s", unique)
 		}
-		//service, err := project.LoadService(ctx, ref)
-		//if err != nil {
-		//	return w.Wrapf(err, "cannot load service from dir: %s", dir)
-		//}
-		namespace := "default"
-		k8sSvc := fmt.Sprintf("svc/%s-%s", ref.Name, ref.Application)
+		namespace := fmt.Sprintf("%s-%s", project.Name, ref.Application)
+		k8sSvc := fmt.Sprintf("svc/%s", ref.Name)
+		w.Debug("k8s", wool.Field("namespace", namespace), wool.Field("service", k8sSvc))
 		//// Check if this service exists in this namespace
-		//_, err = exec.CommandContext(ctx, "kubectl", "get", "svc", k8sSvc, "-n", namespace).Output()
+		_, err = exec.CommandContext(ctx, "kubectl", "get", k8sSvc, "-n", namespace).Output()
+		if err != nil {
+			return w.Wrapf(err, "cannot get service: %s", k8sSvc)
+		}
 
 		// Start a port forward
 		target, err := url.Parse(u)
@@ -75,14 +74,11 @@ func expose(ctx context.Context, project *configurations.Project) error {
 		}
 		port := target.Port()
 		go func(service string, port string, namespace string) {
-			for {
-				w.Info(fmt.Sprintf("exposing %s on port %s", ref.Unique(), port), wool.Field("service", service), wool.Field("port", port), wool.Field("namespace", namespace))
-				cmd := exec.CommandContext(ctx, "kubectl", "port-forward", "-n", namespace, k8sSvc, fmt.Sprintf("%s:8080", port))
-				err := cmd.Run()
-				if err != nil {
-					log.Printf("Failed to forward service: %s, error: %v", service, err)
-				}
-				time.Sleep(time.Second * 5) // wait for 5 seconds before retrying
+			w.Info(fmt.Sprintf("exposing %s at http://localhost:%s", ref.Unique(), port), wool.Field("service", service), wool.Field("port", port), wool.Field("namespace", namespace))
+			cmd := exec.CommandContext(ctx, "kubectl", "port-forward", "-n", namespace, k8sSvc, fmt.Sprintf("%s:8080", port))
+			err := cmd.Run()
+			if err != nil {
+				log.Printf("Failed to forward service: %s, %s, error: %v", service, cmd.Args, err)
 			}
 		}(k8sSvc, port, namespace)
 
