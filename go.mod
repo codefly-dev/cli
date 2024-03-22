@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/glamour v0.6.0
 	github.com/charmbracelet/lipgloss v0.10.0
-	github.com/codefly-dev/core v0.1.60
+	github.com/codefly-dev/core v0.1.61
 	github.com/codefly-dev/golor v0.1.2
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/fatih/color v1.16.0

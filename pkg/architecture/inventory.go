@@ -71,5 +71,10 @@ func LoadService(ctx context.Context, service *configurations.Service) (*basev0.
 	out.Agent = service.Agent.Proto()
 	w.Debug("loaded", wool.Field("endpoints", configurations.MakeEndpointSummary(init.Endpoints)))
 	out.Endpoints = init.Endpoints
+
+	for _, dep := range service.ServiceDependencies {
+		out.ServiceDependencies = append(out.ServiceDependencies, &basev0.ServiceReference{Name: dep.Name, Application: dep.Application})
+	}
+
 	return out, nil
 }
