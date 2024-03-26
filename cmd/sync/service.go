@@ -63,7 +63,7 @@ var ServiceCmd = &cobra.Command{
 
 func initSyncService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("syncService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.SyncMode, false)
+	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.SyncMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

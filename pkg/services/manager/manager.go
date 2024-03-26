@@ -44,7 +44,7 @@ type IManager interface {
 /*
 Manager is responsible is a wrapper around a service instance:
 - keeps around request Dependencies
-- keeps around Provider information
+- keeps around ConfigurationManager information
 */
 type Manager struct {
 	service *configurations.Service
@@ -62,7 +62,7 @@ type Manager struct {
 
 	dependencyEndpoints []*basev0.Endpoint
 	networkMappings     []*basev0.NetworkMapping
-	providerInfos       []*basev0.ProviderInformation
+	//providerInfos       []*basev0.ProviderInformation
 }
 
 func (manager *Manager) BuilderDoInit(ctx context.Context) (*OutputProperty, error) {

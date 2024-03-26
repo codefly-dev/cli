@@ -10,7 +10,6 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployment"
-	"github.com/codefly-dev/cli/pkg/services/network"
 	"github.com/codefly-dev/cli/pkg/services/services"
 
 	"github.com/codefly-dev/core/configurations"
@@ -72,7 +71,7 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load b instance")
 	}
 
-	w.Debug("loaded", wool.Field("endpoints", configurations.MakeEndpointSummary(resp.Endpoints)))
+	w.Debug("loaded", wool.Field("endpoints", configurations.MakeManyEndpointSummary(resp.Endpoints)))
 
 	b.endpoints = resp.Endpoints
 
@@ -103,9 +102,14 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get depednencies")
 	}
 
-	infos, err := b.world.SharedState.GetProviderInfos(ctx, b.instance.Service)
+	conf, err := b.world.ConfigurationManager.GetServiceConfiguration(ctx, b.instance.Service)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot get provider")
+		return nil, w.Wrapf(err, "cannot get ConfigurationManager information")
+	}
+
+	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsFor(ctx, b.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get configuration")
 	}
 
 	networkMappings, err := b.generateDNSNetworkMappings(ctx, b.endpoints)
@@ -114,9 +118,10 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	resp, err := b.instance.Builder.Init(ctx, &builderv0.InitRequest{
-		ProposedNetworkMappings: networkMappings,
-		ProviderInfos:           infos,
-		DependenciesEndpoints:   dependenciesEndpoints,
+		Configuration:              conf,
+		ProposedNetworkMappings:    networkMappings,
+		DependenciesConfigurations: dependenciesConfigurations,
+		DependenciesEndpoints:      dependenciesEndpoints,
 	})
 	if err != nil {
 		if grpcErr, ok := status.FromError(err); ok {
@@ -143,9 +148,9 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
-	err = b.world.SharedState.RecordSharedProviderInfos(ctx, b.instance.Service, resp.ServiceProviderInfos)
+	err = b.world.ConfigurationManager.Share(ctx, b.instance.Service, resp.Configuration)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot record shared provider infos")
+		return nil, w.Wrapf(err, "cannot record shared configuration configurations")
 	}
 
 	err = b.outputPropertyForInit.Set(ctx, &BuilderInitOutput{})
@@ -162,47 +167,49 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 }
 
 func (b *Builder) generateDNSNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
-	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(b.instance.Service))
-	w.Debug("endpoints", wool.NullableField("got", configurations.MakeEndpointSummary(endpoints)))
-	dnsManager, err := network.NewDNS(ctx, b.world.Project.Name)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create dns manager")
-	}
-	pm, err := network.NewServiceDNSManager(ctx, dnsManager)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create network manager")
-	}
-	// We gather public endpoints URL -- from provider info
-	info, err := b.world.Provider.GetProjectProviderInformation(ctx, "dns")
-	if err == nil {
-		w.Debug("provider informations", wool.Field("got", info.Data))
-		dns := map[string]string{}
-		for _, endpoint := range endpoints {
-			if endpoint.Visibility == configurations.VisibilityPublic {
-				e := configurations.EndpointFromProto(endpoint)
-				dns[e.Unique()] = info.Data[e.ServiceUnique()]
-			}
-		}
-		w.Debug("dns", wool.Field("got", dns))
-		pm.WithExternalDNS(info.Data)
-	}
-	for _, endpoint := range endpoints {
-		w.Debug("exposing", wool.Field("destination", configurations.EndpointDestination(endpoint)))
-		err = pm.Expose(endpoint)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot add grpc endpoint to network manager")
-		}
-	}
-	err = pm.Reserve(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot reserve ports")
-	}
-	networkMappings, err := pm.NetworkMapping(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create network mapping")
-	}
-	w.Focus("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
-	return networkMappings, nil
+	//w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(b.instance.Service))
+	//
+	//w.Debug("endpoints", wool.NullableField("got", configurations.MakeEndpointSummary(endpoints)))
+	//dnsManager, err := network.NewDNS(ctx, b.world.Project.Name)
+	//if err != nil {
+	//	return nil, w.Wrapf(err, "cannot create dns manager")
+	//}
+	//pm, err := network.NewServiceDNSManager(ctx, dnsManager)
+	//if err != nil {
+	//	return nil, w.Wrapf(err, "cannot create network manager")
+	//}
+	//// We gather public endpoints URL -- from configuration info
+	//info, err := b.world.ConfigurationManager.GetProjectProviderInformation(ctx, "dns")
+	//if err == nil {
+	//	w.Debug("configuration informations", wool.Field("got", info.Data))
+	//	dns := map[string]string{}
+	//	for _, endpoint := range endpoints {
+	//		if endpoint.Visibility == configurations.VisibilityPublic {
+	//			e := configurations.EndpointFromProto(endpoint)
+	//			dns[e.Unique()] = info.Data[e.ServiceUnique()]
+	//		}
+	//	}
+	//	w.Debug("dns", wool.Field("got", dns))
+	//	pm.WithExternalDNS(info.Data)
+	//}
+	//for _, endpoint := range endpoints {
+	//	w.Debug("exposing", wool.Field("destination", configurations.EndpointDestination(endpoint)))
+	//	err = pm.Expose(endpoint)
+	//	if err != nil {
+	//		return nil, w.Wrapf(err, "cannot add grpc endpoint to network manager")
+	//	}
+	//}
+	//err = pm.Reserve(ctx)
+	//if err != nil {
+	//	return nil, w.Wrapf(err, "cannot reserve ports")
+	//}
+	//networkMappings, err := pm.NetworkMapping(ctx)
+	//if err != nil {
+	//	return nil, w.Wrapf(err, "cannot create network mapping")
+	//}
+	//w.Focus("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
+	//return networkMappings, nil
+	return nil, nil
 }
 
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {

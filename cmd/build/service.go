@@ -67,7 +67,7 @@ var ServiceCmd = &cobra.Command{
 
 func initBuildService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool, ci bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("buildService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.BuildMode, ci)
+	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.BuildMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/providers"
 	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
@@ -37,7 +38,10 @@ type Flow struct {
 	policy   PlaybookPolicy
 
 	// How we keep track of state
-	sharedState *StateManager
+	SharedState *StateManager
+
+	// How we keep track of configurations
+	ConfigurationManager *providers.ConfigurationInformationManager
 
 	hub *Hub
 
@@ -47,10 +51,18 @@ type Flow struct {
 	initOnly    bool
 	standAlone  bool
 	excludeRoot bool
-	ci          bool
+	native      bool
 
 	// convenient
 	services map[string]*configurations.Service
+}
+
+func MapValues[K comparable, V any](m map[K]V) []V {
+	var values []V
+	for _, v := range m {
+		values = append(values, v)
+	}
+	return values
 }
 
 type World struct {
@@ -61,11 +73,12 @@ type World struct {
 	// DAG
 	Dependencies *architecture.ServiceDependencies
 
-	// Things to know
-	Provider *providers.Provider
-
-	// Things to share
+	// Keep track of things
 	SharedState *StateManager
+
+	// Network of things
+	NetworkManager       *network.RuntimeManager
+	ConfigurationManager *providers.ConfigurationInformationManager
 }
 
 // NewEmptyFlow will run a single agent
@@ -80,7 +93,7 @@ func NewEmptyFlow(ctx context.Context, mode Mode) (*Flow, error) {
 	}, nil
 }
 
-func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, env *configurations.Environment, mode Mode, ci bool) (*Flow, error) {
+func NewFlow(ctx context.Context, project *configurations.Project, service *configurations.Service, env *configurations.Environment, mode Mode) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
 
 	services := map[string]*configurations.Service{service.Unique(): service}
@@ -91,36 +104,43 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		return nil, w.Wrap(err)
 	}
 
-	provider, err := providers.New(ctx, project)
+	configurationManager, err := providers.NewConfigurationInformation(ctx, project)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	localReader, err := providers.NewConfigurationLocalReader(ctx, project)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	configurationManager.WithLoader(localReader)
+
+	stateManager, err := NewStateManager(ctx, configurationManager, dependencies)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
 
-	stateManager, err := NewStateManager(ctx, provider, dependencies)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
+	networkManager, err := network.NewManager(ctx)
 
 	world := &World{
-		Env:          env,
-		Mode:         mode,
-		Project:      project,
-		Provider:     provider,
-		SharedState:  stateManager,
-		Dependencies: dependencies,
+		Env:                  env,
+		Mode:                 mode,
+		Project:              project,
+		SharedState:          stateManager,
+		ConfigurationManager: configurationManager,
+		Dependencies:         dependencies,
+		NetworkManager:       networkManager,
 	}
 
 	flow := &Flow{
 		project: project,
 		origin:  service,
 
-		ci: ci,
-
 		services: services,
 
 		world: world,
 
-		sharedState: stateManager,
+		SharedState:          stateManager,
+		ConfigurationManager: configurationManager,
 
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
@@ -135,6 +155,23 @@ func (flow *Flow) Load(ctx context.Context) error {
 	if flow.standAlone {
 		w.Debug("running in stand-alone Mode")
 	}
+
+	// Load the configurations
+	err := flow.ConfigurationManager.Restrict(ctx, MapValues(flow.services))
+	if err != nil {
+		return w.Wrap(err)
+	}
+	err = flow.ConfigurationManager.Load(ctx, flow.world.Env)
+	if err != nil {
+		return w.Wrap(err)
+	}
+
+	allConfs, err := flow.ConfigurationManager.GetConfigurations(ctx)
+	if err != nil {
+		return w.Wrap(err)
+	}
+	w.Focus("got configurations", wool.Field("all", configurations.MakeManyConfigurationSummary(allConfs)))
+
 	var playbook *Playbook
 
 	switch flow.world.Mode {
@@ -149,8 +186,15 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
+		// If init only, we stopAfter at the run
+		if flow.initOnly {
+			w.Debug("init only")
+			playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+				return action.Type == RuntimeInit && action.Service == flow.origin.Unique()
+			})
+		}
 	case BuildMode:
-		policy, err := NewBuildPolicy(ctx, flow.hub, flow.world, flow.ci)
+		policy, err := NewBuildPolicy(ctx, flow.hub, flow.world)
 		if err != nil {
 			return w.Wrapf(err, "cannot create policy")
 		}
@@ -160,7 +204,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		playbook.WithStopping(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
 			return action.Service == flow.origin.Unique() && action.Type == BuilderBuild
 		})
 	case SyncMode:
@@ -174,7 +218,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		playbook.WithStopping(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
 			return action.Service == flow.origin.Unique() && action.Type == BuilderSync
 		})
 	case DeployMode:
@@ -188,7 +232,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		playbook.WithStopping(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
 			return action.Service == flow.origin.Unique() && action.Type == BuilderDeploy
 		})
 
@@ -339,22 +383,26 @@ func (flow *Flow) GetAddressForEndpoint(ctx context.Context, application string,
 	if flow == nil {
 		return "", fmt.Errorf("cannot get addresses from nil flow")
 	}
-	if flow.SharedState() == nil {
+	if flow.SharedState == nil {
 		return "", fmt.Errorf("cannot get addresses from nil state")
 	}
 	// We get that from the stateManager
 	unique := configurations.ServiceUnique(application, service)
-
-	mappings, ok := flow.SharedState().NetworkMappings(unique)
-	if !ok {
-		return "", fmt.Errorf("cannot find network mappings for %s", unique)
-	}
-	for _, np := range mappings {
-		if np.Endpoint.Name == endpoint {
-			return np.Address, nil
-		}
-	}
+	//
+	//mappings, ok := flow.SharedState().NetworkMappings(unique)
+	//if !ok {
+	//	return "", fmt.Errorf("cannot find network mappings for %s", unique)
+	//}
+	//for _, np := range mappings {
+	//	if np.Endpoint.Name == endpoint {
+	//		return np.Address, nil
+	//	}
+	//}
 	return "", fmt.Errorf("cannot find network mappings for %s", unique)
+}
+
+func (flow *Flow) ServiceFromUnique(unique string) *configurations.Service {
+	return flow.services[unique]
 }
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
@@ -414,6 +462,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		if err != nil {
 			return w.Wrap(err)
 		}
+		manager.Runner.WithNative(flow.native)
 		managers = append(managers, manager)
 	} else {
 		// We use a NoOP Manager
@@ -477,12 +526,16 @@ func (flow *Flow) WithStandAlone(alone bool) {
 	flow.standAlone = alone
 }
 
+func (flow *Flow) WithNative(native bool) {
+	flow.native = native
+}
+
 func (flow *Flow) WithExcludeRoot(excludeRoot bool) {
 	flow.excludeRoot = excludeRoot
 }
 
-func (flow *Flow) SharedState() *StateManager {
-	return flow.sharedState
+func (flow *Flow) WithInitOnly(only bool) {
+	flow.initOnly = only
 }
 
 func (flow *Flow) Executed() []Action {

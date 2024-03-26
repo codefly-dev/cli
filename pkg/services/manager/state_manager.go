@@ -12,70 +12,88 @@ import (
 
 // StateManager holds the data that needs to be shared between services
 type StateManager struct {
-	provider     *providers.Provider
-	dependencies *architecture.ServiceDependencies
+	services             map[string]*configurations.Service
+	configurationManager *providers.ConfigurationInformationManager
+	dependencies         *architecture.ServiceDependencies
 
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
 }
 
-func NewStateManager(ctx context.Context, provider *providers.Provider, dependencies *architecture.ServiceDependencies) (*StateManager, error) {
+func NewStateManager(_ context.Context, configurationManager *providers.ConfigurationInformationManager, dependencies *architecture.ServiceDependencies) (*StateManager, error) {
 	return &StateManager{
-		provider:        provider,
-		dependencies:    dependencies,
-		endpoints:       make(map[string][]*basev0.Endpoint),
-		networkMappings: make(map[string][]*basev0.NetworkMapping),
+		services:             make(map[string]*configurations.Service),
+		dependencies:         dependencies,
+		configurationManager: configurationManager,
+		endpoints:            make(map[string][]*basev0.Endpoint),
+		networkMappings:      make(map[string][]*basev0.NetworkMapping),
 	}, nil
 }
 
-// GetProviderInfos returns the provider information for the given service
-func (s *StateManager) GetProviderInfos(ctx context.Context, service *configurations.Service) ([]*basev0.ProviderInformation, error) {
-	w := wool.Get(ctx).In("StateManager.GetProviderInfos", wool.ThisField(service))
-	infos, err := s.provider.GetProviderInformations(ctx, service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get Provider information")
+// GetDependentConfigurationsFor returns the configurations for the given service
+// It includes configuration from its dependencies
+func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, service *configurations.Service) ([]*basev0.Configuration, error) {
+	w := wool.Get(ctx).In("StateManager.GetConfigurations", wool.ThisField(service))
+	var confs []*basev0.Configuration
+	// project configurations
+	for _, dep := range service.ProjectConfigurationDependencies {
+		conf, err := s.configurationManager.GetProjectConfiguration(ctx, dep)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot get project configuration")
+		}
+		confs = append(confs, conf)
+
 	}
 	// We get the shared information from the direct requirements
 	requires, err := s.dependencies.DirectRequires(ctx, service.Unique())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get direct requires")
 	}
-	var uniques []string
+	var requiredServices []*configurations.Service
 	for _, req := range requires {
-		uniques = append(uniques, req.Unique)
+		_, err := configurations.ParseServiceUnique(req.Unique)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot parse service unique")
+		}
+		if svc, ok := s.services[req.Unique]; !ok {
+			return nil, w.Wrapf(nil, "cannot find service")
+		} else {
+			requiredServices = append(requiredServices, svc)
+		}
 	}
-	shared, err := s.provider.GetSharedInformation(ctx, uniques...)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get shared information")
+	// Load the exposed configurations
+	for _, svc := range requiredServices {
+		shared, err := s.configurationManager.GetSharedServiceConfiguration(ctx, svc)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot get shared information")
+		}
+		confs = append(confs, shared...)
 	}
-	infos = append(infos, shared...)
-	w.Debug("got provider infos", wool.Field("got", configurations.MakeProviderInformationSummary(infos)))
-	return infos, nil
+
+	w.Debug("got configuration infos", wool.Field("got", configurations.MakeManyConfigurationSummary(confs)))
+	return confs, nil
 }
 
 // RecordEndpoints records the endpoints for the given service
 func (s *StateManager) RecordEndpoints(ctx context.Context, service *configurations.Service, endpoints []*basev0.Endpoint) error {
 	w := wool.Get(ctx).In("StateManager.RecordEndpoints", wool.ThisField(service))
-	w.Debug("record endpoints", wool.Field("endpoints", configurations.MakeEndpointSummary(endpoints)))
+	w.Debug("record endpoints", wool.Field("endpoints", configurations.MakeManyEndpointSummary(endpoints)))
 	s.endpoints[service.Unique()] = endpoints
 	return nil
 }
 
 // GetDependenciesEndpoints returns the endpoints for the dependencies of the given service
 func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *configurations.Service) ([]*basev0.Endpoint, error) {
+	if s == nil {
+		return nil, nil
+	}
 	w := wool.Get(ctx).In("StateManager.GetDependenciesEndpoints", wool.ThisField(service))
 	var endpoints []*basev0.Endpoint
 	for _, req := range service.ServiceDependencies {
 		endpoints = append(endpoints, s.endpoints[req.Unique()]...)
 	}
-	w.Debug("got dependencies endpoints", wool.Field("endpoints", configurations.MakeEndpointSummary(endpoints)))
+	w.Debug("got dependencies endpoints", wool.Field("endpoints", configurations.MakeManyEndpointSummary(endpoints)))
 	return endpoints, nil
-}
-
-func (s *StateManager) RecordSharedProviderInfos(ctx context.Context, service *configurations.Service, infos []*basev0.ProviderInformation) error {
-	w := wool.Get(ctx).In("StateManager.RecordSharedProviderInfos", wool.ThisField(service))
-	w.Debug("record shared provider infos", wool.Field("infos", configurations.MakeProviderInformationSummary(infos)))
-	return s.provider.Share(ctx, infos)
 }
 
 // GetNetworkMappings returns the network mappings for the given service
@@ -85,14 +103,14 @@ func (s *StateManager) GetNetworkMappings(ctx context.Context, service *configur
 	for _, req := range service.ServiceDependencies {
 		mappings = append(mappings, s.networkMappings[req.Unique()]...)
 	}
-	w.Debug("got network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(mappings)))
+	w.Debug("got network mappings", wool.Field("mappings", configurations.MakeManyNetworkMappingSummary(mappings)))
 	return mappings, nil
 }
 
 // RecordNetworkMappings records the network mappings for the given service
 func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *configurations.Service, mappings []*basev0.NetworkMapping) error {
 	w := wool.Get(ctx).In("StateManager.RecordNetworkMappings", wool.ThisField(service))
-	w.Debug("record network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(mappings)))
+	w.Debug("record network mappings", wool.Field("mappings", configurations.MakeManyNetworkMappingSummary(mappings)))
 	s.networkMappings[service.Unique()] = mappings
 	return nil
 }
@@ -100,13 +118,4 @@ func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *confi
 func (s *StateManager) NetworkMappings(unique string) ([]*basev0.NetworkMapping, bool) {
 	mappings, ok := s.networkMappings[unique]
 	return mappings, ok
-}
-
-func (s *StateManager) GetSharedProviderInformation(ctx context.Context, unique string) ([]*basev0.ProviderInformation, error) {
-	w := wool.Get(ctx).In("StateManager.GetSharedProviderInformation")
-	infos, err := s.provider.GetSharedInformation(ctx, unique)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get shared provider information")
-	}
-	return infos, nil
 }

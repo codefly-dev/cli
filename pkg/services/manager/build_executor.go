@@ -13,7 +13,6 @@ type BuildExecutor struct {
 	builders []*BuildExecutorHelper
 
 	repo builder.Repository
-	ci   bool
 }
 
 func (b *BuildExecutor) GetExecutor(ctx context.Context, action Action) (OutputProcessorFunc, error) {
@@ -57,7 +56,7 @@ func (h *BuildExecutorHelper) Build(ctx context.Context) (*OutputProperty, error
 	return h.manager.BuilderDoBuild(ctx)
 }
 
-func NewBuildExecutor(ctx context.Context, hub *Hub, repo builder.Repository, ci bool) (*BuildExecutor, error) {
+func NewBuildExecutor(ctx context.Context, hub *Hub, repo builder.Repository) (*BuildExecutor, error) {
 	w := wool.Get(ctx).In("NewBuildExecutor")
 	if hub == nil {
 		return nil, w.NewError("hub cannot be nil")
@@ -66,5 +65,5 @@ func NewBuildExecutor(ctx context.Context, hub *Hub, repo builder.Repository, ci
 	for _, manager := range hub.managers {
 		builders = append(builders, &BuildExecutorHelper{manager: manager})
 	}
-	return &BuildExecutor{hub: hub, builders: builders, repo: repo, ci: ci}, nil
+	return &BuildExecutor{hub: hub, builders: builders, repo: repo}, nil
 }

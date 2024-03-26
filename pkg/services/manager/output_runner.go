@@ -70,11 +70,11 @@ func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) e
 
 // RunnerInitOutput looks at:
 // - network mappings
-// - Provider infos
+// - ConfigurationManager infos
 type RunnerInitOutput struct {
 	networkMappings []*basev0.NetworkMapping
-	providerInfos   []*basev0.ProviderInformation
-	failing         bool
+	//providerInfos   []*basev0.ProviderInformation
+	failing bool
 }
 
 type RunnerInitManager struct {
@@ -104,19 +104,19 @@ func (b *RunnerInitManager) Set(ctx context.Context, output *RunnerInitOutput) e
 		b.processed = Pause()
 		return nil
 	}
+	//
+	//providerInfoHash, err := configurations.ProviderInformationHash(output.providerInfos...)
+	//if err != nil {
+	//	return w.Wrapf(err, "cannot compute ConfigurationManager info hash")
+	//}
 
-	providerInfoHash, err := configurations.ProviderInformationHash(output.providerInfos...)
-	if err != nil {
-		return w.Wrapf(err, "cannot compute Provider info hash")
-	}
-
-	networkMappingHash, err := configurations.NetworkMappingHash(output.networkMappings...)
-	if err != nil {
-		return w.Wrapf(err, "cannot compute network mapping hash")
-	}
+	//networkMappingHash, err := configurations.NetworkMappingHash(output.networkMappings...)
+	//if err != nil {
+	//	return w.Wrapf(err, "cannot compute network mapping hash")
+	//}
 	defer func() {
-		b.providerInfoHash = providerInfoHash
-		b.networkMappingHash = networkMappingHash
+		//b.providerInfoHash = providerInfoHash
+		//b.networkMappingHash = networkMappingHash
 	}()
 
 	if b.processed == nil {
@@ -126,10 +126,10 @@ func (b *RunnerInitManager) Set(ctx context.Context, output *RunnerInitOutput) e
 	}
 
 	// If the hash is different, we need to propagate
-	if providerInfoHash != b.providerInfoHash || networkMappingHash != b.networkMappingHash {
-		b.processed = RequirePropagation()
-		return nil
-	}
+	//if providerInfoHash != b.providerInfoHash || networkMappingHash != b.networkMappingHash {
+	//	b.processed = RequirePropagation()
+	//	return nil
+	//}
 	b.processed = IndependentUpdate()
 	return nil
 }

@@ -25,7 +25,7 @@ func clearCommand() {
 	if err != nil {
 		log.Fatalf("can't clear all codefly processes %s\n", err)
 	}
-	docker, err := runners.NewDocker(ctx)
+	docker, err := runners.NewDocker(ctx, nil)
 	if err != nil {
 		log.Fatalf("can't create docker runner %s\n", err)
 	}

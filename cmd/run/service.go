@@ -60,7 +60,9 @@ var ServiceCmd = &cobra.Command{
 		for {
 			select {
 			case err := <-errs:
-				cli.Error("Got service run error: %v\n", errors.Unwrap(err))
+				if err != nil {
+					cli.Error("Got service run error: %v\n", errors.Unwrap(err))
+				}
 				errs <- nil
 				break loop
 			case <-ctx.Done():
@@ -84,12 +86,14 @@ func initRunService(ctx context.Context, project *configurations.Project, servic
 	// Catch panic
 	defer w.Catch()
 
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.RunMode, ci)
+	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.RunMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	flow.WithInitOnly(initOnly)
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
+	flow.WithNative(native)
 	err = flow.InitManagers(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -130,6 +134,7 @@ func stopService(ctx context.Context, flow *manager.Flow) error {
 func init() {
 	ServiceCmd.Flags().BoolVar(&withServer, "server", false, "Begin service server")
 	ServiceCmd.Flags().BoolVar(&ci, "ci", false, "CI Mode")
+	ServiceCmd.Flags().BoolVar(&native, "native", false, "Native mode")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")

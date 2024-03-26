@@ -48,6 +48,8 @@ type RuntimeInstance struct {
 	*configurations.Service
 	services.Runtime
 
+	Native bool
+
 	IsHotReloading bool
 }
 
@@ -104,8 +106,13 @@ func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environme
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot convert runtime spec")
 	}
+	scope := basev0.RuntimeScope_Container
+	if instance.Native {
+		scope = basev0.RuntimeScope_Native
+	}
 	init := &runtimev0.LoadRequest{
 		Debug: wool.IsDebug(),
+		Scope: scope,
 		Identity: &basev0.ServiceIdentity{
 			Name:        instance.Service.Name,
 			Application: instance.Service.Application,

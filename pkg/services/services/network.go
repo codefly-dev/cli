@@ -12,7 +12,7 @@ import (
 func NetworkMappingForRestRouteGroup(ctx context.Context, group *configurations.RestRouteGroup, mappings []*basev0.NetworkMapping) (*basev0.NetworkMapping, error) {
 	w := wool.Get(ctx).In("services.NetworkMappingForRoute")
 	for _, m := range mappings {
-		if rest := m.Endpoint.Api.GetRest(); rest != nil {
+		if rest := configurations.IsRest(ctx, m.Endpoint); rest != nil {
 			if m.Endpoint.Application == group.Application || m.Endpoint.Service == group.Service {
 				return m, nil
 			}

@@ -23,7 +23,7 @@ func TestPlaybookRunNoDependencies(t *testing.T) {
 	playbook.WithPolicy(data.policy)
 
 	// StopIfNeeded after run
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart
 	})
 
@@ -60,7 +60,7 @@ func TestPlaybookRunNoDependenciesWithSignaller(t *testing.T) {
 
 	// Run
 	go func() {
-		// We don't stop
+		// We don't stopAfter
 		_ = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
@@ -90,7 +90,7 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 	playbook.WithPolicy(data.policy)
 
 	// StopIfNeeded after run
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == start
 	})
 
@@ -115,7 +115,7 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 		playbook, err := manager.NewPlaybook(ctx, data.world)
 		playbook.WithPolicy(data.policy)
 
-		playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+		playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 			return action.Type == manager.RuntimeLoad && action.Service == start
 		})
 
@@ -129,7 +129,7 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 		playbook, err := manager.NewPlaybook(ctx, data.world)
 		playbook.WithPolicy(data.policy)
 
-		playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+		playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 			return action.Type == manager.RuntimeInit && action.Service == start
 		})
 
@@ -143,7 +143,7 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 		playbook, err := manager.NewPlaybook(ctx, data.world)
 		playbook.WithPolicy(data.policy)
 
-		playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+		playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 			return action.Type == manager.RuntimeStart && action.Service == start
 		})
 
@@ -176,7 +176,7 @@ func TestPlaybookRunNoDependenciesWithRestart(t *testing.T) {
 	// Run
 	stopped := make(chan error)
 	go func() {
-		// We don't stop YET
+		// We don't stopAfter YET
 		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
@@ -193,7 +193,7 @@ signalled:
 	assert.Equal(t, expected, playbook.Executed())
 
 	// Now we will send a new action
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart
 	})
 
@@ -230,7 +230,7 @@ func TestPlaybookRunOneDependencyWithRestartNoPropagation(t *testing.T) {
 	// Run
 	stopped := make(chan error)
 	go func() {
-		// We don't stop YET
+		// We don't stopAfter YET
 		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
@@ -248,7 +248,7 @@ signalled:
 	assert.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == org
 	})
 
@@ -290,7 +290,7 @@ func TestPlaybookRunOneDependencyWithRestartWithPropagation(t *testing.T) {
 	// Run
 	stopped := make(chan error)
 	go func() {
-		// We don't stop YET
+		// We don't stopAfter YET
 		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
@@ -307,7 +307,7 @@ signalled:
 	assert.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == start
 	})
 
@@ -346,7 +346,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagation(t *testing.T) {
 	// Run
 	stopped := make(chan error)
 	go func() {
-		// We don't stop YET
+		// We don't stopAfter YET
 		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
@@ -363,7 +363,7 @@ signalled:
 	assert.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == start
 	})
 
@@ -410,7 +410,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddle(t *testing
 	// Run
 	stopped := make(chan error)
 	go func() {
-		// We don't stop YET
+		// We don't stopAfter YET
 		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
@@ -427,7 +427,7 @@ signalled:
 	assert.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == accounts // We don't propagate all the way
 	})
 
@@ -490,7 +490,7 @@ func TestErrorOnLoadNoDependencies(t *testing.T) {
 	// Run
 	stopped := make(chan error)
 	go func() {
-		// We don't stop YET
+		// We don't stopAfter YET
 		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
@@ -507,7 +507,7 @@ signalled:
 	assert.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == start
 	})
 
@@ -546,7 +546,7 @@ func TestErrorOnLoadOneDependency(t *testing.T) {
 	// Run
 	stopped := make(chan error)
 	go func() {
-		// We don't stop YET
+		// We don't stopAfter YET
 		stopped <- playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	}()
 
@@ -565,7 +565,7 @@ signalled:
 	assert.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
-	playbook.WithStopping(func(ctx context.Context, action manager.Action) bool {
+	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == start
 	})
 

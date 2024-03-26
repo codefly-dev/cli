@@ -36,7 +36,7 @@ type Playbook struct {
 	ignorer IgnoreFunc
 
 	// Convenient
-	stopper
+	_stopAfter StopAfterFunc
 
 	// Consistency
 	lock sync.RWMutex
@@ -44,12 +44,12 @@ type Playbook struct {
 	stopLock sync.RWMutex
 }
 
-type stopper func(ctx context.Context, action Action) bool
+type StopAfterFunc func(ctx context.Context, action Action) bool
 
-func (playbook *Playbook) WithStopping(policy stopper) *Playbook {
+func (playbook *Playbook) WithStoppingAfter(policy StopAfterFunc) *Playbook {
 	playbook.stopLock.Lock()
 	defer playbook.stopLock.Unlock()
-	playbook.stopper = policy
+	playbook._stopAfter = policy
 	return playbook
 }
 
@@ -116,13 +116,13 @@ func (playbook *Playbook) Executed() []Action {
 	return out
 }
 
-func (playbook *Playbook) stop(ctx context.Context, action Action) bool {
+func (playbook *Playbook) stopAfter(ctx context.Context, action Action) bool {
 	playbook.stopLock.RLock()
 	defer playbook.stopLock.RUnlock()
-	if playbook.stopper == nil {
+	if playbook._stopAfter == nil {
 		return false
 	}
-	stop := playbook.stopper(ctx, action)
+	stop := playbook._stopAfter(ctx, action)
 	return stop
 
 }
@@ -181,7 +181,6 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 					// Record/Signal pause
 					playbook.record(*p)
 					playbook.signal(ctx, *p)
-
 					continue
 				}
 
@@ -191,7 +190,7 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 
 				playbook.signal(ctx, action)
 
-				if playbook.stop(ctx, action) {
+				if playbook.stopAfter(ctx, action) {
 					w.Debug("stopping", wool.Field("action", action))
 					return nil
 				}

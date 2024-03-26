@@ -64,18 +64,22 @@ func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.
 	}, nil
 }
 
-func (s *Server) GetServiceProviderInformation(ctx context.Context, req *cli.GetServiceProviderInfoRequest) (*cli.GetServiceProviderInfoResponse, error) {
+func (s *Server) GetSharedConfiguration(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationResponse, error) {
 	flow := manager.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
 	unique := configurations.ServiceUnique(req.Application, req.Service)
-	infos, err := flow.SharedState().GetSharedProviderInformation(ctx, unique)
+	svc := flow.ServiceFromUnique(unique)
+	if svc == nil {
+		return nil, status.Error(codes.Internal, "service not found")
+	}
+	confs, err := flow.ConfigurationManager.GetSharedServiceConfiguration(ctx, svc)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &cli.GetServiceProviderInfoResponse{
-		ProviderInfos: infos,
+	return &cli.GetConfigurationResponse{
+		Configurations: confs,
 	}, nil
 }
 

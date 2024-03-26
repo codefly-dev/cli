@@ -17,7 +17,7 @@ const (
 	RuntimeLoad  ActionType = "runtime-load"
 	RuntimeInit  ActionType = "runtime-init"
 	RuntimeStart ActionType = "runtime-run"
-	RuntimeStop  ActionType = "runtime-stop"
+	RuntimeStop  ActionType = "runtime-stopAfter"
 
 	BuilderBegin  ActionType = "builder-begin"
 	BuilderLoad   ActionType = "builder-load"
@@ -27,7 +27,7 @@ const (
 	BuilderDeploy ActionType = "builder-deploy"
 )
 
-// Implement some kind of sharedState machine
+// Implement some kind of SharedState machine
 
 type Action struct {
 	Type    ActionType

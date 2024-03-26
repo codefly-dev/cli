@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/codefly-dev/core/generators"
+	generators "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/version"
 
 	"github.com/codefly-dev/core/builders"
@@ -59,22 +59,22 @@ func (g *Proto) Generate(ctx context.Context) error {
 		return w.Wrapf(err, "cannot get companion image")
 	}
 	volume := fmt.Sprintf("%s:/workspace", g.Dir)
-	runner, err := runners.NewRunner(ctx, "docker", "run", "--rm", "-v", volume, "-w", "/workspace/proto", image, "buf", "mod", "update")
+	runner, err := runners.NewProcess(ctx, "docker", "run", "--rm", "-v", volume, "-w", "/workspace/proto", image, "buf", "mod", "update")
 	if err != nil {
 		return w.Wrapf(err, "can't create runner")
 	}
 	runner.WithDir(g.Dir)
-	err = runner.Run()
+	err = runner.Run(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot generate code from buf")
 	}
-	runner, err = runners.NewRunner(ctx, "docker", "run", "--rm", "-v", volume, "-w", "/workspace/proto", image, "buf", "generate")
+	runner, err = runners.NewProcess(ctx, "docker", "run", "--rm", "-v", volume, "-w", "/workspace/proto", image, "buf", "generate")
 	if err != nil {
 		return w.Wrapf(err, "can't create runner")
 	}
 	runner.WithDir(g.Dir)
 	w.Debug("Generating code from buf", wool.DirField(g.Dir))
-	err = runner.Run()
+	err = runner.Run(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot generate code from buf")
 	}

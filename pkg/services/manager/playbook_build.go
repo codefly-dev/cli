@@ -17,23 +17,21 @@ type BuildPolicy struct {
 	dependencies *architecture.ServiceDependencies
 }
 
-func NewBuildPolicy(ctx context.Context, hub *Hub, world *World, ci bool) (*BuildPolicy, error) {
+func NewBuildPolicy(ctx context.Context, hub *Hub, world *World) (*BuildPolicy, error) {
 	//w := wool.Get(ctx).In("NewBuildPolicy")
 	// Create a Build Executor
 	var repo builder.Repository
 	//var org platform.OrganizationRepository
 	var err error
-	if ci {
-		//repo, err = builder.NewService(ctx)
-		//if err != nil {
-		//	w.Warn("cannot create repository: bootstrap mode", wool.ErrField(err))
-		//}
-		//org, err = builder.NewOrganizationService(ctx)
-		//if err != nil {
-		//	w.Warn("cannot create organization repository: bootstrap mode", wool.ErrField(err))
-		//}
-	}
-	executorManager, err := NewBuildExecutor(ctx, hub, repo, ci)
+	//repo, err = builder.NewService(ctx)
+	//if err != nil {
+	//	w.Warn("cannot create repository: bootstrap mode", wool.ErrField(err))
+	//}
+	//org, err = builder.NewOrganizationService(ctx)
+	//if err != nil {
+	//	w.Warn("cannot create organization repository: bootstrap mode", wool.ErrField(err))
+	//}
+	executorManager, err := NewBuildExecutor(ctx, hub, repo)
 	if err != nil {
 		return nil, wool.Get(ctx).Wrapf(err, "cannot create BuildExecutor")
 	}

@@ -4,10 +4,10 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services/services"
+	generators "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/configurations/languages"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
-	coregenerators "github.com/codefly-dev/core/generators"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -17,7 +17,7 @@ func GRPC(ctx context.Context, service *configurations.Service, language languag
 	if err != nil {
 		return w.Wrapf(err, "cannot get grpc endpoints")
 	}
-	err = coregenerators.GenerateGRPC(ctx, language, destination, service.Name, endpoints...)
+	err = generators.GenerateGRPC(ctx, language, destination, service.Name, endpoints...)
 	if err != nil {
 		return w.Wrapf(err, "cannot generate grpc")
 	}
@@ -42,10 +42,10 @@ func getGRPCEndpoints(ctx context.Context, service *configurations.Service) ([]*
 	// filter-out gRPC
 	var endpoints []*basev0.Endpoint
 	for _, endpoint := range res.Endpoints {
-		if grpc := configurations.IsGRPC(ctx, endpoint.Api); grpc != nil {
+		if grpc := configurations.IsGRPC(ctx, endpoint); grpc != nil {
 			endpoints = append(endpoints, endpoint)
 		}
 	}
-	w.Debug("got endpoints", wool.Field("endpoints", configurations.MakeEndpointSummary(endpoints)))
+	w.Debug("got endpoints", wool.Field("endpoints", configurations.MakeManyEndpointSummary(endpoints)))
 	return endpoints, nil
 }

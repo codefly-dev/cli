@@ -4,10 +4,10 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services/services"
+	generators "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/configurations/languages"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
-	coregenerators "github.com/codefly-dev/core/generators"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -17,7 +17,7 @@ func OpenAPI(ctx context.Context, project *configurations.Project, service *conf
 	if err != nil {
 		return w.Wrapf(err, "cannot get OpenAPI endpoints")
 	}
-	err = coregenerators.GenerateOpenAPI(ctx, language, destination, service.Name, endpoints...)
+	err = generators.GenerateOpenAPI(ctx, language, destination, service.Name, endpoints...)
 	if err != nil {
 		return w.Wrapf(err, "cannot generate OpenAPI")
 	}
@@ -42,10 +42,10 @@ func getOpenAPIEndpoints(ctx context.Context, service *configurations.Service) (
 	// filter-out OpenAPI
 	var endpoints []*basev0.Endpoint
 	for _, endpoint := range res.Endpoints {
-		if rest := configurations.IsRest(ctx, endpoint.Api); rest != nil {
+		if rest := configurations.IsRest(ctx, endpoint); rest != nil {
 			endpoints = append(endpoints, endpoint)
 		}
 	}
-	w.Debug("got endpoints", wool.ProjectField(service.Project), wool.Field("endpoints", configurations.MakeEndpointSummary(endpoints)))
+	w.Debug("got endpoints", wool.ProjectField(service.Project), wool.Field("endpoints", configurations.MakeManyEndpointSummary(endpoints)))
 	return endpoints, nil
 }
