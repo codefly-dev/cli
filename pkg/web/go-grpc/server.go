@@ -70,11 +70,7 @@ func (s *Server) GetSharedConfiguration(ctx context.Context, req *cli.GetConfigu
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
 	unique := configurations.ServiceUnique(req.Application, req.Service)
-	svc := flow.ServiceFromUnique(unique)
-	if svc == nil {
-		return nil, status.Error(codes.Internal, "service not found")
-	}
-	confs, err := flow.ConfigurationManager.GetSharedServiceConfiguration(ctx, svc)
+	confs, err := flow.ConfigurationManager.GetSharedServiceConfiguration(ctx, unique)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}

@@ -107,7 +107,7 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get ConfigurationManager information")
 	}
 
-	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsFor(ctx, b.instance.Service)
+	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsOf(ctx, b.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
@@ -148,7 +148,7 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
-	err = b.world.ConfigurationManager.Share(ctx, b.instance.Service, resp.Configuration)
+	err = b.world.ConfigurationManager.Expose(ctx, b.instance.Service, resp.Configuration)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration configurations")
 	}

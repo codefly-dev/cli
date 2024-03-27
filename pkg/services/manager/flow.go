@@ -170,7 +170,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 	if err != nil {
 		return w.Wrap(err)
 	}
-	w.Focus("got configurations", wool.Field("all", configurations.MakeManyConfigurationSummary(allConfs)))
+	w.Debug("got configurations", wool.Field("all", configurations.MakeManyConfigurationSummary(allConfs)))
 
 	var playbook *Playbook
 

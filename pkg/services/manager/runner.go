@@ -128,27 +128,32 @@ func ContextCancelled(err error) bool {
 
 func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Runner.Init", wool.ThisField(runner.instance.Service))
-	w.Debug("init")
 
 	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot run init")
 	}
-	w.Debug("configuration", wool.Field("infos", configurations.MakeManyEndpointSummary(dependenciesEndpoints)))
 
 	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(ctx, runner.instance.Service)
-
-	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(ctx, runner.instance.Service)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot get configuration info")
+		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
-	// Add service mappings
+	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsOf(ctx, runner.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
+	}
+
 	networkMappings, err := runner.world.NetworkManager.GenerateNetworkMappings(ctx, runner.instance.Service, runner.endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
-	w.Focus("generated mappings", wool.Field("mappings", configurations.MakeManyNetworkMappingSummary(networkMappings)))
+
+	w.Focus("configuration",
+		wool.Field("network mappings", configurations.MakeManyNetworkMappingSummary(networkMappings)),
+		wool.Field("dependencies endpoints", configurations.MakeManyEndpointSummary(dependenciesEndpoints)),
+		wool.Field("service configuration", configurations.MakeConfigurationSummary(conf)),
+		wool.Field("dependencies configurations", configurations.MakeManyConfigurationSummary(dependenciesConfigurations)))
 
 	resp, err := runner.instance.Runtime.Init(ctx, &runtimev0.InitRequest{
 		Configuration:              conf,
@@ -169,16 +174,15 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return runner.outputPropertyForInit.Process(ctx)
 
 	}
-	if runner.world.SharedState != nil {
-		err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, resp.NetworkMappings)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot record network mappings")
-		}
 
-		err = runner.world.ConfigurationManager.Share(ctx, runner.instance.Service, resp.Configurations...)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot record shared configuration infos")
-		}
+	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, resp.NetworkMappings)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record network mappings")
+	}
+
+	err = runner.world.ConfigurationManager.Expose(ctx, runner.instance.Service, resp.Configurations...)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record shared configuration infos")
 	}
 
 	w.Debug("init", wool.Field("configuration info", configurations.MakeManyConfigurationSummary(resp.Configurations)))

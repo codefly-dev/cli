@@ -12,7 +12,6 @@ import (
 
 // StateManager holds the data that needs to be shared between services
 type StateManager struct {
-	services             map[string]*configurations.Service
 	configurationManager *providers.ConfigurationInformationManager
 	dependencies         *architecture.ServiceDependencies
 
@@ -22,7 +21,6 @@ type StateManager struct {
 
 func NewStateManager(_ context.Context, configurationManager *providers.ConfigurationInformationManager, dependencies *architecture.ServiceDependencies) (*StateManager, error) {
 	return &StateManager{
-		services:             make(map[string]*configurations.Service),
 		dependencies:         dependencies,
 		configurationManager: configurationManager,
 		endpoints:            make(map[string][]*basev0.Endpoint),
@@ -30,47 +28,45 @@ func NewStateManager(_ context.Context, configurationManager *providers.Configur
 	}, nil
 }
 
-// GetDependentConfigurationsFor returns the configurations for the given service
+// GetDependentConfigurationsOf returns the configurations for the given service
 // It includes configuration from its dependencies
-func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, service *configurations.Service) ([]*basev0.Configuration, error) {
+func (s *StateManager) GetDependentConfigurationsOf(ctx context.Context, service *configurations.Service) ([]*basev0.Configuration, error) {
 	w := wool.Get(ctx).In("StateManager.GetConfigurations", wool.ThisField(service))
 	var confs []*basev0.Configuration
 	// project configurations
+	var projectConfigurations []*basev0.Configuration
 	for _, dep := range service.ProjectConfigurationDependencies {
 		conf, err := s.configurationManager.GetProjectConfiguration(ctx, dep)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot get project configuration")
 		}
-		confs = append(confs, conf)
-
+		projectConfigurations = append(projectConfigurations, conf)
 	}
+	confs = append(confs, projectConfigurations...)
+
 	// We get the shared information from the direct requirements
 	requires, err := s.dependencies.DirectRequires(ctx, service.Unique())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get direct requires")
 	}
-	var requiredServices []*configurations.Service
+	var serviceConfigurations []*basev0.Configuration
+	var shared []*basev0.Configuration
 	for _, req := range requires {
-		_, err := configurations.ParseServiceUnique(req.Unique)
+		_, err = configurations.ParseServiceUnique(req.Unique)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot parse service unique")
 		}
-		if svc, ok := s.services[req.Unique]; !ok {
-			return nil, w.Wrapf(nil, "cannot find service")
-		} else {
-			requiredServices = append(requiredServices, svc)
-		}
-	}
-	// Load the exposed configurations
-	for _, svc := range requiredServices {
-		shared, err := s.configurationManager.GetSharedServiceConfiguration(ctx, svc)
+		shared, err = s.configurationManager.GetSharedServiceConfiguration(ctx, req.Unique)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot get shared information")
 		}
-		confs = append(confs, shared...)
-	}
+		serviceConfigurations = append(serviceConfigurations, shared...)
 
-	w.Debug("got configuration infos", wool.Field("got", configurations.MakeManyConfigurationSummary(confs)))
+	}
+	confs = append(confs, serviceConfigurations...)
+	w.Focus("configurations",
+		wool.Field("configurations", configurations.MakeManyConfigurationSummary(projectConfigurations)),
+		wool.Field("services", configurations.MakeManyConfigurationSummary(serviceConfigurations)))
 	return confs, nil
 }
 
