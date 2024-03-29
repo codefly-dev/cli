@@ -93,6 +93,16 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
+func (b *Builder) GenerateBuilderNetworkMappings(ctx context.Context, service *configurations.Service, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
+	// w := wool.Get(ctx).In("network.Runtime.GenerateNetworkMappings")
+	var out []*basev0.NetworkMapping
+	//for _, endpoint := range endpoints {
+	//
+	//	out = append(out, nm)
+	//}
+	return out, nil
+}
+
 func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 	w.Debug("Init")
@@ -112,9 +122,9 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
 
-	networkMappings, err := b.generateDNSNetworkMappings(ctx, b.endpoints)
+	networkMappings, err := b.GenerateBuilderNetworkMappings(ctx, b.instance.Service, b.endpoints)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot generate network mappings")
+		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
 
 	resp, err := b.instance.Builder.Init(ctx, &builderv0.InitRequest{
@@ -148,7 +158,7 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
-	err = b.world.ConfigurationManager.Expose(ctx, b.instance.Service, resp.Configuration)
+	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Service, resp.Configuration)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration configurations")
 	}
@@ -164,52 +174,6 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	return outputProperty, nil
-}
-
-func (b *Builder) generateDNSNetworkMappings(ctx context.Context, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
-	//w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(b.instance.Service))
-	//
-	//w.Debug("endpoints", wool.NullableField("got", configurations.MakeEndpointSummary(endpoints)))
-	//dnsManager, err := network.NewDNS(ctx, b.world.Project.Name)
-	//if err != nil {
-	//	return nil, w.Wrapf(err, "cannot create dns manager")
-	//}
-	//pm, err := network.NewServiceDNSManager(ctx, dnsManager)
-	//if err != nil {
-	//	return nil, w.Wrapf(err, "cannot create network manager")
-	//}
-	//// We gather public endpoints URL -- from configuration info
-	//info, err := b.world.ConfigurationManager.GetProjectProviderInformation(ctx, "dns")
-	//if err == nil {
-	//	w.Debug("configuration informations", wool.Field("got", info.Data))
-	//	dns := map[string]string{}
-	//	for _, endpoint := range endpoints {
-	//		if endpoint.Visibility == configurations.VisibilityPublic {
-	//			e := configurations.EndpointFromProto(endpoint)
-	//			dns[e.Unique()] = info.Data[e.ServiceUnique()]
-	//		}
-	//	}
-	//	w.Debug("dns", wool.Field("got", dns))
-	//	pm.WithExternalDNS(info.Data)
-	//}
-	//for _, endpoint := range endpoints {
-	//	w.Debug("exposing", wool.Field("destination", configurations.EndpointDestination(endpoint)))
-	//	err = pm.Expose(endpoint)
-	//	if err != nil {
-	//		return nil, w.Wrapf(err, "cannot add grpc endpoint to network manager")
-	//	}
-	//}
-	//err = pm.Reserve(ctx)
-	//if err != nil {
-	//	return nil, w.Wrapf(err, "cannot reserve ports")
-	//}
-	//networkMappings, err := pm.NetworkMapping(ctx)
-	//if err != nil {
-	//	return nil, w.Wrapf(err, "cannot create network mapping")
-	//}
-	//w.Focus("network mappings", wool.Field("mappings", configurations.MakeNetworkMappingSummary(networkMappings)))
-	//return networkMappings, nil
-	return nil, nil
 }
 
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
@@ -278,7 +242,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	networkMappings, err := b.world.SharedState.GetNetworkMappings(ctx, b.instance.Service)
+	otherNetworkMappings, err := b.world.SharedState.GetOtherNetworkMappings(ctx, b.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
@@ -298,10 +262,10 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	resp, err := b.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
-		Environment:     env,
-		BuildContext:    buildContext,
-		Deployment:      deploy,
-		NetworkMappings: networkMappings,
+		Environment:          env,
+		BuildContext:         buildContext,
+		Deployment:           deploy,
+		OtherNetworkMappings: otherNetworkMappings,
 	})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot deploy service instance")

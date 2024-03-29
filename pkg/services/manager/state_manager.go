@@ -12,14 +12,14 @@ import (
 
 // StateManager holds the data that needs to be shared between services
 type StateManager struct {
-	configurationManager *providers.ConfigurationInformationManager
+	configurationManager *providers.Manager
 	dependencies         *architecture.ServiceDependencies
 
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
 }
 
-func NewStateManager(_ context.Context, configurationManager *providers.ConfigurationInformationManager, dependencies *architecture.ServiceDependencies) (*StateManager, error) {
+func NewStateManager(_ context.Context, configurationManager *providers.Manager, dependencies *architecture.ServiceDependencies) (*StateManager, error) {
 	return &StateManager{
 		dependencies:         dependencies,
 		configurationManager: configurationManager,
@@ -31,6 +31,9 @@ func NewStateManager(_ context.Context, configurationManager *providers.Configur
 // GetDependentConfigurationsOf returns the configurations for the given service
 // It includes configuration from its dependencies
 func (s *StateManager) GetDependentConfigurationsOf(ctx context.Context, service *configurations.Service) ([]*basev0.Configuration, error) {
+	if s == nil {
+		return nil, nil
+	}
 	w := wool.Get(ctx).In("StateManager.GetConfigurations", wool.ThisField(service))
 	var confs []*basev0.Configuration
 	// project configurations
@@ -72,6 +75,9 @@ func (s *StateManager) GetDependentConfigurationsOf(ctx context.Context, service
 
 // RecordEndpoints records the endpoints for the given service
 func (s *StateManager) RecordEndpoints(ctx context.Context, service *configurations.Service, endpoints []*basev0.Endpoint) error {
+	if s == nil {
+		return nil
+	}
 	w := wool.Get(ctx).In("StateManager.RecordEndpoints", wool.ThisField(service))
 	w.Debug("record endpoints", wool.Field("endpoints", configurations.MakeManyEndpointSummary(endpoints)))
 	s.endpoints[service.Unique()] = endpoints
@@ -92,9 +98,12 @@ func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *co
 	return endpoints, nil
 }
 
-// GetNetworkMappings returns the network mappings for the given service
-func (s *StateManager) GetNetworkMappings(ctx context.Context, service *configurations.Service) ([]*basev0.NetworkMapping, error) {
-	w := wool.Get(ctx).In("StateManager.GetNetworkMappings", wool.ThisField(service))
+// GetOtherNetworkMappings returns the network mappings for the given service
+func (s *StateManager) GetOtherNetworkMappings(ctx context.Context, service *configurations.Service) ([]*basev0.NetworkMapping, error) {
+	if s == nil {
+		return nil, nil
+	}
+	w := wool.Get(ctx).In("StateManager.GetOtherNetworkMappings", wool.ThisField(service))
 	var mappings []*basev0.NetworkMapping
 	for _, req := range service.ServiceDependencies {
 		mappings = append(mappings, s.networkMappings[req.Unique()]...)
@@ -105,6 +114,9 @@ func (s *StateManager) GetNetworkMappings(ctx context.Context, service *configur
 
 // RecordNetworkMappings records the network mappings for the given service
 func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *configurations.Service, mappings []*basev0.NetworkMapping) error {
+	if s == nil {
+		return nil
+	}
 	w := wool.Get(ctx).In("StateManager.RecordNetworkMappings", wool.ThisField(service))
 	w.Debug("record network mappings", wool.Field("mappings", configurations.MakeManyNetworkMappingSummary(mappings)))
 	s.networkMappings[service.Unique()] = mappings

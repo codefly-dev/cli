@@ -41,7 +41,7 @@ type Flow struct {
 	SharedState *StateManager
 
 	// How we keep track of configurations
-	ConfigurationManager *providers.ConfigurationInformationManager
+	ConfigurationManager *providers.Manager
 
 	hub *Hub
 
@@ -76,9 +76,9 @@ type World struct {
 	// Keep track of things
 	SharedState *StateManager
 
-	// Network of things
-	NetworkManager       *network.RuntimeManager
-	ConfigurationManager *providers.ConfigurationInformationManager
+	NetworkManager network.Manager
+
+	ConfigurationManager *providers.Manager
 }
 
 // NewEmptyFlow will run a single agent
@@ -104,7 +104,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		return nil, w.Wrap(err)
 	}
 
-	configurationManager, err := providers.NewConfigurationInformation(ctx, project)
+	configurationManager, err := providers.NewManager(ctx, project)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -119,8 +119,6 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		return nil, w.Wrap(err)
 	}
 
-	networkManager, err := network.NewManager(ctx)
-
 	world := &World{
 		Env:                  env,
 		Mode:                 mode,
@@ -128,7 +126,17 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 		SharedState:          stateManager,
 		ConfigurationManager: configurationManager,
 		Dependencies:         dependencies,
-		NetworkManager:       networkManager,
+	}
+
+	switch mode {
+	case RunMode:
+		world.NetworkManager, err = network.NewRuntimeManager(ctx)
+	case DeployMode:
+
+		world.NetworkManager, err = network.NewDeployManager(ctx)
+	}
+	if err != nil {
+		return nil, w.Wrap(err)
 	}
 
 	flow := &Flow{
@@ -161,6 +169,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 	if err != nil {
 		return w.Wrap(err)
 	}
+
 	err = flow.ConfigurationManager.Load(ctx, flow.world.Env)
 	if err != nil {
 		return w.Wrap(err)
@@ -170,7 +179,10 @@ func (flow *Flow) Load(ctx context.Context) error {
 	if err != nil {
 		return w.Wrap(err)
 	}
-	w.Debug("got configurations", wool.Field("all", configurations.MakeManyConfigurationSummary(allConfs)))
+
+	w.Focus("got configurations",
+		wool.Field("confs", configurations.MakeManyConfigurationSummary(allConfs)),
+		wool.Field("dns", flow.ConfigurationManager.DNS()))
 
 	var playbook *Playbook
 
@@ -273,7 +285,7 @@ func (flow *Flow) Start(ctx context.Context) error {
 }
 
 func (flow *Flow) Build(ctx context.Context) error {
-	w := wool.Get(ctx).In("flow.Sync")
+	w := wool.Get(ctx).In("flow.Build")
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
 		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {

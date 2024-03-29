@@ -25,7 +25,7 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 	active := &ActiveContext{}
 	workspace, err := configurations.LoadWorkspace(ctx, configurations.LocalWorkspace)
 	if err != nil {
-		w.Warn("running without workspace: run `codefly init` for context magic")
+		w.Debug("running without workspace: run `codefly init` for context magic")
 	}
 
 	active.Workspace = workspace

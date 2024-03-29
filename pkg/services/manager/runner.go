@@ -73,7 +73,9 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get environment")
 	}
+
 	resp, err := runner.instance.Runtime.Load(ctx, env)
+
 	if err != nil {
 		if ContextCancelled(err) {
 			return nil, nil
@@ -85,6 +87,7 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 		}
 		return runner.outputPropertyForLoad.Process(ctx)
 	}
+
 	if resp.Status != nil && resp.Status.State != runtimev0.LoadStatus_READY {
 		w.Warn(fmt.Sprintf("load returned error: %v", resp.Status.Message))
 		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: resp.Status.Message})
@@ -99,12 +102,11 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 
 	runner.endpoints = resp.Endpoints
 
-	if runner.world.SharedState != nil {
-		err = runner.world.SharedState.RecordEndpoints(ctx, runner.instance.Service, resp.Endpoints)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot record endpoints")
-		}
+	err = runner.world.SharedState.RecordEndpoints(ctx, runner.instance.Service, resp.Endpoints)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record endpoints")
 	}
+
 	err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Endpoints: resp.Endpoints})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for load")
@@ -180,7 +182,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
-	err = runner.world.ConfigurationManager.Expose(ctx, runner.instance.Service, resp.Configurations...)
+	err = runner.world.ConfigurationManager.ExposeConfiguration(ctx, runner.instance.Service, resp.Configurations...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration infos")
 	}
@@ -209,17 +211,12 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	// Build the request
-	var networkMappings []*basev0.NetworkMapping
-	if runner.world.SharedState != nil {
-		networkMappings, err = runner.world.SharedState.GetNetworkMappings(ctx, runner.instance.Service)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot load service instance")
-		}
+	otherNetworkMappings, err := runner.world.SharedState.GetOtherNetworkMappings(ctx, runner.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	//w.Debug("starting", wool.Field("networkMappings", configurations.MakeNetworkMappingSummary(networkMappings)))
-
-	resp, err := runner.instance.Runtime.Start(ctx, &runtimev0.StartRequest{OtherNetworkMappings: networkMappings})
+	resp, err := runner.instance.Runtime.Start(ctx, &runtimev0.StartRequest{OtherNetworkMappings: otherNetworkMappings})
 
 	if err != nil {
 		if ContextCancelled(err) {
@@ -329,5 +326,8 @@ func (runner *Runner) Unique() string {
 }
 
 func (runner *Runner) WithNative(native bool) {
+	if runner == nil {
+		return
+	}
 	runner.instance.Runtime.Native = native
 }
