@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services/services"
-	generators "github.com/codefly-dev/core/companions/proto"
+	"github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/configurations/languages"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
@@ -17,7 +17,7 @@ func OpenAPI(ctx context.Context, project *configurations.Project, service *conf
 	if err != nil {
 		return w.Wrapf(err, "cannot get OpenAPI endpoints")
 	}
-	err = generators.GenerateOpenAPI(ctx, language, destination, service.Name, endpoints...)
+	err = proto.GenerateOpenAPI(ctx, language, destination, service.Name, endpoints...)
 	if err != nil {
 		return w.Wrapf(err, "cannot generate OpenAPI")
 	}

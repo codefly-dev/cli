@@ -93,16 +93,6 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-func (b *Builder) GenerateBuilderNetworkMappings(ctx context.Context, service *configurations.Service, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
-	// w := wool.Get(ctx).In("network.Runtime.GenerateNetworkMappings")
-	var out []*basev0.NetworkMapping
-	//for _, endpoint := range endpoints {
-	//
-	//	out = append(out, nm)
-	//}
-	return out, nil
-}
-
 func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 	w.Debug("Init")
@@ -122,7 +112,7 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
 
-	networkMappings, err := b.GenerateBuilderNetworkMappings(ctx, b.instance.Service, b.endpoints)
+	networkMappings, err := b.world.NetworkManager.GenerateNetworkMappings(ctx, b.instance.Service, b.endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
