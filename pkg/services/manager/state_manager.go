@@ -98,6 +98,19 @@ func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *co
 	return endpoints, nil
 }
 
+// GetNetworkMappings returns the network mappings for the given service
+func (s *StateManager) GetNetworkMappings(_ context.Context, service *configurations.Service) ([]*basev0.NetworkMapping, error) {
+	if s == nil {
+		return nil, nil
+	}
+	return s.networkMappings[service.Unique()], nil
+}
+
+func (s *StateManager) GetNetworkMappingsFromUnique(unique string) ([]*basev0.NetworkMapping, bool) {
+	mappings, ok := s.networkMappings[unique]
+	return mappings, ok
+}
+
 // GetOtherNetworkMappings returns the network mappings for the given service
 func (s *StateManager) GetOtherNetworkMappings(ctx context.Context, service *configurations.Service) ([]*basev0.NetworkMapping, error) {
 	if s == nil {
@@ -121,9 +134,4 @@ func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *confi
 	w.Debug("record network mappings", wool.Field("mappings", configurations.MakeManyNetworkMappingSummary(mappings)))
 	s.networkMappings[service.Unique()] = mappings
 	return nil
-}
-
-func (s *StateManager) NetworkMappings(unique string) ([]*basev0.NetworkMapping, bool) {
-	mappings, ok := s.networkMappings[unique]
-	return mappings, ok
 }

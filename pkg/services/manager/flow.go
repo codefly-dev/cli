@@ -393,23 +393,27 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 
 func (flow *Flow) GetAddressForEndpoint(ctx context.Context, application string, service string, endpoint string) (string, error) {
 	if flow == nil {
-		return "", fmt.Errorf("cannot get addresses from nil flow")
+		return "", fmt.Errorf("cannot get address from nil flow")
 	}
 	if flow.SharedState == nil {
 		return "", fmt.Errorf("cannot get addresses from nil state")
 	}
 	// We get that from the stateManager
 	unique := configurations.ServiceUnique(application, service)
-	//
-	//mappings, ok := flow.SharedState().NetworkMappings(unique)
-	//if !ok {
-	//	return "", fmt.Errorf("cannot find network mappings for %s", unique)
-	//}
-	//for _, np := range mappings {
-	//	if np.Endpoint.Name == endpoint {
-	//		return np.Address, nil
-	//	}
-	//}
+	mappings, ok := flow.SharedState.GetNetworkMappingsFromUnique(unique)
+	if !ok {
+		return "", fmt.Errorf("cannot get network mappings for %s", unique)
+
+	}
+	for _, np := range mappings {
+		if np.Endpoint.Name == endpoint {
+			for _, instance := range np.Instances {
+				if instance.Scope == basev0.RuntimeScope_Native {
+					return instance.Address, nil
+				}
+			}
+		}
+	}
 	return "", fmt.Errorf("cannot find network mappings for %s", unique)
 }
 
