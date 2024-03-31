@@ -60,13 +60,7 @@ func NewBuilder(ctx context.Context, instance *services.Instance, world *World) 
 func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(b.instance.Service))
 
-	// Build the request
-	env, err := b.world.Env.Proto()
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get env")
-	}
-
-	resp, err := b.instance.Builder.Load(ctx, env)
+	resp, err := b.instance.Builder.Load(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load b instance")
 	}
@@ -102,26 +96,8 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get depednencies")
 	}
 
-	conf, err := b.world.ConfigurationManager.GetServiceConfiguration(ctx, b.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get ConfigurationManager information")
-	}
-
-	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsOf(ctx, b.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get configuration")
-	}
-
-	networkMappings, err := b.world.NetworkManager.GenerateNetworkMappings(ctx, b.instance.Service, b.endpoints)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
-	}
-
 	resp, err := b.instance.Builder.Init(ctx, &builderv0.InitRequest{
-		Configuration:              conf,
-		ProposedNetworkMappings:    networkMappings,
-		DependenciesConfigurations: dependenciesConfigurations,
-		DependenciesEndpoints:      dependenciesEndpoints,
+		DependenciesEndpoints: dependenciesEndpoints,
 	})
 	if err != nil {
 		if grpcErr, ok := status.FromError(err); ok {
@@ -141,16 +117,6 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 
 	if resp.State != nil && resp.State.State != builderv0.InitStatus_SUCCESS {
 		return nil, w.NewError("service instance is not ready")
-	}
-
-	err = b.world.SharedState.RecordNetworkMappings(ctx, b.instance.Service, resp.NetworkMappings)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot record network mappings")
-	}
-
-	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Service, resp.Configuration)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot record shared configuration configurations")
 	}
 
 	err = b.outputPropertyForInit.Set(ctx, &BuilderInitOutput{})
@@ -232,12 +198,35 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	otherNetworkMappings, err := b.world.SharedState.GetOtherNetworkMappings(ctx, b.instance.Service)
+	conf, err := b.world.ConfigurationManager.GetServiceConfiguration(ctx, b.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get ConfigurationManager information")
+	}
+
+	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsOf(ctx, b.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get configuration")
+	}
+
+	networkMappings, err := b.world.NetworkManager.GenerateNetworkMappings(ctx, b.instance.Service, b.endpoints)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
+	}
+	err = b.world.SharedState.RecordNetworkMappings(ctx, b.instance.Service, networkMappings)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record network mappings")
+	}
+
+	dependenciesNetworkMappings, err := b.world.SharedState.GetDependenciesNetworkMappings(ctx, b.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	deploy, err := deployment.GetDeployment(ctx, b.world.Project, b.instance.Service, b.world.Env)
+	namespace, err := b.world.NetworkManager.GetNamespace(ctx, b.instance.Service, b.world.Env)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get namespace")
+	}
+	deploy, err := deployment.GetDeployment(ctx, b.world.Project, b.instance.Service, b.world.Env, namespace)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
@@ -252,16 +241,24 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	resp, err := b.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
-		Environment:          env,
-		BuildContext:         buildContext,
-		Deployment:           deploy,
-		OtherNetworkMappings: otherNetworkMappings,
+		Environment:                 env,
+		BuildContext:                buildContext,
+		Deployment:                  deploy,
+		Configuration:               conf,
+		DependenciesConfigurations:  dependenciesConfigurations,
+		NetworkMappings:             networkMappings,
+		DependenciesNetworkMappings: dependenciesNetworkMappings,
 	})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot deploy service instance")
 	}
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("service instance is not started")
+	}
+
+	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Service, resp.Configuration)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record shared configuration configurations")
 	}
 
 	err = b.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})

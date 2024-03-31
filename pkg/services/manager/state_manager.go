@@ -67,7 +67,7 @@ func (s *StateManager) GetDependentConfigurationsOf(ctx context.Context, service
 
 	}
 	confs = append(confs, serviceConfigurations...)
-	w.Focus("configurations",
+	w.Debug("configurations",
 		wool.Field("configurations", configurations.MakeManyConfigurationSummary(projectConfigurations)),
 		wool.Field("services", configurations.MakeManyConfigurationSummary(serviceConfigurations)))
 	return confs, nil
@@ -111,12 +111,12 @@ func (s *StateManager) GetNetworkMappingsFromUnique(unique string) ([]*basev0.Ne
 	return mappings, ok
 }
 
-// GetOtherNetworkMappings returns the network mappings for the given service
-func (s *StateManager) GetOtherNetworkMappings(ctx context.Context, service *configurations.Service) ([]*basev0.NetworkMapping, error) {
+// GetDependenciesNetworkMappings returns the network mappings for the given service
+func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, service *configurations.Service) ([]*basev0.NetworkMapping, error) {
 	if s == nil {
 		return nil, nil
 	}
-	w := wool.Get(ctx).In("StateManager.GetOtherNetworkMappings", wool.ThisField(service))
+	w := wool.Get(ctx).In("StateManager.GetDependenciesNetworkMappings", wool.ThisField(service))
 	var mappings []*basev0.NetworkMapping
 	for _, req := range service.ServiceDependencies {
 		mappings = append(mappings, s.networkMappings[req.Unique()]...)

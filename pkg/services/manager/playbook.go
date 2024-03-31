@@ -143,7 +143,7 @@ func (playbook *Playbook) previouslyExecuted(ctx context.Context, action Action)
 
 func (playbook *Playbook) Work(ctx context.Context) error {
 	w := wool.Get(ctx).In("work")
-	w.Debug("waiting for groups")
+	w.Trace("waiting for groups")
 	for {
 		select {
 		case <-ctx.Done():
@@ -153,19 +153,19 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 			plan := playbook.actions.NewActionPlan()
 			for _, action := range group.actions {
 				if playbook.pause.Handle(ctx, action) {
-					w.Debug("discarding action", wool.Field("action", action))
+					w.Trace("discarding action", wool.Field("action", action))
 					continue
 				}
 
 				if playbook.ignore(ctx, action) {
-					w.Debug("ignoring action", wool.Field("action", action))
+					w.Trace("ignoring action", wool.Field("action", action))
 					continue
 				}
 				if playbook.previouslyExecuted(ctx, action) {
-					w.Debug("previously executed", wool.Field("action", action))
+					w.Trace("previously executed", wool.Field("action", action))
 					continue
 				}
-				w.Debug("executing action", wool.Field("action", action))
+				w.Trace("executing action", wool.Field("action", action))
 
 				playbook.record(action)
 
@@ -184,17 +184,17 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 					continue
 				}
 
-				w.Debug("after exec", wool.Field("next", next))
+				w.Trace("after exec", wool.Field("next", next))
 
 				plan.Add(ctx, next...)
 
 				playbook.signal(ctx, action)
 
 				if playbook.stopAfter(ctx, action) {
-					w.Debug("stopping", wool.Field("action", action))
+					w.Trace("stopping", wool.Field("action", action))
 					return nil
 				}
-				w.Debug("done with action", wool.Field("action", action))
+				w.Trace("done with action", wool.Field("action", action))
 
 			}
 			// Done looping on actions

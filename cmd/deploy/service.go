@@ -47,7 +47,7 @@ var ServiceCmd = &cobra.Command{
 				errs <- err
 			}
 			if apply {
-				err = kustomize(ctx, project, service)
+				err = flow.Push(ctx)
 				if err != nil {
 					errs <- err
 				}
@@ -84,7 +84,13 @@ var ServiceCmd = &cobra.Command{
 
 func initDeployService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.DeployMode)
+	var environ *configurations.Environment
+	if env == "local" {
+		environ = configurations.Local()
+	} else {
+		environ = &configurations.Environment{Name: env}
+	}
+	flow, err := manager.NewFlow(ctx, project, service, environ, manager.DeployMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -118,8 +124,10 @@ func deployService(ctx context.Context, flow *manager.Flow) error {
 
 var standAlone bool
 var apply bool
+var env string
 
 func init() {
+	ServiceCmd.Flags().StringVar(&env, "env", "local", "Environment to deploy the service")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&apply, "apply", false, "Apply the deployment")
 }

@@ -151,7 +151,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
 
-	w.Focus("configuration",
+	w.Debug("configuration",
 		wool.Field("network mappings", configurations.MakeManyNetworkMappingSummary(networkMappings)),
 		wool.Field("dependencies endpoints", configurations.MakeManyEndpointSummary(dependenciesEndpoints)),
 		wool.Field("service configuration", configurations.MakeConfigurationSummary(conf)),
@@ -211,12 +211,12 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	// Build the request
-	otherNetworkMappings, err := runner.world.SharedState.GetOtherNetworkMappings(ctx, runner.instance.Service)
+	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(ctx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	resp, err := runner.instance.Runtime.Start(ctx, &runtimev0.StartRequest{OtherNetworkMappings: otherNetworkMappings})
+	resp, err := runner.instance.Runtime.Start(ctx, &runtimev0.StartRequest{DependenciesNetworkMappings: dependenciesNetworkMappings})
 
 	if err != nil {
 		if ContextCancelled(err) {
@@ -307,7 +307,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 						action.Type = RuntimeStart
 					}
 					runner.restart = true
-					w.Debug("sending action", wool.Field("action", action.Type))
+					w.Trace("sending action", wool.Field("action", action.Type))
 					err = runner.callback(ctx, action)
 					if err != nil {
 						w.Error("cannot seed", wool.ErrField(err))

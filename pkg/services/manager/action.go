@@ -118,11 +118,11 @@ func (manager *ActionManager) send(ctx context.Context, actions ...Action) {
 		actions[i].Round = round
 	}
 	group := ActionGroup{actions: actions, round: round}
-	w.Debug("sending actions", wool.Field("actions", group))
+	w.Trace("sending actions", wool.Field("actions", group))
 	go func() {
 		manager.actions <- group
 	}()
-	w.Debug("sent actions", wool.Field("actions", group))
+	w.Trace("sent actions", wool.Field("actions", group))
 }
 
 func (manager *ActionManager) Group() chan ActionGroup {
@@ -145,15 +145,15 @@ type ActionPlan struct {
 
 func (plan *ActionPlan) Add(ctx context.Context, actions ...Action) {
 	w := wool.Get(ctx).In("ActionPlan:Add")
-	w.Debug("considering actions in plan", wool.Field("actions", actions))
+	w.Trace("considering actions in plan", wool.Field("actions", actions))
 	for _, action := range actions {
 		action.Round = plan.round
 		if _, ok := plan.known[action]; !ok {
-			w.Debug("adding action to plan", wool.Field("action", action.String()))
+			w.Trace("adding action to plan", wool.Field("action", action.String()))
 			plan.actions = append(plan.actions, action)
 			plan.known[action] = true
 		} else {
-			w.Debug("action already known", wool.Field("action", action.String()))
+			w.Trace("action already known", wool.Field("action", action.String()))
 		}
 	}
 }

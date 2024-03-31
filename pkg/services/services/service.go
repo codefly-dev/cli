@@ -55,7 +55,7 @@ type RuntimeInstance struct {
 
 // Builder methods
 
-func (instance *BuilderInstance) Load(ctx context.Context, env *basev0.Environment) (*builderv0.LoadResponse, error) {
+func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
 	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
 	w.Debug("loading", wool.ProjectField(instance.Service.Project), wool.ApplicationField(instance.Service.Application))
 	init := &builderv0.LoadRequest{
@@ -66,7 +66,6 @@ func (instance *BuilderInstance) Load(ctx context.Context, env *basev0.Environme
 			Project:     instance.Service.Project,
 			Location:    instance.Service.Dir(),
 		},
-		Environment: env,
 	}
 	return instance.Builder.Load(ctx, init)
 
@@ -106,9 +105,9 @@ func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environme
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot convert runtime spec")
 	}
-	scope := basev0.RuntimeScope_Container
+	scope := basev0.NetworkScope_Container
 	if instance.Native {
-		scope = basev0.RuntimeScope_Native
+		scope = basev0.NetworkScope_Native
 	}
 	init := &runtimev0.LoadRequest{
 		Debug: wool.IsDebug(),

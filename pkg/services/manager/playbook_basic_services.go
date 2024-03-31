@@ -9,7 +9,7 @@ import (
 
 func BasicNext(ctx context.Context, dependencies *architecture.ServiceDependencies, change *OutputProperty, action Action, nextType ActionType) ([]Action, error) {
 	w := wool.Get(ctx).In("SyncPolicy.BasicNext")
-	w.Debug("computing next action with output", wool.Field("property", change))
+	w.Trace("computing next action with output", wool.Field("property", change))
 	if change.OnInit {
 		var required []architecture.Service
 		var err error
@@ -37,11 +37,11 @@ func BasicNext(ctx context.Context, dependencies *architecture.ServiceDependenci
 			}
 		}
 		// We execute the same action on all dependents
-		w.Debug("propagating", wool.Field("service", action.Service), wool.Field("direct dependents", deps))
+		w.Trace("propagating", wool.Field("service", action.Service), wool.Field("direct dependents", deps))
 		next := action.NextFor(action.Type, deps...)
 		next = append(next, action.Next(nextType))
 		next = append(next, action.NextFor(nextType, deps...)...)
-		w.Debug("propagating", wool.Field("service", action.Service), wool.Field("next", next))
+		w.Trace("propagating", wool.Field("service", action.Service), wool.Field("next", next))
 		return next, nil
 	}
 	return nil, nil

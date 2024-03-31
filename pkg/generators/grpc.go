@@ -35,7 +35,7 @@ func getGRPCEndpoints(ctx context.Context, service *configurations.Service) ([]*
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load builder")
 	}
-	res, err := instance.Builder.Load(ctx, configurations.LocalProto())
+	res, err := instance.Builder.Load(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load builder")
 	}

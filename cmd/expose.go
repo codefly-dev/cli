@@ -2,13 +2,20 @@ package cmd
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/configurations/standards"
+	"github.com/codefly-dev/core/network"
+	"github.com/codefly-dev/core/providers"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -32,50 +39,66 @@ var ExposeCmd = &cobra.Command{
 }
 
 func expose(ctx context.Context, project *configurations.Project) error {
-	//w := wool.Get(ctx).In("expose")
-	//provider, err := providers.NewConfigurationInformation(ctx, project)
-	//if err != nil {
-	//	return w.Wrap(err)
-	//}
-	//// Get the DNS
-	//// We gather public endpoints URL -- from provider info
-	//info, err := provider.GetProjectProviderInformation(ctx, "dns")
-	//if err != nil {
-	//	return w.Wrapf(err, "cannot get DNS provider information")
-	//}
-	//for unique, u := range info.Data {
-	//	if !strings.HasPrefix(u, "http") {
-	//		continue
-	//	}
-	//	ref, err := configurations.ParseServiceUnique(unique)
-	//	if err != nil {
-	//		return w.Wrapf(err, "cannot parse unique: %s", unique)
-	//	}
-	//	namespace := fmt.Sprintf("%s-%s", project.Name, ref.Application)
-	//	k8sSvc := fmt.Sprintf("svc/%s", ref.Name)
-	//	w.Debug("k8s", wool.Field("namespace", namespace), wool.Field("service", k8sSvc))
-	//	//// Check if this service exists in this namespace
-	//	_, err = exec.CommandContext(ctx, "kubectl", "get", k8sSvc, "-n", namespace).Output()
-	//	if err != nil {
-	//		return w.Wrapf(err, "cannot get service: %s", k8sSvc)
-	//	}
-	//
-	//	// Start a port forward
-	//	target, err := url.Parse(u)
-	//	if err != nil {
-	//		return w.Wrapf(err, "cannot parse URL: %s", u)
-	//	}
-	//	port := target.Port()
-	//	go func(service string, port string, namespace string) {
-	//		w.Info(fmt.Sprintf("exposing %s at http://localhost:%s", ref.Unique(), port), wool.Field("service", service), wool.Field("port", port), wool.Field("namespace", namespace))
-	//		cmd := exec.CommandContext(ctx, "kubectl", "port-forward", "-n", namespace, k8sSvc, fmt.Sprintf("%s:8080", port))
-	//		err := cmd.Run()
-	//		if err != nil {
-	//			log.Printf("Failed to forward service: %s, %s, error: %v", service, cmd.Args, err)
-	//		}
-	//	}(k8sSvc, port, namespace)
-	//
-	//}
-	//<-ctx.Done()
+	w := wool.Get(ctx).In("expose")
+	// Get the running network manager
+	configurationManager, err := providers.NewManager(ctx, project)
+	if err != nil {
+		return w.Wrap(err)
+	}
+	localReader, err := providers.NewConfigurationLocalReader(ctx, project)
+	if err != nil {
+		return w.Wrap(err)
+	}
+	configurationManager.WithLoader(localReader)
+	err = configurationManager.Load(ctx, configurations.Local())
+
+	networkManager, err := network.NewDeployManager(ctx, configurationManager)
+	if err != nil {
+		return w.Wrap(err)
+	}
+	// Loop over svcs
+	svcs, err := project.LoadServices(ctx)
+	if err != nil {
+		return w.Wrap(err)
+	}
+	for _, service := range svcs {
+		for _, endpoint := range service.Endpoints {
+			if endpoint.Visibility == configurations.VisibilityPublic {
+				err = exposeService(ctx, service, endpoint, networkManager)
+				if err != nil {
+					return w.Wrap(err)
+				}
+			}
+		}
+	}
+	<-ctx.Done()
+	return nil
+}
+
+func exposeService(ctx context.Context, service *configurations.Service, endpoint *configurations.Endpoint, networkManager network.Manager) error {
+	w := wool.Get(ctx).In("exposeService")
+	namespace, err := networkManager.GetNamespace(ctx, service, configurations.Local())
+	if err != nil {
+		return w.Wrap(err)
+	}
+	k8sSvc := fmt.Sprintf("svc/%s", service.Name)
+	w.Debug("k8s", wool.Field("namespace", namespace), wool.Field("service", k8sSvc))
+	// Check if this service exists in this namespace
+	_, err = exec.CommandContext(ctx, "kubectl", "get", k8sSvc, "-n", namespace).Output()
+	if err != nil {
+		w.Warn(fmt.Sprintf("cannot get service: %s", k8sSvc))
+		return nil
+	}
+	hostPort := network.ToNamedPort(ctx, service.Application, service.Name, endpoint.Name, endpoint.API)
+	targetPort := standards.Port(endpoint.API)
+
+	go func() {
+		w.Info(fmt.Sprintf("exposing %s at http://localhost:%d", service.Unique(), hostPort), wool.Field("service", service), wool.Field("port", targetPort), wool.Field("namespace", namespace))
+		cmd := exec.CommandContext(ctx, "kubectl", "port-forward", "-n", namespace, k8sSvc, fmt.Sprintf("%d:%d", hostPort, targetPort))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("Failed to forward service: %s, %s, error: %v, out: %s", service.Unique(), cmd.Args, err, out)
+		}
+	}()
 	return nil
 }

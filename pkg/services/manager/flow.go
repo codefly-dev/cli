@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/providers"
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
 )
@@ -130,9 +132,11 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 
 	switch mode {
 	case RunMode:
-		world.NetworkManager, err = network.NewRuntimeManager(ctx)
+		world.NetworkManager, err = network.NewRuntimeManager(ctx, configurationManager)
+	case BuildMode:
+		world.NetworkManager, err = network.NewDeployManager(ctx, configurationManager)
 	case DeployMode:
-		world.NetworkManager, err = network.NewDeployManager(ctx)
+		world.NetworkManager, err = network.NewDeployManager(ctx, configurationManager)
 	}
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -407,7 +411,7 @@ func (flow *Flow) GetAddressForEndpoint(ctx context.Context, application string,
 	for _, np := range mappings {
 		if np.Endpoint.Name == endpoint {
 			for _, instance := range np.Instances {
-				if instance.Scope == basev0.RuntimeScope_Native {
+				if instance.Scope == basev0.NetworkScope_Native {
 					return instance.Address, nil
 				}
 			}
@@ -555,6 +559,36 @@ func (flow *Flow) WithInitOnly(only bool) {
 
 func (flow *Flow) Executed() []Action {
 	return flow.playbook.Executed()
+}
+
+func (flow *Flow) Push(ctx context.Context) error {
+	w := wool.Get(ctx).In("flow.Push")
+	services, err := flow.world.Dependencies.OrderTo(ctx, flow.origin.Unique())
+	if err != nil {
+		return w.Wrapf(err, "cannot order services")
+	}
+	services = append(services, architecture.Service{Unique: flow.origin.Unique()})
+	for _, dep := range services {
+		// Execute the kustomize build command
+		fromUnique, err := configurations.ParseServiceUnique(dep.Unique)
+		if err != nil {
+			return w.Wrapf(err, "cannot parse unique: %s", dep.Unique)
+		}
+		dir := fmt.Sprintf("%s/deployments/kustomize/applications/%s/services/%s/overlays/%s", flow.project.Dir(), fromUnique.Application, fromUnique.Name, flow.world.Env.Name)
+		if exists, _ := shared.CheckDirectory(ctx, dir); !exists {
+			w.Warn(fmt.Sprintf("no kustomize folder for service %s", dep.Unique))
+			continue
+		}
+		cmd := exec.Command("sh", "-c",
+			fmt.Sprintf("kustomize build %s | kubectl apply -f -", dir))
+		w.Info(fmt.Sprintf("Applying kustomize deployment for %s", dep.Unique))
+		w.Debug(fmt.Sprintf("Command: %s", cmd.String()))
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return w.Wrapf(err, "cannot apply kustomize deployment: %s", output)
+		}
+	}
+	return nil
 }
 
 var _ ExecutorManager = &Flow{}

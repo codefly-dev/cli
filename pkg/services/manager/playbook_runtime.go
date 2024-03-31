@@ -30,10 +30,10 @@ func (policy *RuntimeStartPolicy) Execute(ctx context.Context, action Action) ([
 		return nil, w.Wrapf(err, "cannot process outputProperty")
 	}
 	if outputProperty == nil {
-		w.Debug("no outputProperty: not doing anything")
+		w.Trace("no outputProperty: not doing anything")
 		return nil, nil
 	}
-	w.Debug("got outputProperty", wool.Field("outputProperty", outputProperty))
+	w.Trace("got outputProperty", wool.Field("outputProperty", outputProperty))
 	if !outputProperty.Valid() {
 		return nil, w.NewError("invalid outputProperty: only one of the property of output must be true: %v", outputProperty)
 	}
@@ -70,7 +70,7 @@ func (policy *RuntimeStartPolicy) Restrict(ctx context.Context, unique string) e
 		return w.Wrapf(err, "cannot get Dependencies")
 	}
 	policy.dependencies = dependencies
-	w.Debug("restricted", wool.Field("graph", policy.dependencies.Print()))
+	w.Trace("restricted", wool.Field("graph", policy.dependencies.Print()))
 	return nil
 }
 
