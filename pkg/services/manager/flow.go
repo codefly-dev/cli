@@ -500,7 +500,7 @@ func (flow *Flow) WithGoService(ctx context.Context, args ...string) error {
 	if err != nil {
 		return w.Wrapf(err, "can't get current dir")
 	}
-	agent, err := common.GetAgent(ctx, "codefly.dev/go-single:0.0.9")
+	agent, err := common.GetAgent(ctx, "codefly.dev/go-single:0.0.12")
 	if err != nil {
 		return w.Wrapf(err, "cannot get agent")
 	}
@@ -514,13 +514,14 @@ func (flow *Flow) WithGoService(ctx context.Context, args ...string) error {
 
 	flow.origin = svc
 	flow.services[unique] = svc
+	var networkManager *network.RuntimeManager
+	flow.world.NetworkManager = networkManager
 	cli.RegisterLoggingResource(unique)
 	return nil
 }
 
 func (flow *Flow) CreateManager(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
-
 	w.Debug("creating run manager", wool.Field("for", flow.origin.Unique()))
 	manager, err := New(ctx, flow.origin, flow.world)
 	cli.RegisterLoggingResource(flow.origin.Unique())
