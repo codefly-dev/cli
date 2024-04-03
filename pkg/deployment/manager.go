@@ -9,10 +9,10 @@ import (
 
 func GetDeployment(ctx context.Context, project *configurations.Project, service *configurations.Service, environment *configurations.Environment, namespace string) (*builderv0.Deployment, error) {
 	return &builderv0.Deployment{
-		Namespace: namespace,
-		Kind: &builderv0.Deployment_Kustomize{
-			Kustomize: &builderv0.KustomizeDeployment{
-				Destination: DirFor(ctx, project, builderv0.DeploymentKind_KUSTOMIZE),
+		Kind: &builderv0.Deployment_Kubernetes{
+			Kubernetes: &builderv0.KubernetesDeployment{
+				Namespace:   namespace,
+				Destination: Dir(ctx, project),
 			},
 		},
 	}, nil

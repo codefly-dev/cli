@@ -5,22 +5,12 @@ import (
 	"path"
 
 	"github.com/codefly-dev/core/configurations"
-	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 	"github.com/codefly-dev/core/wool"
 	git "github.com/go-git/go-git/v5"
 )
 
 func Dir(ctx context.Context, project *configurations.Project) string {
 	return path.Join(project.Dir(), "deployments")
-}
-
-func DirFor(ctx context.Context, project *configurations.Project, kind builderv0.DeploymentKind) string {
-	var sub string
-	switch kind {
-	case builderv0.DeploymentKind_KUSTOMIZE:
-		sub = "kustomize"
-	}
-	return path.Join(Dir(ctx, project), sub)
 }
 
 func InitRepository(ctx context.Context, project *configurations.Project) error {

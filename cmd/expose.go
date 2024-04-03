@@ -40,6 +40,12 @@ var ExposeCmd = &cobra.Command{
 
 func expose(ctx context.Context, project *configurations.Project) error {
 	w := wool.Get(ctx).In("expose")
+	var environ *configurations.Environment
+	if env == "local" {
+		environ = configurations.Local()
+	} else {
+		environ = &configurations.Environment{Name: env}
+	}
 	// Get the running network manager
 	configurationManager, err := providers.NewManager(ctx, project)
 	if err != nil {
@@ -64,7 +70,7 @@ func expose(ctx context.Context, project *configurations.Project) error {
 	for _, service := range svcs {
 		for _, endpoint := range service.Endpoints {
 			if endpoint.Visibility == configurations.VisibilityPublic {
-				err = exposeService(ctx, service, endpoint, networkManager)
+				err = exposeService(ctx, service, endpoint, networkManager, environ)
 				if err != nil {
 					return w.Wrap(err)
 				}
@@ -75,9 +81,10 @@ func expose(ctx context.Context, project *configurations.Project) error {
 	return nil
 }
 
-func exposeService(ctx context.Context, service *configurations.Service, endpoint *configurations.Endpoint, networkManager network.Manager) error {
+func exposeService(ctx context.Context, service *configurations.Service, endpoint *configurations.Endpoint, networkManager network.Manager, env *configurations.Environment) error {
 	w := wool.Get(ctx).In("exposeService")
-	namespace, err := networkManager.GetNamespace(ctx, service, configurations.Local())
+
+	namespace, err := networkManager.GetNamespace(ctx, service, env)
 	if err != nil {
 		return w.Wrap(err)
 	}
@@ -101,4 +108,10 @@ func exposeService(ctx context.Context, service *configurations.Service, endpoin
 		}
 	}()
 	return nil
+}
+
+var env string
+
+func init() {
+	ExposeCmd.Flags().StringVar(&env, "env", "local", "Environment to deploy the service")
 }

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"os/exec"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -39,12 +40,14 @@ type Builder struct {
 	outputPropertyForInit  *BuilderInitManager
 	outputPropertyForBuild *BuilderBuildManager
 	outputPropertyForSync  *BuilderSyncManager
+
+	push bool
 }
 
 func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(instance))
-	w.Debug("new builder")
-	builder := &Builder{
+	w.Debug("new b")
+	b := &Builder{
 		instance: instance,
 
 		world: world,
@@ -54,7 +57,7 @@ func NewBuilder(ctx context.Context, instance *services.Instance, world *World) 
 		outputPropertyForBuild: NewBuilderBuildManager(instance.Unique()),
 		outputPropertyForSync:  NewBuilderSyncManager(instance.Unique()),
 	}
-	return builder, nil
+	return b, nil
 }
 
 func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
@@ -137,7 +140,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w.Debug("Build")
 
 	// Build the request
-	buildContext, err := builder.BuildContext(ctx, b.instance.Service)
+	buildContext, err := builder.BuildContext(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
@@ -161,7 +164,25 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
+	if push && resp.Result != nil {
+		if buildResult := resp.Result.Kind.(*builderv0.BuildResult_DockerBuildResult); buildResult != nil {
+			w.Info("Pushing docker images", wool.Field("result", resp.Result))
+			for _, im := range buildResult.DockerBuildResult.Images {
+				cmd := exec.Command("docker", "push", im)
+				err := cmd.Run()
+				if err != nil {
+					return nil, w.Wrapf(err, "cannot push docker image")
+				}
+			}
+		}
+	}
 	return outputProperty, nil
+}
+
+var push bool
+
+func SetBuilderPush() {
+	push = true
 }
 
 func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
@@ -208,7 +229,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
 
-	networkMappings, err := b.world.NetworkManager.GenerateNetworkMappings(ctx, b.instance.Service, b.endpoints)
+	networkMappings, err := b.world.NetworkManager.GenerateNetworkMappings(ctx, b.instance.Service, b.endpoints, b.world.Env)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
@@ -235,7 +256,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
 	// Build the request
-	buildContext, err := builder.BuildContext(ctx, b.instance.Service)
+	buildContext, err := builder.BuildContext(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
@@ -270,8 +291,8 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for deploy")
 	}
-	return outputProperty, nil
 
+	return outputProperty, nil
 }
 
 func (b *Builder) Unique() string {

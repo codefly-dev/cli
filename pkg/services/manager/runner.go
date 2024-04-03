@@ -146,7 +146,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
 	}
 
-	networkMappings, err := runner.world.NetworkManager.GenerateNetworkMappings(ctx, runner.instance.Service, runner.endpoints)
+	networkMappings, err := runner.world.NetworkManager.GenerateNetworkMappings(ctx, runner.instance.Service, runner.endpoints, runner.world.Env)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}

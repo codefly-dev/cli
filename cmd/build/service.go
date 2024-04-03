@@ -7,6 +7,7 @@ import (
 	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
@@ -36,7 +37,7 @@ var ServiceCmd = &cobra.Command{
 			return
 		}
 
-		flow, err := initBuildService(ctx, project, service, standAlone, ci)
+		flow, err := initBuildService(ctx, project, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
 			errs <- buildService(ctx, flow)
@@ -65,17 +66,21 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initBuildService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool, ci bool) (*manager.Flow, error) {
+func initBuildService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("buildService", wool.ThisField(service))
+	if org != "" {
+		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
+		builder.SetRepository(repo)
+	}
+	if push {
+		manager.SetBuilderPush()
+	}
 	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.BuildMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -102,9 +107,11 @@ func buildService(ctx context.Context, flow *manager.Flow) error {
 }
 
 var standAlone bool
-var ci bool
+var org string
+var push bool
 
 func init() {
-	ServiceCmd.Flags().BoolVar(&ci, "ci", false, "CI Mode")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().StringVar(&org, "org", "", "Organization")
+	ServiceCmd.Flags().BoolVar(&push, "push", false, "Push the image to the repository")
 }

@@ -7,10 +7,12 @@ import (
 	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -84,6 +86,11 @@ var ServiceCmd = &cobra.Command{
 
 func initDeployService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(service))
+	if org != "" {
+		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
+		builder.SetRepository(repo)
+		network.SetLoadBalancer("codefly.build")
+	}
 	var environ *configurations.Environment
 	if env == "local" {
 		environ = configurations.Local()
@@ -125,8 +132,10 @@ func deployService(ctx context.Context, flow *manager.Flow) error {
 var standAlone bool
 var apply bool
 var env string
+var org string
 
 func init() {
+	ServiceCmd.Flags().StringVar(&org, "org", "", "Organization")
 	ServiceCmd.Flags().StringVar(&env, "env", "local", "Environment to deploy the service")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&apply, "apply", false, "Apply the deployment")

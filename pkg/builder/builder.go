@@ -4,12 +4,17 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/builders"
-	"github.com/codefly-dev/core/configurations"
 )
 
-func BuildContext(ctx context.Context, service *configurations.Service) (*builders.BuildContext, error) {
+var repository = "codefly-dev"
+
+func SetRepository(repo string) {
+	repository = repo
+}
+
+func BuildContext(ctx context.Context) (*builders.BuildContext, error) {
 	return builders.NewDockerBuilderContext(ctx, builders.DockerContext{
-		Repository: "codefly-dev",
+		Repository: repository,
 	})
 }
 
