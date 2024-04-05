@@ -98,7 +98,7 @@ import (
 //	//	return nil, logger.Wrapf(err, "cannot create migration")
 //	//}
 //	//
-//	//// Apply migrations
+//	//// KustomizeApply migrations
 //	//if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 //	//	return nil, logger.Wrapf(err, "Failed to apply migrations")
 //	//}

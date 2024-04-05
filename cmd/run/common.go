@@ -15,5 +15,8 @@ var excludeRoot bool
 // Run in CI mode
 var ci bool
 
-// Run in init only mode
+// load only mode
+var loadOnly bool
+
+// init only mode
 var initOnly bool

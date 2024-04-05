@@ -3,7 +3,7 @@ package builder
 import (
 	"context"
 
-	"github.com/codefly-dev/core/builders"
+	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 )
 
 var repository = "codefly-dev"
@@ -12,10 +12,18 @@ func SetRepository(repo string) {
 	repository = repo
 }
 
-func BuildContext(ctx context.Context) (*builders.BuildContext, error) {
-	return builders.NewDockerBuilderContext(ctx, builders.DockerContext{
-		Repository: repository,
-	})
+func DockerBuildContext(ctx context.Context) (*builderv0.DockerBuildContext, error) {
+	return &builderv0.DockerBuildContext{
+		DockerRepository: repository,
+	}, nil
+}
+
+func BuildContextFromDocker(dockerContext *builderv0.DockerBuildContext) *builderv0.BuildContext {
+	return &builderv0.BuildContext{
+		Kind: &builderv0.BuildContext_DockerBuildContext{
+			DockerBuildContext: dockerContext,
+		},
+	}
 }
 
 type Repository interface {

@@ -48,12 +48,6 @@ var ServiceCmd = &cobra.Command{
 			if err != nil {
 				errs <- err
 			}
-			if apply {
-				err = flow.Push(ctx)
-				if err != nil {
-					errs <- err
-				}
-			}
 			errs <- nil
 		}()
 		defer func(flow *manager.Flow) {
@@ -138,5 +132,4 @@ func init() {
 	ServiceCmd.Flags().StringVar(&org, "org", "", "Organization")
 	ServiceCmd.Flags().StringVar(&env, "env", "local", "Environment to deploy the service")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
-	ServiceCmd.Flags().BoolVar(&apply, "apply", false, "Apply the deployment")
 }

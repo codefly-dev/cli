@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 
@@ -15,7 +14,6 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/providers"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
 )
@@ -50,10 +48,13 @@ type Flow struct {
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
 
-	initOnly    bool
+	loadOnly bool
+	initOnly bool
+
 	standAlone  bool
 	excludeRoot bool
-	native      bool
+
+	native bool
 
 	// convenient
 	services map[string]*configurations.Service
@@ -183,7 +184,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		return w.Wrap(err)
 	}
 
-	w.Focus("got configurations",
+	w.Debug("got configurations",
 		wool.Field("confs", configurations.MakeManyConfigurationSummary(allConfs)),
 		wool.Field("dns", flow.ConfigurationManager.DNS()))
 
@@ -201,7 +202,12 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		// If init only, we stopAfter at the run
+		if flow.loadOnly {
+			w.Debug("load only")
+			playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+				return action.Type == RuntimeLoad && action.Service == flow.origin.Unique()
+			})
+		}
 		if flow.initOnly {
 			w.Debug("init only")
 			playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
@@ -436,7 +442,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		for _, service := range order {
 			required = append(required, service.Unique)
 		}
-		w.Debug("service Dependencies", wool.NameField(flow.origin.Name), wool.Field("Dependencies", required))
+		w.Debug("service dependencies", wool.NameField(flow.origin.Name), wool.Field("dependencies", required))
 	}
 	if len(required) == 0 {
 		cli.Info("Running <%s>", flow.origin.Name)
@@ -562,34 +568,9 @@ func (flow *Flow) Executed() []Action {
 	return flow.playbook.Executed()
 }
 
-func (flow *Flow) Push(ctx context.Context) error {
-	w := wool.Get(ctx).In("flow.Push")
-	services, err := flow.world.Dependencies.OrderTo(ctx, flow.origin.Unique())
-	if err != nil {
-		return w.Wrapf(err, "cannot order services")
-	}
-	services = append(services, architecture.Service{Unique: flow.origin.Unique()})
-	for _, dep := range services {
-		// Execute the kustomize build command
-		fromUnique, err := configurations.ParseServiceUnique(dep.Unique)
-		if err != nil {
-			return w.Wrapf(err, "cannot parse unique: %s", dep.Unique)
-		}
-		dir := fmt.Sprintf("%s/deployments/kustomize/applications/%s/services/%s/overlays/%s", flow.project.Dir(), fromUnique.Application, fromUnique.Name, flow.world.Env.Name)
-		if exists, _ := shared.CheckDirectory(ctx, dir); !exists {
-			w.Warn(fmt.Sprintf("no kustomize folder for service %s", dep.Unique))
-			continue
-		}
-		cmd := exec.Command("sh", "-c",
-			fmt.Sprintf("kustomize build %s | kubectl apply -f -", dir))
-		w.Info(fmt.Sprintf("Applying kustomize deployment for %s", dep.Unique))
-		w.Debug(fmt.Sprintf("Command: %s", cmd.String()))
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return w.Wrapf(err, "cannot apply kustomize deployment: %s", output)
-		}
-	}
-	return nil
+func (flow *Flow) WithLoadOnly(only bool) {
+	flow.loadOnly = only
+
 }
 
 var _ ExecutorManager = &Flow{}

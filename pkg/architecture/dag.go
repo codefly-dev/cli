@@ -161,6 +161,16 @@ func (g *DAG) Print() string {
 	return strings.Join(res, "\n")
 }
 
+func (g *DAG) PrintAsDot() string {
+	var builder strings.Builder
+	builder.WriteString("digraph {\n")
+	for _, edge := range g.Edges() {
+		builder.WriteString(fmt.Sprintf("\t\"%s\" -> \"%s\";\n", edge.From, edge.To))
+	}
+	builder.WriteString("}\n")
+	return builder.String()
+}
+
 func (g *DAG) Invert() *DAG {
 	inverted := NewDAG(g.Name + "-inverted")
 	for _, node := range g.Nodes() {

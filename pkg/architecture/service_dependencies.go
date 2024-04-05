@@ -86,14 +86,18 @@ func (d *ServiceDependencies) Dependencies() []ServiceDependency {
 
 // OrderTo returns the list of services "required" to end up with the service identified by unique.
 func (d *ServiceDependencies) OrderTo(ctx context.Context, unique string) ([]Service, error) {
+	w := wool.Get(ctx).In("OrderTo")
 	sub, err := d.Graph.SubGraphTo(unique)
 	if err != nil {
 		return nil, fmt.Errorf("cannot topologically sort to <%s>: %w", unique, err)
 	}
+	w.Trace("service dependencies", wool.Field("graph", d.Graph.PrintAsDot()))
+	w.Trace("service dependencies", wool.Field("subgraph", sub.PrintAsDot()))
 	order, err := sub.TopologicalSortTo(unique)
 	if err != nil {
 		return nil, fmt.Errorf("cannot topologically sort to <%s>: %w", unique, err)
 	}
+	w.Trace("service dependencies", wool.Field("order", order))
 	var out []Service
 	for _, u := range order {
 		if u.Type != configurations.SERVICE {

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 
 	"google.golang.org/grpc/codes"
@@ -140,12 +141,12 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w.Debug("Build")
 
 	// Build the request
-	buildContext, err := builder.BuildContext(ctx)
+	dockerContext, err := builder.DockerBuildContext(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
 
-	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: buildContext})
+	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: builder.BuildContextFromDocker(dockerContext)})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot call build")
 	}
@@ -247,7 +248,14 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get namespace")
 	}
-	deploy, err := deployment.GetDeployment(ctx, b.world.Project, b.instance.Service, b.world.Env, namespace)
+
+	// Build the request
+	dockerContext, err := builder.DockerBuildContext(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create build context")
+	}
+
+	deploy, err := deployment.GetKubernetesDeployment(ctx, dockerContext, b.world.Project, b.instance.Service, b.world.Env, namespace)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
@@ -255,15 +263,8 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	// Build the request
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
-	// Build the request
-	buildContext, err := builder.BuildContext(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create build context")
-	}
-
 	resp, err := b.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
 		Environment:                 env,
-		BuildContext:                buildContext,
 		Deployment:                  deploy,
 		Configuration:               conf,
 		DependenciesConfigurations:  dependenciesConfigurations,
@@ -275,6 +276,13 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	}
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("service instance is not started")
+	}
+
+	switch v := resp.Deployment.Kind.(type) {
+	case *builderv0.DeploymentOutput_Kubernetes:
+		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_Kustomize {
+			err = b.KustomizeApply(ctx, b.instance.Service)
+		}
 	}
 
 	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Service, resp.Configuration)
@@ -292,7 +300,24 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for deploy")
 	}
 
+	// Deploy
+
 	return outputProperty, nil
+}
+
+func (b *Builder) KustomizeApply(ctx context.Context, service *configurations.Service) error {
+	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
+	dir := deployment.Dir(ctx, b.world.Project)
+	dir = fmt.Sprintf("%s/applications/%s/services/%s/overlays/%s", dir, service.Application, service.Name, b.world.Env.Name)
+	cmd := exec.Command("sh", "-c",
+		fmt.Sprintf("kustomize build %s | kubectl apply -f -", dir))
+	w.Info(fmt.Sprintf("Applying kustomize deployment for %s", service.Unique()))
+	w.Debug(fmt.Sprintf("Command: %s", cmd.String()))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return w.Wrapf(err, "cannot apply kustomize deployment: %s", output)
+	}
+	return nil
 }
 
 func (b *Builder) Unique() string {
