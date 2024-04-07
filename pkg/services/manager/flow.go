@@ -139,6 +139,7 @@ func NewFlow(ctx context.Context, project *configurations.Project, service *conf
 	case DeployMode:
 		world.NetworkManager, err = network.NewDeployManager(ctx, configurationManager)
 	}
+
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

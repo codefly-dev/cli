@@ -167,7 +167,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 
 	if push && resp.Result != nil {
 		if buildResult := resp.Result.Kind.(*builderv0.BuildResult_DockerBuildResult); buildResult != nil {
-			w.Info("Pushing docker images", wool.Field("result", resp.Result))
+			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.DockerBuildResult.Images {
 				cmd := exec.Command("docker", "push", im)
 				err := cmd.Run()
@@ -234,6 +234,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
+
 	err = b.world.SharedState.RecordNetworkMappings(ctx, b.instance.Service, networkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
@@ -255,7 +256,9 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
 
-	deploy, err := deployment.GetKubernetesDeployment(ctx, dockerContext, b.world.Project, b.instance.Service, b.world.Env, namespace)
+	// Public endpoints need Load Balancer
+	withLoadBalancer := env.LoadBalancer != "" && configurations.HasPublicEndoints(b.endpoints)
+	deploy, err := deployment.GetKubernetesDeployment(ctx, dockerContext, b.world.Project, b.instance.Service, b.world.Env, namespace, withLoadBalancer)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
@@ -278,13 +281,6 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("service instance is not started")
 	}
 
-	switch v := resp.Deployment.Kind.(type) {
-	case *builderv0.DeploymentOutput_Kubernetes:
-		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_Kustomize {
-			err = b.KustomizeApply(ctx, b.instance.Service)
-		}
-	}
-
 	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Service, resp.Configuration)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration configurations")
@@ -302,7 +298,17 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 
 	// Deploy
 
+	if dryRun {
+		return outputProperty, nil
+	}
+	switch v := resp.Deployment.Kind.(type) {
+	case *builderv0.DeploymentOutput_Kubernetes:
+		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_Kustomize {
+			err = b.KustomizeApply(ctx, b.instance.Service)
+		}
+	}
 	return outputProperty, nil
+
 }
 
 func (b *Builder) KustomizeApply(ctx context.Context, service *configurations.Service) error {
@@ -322,4 +328,10 @@ func (b *Builder) KustomizeApply(ctx context.Context, service *configurations.Se
 
 func (b *Builder) Unique() string {
 	return b.instance.Service.Unique()
+}
+
+var dryRun bool
+
+func SetDryRun(d bool) {
+	dryRun = d
 }

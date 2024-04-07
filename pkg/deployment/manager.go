@@ -7,8 +7,9 @@ import (
 	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 )
 
-func GetKubernetesDeployment(ctx context.Context, dockerBuildContext *builderv0.DockerBuildContext, project *configurations.Project, service *configurations.Service, environment *configurations.Environment, namespace string) (*builderv0.Deployment, error) {
+func GetKubernetesDeployment(ctx context.Context, dockerBuildContext *builderv0.DockerBuildContext, project *configurations.Project, service *configurations.Service, environment *configurations.Environment, namespace string, withLoadBalancer bool) (*builderv0.Deployment, error) {
 	return &builderv0.Deployment{
+		LoadBalancer: withLoadBalancer,
 		Kind: &builderv0.Deployment_Kubernetes{
 			Kubernetes: &builderv0.KubernetesDeployment{
 				BuildContext: dockerBuildContext,

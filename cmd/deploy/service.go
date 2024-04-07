@@ -12,7 +12,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -83,15 +82,20 @@ func initDeployService(ctx context.Context, project *configurations.Project, ser
 	if org != "" {
 		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
 		builder.SetRepository(repo)
-		network.SetLoadBalancer("codefly.build")
 	}
-	var environ *configurations.Environment
-	if env == "local" {
-		environ = configurations.Local()
+	manager.SetDryRun(dryRun)
+
+	var env *configurations.Environment
+	if envInput == "local" {
+		env = configurations.Local()
 	} else {
-		environ = &configurations.Environment{Name: env}
+		env = &configurations.Environment{Name: envInput}
 	}
-	flow, err := manager.NewFlow(ctx, project, service, environ, manager.DeployMode)
+	if org != "" {
+		env.LoadBalancer = "codefly.build"
+	}
+
+	flow, err := manager.NewFlow(ctx, project, service, env, manager.DeployMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -124,12 +128,13 @@ func deployService(ctx context.Context, flow *manager.Flow) error {
 }
 
 var standAlone bool
-var apply bool
-var env string
+var envInput string
 var org string
+var dryRun bool
 
 func init() {
 	ServiceCmd.Flags().StringVar(&org, "org", "", "Organization")
-	ServiceCmd.Flags().StringVar(&env, "env", "local", "Environment to deploy the service")
+	ServiceCmd.Flags().StringVar(&envInput, "env", "local", "Environment to deploy the service")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Dry run the deployment")
 }
