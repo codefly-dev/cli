@@ -2,14 +2,14 @@
 
 # Usage: ./tag.sh <new_version>
 
-YAML_FILE="cmd/info.yaml"
+YAML_FILE="pkg/cli/info.yaml"
 
 if [ ! -f "$YAML_FILE" ]; then
     echo "Error: YAML file $YAML_FILE does not exist."
     exit 1
 fi
 
-CURRENT_VERSION=$(yq eval '.version' "$YAML_FILE")
+CURRENT_VERSION=$(yq -r '.version' "$YAML_FILE")
 NEW_VERSION="$CURRENT_VERSION"
 
 

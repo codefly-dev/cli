@@ -36,6 +36,7 @@ var ServiceCmd = &cobra.Command{
 		}
 		name := args[0]
 
+		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
 		ctx, done := common.NewContext()

@@ -96,7 +96,7 @@ func exposeService(ctx context.Context, service *configurations.Service, endpoin
 		w.Warn(fmt.Sprintf("cannot get service: %s", k8sSvc))
 		return nil
 	}
-	hostPort := network.ToNamedPort(ctx, service.Application, service.Name, endpoint.Name, endpoint.API)
+	hostPort := network.ToNamedPort(ctx, service.Project, service.Application, service.Name, endpoint.Name, endpoint.API)
 	targetPort := standards.Port(endpoint.API)
 
 	go func() {

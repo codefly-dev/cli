@@ -55,10 +55,8 @@ type RuntimeInstance struct {
 
 // Builder methods
 
-func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
-	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
-	w.Debug("loading", wool.ProjectField(instance.Service.Project), wool.ApplicationField(instance.Service.Application))
-	init := &builderv0.LoadRequest{
+func (instance *BuilderInstance) loadRequest() *builderv0.LoadRequest {
+	return &builderv0.LoadRequest{
 		Debug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
 			Name:        instance.Service.Name,
@@ -67,8 +65,21 @@ func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadRespo
 			Location:    instance.Service.Dir(),
 		},
 	}
-	return instance.Builder.Load(ctx, init)
+}
 
+func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
+	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
+	w.Debug("loading", wool.ProjectField(instance.Service.Project), wool.ApplicationField(instance.Service.Application))
+	req := instance.loadRequest()
+	return instance.Builder.Load(ctx, req)
+}
+
+func (instance *BuilderInstance) LoadForCreate(ctx context.Context) (*builderv0.LoadResponse, error) {
+	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
+	w.Debug("loading", wool.ProjectField(instance.Service.Project), wool.ApplicationField(instance.Service.Application))
+	req := instance.loadRequest()
+	req.AtCreate = true
+	return instance.Builder.Load(ctx, req)
 }
 
 func (instance *BuilderInstance) Create(ctx context.Context, req *builderv0.CreateRequest) (*builderv0.CreateResponse, error) {

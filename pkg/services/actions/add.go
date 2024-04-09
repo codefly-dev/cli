@@ -35,7 +35,7 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		return w.Wrapf(err, "cannot add service")
 	}
 
-	cli.Header(2, "Service <%s> added and is now active", service.Name)
+	cli.Header(2, "Service <%s> added.", service.Name)
 
 	instance, err := services.Load(ctx, service)
 	if err != nil {
@@ -49,7 +49,7 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 
 	info, err := instance.Agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 	if err != nil {
-
+		return w.Wrapf(err, "cannot get agent information")
 	}
 	// README
 	rendered, err := glamour.Render(info.ReadMe, "dark")
@@ -63,7 +63,7 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 		fmt.Println(rendered)
 	}
 
-	_, err = instance.Builder.Load(ctx)
+	_, err = instance.Builder.LoadForCreate(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot create service instance")
 	}

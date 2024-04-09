@@ -27,17 +27,25 @@ var ServiceCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
 
+		cli.Init()
+		cli.RegisterCleanup(services.ClearAgents)
+
 		errs := make(chan error, 1) // Buffered channel
 
-		project := common.Project(ctx)
-		if project == nil {
-			cli.Error("Cannot find project")
-			cli.ExitError()
+		project := common.RequireProject(ctx)
+
+		// Argument overrides directory
+		service, err := common.ParseServiceArgument(ctx, project, args)
+		if err != nil {
+			cli.ExitOnError(err, "Cannot parse service argument")
 		}
-		service := common.Service(ctx)
 		if service == nil {
-			cli.Error("Cannot find service")
-			cli.ExitError()
+			service = common.Service(ctx)
+		}
+
+		if service == nil {
+			cli.Error("No service found: use argument or run inside a service folder or use workspace")
+			return
 		}
 
 		flow, err := initDeployService(ctx, project, service, standAlone)

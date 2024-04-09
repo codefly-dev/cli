@@ -120,6 +120,7 @@ func RequireProject(ctx context.Context) *configurations.Project {
 	project := Project(ctx)
 	if project == nil {
 		cli.Error("No project found: run inside a project folder or use workspace")
+		cli.Exit()
 	}
 	return project
 }

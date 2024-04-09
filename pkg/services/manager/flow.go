@@ -574,4 +574,12 @@ func (flow *Flow) WithLoadOnly(only bool) {
 
 }
 
+func (flow *Flow) ActiveProject() *configurations.Project {
+	return flow.project
+}
+
+func (flow *Flow) Origin() *configurations.Service {
+	return flow.origin
+}
+
 var _ ExecutorManager = &Flow{}

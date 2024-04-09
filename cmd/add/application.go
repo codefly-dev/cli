@@ -82,7 +82,7 @@ func addApplication(name string) {
 		}
 
 	}
-	cli.Header(2, "Application <%s> added and is now active", app.Name)
+	cli.Header(2, "Application <%s> added.", app.Name)
 }
 
 func init() {

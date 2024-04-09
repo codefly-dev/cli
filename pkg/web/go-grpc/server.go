@@ -96,14 +96,14 @@ func (s *Server) GetAddresses(ctx context.Context, req *cli.GetAddressRequest) (
 /* Active information */
 
 func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*cli.ActiveResponse, error) {
-	active, err := common.LoadActiveContext(ctx)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+	flow := manager.CurrentFlow()
+	if flow == nil {
+		return nil, status.Error(codes.Internal, "nothing running")
 	}
 	return &cli.ActiveResponse{
-		Project:     active.Project.Name,
-		Application: active.Application.Name,
-		Service:     active.Service.Name,
+		Project:     flow.ActiveProject().Name,
+		Application: flow.Origin().Application,
+		Service:     flow.Origin().Name,
 	}, nil
 
 }

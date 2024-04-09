@@ -13,7 +13,7 @@ fi
 
 # Usage: ./tag.sh <new_version>
 
-YAML_FILE="cmd/info.yaml"
+YAML_FILE="pkg/cli/info.yaml"
 
 if [ ! -f "$YAML_FILE" ]; then
     echo "Error: YAML file $YAML_FILE does not exist."
@@ -23,7 +23,7 @@ fi
 # Argument is patch/minor/major and defaults to patch
 NEW_VERSION_TYPE=${1:-patch}
 
-CURRENT_VERSION=$(yq eval '.version' "$YAML_FILE")
+CURRENT_VERSION=$(yq -r '.version' "$YAML_FILE")
 NEW_VERSION=$(semver bump "$NEW_VERSION_TYPE" "$CURRENT_VERSION")
 
 
