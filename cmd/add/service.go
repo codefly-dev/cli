@@ -74,10 +74,9 @@ var ServiceCmd = &cobra.Command{
 }
 
 func addService(ctx context.Context, name string, agentInput string) error {
-
 	w := wool.Get(ctx).In("cmd.add.service")
 
-	// TODO context
+	cli.SetWithDefault(withDefault)
 
 	//workspace := common.Workspace(ctx)
 	project := common.RequireProject(ctx)
@@ -149,13 +148,13 @@ func addService(ctx context.Context, name string, agentInput string) error {
 }
 
 var (
-	namespace  string
-	agentInput string
+	agentInput  string
+	withDefault bool
 )
 
 func init() {
 	ServiceCmd.Flags().StringVar(&agentInput, "agent", "", "Instance agent to get started")
-	ServiceCmd.Flags().StringVar(&namespace, "namespace", "", "Namespace for the service, default to application name")
 	ServiceCmd.Flags().BoolVar(&override, "override", false, "Override existing service")
+	ServiceCmd.Flags().BoolVar(&withDefault, "default", false, "Use default options")
 
 }

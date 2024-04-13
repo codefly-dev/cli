@@ -22,9 +22,9 @@ type Release struct {
 
 func CheckForCLIForUpdate() {
 	latest, err := getLatestRelease()
-	ExitOnError(err, "Cannot get latest release")
+	ExitOnError(err, "Cannot get latest release for CLI")
 	current, err := GetCurrentVersion()
-	ExitOnError(err, "Cannot get current version")
+	ExitOnError(err, "Cannot get current version for CLI")
 	if fmt.Sprintf("v%s", current) != latest {
 		Warning("A new version of codefly is available. Please update to %s", latest)
 	}

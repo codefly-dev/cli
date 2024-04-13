@@ -87,7 +87,7 @@ var ServiceCmd = &cobra.Command{
 
 func initDeployService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(service))
-	if org != "" {
+	if envInput == "aws" {
 		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
 		builder.SetRepository(repo)
 	}
@@ -99,7 +99,7 @@ func initDeployService(ctx context.Context, project *configurations.Project, ser
 	} else {
 		env = &configurations.Environment{Name: envInput}
 	}
-	if org != "" {
+	if envInput == "aws" {
 		env.LoadBalancer = "codefly.build"
 	}
 

@@ -257,7 +257,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	// Public endpoints need Load Balancer
-	withLoadBalancer := env.LoadBalancer != "" && configurations.HasPublicEndoints(b.endpoints)
+	withLoadBalancer := env.LoadBalancer != "" && configurations.HasPublicEndpoints(b.endpoints)
 	deploy, err := deployment.GetKubernetesDeployment(ctx, dockerContext, b.world.Project, b.instance.Service, b.world.Env, namespace, withLoadBalancer)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
@@ -301,11 +301,19 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if dryRun {
 		return outputProperty, nil
 	}
+	if resp.Deployment == nil {
+		return nil, w.NewError("no supported deployment found")
+	}
 	switch v := resp.Deployment.Kind.(type) {
 	case *builderv0.DeploymentOutput_Kubernetes:
 		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_Kustomize {
 			err = b.KustomizeApply(ctx, b.instance.Service)
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot apply kustomize")
+			}
 		}
+	default:
+		return nil, w.NewError("no supported deployment found")
 	}
 	return outputProperty, nil
 
@@ -315,13 +323,9 @@ func (b *Builder) KustomizeApply(ctx context.Context, service *configurations.Se
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 	dir := deployment.Dir(ctx, b.world.Project)
 	dir = fmt.Sprintf("%s/applications/%s/services/%s/overlays/%s", dir, service.Application, service.Name, b.world.Env.Name)
-	cmd := exec.Command("sh", "-c",
-		fmt.Sprintf("kustomize build %s | kubectl apply -f -", dir))
-	w.Info(fmt.Sprintf("Applying kustomize deployment for %s", service.Unique()))
-	w.Debug(fmt.Sprintf("Command: %s", cmd.String()))
-	output, err := cmd.CombinedOutput()
+	err := deployment.KustomizeApply(ctx, service, b.world.Env, dir)
 	if err != nil {
-		return w.Wrapf(err, "cannot apply kustomize deployment: %s", output)
+		return w.Wrapf(err, "cannot apply kustomize")
 	}
 	return nil
 }

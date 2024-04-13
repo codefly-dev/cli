@@ -66,8 +66,6 @@ func Execute() {
 	if focus {
 		wool.SetGlobalLogLevel(wool.FOCUS)
 	}
-	cli.SetWithDefault(withDefault)
-
 	if tracker != "" {
 		tracker, err := actions.NewActionTracker(context.Background(), tracker)
 		cli.ExitOnError(err, "cannot create action tracker")
@@ -150,9 +148,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
-	RootCmd.PersistentFlags().BoolVar(&withDefault, "with-default", false, "Use default option instead of prompt")
 	RootCmd.PersistentFlags().BoolVar(&todo, "todo", false, "Print TODOs")
-	RootCmd.PersistentFlags().BoolVar(&override, "override", false, "Replace all")
 	RootCmd.PersistentFlags().StringVar(&tracker, "track", "", "Tracker of actions -- advanced usage")
 
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")

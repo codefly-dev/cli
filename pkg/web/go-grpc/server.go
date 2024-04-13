@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"regexp"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -195,6 +196,14 @@ func (s *Server) LogHistory(ctx context.Context, request *observabilityv0.LogReq
 	return nil, nil
 }
 
+// removeANSICodes strips ANSI escape codes from the input string.
+func removeANSICodes(input string) string {
+	// ANSI escape codes start with the escape character (ASCII 27, octal \033)
+	// followed by '[' and end with 'm'. This regex also accounts for other sequences.
+	re := regexp.MustCompile(`\x1B\[[0-9;]*[a-zA-Z]`)
+	return re.ReplaceAllString(input, "")
+}
+
 func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 	if source.IsSystem() {
 		return
@@ -208,8 +217,8 @@ func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 		At:          timestamppb.New(time.Now()),
 		Application: service.Application,
 		Service:     service.Name,
-		Message:     log.String(),
-		Kind:        observabilityv0.Log_SERVICE,
+		Message:     removeANSICodes(log.String()),
+		Kind:        source.Kind,
 	}
 	go func() {
 		s.logChannel <- logEntry

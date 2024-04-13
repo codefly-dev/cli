@@ -65,12 +65,12 @@ func Add(ctx context.Context, input *actionservice.AddService) error {
 
 	_, err = instance.Builder.LoadForCreate(ctx)
 	if err != nil {
-		return w.Wrapf(err, "cannot create service instance")
+		return w.Wrapf(err, "builder failed in load")
 	}
 
 	_, err = instance.Builder.Create(ctx, &builderv0.CreateRequest{})
 	if err != nil {
-		return w.Wrapf(err, "cannot create service instance")
+		return w.Wrapf(err, "builder failed in create")
 
 	}
 	return nil
