@@ -6,7 +6,7 @@ import (
 
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/agents/services"
-	"github.com/codefly-dev/core/runners"
+	runners "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/cli/pkg/cli"

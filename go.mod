@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/glamour v0.7.0
 	github.com/charmbracelet/lipgloss v0.10.0
-	github.com/codefly-dev/core v0.1.83
+	github.com/codefly-dev/core v0.1.85
 	github.com/codefly-dev/golor v0.1.2
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/fatih/color v1.16.0
@@ -35,7 +35,7 @@ require (
 	k8s.io/cli-runtime v0.29.3
 	k8s.io/client-go v0.29.3
 	k8s.io/kubectl v0.29.3
-	modernc.org/sqlite v1.29.6
+	modernc.org/sqlite v1.29.7
 )
 
 require (
@@ -174,7 +174,7 @@ require (
 	github.com/xeipuuv/gojsonschema v1.2.0 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
-	github.com/yoheimuta/go-protoparser/v4 v4.9.0 // indirect
+	github.com/yoheimuta/go-protoparser/v4 v4.10.0 // indirect
 	github.com/yuin/goldmark v1.7.1 // indirect
 	github.com/yuin/goldmark-emoji v1.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
@@ -189,7 +189,7 @@ require (
 	go.opentelemetry.io/proto/otlp v1.1.0 // indirect
 	go.starlark.net v0.0.0-20230525235612-a134d8f9ddca // indirect
 	golang.org/x/crypto v0.22.0 // indirect
-	golang.org/x/exp v0.0.0-20240409090435-93d18d7e34b8 // indirect
+	golang.org/x/exp v0.0.0-20240416160154-fe59bbe5cc7f // indirect
 	golang.org/x/net v0.24.0 // indirect
 	golang.org/x/oauth2 v0.17.0 // indirect
 	golang.org/x/sync v0.7.0 // indirect
@@ -199,8 +199,8 @@ require (
 	golang.org/x/time v0.5.0 // indirect
 	golang.org/x/tools v0.20.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20240412170617-26222e5d3d56 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240412170617-26222e5d3d56 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20240415180920-8c6c420018be // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20240415180920-8c6c420018be // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	k8s.io/api v0.29.3 // indirect

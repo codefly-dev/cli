@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"os/exec"
+	"strings"
 
-	"github.com/codefly-dev/core/runners"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 )
 
@@ -25,13 +27,22 @@ func clearCommand() {
 	if err != nil {
 		log.Fatalf("can't clear all codefly processes %s\n", err)
 	}
-	docker, err := runners.NewDocker(ctx, nil)
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		log.Fatalf("can't create docker runner %s\n", err)
+		log.Fatalf("can't create docker client %s\n", err)
 	}
-	err = docker.KillAll(ctx)
+	// delete all c with name starting with /codefly
+	cos, err := cli.ContainerList(ctx, container.ListOptions{})
 	if err != nil {
-		log.Fatalf("can't clear all codefly docker processes %s\n", err)
+		log.Fatalf("can't list containers %s\n", err)
 	}
-
+	for _, c := range cos {
+		if strings.HasPrefix(c.Names[0], "/codefly") {
+			err = cli.ContainerKill(ctx, c.ID, "SIGKILL")
+			err = cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
+			if err != nil {
+				log.Fatalf("can't remove c %s\n", err)
+			}
+		}
+	}
 }

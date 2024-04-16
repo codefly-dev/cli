@@ -174,7 +174,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		w.Debug("init failed: waiting")
 		err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true})
 		return runner.outputPropertyForInit.Process(ctx)
-
 	}
 
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, resp.NetworkMappings)
@@ -270,8 +269,9 @@ func (runner *Runner) Stop(ctx context.Context) error {
 	go func() {
 		runner.stopped <- struct{}{}
 	}()
-
-	_, err := runner.instance.Runtime.Stop(ctx, &runtimev0.StopRequest{})
+	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
 	if err != nil {
 		return w.Wrapf(err, "cannot stopAfter service instance: %s", runner.Unique())
 	}
@@ -292,8 +292,10 @@ func (runner *Runner) Follow(ctx context.Context) error {
 			default:
 				info, err := runner.instance.Runtime.Information(ctx, &runtimev0.InformationRequest{})
 				if err != nil {
-					w.Debug("cannot get information", wool.ErrField(err))
-					return
+					if !ContextCancelled(err) {
+						w.Debug("cannot get information", wool.ErrField(err))
+						return
+					}
 				}
 				if info.DesiredState != nil && info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
 					w.Debug("received a request to change SharedState", wool.Field("SharedState", info.DesiredState.Stage))
