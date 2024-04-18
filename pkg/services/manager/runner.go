@@ -188,7 +188,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 	w.Debug("init", wool.Field("configuration info", configurations.MakeManyConfigurationSummary(resp.Configurations)))
 
-	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{})
+	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: resp.NetworkMappings, configurations: resp.Configurations})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
@@ -294,8 +294,8 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				if err != nil {
 					if !ContextCancelled(err) {
 						w.Debug("cannot get information", wool.ErrField(err))
-						return
 					}
+					return
 				}
 				if info.DesiredState != nil && info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
 					w.Debug("received a request to change SharedState", wool.Field("SharedState", info.DesiredState.Stage))

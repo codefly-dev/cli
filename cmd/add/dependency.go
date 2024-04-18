@@ -22,24 +22,40 @@ var ServiceDependencyCmd = &cobra.Command{
 		if interactive {
 			cli.GetLogger().Oops("Interactive mode not implemented yet")
 		}
-		addServiceDependency()
+		addServiceDependency(args...)
 	},
 }
 
-func addServiceDependency() {
+func addServiceDependency(args ...string) {
 	ctx, done := common.NewContext()
 	defer done()
 	defer services.ClearAgents()
 
-	project := common.Project(ctx)
-	app := common.Application(ctx)
-	service := common.Service(ctx)
+	project := common.RequireProject(ctx)
+
+	// Argument overrides directory
+	service, err := common.ParseServiceArgument(ctx, project, args)
+	if err != nil {
+		cli.ExitOnError(err, "Cannot parse service argument")
+	}
+	if service == nil {
+		service = common.Service(ctx)
+	}
+
+	if service == nil {
+		cli.Error("No service found: use argument or run inside a service folder or use workspace")
+		return
+	}
 
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		cli.Exit()
 	}
+
+	app, err := project.LoadApplicationFromName(ctx, service.Application)
+	cli.ExitOnError(err, "cannot get application from name")
+
 	// First all services in the same application
 	inAppServices := app.ServiceReferences
 

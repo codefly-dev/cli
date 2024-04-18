@@ -3,11 +3,14 @@ package cli
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
@@ -21,18 +24,41 @@ type Release struct {
 }
 
 func CheckForCLIForUpdate() {
+	go checkForCLIForUpdate()
+}
+
+func checkForCLIForUpdate() {
 	latest, err := getLatestRelease()
-	ExitOnError(err, "Cannot get latest release for CLI")
+	if errors.Is(err, NoInternetError{}) {
+		return
+	} else if err != nil {
+		Warning("Cannot get latest release for CLI")
+		return
+	}
 	current, err := GetCurrentVersion()
-	ExitOnError(err, "Cannot get current version for CLI")
+	if err != nil {
+		Warning("Cannot get current version for CLI")
+		return
+	}
 	if fmt.Sprintf("v%s", current) != latest {
 		Warning("A new version of codefly is available. Please update to %s", latest)
 	}
 }
 
+type NoInternetError struct {
+}
+
+func (NoInternetError) Error() string {
+	return "no internet"
+}
+
 func getLatestRelease() (string, error) {
-	resp, err := http.Get("https://api.github.com/repos/codefly-dev/cli-releases/releases/latest")
+	client := http.Client{Timeout: time.Second}
+	resp, err := client.Get("https://api.github.com/repos/codefly-dev/cli-releases/releases/latest")
 	if err != nil {
+		if strings.Contains(err.Error(), "i/o timeout") {
+			return "", NoInternetError{}
+		}
 		return "", err
 	}
 	defer resp.Body.Close()

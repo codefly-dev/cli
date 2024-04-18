@@ -73,14 +73,15 @@ func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) e
 // - ConfigurationManager infos
 type RunnerInitOutput struct {
 	networkMappings []*basev0.NetworkMapping
-	//providerInfos   []*basev0.ProviderInformation
-	failing bool
+	configurations  []*basev0.Configuration
+	failing         bool
 }
 
 type RunnerInitManager struct {
-	unique             string
+	unique string
+
+	configurationHash  string
 	networkMappingHash string
-	providerInfoHash   string
 
 	processed *OutputProperty
 }
@@ -104,19 +105,11 @@ func (b *RunnerInitManager) Set(ctx context.Context, output *RunnerInitOutput) e
 		b.processed = Pause()
 		return nil
 	}
-	//
-	//providerInfoHash, err := configurations.ProviderInformationHash(output.providerInfos...)
-	//if err != nil {
-	//	return w.Wrapf(err, "cannot compute ConfigurationManager info hash")
-	//}
-
-	//networkMappingHash, err := configurations.NetworkMappingHash(output.networkMappings...)
-	//if err != nil {
-	//	return w.Wrapf(err, "cannot compute network mapping hash")
-	//}
+	networkMappingHash := configurations.NetworkMappingHash(output.networkMappings...)
+	configurationsHash := configurations.ConfigurationsHash(output.configurations...)
 	defer func() {
-		//b.providerInfoHash = providerInfoHash
-		//b.networkMappingHash = networkMappingHash
+		b.configurationHash = configurationsHash
+		b.networkMappingHash = networkMappingHash
 	}()
 
 	if b.processed == nil {
@@ -125,11 +118,11 @@ func (b *RunnerInitManager) Set(ctx context.Context, output *RunnerInitOutput) e
 		return nil
 	}
 
-	// If the hash is different, we need to propagate
-	//if providerInfoHash != b.providerInfoHash || networkMappingHash != b.networkMappingHash {
-	//	b.processed = RequirePropagation()
-	//	return nil
-	//}
+	// Check for propagation
+	if configurationsHash != b.configurationHash || networkMappingHash != b.networkMappingHash {
+		b.processed = RequirePropagation()
+		return nil
+	}
 	b.processed = IndependentUpdate()
 	return nil
 }
