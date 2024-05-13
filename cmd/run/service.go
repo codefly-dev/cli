@@ -5,13 +5,14 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"slices"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/cli/pkg/web"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -19,42 +20,46 @@ import (
 // ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Begin a service",
+	Short: "Run a service",
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx, done := common.NewContext()
 		defer done()
 
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 		defer stop()
+
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
+		workspace, service := common.LoadRequired(ctx, args)
+
+		// Get the silent services
+		var silentServices []*resources.ServiceWithModule
+		for _, s := range silent {
+			service, err := resources.ParseServiceWithOptionalModule(s)
+			cli.ExitOnError(err, "Cannot parse silent service")
+			if service.Module == "" {
+				// Find unique service by name
+				svc, err := workspace.FindUniqueServiceAndModuleByName(ctx, service.Name)
+				cli.ExitOnError(err, "Cannot find unique service by name")
+				service.Module = svc.Module
+			}
+			silentServices = append(silentServices, service)
+		}
+		cli.Debug("silent services: %v", silentServices)
+		cli.WithSilence(silentServices)
+
 		errs := make(chan error, 1) // Buffered channel
 
-		if withServer {
-			workspace := common.Workspace(ctx)
+		if withCLIServer {
 			server, err := web.NewServer(web.ServerData{Workspace: workspace})
 			cli.ExitOnError(err, "cannot create web server")
 			go func() {
 				errs <- server.Start(ctx)
 			}()
 		}
-		project := common.RequireProject(ctx)
 
-		// Argument overrides directory
-		service, err := common.ParseServiceArgument(ctx, project, args)
-		if err != nil {
-			cli.ExitOnError(err, "Cannot parse service argument")
-		}
-		if service == nil {
-			service = common.Service(ctx)
-		}
-
-		if service == nil {
-			cli.Error("No service found: use argument or run inside a service folder or use workspace")
-			return
-		}
-		flow, err := initRunService(ctx, project, service, standAlone, ci)
+		flow, err := initRunService(ctx, workspace, service)
 		if err != nil {
 			err = errors.Unwrap(err)
 			cli.ExitOnError(err, "Cannot init flow")
@@ -88,12 +93,16 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initRunService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool, ci bool) (*manager.Flow, error) {
+func initRunService(ctx context.Context, workspace *resources.Workspace, service *resources.Service) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("runService", wool.ThisField(service))
 	// Catch panic
 	defer w.Catch()
 
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.RunMode)
+	if !slices.Contains(resources.RuntimeContexts(), runtimeContext) {
+		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
+	}
+
+	flow, err := manager.NewFlow(ctx, workspace, service, resources.LocalEnvironment(), manager.RunMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -101,7 +110,8 @@ func initRunService(ctx context.Context, project *configurations.Project, servic
 	flow.WithInitOnly(initOnly)
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
-	flow.WithNative(native)
+	flow.WithRuntimeContext(runtimeContext)
+
 	err = flow.InitManagers(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -140,10 +150,12 @@ func stopService(ctx context.Context, flow *manager.Flow) error {
 }
 
 func init() {
-	ServiceCmd.Flags().BoolVar(&withServer, "server", false, "Begin service server")
-	ServiceCmd.Flags().BoolVar(&native, "native", false, "Native mode")
+	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
+	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
+	ServiceCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
-	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "Load service only, i.e. without running it")
+	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
+	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 }

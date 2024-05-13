@@ -6,9 +6,9 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services/services"
 
-	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -16,6 +16,7 @@ type Mode string
 
 const (
 	RunMode    Mode = "run"
+	TestMode   Mode = "test"
 	SyncMode   Mode = "sync"
 	BuildMode  Mode = "build"
 	DeployMode Mode = "deploy"
@@ -24,21 +25,24 @@ const (
 type IManager interface {
 	Unique() string
 
-	// Builder
+	// Builder interface
+
 	BuilderDoInit(ctx context.Context) (*OutputProperty, error)
 	BuilderDoLoad(ctx context.Context) (*OutputProperty, error)
 	BuilderDoBuild(ctx context.Context) (*OutputProperty, error)
 	BuilderDoSync(ctx context.Context) (*OutputProperty, error)
 	BuilderDoDeploy(ctx context.Context) (*OutputProperty, error)
 
-	// Runner
+	// Runner interface
+
 	RunnerDoLoad(ctx context.Context) (*OutputProperty, error)
 	RunnerDoInit(ctx context.Context) (*OutputProperty, error)
 	RunnerDoStart(ctx context.Context) (*OutputProperty, error)
+	RunnerDoTest(ctx context.Context) (*OutputProperty, error)
+	RunnerDoStop(ctx context.Context) (*OutputProperty, error)
+	RunnerDoDestroy(ctx context.Context) (*OutputProperty, error)
 
 	DoSetCallback(seed func(ctx context.Context, action Action) error)
-
-	Stop(ctx context.Context) error
 }
 
 /*
@@ -47,7 +51,7 @@ Manager is responsible is a wrapper around a service instance:
 - keeps around ConfigurationManager information
 */
 type Manager struct {
-	service *configurations.Service
+	service *resources.Service
 
 	world *World
 
@@ -62,7 +66,6 @@ type Manager struct {
 
 	dependencyEndpoints []*basev0.Endpoint
 	networkMappings     []*basev0.NetworkMapping
-	//providerInfos       []*basev0.ProviderInformation
 }
 
 func (manager *Manager) BuilderDoInit(ctx context.Context) (*OutputProperty, error) {
@@ -97,6 +100,18 @@ func (manager *Manager) RunnerDoStart(ctx context.Context) (*OutputProperty, err
 	return manager.Runner.Start(ctx)
 }
 
+func (manager *Manager) RunnerDoTest(ctx context.Context) (*OutputProperty, error) {
+	return manager.Runner.Test(ctx)
+}
+
+func (manager *Manager) RunnerDoStop(ctx context.Context) (*OutputProperty, error) {
+	return manager.Runner.Stop(ctx)
+}
+
+func (manager *Manager) RunnerDoDestroy(ctx context.Context) (*OutputProperty, error) {
+	return manager.Runner.Destroy(ctx)
+}
+
 func (manager *Manager) DoSetCallback(callback func(ctx context.Context, action Action) error) {
 	manager.SetCallback(callback)
 }
@@ -105,7 +120,7 @@ func (manager *Manager) Unique() string {
 	return manager.service.Unique()
 }
 
-func New(ctx context.Context, service *configurations.Service, world *World) (*Manager, error) {
+func New(ctx context.Context, service *resources.Service, world *World) (*Manager, error) {
 	w := wool.Get(ctx).In("hub.New", wool.ThisField(service))
 
 	manager := &Manager{service: service, world: world}
@@ -127,7 +142,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 	w.Debug("load agent", wool.Field("agent-pid", instance.ProcessInfo.AgentPID))
 
 	switch manager.world.Mode {
-	case RunMode:
+	case RunMode, TestMode:
 		w.Debug("load runtime")
 		err = instance.LoadRuntime(ctx, true)
 		if err != nil {
@@ -156,13 +171,6 @@ func (manager *Manager) Load(ctx context.Context) error {
 	return w.NewError("unknown mode %s", manager.world.Mode)
 }
 
-func (manager *Manager) Stop(ctx context.Context) error {
-	if manager.world.Mode == RunMode {
-		return manager.Runner.Stop(ctx)
-	}
-	return nil
-}
-
 func (manager *Manager) SetCallback(f Callback) {
 	if manager.Runner == nil {
 		return
@@ -184,7 +192,19 @@ func (hub *Hub) Manager(unique string) (IManager, error) {
 }
 
 type NoOpManager struct {
-	service *configurations.Service
+	service *resources.Service
+}
+
+func (n NoOpManager) RunnerDoTest(ctx context.Context) (*OutputProperty, error) {
+	return nil, nil
+}
+
+func (n NoOpManager) RunnerDoStop(ctx context.Context) (*OutputProperty, error) {
+	return nil, nil
+}
+
+func (n NoOpManager) RunnerDoDestroy(ctx context.Context) (*OutputProperty, error) {
+	return nil, nil
 }
 
 func (n NoOpManager) Unique() string {

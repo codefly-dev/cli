@@ -9,12 +9,12 @@ import (
 	"google.golang.org/grpc/status"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	resources "github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployment"
 	"github.com/codefly-dev/cli/pkg/services/services"
 
-	"github.com/codefly-dev/core/configurations"
 	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 	"github.com/codefly-dev/core/wool"
 )
@@ -64,12 +64,14 @@ func NewBuilder(ctx context.Context, instance *services.Instance, world *World) 
 func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(b.instance.Service))
 
+	b.instance.Builder.Workspace = b.world.Workspace
+
 	resp, err := b.instance.Builder.Load(ctx)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load b instance")
+		return nil, w.Wrapf(err, "cannot load builder instance")
 	}
 
-	w.Debug("loaded", wool.Field("endpoints", configurations.MakeManyEndpointSummary(resp.Endpoints)))
+	w.Debug("loaded", wool.Field("endpoints", resources.MakeManyEndpointSummary(resp.Endpoints)))
 
 	b.endpoints = resp.Endpoints
 
@@ -141,7 +143,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w.Debug("Build")
 
 	// Build the request
-	dockerContext, err := builder.DockerBuildContext(ctx)
+	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
@@ -225,12 +227,12 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get ConfigurationManager information")
 	}
 
-	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsOf(ctx, b.instance.Service)
+	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsFor(ctx, b.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
 
-	networkMappings, err := b.world.NetworkManager.GenerateNetworkMappings(ctx, b.instance.Service, b.endpoints, b.world.Env)
+	networkMappings, err := b.world.NetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Service, b.endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
@@ -245,20 +247,20 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	namespace, err := b.world.NetworkManager.GetNamespace(ctx, b.instance.Service, b.world.Env)
+	namespace, err := b.world.NetworkManager.GetNamespace(ctx, b.world.Env, b.world.Workspace, b.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get namespace")
 	}
 
 	// Build the request
-	dockerContext, err := builder.DockerBuildContext(ctx)
+	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
 
 	// Public endpoints need Load Balancer
-	withLoadBalancer := env.LoadBalancer != "" && configurations.HasPublicEndpoints(b.endpoints)
-	deploy, err := deployment.GetKubernetesDeployment(ctx, dockerContext, b.world.Project, b.instance.Service, b.world.Env, namespace, withLoadBalancer)
+	//withLoadBalancer := env.LoadBalancer != "" && resources.HasPublicEndpoints(b.endpoints)
+	deploy, err := deployment.GetKubernetesDeployment(ctx, dockerContext, b.world.Workspace, b.instance.Service, b.world.Env, namespace, false)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
@@ -319,10 +321,10 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 
 }
 
-func (b *Builder) KustomizeApply(ctx context.Context, service *configurations.Service) error {
+func (b *Builder) KustomizeApply(ctx context.Context, service *resources.Service) error {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
-	dir := deployment.Dir(ctx, b.world.Project)
-	dir = fmt.Sprintf("%s/applications/%s/services/%s/overlays/%s", dir, service.Application, service.Name, b.world.Env.Name)
+	dir := deployment.Dir(ctx, b.world.Workspace)
+	dir = fmt.Sprintf("%s/modules/%s/uniqueToService/%s/overlays/%s", dir, service.Module, service.Name, b.world.Env.Name)
 	err := deployment.KustomizeApply(ctx, service, b.world.Env, dir)
 	if err != nil {
 		return w.Wrapf(err, "cannot apply kustomize")

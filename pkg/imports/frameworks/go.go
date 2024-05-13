@@ -6,12 +6,12 @@ import (
 	"path"
 	"strings"
 
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"golang.org/x/mod/modfile"
 )
 
-func RecommendedGoDependencies(ctx context.Context, dir string) ([]*configurations.Agent, error) {
+func RecommendedGoDependencies(ctx context.Context, dir string) ([]*resources.Agent, error) {
 	w := wool.Get(ctx).In("RecommendedGoDependencies", wool.DirField(dir))
 	// Parse the go.mod file
 	content, err := os.ReadFile(path.Join(dir, "go.mod"))
@@ -23,7 +23,7 @@ func RecommendedGoDependencies(ctx context.Context, dir string) ([]*configuratio
 		return nil, w.Wrapf(err, "cannot parse go.mod")
 	}
 
-	agents := make(map[configurations.Agent]bool)
+	agents := make(map[resources.Agent]bool)
 	for _, require := range modFile.Require {
 		p := GuessAgentFromGoRequire(require)
 		if p == nil {
@@ -31,20 +31,20 @@ func RecommendedGoDependencies(ctx context.Context, dir string) ([]*configuratio
 		}
 		agents[*p] = true
 	}
-	var deps []*configurations.Agent
+	var deps []*resources.Agent
 	for p := range agents {
 		deps = append(deps, &p)
 	}
 	return deps, nil
 }
 
-func GuessAgentFromGoRequire(require *modfile.Require) *configurations.Agent {
+func GuessAgentFromGoRequire(require *modfile.Require) *resources.Agent {
 	if strings.Contains(require.Mod.String(), "redis") {
-		return &configurations.Agent{
+		return &resources.Agent{
 			Publisher: "codefly.ai",
 			Name:      "redis",
 			Version:   "latest",
-			Kind:      configurations.ServiceAgent,
+			Kind:      resources.ServiceAgent,
 		}
 	}
 	return nil

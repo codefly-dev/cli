@@ -1,0 +1,6 @@
+name: codefly-platform
+layout: modules
+modules:
+    - name: management
+    - name: web
+    - name: billing

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/configurations"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -24,7 +24,7 @@ func NewContext() (context.Context, func()) {
 	// Store the cancel function in the context
 	ctx = context.WithValue(ctx, cancelContextKey{}, cancel)
 
-	provider := wool.New(ctx, configurations.CLI.AsResource())
+	provider := wool.New(ctx, resources.CLI.AsResource())
 
 	provider.WithLogger(cli.GetLogger())
 

@@ -109,7 +109,7 @@ var LoginCmd = &cobra.Command{
 //	if err != nil {
 //		return nil, w.Wrapf(err, "cannot marshal payload")
 //	}
-//	resp, err := http.Post(deviceCodeURL, "application/json", bytes.NewBuffer(payloadBytes))
+//	resp, err := http.Post(deviceCodeURL, "module/json", bytes.NewBuffer(payloadBytes))
 //	if err != nil {
 //		return nil, w.Wrapf(err, "cannot post request")
 //	}
@@ -136,7 +136,7 @@ var LoginCmd = &cobra.Command{
 //	}
 //	for {
 //		payloadBytes, _ := json.Marshal(payload)
-//		resp, err := http.Post(tokenURL, "application/json", bytes.NewBuffer(payloadBytes))
+//		resp, err := http.Post(tokenURL, "module/json", bytes.NewBuffer(payloadBytes))
 //		if err != nil {
 //			panic(err)
 //		}

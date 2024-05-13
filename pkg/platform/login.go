@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
-func LoadToken(ctx context.Context, workspace *configurations.Workspace) (string, error) {
+func LoadToken(ctx context.Context, workspace *resources.Workspace) (string, error) {
 	// Load from environment variable first
 	token := os.Getenv("CODEFLY_TOKEN")
 	if token != "" {

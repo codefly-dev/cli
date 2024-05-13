@@ -23,10 +23,10 @@ var LibraryCmd = &cobra.Command{
 		//name := args[0]
 		//
 		//// Setup probably should be moved other places...getting busy
-		//destination = configurations.SolveDir(destination)
+		//destination = resources.SolveDir(destination)
 		//// We infer the path of the library from the destination
-		//logger.TODO("Make a function on project to get relative path")
-		//relativePath, err := filepath.Rel(configurations.MustCurrentProject().Dir(), destination)
+		//logger.TODO("Make a function on workspace to get relative path")
+		//relativePath, err := filepath.Rel(resources.MustCurrentWorkspace().Dir(), destination)
 		//shared.ExitOnError(err, "cannot get relative path")
 		//
 		//err = libraries.Setup(destination, override)
@@ -34,14 +34,14 @@ var LibraryCmd = &cobra.Command{
 		//
 		//logger.Message("Installing library <%s> to <%s>", name, destination)
 		//
-		//lib, err := configurations.ParseLibrary(name)
+		//lib, err := resources.ParseLibrary(name)
 		//shared.ExitOnError(err, "cannot parse library name: %s", name)
 		//lib.RelativePathOverride = relativePath
 		//
 		//err = libraries.Install(lib)
 		//shared.ExitOnError(err, "cannot install library")
 		//
-		//err = configurations.AddLibraryUsage(lib, destination)
+		//err = resources.AddLibraryUsage(lib, destination)
 		//shared.ExitOnError(err, "cannot add library usage")
 	},
 }

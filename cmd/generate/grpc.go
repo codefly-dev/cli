@@ -10,8 +10,8 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/configurations/languages"
+	"github.com/codefly-dev/core/languages"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
@@ -29,24 +29,22 @@ var GRPCCmd = &cobra.Command{
 
 		cli.RegisterCleanup(services.ClearAgents)
 
-		project := common.Project(ctx)
-		input, err := configurations.ParseService(serviceInput)
-		cli.ExitOnError(err, "Cannot parse service input")
-		service, err := project.LoadService(ctx, input)
-		cli.ExitOnError(err, "Cannot load service")
+		workspace := common.RequireWorkspace(ctx)
+		svc, err := workspace.FindUniqueServiceByName(ctx, serviceInput)
+		cli.ExitOnError(err, "Cannot find service from input")
 
 		destination, err = shared.SolvePath(destination)
 		cli.ExitOnError(err, "Cannot solve path")
 		language := languages.FromString(languageInput)
 		cli.ExitIf(language == languages.NotSupported, "Language not supported")
-		err = generateGRPC(ctx, service, language, destination)
+		err = generateGRPC(ctx, svc, language, destination)
 		cli.ExitOnError(err, "Cannot generate gRPC client code")
 		cli.Header(1, "Work done!")
 		cli.Done()
 	},
 }
 
-func generateGRPC(ctx context.Context, service *configurations.Service, language languages.Language, destination string) error {
+func generateGRPC(ctx context.Context, service *resources.Service, language languages.Language, destination string) error {
 	return generators.GRPC(ctx, service, language, destination)
 }
 

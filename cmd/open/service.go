@@ -6,7 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -18,7 +18,7 @@ var ServiceCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
 
-		provider := wool.New(ctx, configurations.CLI.AsResource())
+		provider := wool.New(ctx, resources.CLI.AsResource())
 
 		provider.WithLogger(cli.GetLogger())
 		defer provider.Done()

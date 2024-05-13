@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -71,6 +72,11 @@ func padRight(str string, length int) string {
 func Log(identifier *wool.Identifier, log *wool.Log) {
 	sep := "||"
 	if log.Level == wool.FORWARD {
+		for _, s := range silent {
+			if strings.HasPrefix(identifier.Unique, s) {
+				return
+			}
+		}
 		sep = ">>"
 	}
 	style := GetBaseStyle(identifier.Unique)
@@ -139,6 +145,7 @@ func (cp *ColorPicker) PickStyle(unique string) lipgloss.Style {
 }
 
 var styles map[string]lipgloss.Style
+var silent []string
 
 func init() {
 	styles = map[string]lipgloss.Style{}
@@ -151,4 +158,10 @@ func GetBaseStyle(unique string) lipgloss.Style {
 	style := NewColorPicker().PickStyle(unique)
 	styles[unique] = style
 	return style
+}
+
+func WithSilence(services []*resources.ServiceWithModule) {
+	for _, s := range services {
+		silent = append(silent, s.Unique())
+	}
 }

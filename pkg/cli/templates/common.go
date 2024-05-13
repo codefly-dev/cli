@@ -1,11 +1,11 @@
 package templates
 
-import "github.com/codefly-dev/core/configurations"
+import "github.com/codefly-dev/core/resources"
 
 type Display struct {
-	*configurations.Project
-	*configurations.Application
-	*configurations.Service
+	*resources.Workspace
+	*resources.Module
+	*resources.Service
 	Other map[string]interface{}
 }
 
@@ -18,17 +18,17 @@ func (d *Display) With(key string, value interface{}) *Display {
 	return d
 }
 
-func (d *Display) WithProject(project *configurations.Project) *Display {
-	d.Project = project
+func (d *Display) WithWorkspace(workspace *resources.Workspace) *Display {
+	d.Workspace = workspace
 	return d
 }
 
-func (d *Display) WithApplication(application *configurations.Application) *Display {
-	d.Application = application
+func (d *Display) WithModule(module *resources.Module) *Display {
+	d.Module = module
 	return d
 }
 
-func (d *Display) WithService(service *configurations.Service) *Display {
+func (d *Display) WithService(service *resources.Service) *Display {
 	d.Service = service
 	return d
 }

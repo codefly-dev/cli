@@ -6,11 +6,11 @@ import (
 	"time"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	"github.com/codefly-dev/core/resources"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/configurations"
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 	"github.com/codefly-dev/core/wool"
 )
@@ -43,8 +43,11 @@ type Runner struct {
 	outputPropertyForLoad  *RunnerLoadManager
 	outputPropertyForInit  *RunnerInitManager
 	outputPropertyForStart *RunnerStartManager
+	outputPropertyForTest  *RunnerTestManager
 
 	stopped chan struct{}
+
+	runtimeContext string
 }
 
 type Callback func(ctx context.Context, action Action) error
@@ -60,6 +63,7 @@ func NewRunner(ctx context.Context, instance *services.Instance, world *World) (
 		outputPropertyForLoad:  NewRunnerLoadManager(instance.Unique()),
 		outputPropertyForInit:  NewRunnerInitManager(instance.Unique()),
 		outputPropertyForStart: NewRunnerStartManager(instance.Unique()),
+		outputPropertyForTest:  NewRunnerTestManager(instance.Unique()),
 
 		stopped: make(chan struct{}),
 	}
@@ -73,6 +77,8 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get environment")
 	}
+
+	runner.instance.Runtime.Workspace = runner.world.Workspace
 
 	resp, err := runner.instance.Runtime.Load(ctx, env)
 
@@ -98,7 +104,7 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	w.Debug("loaded",
-		wool.Field("endpoints", configurations.MakeManyEndpointSummary(resp.Endpoints)))
+		wool.Field("endpoints", resources.MakeManyEndpointSummary(resp.Endpoints)))
 
 	runner.endpoints = resp.Endpoints
 
@@ -141,28 +147,38 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
-	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsOf(ctx, runner.instance.Service)
+	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(ctx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
 	}
 
-	networkMappings, err := runner.world.NetworkManager.GenerateNetworkMappings(ctx, runner.instance.Service, runner.endpoints, runner.world.Env)
+	networkMappings, err := runner.world.NetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Service, runner.endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
 
 	w.Debug("configuration",
-		wool.Field("network mappings", configurations.MakeManyNetworkMappingSummary(networkMappings)),
-		wool.Field("dependencies endpoints", configurations.MakeManyEndpointSummary(dependenciesEndpoints)),
-		wool.Field("service configuration", configurations.MakeConfigurationSummary(conf)),
-		wool.Field("dependencies configurations", configurations.MakeManyConfigurationSummary(dependenciesConfigurations)))
+		wool.Field("network mappings", resources.MakeManyNetworkMappingSummary(networkMappings)),
+		wool.Field("dependencies endpoints", resources.MakeManyEndpointSummary(dependenciesEndpoints)),
+		wool.Field("service configuration", resources.MakeConfigurationSummary(conf)),
+		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
 
-	resp, err := runner.instance.Runtime.Init(ctx, &runtimev0.InitRequest{
+	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
+	}
+	req := &runtimev0.InitRequest{
+		RuntimeContext:             runtimeContext,
 		Configuration:              conf,
 		ProposedNetworkMappings:    networkMappings,
 		DependenciesEndpoints:      dependenciesEndpoints,
 		DependenciesConfigurations: dependenciesConfigurations,
-	})
+	}
+	err = resources.Validate(req)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot validate init request")
+	}
+	resp, err := runner.instance.Runtime.Init(ctx, req)
 	if err != nil {
 		if ContextCancelled(err) {
 			return nil, nil
@@ -181,14 +197,14 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
 
-	err = runner.world.ConfigurationManager.ExposeConfiguration(ctx, runner.instance.Service, resp.Configurations...)
+	err = runner.world.ConfigurationManager.ExposeConfiguration(ctx, runner.instance.Service, resp.RuntimeConfigurations...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration infos")
 	}
 
-	w.Debug("init", wool.Field("configuration info", configurations.MakeManyConfigurationSummary(resp.Configurations)))
+	w.Debug("init", wool.Field("configuration info", resources.MakeManyConfigurationSummary(resp.RuntimeConfigurations)))
 
-	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: resp.NetworkMappings, configurations: resp.Configurations})
+	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: resp.NetworkMappings, configurations: resp.RuntimeConfigurations})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
@@ -215,7 +231,13 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	resp, err := runner.instance.Runtime.Start(ctx, &runtimev0.StartRequest{DependenciesNetworkMappings: dependenciesNetworkMappings})
+	req := &runtimev0.StartRequest{DependenciesNetworkMappings: dependenciesNetworkMappings}
+	err = resources.Validate(req)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot validate start request")
+	}
+
+	resp, err := runner.instance.Runtime.Start(ctx, req)
 
 	if err != nil {
 		if ContextCancelled(err) {
@@ -242,6 +264,48 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
+func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance.Service))
+	w.Debug("test")
+
+	err := runner.StopIfNeeded(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot stopAfter service instance if needed")
+	}
+
+	req := &runtimev0.TestRequest{}
+	err = resources.Validate(req)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot validate start request")
+	}
+
+	resp, err := runner.instance.Runtime.Test(ctx, req)
+
+	if err != nil {
+		if ContextCancelled(err) {
+			return nil, nil
+		}
+		return nil, w.Wrapf(err, "context cancelled: cannot stopAfter service instance")
+	}
+
+	if resp.Status != nil && resp.Status.State != runtimev0.TestStatus_SUCCESS {
+		return nil, w.NewError("service instance testing failed")
+	}
+
+	err = runner.outputPropertyForTest.Set(ctx, &RunnerTestOutput{})
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot set outputProperty for start")
+	}
+
+	outputProperty, err := runner.outputPropertyForLoad.Process(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot process outputProperty for start")
+	}
+
+	runner.isStarted = true
+	return outputProperty, nil
+}
+
 func (runner *Runner) StopIfNeeded(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.StopIfNeeded", wool.ThisField(runner.instance.Service))
 	w.Debug("stopIfNeeded", wool.Field("isStarted", runner.isStarted), wool.Field("isHotReloading", runner.instance.Runtime.IsHotReloading))
@@ -252,7 +316,7 @@ func (runner *Runner) StopIfNeeded(ctx context.Context) error {
 		return nil
 	}
 
-	err := runner.Stop(ctx)
+	_, err := runner.Stop(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot stopAfter service: %s", runner.Unique())
 	}
@@ -261,8 +325,8 @@ func (runner *Runner) StopIfNeeded(ctx context.Context) error {
 
 }
 
-func (runner *Runner) Stop(ctx context.Context) error {
-	w := wool.Get(ctx).In("service.Stop", wool.ThisField(runner.instance.Service))
+func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance.Service))
 	w.Debug("stopping")
 	// Build the request
 	runner.isStarted = false
@@ -273,9 +337,21 @@ func (runner *Runner) Stop(ctx context.Context) error {
 	defer cancel()
 	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
 	if err != nil {
-		return w.Wrapf(err, "cannot stopAfter service instance: %s", runner.Unique())
+		return nil, w.Wrapf(err, "cannot stop service instance: %s", runner.Unique())
 	}
-	return nil
+	return &OutputProperty{}, nil
+}
+
+func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance.Service))
+	w.Debug("shutting down")
+	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err := runner.instance.Runtime.Destroy(stoppingContext, &runtimev0.DestroyRequest{})
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot shutdown service instance: %s", runner.Unique())
+	}
+	return &OutputProperty{}, nil
 }
 
 // Follow calls the agent for information and generate a channel of events for the service:
@@ -327,9 +403,6 @@ func (runner *Runner) Unique() string {
 	return runner.instance.Service.Unique()
 }
 
-func (runner *Runner) WithNative(native bool) {
-	if runner == nil {
-		return
-	}
-	runner.instance.Runtime.Native = native
+func (runner *Runner) WithRuntimeContext(runtimeContext string) {
+	runner.runtimeContext = runtimeContext
 }

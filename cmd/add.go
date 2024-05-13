@@ -12,7 +12,7 @@ var AddCmd = &cobra.Command{
 }
 
 func init() {
-	AddCmd.AddCommand(add.ApplicationCmd)
+	AddCmd.AddCommand(add.ModuleCmd)
 	AddCmd.AddCommand(add.ServiceCmd)
 	AddCmd.AddCommand(add.ServiceDependencyCmd)
 }

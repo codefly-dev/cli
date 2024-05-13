@@ -3,12 +3,12 @@ package services
 import (
 	"context"
 
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/core/agents/manager"
 	coreservices "github.com/codefly-dev/core/agents/services"
 
-	"github.com/codefly-dev/core/configurations"
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 )
 
@@ -24,7 +24,7 @@ func init() {
 	runtimesPid = make(map[string]int)
 }
 
-func LoadRuntime(ctx context.Context, service *configurations.Service) (*coreservices.RuntimeAgent, error) {
+func LoadRuntime(ctx context.Context, service *resources.Service) (*coreservices.RuntimeAgent, error) {
 	w := wool.Get(ctx).In("services.LoadRuntime", wool.ThisField(service))
 	if service == nil || service.Agent == nil {
 		return nil, w.NewError("agent cannot be nil")
@@ -36,7 +36,7 @@ func LoadRuntime(ctx context.Context, service *configurations.Service) (*coreser
 
 	runtime, process, err := manager.Load[coreservices.ServiceRuntimeAgentContext, coreservices.RuntimeAgent](
 		ctx,
-		service.Agent.Of(configurations.RuntimeServiceAgent),
+		service.Agent.Of(resources.RuntimeServiceAgent),
 		service.Unique())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service runtime agent")

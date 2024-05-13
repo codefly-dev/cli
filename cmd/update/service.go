@@ -4,10 +4,10 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/services/services"
+	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/configurations"
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +22,7 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func updateService(service *configurations.Service) {
+func updateService(service *resources.Service) {
 	ctx, done := common.NewContext()
 	defer done()
 

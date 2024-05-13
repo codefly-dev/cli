@@ -7,7 +7,7 @@ import (
 
 	"github.com/asottile/dockerfile"
 	"github.com/codefly-dev/cli/pkg/imports/frameworks"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 )
@@ -15,7 +15,12 @@ import (
 func CheckDocker(ctx context.Context, dir string) (*Recommendation, error) {
 	w := wool.Get(ctx).In("CheckDocker<%s>", wool.DirField(dir))
 	file := path.Join(dir, "Dockerfile")
-	if !shared.FileExists(file) {
+
+	exists, err := shared.FileExists(ctx, file)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot check Dockerfile")
+	}
+	if !exists {
 		return nil, nil
 	}
 	// Parse the Dockerfile
@@ -27,7 +32,7 @@ func CheckDocker(ctx context.Context, dir string) (*Recommendation, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot recommend bases")
 	}
-	inc, err := includes(dir, cmds)
+	inc, err := includes(ctx, dir, cmds)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot recommend includes")
 	}
@@ -74,13 +79,17 @@ func RecommendBaseFromDocker(ctx context.Context, image string) (*MainServiceRec
 	})
 }
 
-func includes(dir string, cmds []dockerfile.Command) ([]shared.CopyInstruction, error) {
+func includes(ctx context.Context, dir string, cmds []dockerfile.Command) ([]shared.CopyInstruction, error) {
 	var results []shared.CopyInstruction
 	for _, cmd := range cmds {
 		if cmd.Cmd == "COPY" || cmd.Cmd == "ADD" {
 			// Only add existing thing
 			p := path.Join(dir, cmd.Value[0])
-			if !shared.FileExists(p) {
+			exists, err := shared.FileExists(ctx, p)
+			if err != nil {
+				return nil, err
+			}
+			if !exists {
 				continue
 			}
 			results = append(results, shared.CopyInstruction{Name: cmd.Value[0], Path: p})
@@ -89,7 +98,7 @@ func includes(dir string, cmds []dockerfile.Command) ([]shared.CopyInstruction, 
 	return results, nil
 }
 
-func recommendedDependencies(ctx context.Context, dir string, kind string) ([]*configurations.Agent, error) {
+func recommendedDependencies(ctx context.Context, dir string, kind string) ([]*resources.Agent, error) {
 	switch kind {
 	case "go":
 		return frameworks.RecommendedGoDependencies(ctx, dir)

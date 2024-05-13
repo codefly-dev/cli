@@ -40,7 +40,7 @@ var ServerCmd = &cobra.Command{
 			select {
 			case err := <-errs:
 				if err != nil {
-					fmt.Printf("Got applications run error: %v\n", err)
+					fmt.Printf("Got modules run error: %v\n", err)
 				}
 				break loop
 			case <-ctx.Done():

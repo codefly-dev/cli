@@ -21,8 +21,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/agents"
-	"github.com/codefly-dev/core/configurations"
 	cli "github.com/codefly-dev/core/generated/go/cli/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
@@ -42,7 +42,7 @@ type Server struct {
 	config     *Configuration
 	gRPC       *grpc.Server
 	logChannel chan *observabilityv0.Log
-	workspace  *configurations.Workspace
+	workspace  *resources.Workspace
 	Wool       *wool.Wool
 }
 
@@ -50,12 +50,20 @@ func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty
 	return &emptypb.Empty{}, nil
 }
 
-func (s *Server) StopFlow(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty, error) {
+func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.StopFlowResponse, error) {
 	err := manager.CurrentFlow().Stop()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &emptypb.Empty{}, nil
+	return &cli.StopFlowResponse{}, nil
+}
+
+func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (*cli.DestroyFlowResponse, error) {
+	err := manager.CurrentFlow().Stop()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &cli.DestroyFlowResponse{}, nil
 }
 
 func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.FlowStatus, error) {
@@ -65,17 +73,55 @@ func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.
 	}, nil
 }
 
-func (s *Server) GetSharedConfiguration(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationResponse, error) {
+func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationResponse, error) {
 	flow := manager.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
-	unique := configurations.ServiceUnique(req.Application, req.Service)
-	confs, err := flow.ConfigurationManager.GetSharedServiceConfiguration(ctx, unique)
+	unique := resources.ServiceUnique(req.Module, req.Service)
+	svc, err := flow.ServiceFromUnique(unique)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	conf, err := flow.ConfigurationManager.GetServiceConfiguration(ctx, svc)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &cli.GetConfigurationResponse{
+		Configuration: conf,
+	}, nil
+}
+
+func (s *Server) GetDependenciesConfigurations(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationsResponse, error) {
+	flow := manager.CurrentFlow()
+	if flow == nil {
+		return nil, status.Error(codes.Internal, "nothing running")
+	}
+	unique := resources.ServiceUnique(req.Module, req.Service)
+	svc, err := flow.ServiceFromUnique(unique)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	confs, err := flow.SharedState.GetDependentConfigurationsFor(ctx, svc)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &cli.GetConfigurationsResponse{
+		Configurations: confs,
+	}, nil
+}
+
+func (s *Server) GetRuntimeConfigurations(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationsResponse, error) {
+	flow := manager.CurrentFlow()
+	if flow == nil {
+		return nil, status.Error(codes.Internal, "nothing running")
+	}
+	unique := resources.ServiceUnique(req.Module, req.Service)
+	confs, err := flow.ConfigurationManager.GetSharedServiceConfiguration(ctx, unique)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &cli.GetConfigurationsResponse{
 		Configurations: confs,
 	}, nil
 }
@@ -85,7 +131,7 @@ func (s *Server) GetAddresses(ctx context.Context, req *cli.GetAddressRequest) (
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
-	address, err := flow.GetAddressForEndpoint(ctx, req.Application, req.Service, req.Endpoint)
+	address, err := flow.GetAddressForEndpoint(ctx, req.Module, req.Service, req.Endpoint)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -102,9 +148,9 @@ func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*cli.Acti
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
 	return &cli.ActiveResponse{
-		Project:     flow.ActiveProject().Name,
-		Application: flow.Origin().Application,
-		Service:     flow.Origin().Name,
+		Workspace: flow.ActiveWorkspace().Name,
+		Module:    flow.Origin().Module,
+		Service:   flow.Origin().Name,
 	}, nil
 
 }
@@ -116,7 +162,7 @@ func (s *Server) ActiveLogHistory(ctx context.Context, request *observabilityv0.
 /* Overall information */
 
 func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentInformationRequest) (*agentv0.AgentInformation, error) {
-	agent, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, request.Agent)
+	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, request.Agent)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -128,60 +174,22 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentI
 
 }
 
-func (s *Server) GetProjects(ctx context.Context, empty *emptypb.Empty) (*cli.GetProjectsResponse, error) {
-	var projects []string
-	if s.workspace == nil {
-		project := common.Project(ctx)
-		if project == nil {
-			return nil, status.Error(codes.Internal, "no project")
-		}
-		projects = []string{project.Name}
-	} else {
-		for _, project := range s.workspace.Projects {
-			projects = append(projects, project.Name)
-		}
-	}
-	return &cli.GetProjectsResponse{
-		Projects: projects,
-	}, nil
-}
-
-func (s *Server) getProject(ctx context.Context, name string) (*configurations.Project, error) {
-	if s.workspace == nil {
-		project := common.Project(ctx)
-		if project == nil {
-			return nil, status.Error(codes.Internal, "no project")
-		}
-		if project.Name != name {
-			return nil, status.Error(codes.Internal, "project mismatch")
-		}
-		return project, nil
-	}
-	return s.workspace.LoadProjectFromName(ctx, name)
-}
-
-func (s *Server) GetProjectInventory(ctx context.Context, request *cli.ProjectRequest) (*basev0.Project, error) {
-	project, err := s.getProject(ctx, request.Project)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-	view, err := architecture.LoadProject(ctx, project)
+func (s *Server) GetWorkspaceInventory(ctx context.Context, request *emptypb.Empty) (*basev0.Workspace, error) {
+	workspace := common.RequireWorkspace(ctx)
+	view, err := architecture.LoadWorkspace(ctx, workspace)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return view, nil
 }
 
-func (s *Server) GetProjectServiceDependencyGraph(ctx context.Context, request *cli.ProjectRequest) (*observabilityv0.GraphResponse, error) {
+func (s *Server) GetWorkspaceServiceDependencyGraph(ctx context.Context, request *emptypb.Empty) (*observabilityv0.GraphResponse, error) {
 	return &observabilityv0.GraphResponse{}, nil
 }
 
-func (s *Server) GetProjectPublicApplicationsDependencyGraph(ctx context.Context, request *cli.ProjectRequest) (*cli.MultiGraphResponse, error) {
-	project, err := s.getProject(ctx, request.Project)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-	gs, err := architecture.LoadPublicApplicationGraph(ctx, project)
+func (s *Server) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, request *emptypb.Empty) (*cli.MultiGraphResponse, error) {
+	workspace := common.RequireWorkspace(ctx)
+	gs, err := architecture.LoadPublicModuleGraph(ctx, workspace)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -208,17 +216,20 @@ func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 	if source.IsSystem() {
 		return
 	}
-	service, err := configurations.ParseServiceUnique(source.Unique)
+	service, err := resources.ParseServiceWithOptionalModule(source.Unique)
 	if err != nil {
 		s.Wool.Error("cannot parse service from source", wool.Field("source", source), wool.Field("error", err))
 		return
 	}
+	if source.Kind != "service" {
+		return
+	}
 	logEntry := &observabilityv0.Log{
-		At:          timestamppb.New(time.Now()),
-		Application: service.Application,
-		Service:     service.Name,
-		Message:     removeANSICodes(log.String()),
-		Kind:        source.Kind,
+		At:      timestamppb.New(time.Now()),
+		Module:  service.Module,
+		Service: service.Name,
+		Message: removeANSICodes(log.String()),
+		Kind:    source.Kind,
 	}
 	go func() {
 		s.logChannel <- logEntry
@@ -234,7 +245,7 @@ func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {
 	return nil
 }
 
-func NewServer(c *Configuration, w *configurations.Workspace) (*Server, error) {
+func NewServer(c *Configuration, w *resources.Workspace) (*Server, error) {
 	grpcServer := grpc.NewServer()
 	bufferSize := 100
 	s := Server{

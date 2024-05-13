@@ -7,7 +7,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/core/wool"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPlaybookRunNoDependencies(t *testing.T) {
@@ -29,10 +29,10 @@ func TestPlaybookRunNoDependencies(t *testing.T) {
 
 	// Run
 	err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	expected := createActionsWithRound(1, start, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
-	assert.Equal(t, expected, playbook.Executed())
+	require.Equal(t, expected, playbook.Executed())
 
 }
 
@@ -45,7 +45,7 @@ func TestPlaybookRunNoDependenciesWithSignaller(t *testing.T) {
 	start := "billing/no_dependencies"
 
 	err := data.policy.Restrict(ctx, start)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
 
@@ -69,7 +69,7 @@ func TestPlaybookRunNoDependenciesWithSignaller(t *testing.T) {
 		select {
 		case <-playbook.Signals():
 			expected := createActionsWithRound(1, start, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
-			assert.Equal(t, expected, playbook.Executed())
+			require.Equal(t, expected, playbook.Executed())
 			return
 		}
 	}
@@ -84,7 +84,7 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 	org := "management/organization"
 
 	err := data.policy.Restrict(ctx, start)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
 	playbook.WithPolicy(data.policy)
@@ -96,9 +96,9 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 
 	// Run
 	err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	expected := createCombinedActionsWithRound(1, []string{org, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
-	assert.Equal(t, expected, playbook.Executed())
+	require.Equal(t, expected, playbook.Executed())
 
 }
 
@@ -120,9 +120,9 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 		})
 
 		err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad)
-		assert.Equal(t, expected, playbook.Executed())
+		require.Equal(t, expected, playbook.Executed())
 	}
 
 	{
@@ -134,9 +134,9 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 		})
 
 		err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad, manager.RuntimeInit)
-		assert.Equal(t, expected, playbook.Executed())
+		require.Equal(t, expected, playbook.Executed())
 	}
 
 	{
@@ -148,9 +148,9 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 		})
 
 		err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
-		assert.Equal(t, expected, playbook.Executed())
+		require.Equal(t, expected, playbook.Executed())
 	}
 
 }
@@ -190,7 +190,7 @@ func TestPlaybookRunNoDependenciesWithRestart(t *testing.T) {
 		}
 	}
 signalled:
-	assert.Equal(t, expected, playbook.Executed())
+	require.Equal(t, expected, playbook.Executed())
 
 	// Now we will send a new action
 	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -198,11 +198,11 @@ signalled:
 	})
 
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: start})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	expected = append(expected, createActionsWithRound(2, start, manager.RuntimeInit, manager.RuntimeStart)...)
 
 	<-stopped
-	assert.Equal(t, expected, playbook.Executed())
+	require.Equal(t, expected, playbook.Executed())
 }
 
 func TestPlaybookRunOneDependencyWithRestartNoPropagation(t *testing.T) {
@@ -214,7 +214,7 @@ func TestPlaybookRunOneDependencyWithRestartNoPropagation(t *testing.T) {
 	org := "management/organization"
 
 	err := data.policy.Restrict(ctx, start)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
 
@@ -245,7 +245,7 @@ func TestPlaybookRunOneDependencyWithRestartNoPropagation(t *testing.T) {
 	}
 signalled:
 	executed := playbook.Executed()
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
 	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -253,14 +253,14 @@ signalled:
 	})
 
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	<-stopped
 
 	// New ones
 	executed = playbook.Executed()[len(executed):]
 	expected = createActionsWithRound(2, org, manager.RuntimeInit, manager.RuntimeStart)
 
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 }
 
 func TestPlaybookRunOneDependencyWithRestartWithPropagation(t *testing.T) {
@@ -274,7 +274,7 @@ func TestPlaybookRunOneDependencyWithRestartWithPropagation(t *testing.T) {
 	org := "management/organization"
 
 	err := data.policy.Restrict(ctx, start)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
 
@@ -304,7 +304,7 @@ func TestPlaybookRunOneDependencyWithRestartWithPropagation(t *testing.T) {
 signalled:
 	expected := createCombinedActionsWithRound(1, []string{org, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
 	executed := playbook.Executed()
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
 	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -312,13 +312,13 @@ signalled:
 	})
 
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	<-stopped
 	// New ones
 	executed = playbook.Executed()[len(executed):]
 	expected = createCombinedActionsWithRound(2, []string{org, start}, manager.RuntimeInit, manager.RuntimeStart)
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 }
 
 func TestPlaybookRunTwoDependenciesWithRestartWithPropagation(t *testing.T) {
@@ -360,7 +360,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagation(t *testing.T) {
 signalled:
 	expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
 	executed := playbook.Executed()
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
 	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -368,7 +368,7 @@ signalled:
 	})
 
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	<-stopped
 	// New ones
@@ -379,7 +379,7 @@ signalled:
 	// Need some recursive...
 	expected = createCombinedActionsWithRound(2, []string{org, accounts}, manager.RuntimeInit, manager.RuntimeStart)
 	expected = append(expected, createActionsWithRound(2, start, manager.RuntimeInit, manager.RuntimeStart)...)
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 }
 
 func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddle(t *testing.T) {
@@ -424,7 +424,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddle(t *testing
 signalled:
 	expected := createCombinedActionsWithRound(1, []string{org, accounts, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
 	executed := playbook.Executed()
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
 	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -432,14 +432,14 @@ signalled:
 	})
 
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	<-stopped
 	// New ones
 	executed = playbook.Executed()[len(executed):]
 	// We don't propagate to start
 	expected = createCombinedActionsWithRound(2, []string{org, accounts}, manager.RuntimeInit, manager.RuntimeStart)
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 }
 
 type onExecFailsOn struct {
@@ -504,7 +504,7 @@ func TestErrorOnLoadNoDependencies(t *testing.T) {
 signalled:
 	expected := createCombinedActionsWithRound(1, []string{start}, manager.RuntimeLoad)
 	executed := playbook.Executed()
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
 	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -512,14 +512,14 @@ signalled:
 	})
 
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeLoad, Service: start})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	<-stopped
 	// New ones
 	executed = playbook.Executed()[len(executed):]
 	// We don't propagate to start
 	expected = createCombinedActionsWithRound(2, []string{start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 
 }
 
@@ -562,7 +562,7 @@ signalled:
 	// Fail at org
 	expected = append(expected, createActionsWithRound(1, org, manager.RuntimeInit)...)
 	executed := playbook.Executed()
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 
 	// Now we will send a new action from the dependency of start
 	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -570,12 +570,12 @@ signalled:
 	})
 
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	<-stopped
 	// New ones
 	executed = playbook.Executed()[len(executed):]
 	expected = createCombinedActionsWithRound(2, []string{org, start}, manager.RuntimeInit, manager.RuntimeStart)
-	assert.Equal(t, expected, executed)
+	require.Equal(t, expected, executed)
 
 }

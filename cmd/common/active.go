@@ -4,129 +4,90 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/wool"
+	resources "github.com/codefly-dev/core/resources"
 )
 
 type ActiveContext struct {
-	Workspace   *configurations.Workspace
-	Project     *configurations.Project
-	Application *configurations.Application
-	Service     *configurations.Service
+	Workspace *resources.Workspace
+	Module    *resources.Module
+	Service   *resources.Service
 }
 
 var _active *ActiveContext
 
 func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
-	w := wool.Get(ctx).In("loadActiveContext")
 	if _active != nil {
 		return _active, nil
 	}
 	active := &ActiveContext{}
-	workspace, err := configurations.LoadWorkspace(ctx, configurations.LocalWorkspace)
+
+	// Override path
+	workspace, err := resources.FindWorkspaceUp(ctx)
 	if err != nil {
-		w.Debug("running without workspace: run `codefly init` for context magic")
+		return nil, err
 	}
 
 	active.Workspace = workspace
-	// Override path
-	project, err := configurations.LoadProjectFromPath(ctx)
-	if err != nil {
-		return nil, err
-	}
-	pathProjectOverride := project != nil
 
-	if project == nil {
-		if workspace != nil {
-			project, err = workspace.LoadActiveProject(ctx)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	active.Project = project
-	application, err := configurations.LoadApplicationFromPath(ctx)
+	module, err := resources.LoadModuleFromPath(ctx)
 	if err != nil {
 		return nil, err
 	}
-	pathApplicationOverride := application != nil
-	if application == nil {
-		if !pathProjectOverride && workspace != nil {
-			if project != nil {
-				application, err = workspace.LoadActiveApplication(ctx, project.Name)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-	}
-	active.Application = application
 
-	service, err := configurations.LoadServiceFromPath(ctx)
+	active.Module = module
+
+	service, err := resources.LoadServiceFromPath(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if service == nil {
-		if !pathApplicationOverride && workspace != nil {
-			if project != nil && application != nil {
-				service, err = workspace.LoadActiveService(ctx, project.Name, application.Name)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-	}
+
 	active.Service = service
 	_active = active
 	return active, nil
 }
 
-func Service(ctx context.Context) *configurations.Service {
+func Service(ctx context.Context) *resources.Service {
 	active, err := LoadActiveContext(ctx)
 	cli.ExitOnError(err, "cannot load active context")
 	return active.Service
 }
 
-func RequireService(ctx context.Context) *configurations.Service {
+func RequireService(ctx context.Context) *resources.Service {
 	service := Service(ctx)
 	if service == nil {
 		cli.Error("No service found: run inside a service folder or use workspace")
+		cli.Exit()
 	}
 	return service
 }
 
-func Application(ctx context.Context) *configurations.Application {
+func Module(ctx context.Context) *resources.Module {
 	active, err := LoadActiveContext(ctx)
 	cli.ExitOnError(err, "cannot load active context")
-	return active.Application
+	return active.Module
 }
 
-func RequireApplication(ctx context.Context) *configurations.Application {
-	application := Application(ctx)
-	if application == nil {
-		cli.Error("No application found: run inside an application folder or use workspace")
-	}
-	return application
-}
-
-func Project(ctx context.Context) *configurations.Project {
-	active, err := LoadActiveContext(ctx)
-	cli.ExitOnError(err, "cannot load active context")
-	cli.ExitIf(active.Project == nil, "no active project")
-	return active.Project
-}
-
-func RequireProject(ctx context.Context) *configurations.Project {
-	project := Project(ctx)
-	if project == nil {
-		cli.Error("No project found: run inside a project folder or use workspace")
+func RequireModule(ctx context.Context) *resources.Module {
+	module := Module(ctx)
+	if module == nil {
+		cli.Error("No module found: run inside an module folder or use workspace")
 		cli.Exit()
 	}
-	return project
+	return module
 }
 
-func Workspace(ctx context.Context) *configurations.Workspace {
+func Workspace(ctx context.Context) *resources.Workspace {
 	active, err := LoadActiveContext(ctx)
 	cli.ExitOnError(err, "cannot load active context")
+	cli.ExitIf(active.Workspace == nil, "no active workspace")
 	return active.Workspace
+}
+
+func RequireWorkspace(ctx context.Context) *resources.Workspace {
+	workspace := Workspace(ctx)
+	if workspace == nil {
+		cli.Error("No workspace found: run inside a workspace folder or use workspace")
+		cli.Exit()
+	}
+	return workspace
 }

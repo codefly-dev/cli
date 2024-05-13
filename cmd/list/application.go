@@ -4,14 +4,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// ApplicationCmd represents the run command
-var ApplicationCmd = &cobra.Command{
-	Use:   "applications",
-	Short: "List all applications for the project",
+// ModuleCmd represents the run command
+var ModuleCmd = &cobra.Command{
+	Use:   "modules",
+	Short: "List all modules for the workspace",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		//apps, err := configurations.ListApplications()
-		//shared.ExitOnError(err, "cannot list applications")
-		//fmt.Println("Applications:", apps)
+		//mods, err := resources.ListModules()
+		//shared.ExitOnError(err, "cannot list modules")
+		//fmt.Println("Modules:", apps)
 	},
 }

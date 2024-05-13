@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/services/manager"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSyncPolicyNoDependencies(t *testing.T) {
@@ -16,19 +16,19 @@ func TestSyncPolicyNoDependencies(t *testing.T) {
 	start := "billing/no_dependencies"
 
 	err := data.policy.Restrict(ctx, start)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.BuilderBegin, Service: start})
-	assert.NoError(t, err)
-	assert.Equal(t, createActions(start, manager.BuilderLoad), actions, "Expected no action to be triggered")
+	require.NoError(t, err)
+	require.Equal(t, createActions(start, manager.BuilderLoad), actions, "Expected no action to be triggered")
 
 	actions, err = data.policy.Execute(ctx, manager.Action{Type: manager.BuilderLoad, Service: start})
-	assert.NoError(t, err)
-	assert.Equal(t, createActions(start, manager.BuilderInit), actions, "Expected no action to be triggered")
+	require.NoError(t, err)
+	require.Equal(t, createActions(start, manager.BuilderInit), actions, "Expected no action to be triggered")
 
 	actions, err = data.policy.Execute(ctx, manager.Action{Type: manager.BuilderInit, Service: start})
-	assert.NoError(t, err)
-	assert.Equal(t, createActions(start, manager.BuilderSync), actions, "Expected no action to be triggered")
+	require.NoError(t, err)
+	require.Equal(t, createActions(start, manager.BuilderSync), actions, "Expected no action to be triggered")
 
 }
 
@@ -41,9 +41,9 @@ func TestSyncPolicyOneDependency(t *testing.T) {
 	org := "management/organization"
 
 	err := data.policy.Restrict(ctx, start)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	actions, err := data.policy.Execute(ctx, manager.Action{Type: manager.BuilderBegin, Service: start})
-	assert.NoError(t, err)
-	assert.Equal(t, createCombinedActions([]string{org, start}, manager.BuilderLoad), actions, "Expected no action to be triggered")
+	require.NoError(t, err)
+	require.Equal(t, createCombinedActions([]string{org, start}, manager.BuilderLoad), actions, "Expected no action to be triggered")
 }

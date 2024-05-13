@@ -14,7 +14,11 @@ import (
 func CheckDockerCompose(ctx context.Context, dir string) (*Recommendation, error) {
 	w := wool.Get(ctx).In("CheckDockerCompose<%s>", wool.DirField(dir))
 	dockerfile := path.Join(dir, "docker-compose.yml")
-	if !shared.FileExists(dockerfile) {
+	exists, err := shared.FileExists(ctx, dockerfile)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot check docker-compose.yml")
+	}
+	if !exists {
 		return nil, nil
 	}
 	config, err := loader.LoadWithContext(ctx, types.ConfigDetails{

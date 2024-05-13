@@ -1,12 +1,14 @@
 package communicate
 
 import (
+	"context"
+
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
 )
 
-func Choice(msg *agentv0.Message, c *agentv0.Choice) (*agentv0.Answer, error) {
+func Choice(ctx context.Context, msg *agentv0.Message, c *agentv0.Choice) (*agentv0.Answer, error) {
 	cli.Header(2, msg.Description)
 	var entries []*models.Entry
 	toNames := make(map[string]string)
@@ -18,7 +20,7 @@ func Choice(msg *agentv0.Message, c *agentv0.Choice) (*agentv0.Answer, error) {
 		entries = append(entries, entry)
 		toNames[entry.Identifier] = option.Name
 	}
-	input, err := models.Choice(msg.Message, entries)
+	input, err := models.Choice(ctx, msg.Message, entries)
 	if err != nil {
 		return nil, err
 	}

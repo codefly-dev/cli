@@ -3,8 +3,8 @@ package manager
 import (
 	"context"
 
-	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -37,7 +37,7 @@ func (b *BuilderLoadManager) Process(ctx context.Context) (*OutputProperty, erro
 func (b *BuilderLoadManager) Set(ctx context.Context, output *BuilderLoadOutput) error {
 	w := wool.Get(ctx).In("BuilderLoadManager.Set")
 	// Compute a hash on the endpoints
-	hash, err := configurations.EndpointHash(ctx, output.Endpoints...)
+	hash, err := resources.EndpointHash(ctx, output.Endpoints...)
 	if err != nil {
 		return w.Wrapf(err, "cannot compute endpoints hash")
 	}
@@ -89,7 +89,7 @@ func (b *BuilderInitManager) Process(ctx context.Context) (*OutputProperty, erro
 func (b *BuilderInitManager) Set(ctx context.Context, output *BuilderInitOutput) error {
 	w := wool.Get(ctx).In("BuilderInitManager.Set")
 	// Compute a hash on the endpoints
-	hash, err := configurations.EndpointHash(ctx, output.Endpoints...)
+	hash, err := resources.EndpointHash(ctx, output.Endpoints...)
 	if err != nil {
 		return w.Wrapf(err, "cannot compute endpoints hash")
 	}

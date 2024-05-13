@@ -5,13 +5,13 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/companions/proto"
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/configurations/languages"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	"github.com/codefly-dev/core/languages"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
-func OpenAPI(ctx context.Context, project *configurations.Project, service *configurations.Service, language languages.Language, destination string) error {
+func OpenAPI(ctx context.Context, workspace *resources.Workspace, service *resources.Service, language languages.Language, destination string) error {
 	w := wool.Get(ctx).In("generateOpenAPIs", wool.ThisField(service))
 	endpoints, err := getOpenAPIEndpoints(ctx, service)
 	if err != nil {
@@ -24,7 +24,7 @@ func OpenAPI(ctx context.Context, project *configurations.Project, service *conf
 	return nil
 }
 
-func getOpenAPIEndpoints(ctx context.Context, service *configurations.Service) ([]*basev0.Endpoint, error) {
+func getOpenAPIEndpoints(ctx context.Context, service *resources.Service) ([]*basev0.Endpoint, error) {
 	w := wool.Get(ctx).In("getOpenAPIEndpoints")
 	// Use the Builder
 	instance, err := services.Load(ctx, service)
@@ -42,10 +42,10 @@ func getOpenAPIEndpoints(ctx context.Context, service *configurations.Service) (
 	// filter-out OpenAPI
 	var endpoints []*basev0.Endpoint
 	for _, endpoint := range res.Endpoints {
-		if rest := configurations.IsRest(ctx, endpoint); rest != nil {
+		if rest := resources.IsRest(ctx, endpoint); rest != nil {
 			endpoints = append(endpoints, endpoint)
 		}
 	}
-	w.Debug("got endpoints", wool.ProjectField(service.Project), wool.Field("endpoints", configurations.MakeManyEndpointSummary(endpoints)))
+	w.Debug("got endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(endpoints)))
 	return endpoints, nil
 }

@@ -8,11 +8,11 @@ import (
 // OpenCmd represents the build command
 var OpenCmd = &cobra.Command{
 	Use:   "open",
-	Short: "Open your project and application automatically",
+	Short: "Open your workspace and module automatically",
 }
 
 func init() {
-	OpenCmd.AddCommand(open.ProjectCmd)
-	OpenCmd.AddCommand(open.ApplicationCmd)
+	OpenCmd.AddCommand(open.WorkspaceCmd)
+	OpenCmd.AddCommand(open.ModuleCmd)
 	OpenCmd.AddCommand(open.ServiceCmd)
 }

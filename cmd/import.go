@@ -12,5 +12,5 @@ var ImportCmd = &cobra.Command{
 }
 
 func init() {
-	ImportCmd.AddCommand(imports.ApplicationCmd)
+	ImportCmd.AddCommand(imports.ModuleCmd)
 }

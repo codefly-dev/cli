@@ -10,7 +10,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -31,8 +31,8 @@ var ServiceCmd = &cobra.Command{
 		errs := make(chan error, 1) // Buffered channel
 
 		service := common.Service(ctx)
-		project := common.Project(ctx)
-		flow, err := initSyncService(ctx, project, service, standAlone)
+		workspace := common.Workspace(ctx)
+		flow, err := initSyncService(ctx, workspace, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
 			errs <- syncService(ctx, flow)
@@ -61,9 +61,9 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initSyncService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
+func initSyncService(ctx context.Context, workspace *resources.Workspace, service *resources.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("syncService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.SyncMode)
+	flow, err := manager.NewFlow(ctx, workspace, service, resources.LocalEnvironment(), manager.SyncMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/codefly-dev/core/configurations"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/golor"
 )
 
@@ -26,7 +26,7 @@ func isInITerm() bool {
 func Logo() {
 	golor.Println(`#(bold,white)[Welcome to codefly.ai!]`)
 	if isInITerm() {
-		dir, err := configurations.HomeDir()
+		dir, err := resources.HomeDir()
 		if err != nil {
 			return
 		}

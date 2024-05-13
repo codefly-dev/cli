@@ -10,8 +10,8 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/configurations/languages"
+	"github.com/codefly-dev/core/languages"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
@@ -29,25 +29,23 @@ var OpenAPICmd = &cobra.Command{
 
 		cli.RegisterCleanup(services.ClearAgents)
 
-		project := common.Project(ctx)
-		input, err := configurations.ParseService(serviceInput)
-		cli.ExitOnError(err, "Cannot parse service input")
-		service, err := project.LoadService(ctx, input)
-		cli.ExitOnError(err, "Cannot load service")
+		workspace := common.RequireWorkspace(ctx)
+		svc, err := workspace.FindUniqueServiceByName(ctx, serviceInput)
+		cli.ExitOnError(err, "Cannot find service from input")
 
 		destination, err = shared.SolvePath(destination)
 		cli.ExitOnError(err, "Cannot solve path")
 		language := languages.FromString(languageInput)
 		cli.ExitIf(language == languages.NotSupported, "Language not supported")
-		err = generateOpenAPI(ctx, project, service, language, destination)
+		err = generateOpenAPI(ctx, workspace, svc, language, destination)
 		cli.ExitOnError(err, "Cannot generate openAPI client code")
 		cli.Header(1, "Work done!")
 		cli.Done()
 	},
 }
 
-func generateOpenAPI(ctx context.Context, project *configurations.Project, service *configurations.Service, language languages.Language, destination string) error {
-	return generators.OpenAPI(ctx, project, service, language, destination)
+func generateOpenAPI(ctx context.Context, workspace *resources.Workspace, service *resources.Service, language languages.Language, destination string) error {
+	return generators.OpenAPI(ctx, workspace, service, language, destination)
 }
 
 func init() {

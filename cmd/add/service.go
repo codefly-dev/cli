@@ -9,11 +9,10 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	"github.com/codefly-dev/cli/pkg/services/actions"
 	"github.com/codefly-dev/cli/pkg/services/services"
 
 	actionsservice "github.com/codefly-dev/core/actions/service"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -29,7 +28,7 @@ var ServiceCmd = &cobra.Command{
 			cli.GetLogger().Oops("Interactive mode not implemented yet")
 		}
 		if len(args) != 1 {
-			cli.GetLogger().Oops("You must provide a name for the application as the single argument")
+			cli.GetLogger().Oops("You must provide a name for the module as the single argument")
 		}
 		if agentInput == "" {
 			cli.GetLogger().Oops("You must provide an agent for the service, use --agent=<agent>, for example --agent=python, --agent=go, --agent=nextjs or more advanced agent. See TODO")
@@ -78,38 +77,25 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	cli.SetWithDefault(withDefault)
 
-	//workspace := common.Workspace(ctx)
-	project := common.RequireProject(ctx)
+	workspace := common.RequireWorkspace(ctx)
 
-	app := common.Application(ctx)
-
-	// Parse service to see if we need to change organization
-	parsed, err := configurations.ParseService(name)
+	svcWithMod, err := resources.ParseServiceWithOptionalModule(name)
 	if err != nil {
 		return w.Wrapf(err, "cannot parse service name")
 	}
 
-	if parsed.Application != "" {
-		name = parsed.Name
-		// Choice of creating an application if not present
-		created := false
-		if app == nil {
-			addApplication(name)
-			created = true
-			project, err = configurations.ReloadProject(ctx, project)
-			cli.ExitOnError(err, "cannot reload project")
-
+	var mod *resources.Module
+	if svcWithMod.Module != "" {
+		mod, err = workspace.LoadModuleFromName(ctx, svcWithMod.Module)
+		if err != nil {
+			return w.Wrapf(err, "cannot load module")
 		}
-		if created || parsed.Application != app.Name {
-			app, err = project.LoadApplicationFromName(ctx, parsed.Application)
-			if err != nil {
-				return w.Wrapf(err, "cannot load application")
-			}
-		}
+	} else {
+		mod = common.RequireModule(ctx)
 	}
 
-	if app.ExistsService(ctx, name) && !override {
-		cli.GetLogger().Oops("Service <%s> already exists", name)
+	if mod.ExistsService(ctx, svcWithMod.Name) && !override {
+		cli.GetLogger().Oops("Service <%s> already exists", svcWithMod.Name)
 	}
 
 	w.Debug("input", wool.Field("agent", agentInput))
@@ -119,17 +105,15 @@ func addService(ctx context.Context, name string, agentInput string) error {
 		return w.Wrapf(err, "cannot get agent")
 	}
 
-	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service <%s> in application <%s>?", name, app.Name), true)
+	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service <%s> in module <%s>?", svcWithMod.Name, mod.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		cli.Exit()
 	}
 
 	input := &actionsservice.AddService{
-		Name:            name,
-		ApplicationPath: app.Dir(),
-		Agent:           agent.Proto(),
-		Override:        override,
+		Name:  svcWithMod.Name,
+		Agent: agent.Proto(),
 	}
 
 	addDescription := models.Confirm(ctx, "Do you want to add a short description?", false)
@@ -138,7 +122,7 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	}
 
-	err = actions.Add(ctx, input)
+	err = services.Add(ctx, workspace, mod, input)
 	if err != nil {
 		return w.Wrapf(err, "cannot add service")
 	}

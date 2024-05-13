@@ -7,8 +7,8 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/configurations"
 	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -30,7 +30,7 @@ func serviceInfo(ctx context.Context, input string) {
 	w := wool.Get(ctx).In("cmd.info.agentInput.service")
 	ctx = w.Inject(ctx)
 
-	conf, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, input)
+	conf, err := resources.ParseAgent(ctx, resources.ServiceAgent, input)
 	cli.ExitOnError(err, "Cannot parse agentInput")
 
 	cli.Header(1, "Fetching information about Service Agent <%s> information", conf)

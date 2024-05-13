@@ -8,11 +8,11 @@ import (
 	"path"
 	"strings"
 
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
-func GetK8sConfig(ctx context.Context, env *configurations.Environment) (string, error) {
+func GetK8sConfig(ctx context.Context, env *resources.Environment) (string, error) {
 	w := wool.Get(ctx).In("GetK8sClient")
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -47,7 +47,7 @@ func kubectlApply(ctx context.Context, configPath, resource string) error {
 	return nil
 }
 
-func KubernetesApply(ctx context.Context, service *configurations.Service, env *configurations.Environment, resources ...string) error {
+func KubernetesApply(ctx context.Context, service *resources.Service, env *resources.Environment, resources ...string) error {
 	w := wool.Get(ctx).In("KubernetesApply", wool.ThisField(service))
 	// Create the Kubernetes client
 	configPath, err := GetK8sConfig(ctx, env)

@@ -1,17 +1,17 @@
 package templates
 
 import (
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/golor"
 )
 
 type ServiceDisplay struct {
-	Service *configurations.ServiceReference
+	Service *resources.ServiceReference
 	Action  string
 	Indent  string
 }
 
-func displayService(svc *configurations.ServiceReference, indent string) {
+func displayService(svc *resources.ServiceReference, indent string) {
 	golor.Template(ServiceDisplay{Service: svc, Action: "Service", Indent: indent}).Println(`{{.Indent}}#(white,bold)[{{.Service.Name}}]`)
 }
 

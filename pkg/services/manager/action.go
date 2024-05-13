@@ -17,7 +17,8 @@ const (
 	RuntimeLoad  ActionType = "runtime-load"
 	RuntimeInit  ActionType = "runtime-init"
 	RuntimeStart ActionType = "runtime-run"
-	RuntimeStop  ActionType = "runtime-stopAfter"
+	RuntimeTest  ActionType = "runtime-test"
+	RuntimeStop  ActionType = "runtime-stop"
 
 	BuilderBegin  ActionType = "builder-begin"
 	BuilderLoad   ActionType = "builder-load"

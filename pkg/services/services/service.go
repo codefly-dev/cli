@@ -17,9 +17,9 @@ import (
 
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
 
-	"github.com/codefly-dev/core/configurations"
 	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
+	resources "github.com/codefly-dev/core/resources"
 )
 
 type ProcessInfo struct {
@@ -27,7 +27,9 @@ type ProcessInfo struct {
 }
 
 type Instance struct {
-	*configurations.Service
+	*resources.Service
+
+	Workspace *resources.Workspace
 
 	Agent services.Agent
 	Info  *agentv0.AgentInformation
@@ -40,15 +42,17 @@ type Instance struct {
 }
 
 type BuilderInstance struct {
-	*configurations.Service
+	Workspace *resources.Workspace
+	Service   *resources.Service
+
 	services.Builder
 }
 
 type RuntimeInstance struct {
-	*configurations.Service
-	services.Runtime
+	Workspace *resources.Workspace
+	Service   *resources.Service
 
-	Native bool
+	services.Runtime
 
 	IsHotReloading bool
 }
@@ -56,29 +60,32 @@ type RuntimeInstance struct {
 // Builder methods
 
 func (instance *BuilderInstance) loadRequest() *builderv0.LoadRequest {
-	return &builderv0.LoadRequest{
-		Debug: wool.IsDebug(),
+	req := &builderv0.LoadRequest{
 		Identity: &basev0.ServiceIdentity{
-			Name:        instance.Service.Name,
-			Application: instance.Service.Application,
-			Project:     instance.Service.Project,
-			Location:    instance.Service.Dir(),
+			Name:      instance.Service.Name,
+			Module:    instance.Service.Module,
+			Workspace: instance.Workspace.Name,
+			Location:  instance.Service.Dir(),
 		},
 	}
+	if instance.Workspace != nil {
+		req.Identity.Workspace = instance.Workspace.Name
+	}
+	return req
 }
 
 func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
 	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
-	w.Debug("loading", wool.ProjectField(instance.Service.Project), wool.ApplicationField(instance.Service.Application))
+	w.Debug("loading", wool.ModuleField(instance.Service.Module))
 	req := instance.loadRequest()
 	return instance.Builder.Load(ctx, req)
 }
 
 func (instance *BuilderInstance) LoadForCreate(ctx context.Context) (*builderv0.LoadResponse, error) {
 	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
-	w.Debug("loading", wool.ProjectField(instance.Service.Project), wool.ApplicationField(instance.Service.Application))
+	w.Debug("loading", wool.ModuleField(instance.Service.Module))
 	req := instance.loadRequest()
-	req.AtCreate = true
+	req.CreationMode = &builderv0.CreationMode{Communicate: true}
 	return instance.Builder.Load(ctx, req)
 }
 
@@ -111,28 +118,25 @@ func (instance *BuilderInstance) Sync(ctx context.Context, req *builderv0.SyncRe
 
 func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environment) (*runtimev0.LoadResponse, error) {
 	w := wool.Get(ctx).In("RuntimeInstance::Load", wool.NameField(instance.Service.Unique()))
-	w.Debug("sending load")
-	additionalSpecs, err := configurations.ConvertSpec(instance.Service.RuntimeSpec)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot convert runtime spec")
-	}
-	scope := basev0.NetworkScope_Container
-	if instance.Native {
-		scope = basev0.NetworkScope_Native
-	}
-	init := &runtimev0.LoadRequest{
-		Debug: wool.IsDebug(),
-		Scope: scope,
+	w.Debug("sending load request")
+	req := &runtimev0.LoadRequest{
+		DeveloperDebug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
-			Name:        instance.Service.Name,
-			Application: instance.Service.Application,
-			Project:     instance.Service.Project,
-			Location:    instance.Service.Dir(),
+			Name:     instance.Service.Name,
+			Module:   instance.Service.Module,
+			Version:  instance.Service.Version,
+			Location: instance.Service.Dir(),
 		},
-		Environment:     env,
-		AdditionalSpecs: additionalSpecs,
+		Environment: env,
 	}
-	return instance.Runtime.Load(ctx, init)
+	if instance.Workspace != nil {
+		req.Identity.Workspace = instance.Workspace.Name
+	}
+	err := resources.Validate(req)
+	if err != nil {
+		return nil, w.Wrapf(err, "invalid request")
+	}
+	return instance.Runtime.Load(ctx, req)
 }
 
 // Loader
@@ -144,7 +148,7 @@ func init() {
 	instances = make(map[string]*Instance)
 }
 
-func Load(ctx context.Context, service *configurations.Service) (*Instance, error) {
+func Load(ctx context.Context, service *resources.Service) (*Instance, error) {
 	w := wool.Get(ctx).In("services.Load", wool.ThisField(service))
 
 	if service == nil {
@@ -193,8 +197,7 @@ func (instance *Instance) LoadBuilder(ctx context.Context) error {
 	if err != nil {
 		return w.Wrapf(err, "cannot load builder")
 	}
-	instance.Builder = &BuilderInstance{Service: instance.Service, Builder: builder}
-
+	instance.Builder = &BuilderInstance{Workspace: instance.Workspace, Service: instance.Service, Builder: builder}
 	return nil
 }
 
@@ -226,8 +229,7 @@ func (instance *Instance) LoadRuntime(ctx context.Context, withRuntimeCheck bool
 			break
 		}
 	}
-	instance.Runtime = &RuntimeInstance{Service: instance.Service, Runtime: runtime, IsHotReloading: hotReload}
-
+	instance.Runtime = &RuntimeInstance{Workspace: instance.Workspace, Service: instance.Service, Runtime: runtime, IsHotReloading: hotReload}
 	return nil
 }
 
@@ -240,6 +242,10 @@ func (instance *Instance) CheckCapabilities(capability agentv0.Capability_Type) 
 	return fmt.Errorf("missing capability %v", capability)
 }
 
+func (instance *Instance) WithWorkspace(workspace *resources.Workspace) {
+	instance.Workspace = workspace
+}
+
 type AgentUpdate struct {
 	Name string
 	From string
@@ -250,7 +256,7 @@ type UpdateInformation struct {
 	*AgentUpdate
 }
 
-func UpdateAgent(ctx context.Context, service *configurations.Service) (*UpdateInformation, error) {
+func UpdateAgent(ctx context.Context, service *resources.Service) (*UpdateInformation, error) {
 	w := wool.Get(ctx).In("ServiceInstance::Update")
 	agentVersion := service.Agent.Version
 	info := &UpdateInformation{}

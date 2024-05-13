@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -32,23 +32,9 @@ var ServiceCmd = &cobra.Command{
 
 		errs := make(chan error, 1) // Buffered channel
 
-		project := common.RequireProject(ctx)
+		workspace, service := common.LoadRequired(ctx, args)
 
-		// Argument overrides directory
-		service, err := common.ParseServiceArgument(ctx, project, args)
-		if err != nil {
-			cli.ExitOnError(err, "Cannot parse service argument")
-		}
-		if service == nil {
-			service = common.Service(ctx)
-		}
-
-		if service == nil {
-			cli.Error("No service found: use argument or run inside a service folder or use workspace")
-			return
-		}
-
-		flow, err := initDeployService(ctx, project, service, standAlone)
+		flow, err := initDeployService(ctx, workspace, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
 			err = deployService(ctx, flow)
@@ -85,7 +71,7 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initDeployService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
+func initDeployService(ctx context.Context, workspace *resources.Workspace, service *resources.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(service))
 	if envInput == "aws" {
 		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
@@ -93,17 +79,17 @@ func initDeployService(ctx context.Context, project *configurations.Project, ser
 	}
 	manager.SetDryRun(dryRun)
 
-	var env *configurations.Environment
+	var env *resources.Environment
 	if envInput == "local" {
-		env = configurations.Local()
+		env = resources.LocalEnvironment()
 	} else {
-		env = &configurations.Environment{Name: envInput}
+		env = &resources.Environment{Name: envInput}
 	}
 	if envInput == "aws" {
-		env.LoadBalancer = "codefly.build"
+		//env.LoadBalancer = "codefly.build"
 	}
 
-	flow, err := manager.NewFlow(ctx, project, service, env, manager.DeployMode)
+	flow, err := manager.NewFlow(ctx, workspace, service, env, manager.DeployMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

@@ -1,19 +1,23 @@
 package run
 
 // Run codefly frontend companion
-var withServer bool
+var withCLIServer bool
 
-// Run codefly natively
-var native bool
+// Silent services in the CLI
+var silent []string
+
+// Scope for the runtime: affect ports to avoid conflict with run
+// Useful for testing/CI
+var scope string
+
+// Runtime context
+var runtimeContext string
 
 // Don't run dependencies
 var standAlone bool
 
 // Only run dependencies
 var excludeRoot bool
-
-// Run in CI mode
-var ci bool
 
 // load only mode
 var loadOnly bool

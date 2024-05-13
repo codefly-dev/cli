@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -58,7 +59,7 @@ func (m choice) View() string {
 	return s
 }
 
-func Choice(msg string, all []*Entry) (*Entry, error) {
+func Choice(ctx context.Context, msg string, all []*Entry) (*Entry, error) {
 	p := tea.NewProgram(choice{
 		Message: msg,
 		entries: all,

@@ -7,11 +7,11 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
-func KustomizeApply(ctx context.Context, service *configurations.Service, env *configurations.Environment, dir string) error {
+func KustomizeApply(ctx context.Context, service *resources.Service, env *resources.Environment, dir string) error {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(service))
 	w.Debug("applying kustomize", wool.DirField(dir))
 	cmd := exec.Command("kustomize", "build", dir)

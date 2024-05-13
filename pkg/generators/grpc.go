@@ -5,13 +5,13 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/companions/proto"
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/configurations/languages"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	"github.com/codefly-dev/core/languages"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
-func GRPC(ctx context.Context, service *configurations.Service, language languages.Language, destination string) error {
+func GRPC(ctx context.Context, service *resources.Service, language languages.Language, destination string) error {
 	w := wool.Get(ctx).In("generateGRPCs", wool.ThisField(service))
 	endpoints, err := getGRPCEndpoints(ctx, service)
 	if err != nil {
@@ -24,7 +24,7 @@ func GRPC(ctx context.Context, service *configurations.Service, language languag
 	return nil
 }
 
-func getGRPCEndpoints(ctx context.Context, service *configurations.Service) ([]*basev0.Endpoint, error) {
+func getGRPCEndpoints(ctx context.Context, service *resources.Service) ([]*basev0.Endpoint, error) {
 	w := wool.Get(ctx).In("getGRPCEndpoints")
 	// Use the Builder
 	instance, err := services.Load(ctx, service)
@@ -42,10 +42,10 @@ func getGRPCEndpoints(ctx context.Context, service *configurations.Service) ([]*
 	// filter-out gRPC
 	var endpoints []*basev0.Endpoint
 	for _, endpoint := range res.Endpoints {
-		if grpc := configurations.IsGRPC(ctx, endpoint); grpc != nil {
+		if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil {
 			endpoints = append(endpoints, endpoint)
 		}
 	}
-	w.Debug("got endpoints", wool.Field("endpoints", configurations.MakeManyEndpointSummary(endpoints)))
+	w.Debug("got endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(endpoints)))
 	return endpoints, nil
 }

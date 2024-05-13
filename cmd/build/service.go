@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -31,23 +31,9 @@ var ServiceCmd = &cobra.Command{
 
 		errs := make(chan error, 1) // Buffered channel
 
-		project := common.RequireProject(ctx)
+		workspace, service := common.LoadRequired(ctx, args)
 
-		// Argument overrides directory
-		service, err := common.ParseServiceArgument(ctx, project, args)
-		if err != nil {
-			cli.ExitOnError(err, "Cannot parse service argument")
-		}
-		if service == nil {
-			service = common.Service(ctx)
-		}
-
-		if service == nil {
-			cli.Error("No service found: use argument or run inside a service folder or use workspace")
-			return
-		}
-
-		flow, err := initBuildService(ctx, project, service, standAlone)
+		flow, err := initBuildService(ctx, workspace, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
 			errs <- buildService(ctx, flow)
@@ -76,7 +62,7 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initBuildService(ctx context.Context, project *configurations.Project, service *configurations.Service, standAlone bool) (*manager.Flow, error) {
+func initBuildService(ctx context.Context, workspace *resources.Workspace, service *resources.Service, standAlone bool) (*manager.Flow, error) {
 	w := wool.Get(ctx).In("buildService", wool.ThisField(service))
 	if org != "" {
 		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
@@ -85,7 +71,7 @@ func initBuildService(ctx context.Context, project *configurations.Project, serv
 	if push {
 		manager.SetBuilderPush()
 	}
-	flow, err := manager.NewFlow(ctx, project, service, configurations.Local(), manager.BuildMode)
+	flow, err := manager.NewFlow(ctx, workspace, service, resources.LocalEnvironment(), manager.BuildMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

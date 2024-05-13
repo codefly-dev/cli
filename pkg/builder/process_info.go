@@ -1,7 +1,7 @@
 package builder
 
 type AgentProcessInfo struct {
-	Application string
-	Service     string
-	AgentPID    int
+	Module   string
+	Service  string
+	AgentPID int
 }

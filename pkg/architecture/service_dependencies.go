@@ -4,31 +4,42 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
-
-	"github.com/codefly-dev/core/configurations"
 )
 
 /*
-Overview builds a dependency graph of the application and its services.
+Overview builds a dependency graph of the module and its services.
 */
 
 type ServiceDependencies struct {
-	Project *configurations.Project
-	Graph   *DAG
+	Workspace       *resources.Workspace
+	uniqueToService map[string]*resources.Service
+
+	Graph *DAG
 }
 
-func NewServiceDependencies(ctx context.Context, project *configurations.Project) (*ServiceDependencies, error) {
+func NewServiceDependencies(ctx context.Context, workspace *resources.Workspace) (*ServiceDependencies, error) {
 	w := wool.Get(ctx).In("NewServiceDependencies")
-	g, err := loadServiceGraph(ctx, project)
+
+	dep := &ServiceDependencies{
+		Workspace:       workspace,
+		uniqueToService: make(map[string]*resources.Service),
+	}
+	err := dep.loadServiceGraph(ctx, workspace)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service graph")
 	}
-	g.verb = "required by"
-	return &ServiceDependencies{
-		Project: project,
-		Graph:   g,
-	}, nil
+	dep.Graph.verb = "required by"
+	return dep, nil
+}
+
+func (d *ServiceDependencies) ServiceFromUnique(unique string) (*resources.Service, error) {
+	if svc, ok := d.uniqueToService[unique]; ok {
+		return svc, nil
+	}
+	return nil, shared.NewErrorResourceNotFound("service", unique)
 }
 
 // DependsOn returns true if the service identified by unique depends on the service identified by other
@@ -60,7 +71,7 @@ func (d *ServiceDependencies) Print() string {
 func (d *ServiceDependencies) Services() []Service {
 	var out []Service
 	for _, node := range d.Graph.Nodes() {
-		if node.Type == configurations.SERVICE {
+		if node.Type == resources.SERVICE {
 			out = append(out, Service{
 				Unique: node.ID,
 			})
@@ -100,7 +111,7 @@ func (d *ServiceDependencies) OrderTo(ctx context.Context, unique string) ([]Ser
 	w.Trace("service dependencies", wool.Field("order", order))
 	var out []Service
 	for _, u := range order {
-		if u.Type != configurations.SERVICE {
+		if u.Type != resources.SERVICE {
 			continue
 		}
 		out = append(out, Service{
@@ -120,7 +131,7 @@ func (d *ServiceDependencies) DirectRequires(ctx context.Context, unique string)
 	}
 	var out []Service
 	for _, child := range children {
-		if child.Type != configurations.SERVICE {
+		if child.Type != resources.SERVICE {
 			continue
 		}
 		out = append(out, Service{
@@ -140,7 +151,7 @@ func (d *ServiceDependencies) DirectDependents(ctx context.Context, unique strin
 	}
 	var out []Service
 	for _, child := range children {
-		if child.Type != configurations.SERVICE {
+		if child.Type != resources.SERVICE {
 			continue
 		}
 		out = append(out, Service{
@@ -158,31 +169,34 @@ func (d *ServiceDependencies) Restrict(ctx context.Context, unique string) (*Ser
 		return nil, fmt.Errorf("cannot restrict to <%s>: %w", unique, err)
 	}
 	return &ServiceDependencies{
-		Project: d.Project,
-		Graph:   sub,
+		Workspace: d.Workspace,
+		Graph:     sub,
 	}, nil
 }
 
 // X depends on Y means an edge X <- Y
-func loadServiceGraph(ctx context.Context, project *configurations.Project) (*DAG, error) {
-	w := wool.Get(ctx).In("LoadServiceGraph")
-	graph := NewDAG(project.Name)
-	for _, appRef := range project.Applications {
-		app, err := project.LoadApplicationFromReference(ctx, appRef)
+func (d *ServiceDependencies) loadServiceGraph(ctx context.Context, workspace *resources.Workspace) error {
+	w := wool.Get(ctx).In("loadServiceGraph")
+	w.Debug("analyzing workspace", wool.Field("workspace", workspace.Name), wool.Field("#modules", len(workspace.Modules)))
+	graph := NewDAG(workspace.Name)
+	for _, modRef := range workspace.Modules {
+		mod, err := workspace.LoadModuleFromReference(ctx, modRef)
 		if err != nil {
-			return nil, w.Wrapf(err, "cannot load application <%s>", appRef.Name)
+			return w.Wrapf(err, "cannot load module <%s>", modRef.Name)
 		}
-		for _, serviceRef := range app.ServiceReferences {
-			service, err := app.LoadServiceFromReference(ctx, serviceRef)
+		for _, serviceRef := range mod.ServiceReferences {
+			svc, err := mod.LoadServiceFromReference(ctx, serviceRef)
 			if err != nil {
-				return nil, w.Wrapf(err, "cannot load service <%s>", serviceRef.Name)
+				return w.Wrapf(err, "cannot load svc <%s>", serviceRef.Name)
 			}
-			graph.AddNode(service.Unique()).WithType(configurations.SERVICE)
-			for _, dep := range service.ServiceDependencies {
-				graph.AddNode(dep.Unique()).WithType(configurations.SERVICE)
-				graph.AddEdge(dep.Unique(), service.Unique())
+			d.uniqueToService[svc.Unique()] = svc
+			graph.AddNode(svc.Unique()).WithType(resources.SERVICE)
+			for _, dep := range svc.ServiceDependencies {
+				graph.AddNode(dep.Unique()).WithType(resources.SERVICE)
+				graph.AddEdge(dep.Unique(), svc.Unique())
 			}
 		}
 	}
-	return graph, nil
+	d.Graph = graph
+	return nil
 }

@@ -63,7 +63,7 @@ import (
 //
 //func NewSqliteStorage() (Storage, error) {
 //	//w := wool.Get(ctx).In("development.SqliteInit")
-//	//ws, err := configurations.Current()
+//	//ws, err := resources.Current()
 //	//if err != nil {
 //	//	return nil, err
 //	//}
@@ -119,10 +119,10 @@ import (
 //func (storage *Sqlite) initPartialSession(ctx context.Context, session *basev0.Session) error {
 //	w := wool.Get(ctx).In("development.initPartialSession")
 //
-//	fmt.Println("PROJECT ID", session.GetPartial().Project.Uuid)
-//	err := storage.addProjectSnapshot(ctx, session.GetPartial().Project)
+//	fmt.Println("WORKSPACE ID", session.GetPartial().Workspace.Uuid)
+//	err := storage.addWorkspaceSnapshot(ctx, session.GetPartial().Workspace)
 //	if err != nil {
-//		return logger.Wrapf(err, "cannot add project snapshot")
+//		return logger.Wrapf(err, "cannot add workspace snapshot")
 //	}
 //	fmt.Println("PARTIAL ID", session.GetPartial().Uuid)
 //	err = storage.addPartialSnapshot(ctx, session.GetPartial())
@@ -130,44 +130,44 @@ import (
 //		return logger.Wrapf(err, "cannot add partial snapshot")
 //	}
 //	// SQL statement to insert a new session
-//	stmt, err := storage.db.Prepare(`INSERT INTO session (id, project_snapshot_id, partial_snapshot_id, application_snapshot_id, at) VALUES (?, ?, ?, ?, ?)`)
+//	stmt, err := storage.db.Prepare(`INSERT INTO session (id, workspace_snapshot_id, partial_snapshot_id, module_snapshot_id, at) VALUES (?, ?, ?, ?, ?)`)
 //	if err != nil {
 //		return logger.Wrapf(err, "cannot prepare statement")
 //	}
 //	defer stmt.Close()
 //
 //	// Execute the statement
-//	projectID := sql.NullString{String: session.GetPartial().Project.Uuid, Valid: true}
+//	workspaceID := sql.NullString{String: session.GetPartial().Workspace.Uuid, Valid: true}
 //	partialID := sql.NullString{String: session.GetPartial().Uuid, Valid: true}
-//	applicationID := sql.NullString{String: "", Valid: false}
-//	_, err = stmt.Exec(session.Uuid, projectID, partialID, applicationID, session.At.AsTime())
+//	moduleID := sql.NullString{String: "", Valid: false}
+//	_, err = stmt.Exec(session.Uuid, workspaceID, partialID, moduleID, session.At.AsTime())
 //	if err != nil {
 //		return logger.Wrapf(err, "cannot execute statement")
 //	}
 //	return nil
 //}
 //
-//func (storage *Sqlite) addProjectSnapshot(ctx context.Context, project *basev0.ProjectSnapshot) error {
-//	w := wool.Get(ctx).In("development.SqliteAddProjectSnapshot")
-//	_, err := storage.db.Exec("INSERT INTO project_snapshot (id, name) VALUES (?, ?)", project.Uuid, project.Name)
+//func (storage *Sqlite) addWorkspaceSnapshot(ctx context.Context, workspace *basev0.WorkspaceSnapshot) error {
+//	w := wool.Get(ctx).In("development.SqliteAddWorkspaceSnapshot")
+//	_, err := storage.db.Exec("INSERT INTO workspace_snapshot (id, name) VALUES (?, ?)", workspace.Uuid, workspace.Name)
 //	if err != nil {
-//		return logger.Wrapf(err, "cannot add project snapshot")
+//		return logger.Wrapf(err, "cannot add workspace snapshot")
 //	}
-//	log.Println("ProjectSnapshot added successfully")
+//	log.Println("WorkspaceSnapshot added successfully")
 //	return nil
 //}
 //
 //func (storage *Sqlite) addPartialSnapshot(ctx context.Context, partial *basev0.PartialSnapshot) error {
 //	w := wool.Get(ctx).In("development.SqliteAddPartialSnapshot")
 //
-//	stmt, err := storage.db.Prepare(`INSERT INTO partial_snapshot (id, name, project_id) VALUES (?, ?, ?)`)
+//	stmt, err := storage.db.Prepare(`INSERT INTO partial_snapshot (id, name, workspace_id) VALUES (?, ?, ?)`)
 //	if err != nil {
 //		return logger.Wrapf(err, "cannot prepare statement")
 //	}
 //	defer stmt.Close()
 //
 //	// Execute the statement
-//	_, err = stmt.Exec(partial.Uuid, partial.Name, partial.Project.Uuid)
+//	_, err = stmt.Exec(partial.Uuid, partial.Name, partial.Workspace.Uuid)
 //	if err != nil {
 //		return logger.Wrapf(err, "cannot execute statement")
 //	}
@@ -183,7 +183,7 @@ import (
 //	}
 //
 //	// Prepare the insert statement
-//	stmt, err := tx.Prepare("INSERT INTO logs (session_id, at, application, service, kind, message) VALUES (?, ?, ?, ?, ?, ?)")
+//	stmt, err := tx.Prepare("INSERT INTO logs (session_id, at, module, service, kind, message) VALUES (?, ?, ?, ?, ?, ?)")
 //	if err != nil {
 //		tx.Rollback()
 //		return err
@@ -192,7 +192,7 @@ import (
 //
 //	// Insert each log in the batch
 //	for _, log := range logs {
-//		_, err = stmt.Exec(sessionID, log.At.AsTime(), log.Application, log.Service, log.Kind, log.Message)
+//		_, err = stmt.Exec(sessionID, log.At.AsTime(), log.Module, log.Service, log.Kind, log.Message)
 //		if err != nil {
 //			tx.Rollback()
 //			return err

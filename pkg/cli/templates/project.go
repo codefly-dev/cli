@@ -1,34 +1,34 @@
 package templates
 
 import (
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/golor"
 )
 
-type ProjectDisplay struct {
-	Project *configurations.Project
-	Action  string
-	Current string
+type WorkspaceDisplay struct {
+	Workspace *resources.Workspace
+	Action    string
+	Current   string
 }
 
-func ShowProject(project *configurations.Project, current bool) {
+func ShowWorkspace(workspace *resources.Workspace, current bool) {
 	currentSign := ""
 	if current {
 		currentSign = "#(green)[*]"
 	}
-	d := ProjectDisplay{Project: project, Action: "Project", Current: currentSign}
-	golor.Template(d).Println(`#(blue,bold)[🔎 Project <#bold[{{.Project.Name}}{{.Current}}]>]`)
+	d := WorkspaceDisplay{Workspace: workspace, Action: "Workspace", Current: currentSign}
+	golor.Template(d).Println(`#(blue,bold)[🔎 Workspace <#bold[{{.Workspace.Name}}{{.Current}}]>]`)
 
-	//apps, err := configurations.ListApplications()
-	//shared.ExitOnError(err, "Cannot list applications")
+	//mods, err := resources.ListModules()
+	//shared.ExitOnError(err, "Cannot list modules")
 	//
-	//for _, app := range apps {
-	//	current := project.Current() == app.Name
-	//	ShowApplication(app, current, "  ")
+	//for _, mod :=  range apps {
+	//	current := workspace.Current() == app.Name
+	//	ShowModule(app, current, "  ")
 	//}
 }
 
-func CreatedProject(project *configurations.Project) {
-	d := ProjectDisplay{Project: project}
-	golor.Template(d).Println(`#(blue,bold)[🔎 Created project #bold[{{.Project.Name}}]]`)
+func CreatedWorkspace(workspace *resources.Workspace) {
+	d := WorkspaceDisplay{Workspace: workspace}
+	golor.Template(d).Println(`#(blue,bold)[🔎 Created workspace #bold[{{.Workspace.Name}}]]`)
 }

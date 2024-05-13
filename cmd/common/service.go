@@ -2,47 +2,33 @@ package common
 
 import (
 	"context"
-	"errors"
 
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/cli/pkg/cli"
+	resources "github.com/codefly-dev/core/resources"
 )
 
-func ParseServiceArgument(ctx context.Context, project *configurations.Project, args []string) (*configurations.Service, error) {
-	w := wool.Get(ctx).In("parseServiceArgument")
+func LoadRequired(ctx context.Context, args []string) (*resources.Workspace, *resources.Service) {
+	workspace := RequireWorkspace(ctx)
 	if len(args) == 0 {
-		return nil, nil
+		service := RequireService(ctx)
+		return workspace, service
 	}
-	svcWithApp, err := configurations.ParseService(args[0])
+	service, err := workspace.FindUniqueServiceByName(ctx, args[0])
 	if err != nil {
-		return nil, w.Wrap(err)
+		cli.ExitOnError(err, "Cannot parse service argument")
 	}
-	if svcWithApp.Application == "" {
-		// If unique in project, we are good
-		w.Debug("Looking for service", wool.NameField(svcWithApp.Name))
-		svc, err := project.FindUniqueService(ctx, svcWithApp.Name)
-		if err == nil {
-			w.Debug("Found service", wool.ThisField(svc))
-			return svc, nil
-		}
-		if errors.Is(err, configurations.NonUniqueServiceNameError{}) {
-			// We must be in an application folder
-			app := Application(ctx)
-			if app == nil {
-				return nil, w.NewError("Found multiple services with the same name: either run in application folder or specify application with service name like 'app/service'")
-			}
-			svc, err = app.LoadServiceFromName(ctx, svcWithApp.Name)
-			if err != nil {
-				return nil, w.Wrap(err)
-			}
-		} else {
-			return nil, w.Wrap(err)
-		}
-		return nil, w.Wrap(err)
+	return workspace, service
+}
+
+func Load(ctx context.Context, args []string) (*resources.Workspace, *resources.Service) {
+	workspace := RequireWorkspace(ctx)
+	if len(args) == 0 {
+		service := Service(ctx)
+		return workspace, service
 	}
-	svc, err := project.LoadService(ctx, svcWithApp)
+	service, err := workspace.FindUniqueServiceByName(ctx, args[0])
 	if err != nil {
-		return nil, w.Wrap(err)
+		cli.ExitOnError(err, "Cannot parse service argument")
 	}
-	return svc, nil
+	return workspace, service
 }

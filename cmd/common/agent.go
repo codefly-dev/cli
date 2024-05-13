@@ -4,13 +4,13 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/agents/manager"
-	"github.com/codefly-dev/core/configurations"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
-func GetAgent(ctx context.Context, input string) (*configurations.Agent, error) {
+func GetAgent(ctx context.Context, input string) (*resources.Agent, error) {
 	w := wool.Get(ctx).In("getAgent")
-	agent, err := configurations.ParseAgent(ctx, configurations.ServiceAgent, input)
+	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, input)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot parse agent")
 	}
@@ -24,7 +24,11 @@ func GetAgent(ctx context.Context, input string) (*configurations.Agent, error) 
 	}
 
 	// Download the agent if required
-	if !manager.Downloaded(agent) {
+	downloaded, err := manager.Downloaded(ctx, agent)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot check if agent is downloaded")
+	}
+	if !downloaded {
 		err = manager.Download(ctx, agent)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot download agent")

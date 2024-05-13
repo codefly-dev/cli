@@ -11,10 +11,10 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/services"
-	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/configurations/standards"
+	providers "github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/network"
-	"github.com/codefly-dev/core/providers"
+	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/standards"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -32,45 +32,45 @@ var ExposeCmd = &cobra.Command{
 
 		defer services.ClearAgents()
 
-		project := common.Project(ctx)
-		err := expose(ctx, project)
+		workspace := common.Workspace(ctx)
+		err := expose(ctx, workspace)
 		cli.ExitOnError(err, "Cannot expose service")
 	},
 }
 
-func expose(ctx context.Context, project *configurations.Project) error {
+func expose(ctx context.Context, workspace *resources.Workspace) error {
 	w := wool.Get(ctx).In("expose")
-	var environ *configurations.Environment
+	var environ *resources.Environment
 	if env == "local" {
-		environ = configurations.Local()
+		environ = resources.LocalEnvironment()
 	} else {
-		environ = &configurations.Environment{Name: env}
+		environ = &resources.Environment{Name: env}
 	}
 	// Get the running network manager
-	configurationManager, err := providers.NewManager(ctx, project)
+	configurationManager, err := providers.NewManager(ctx, workspace)
 	if err != nil {
 		return w.Wrap(err)
 	}
-	localReader, err := providers.NewConfigurationLocalReader(ctx, project)
+	localReader, err := providers.NewConfigurationLocalReader(ctx, workspace)
 	if err != nil {
 		return w.Wrap(err)
 	}
 	configurationManager.WithLoader(localReader)
-	err = configurationManager.Load(ctx, configurations.Local())
+	err = configurationManager.Load(ctx, resources.LocalEnvironment())
 
 	networkManager, err := network.NewDeployManager(ctx, configurationManager)
 	if err != nil {
 		return w.Wrap(err)
 	}
 	// Loop over svcs
-	svcs, err := project.LoadServices(ctx)
+	svcs, err := workspace.LoadServices(ctx)
 	if err != nil {
 		return w.Wrap(err)
 	}
 	for _, service := range svcs {
 		for _, endpoint := range service.Endpoints {
-			if endpoint.Visibility == configurations.VisibilityPublic {
-				err = exposeService(ctx, service, endpoint, networkManager, environ)
+			if endpoint.Visibility == resources.VisibilityPublic {
+				err = exposeService(ctx, environ, workspace, service, endpoint, networkManager)
 				if err != nil {
 					return w.Wrap(err)
 				}
@@ -81,10 +81,10 @@ func expose(ctx context.Context, project *configurations.Project) error {
 	return nil
 }
 
-func exposeService(ctx context.Context, service *configurations.Service, endpoint *configurations.Endpoint, networkManager network.Manager, env *configurations.Environment) error {
+func exposeService(ctx context.Context, env *resources.Environment, workspace *resources.Workspace, service *resources.Service, endpoint *resources.Endpoint, networkManager network.Manager) error {
 	w := wool.Get(ctx).In("exposeService")
 
-	namespace, err := networkManager.GetNamespace(ctx, service, env)
+	namespace, err := networkManager.GetNamespace(ctx, env, workspace, service)
 	if err != nil {
 		return w.Wrap(err)
 	}
@@ -96,7 +96,7 @@ func exposeService(ctx context.Context, service *configurations.Service, endpoin
 		w.Warn(fmt.Sprintf("cannot get service: %s", k8sSvc))
 		return nil
 	}
-	hostPort := network.ToNamedPort(ctx, service.Project, service.Application, service.Name, endpoint.Name, endpoint.API)
+	hostPort := network.ToNamedPort(ctx, workspace.Name, service.Module, service.Name, endpoint.Name, endpoint.API)
 	targetPort := standards.Port(endpoint.API)
 
 	go func() {

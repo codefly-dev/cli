@@ -7,13 +7,13 @@ import (
 	"syscall"
 
 	"github.com/codefly-dev/core/agents/manager"
+	resources "github.com/codefly-dev/core/resources"
 	plugin "github.com/hashicorp/go-plugin"
 
 	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/core/agents"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	"github.com/codefly-dev/core/configurations"
 )
 
 var agentsCache map[string]*coreservices.ServiceAgent
@@ -24,7 +24,7 @@ func init() {
 	agentsPid = make(map[string]int)
 }
 
-func LoadAgent(ctx context.Context, agent *configurations.Agent) (*coreservices.ServiceAgent, error) {
+func LoadAgent(ctx context.Context, agent *resources.Agent) (*coreservices.ServiceAgent, error) {
 	if agent == nil {
 		return nil, fmt.Errorf("service cannot be nil")
 	}
@@ -42,7 +42,7 @@ func LoadAgent(ctx context.Context, agent *configurations.Agent) (*coreservices.
 
 	loaded, process, err := manager.Load[coreservices.ServiceAgentContext, coreservices.ServiceAgent](
 		ctx,
-		agent.Of(configurations.ServiceAgent),
+		agent.Of(resources.ServiceAgent),
 		agent.Unique())
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -57,7 +57,7 @@ func LoadAgent(ctx context.Context, agent *configurations.Agent) (*coreservices.
 }
 
 // NewServiceAgent binds the agent implementation to the agent
-func NewServiceAgent(conf *configurations.Agent, service coreservices.Agent) agents.AgentImplementation {
+func NewServiceAgent(conf *resources.Agent, service coreservices.Agent) agents.AgentImplementation {
 	return agents.AgentImplementation{
 		Configuration: conf,
 		Agent:         &coreservices.ServiceAgentGRPC{Service: service},

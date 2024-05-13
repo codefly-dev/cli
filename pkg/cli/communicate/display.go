@@ -3,6 +3,7 @@ package communicate
 // Handle Communicate Requests
 
 import (
+	"context"
 	"fmt"
 
 	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
@@ -11,7 +12,7 @@ import (
 	"github.com/codefly-dev/golor"
 )
 
-func Display(msg *agentv0.Message, data *agentv0.Display) (*agentv0.Answer, error) {
+func Display(ctx context.Context, msg *agentv0.Message, data *agentv0.Display) (*agentv0.Answer, error) {
 	// Render a block of text.
 	var style = lipgloss.NewStyle().
 		Margin(1, 2, 1, 2)

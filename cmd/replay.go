@@ -7,6 +7,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
+	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +29,7 @@ func replayCodefly(track string) {
 	ctx, done := common.NewContext()
 	defer done()
 
-	actionTracker, err := actions.NewActionTracker(ctx, track)
+	actionTracker, err := actions.NewActionTracker(ctx, resources.CodeflyDir(), track)
 	cli.ExitOnError(err, "cannot create action tracker")
 	actionTracker.Replay = true
 
@@ -39,7 +40,8 @@ func replayCodefly(track string) {
 	cli.ExitOnError(err, "cannot get actions")
 	for _, action := range steps {
 		fmt.Println("Running action equivalent to:", action.Command())
-		_, err := actions.Run(ctx, action)
+		// TODO: Need to update the action space from the output
+		_, err := actions.Run(ctx, action, nil)
 		cli.ExitOnError(err, "cannot run action")
 	}
 

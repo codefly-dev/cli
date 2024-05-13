@@ -19,13 +19,13 @@ func (h *Prompt) Answer(ctx context.Context, q *agentv0.Question) (*agentv0.Answ
 	switch v := q.Value.(type) {
 	case *agentv0.Question_Display:
 
-		return Display(q.Message, v.Display)
+		return Display(ctx, q.Message, v.Display)
 	case *agentv0.Question_Confirm:
 		return Confirm(ctx, q.Message, v.Confirm)
 	case *agentv0.Question_Input:
-		return Input(q.Message, v.Input)
+		return Input(ctx, q.Message, v.Input)
 	case *agentv0.Question_Choice:
-		return Choice(q.Message, v.Choice)
+		return Choice(ctx, q.Message, v.Choice)
 	default:
 		return nil, w.NewError("unknown question type: %v", q.Value)
 	}

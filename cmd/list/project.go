@@ -4,14 +4,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// ProjectCmd represents the run command
-var ProjectCmd = &cobra.Command{
-	Use:   "projects",
-	Short: "List all projects for the project",
+// WorkspaceCmd represents the run command
+var WorkspaceCmd = &cobra.Command{
+	Use:   "workspaces",
+	Short: "List all workspaces for the workspace",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		//projects, err := configurations.ListProjects()
-		//shared.ExitOnError(err, "cannot list projects")
-		//fmt.Println("Projects:", projects)
+		//workspaces, err := resources.ListWorkspaces()
+		//shared.ExitOnError(err, "cannot list workspaces")
+		//fmt.Println("Workspaces:", workspaces)
 	},
 }

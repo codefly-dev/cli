@@ -1,0 +1,18 @@
+kind: service
+name: accounts
+version: 0.0.0
+module: billing
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+  - name: organization
+    module: management
+endpoints:
+    - name: grpc
+      api: grpc
+    - name: rest
+      visibility: public
+      api: rest

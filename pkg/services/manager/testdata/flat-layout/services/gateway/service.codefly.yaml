@@ -1,0 +1,19 @@
+kind: service
+name: gateway
+module: flat-layout
+version: 0.0.0
+agent:
+    kind: runtime::service
+    name: krakend
+    version: 0.0.6
+    publisher: codefly.ai
+service-dependencies:
+    - name: organization
+    - name: accounts
+endpoints:
+    - name: rest
+      visibility: public
+      api: rest
+    - name: grpc
+      visibility: public
+      api: grpc

@@ -8,7 +8,7 @@ import (
 // RunCmd represents the run command
 var RunCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Local run of your applications",
+	Short: "Local run of your modules",
 }
 
 func init() {

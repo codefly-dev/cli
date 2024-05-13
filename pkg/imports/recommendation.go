@@ -1,7 +1,7 @@
 package imports
 
 import (
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 )
 
@@ -12,7 +12,7 @@ type ServiceRecommendation struct {
 
 type Recommendation struct {
 	Main         ServiceRecommendation
-	Dependencies []*configurations.Agent
+	Dependencies []*resources.Agent
 	Name         string
 }
 

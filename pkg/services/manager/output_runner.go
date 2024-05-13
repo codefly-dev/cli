@@ -3,8 +3,8 @@ package manager
 import (
 	"context"
 
-	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -45,7 +45,7 @@ func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) e
 	}
 	// Compute a hash on the endpoints
 	w.Debug("computing hash")
-	hash, err := configurations.EndpointHash(ctx, output.Endpoints...)
+	hash, err := resources.EndpointHash(ctx, output.Endpoints...)
 	if err != nil {
 		return w.Wrapf(err, "cannot compute endpoints hash")
 	}
@@ -105,8 +105,8 @@ func (b *RunnerInitManager) Set(ctx context.Context, output *RunnerInitOutput) e
 		b.processed = Pause()
 		return nil
 	}
-	networkMappingHash := configurations.NetworkMappingHash(output.networkMappings...)
-	configurationsHash := configurations.ConfigurationsHash(output.configurations...)
+	networkMappingHash := resources.NetworkMappingHash(output.networkMappings...)
+	configurationsHash := resources.ConfigurationsHash(output.configurations...)
 	defer func() {
 		b.configurationHash = configurationsHash
 		b.networkMappingHash = networkMappingHash
@@ -157,6 +157,50 @@ func (b *RunnerStartManager) Set(ctx context.Context, output *RunnerStartOutput)
 		b.processed = OnInit()
 		return nil
 	}
+	b.processed = IndependentUpdate()
+	return nil
+}
+
+// RunnerTestOutput looks at:
+
+type RunnerTestOutput struct {
+	Err string
+}
+
+type RunnerTestManager struct {
+	unique string
+
+	processed *OutputProperty
+}
+
+var _ OutputProcessor = &RunnerTestManager{}
+
+func NewRunnerTestManager(unique string) *RunnerTestManager {
+	return &RunnerTestManager{unique: unique}
+}
+
+func (b *RunnerTestManager) Process(ctx context.Context) (*OutputProperty, error) {
+	if b.processed == nil {
+		return nil, wool.Get(ctx).In("RunnerTestManager.Process").Wrapf(nil, "cannot process")
+	}
+	return b.processed, nil
+}
+
+func (b *RunnerTestManager) Set(ctx context.Context, output *RunnerTestOutput) error {
+	w := wool.Get(ctx).In("RunnerTestManager.Set", wool.NameField(b.unique))
+	// Handle error
+	if output.Err != "" {
+		b.processed = Pause()
+		return nil
+	}
+	defer func() {
+	}()
+	if b.processed == nil {
+		w.Debug("first time")
+		b.processed = OnInit()
+		return nil
+	}
+
 	b.processed = IndependentUpdate()
 	return nil
 }

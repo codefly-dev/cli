@@ -5,9 +5,10 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/architecture"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func createServices(services ...string) []architecture.Service {
@@ -18,122 +19,164 @@ func createServices(services ...string) []architecture.Service {
 	return out
 }
 
-func TestServiceGraph(t *testing.T) {
+// Modules Layout:
+// management:
+// - organization
+// billing
+// - accounts -> management/organization
+// web:
+// - gateway  -> management/organization
+// - gateway  -> billing/accounts
+// - frontend -> gateway
+
+// Flat Layout:
+// organization
+// accounts -> organization
+// gateway -> organization
+// gateway -> accounts
+// frontend -> gateway
+
+func TestServiceDependenciesModulesLayout(t *testing.T) {
 	ctx := context.Background()
 	wool.SetGlobalLogLevel(wool.DEBUG)
 
-	workspace := &configurations.Workspace{}
-	project, err := workspace.LoadProjectFromDir(ctx, "testdata/codefly-platform")
-	assert.NoError(t, err)
-	assert.NotNil(t, project)
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/module-layout")
+	require.NoError(t, err)
+	require.NotNil(t, workspace)
+	require.Equal(t, 3, len(workspace.Modules))
 
-	// applications:
-	// management:
-	// - organization
-	// billing
-	// - accounts -> management/organization
-	// web:
-	// - frontend -> gateway
-	// - gateway  -> management/organization
-	// - gateway  -> billing/accounts
+	organization := shared.Must(workspace.FindUniqueServiceByName(ctx, "management/organization"))
+	require.NotNil(t, organization)
+	accounts := shared.Must(workspace.FindUniqueServiceByName(ctx, "billing/accounts"))
+	require.NotNil(t, accounts)
+	gateway := shared.Must(workspace.FindUniqueServiceByName(ctx, "web/gateway"))
+	require.NotNil(t, gateway)
+	frontend := shared.Must(workspace.FindUniqueServiceByName(ctx, "web/frontend"))
+	require.NotNil(t, frontend)
 
-	organization := "management/organization"
-	accounts := "billing/accounts"
-	gateway := "web/gateway"
-	frontend := "web/frontend"
+	testServiceGraph(t, workspace, organization.Unique(), accounts.Unique(), gateway.Unique(), frontend.Unique())
+}
 
-	assert.Equal(t, 3, len(project.Applications))
+func TestServiceDependenciesFlatLayout(t *testing.T) {
+	ctx := context.Background()
+	wool.SetGlobalLogLevel(wool.DEBUG)
 
-	dep, err := architecture.NewServiceDependencies(ctx, project)
-	assert.NoError(t, err)
-	assert.NotNil(t, dep)
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/flat-layout")
+	require.NoError(t, err)
+	require.NotNil(t, workspace)
 
-	assert.Equal(t, 4, len(dep.Services()))
+	organization := shared.Must(workspace.FindUniqueServiceByName(ctx, "organization"))
+	require.NotNil(t, organization)
+	accounts := shared.Must(workspace.FindUniqueServiceByName(ctx, "accounts"))
+	require.NotNil(t, accounts)
+	gateway := shared.Must(workspace.FindUniqueServiceByName(ctx, "gateway"))
+	require.NotNil(t, gateway)
+	frontend := shared.Must(workspace.FindUniqueServiceByName(ctx, "frontend"))
+	require.NotNil(t, frontend)
 
-	assert.Equal(t, 4, len(dep.Dependencies()))
+	testServiceGraph(t, workspace, organization.Unique(), accounts.Unique(), gateway.Unique(), frontend.Unique())
+}
+
+func testServiceGraph(t *testing.T, workspace *resources.Workspace, organization, accounts, gateway, frontend string) {
+	ctx := context.Background()
+	dep, err := architecture.NewServiceDependencies(ctx, workspace)
+	require.NoError(t, err)
+	require.NotNil(t, dep)
+
+	for _, service := range []string{organization, accounts, gateway, frontend} {
+		svc, err := dep.ServiceFromUnique(service)
+		require.NoError(t, err)
+		require.NotNil(t, svc)
+		require.Equal(t, service, svc.Unique())
+	}
+
+	require.Equal(t, 4, len(dep.Services()))
+
+	require.Equal(t, 4, len(dep.Dependencies()))
 
 	// Sanity checks
 	ok, err := dep.DependsOn(accounts, organization)
-	assert.NoError(t, err)
-	assert.True(t, ok)
+	require.NoError(t, err)
+	require.True(t, ok)
 
 	ok, err = dep.DependsOn(gateway, organization)
-	assert.NoError(t, err)
-	assert.True(t, ok)
+	require.NoError(t, err)
+	require.True(t, ok)
 
 	ok, err = dep.DependsOn(gateway, accounts)
-	assert.NoError(t, err)
-	assert.True(t, ok)
+	require.NoError(t, err)
+	require.True(t, ok)
 
 	ok, err = dep.DependsOn(frontend, organization)
-	assert.NoError(t, err)
-	assert.True(t, ok)
+	require.NoError(t, err)
+	require.True(t, ok)
 
 	// Check Restrict
 	smallerDep, err := dep.Restrict(ctx, accounts)
-	assert.NoError(t, err)
-	assert.ElementsMatch(t, createServices(accounts, organization), smallerDep.Services())
+	require.NoError(t, err)
+
+	require.ElementsMatch(t, createServices(accounts, organization), smallerDep.Services())
 
 	// Check DirectRequires
 
 	deps, err := dep.DirectRequires(ctx, organization)
-	assert.NoError(t, err)
-	assert.Equal(t, 0, len(deps))
+	require.NoError(t, err)
+	require.Equal(t, 0, len(deps))
 
 	deps, err = dep.DirectRequires(ctx, accounts)
-	assert.NoError(t, err)
-	assert.Equal(t, createServices(organization), deps)
+	require.NoError(t, err)
+	require.Equal(t, createServices(organization), deps)
 
 	deps, err = dep.DirectRequires(ctx, gateway)
-	assert.NoError(t, err)
-	assert.Equal(t, createServices(organization, accounts), deps)
+	require.NoError(t, err)
+	require.Equal(t, createServices(organization, accounts), deps)
 
 	deps, err = dep.DirectRequires(ctx, frontend)
-	assert.NoError(t, err)
-	assert.Equal(t, createServices(gateway), deps)
+	require.NoError(t, err)
+	require.Equal(t, createServices(gateway), deps)
 
 	// Check DirectDependents
 
 	reqs, err := dep.DirectDependents(ctx, frontend)
-	assert.NoError(t, err)
-	assert.Equal(t, 0, len(reqs))
+	require.NoError(t, err)
+	require.Equal(t, 0, len(reqs))
 
 	reqs, err = dep.DirectDependents(ctx, gateway)
-	assert.NoError(t, err)
-	assert.Equal(t, createServices(frontend), reqs)
+	require.NoError(t, err)
+	require.Equal(t, createServices(frontend), reqs)
 
 	reqs, err = dep.DirectDependents(ctx, organization)
-	assert.NoError(t, err)
-	assert.Equal(t, createServices(accounts, gateway), reqs)
+	require.NoError(t, err)
+	require.Equal(t, createServices(accounts, gateway), reqs)
 
 	// Topological sorts
 
 	order, err := dep.OrderTo(ctx, organization)
-	assert.NoError(t, err)
-	assert.Equal(t, 0, len(order))
+	require.NoError(t, err)
+	require.Equal(t, 0, len(order))
 
 	order, err = dep.OrderTo(ctx, accounts)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	expected := []architecture.Service{
 		{organization},
 	}
-	assert.Equal(t, expected, order)
+	require.Equal(t, expected, order)
 
 	order, err = dep.OrderTo(ctx, gateway)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	expected = []architecture.Service{
 		{organization},
 		{accounts},
 	}
-	assert.Equal(t, expected, order)
+	require.Equal(t, expected, order)
 
 	order, err = dep.OrderTo(ctx, frontend)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	expected = []architecture.Service{
 		{organization},
 		{accounts},
 		{gateway},
 	}
-	assert.Equal(t, expected, order)
+	require.Equal(t, expected, order)
 
 }

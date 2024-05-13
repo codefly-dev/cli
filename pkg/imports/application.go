@@ -1,8 +1,8 @@
 package imports
 
-type ApplicationImporter interface {
-	NewApplicationName() string
-	ProjectName() string
+type ModuleImporter interface {
+	NewModuleName() string
+	WorkspaceName() string
 	Source() SourceImporter
 
 	Fetch() error
@@ -13,19 +13,19 @@ type ServiceImporter interface {
 }
 
 type Importer struct {
-	ApplicationImporter
+	ModuleImporter
 	ServiceImporter
 }
 
-func ImportApplication(imp *Importer) error {
-	//logger := shared.GetBaseLogger(ctx).With("import.ImportApplication")
-	//logger.Debuf("Importing applications to <%s>", imp.ProjectName())
-	//err := imp.ApplicationImporter.Fetch()
+func ImportModule(imp *Importer) error {
+	//logger := shared.GetBaseLogger(ctx).With("import.ImportModule")
+	//logger.Debuf("Importing modules to <%s>", imp.WorkspaceName())
+	//err := imp.ModuleImporter.Fetch()
 	//if err != nil {
 	//	return err
 	//}
 	//
-	//recommendation, err := imp.ApplicationImporter.Source().Analyze()
+	//recommendation, err := imp.ModuleImporter.Source().Analyze()
 	//if err != nil {
 	//	return logger.Wrapf(err, "cannot analyze source")
 	//}
@@ -38,27 +38,27 @@ func ImportApplication(imp *Importer) error {
 	//if err != nil {
 	//	return err
 	//}
-	//project, err := configurations.LoadProjectFromName(imp.ProjectName())
+	//workspace, err := resources.LoadWorkspaceFromName(imp.WorkspaceName())
 	//if err != nil {
-	//	return logger.Wrapf(err, "needs a project to import into")
+	//	return logger.Wrapf(err, "needs a workspace to import into")
 	//}
-	//configurations.Global().SetCurrentProject(project)
+	//resources.Global().SetCurrentWorkspace(workspace)
 	//
 	//// Will clone to the name
-	//name := imp.NewApplicationName()
+	//name := imp.NewModuleName()
 	//
-	//conf, err := configurations.NewApplication(name)
+	//conf, err := resources.NewModule(name)
 	//if err != nil {
-	//	return logger.Wrapf(err, "cannot create applications")
+	//	return logger.Wrapf(err, "cannot create modules")
 	//}
 	//
 	//err = conf.Save()
 	//if err != nil {
-	//	return logger.Wrapf(err, "cannot save applications")
+	//	return logger.Wrapf(err, "cannot save modules")
 	//}
-	//configurations.SetCurrentApplication(conf)
+	//resources.SetCurrentModule(conf)
 	//if err != nil {
-	//	return logger.Wrapf(err, "cannot analyze applications")
+	//	return logger.Wrapf(err, "cannot analyze modules")
 	//}
 	//
 	//inputs, err := imp.ServiceImporter.CreationInputs()
@@ -74,14 +74,14 @@ func ImportApplication(imp *Importer) error {
 	//}
 	//
 	//// Load an sync
-	//golor.Println(`#(white,bold)[We are syncing the applications].`)
-	//app, err := application.Load(project, conf, application.BuilderMode)
+	//golor.Println(`#(white,bold)[We are syncing the modules].`)
+	//app, err := module.Load(workspace, conf, module.BuilderMode)
 	//if err != nil {
-	//	return logger.Wrapf(err, "cannot load applications")
+	//	return logger.Wrapf(err, "cannot load modules")
 	//}
 	//err = app.Sync(context.Background())
 	//if err != nil {
-	//	return logger.Wrapf(err, "cannot sync applications")
+	//	return logger.Wrapf(err, "cannot sync modules")
 	//}
 
 	return nil

@@ -12,7 +12,7 @@ var ListCmd = &cobra.Command{
 }
 
 func init() {
-	ListCmd.AddCommand(list.ProjectCmd)
-	ListCmd.AddCommand(list.ApplicationCmd)
+	ListCmd.AddCommand(list.WorkspaceCmd)
+	ListCmd.AddCommand(list.ModuleCmd)
 	ListCmd.AddCommand(list.LibraryCmd)
 }

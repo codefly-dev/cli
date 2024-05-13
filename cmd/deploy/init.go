@@ -24,6 +24,6 @@ func setup() {
 	active, err := common.LoadActiveContext(ctx)
 	cli.ExitOnError(err, "cannot load active context")
 
-	err = deployment.SetupBaseVersionControl(ctx, active.Project)
+	err = deployment.SetupBaseVersionControl(ctx, active.Workspace)
 	cli.ExitOnError(err, "cannot setup base version control")
 }

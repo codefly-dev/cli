@@ -12,7 +12,7 @@ var UpdateCmd = &cobra.Command{
 }
 
 func init() {
-	UpdateCmd.AddCommand(update.ProjectCmd)
-	// UpdateCmd.AddCommand(update.ApplicationCmd)
+	UpdateCmd.AddCommand(update.WorkspaceCmd)
+	// UpdateCmd.AddCommand(update.ModuleCmd)
 	// UpdateCmd.AddCommand(update.ServiceCmd)
 }

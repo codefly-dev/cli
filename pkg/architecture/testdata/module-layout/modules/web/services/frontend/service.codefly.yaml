@@ -1,0 +1,15 @@
+kind: service
+name: frontend
+version: 0.0.0
+module: web
+agent:
+    kind: runtime::service
+    name: nextjs-auth0
+    version: 0.0.6
+    publisher: codefly.ai
+service-dependencies:
+    - name: gateway
+endpoints:
+    - name: http
+      visibility: public
+      api: http

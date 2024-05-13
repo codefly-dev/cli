@@ -1,14 +1,14 @@
 package update
 
-// // ApplicationCmd represents the run command
-// var ApplicationCmd = &cobra.Command{
-// 	Use:   "application",
-// 	Short: "Update an application",
+// // ModuleCmd represents the run command
+// var ModuleCmd = &cobra.Command{
+// 	Use:   "module",
+// 	Short: "Update an module",
 
 // 	Begin: func(cmd *cobra.Command, args []string) {
 // 	ctx := context.Background()
 
-//provider := wool.New(ctx, configurations.CLI.AsResource())
+//provider := wool.New(ctx, resources.CLI.AsResource())
 //
 //provider.WithLogger(cli.GetLogger())
 //defer provider.Done()
@@ -17,14 +17,14 @@ package update
 // 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
 // 		defer stop()
 
-// 		project := common.Project(ctx)
-// 		config := common.Application(ctx)
+// 		workspace := common.Workspace(ctx)
+// 		config := common.Module(ctx)
 
-// 		golor.Println(`#(blue,bold)[Starting application]: #(italic,white)[{{ .Name }}]
+// 		golor.Println(`#(blue,bold)[Starting module]: #(italic,white)[{{ .Name }}]
 // #(blue,bold)[Ctrl-C anytime to exit...]`, config)
 
-// 		configurations.SetMode(configurations.ModeApplication)
-// 		app, err := application.Load(ctx, project, config, application.BuilderMode)
+// 		resources.SetMode(resources.ModeModule)
+// 		app, err := module.Load(ctx, workspace, config, module.BuilderMode)
 // 		cli.ExitOnError(err, "<%s>", config.Name)
 
 // 		err = app.Update(ctx)
@@ -35,6 +35,6 @@ package update
 // var current bool
 
 // func init() {
-// 	ApplicationCmd.Flags().BoolVarP(&current, "current", "c", false, "update current application")
-// 	ApplicationCmd.PersistentFlags().BoolVarP(&interactive, "interactive", "i", false, "interactive mode")
+// 	ModuleCmd.Flags().BoolVarP(&current, "current", "c", false, "update current module")
+// 	ModuleCmd.PersistentFlags().BoolVarP(&interactive, "interactive", "i", false, "interactive mode")
 // }

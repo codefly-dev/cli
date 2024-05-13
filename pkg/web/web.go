@@ -5,18 +5,18 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
-	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/golor"
 )
 
 type CodeflyServer struct {
-	// app    *application.Application
+	// app    *module.Module
 	server *go_grpc.Server
 	rest   *go_grpc.HttpServer
 }
 
 type ServerData struct {
-	Workspace *configurations.Workspace
+	Workspace *resources.Workspace
 }
 
 func NewServer(input ServerData) (*CodeflyServer, error) {

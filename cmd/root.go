@@ -7,6 +7,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/fatih/color"
 
@@ -67,9 +68,9 @@ func Execute() {
 		wool.SetGlobalLogLevel(wool.FOCUS)
 	}
 	if tracker != "" {
-		tracker, err := actions.NewActionTracker(context.Background(), tracker)
+		tr, err := actions.NewActionTracker(context.Background(), resources.CodeflyDir(), tracker)
 		cli.ExitOnError(err, "cannot create action tracker")
-		actions.SetActionTracker(tracker)
+		actions.SetActionTracker(tr)
 	}
 
 	cli.ExitOnError(RootCmd.Execute(), "cannot execute command")
@@ -97,10 +98,8 @@ func init() {
 	RootCmd.AddCommand(VersionCmd)
 
 	// Initialization and configuration
-	RootCmd.AddCommand(InitCmd)
 	RootCmd.AddCommand(LoginCmd)
 
-	RootCmd.AddCommand(WorkspaceCmd)
 	RootCmd.AddCommand(ListCmd)
 
 	// Generate client code
@@ -130,7 +129,7 @@ func init() {
 	// Deploy
 	RootCmd.AddCommand(DeployCmd)
 
-	// Open your applications in your favorite editor
+	// Open your modules in your favorite editor
 	RootCmd.AddCommand(OpenCmd)
 
 	// Agents
@@ -144,6 +143,9 @@ func init() {
 
 	// Clear things
 	RootCmd.AddCommand(ClearCmd)
+
+	// Test things
+	RootCmd.AddCommand(TestCmd)
 
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")

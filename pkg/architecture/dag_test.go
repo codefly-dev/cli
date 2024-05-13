@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/architecture"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func createNodes(s ...string) []architecture.Node {
@@ -17,13 +17,13 @@ func createNodes(s ...string) []architecture.Node {
 
 func subgraphFrom(t *testing.T, g *architecture.DAG, node string) *architecture.DAG {
 	sub, err := g.SubGraphFrom(node)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	return sub
 }
 
 func subgraphTo(t *testing.T, g *architecture.DAG, node string) *architecture.DAG {
 	sub, err := g.SubGraphTo(node)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	return sub
 }
 
@@ -34,7 +34,7 @@ func TestGraph(t *testing.T) {
 	g.AddEdge("b", "c") // b -> c
 
 	reachable := g.ReachableFrom("a", "c")
-	assert.True(t, reachable)
+	require.True(t, reachable)
 
 	// Branch
 	g.AddEdge("d", "e") // d -> e
@@ -48,102 +48,102 @@ func TestGraph(t *testing.T) {
 	// Lonely
 	g.AddNode("z") // z
 
-	assert.Equal(t, 10, len(g.Nodes()))
-	assert.Equal(t, 7, len(g.Edges()))
+	require.Equal(t, 10, len(g.Nodes()))
+	require.Equal(t, 7, len(g.Edges()))
 
 	// Children
 
 	children := g.Children("a")
-	assert.ElementsMatch(t, createNodes("b"), children, "Expected b")
+	require.ElementsMatch(t, createNodes("b"), children, "Expected b")
 
 	children = g.Children("d")
-	assert.ElementsMatch(t, createNodes("e", "f"), children, "Expected e, f")
+	require.ElementsMatch(t, createNodes("e", "f"), children, "Expected e, f")
 
 	children = g.Children("x")
-	assert.ElementsMatch(t, createNodes("h", "y"), children, "Expected h, y")
+	require.ElementsMatch(t, createNodes("h", "y"), children, "Expected h, y")
 
 	children = g.Children("z")
-	assert.Equal(t, 0, len(children))
+	require.Equal(t, 0, len(children))
 
 	// Parents
 	parents := g.Parents("a")
-	assert.Equal(t, 0, len(parents))
+	require.Equal(t, 0, len(parents))
 
 	parents = g.Parents("b")
-	assert.ElementsMatch(t, createNodes("a"), parents, "Expected a")
+	require.ElementsMatch(t, createNodes("a"), parents, "Expected a")
 
 	parents = g.Parents("h")
-	assert.ElementsMatch(t, createNodes("x", "y"), parents, "Expected x, y")
+	require.ElementsMatch(t, createNodes("x", "y"), parents, "Expected x, y")
 
 	parents = g.Parents("z")
-	assert.Equal(t, 0, len(parents))
+	require.Equal(t, 0, len(parents))
 
 	// Topological sort
 	order, err := g.TopologicalSortFrom("a")
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("b", "c"), order, "Expected b, c")
+	require.NoError(t, err)
+	require.Equal(t, createNodes("b", "c"), order, "Expected b, c")
 
 	order, err = g.TopologicalSortFrom("d")
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("e", "f"), order, "Expected e, f")
+	require.NoError(t, err)
+	require.Equal(t, createNodes("e", "f"), order, "Expected e, f")
 
 	order, err = g.TopologicalSortTo("h")
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("x", "y"), order, "Expected x, y")
+	require.NoError(t, err)
+	require.Equal(t, createNodes("x", "y"), order, "Expected x, y")
 
 	// Sub-graphs STARTING FROM NODE
 
 	// a -> b -> c
 	sub := subgraphFrom(t, g, "a")
-	assert.ElementsMatch(t, createNodes("a", "b", "c"), sub.Nodes(), "Expected a, b, c")
+	require.ElementsMatch(t, createNodes("a", "b", "c"), sub.Nodes(), "Expected a, b, c")
 
 	// b -> c
 	sub = subgraphFrom(t, g, "b")
-	assert.ElementsMatch(t, createNodes("b", "c"), sub.Nodes(), "Expected b, c")
+	require.ElementsMatch(t, createNodes("b", "c"), sub.Nodes(), "Expected b, c")
 
 	// c
 	sub = subgraphFrom(t, g, "c")
-	assert.ElementsMatch(t, createNodes("c"), sub.Nodes(), "Expected c")
+	require.ElementsMatch(t, createNodes("c"), sub.Nodes(), "Expected c")
 
 	// d
 	sub = subgraphFrom(t, g, "d")
-	assert.ElementsMatch(t, createNodes("d", "e", "f"), sub.Nodes(), "Expected d, e, f")
+	require.ElementsMatch(t, createNodes("d", "e", "f"), sub.Nodes(), "Expected d, e, f")
 
 	// z
 	sub = subgraphFrom(t, g, "z")
-	assert.ElementsMatch(t, createNodes("z"), sub.Nodes(), "Expected z")
+	require.ElementsMatch(t, createNodes("z"), sub.Nodes(), "Expected z")
 
 	// Sub-graphs ENDING AT NODE
 	sub = subgraphTo(t, g, "a")
-	assert.ElementsMatch(t, createNodes("a"), sub.Nodes(), "Expected a")
+	require.ElementsMatch(t, createNodes("a"), sub.Nodes(), "Expected a")
 
 	sub = subgraphTo(t, g, "b")
-	assert.ElementsMatch(t, createNodes("a", "b"), sub.Nodes(), "Expected a, b")
+	require.ElementsMatch(t, createNodes("a", "b"), sub.Nodes(), "Expected a, b")
 
 	sub = subgraphTo(t, g, "c")
-	assert.ElementsMatch(t, createNodes("a", "b", "c"), sub.Nodes(), "Expected a, b, c")
+	require.ElementsMatch(t, createNodes("a", "b", "c"), sub.Nodes(), "Expected a, b, c")
 
 	sub = subgraphTo(t, g, "d")
-	assert.ElementsMatch(t, createNodes("d"), sub.Nodes(), "Expected d")
+	require.ElementsMatch(t, createNodes("d"), sub.Nodes(), "Expected d")
 
 	sub = subgraphTo(t, g, "e")
-	assert.ElementsMatch(t, createNodes("d", "e"), sub.Nodes(), "Expected d, e")
+	require.ElementsMatch(t, createNodes("d", "e"), sub.Nodes(), "Expected d, e")
 
 	sub = subgraphTo(t, g, "f")
-	assert.ElementsMatch(t, createNodes("d", "f"), sub.Nodes(), "Expected d, f")
+	require.ElementsMatch(t, createNodes("d", "f"), sub.Nodes(), "Expected d, f")
 
 	sub = subgraphTo(t, g, "x")
-	assert.ElementsMatch(t, createNodes("x"), sub.Nodes(), "Expected x, h")
+	require.ElementsMatch(t, createNodes("x"), sub.Nodes(), "Expected x, h")
 
 	sub = subgraphTo(t, g, "y")
-	assert.ElementsMatch(t, createNodes("y", "x"), sub.Nodes(), "Expected y, x")
+	require.ElementsMatch(t, createNodes("y", "x"), sub.Nodes(), "Expected y, x")
 
 	sub = subgraphTo(t, g, "h")
-	assert.ElementsMatch(t, createNodes("x", "y", "h"), sub.Nodes(), "Expected x, y, h")
+	require.ElementsMatch(t, createNodes("x", "y", "h"), sub.Nodes(), "Expected x, y, h")
 
 	// z
 	sub = subgraphTo(t, g, "z")
-	assert.ElementsMatch(t, createNodes("z"), sub.Nodes(), "Expected z")
+	require.ElementsMatch(t, createNodes("z"), sub.Nodes(), "Expected z")
 
 }
 
@@ -198,11 +198,11 @@ func TestSortedChildren(t *testing.T) {
 			g.AddEdge(operations[i].from, operations[i].to)
 		}
 		order, err := g.TopologicalSortFrom("a")
-		assert.NoError(t, err)
-		assert.Equal(t, createNodes("b", "c", "d", "e"), order)
+		require.NoError(t, err)
+		require.Equal(t, createNodes("b", "c", "d", "e"), order)
 		children, err := g.SortedChildren("a")
-		assert.NoError(t, err)
-		assert.Equal(t, createNodes("b", "c", "e"), children)
+		require.NoError(t, err)
+		require.Equal(t, createNodes("b", "c", "e"), children)
 	}
 
 }
@@ -225,11 +225,11 @@ func TestSortedParents(t *testing.T) {
 			g.AddEdge(operations[i].from, operations[i].to)
 		}
 		order, err := g.TopologicalSortTo("z")
-		assert.NoError(t, err)
-		assert.Equal(t, createNodes("x", "u", "w", "v"), order)
+		require.NoError(t, err)
+		require.Equal(t, createNodes("x", "u", "w", "v"), order)
 		children, err := g.SortedParents("z")
-		assert.NoError(t, err)
-		assert.Equal(t, createNodes("x", "u", "v"), children)
+		require.NoError(t, err)
+		require.Equal(t, createNodes("x", "u", "v"), children)
 	}
 }
 
@@ -242,35 +242,35 @@ func TestSubGraphFrom(t *testing.T) {
 	g.AddEdge("w", "u")
 	g.AddEdge("u", "x")
 
-	assert.Equal(t, 5, len(g.Nodes()))
-	assert.Equal(t, 6, len(g.Edges()))
+	require.Equal(t, 5, len(g.Nodes()))
+	require.Equal(t, 6, len(g.Edges()))
 
 	sub := subgraphFrom(t, g, "z")
-	assert.Equal(t, 5, len(g.Nodes()))
-	assert.Equal(t, 6, len(g.Edges()))
+	require.Equal(t, 5, len(g.Nodes()))
+	require.Equal(t, 6, len(g.Edges()))
 
 	// All reachable from z
-	assert.ElementsMatch(t, createNodes("z", "u", "v", "w", "x"), sub.Nodes(), "Expected z, u, v, w, x")
+	require.ElementsMatch(t, createNodes("z", "u", "v", "w", "x"), sub.Nodes(), "Expected z, u, v, w, x")
 
 	for _, node := range g.Nodes() {
-		assert.True(t, sub.HasNode(node.ID))
+		require.True(t, sub.HasNode(node.ID))
 	}
 
 	for _, edge := range g.Edges() {
-		assert.True(t, sub.HasEdge(edge.From, edge.To), "Expected edge %s -> %s", edge.From, edge.To)
+		require.True(t, sub.HasEdge(edge.From, edge.To), "Expected edge %s -> %s", edge.From, edge.To)
 	}
 
 	order, err := g.TopologicalSort()
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("z", "v", "w", "u", "x"), order)
+	require.NoError(t, err)
+	require.Equal(t, createNodes("z", "v", "w", "u", "x"), order)
 
 	order, err = sub.TopologicalSort()
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("z", "v", "w", "u", "x"), order)
+	require.NoError(t, err)
+	require.Equal(t, createNodes("z", "v", "w", "u", "x"), order)
 
 	order, err = g.TopologicalSortFrom("z")
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("v", "w", "u", "x"), order)
+	require.NoError(t, err)
+	require.Equal(t, createNodes("v", "w", "u", "x"), order)
 }
 
 func TestSubGraphTo(t *testing.T) {
@@ -285,33 +285,33 @@ func TestSubGraphTo(t *testing.T) {
 
 	g = g.Invert()
 
-	assert.Equal(t, 5, len(g.Nodes()))
-	assert.Equal(t, 6, len(g.Edges()))
+	require.Equal(t, 5, len(g.Nodes()))
+	require.Equal(t, 6, len(g.Edges()))
 
 	sub := subgraphTo(t, g, "z")
-	assert.Equal(t, 5, len(g.Nodes()))
-	assert.Equal(t, 6, len(g.Edges()))
+	require.Equal(t, 5, len(g.Nodes()))
+	require.Equal(t, 6, len(g.Edges()))
 
 	// All reachable from z
-	assert.ElementsMatch(t, createNodes("z", "u", "v", "w", "x"), sub.Nodes(), "Expected z, u, v, w, x")
+	require.ElementsMatch(t, createNodes("z", "u", "v", "w", "x"), sub.Nodes(), "Expected z, u, v, w, x")
 
 	for _, node := range g.Nodes() {
-		assert.True(t, sub.HasNode(node.ID))
+		require.True(t, sub.HasNode(node.ID))
 	}
 
 	for _, edge := range g.Edges() {
-		assert.True(t, sub.HasEdge(edge.From, edge.To), "Expected edge %s -> %s", edge.From, edge.To)
+		require.True(t, sub.HasEdge(edge.From, edge.To), "Expected edge %s -> %s", edge.From, edge.To)
 	}
 
 	order, err := g.TopologicalSort()
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("x", "u", "w", "v", "z"), order)
+	require.NoError(t, err)
+	require.Equal(t, createNodes("x", "u", "w", "v", "z"), order)
 
 	order, err = sub.TopologicalSort()
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("x", "u", "w", "v", "z"), order)
+	require.NoError(t, err)
+	require.Equal(t, createNodes("x", "u", "w", "v", "z"), order)
 
 	order, err = g.TopologicalSortTo("z")
-	assert.NoError(t, err)
-	assert.Equal(t, createNodes("x", "u", "w", "v"), order)
+	require.NoError(t, err)
+	require.Equal(t, createNodes("x", "u", "w", "v"), order)
 }

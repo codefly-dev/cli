@@ -5,12 +5,11 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/core/agents"
+	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 
 	"github.com/codefly-dev/core/agents/manager"
 	coreservices "github.com/codefly-dev/core/agents/services"
-
-	"github.com/codefly-dev/core/configurations"
 )
 
 var buildersCache map[string]*coreservices.BuilderAgent
@@ -21,7 +20,7 @@ func init() {
 	buildersPid = make(map[string]int)
 }
 
-func LoadBuilder(ctx context.Context, conf *configurations.Service) (*coreservices.BuilderAgent, error) {
+func LoadBuilder(ctx context.Context, conf *resources.Service) (*coreservices.BuilderAgent, error) {
 	w := wool.Get(ctx).In("services.LoadBuilder", wool.ThisField(conf))
 
 	if conf == nil {
@@ -35,7 +34,7 @@ func LoadBuilder(ctx context.Context, conf *configurations.Service) (*coreservic
 		return builder, nil
 	}
 
-	builder, process, err := manager.Load[coreservices.ServiceBuilderAgentContext, coreservices.BuilderAgent](ctx, conf.Agent.Of(configurations.BuilderServiceAgent), conf.Unique())
+	builder, process, err := manager.Load[coreservices.ServiceBuilderAgentContext, coreservices.BuilderAgent](ctx, conf.Agent.Of(resources.BuilderServiceAgent), conf.Unique())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service builder conf")
 	}
@@ -51,7 +50,7 @@ func LoadBuilder(ctx context.Context, conf *configurations.Service) (*coreservic
 	return builder, nil
 }
 
-func NewBuilderAgent(conf *configurations.Agent, builder coreservices.Builder) agents.AgentImplementation {
+func NewBuilderAgent(conf *resources.Agent, builder coreservices.Builder) agents.AgentImplementation {
 	return agents.AgentImplementation{
 		Configuration: conf,
 		Agent:         &coreservices.BuilderAgentGRPC{Builder: builder},
