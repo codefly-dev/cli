@@ -23,7 +23,7 @@ func LoadWorkspace(ctx context.Context, workspace *resources.Workspace) (*basev0
 		return nil, w.Wrapf(err, "failed to load modules")
 	}
 	for _, mod := range mods {
-		a, err := LoadModule(ctx, mod)
+		a, err := LoadModule(ctx, workspace, mod)
 		if err != nil {
 			return nil, w.Wrapf(err, "failed to load module: %s", mod.Name)
 		}
@@ -32,15 +32,15 @@ func LoadWorkspace(ctx context.Context, workspace *resources.Workspace) (*basev0
 	return out, nil
 }
 
-func LoadModule(ctx context.Context, app *resources.Module) (*basev0.Module, error) {
+func LoadModule(ctx context.Context, workspace *resources.Workspace, mod *resources.Module) (*basev0.Module, error) {
 	w := wool.Get(ctx).In("overview.LoadModule")
-	out := app.Proto()
-	svcs, err := app.LoadServices(ctx)
+	out := mod.Proto()
+	svcs, err := mod.LoadServices(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "failed to load svcs")
 	}
 	for _, service := range svcs {
-		s, err := LoadService(ctx, service)
+		s, err := LoadService(ctx, workspace, service)
 		if err != nil {
 			return nil, w.Wrapf(err, "failed to load service: %s", service.Name)
 		}
@@ -49,7 +49,7 @@ func LoadModule(ctx context.Context, app *resources.Module) (*basev0.Module, err
 	return out, nil
 }
 
-func LoadService(ctx context.Context, service *resources.Service) (*basev0.Service, error) {
+func LoadService(ctx context.Context, workspace *resources.Workspace, service *resources.Service) (*basev0.Service, error) {
 	w := wool.Get(ctx).In("overview.LoadService")
 	out := service.Proto()
 	// Get endpoints from services
@@ -58,9 +58,10 @@ func LoadService(ctx context.Context, service *resources.Service) (*basev0.Servi
 		return nil, w.Wrapf(err, "failed to load service: %s", service.Name)
 	}
 
+	instance.Workspace = workspace
 	err = instance.LoadRuntime(ctx, false)
 	if err != nil {
-		return nil, w.Wrapf(err, "failed to load service: %s", service.Name)
+		return nil, w.Wrapf(err, "failed to load service runtime: %s", service.Name)
 	}
 
 	init, err := instance.Runtime.Load(ctx, shared.Must(resources.LocalEnvironment().Proto()))

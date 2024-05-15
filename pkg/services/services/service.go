@@ -28,7 +28,6 @@ type ProcessInfo struct {
 
 type Instance struct {
 	*resources.Service
-
 	Workspace *resources.Workspace
 
 	Agent services.Agent
@@ -42,15 +41,13 @@ type Instance struct {
 }
 
 type BuilderInstance struct {
-	Workspace *resources.Workspace
-	Service   *resources.Service
+	*Instance
 
 	services.Builder
 }
 
 type RuntimeInstance struct {
-	Workspace *resources.Workspace
-	Service   *resources.Service
+	*Instance
 
 	services.Runtime
 
@@ -186,7 +183,7 @@ func Load(ctx context.Context, service *resources.Service) (*Instance, error) {
 func (instance *Instance) LoadBuilder(ctx context.Context) error {
 	w := wool.Get(ctx).In("ServiceInstance::LoadBuilder", wool.NameField(instance.Service.Unique()))
 	if builder, ok := buildersCache[instance.Service.Unique()]; ok {
-		instance.Builder = &BuilderInstance{Service: instance.Service, Builder: builder}
+		instance.Builder = &BuilderInstance{Instance: instance, Builder: builder}
 		return nil
 	}
 	err := instance.CheckCapabilities(agentv0.Capability_BUILDER)
@@ -197,14 +194,14 @@ func (instance *Instance) LoadBuilder(ctx context.Context) error {
 	if err != nil {
 		return w.Wrapf(err, "cannot load builder")
 	}
-	instance.Builder = &BuilderInstance{Workspace: instance.Workspace, Service: instance.Service, Builder: builder}
+	instance.Builder = &BuilderInstance{Instance: instance, Builder: builder}
 	return nil
 }
 
 func (instance *Instance) LoadRuntime(ctx context.Context, withRuntimeCheck bool) error {
 	w := wool.Get(ctx).In("ServiceInstance::LoadRuntime", wool.NameField(instance.Service.Unique()))
 	if runtime, ok := runtimesCache[instance.Service.Unique()]; ok {
-		instance.Runtime = &RuntimeInstance{Service: instance.Service, Runtime: runtime}
+		instance.Runtime = &RuntimeInstance{Instance: instance, Runtime: runtime}
 		return nil
 	}
 	err := instance.CheckCapabilities(agentv0.Capability_RUNTIME)
@@ -229,7 +226,7 @@ func (instance *Instance) LoadRuntime(ctx context.Context, withRuntimeCheck bool
 			break
 		}
 	}
-	instance.Runtime = &RuntimeInstance{Workspace: instance.Workspace, Service: instance.Service, Runtime: runtime, IsHotReloading: hotReload}
+	instance.Runtime = &RuntimeInstance{Instance: instance, Runtime: runtime, IsHotReloading: hotReload}
 	return nil
 }
 

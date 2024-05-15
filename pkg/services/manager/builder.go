@@ -324,7 +324,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 func (b *Builder) KustomizeApply(ctx context.Context, service *resources.Service) error {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 	dir := deployment.Dir(ctx, b.world.Workspace)
-	dir = fmt.Sprintf("%s/modules/%s/uniqueToService/%s/overlays/%s", dir, service.Module, service.Name, b.world.Env.Name)
+	dir = fmt.Sprintf("%s/modules/%s/services/%s/overlays/%s", dir, service.Module, service.Name, b.world.Env.Name)
 	err := deployment.KustomizeApply(ctx, service, b.world.Env, dir)
 	if err != nil {
 		return w.Wrapf(err, "cannot apply kustomize")

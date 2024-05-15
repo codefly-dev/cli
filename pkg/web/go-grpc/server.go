@@ -247,7 +247,7 @@ func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {
 
 func NewServer(c *Configuration, w *resources.Workspace) (*Server, error) {
 	grpcServer := grpc.NewServer()
-	bufferSize := 100
+	bufferSize := 10000
 	s := Server{
 		config:     c,
 		workspace:  w,
@@ -260,7 +260,7 @@ func NewServer(c *Configuration, w *resources.Workspace) (*Server, error) {
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	w := wool.Get(ctx).In("webServer")
+	w := wool.Get(ctx).In("cli.Server")
 	s.Wool = w
 	agents.AddProcessor(s)
 	lis, err := net.Listen("tcp", s.config.EndpointGrpc)

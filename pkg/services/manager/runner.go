@@ -326,6 +326,9 @@ func (runner *Runner) StopIfNeeded(ctx context.Context) error {
 }
 
 func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
+	if runner == nil {
+		return &OutputProperty{}, nil
+	}
 	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance.Service))
 	w.Debug("stopping")
 	// Build the request
@@ -404,5 +407,8 @@ func (runner *Runner) Unique() string {
 }
 
 func (runner *Runner) WithRuntimeContext(runtimeContext string) {
+	if runner == nil {
+		return
+	}
 	runner.runtimeContext = runtimeContext
 }

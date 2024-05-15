@@ -22,8 +22,8 @@ func KustomizeApply(ctx context.Context, service *resources.Service, env *resour
 	if err != nil {
 		return w.Wrapf(err, "cannot run kustomize build: %s", stderr.String())
 	}
-	// Split the output into individual resources
-	resources := strings.Split(stdout.String(), "---")
-	w.Info(fmt.Sprintf("Found %d resources to apply", len(resources)))
-	return KubernetesApply(ctx, service, env, resources...)
+	// Split the output into individual objs
+	objs := strings.Split(stdout.String(), "---")
+	w.Info(fmt.Sprintf("Found %d resources to apply", len(objs)))
+	return KubernetesApply(ctx, service, env, objs...)
 }
