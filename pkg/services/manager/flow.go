@@ -609,6 +609,9 @@ func (flow *Flow) CreateManager(ctx context.Context) error {
 }
 
 func (flow *Flow) Ready(ctx context.Context) bool {
+	if flow == nil {
+		return false
+	}
 	// We want the origin to have ran
 	for _, action := range flow.playbook.Executed() {
 		if action.Service == flow.origin.Unique() && action.Type == RuntimeStart {
