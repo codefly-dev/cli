@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.26.2
 	github.com/charmbracelet/glamour v0.7.0
 	github.com/charmbracelet/lipgloss v0.10.0
-	github.com/codefly-dev/core v0.1.102
+	github.com/codefly-dev/core v0.1.104
 	github.com/codefly-dev/golor v0.1.2
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/docker/docker v26.1.3+incompatible
@@ -31,7 +31,7 @@ require (
 	google.golang.org/grpc v1.64.0
 	google.golang.org/protobuf v1.34.1
 	gopkg.in/yaml.v2 v2.4.0
-	modernc.org/sqlite v1.29.9
+	modernc.org/sqlite v1.29.10
 )
 
 require (
@@ -169,7 +169,7 @@ require (
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/gc/v3 v3.0.0-20240304020402-f0dba7c97c2b // indirect
-	modernc.org/libc v1.50.6 // indirect
+	modernc.org/libc v1.50.7 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.8.0 // indirect
 	modernc.org/strutil v1.2.0 // indirect
