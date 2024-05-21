@@ -107,6 +107,9 @@ func (playbook *Playbook) Begin(ctx context.Context, action Action) error {
 // Executed returns the list of actions that were executed
 // Since it is public, we lock
 func (playbook *Playbook) Executed() []Action {
+	if playbook == nil {
+		return nil
+	}
 	playbook.lock.RLock()
 	var out []Action
 	for _, action := range playbook.executed {

@@ -56,32 +56,42 @@ type RuntimeInstance struct {
 
 // Builder methods
 
-func (instance *BuilderInstance) loadRequest() *builderv0.LoadRequest {
+func (instance *BuilderInstance) loadRequest(ctx context.Context) (*builderv0.LoadRequest, error) {
+	w := wool.Get(ctx).In("BuilderInstance::loadRequest", wool.NameField(instance.Service.Unique()))
+	relativeToWorkspace, err := instance.Workspace.RelativeDir(instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot compute relative dir")
+
+	}
 	req := &builderv0.LoadRequest{
 		Identity: &basev0.ServiceIdentity{
-			Name:      instance.Service.Name,
-			Module:    instance.Service.Module,
-			Workspace: instance.Workspace.Name,
-			Location:  instance.Service.Dir(),
+			Name:                instance.Service.Name,
+			Module:              instance.Service.Module,
+			Workspace:           instance.Workspace.Name,
+			WorkspacePath:       instance.Workspace.Dir(),
+			RelativeToWorkspace: relativeToWorkspace,
 		},
 	}
-	if instance.Workspace != nil {
-		req.Identity.Workspace = instance.Workspace.Name
-	}
-	return req
+	return req, nil
 }
 
 func (instance *BuilderInstance) Load(ctx context.Context) (*builderv0.LoadResponse, error) {
 	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
 	w.Debug("loading", wool.ModuleField(instance.Service.Module))
-	req := instance.loadRequest()
+	req, err := instance.loadRequest(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create load request")
+	}
 	return instance.Builder.Load(ctx, req)
 }
 
 func (instance *BuilderInstance) LoadForCreate(ctx context.Context) (*builderv0.LoadResponse, error) {
 	w := wool.Get(ctx).In("BuilderInstance::Load", wool.NameField(instance.Service.Unique()))
 	w.Debug("loading", wool.ModuleField(instance.Service.Module))
-	req := instance.loadRequest()
+	req, err := instance.loadRequest(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create load request")
+	}
 	req.CreationMode = &builderv0.CreationMode{Communicate: true}
 	return instance.Builder.Load(ctx, req)
 }
@@ -116,20 +126,23 @@ func (instance *BuilderInstance) Sync(ctx context.Context, req *builderv0.SyncRe
 func (instance *RuntimeInstance) Load(ctx context.Context, env *basev0.Environment) (*runtimev0.LoadResponse, error) {
 	w := wool.Get(ctx).In("RuntimeInstance::Load", wool.NameField(instance.Service.Unique()))
 	w.Debug("sending load request")
+	relativeToWorkspace, err := instance.Workspace.RelativeDir(instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot compute relative dir")
+	}
 	req := &runtimev0.LoadRequest{
 		DeveloperDebug: wool.IsDebug(),
 		Identity: &basev0.ServiceIdentity{
-			Name:     instance.Service.Name,
-			Module:   instance.Service.Module,
-			Version:  instance.Service.Version,
-			Location: instance.Service.Dir(),
+			Name:                instance.Service.Name,
+			Module:              instance.Service.Module,
+			Version:             instance.Service.Version,
+			Workspace:           instance.Workspace.Name,
+			WorkspacePath:       instance.Workspace.Dir(),
+			RelativeToWorkspace: relativeToWorkspace,
 		},
 		Environment: env,
 	}
-	if instance.Workspace != nil {
-		req.Identity.Workspace = instance.Workspace.Name
-	}
-	err := resources.Validate(req)
+	err = resources.Validate(req)
 	if err != nil {
 		return nil, w.Wrapf(err, "invalid request")
 	}

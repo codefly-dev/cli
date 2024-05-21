@@ -3,6 +3,7 @@ package create
 import (
 	"fmt"
 	"os"
+	"path"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -69,6 +70,9 @@ func newWorkspace(name string) {
 	}
 
 	cli.Header(2, "Workspace <%s> created in current directory", workspace.Name)
+
+	err = os.Mkdir(path.Join(workspace.Dir(), ".codefly"), 0600)
+	cli.ExitOnError(err, "cannot create .codefly directory")
 
 }
 

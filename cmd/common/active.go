@@ -79,7 +79,6 @@ func RequireModule(ctx context.Context) *resources.Module {
 func Workspace(ctx context.Context) *resources.Workspace {
 	active, err := LoadActiveContext(ctx)
 	cli.ExitOnError(err, "cannot load active context")
-	cli.ExitIf(active.Workspace == nil, "no active workspace")
 	return active.Workspace
 }
 

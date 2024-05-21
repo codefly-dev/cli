@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"os/signal"
-	"slices"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -30,7 +29,11 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
-		workspace, service := common.LoadRequired(ctx, args)
+		workspace, service := common.Load(ctx, args)
+		if service == nil {
+			cli.Error("No service found")
+			cli.Exit()
+		}
 
 		errs := make(chan error, 1) // Buffered channel
 
@@ -73,7 +76,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, service
 	// Catch panic
 	defer w.Catch()
 
-	if !slices.Contains(resources.RuntimeContexts(), runtimeContext) {
+	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"os/signal"
-	"slices"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -46,8 +45,10 @@ var ServiceCmd = &cobra.Command{
 			}
 			silentServices = append(silentServices, service)
 		}
-		cli.Debug("silent services: %v", silentServices)
-		cli.WithSilence(silentServices)
+		if len(silentServices) > 0 {
+			cli.Debug("silent services: %v", silentServices)
+			cli.WithSilence(silentServices)
+		}
 
 		errs := make(chan error, 1) // Buffered channel
 
@@ -98,7 +99,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, service
 	// Catch panic
 	defer w.Catch()
 
-	if !slices.Contains(resources.RuntimeContexts(), runtimeContext) {
+	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
