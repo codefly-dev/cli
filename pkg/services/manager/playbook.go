@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/codefly-dev/cli/pkg/architecture"
+	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/wool"
 )
 

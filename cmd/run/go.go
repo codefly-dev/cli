@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
-	"github.com/codefly-dev/cli/pkg/services/services"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )

@@ -7,9 +7,6 @@ var scope string
 // Runtime context
 var runtimeContext string
 
-// Run in CI mode
-var ci bool
-
 // load only mode
 var loadOnly bool
 

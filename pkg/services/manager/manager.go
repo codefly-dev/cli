@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/codefly-dev/cli/pkg/services/services"
+	"github.com/codefly-dev/core/services"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"

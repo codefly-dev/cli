@@ -3,11 +3,11 @@ package generators
 import (
 	"context"
 
-	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/companions/proto"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	"github.com/codefly-dev/core/languages"
 	resources "github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 )
 

@@ -17,12 +17,12 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/services/manager"
-	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/architecture"
 	cli "github.com/codefly-dev/core/generated/go/cli/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"

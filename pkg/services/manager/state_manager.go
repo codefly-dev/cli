@@ -3,7 +3,7 @@ package manager
 import (
 	"context"
 
-	"github.com/codefly-dev/cli/pkg/architecture"
+	"github.com/codefly-dev/core/architecture"
 	providers "github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	resources "github.com/codefly-dev/core/resources"

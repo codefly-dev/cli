@@ -147,6 +147,9 @@ func init() {
 	// Test things
 	RootCmd.AddCommand(TestCmd)
 
+	// CI
+	RootCmd.AddCommand(CiCmd)
+
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")

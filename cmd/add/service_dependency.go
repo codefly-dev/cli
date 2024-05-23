@@ -6,7 +6,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	"github.com/codefly-dev/cli/pkg/services/services"
+	"github.com/codefly-dev/core/services"
 
 	"github.com/codefly-dev/core/actions/actions"
 	actionsservice "github.com/codefly-dev/core/actions/service"

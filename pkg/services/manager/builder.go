@@ -13,7 +13,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployment"
-	"github.com/codefly-dev/cli/pkg/services/services"
+	"github.com/codefly-dev/core/services"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
 	"github.com/codefly-dev/core/wool"

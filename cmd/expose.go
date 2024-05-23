@@ -10,10 +10,10 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services/services"
 	providers "github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/standards"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"

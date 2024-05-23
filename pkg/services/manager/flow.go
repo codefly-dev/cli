@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
 	"github.com/codefly-dev/core/network"

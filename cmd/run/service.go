@@ -9,9 +9,9 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/services/manager"
-	"github.com/codefly-dev/cli/pkg/services/services"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -32,23 +32,7 @@ var ServiceCmd = &cobra.Command{
 
 		workspace, service := common.LoadRequired(ctx, args)
 
-		// Get the silent services
-		var silentServices []*resources.ServiceWithModule
-		for _, s := range silent {
-			service, err := resources.ParseServiceWithOptionalModule(s)
-			cli.ExitOnError(err, "Cannot parse silent service")
-			if service.Module == "" {
-				// Find unique service by name
-				svc, err := workspace.FindUniqueServiceAndModuleByName(ctx, service.Name)
-				cli.ExitOnError(err, "Cannot find unique service by name")
-				service.Module = svc.Module
-			}
-			silentServices = append(silentServices, service)
-		}
-		if len(silentServices) > 0 {
-			cli.Debug("silent services: %v", silentServices)
-			cli.WithSilence(silentServices)
-		}
+		common.WithSilence(ctx, workspace, silent)
 
 		errs := make(chan error, 1) // Buffered channel
 

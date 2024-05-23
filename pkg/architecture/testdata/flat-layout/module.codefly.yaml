@@ -1,7 +1,0 @@
-kind: module
-name: flat-layout
-services:
-    - name: gateway
-    - name: frontend
-    - name: accounts
-    - name: organization

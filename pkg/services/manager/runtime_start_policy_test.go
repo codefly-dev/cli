@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/codefly-dev/cli/pkg/architecture"
 	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/core/architecture"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"

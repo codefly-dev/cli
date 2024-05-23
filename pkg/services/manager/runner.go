@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/codefly-dev/cli/pkg/services/services"
 	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 )
 
