@@ -8,14 +8,15 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	resources "github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/cli/communicate"
 	"github.com/codefly-dev/cli/pkg/deployment"
 	"github.com/codefly-dev/core/services"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/services/builder/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -47,7 +48,7 @@ type Builder struct {
 
 func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(instance))
-	w.Debug("new b")
+	w.Debug("new builder")
 	b := &Builder{
 		instance: instance,
 
@@ -66,7 +67,12 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 
 	b.instance.Builder.Workspace = b.world.Workspace
 
-	resp, err := b.instance.Builder.Load(ctx)
+	var options []services.BuilderLoadOption
+	switch b.world.Mode {
+	case SyncMode:
+		options = []services.BuilderLoadOption{services.ForSync}
+	}
+	resp, err := b.instance.Builder.Load(ctx, options...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load builder instance")
 	}
@@ -138,6 +144,31 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
+func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
+
+	// Build the request
+	resp, err := b.instance.Builder.Sync(ctx, &builderv0.SyncRequest{}, communicate.NewPrompt())
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot sync service instance")
+	}
+	if resp.State.State != builderv0.SyncStatus_SUCCESS {
+		return nil, w.NewError("service instance is not started")
+	}
+
+	err = b.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot set outputProperty for sync")
+	}
+
+	outputProperty, err := b.outputPropertyForSync.Process(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot process outputProperty for sync")
+	}
+
+	return outputProperty, nil
+}
+
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
 	w.Debug("Build")
@@ -151,6 +182,9 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: builder.BuildContextFromDocker(dockerContext)})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot call build")
+	}
+	if resp == nil {
+		return &OutputProperty{UpdateWithRequiredPropagation: true}, nil
 	}
 
 	if resp.State != nil && resp.State.State != builderv0.BuildStatus_SUCCESS {
@@ -186,31 +220,6 @@ var push bool
 
 func SetBuilderPush() {
 	push = true
-}
-
-func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
-	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance.Service))
-
-	// Build the request
-	resp, err := b.instance.Builder.Sync(ctx, &builderv0.SyncRequest{})
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot sync service instance")
-	}
-	if resp.State.State != builderv0.SyncStatus_SUCCESS {
-		return nil, w.NewError("service instance is not started")
-	}
-
-	err = b.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot set outputProperty for sync")
-	}
-
-	outputProperty, err := b.outputPropertyForSync.Process(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot process outputProperty for sync")
-	}
-
-	return outputProperty, nil
 }
 
 func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
@@ -279,6 +288,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot deploy service instance")
 	}
+
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("service instance is not started")
 	}
@@ -304,7 +314,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return outputProperty, nil
 	}
 	if resp.Deployment == nil {
-		return nil, w.NewError("no supported deployment found")
+		return outputProperty, nil
 	}
 	switch v := resp.Deployment.Kind.(type) {
 	case *builderv0.DeploymentOutput_Kubernetes:
@@ -315,7 +325,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 			}
 		}
 	default:
-		return nil, w.NewError("no supported deployment found")
+		return nil, w.NewError("not supported deployment found")
 	}
 	return outputProperty, nil
 

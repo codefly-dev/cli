@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/codefly-dev/golor"

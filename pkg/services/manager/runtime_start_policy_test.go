@@ -2,6 +2,7 @@ package manager_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/services/manager"
@@ -76,15 +77,19 @@ func execOnInitThenPropagate() *initThenPropagate {
 func (a *initThenPropagate) GetExecutor(ctx context.Context, action manager.Action) (manager.OutputProcessorFunc, error) {
 	return func(ctx context.Context) (*manager.OutputProperty, error) {
 		if a.onInit {
+			fmt.Println("ON INIT", action)
 			a.onInit = false
 			return manager.OnInit(), nil
 		}
 		if a.onlyService == "" {
+			fmt.Println("PROPAGATE", action)
 			return manager.RequirePropagation(), nil
 		}
 		if action.Service == a.onlyService {
+			fmt.Println("PROPAGATE ONLY", action)
 			return manager.RequirePropagation(), nil
 		}
+		fmt.Println("INDEPENDEMT UPDATE", action)
 		return manager.IndependentUpdate(), nil
 	}, nil
 }
@@ -180,9 +185,8 @@ func createCombinedActionsWithRound(round int, services []string, types ...manag
 func TestRunPolicyNoDependencies(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, manager.RuntimeStart, execOnInit())
-	// "Create"
 
-	start := "billing/no_dependencies"
+	start := "management/organization"
 
 	err := data.policy.Restrict(ctx, start)
 	require.NoError(t, err)

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/companions/proto"
-	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/languages"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"

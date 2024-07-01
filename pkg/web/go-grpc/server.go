@@ -20,14 +20,14 @@ import (
 	"github.com/codefly-dev/cli/pkg/services/manager"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/architecture"
-	cli "github.com/codefly-dev/core/generated/go/cli/v0"
+	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 
-	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
-	observabilityv0 "github.com/codefly-dev/core/generated/go/observability/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/services/agent/v0"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	observabilityv0 "github.com/codefly-dev/core/generated/go/codefly/observability/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 
 	"google.golang.org/grpc"
 )

@@ -14,11 +14,12 @@ func TestPlaybookRunNoDependencies(t *testing.T) {
 	ctx := context.Background()
 	wool.SetGlobalLogLevel(wool.DEBUG)
 	data := setup(t, manager.RuntimeStart, execOnInit())
-	// "Create"
 
-	start := "billing/no_dependencies"
+	start := "management/organization"
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+
+	require.NoError(t, err)
 
 	playbook.WithPolicy(data.policy)
 
@@ -40,14 +41,14 @@ func TestPlaybookRunNoDependenciesWithSignaller(t *testing.T) {
 	ctx := context.Background()
 	wool.SetGlobalLogLevel(wool.DEBUG)
 	data := setup(t, manager.RuntimeStart, execOnInit())
-	// "Create"
 
-	start := "billing/no_dependencies"
+	start := "management/organization"
 
 	err := data.policy.Restrict(ctx, start)
 	require.NoError(t, err)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+	require.NoError(t, err)
 
 	playbook.WithPolicy(data.policy)
 
@@ -78,7 +79,6 @@ func TestPlaybookRunNoDependenciesWithSignaller(t *testing.T) {
 func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, manager.RuntimeStart, execOnInit())
-	// "Create"
 
 	start := "billing/accounts"
 	org := "management/organization"
@@ -87,6 +87,9 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 	require.NoError(t, err)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+
+	require.NoError(t, err)
+
 	playbook.WithPolicy(data.policy)
 
 	// StopIfNeeded after run
@@ -97,6 +100,7 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 	// Run
 	err = playbook.Begin(ctx, manager.Action{Type: manager.RuntimeBegin, Service: start})
 	require.NoError(t, err)
+
 	expected := createCombinedActionsWithRound(1, []string{org, start}, manager.RuntimeLoad, manager.RuntimeInit, manager.RuntimeStart)
 	require.Equal(t, expected, playbook.Executed())
 
@@ -105,7 +109,6 @@ func TestPlaybookPlaybookRunOneDependency(t *testing.T) {
 func TestPlaybookRunTwoDependencies(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, manager.RuntimeStart, execOnInit())
-	// "Create"
 
 	start := "web/gateway"
 	accounts := "billing/accounts"
@@ -113,6 +116,9 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 
 	{
 		playbook, err := manager.NewPlaybook(ctx, data.world)
+
+		require.NoError(t, err)
+
 		playbook.WithPolicy(data.policy)
 
 		playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -127,6 +133,8 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 
 	{
 		playbook, err := manager.NewPlaybook(ctx, data.world)
+		require.NoError(t, err)
+
 		playbook.WithPolicy(data.policy)
 
 		playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -141,6 +149,7 @@ func TestPlaybookRunTwoDependencies(t *testing.T) {
 
 	{
 		playbook, err := manager.NewPlaybook(ctx, data.world)
+		require.NoError(t, err)
 		playbook.WithPolicy(data.policy)
 
 		playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
@@ -161,9 +170,10 @@ func TestPlaybookRunNoDependenciesWithRestart(t *testing.T) {
 	wool.SetGlobalLogLevel(wool.DEBUG)
 	data := setup(t, manager.RuntimeStart, execOnInitThenUpdated())
 
-	start := "billing/no_dependencies"
+	start := "management/organization"
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+	require.NoError(t, err)
 
 	playbook.WithPolicy(data.policy)
 	playbook.WithSignallerFunc(func(_ *manager.Playbook, action manager.Action) *manager.Signal {
@@ -217,6 +227,7 @@ func TestPlaybookRunOneDependencyWithRestartNoPropagation(t *testing.T) {
 	require.NoError(t, err)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+	require.NoError(t, err)
 
 	playbook.WithPolicy(data.policy)
 
@@ -252,6 +263,9 @@ signalled:
 		return action.Type == manager.RuntimeStart && action.Service == org
 	})
 
+	// Re-init the "root": organization
+	// We shouldn't have any billing (start)
+
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
 	require.NoError(t, err)
 	<-stopped
@@ -277,6 +291,7 @@ func TestPlaybookRunOneDependencyWithRestartWithPropagation(t *testing.T) {
 	require.NoError(t, err)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+	require.NoError(t, err)
 
 	playbook.WithPolicy(data.policy)
 
@@ -310,6 +325,8 @@ signalled:
 	playbook.WithStoppingAfter(func(ctx context.Context, action manager.Action) bool {
 		return action.Type == manager.RuntimeStart && action.Service == start
 	})
+	// Re-init the "root": organization
+	// We shouldn't have any billing (start)
 
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
 	require.NoError(t, err)
@@ -333,6 +350,7 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagation(t *testing.T) {
 	org := "management/organization"
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+	require.NoError(t, err)
 
 	playbook.WithPolicy(data.policy)
 
@@ -375,14 +393,11 @@ signalled:
 	executed = playbook.Executed()[len(executed):]
 	// We propagate all
 
-	// Not great, order is correct but we finish org/accounts before start
-	// Need some recursive...
-	expected = createCombinedActionsWithRound(2, []string{org, accounts}, manager.RuntimeInit, manager.RuntimeStart)
-	expected = append(expected, createActionsWithRound(2, start, manager.RuntimeInit, manager.RuntimeStart)...)
+	expected = createCombinedActionsWithRound(2, []string{org, accounts, start}, manager.RuntimeInit, manager.RuntimeStart)
 	require.Equal(t, expected, executed)
 }
 
-func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddle(t *testing.T) {
+func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddleOnly(t *testing.T) {
 	ctx, done := common.NewContext()
 	defer done()
 
@@ -391,12 +406,16 @@ func TestPlaybookRunTwoDependenciesWithRestartWithPropagationInMiddle(t *testing
 	org := "management/organization"
 
 	wool.SetGlobalLogLevel(wool.DEBUG)
+
 	exec := execOnInitThenPropagate()
+
+	// We will propagate only for org after Init
 	exec.onlyService = org
 
 	data := setup(t, manager.RuntimeStart, exec)
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+	require.NoError(t, err)
 
 	playbook.WithPolicy(data.policy)
 
@@ -431,13 +450,15 @@ signalled:
 		return action.Type == manager.RuntimeStart && action.Service == accounts // We don't propagate all the way
 	})
 
+	// Re-init the "root": organization
+	// Only org propagate so we shouldn't get any gateway
 	err = playbook.Seed(ctx, manager.Action{Type: manager.RuntimeInit, Service: org})
 	require.NoError(t, err)
 
 	<-stopped
 	// New ones
 	executed = playbook.Executed()[len(executed):]
-	// We don't propagate to start
+
 	expected = createCombinedActionsWithRound(2, []string{org, accounts}, manager.RuntimeInit, manager.RuntimeStart)
 	require.Equal(t, expected, executed)
 }
@@ -472,11 +493,12 @@ func execFailFirst(unique string, stage manager.ActionType) *onExecFailsOn {
 func TestErrorOnLoadNoDependencies(t *testing.T) {
 	ctx := context.Background()
 	wool.SetGlobalLogLevel(wool.DEBUG)
-	start := "billing/no_dependencies"
+	start := "management/organization"
 
 	data := setup(t, manager.RuntimeStart, execFailFirst(start, manager.RuntimeLoad))
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
+	require.NoError(t, err)
 
 	playbook.WithPolicy(data.policy)
 
@@ -533,7 +555,7 @@ func TestErrorOnLoadOneDependency(t *testing.T) {
 	data := setup(t, manager.RuntimeStart, execFailFirst(org, manager.RuntimeInit))
 
 	playbook, err := manager.NewPlaybook(ctx, data.world)
-
+	require.NoError(t, err)
 	playbook.WithPolicy(data.policy)
 
 	playbook.WithSignallerFunc(func(_ *manager.Playbook, action manager.Action) *manager.Signal {

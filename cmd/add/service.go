@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/cli/communicate"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/services"
 
@@ -122,9 +125,19 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	}
 
-	err = services.Add(ctx, workspace, mod, input)
+	output, err := services.Add(ctx, workspace, mod, input, communicate.NewPrompt())
 	if err != nil {
 		return w.Wrapf(err, "cannot add service")
+	}
+	rendered, err := glamour.Render(output.ReadMe, "dark")
+	if err != nil {
+		return w.Wrapf(err, "cannot render info README")
+	}
+	// Paginate if long
+	if len(strings.Split(rendered, "\n")) > 50 {
+		cli.Paginate(rendered)
+	} else {
+		fmt.Println(rendered)
 	}
 
 	return nil

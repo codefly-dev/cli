@@ -11,9 +11,8 @@ import (
 func TestSyncPolicyNoDependencies(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, manager.BuilderSync, execOnInit())
-	// "Create"
 
-	start := "billing/no_dependencies"
+	start := "management/organization"
 
 	err := data.policy.Restrict(ctx, start)
 	require.NoError(t, err)
@@ -35,7 +34,6 @@ func TestSyncPolicyNoDependencies(t *testing.T) {
 func TestSyncPolicyOneDependency(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, manager.BuilderSync, execOnInit())
-	// "Create"
 
 	start := "billing/accounts"
 	org := "management/organization"

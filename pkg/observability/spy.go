@@ -3,7 +3,7 @@ package observability
 import (
 	"context"
 
-	observabilityv0 "github.com/codefly-dev/core/generated/go/observability/v0"
+	observabilityv0 "github.com/codefly-dev/core/generated/go/codefly/observability/v0"
 )
 
 type Spy struct {

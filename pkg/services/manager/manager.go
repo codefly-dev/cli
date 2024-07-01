@@ -6,8 +6,8 @@ import (
 
 	"github.com/codefly-dev/core/services"
 
-	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )

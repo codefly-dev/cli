@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	basev0 "github.com/codefly-dev/core/generated/go/base/v0"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	runtimev0 "github.com/codefly-dev/core/generated/go/services/runtime/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 )

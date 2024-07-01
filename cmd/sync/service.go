@@ -30,8 +30,8 @@ var ServiceCmd = &cobra.Command{
 
 		errs := make(chan error, 1) // Buffered channel
 
-		service := common.Service(ctx)
-		workspace := common.Workspace(ctx)
+		workspace, service := common.LoadRequired(ctx, args)
+
 		flow, err := initSyncService(ctx, workspace, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
