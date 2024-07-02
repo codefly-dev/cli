@@ -211,7 +211,6 @@ func TestRunPolicyNoDependencies(t *testing.T) {
 func TestRunPolicyOneDependency(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, manager.RuntimeStart, execOnInit())
-	// "Create"
 
 	start := "billing/accounts"
 	org := "management/organization"
@@ -227,7 +226,6 @@ func TestRunPolicyOneDependency(t *testing.T) {
 func TestRunPolicyNoDependencySimulateError(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, manager.RuntimeStart, execWait())
-	// "Create"
 
 	start := "billing/accounts"
 
@@ -244,7 +242,6 @@ func TestRunPolicyNoDependencySimulateError(t *testing.T) {
 func TestRunPolicyOneDependencySimulateError(t *testing.T) {
 	ctx := context.Background()
 	data := setup(t, manager.RuntimeStart, execWait())
-	// "Create"
 
 	start := "billing/accounts"
 	org := "management/organization"

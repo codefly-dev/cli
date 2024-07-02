@@ -41,7 +41,7 @@ var BuildCmd = &cobra.Command{
 }
 
 func runBuildService(ctx context.Context, workspace *resources.Workspace, service *resources.Service) error {
-	w := wool.Get(ctx).In("deployService")
+	w := wool.Get(ctx).In("buildService")
 	flow, err := initBuildService(ctx, workspace, service)
 	if err != nil {
 		return w.Wrapf(err, "Cannot init flow")
