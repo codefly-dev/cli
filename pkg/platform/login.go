@@ -26,22 +26,10 @@ func LoadToken(ctx context.Context, workspace *resources.Workspace) (string, err
 
 func Login(ctx context.Context, token string) error {
 	w := wool.Get(ctx).In("login")
-	client, err := NewPlatformService(ctx, token)
+	_, err := NewClient(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot create platform service")
 	}
-	version, err := client.API.OrganizationService.OrganizationServiceVersion(nil)
-	if err != nil {
-		return w.Wrapf(err, "cannot get version")
-	}
-	w.Debug("version", wool.Field("version", version.Payload.Version))
-
-	//// Call the self API
-	//self, err := client.API.OrganizationService.OrganizationServiceGetSelf(nil)
-	//if err != nil {
-	//	return w.Wrap(err)
-	//}
-	//w.Debug("ID", wool.Field("who am I?", self.Payload.User.Name))
 
 	return err
 }

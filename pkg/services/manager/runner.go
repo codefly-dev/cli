@@ -48,6 +48,7 @@ type Runner struct {
 	stopped chan struct{}
 
 	runtimeContext string
+	fixture        string
 }
 
 type Callback func(ctx context.Context, action Action) error
@@ -231,7 +232,10 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	req := &runtimev0.StartRequest{DependenciesNetworkMappings: dependenciesNetworkMappings}
+	req := &runtimev0.StartRequest{
+		DependenciesNetworkMappings: dependenciesNetworkMappings,
+		Fixture:                     runner.fixture,
+	}
 	err = resources.Validate(req)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot validate start request")
@@ -411,4 +415,11 @@ func (runner *Runner) WithRuntimeContext(runtimeContext string) {
 		return
 	}
 	runner.runtimeContext = runtimeContext
+}
+
+func (runner *Runner) WithFixture(fixture string) {
+	if runner == nil {
+		return
+	}
+	runner.fixture = fixture
 }

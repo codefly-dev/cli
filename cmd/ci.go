@@ -15,4 +15,5 @@ func init() {
 	CiCmd.AddCommand(ci.TestCmd)
 	CiCmd.AddCommand(ci.BuildCmd)
 	CiCmd.AddCommand(ci.DeployCmd)
+	CiCmd.AddCommand(ci.PushCmd)
 }

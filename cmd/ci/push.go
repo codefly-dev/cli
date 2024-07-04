@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/platform"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -41,6 +42,14 @@ var PushCmd = &cobra.Command{
 func pushWorkspace(ctx context.Context, workspace *resources.Workspace) error {
 	w := wool.Get(ctx).In("pushWorkspace")
 	w.Debug("pushing workspace")
+	client, err := platform.NewClient(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot create platform service")
+	}
+	err = client.UpdateWorkspace(ctx, workspace)
+	if err != nil {
+		return w.Wrapf(err, "cannot update workspace")
+	}
 	return nil
 }
 

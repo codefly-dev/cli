@@ -43,9 +43,9 @@ func (logger *Logger) Process(log *wool.Log) {
 	case wool.DEBUG:
 		Debug(fmt.Sprintf("%s", log))
 	case wool.INFO:
-		Info(log.Message)
+		Info(fmt.Sprintf("%s", log))
 	case wool.WARN:
-		Warning(log.Message)
+		Warning(fmt.Sprintf("%s", log))
 	case wool.ERROR:
 		Error(fmt.Sprintf("%s", log))
 	case wool.FOCUS:
@@ -133,15 +133,12 @@ func (cp *ColorPicker) PickStyle(unique string) lipgloss.Style {
 	if len(parts) != 2 {
 		return lipgloss.NewStyle()
 	}
-	hashApp := hashString(parts[0])
-	hashService := hashString(parts[1])
+	hash := hashString(unique)
 
-	fgColor := cp.foregroundColors[hashService%uint32(len(cp.foregroundColors))]
-	bgColor := cp.backgroundColors[hashApp%uint32(len(cp.backgroundColors))]
+	fgColor := cp.foregroundColors[hash%uint32(len(cp.foregroundColors))]
 
 	return lipgloss.NewStyle().
-		Foreground(fgColor).
-		Background(bgColor)
+		Foreground(fgColor)
 }
 
 var styles map[string]lipgloss.Style

@@ -290,7 +290,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
-		return nil, w.NewError("service instance is not started")
+		return nil, w.NewError("cant deploy service instance")
 	}
 
 	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Service, resp.Configuration)

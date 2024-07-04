@@ -43,6 +43,9 @@ func kubectlApply(ctx context.Context, configPath, resource string) error {
 		return w.Wrapf(err, "cannot run kubectl apply: %s", stderr.String())
 	}
 
+	if strings.Contains(out.String(), "unchanged") {
+		return nil
+	}
 	w.Info(strings.TrimSpace(out.String()))
 	return nil
 }

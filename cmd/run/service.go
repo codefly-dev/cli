@@ -96,6 +96,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, service
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
+	flow.WithFixture(fixture)
 
 	err = flow.InitManagers(ctx)
 	if err != nil {
@@ -134,6 +135,8 @@ func stopService(ctx context.Context, flow *manager.Flow) error {
 	return nil
 }
 
+var fixture string
+
 func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
@@ -143,4 +146,5 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
+	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")
 }

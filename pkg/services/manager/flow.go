@@ -55,6 +55,7 @@ type Flow struct {
 	excludeRoot bool
 
 	runtimeContext string
+	fixture        string
 
 	// actual services running
 	services []*resources.Service
@@ -547,6 +548,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 			return w.Wrap(err)
 		}
 		manager.Runner.WithRuntimeContext(flow.runtimeContext)
+		manager.Runner.WithFixture(flow.fixture)
 		managers = append(managers, manager)
 	}
 
@@ -627,6 +629,10 @@ func (flow *Flow) WithStandAlone(alone bool) {
 
 func (flow *Flow) WithRuntimeContext(runtimeContext string) {
 	flow.runtimeContext = runtimeContext
+}
+
+func (flow *Flow) WithFixture(fixture string) {
+	flow.fixture = fixture
 }
 
 func (flow *Flow) WithExcludeRoot(excludeRoot bool) {
