@@ -48,7 +48,8 @@ type Runner struct {
 	stopped chan struct{}
 
 	runtimeContext string
-	fixture        string
+
+	fixture string
 }
 
 type Callback func(ctx context.Context, action Action) error
@@ -148,6 +149,11 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
+	projectConfs, err := runner.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, runner.instance.WorkspaceConfigurationDependencies...)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get project configurations")
+	}
+
 	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(ctx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
@@ -158,10 +164,11 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
 
-	w.Debug("configuration",
+	w.Focus("configuration",
 		wool.Field("network mappings", resources.MakeManyNetworkMappingSummary(networkMappings)),
-		wool.Field("dependencies endpoints", resources.MakeManyEndpointSummary(dependenciesEndpoints)),
 		wool.Field("service configuration", resources.MakeConfigurationSummary(conf)),
+		wool.Field("dependencies endpoints", resources.MakeManyEndpointSummary(dependenciesEndpoints)),
+		wool.Field("project configurations", resources.MakeManyConfigurationSummary(projectConfs)),
 		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
 
 	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
@@ -170,9 +177,10 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 	req := &runtimev0.InitRequest{
 		RuntimeContext:             runtimeContext,
-		Configuration:              conf,
 		ProposedNetworkMappings:    networkMappings,
 		DependenciesEndpoints:      dependenciesEndpoints,
+		Configuration:              conf,
+		ProjectConfigurations:      projectConfs,
 		DependenciesConfigurations: dependenciesConfigurations,
 	}
 	err = resources.Validate(req)

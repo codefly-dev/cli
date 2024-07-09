@@ -36,17 +36,6 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 	}
 	w := wool.Get(ctx).In("StateManager.GetConfigurations", wool.ThisField(service))
 	var confs []*basev0.Configuration
-	// workspace configurations
-	var workspaceConfigurations []*basev0.Configuration
-	for _, dep := range service.ConfigurationDependencies {
-		conf, err := s.configurationManager.GetConfiguration(ctx, dep)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot get workspace configuration")
-		}
-		workspaceConfigurations = append(workspaceConfigurations, conf)
-	}
-	confs = append(confs, workspaceConfigurations...)
-
 	// We get the shared information from the direct requirements
 	requires, err := s.dependencies.DirectRequires(ctx, service.Unique())
 	if err != nil {
@@ -68,7 +57,6 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 	}
 	confs = append(confs, serviceConfigurations...)
 	w.Debug("configurations",
-		wool.Field("configurations", resources.MakeManyConfigurationSummary(workspaceConfigurations)),
 		wool.Field("uniqueToService", resources.MakeManyConfigurationSummary(serviceConfigurations)))
 	return confs, nil
 }

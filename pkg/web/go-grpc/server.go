@@ -73,6 +73,23 @@ func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.
 	}, nil
 }
 
+func (s *Server) GetDependenciesNetworkMappings(ctx context.Context, req *cli.GetNetworkMappingsRequest) (*cli.GetNetworkMappingsResponse, error) {
+	flow := manager.CurrentFlow()
+	if flow == nil {
+		return nil, status.Error(codes.Internal, "nothing running")
+	}
+	unique := resources.ServiceUnique(req.Module, req.Service)
+	svc, err := flow.ServiceFromUnique(unique)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	mappings, err := flow.GetDependenciesNetworkMappingsFor(ctx, svc)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &cli.GetNetworkMappingsResponse{NetworkMappings: mappings}, nil
+}
+
 func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationResponse, error) {
 	flow := manager.CurrentFlow()
 	if flow == nil {

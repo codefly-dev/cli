@@ -8,7 +8,7 @@ var silent []string
 
 // Scope for the runtime: affect ports to avoid conflict with run
 // Useful for testing/CI
-var scope string
+var namingScope string
 
 // Runtime context
 var runtimeContext string

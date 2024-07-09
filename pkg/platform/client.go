@@ -46,7 +46,7 @@ func (c *Client) UpdateWorkspace(ctx context.Context, workspace *resources.Works
 		return w.Wrapf(err, "cannot update workspace")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return w.NewError("unexpected status code", wool.Field("status", resp.Status))
+		return w.NewError("unexpected status code: %s", resp.Status)
 	}
 	return nil
 }

@@ -103,8 +103,6 @@ func generateForegroundColors() []lipgloss.Color {
 		lipgloss.Color("#90EE90"), // Soft Green
 		lipgloss.Color("#FFC0CB"), // Pale Pink
 		lipgloss.Color("#E6E6FA"), // Lavender
-		lipgloss.Color("#F08080"), // Light Coral
-		lipgloss.Color("#F5DEB3"), // Wheat
 		lipgloss.Color("#00FF00"), // Bright Green
 		lipgloss.Color("#00FFFF"), // Cyan
 		lipgloss.Color("#FF1493"), // Neon Pink

@@ -54,6 +54,8 @@ type Flow struct {
 	standAlone  bool
 	excludeRoot bool
 
+	scope string
+
 	runtimeContext string
 	fixture        string
 
@@ -179,13 +181,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		return w.Wrap(err)
 	}
 
-	allConfs, err := flow.ConfigurationManager.GetConfigurations(ctx)
-	if err != nil {
-		return w.Wrap(err)
-	}
-
 	w.Debug("got resources",
-		wool.Field("confs", resources.MakeManyConfigurationSummary(allConfs)),
 		wool.Field("dns", flow.ConfigurationManager.DNS()))
 
 	var playbook *Playbook
@@ -466,6 +462,16 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 	default:
 		return nil, w.NewError("unknown action type %s for executor", action.Type)
 	}
+}
+
+func (flow *Flow) GetDependenciesNetworkMappingsFor(ctx context.Context, service *resources.Service) ([]*basev0.NetworkMapping, error) {
+	if flow == nil {
+		return nil, nil
+	}
+	if flow.SharedState == nil {
+		return nil, nil
+	}
+	return flow.SharedState.GetDependenciesNetworkMappings(ctx, service)
 }
 
 func (flow *Flow) GetAddressForEndpoint(ctx context.Context, module string, service string, endpoint string) (string, error) {

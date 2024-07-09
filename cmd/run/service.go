@@ -87,10 +87,15 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, service
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	flow, err := manager.NewFlow(ctx, workspace, service, resources.LocalEnvironment(), manager.RunMode)
+	env := resources.LocalEnvironment()
+	// Setup optional naming namingScope
+	env.NamingScope = namingScope
+
+	flow, err := manager.NewFlow(ctx, workspace, service, env, manager.RunMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithStandAlone(standAlone)
@@ -140,7 +145,7 @@ var fixture string
 func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
-	ServiceCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")
+	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope (for testing encapsulation)")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
