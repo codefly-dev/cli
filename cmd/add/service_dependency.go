@@ -31,11 +31,14 @@ func addServiceDependency(args []string) {
 	defer done()
 	defer services.ClearAgents()
 
-	workspace, service := common.Load(ctx, args)
+	workspace, module, service := common.Load(ctx, args)
+	if module == nil {
+		cli.Error("No module found")
+		return
 
+	}
 	if service == nil {
-		mod := common.RequireModule(ctx)
-		svcs, err := mod.LoadServices(ctx)
+		svcs, err := module.LoadServices(ctx)
 		cli.ExitOnError(err, "can't load services")
 		if len(svcs) == 0 {
 			cli.Error("No services found")
@@ -49,7 +52,7 @@ func addServiceDependency(args []string) {
 		}
 		selected, err := models.Select("Select the service to add the dependency", entries)
 		cli.ExitOnError(err, "cannot select service")
-		service, err = mod.LoadServiceFromName(ctx, selected.Identifier)
+		service, err = module.LoadServiceFromName(ctx, selected.Identifier)
 		cli.ExitOnError(err, "cannot load service")
 	}
 
@@ -59,11 +62,8 @@ func addServiceDependency(args []string) {
 		cli.Exit()
 	}
 
-	mod, err := workspace.LoadModuleFromName(ctx, service.Module)
-	cli.ExitOnError(err, "cannot get module from name")
-
 	// First all services in the same module
-	modServices := mod.ServiceReferences
+	modServices := module.ServiceReferences
 
 	// only 1 service means must be in another mod
 	if len(modServices) > 1 {
@@ -87,12 +87,12 @@ func addServiceDependency(args []string) {
 		if selected.Identifier != otherModule {
 			action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
 				Name:             service.Name,
-				Module:           mod.Name,
-				DependencyModule: mod.Name,
+				Module:           module.Name,
+				DependencyModule: module.Name,
 				DependencyName:   selected.Identifier,
 			})
 			cli.ExitOnError(err, "cannot create action")
-			_, err = actions.Run(ctx, action, &actions.Space{Module: mod, Workspace: workspace})
+			_, err = actions.Run(ctx, action, &actions.Space{Module: module, Workspace: workspace})
 			cli.ExitOnError(err, "cannot add service dependency")
 			cli.Header(2, "Service dependency added")
 			return
@@ -105,7 +105,7 @@ func addServiceDependency(args []string) {
 	}
 	var entries []*models.Entry
 	for _, p := range allApps {
-		if p.Name == mod.Name {
+		if p.Name == module.Name {
 			continue
 		}
 		entries = append(entries, &models.Entry{
@@ -131,12 +131,12 @@ func addServiceDependency(args []string) {
 
 	action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
 		Name:             service.Name,
-		Module:           mod.Name,
+		Module:           module.Name,
 		DependencyModule: otherMod.Name,
 		DependencyName:   selected.Identifier,
 	})
 	cli.ExitOnError(err, "cannot create action")
-	_, err = actions.Run(ctx, action, &actions.Space{Module: mod, Workspace: workspace})
+	_, err = actions.Run(ctx, action, &actions.Space{Module: module, Workspace: workspace})
 	cli.ExitOnError(err, "cannot add service dependency")
 	cli.Header(2, "Service dependency added")
 

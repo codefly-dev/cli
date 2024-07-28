@@ -8,7 +8,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -30,9 +30,9 @@ var ServiceCmd = &cobra.Command{
 
 		errs := make(chan error, 1) // Buffered channel
 
-		workspace, service := common.LoadRequired(ctx, args)
+		workspace, module, service := common.LoadRequired(ctx, args)
 
-		flow, err := initSyncService(ctx, workspace, service, standAlone)
+		flow, err := initSyncService(ctx, workspace, module, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
 			errs <- syncService(ctx, flow)
@@ -61,9 +61,9 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initSyncService(ctx context.Context, workspace *resources.Workspace, service *resources.Service, standAlone bool) (*manager.Flow, error) {
-	w := wool.Get(ctx).In("syncService", wool.ThisField(service))
-	flow, err := manager.NewFlow(ctx, workspace, service, resources.LocalEnvironment(), manager.SyncMode)
+func initSyncService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {
+	w := wool.Get(ctx).In("syncService", wool.ThisField(resources.WithUnique(service)))
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), orchestration.SyncMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -79,12 +79,12 @@ func initSyncService(ctx context.Context, workspace *resources.Workspace, servic
 	return flow, nil
 }
 
-func cleanSyncService(flow *manager.Flow) error {
+func cleanSyncService(flow *orchestration.Flow) error {
 	defer services.ClearAgents()
 	return flow.Stop()
 }
 
-func syncService(ctx context.Context, flow *manager.Flow) error {
+func syncService(ctx context.Context, flow *orchestration.Flow) error {
 	w := wool.Get(ctx).In("syncService")
 	err := flow.Sync(ctx)
 	if err != nil {

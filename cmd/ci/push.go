@@ -28,12 +28,15 @@ var PushCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
+		err := platform.InitClient(ctx)
+		cli.ExitOnError(err, "Cannot initialize platform client")
+
 		workspace := common.RequireWorkspace(ctx)
 
 		common.WithSilence(ctx, workspace, silent)
 
-		err := pushWorkspace(ctx, workspace)
-		cli.ExitOnError(err, "Cannot test CI")
+		err = pushWorkspace(ctx, workspace)
+		cli.ExitOnError(err, "Cannot CI push")
 		cli.Header(1, "Work done!")
 		cli.Exit()
 	},
@@ -42,11 +45,7 @@ var PushCmd = &cobra.Command{
 func pushWorkspace(ctx context.Context, workspace *resources.Workspace) error {
 	w := wool.Get(ctx).In("pushWorkspace")
 	w.Debug("pushing workspace")
-	client, err := platform.NewClient(ctx)
-	if err != nil {
-		return w.Wrapf(err, "cannot create platform service")
-	}
-	err = client.UpdateWorkspace(ctx, workspace)
+	err := platform.UpdateWorkspace(ctx, workspace)
 	if err != nil {
 		return w.Wrapf(err, "cannot update workspace")
 	}

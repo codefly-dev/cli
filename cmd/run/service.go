@@ -8,7 +8,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -30,7 +30,7 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
-		workspace, service := common.LoadRequired(ctx, args)
+		workspace, module, service := common.LoadRequired(ctx, args)
 
 		common.WithSilence(ctx, workspace, silent)
 
@@ -44,7 +44,7 @@ var ServiceCmd = &cobra.Command{
 			}()
 		}
 
-		flow, err := initRunService(ctx, workspace, service)
+		flow, err := initRunService(ctx, workspace, module, service)
 		if err != nil {
 			err = errors.Unwrap(err)
 			cli.ExitOnError(err, "Cannot init flow")
@@ -78,8 +78,8 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initRunService(ctx context.Context, workspace *resources.Workspace, service *resources.Service) (*manager.Flow, error) {
-	w := wool.Get(ctx).In("runService", wool.ThisField(service))
+func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
+	w := wool.Get(ctx).In("runService", wool.ThisField(resources.WithUnique(service)))
 	// Catch panic
 	defer w.Catch()
 
@@ -91,7 +91,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, service
 	// Setup optional naming namingScope
 	env.NamingScope = namingScope
 
-	flow, err := manager.NewFlow(ctx, workspace, service, env, manager.RunMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -114,7 +114,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, service
 	return flow, nil
 }
 
-func runService(ctx context.Context, flow *manager.Flow) error {
+func runService(ctx context.Context, flow *orchestration.Flow) error {
 	// Catch panic
 	w := wool.Get(ctx).In("runService")
 	defer w.Catch()
@@ -125,7 +125,7 @@ func runService(ctx context.Context, flow *manager.Flow) error {
 	return nil
 }
 
-func stopService(ctx context.Context, flow *manager.Flow) error {
+func stopService(ctx context.Context, flow *orchestration.Flow) error {
 	// Catch panic
 	w := wool.Get(ctx).In("stopService")
 	defer w.Catch()

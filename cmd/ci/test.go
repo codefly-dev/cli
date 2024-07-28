@@ -7,7 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -40,9 +40,9 @@ var TestCmd = &cobra.Command{
 	},
 }
 
-func runTestService(ctx context.Context, workspace *resources.Workspace, service *resources.Service) error {
+func runTestService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
 	w := wool.Get(ctx).In("deployService")
-	flow, err := initTestService(ctx, workspace, service)
+	flow, err := initTestService(ctx, workspace, module, service)
 	if err != nil {
 		return w.Wrapf(err, "Cannot init flow")
 	}
@@ -53,8 +53,8 @@ func runTestService(ctx context.Context, workspace *resources.Workspace, service
 	return nil
 }
 
-func initTestService(ctx context.Context, workspace *resources.Workspace, service *resources.Service) (*manager.Flow, error) {
-	w := wool.Get(ctx).In("TestService", wool.ThisField(service))
+func initTestService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
+	w := wool.Get(ctx).In("TestService", wool.ThisField(resources.WithUnique(service)))
 	// Catch panic
 	defer w.Catch()
 
@@ -62,7 +62,7 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, servic
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	flow, err := manager.NewFlow(ctx, workspace, service, resources.LocalEnvironment(), manager.TestMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), orchestration.TestMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -82,7 +82,7 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, servic
 	return flow, nil
 }
 
-func testService(ctx context.Context, flow *manager.Flow) error {
+func testService(ctx context.Context, flow *orchestration.Flow) error {
 	// Catch panic
 	w := wool.Get(ctx).In("TestService")
 	defer w.Catch()

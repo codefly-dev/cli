@@ -30,22 +30,22 @@ var OpenAPICmd = &cobra.Command{
 		cli.RegisterCleanup(services.ClearAgents)
 
 		workspace := common.RequireWorkspace(ctx)
-		svc, err := workspace.FindUniqueServiceByName(ctx, serviceInput)
+		svc, mod, err := workspace.FindUniqueModuleServiceByName(ctx, serviceInput)
 		cli.ExitOnError(err, "Cannot find service from input")
 
 		destination, err = shared.SolvePath(destination)
 		cli.ExitOnError(err, "Cannot solve path")
 		language := languages.FromString(languageInput)
 		cli.ExitIf(language == languages.NotSupported, "Language not supported")
-		err = generateOpenAPI(ctx, workspace, svc, language, destination)
+		err = generateOpenAPI(ctx, workspace, mod, svc, language, destination)
 		cli.ExitOnError(err, "Cannot generate openAPI client code")
 		cli.Header(1, "Work done!")
 		cli.Done()
 	},
 }
 
-func generateOpenAPI(ctx context.Context, workspace *resources.Workspace, service *resources.Service, language languages.Language, destination string) error {
-	return generators.OpenAPI(ctx, workspace, service, language, destination)
+func generateOpenAPI(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, language languages.Language, destination string) error {
+	return generators.OpenAPI(ctx, workspace, module, service, language, destination)
 }
 
 func init() {

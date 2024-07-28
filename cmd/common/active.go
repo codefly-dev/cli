@@ -29,19 +29,14 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 
 	active.Workspace = workspace
 
-	module, err := resources.LoadModuleFromPath(ctx)
+	module, service, err := resources.LoadModuleAndServiceFromCurrentPath(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	active.Module = module
-
-	service, err := resources.LoadServiceFromPath(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	active.Service = service
+
 	_active = active
 	return active, nil
 }

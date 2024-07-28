@@ -32,16 +32,16 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
-		workspace, service := common.LoadRequired(ctx, args)
-		deleteService(workspace, service)
+		workspace, module, service := common.LoadRequired(ctx, args)
+		deleteService(workspace, module, service)
 	},
 }
 
-func deleteService(workspace *resources.Workspace, service *resources.Service) {
+func deleteService(workspace *resources.Workspace, module *resources.Module, service *resources.Service) {
 	ctx, done := common.NewContext()
 	defer done()
 
-	mod, err := workspace.LoadModuleFromName(ctx, service.Module)
+	mod, err := workspace.LoadModuleFromName(ctx, module.Name)
 	cli.ExitOnError(err, "cannot load module")
 
 	if !mod.ExistsService(ctx, service.Name) {

@@ -5,10 +5,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// DeployCmd represents the Deploy command
+// DeployCmd represents the Handle command
 var DeployCmd = &cobra.Command{
 	Use:   "deploy",
-	Short: "Deploy",
+	Short: "Handle",
 }
 
 func init() {

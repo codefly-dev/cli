@@ -3,7 +3,7 @@ package deploy
 import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/deployment"
+	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/spf13/cobra"
 )
 
@@ -24,6 +24,6 @@ func setup() {
 	active, err := common.LoadActiveContext(ctx)
 	cli.ExitOnError(err, "cannot load active context")
 
-	err = deployment.SetupBaseVersionControl(ctx, active.Workspace)
+	err = deployments.SetupBaseVersionControl(ctx, active.Workspace)
 	cli.ExitOnError(err, "cannot setup base version control")
 }

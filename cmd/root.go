@@ -126,7 +126,7 @@ func init() {
 	// Build
 	RootCmd.AddCommand(BuildCmd)
 
-	// Deploy
+	// Handle
 	RootCmd.AddCommand(DeployCmd)
 
 	// Open your modules in your favorite editor

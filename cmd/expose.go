@@ -44,7 +44,7 @@ var ExposeCmd = &cobra.Command{
 type KubernetesService struct {
 	Namespace string
 	Name      string
-	*resources.Service
+	*resources.ServiceIdentity
 }
 
 func expose(ctx context.Context, workspace *resources.Workspace) error {
@@ -79,15 +79,19 @@ func expose(ctx context.Context, workspace *resources.Workspace) error {
 
 	var k8sServices []*KubernetesService
 	for _, service := range svcs {
-		cli.RegisterLoggingResource(service.Unique())
-		k8sService, err := GetKubernetesService(ctx, environ, workspace, service, networkManager)
+		id, err := service.Identity()
+		if err != nil {
+			return w.Wrap(err)
+		}
+		cli.RegisterLoggingResource(id.Unique())
+		k8sService, err := GetKubernetesService(ctx, environ, workspace, id, networkManager)
 		if err != nil {
 			return w.Wrap(err)
 		}
 		k8sServices = append(k8sServices, k8sService)
 		for _, endpoint := range service.Endpoints {
 			if endpoint.Visibility == resources.VisibilityPublic {
-				err = exposeService(ctx, environ, workspace, service, endpoint, k8sService)
+				err = exposeService(ctx, environ, workspace, id, endpoint, k8sService)
 				if err != nil {
 					return w.Wrap(err)
 				}
@@ -128,7 +132,7 @@ func fetchNamespacePodLogs(ctx context.Context, svc *KubernetesService) error {
 
 	var wg sync.WaitGroup
 	for _, pod := range pods {
-		if !strings.Contains(pod, svc.Service.Name) {
+		if !strings.Contains(pod, svc.ServiceIdentity.Name) {
 			continue
 		}
 		wg.Add(1)
@@ -177,7 +181,7 @@ func fetchPodLogs(ctx context.Context, service *KubernetesService, pod string) e
 	return nil
 }
 
-func GetKubernetesService(ctx context.Context, env *resources.Environment, workspace *resources.Workspace, service *resources.Service, networkManager network.Manager) (*KubernetesService, error) {
+func GetKubernetesService(ctx context.Context, env *resources.Environment, workspace *resources.Workspace, service *resources.ServiceIdentity, networkManager network.Manager) (*KubernetesService, error) {
 	w := wool.Get(ctx).In("getKubernetesService")
 	namespace, err := networkManager.GetNamespace(ctx, env, workspace, service)
 	if err != nil {
@@ -185,10 +189,10 @@ func GetKubernetesService(ctx context.Context, env *resources.Environment, works
 	}
 	k8sSvc := fmt.Sprintf("svc/%s", service.Name)
 	w.Debug("k8s", wool.Field("namespace", namespace), wool.Field("service", k8sSvc))
-	return &KubernetesService{Namespace: namespace, Name: k8sSvc, Service: service}, nil
+	return &KubernetesService{Namespace: namespace, Name: k8sSvc, ServiceIdentity: service}, nil
 }
 
-func exposeService(ctx context.Context, env *resources.Environment, workspace *resources.Workspace, service *resources.Service, endpoint *resources.Endpoint, k8sSvc *KubernetesService) error {
+func exposeService(ctx context.Context, env *resources.Environment, workspace *resources.Workspace, service *resources.ServiceIdentity, endpoint *resources.Endpoint, k8sSvc *KubernetesService) error {
 	w := wool.Get(ctx).In("exposeService")
 	// Check if this service exists in this namespace
 	_, err := exec.CommandContext(ctx, "kubectl", "get", k8sSvc.Name, "-n", k8sSvc.Namespace).Output()

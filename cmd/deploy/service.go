@@ -7,9 +7,9 @@ import (
 	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -19,7 +19,7 @@ import (
 // ServiceCmd represents the deploy command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Deploy a service",
+	Short: "Handle a service",
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx, done := common.NewContext()
 		defer done()
@@ -32,10 +32,11 @@ var ServiceCmd = &cobra.Command{
 
 		errs := make(chan error, 1) // Buffered channel
 
-		workspace, service := common.LoadRequired(ctx, args)
+		workspace, module, service := common.LoadRequired(ctx, args)
 
-		flow, err := initDeployService(ctx, workspace, service, standAlone)
+		flow, err := initDeployService(ctx, workspace, module, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
+
 		go func() {
 			err = deployService(ctx, flow)
 			if err != nil {
@@ -43,7 +44,7 @@ var ServiceCmd = &cobra.Command{
 			}
 			errs <- nil
 		}()
-		defer func(flow *manager.Flow) {
+		defer func(flow *orchestration.Flow) {
 
 		}(flow)
 
@@ -71,28 +72,21 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initDeployService(ctx context.Context, workspace *resources.Workspace, service *resources.Service, standAlone bool) (*manager.Flow, error) {
-	w := wool.Get(ctx).In("deployService", wool.ThisField(service))
-	if envInput == "aws" {
-		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
-		builder.SetRepository(repo)
-	}
-	manager.SetDryRun(dryRun)
-
+func initDeployService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {
+	w := wool.Get(ctx).In("deployService", wool.ThisField(resources.WithUnique(service)))
+	orchestration.SetDryRun(dryRun)
 	var env *resources.Environment
 	if envInput == "local" {
 		env = resources.LocalEnvironment()
 	} else {
 		env = &resources.Environment{Name: envInput}
 	}
-	if envInput == "aws" {
-		//env.LoadBalancer = "codefly.build"
-	}
 
-	flow, err := manager.NewFlow(ctx, workspace, service, env, manager.DeployMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)
 	if err != nil {
@@ -103,15 +97,18 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, serv
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	// Use Local Deployment NewManager
+
+	flow.WithDeploymentManager(deployments.NewLocalApplyManager(ctx, workspace, env))
 	return flow, nil
 }
 
-func cleanDeployService(flow *manager.Flow) error {
+func cleanDeployService(flow *orchestration.Flow) error {
 	defer services.ClearAgents()
 	return flow.Stop()
 }
 
-func deployService(ctx context.Context, flow *manager.Flow) error {
+func deployService(ctx context.Context, flow *orchestration.Flow) error {
 	w := wool.Get(ctx).In("deployService")
 	err := flow.Deploy(ctx)
 	if err != nil {
@@ -123,11 +120,9 @@ func deployService(ctx context.Context, flow *manager.Flow) error {
 
 var standAlone bool
 var envInput string
-var org string
 var dryRun bool
 
 func init() {
-	ServiceCmd.Flags().StringVar(&org, "org", "", "Organization")
 	ServiceCmd.Flags().StringVar(&envInput, "env", "local", "Environment to deploy the service")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Dry run the deployment")

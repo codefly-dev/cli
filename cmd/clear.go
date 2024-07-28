@@ -33,7 +33,7 @@ func clearCommand(args []string) {
 		log.Fatalf("can't create docker client %s\n", err)
 	}
 	// delete all c with name starting with /codefly
-	cos, err := cli.ContainerList(ctx, container.ListOptions{})
+	cos, err := cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		log.Fatalf("can't list containers %s\n", err)
 	}

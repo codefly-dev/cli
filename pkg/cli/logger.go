@@ -109,6 +109,36 @@ func generateForegroundColors() []lipgloss.Color {
 		lipgloss.Color("#7DF9FF"), // Electric Blue
 		lipgloss.Color("#FF69B4"), // Hot Pink
 		lipgloss.Color("#C0C0C0"), // Silver
+		lipgloss.Color("#FFD700"), // Gold
+		lipgloss.Color("#FF4500"), // Orange Red
+		lipgloss.Color("#9370DB"), // Medium Purple
+		lipgloss.Color("#3CB371"), // Medium Sea Green
+		lipgloss.Color("#20B2AA"), // Light Sea Green
+		lipgloss.Color("#DDA0DD"), // Plum
+		lipgloss.Color("#B0E0E6"), // Powder Blue
+		lipgloss.Color("#FF6347"), // Tomato
+		lipgloss.Color("#4682B4"), // Steel Blue
+		lipgloss.Color("#D2691E"), // Chocolate
+		lipgloss.Color("#FFDAB9"), // Peach Puff
+		lipgloss.Color("#7B68EE"), // Medium Slate Blue
+		lipgloss.Color("#BA55D3"), // Medium Orchid
+		lipgloss.Color("#F0E68C"), // Khaki
+		lipgloss.Color("#48D1CC"), // Medium Turquoise
+		lipgloss.Color("#FFB6C1"), // Light Pink
+		lipgloss.Color("#DEB887"), // Burlywood
+		lipgloss.Color("#AFEEEE"), // Pale Turquoise
+		lipgloss.Color("#98FB98"), // Pale Green
+		lipgloss.Color("#FFA07A"), // Light Salmon
+		lipgloss.Color("#E0FFFF"), // Light Cyan
+		lipgloss.Color("#D8BFD8"), // Thistle
+		lipgloss.Color("#FFDAB9"), // Peach Puff
+		lipgloss.Color("#CD853F"), // Peru
+		lipgloss.Color("#FFA500"), // Orange
+		lipgloss.Color("#F0FFF0"), // Honeydew
+		lipgloss.Color("#F5DEB3"), // Wheat
+		lipgloss.Color("#FAFAD2"), // Light Goldenrod Yellow
+		lipgloss.Color("#B0C4DE"), // Light Steel Blue
+		lipgloss.Color("#FF00FF"), // Magenta
 	}
 }
 

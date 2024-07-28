@@ -7,7 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -34,27 +34,27 @@ var BuildCmd = &cobra.Command{
 
 		err := CI(ctx, workspace, runBuildService)
 
-		cli.ExitOnError(err, "Cannot test CI")
+		cli.ExitOnError(err, "Cannot CI build")
 		cli.Header(1, "Work done!")
 		cli.Exit()
 	},
 }
 
-func runBuildService(ctx context.Context, workspace *resources.Workspace, service *resources.Service) error {
+func runBuildService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
 	w := wool.Get(ctx).In("buildService")
-	flow, err := initBuildService(ctx, workspace, service)
+	flow, err := initBuildService(ctx, workspace, module, service)
 	if err != nil {
 		return w.Wrapf(err, "Cannot init flow")
 	}
 	err = buildService(ctx, flow)
 	if err != nil {
-		return w.Wrapf(err, "Cannot test service")
+		return w.Wrapf(err, "Cannot build service")
 	}
 	return nil
 }
 
-func initBuildService(ctx context.Context, workspace *resources.Workspace, service *resources.Service) (*manager.Flow, error) {
-	w := wool.Get(ctx).In("TestService", wool.ThisField(service))
+func initBuildService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
+	w := wool.Get(ctx).In("BuildService", wool.ThisField(resources.WithUnique(service)))
 	// Catch panic
 	defer w.Catch()
 
@@ -62,10 +62,11 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, servi
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	flow, err := manager.NewFlow(ctx, workspace, service, resources.LocalEnvironment(), manager.TestMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), orchestration.BuildMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithStandAlone(true)
@@ -75,18 +76,20 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, servi
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+
 	err = flow.Load(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+
 	return flow, nil
 }
 
-func buildService(ctx context.Context, flow *manager.Flow) error {
-	// Catch panic
-	w := wool.Get(ctx).In("TestService")
+func buildService(ctx context.Context, flow *orchestration.Flow) error {
+	w := wool.Get(ctx).In("BuildService")
 	defer w.Catch()
-	err := flow.Start(ctx)
+
+	err := flow.Build(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot start service")
 	}

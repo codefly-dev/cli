@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -31,9 +31,9 @@ var ServiceCmd = &cobra.Command{
 
 		errs := make(chan error, 1) // Buffered channel
 
-		workspace, service := common.LoadRequired(ctx, args)
+		workspace, module, service := common.LoadRequired(ctx, args)
 
-		flow, err := initBuildService(ctx, workspace, service, standAlone)
+		flow, err := initBuildService(ctx, workspace, module, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
 			errs <- buildService(ctx, flow)
@@ -62,16 +62,16 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
-func initBuildService(ctx context.Context, workspace *resources.Workspace, service *resources.Service, standAlone bool) (*manager.Flow, error) {
-	w := wool.Get(ctx).In("buildService", wool.ThisField(service))
+func initBuildService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {
+	w := wool.Get(ctx).In("buildService", wool.ThisField(resources.WithUnique(service)))
 	if org != "" {
 		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
 		builder.SetRepository(repo)
 	}
 	if push {
-		manager.SetBuilderPush()
+		orchestration.SetBuilderPush()
 	}
-	flow, err := manager.NewFlow(ctx, workspace, service, resources.LocalEnvironment(), manager.BuildMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), orchestration.BuildMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -87,12 +87,12 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, servi
 	return flow, nil
 }
 
-func cleanBuildService(flow *manager.Flow) error {
+func cleanBuildService(flow *orchestration.Flow) error {
 	defer services.ClearAgents()
 	return flow.Stop()
 }
 
-func buildService(ctx context.Context, flow *manager.Flow) error {
+func buildService(ctx context.Context, flow *orchestration.Flow) error {
 	w := wool.Get(ctx).In("buildService")
 	err := flow.Build(ctx)
 	if err != nil {

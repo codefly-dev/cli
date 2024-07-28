@@ -24,7 +24,7 @@ var loadOnly bool
 // init only mode
 var initOnly bool
 
-type Action func(ctx context.Context, workspace *resources.Workspace, service *resources.Service) error
+type Action func(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error
 
 func CI(ctx context.Context, workspace *resources.Workspace, action Action) error {
 	w := wool.Get(ctx).In("deployCI")
@@ -50,18 +50,27 @@ func CI(ctx context.Context, workspace *resources.Workspace, action Action) erro
 			if alreadyRan[svc.Unique] {
 				continue
 			}
-			w.Info("Running service", wool.Field("service", svc.Unique))
+			w.Info("Handling services", wool.Field("service", svc.Unique))
+
 			ref, err := resources.ParseServiceWithOptionalModule(svc.Unique)
 			if err != nil {
 				return w.Wrapf(err, "Cannot parse service <%s>", svc.Unique)
 			}
-			service, err := workspace.LoadService(ctx, ref)
+
+			module, err := workspace.LoadModuleFromName(ctx, ref.Module)
+			if err != nil {
+				return w.Wrapf(err, "Cannot load module <%s>", ref.Module)
+			}
+			service, err := module.LoadServiceFromName(ctx, ref.Name)
 			if err != nil {
 				return w.Wrapf(err, "Cannot load service <%s>", svc.Unique)
 			}
-			err = action(ctx, workspace, service)
+
+			service.WithModule(module.Name)
+
+			err = action(ctx, workspace, module, service)
 			if err != nil {
-				return w.Wrapf(err, "Cannot run test for service <%s>", svc.Unique)
+				return w.Wrapf(err, "Cannot run CI %T for service <%s>", action, svc.Unique)
 			}
 			alreadyRan[svc.Unique] = true
 		}

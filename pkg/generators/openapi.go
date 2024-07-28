@@ -11,9 +11,9 @@ import (
 	"github.com/codefly-dev/core/wool"
 )
 
-func OpenAPI(ctx context.Context, workspace *resources.Workspace, service *resources.Service, language languages.Language, destination string) error {
-	w := wool.Get(ctx).In("generateOpenAPIs", wool.ThisField(service))
-	endpoints, err := getOpenAPIEndpoints(ctx, service)
+func OpenAPI(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, language languages.Language, destination string) error {
+	w := wool.Get(ctx).In("generateOpenAPIs", wool.ThisField(resources.WithUnique(service)))
+	endpoints, err := getOpenAPIEndpoints(ctx, module, service)
 	if err != nil {
 		return w.Wrapf(err, "cannot get OpenAPI endpoints")
 	}
@@ -24,10 +24,10 @@ func OpenAPI(ctx context.Context, workspace *resources.Workspace, service *resou
 	return nil
 }
 
-func getOpenAPIEndpoints(ctx context.Context, service *resources.Service) ([]*basev0.Endpoint, error) {
+func getOpenAPIEndpoints(ctx context.Context, module *resources.Module, service *resources.Service) ([]*basev0.Endpoint, error) {
 	w := wool.Get(ctx).In("getOpenAPIEndpoints")
 	// Use the Builder
-	instance, err := services.Load(ctx, service)
+	instance, err := services.Load(ctx, module, service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load builder")
 	}

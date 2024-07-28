@@ -11,9 +11,9 @@ import (
 	"github.com/codefly-dev/core/wool"
 )
 
-func GRPC(ctx context.Context, service *resources.Service, language languages.Language, destination string) error {
-	w := wool.Get(ctx).In("generateGRPCs", wool.ThisField(service))
-	endpoints, err := getGRPCEndpoints(ctx, service)
+func GRPC(ctx context.Context, module *resources.Module, service *resources.Service, language languages.Language, destination string) error {
+	w := wool.Get(ctx).In("generateGRPCs", wool.ThisField(resources.WithUnique(service)))
+	endpoints, err := getGRPCEndpoints(ctx, module, service)
 	if err != nil {
 		return w.Wrapf(err, "cannot get grpc endpoints")
 	}
@@ -24,10 +24,10 @@ func GRPC(ctx context.Context, service *resources.Service, language languages.La
 	return nil
 }
 
-func getGRPCEndpoints(ctx context.Context, service *resources.Service) ([]*basev0.Endpoint, error) {
+func getGRPCEndpoints(ctx context.Context, module *resources.Module, service *resources.Service) ([]*basev0.Endpoint, error) {
 	w := wool.Get(ctx).In("getGRPCEndpoints")
 	// Use the Builder
-	instance, err := services.Load(ctx, service)
+	instance, err := services.Load(ctx, module, service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load builder")
 	}

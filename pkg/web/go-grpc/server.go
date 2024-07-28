@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/services/manager"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/architecture"
 	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
@@ -51,7 +51,7 @@ func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty
 }
 
 func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.StopFlowResponse, error) {
-	err := manager.CurrentFlow().Stop()
+	err := orchestration.CurrentFlow().Stop()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -59,7 +59,7 @@ func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.S
 }
 
 func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (*cli.DestroyFlowResponse, error) {
-	err := manager.CurrentFlow().Stop()
+	err := orchestration.CurrentFlow().Stop()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -67,14 +67,14 @@ func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (
 }
 
 func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.FlowStatus, error) {
-	ready := manager.CurrentFlow().Ready(ctx)
+	ready := orchestration.CurrentFlow().Ready(ctx)
 	return &cli.FlowStatus{
 		Ready: ready,
 	}, nil
 }
 
 func (s *Server) GetDependenciesNetworkMappings(ctx context.Context, req *cli.GetNetworkMappingsRequest) (*cli.GetNetworkMappingsResponse, error) {
-	flow := manager.CurrentFlow()
+	flow := orchestration.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -91,7 +91,7 @@ func (s *Server) GetDependenciesNetworkMappings(ctx context.Context, req *cli.Ge
 }
 
 func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationResponse, error) {
-	flow := manager.CurrentFlow()
+	flow := orchestration.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -100,7 +100,11 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	conf, err := flow.ConfigurationManager.GetServiceConfiguration(ctx, svc)
+	id, err := svc.Identity()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	conf, err := flow.ConfigurationManager.GetServiceConfiguration(ctx, id)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -110,7 +114,7 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 }
 
 func (s *Server) GetDependenciesConfigurations(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationsResponse, error) {
-	flow := manager.CurrentFlow()
+	flow := orchestration.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -119,7 +123,11 @@ func (s *Server) GetDependenciesConfigurations(ctx context.Context, req *cli.Get
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	confs, err := flow.SharedState.GetDependentConfigurationsFor(ctx, svc)
+	id, err := svc.Identity()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	confs, err := flow.SharedState.GetDependentConfigurationsFor(ctx, id)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -129,7 +137,7 @@ func (s *Server) GetDependenciesConfigurations(ctx context.Context, req *cli.Get
 }
 
 func (s *Server) GetRuntimeConfigurations(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationsResponse, error) {
-	flow := manager.CurrentFlow()
+	flow := orchestration.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -144,7 +152,7 @@ func (s *Server) GetRuntimeConfigurations(ctx context.Context, req *cli.GetConfi
 }
 
 func (s *Server) GetAddresses(ctx context.Context, req *cli.GetAddressRequest) (*cli.GetAddressResponse, error) {
-	flow := manager.CurrentFlow()
+	flow := orchestration.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -160,13 +168,17 @@ func (s *Server) GetAddresses(ctx context.Context, req *cli.GetAddressRequest) (
 /* Active information */
 
 func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*cli.ActiveResponse, error) {
-	flow := manager.CurrentFlow()
+	flow := orchestration.CurrentFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
+	id, err := flow.Origin().Identity()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 	return &cli.ActiveResponse{
 		Workspace: flow.ActiveWorkspace().Name,
-		Module:    flow.Origin().Module,
+		Module:    id.Module,
 		Service:   flow.Origin().Name,
 	}, nil
 

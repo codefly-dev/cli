@@ -129,6 +129,9 @@ func addService(ctx context.Context, name string, agentInput string) error {
 	if err != nil {
 		return w.Wrapf(err, "cannot add service")
 	}
+
+	// Show some information: Read me
+	// TODO: Configuration output
 	rendered, err := glamour.Render(output.ReadMe, "dark")
 	if err != nil {
 		return w.Wrapf(err, "cannot render info README")
