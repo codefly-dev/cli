@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.26.6
 	github.com/charmbracelet/glamour v0.7.0
 	github.com/charmbracelet/lipgloss v0.12.1
-	github.com/codefly-dev/core v0.1.136
+	github.com/codefly-dev/core v0.1.138
 	github.com/codefly-dev/golor v0.1.3
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/docker/docker v27.1.1+incompatible
@@ -41,6 +41,7 @@ require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
+	github.com/blang/semver v3.5.1+incompatible // indirect
 	github.com/bufbuild/protovalidate-go v0.6.3 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/charmbracelet/x/ansi v0.1.4 // indirect

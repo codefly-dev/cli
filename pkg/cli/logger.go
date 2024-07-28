@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/codefly-dev/core/agents"
@@ -169,20 +170,32 @@ func (cp *ColorPicker) PickStyle(unique string) lipgloss.Style {
 		Foreground(fgColor)
 }
 
-var styles map[string]lipgloss.Style
-var silent []string
+var (
+	styles map[string]lipgloss.Style
+	silent []string
+	mu     sync.RWMutex
+)
 
 func init() {
 	styles = map[string]lipgloss.Style{}
 }
 
 func GetBaseStyle(unique string) lipgloss.Style {
+	mu.RLock()
 	if style, ok := styles[unique]; ok {
+		mu.RUnlock()
 		return style
 	}
+	mu.RUnlock()
+
 	style := NewColorPicker().PickStyle(unique)
+
+	mu.Lock()
 	styles[unique] = style
+	mu.Unlock()
+
 	return style
+
 }
 
 func WithSilence(services []*resources.ServiceWithModule) {
