@@ -31,7 +31,7 @@ func addServiceDependency(args []string) {
 	defer done()
 	defer services.ClearAgents()
 
-	workspace, module, service := common.Load(ctx, args)
+	workspace, module, service := common.LoadRequired(ctx, args)
 	if module == nil {
 		cli.Error("No module found")
 		return

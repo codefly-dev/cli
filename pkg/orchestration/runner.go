@@ -3,8 +3,10 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/grpc/codes"
@@ -26,6 +28,8 @@ type Runner struct {
 
 	// API
 	endpoints []*basev0.Endpoint
+	// Network
+	networkMappings []*basev0.NetworkMapping
 
 	// View of the world
 	world *World
@@ -49,7 +53,14 @@ type Runner struct {
 
 	runtimeContext string
 
+	// Path fixture Name
 	fixture string
+
+	// Output environment variables
+	outputEnv string
+
+	// Running remote
+	remoteEnvironment *resources.Environment
 }
 
 type Callback func(ctx context.Context, action Action) error
@@ -74,6 +85,11 @@ func NewRunner(ctx context.Context, instance *services.Instance, world *World) (
 
 func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Runner.Load", wool.ThisField(runner.instance))
+
+	// This is a first iteration, it's more complicated that this: when Deploy
+	// We should save the endpoint
+	// But since we don't do much here
+	// Init is an issue..Load is just setup
 
 	env, err := runner.world.Env.Proto()
 	if err != nil {
@@ -139,6 +155,11 @@ func ContextCancelled(err error) bool {
 func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Runner.Init", wool.ThisField(runner.instance))
 
+	if runner.remoteEnvironment != nil {
+		return runner.InitRemote(ctx)
+
+	}
+
 	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot run init")
@@ -149,7 +170,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
-	projectConfs, err := runner.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, runner.instance.Service.WorkspaceConfigurationDependencies...)
+	workspaceConfigurations, err := runner.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, runner.instance.Service.WorkspaceConfigurationDependencies...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get project configurations")
 	}
@@ -159,7 +180,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
 	}
 
-	networkMappings, err := runner.world.NetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints)
+	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
@@ -168,7 +189,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		wool.Field("network mappings", resources.MakeManyNetworkMappingSummary(networkMappings)),
 		wool.Field("service configuration", resources.MakeConfigurationSummary(conf)),
 		wool.Field("dependencies endpoints", resources.MakeManyEndpointSummary(dependenciesEndpoints)),
-		wool.Field("project configurations", resources.MakeManyConfigurationSummary(projectConfs)),
+		wool.Field("project configurations", resources.MakeManyConfigurationSummary(workspaceConfigurations)),
 		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
 
 	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
@@ -180,7 +201,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		ProposedNetworkMappings:    networkMappings,
 		DependenciesEndpoints:      dependenciesEndpoints,
 		Configuration:              conf,
-		ProjectConfigurations:      projectConfs,
+		WorkspaceConfigurations:    workspaceConfigurations,
 		DependenciesConfigurations: dependenciesConfigurations,
 	}
 	err = resources.Validate(req)
@@ -201,7 +222,9 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return runner.outputPropertyForInit.Process(ctx)
 	}
 
-	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, resp.NetworkMappings)
+	runner.networkMappings = resp.NetworkMappings
+
+	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
@@ -211,9 +234,16 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot record shared configuration infos")
 	}
 
+	if runner.outputEnv != "" {
+		err = AppendEnvironmentVariablesToFile(ctx, runner.outputEnv, resp.RuntimeConfigurations)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot write environment variables to file")
+		}
+	}
+
 	w.Debug("init", wool.Field("configuration info", resources.MakeManyConfigurationSummary(resp.RuntimeConfigurations)))
 
-	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: resp.NetworkMappings, configurations: resp.RuntimeConfigurations})
+	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: networkMappings, configurations: resp.RuntimeConfigurations})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
@@ -225,9 +255,38 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
+func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
+	// This is a first iteration, it's more complicated that this: when Deploy
+	// We should save the exposed configuration and networking and get it here
+	// It won't work from ProposedNetworking != response Networking
+	// With a remote environment
+	// We only need to setup Networking
+	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance))
+	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
+	}
+	runner.networkMappings = networkMappings
+
+	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot record network mappings")
+	}
+	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: networkMappings})
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot set outputProperty for init")
+	}
+	w.Info("done with remote init")
+	return runner.outputPropertyForInit.Process(ctx)
+}
+
 func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance))
 	w.Debug("start")
+
+	if runner.remoteEnvironment != nil {
+		return runner.StartRemote(ctx)
+	}
 
 	err := runner.StopIfNeeded(ctx)
 	if err != nil {
@@ -267,7 +326,22 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot set outputProperty for start")
 	}
 
-	outputProperty, err := runner.outputPropertyForLoad.Process(ctx)
+	outputProperty, err := runner.outputPropertyForStart.Process(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot process outputProperty for start")
+	}
+
+	runner.isStarted = true
+	return outputProperty, nil
+}
+
+func (runner *Runner) StartRemote(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance))
+	err := runner.world.RemoteNetworkManager.Expose(ctx, runner.remoteEnvironment, runner.world.Workspace, runner.instance.Identity, runner.endpoints, runner.networkMappings, cli.GetLogger())
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot expose service")
+	}
+	outputProperty, err := runner.outputPropertyForStart.Process(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for start")
 	}
@@ -430,4 +504,41 @@ func (runner *Runner) WithFixture(fixture string) {
 		return
 	}
 	runner.fixture = fixture
+}
+
+func (runner *Runner) WithOutputEnv(path string) {
+	if runner == nil {
+		return
+	}
+	runner.outputEnv = path
+}
+
+func (runner *Runner) WithRemote(environment *resources.Environment) {
+	runner.remoteEnvironment = environment
+}
+
+func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, confs []*basev0.Configuration) error {
+	w := wool.Get(ctx).In("resources.AppendToFile", wool.Field("filePath", filePath))
+	// filter out for native
+	filtered := resources.FilterConfigurations(confs, resources.NewRuntimeContextNative())
+	m := resources.NewEnvironmentVariableManager()
+	err := m.AddConfigurations(ctx, filtered...)
+	if err != nil {
+		return w.Wrapf(err, "cannot add configurations")
+	}
+	// Open the file in append mode, create it if it doesn't exist
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return w.Wrapf(err, "cannot open file")
+	}
+	defer file.Close()
+
+	// Write each environment variable to the file
+	for _, env := range m.All() {
+		_, err := file.WriteString(fmt.Sprintf("%s=%v\n", env.Key, env.Value))
+		if err != nil {
+			return w.Wrapf(err, "cannot write to file")
+		}
+	}
+	return nil
 }

@@ -2,18 +2,19 @@ package common
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	resources "github.com/codefly-dev/core/resources"
 )
+
+var _active *ActiveContext
 
 type ActiveContext struct {
 	Workspace *resources.Workspace
 	Module    *resources.Module
 	Service   *resources.Service
 }
-
-var _active *ActiveContext
 
 func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 	if _active != nil {
@@ -27,16 +28,32 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 		return nil, err
 	}
 
+	if workspace == nil {
+		return nil, fmt.Errorf("no workspace found")
+	}
 	active.Workspace = workspace
 
-	module, service, err := resources.LoadModuleAndServiceFromCurrentPath(ctx)
-	if err != nil {
-		return nil, err
+	// If in Flat layout, load module automatically
+	if workspace.Layout == resources.LayoutKindFlat {
+		module, err := workspace.LoadModuleFromName(ctx, workspace.Name)
+		if err != nil {
+			return nil, err
+		}
+		active.Module = module
+		service, err := resources.LoadServiceFromCurrentPath(ctx)
+		if err != nil {
+			return nil, err
+		}
+		active.Service = service
+	} else {
+		module, service, err := resources.LoadModuleAndServiceFromCurrentPath(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		active.Module = module
+		active.Service = service
 	}
-
-	active.Module = module
-	active.Service = service
-
 	_active = active
 	return active, nil
 }

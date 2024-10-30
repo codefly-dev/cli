@@ -78,13 +78,11 @@ func Execute() {
 
 // Origin of the World
 var (
-	focus       bool
-	debug       bool
-	trace       bool
-	todo        bool
-	override    bool
-	withDefault bool
-	tracker     string
+	focus   bool
+	debug   bool
+	trace   bool
+	todo    bool
+	tracker string
 )
 
 func init() {
@@ -109,7 +107,7 @@ func init() {
 	RootCmd.AddCommand(ImportCmd)
 
 	// New, Add, Update and Sync
-	RootCmd.AddCommand(CreateCmd)
+	RootCmd.AddCommand(InitCmd)
 	RootCmd.AddCommand(AddCmd)
 	RootCmd.AddCommand(UpdateCmd)
 	RootCmd.AddCommand(SyncCmd)

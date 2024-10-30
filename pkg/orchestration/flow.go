@@ -14,6 +14,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
 )
@@ -60,8 +61,13 @@ type Flow struct {
 	runtimeContext string
 	fixture        string
 
+	// Output running configurations
+	outputEnvPath string
+
 	// actual services running
 	services []*resources.Service
+	// except when we do remote
+	remoteServices []*Remote
 }
 
 func MapValues[K comparable, V any](m map[K]V) []V {
@@ -83,11 +89,12 @@ type World struct {
 	// Keep track of things
 	SharedState *StateManager
 
-	NetworkManager network.Manager
+	LocalNetworkManager  *network.RuntimeManager
+	RemoteNetworkManager *network.RemoteManager
 
 	ConfigurationManager *configurations.Manager
 
-	DeployManager deployments.Manager
+	RemoteManager deployments.Manager
 }
 
 // NewEmptyFlow will run a single agent
@@ -110,6 +117,13 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		return nil, w.Wrap(err)
 	}
 
+	world := &World{
+		Env:          env,
+		Mode:         mode,
+		Workspace:    workspace,
+		Dependencies: dependencies,
+	}
+
 	configurationManager, err := configurations.NewManager(ctx, workspace)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -121,31 +135,19 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 	configurationManager.WithLoader(localReader)
 
-	stateManager, err := NewStateManager(ctx, configurationManager, dependencies)
+	stateManager, err := NewStateManager(ctx, configurationManager, world.Dependencies)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
 
-	world := &World{
-		Env:                  env,
-		Mode:                 mode,
-		Workspace:            workspace,
-		SharedState:          stateManager,
-		ConfigurationManager: configurationManager,
-		Dependencies:         dependencies,
-	}
+	world.SharedState = stateManager
+	world.ConfigurationManager = configurationManager
 
-	switch mode {
-	case RunMode:
-		world.NetworkManager, err = network.NewRuntimeManager(ctx, configurationManager)
-	case TestMode:
-		world.NetworkManager, err = network.NewRuntimeManager(ctx, configurationManager)
-	case BuildMode:
-		world.NetworkManager, err = network.NewDeployManager(ctx, configurationManager)
-	case DeployMode:
-		world.NetworkManager, err = network.NewDeployManager(ctx, configurationManager)
+	world.LocalNetworkManager, err = network.NewRuntimeManager(ctx, configurationManager)
+	if err != nil {
+		return nil, w.Wrap(err)
 	}
-
+	world.RemoteNetworkManager, err = network.NewRemoteManager(ctx, configurationManager)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -518,6 +520,20 @@ func (flow *Flow) ServiceFromUnique(unique string) (*resources.Service, error) {
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
+	remotes := make(map[string]*Remote)
+	if len(flow.remoteServices) > 0 {
+		var cutoffs []string
+		for _, remote := range flow.remoteServices {
+			remotes[remote.Unique()] = remote
+			cutoffs = append(cutoffs, remote.Unique())
+		}
+		dep, err := architecture.NewServiceDependencies(ctx, flow.workspace, architecture.SkipDependencyFor(cutoffs...))
+		if err != nil {
+			return w.Wrap(err)
+		}
+		flow.world.Dependencies = dep
+	}
+
 	// Create manager for all service required by this service if not standalone
 	var required []string
 	if !flow.standAlone {
@@ -569,6 +585,10 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 
 		manager.Runner.WithRuntimeContext(flow.runtimeContext)
 		manager.Runner.WithFixture(flow.fixture)
+		manager.Runner.WithOutputEnv(flow.outputEnvPath)
+		if remote, ok := remotes[unique]; ok {
+			manager.Runner.WithRemote(remote.Environment)
+		}
 		managers = append(managers, manager)
 	}
 
@@ -582,6 +602,9 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		}
 		flow.services = append(flow.services, flow.originService)
 		manager.Runner.WithRuntimeContext(flow.runtimeContext)
+		if remote, ok := remotes[resources.WithUnique(flow.originService).Unique()]; ok {
+			manager.Runner.WithRemote(remote.Environment)
+		}
 		managers = append(managers, manager)
 	} else {
 		// We use a NoOP NewManager
@@ -619,7 +642,7 @@ func (flow *Flow) Ready(ctx context.Context) bool {
 }
 
 func (flow *Flow) WithDeploymentManager(manager deployments.Manager) {
-	flow.world.DeployManager = manager
+	flow.world.RemoteManager = manager
 }
 
 func (flow *Flow) WithStandAlone(alone bool) {
@@ -657,6 +680,26 @@ func (flow *Flow) ActiveWorkspace() *resources.Workspace {
 
 func (flow *Flow) Origin() *resources.Service {
 	return flow.originService
+}
+
+func (flow *Flow) WithOutputEnv(envPath string) {
+	// Delete the file first
+	if exists, err := shared.FileExists(context.Background(), envPath); err == nil && exists {
+		err := shared.DeleteFile(context.Background(), envPath)
+		if err != nil {
+			cli.Error("cannot delete file %s: %s", envPath, err)
+		}
+	}
+	flow.outputEnvPath = envPath
+}
+
+type Remote struct {
+	*resources.ServiceWithModule
+	*resources.Environment
+}
+
+func (flow *Flow) WithRemotes(services []*Remote) {
+	flow.remoteServices = services
 }
 
 var _ ExecutorManager = &Flow{}

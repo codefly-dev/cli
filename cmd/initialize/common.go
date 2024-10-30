@@ -1,4 +1,4 @@
-package create
+package initialize
 
 // Override existing agent
 var override bool

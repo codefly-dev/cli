@@ -2,10 +2,12 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -28,10 +30,12 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
 
-	networkMappings, err := b.world.NetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)
+	networkMappings, err := b.world.RemoteNetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
+
+	fmt.Println("NETWORK MAPPINGS", resources.MakeManyNetworkMappingSummary(networkMappings))
 
 	err = b.world.SharedState.RecordNetworkMappings(ctx, b.instance.Service, networkMappings)
 	if err != nil {
@@ -43,7 +47,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	namespace, err := b.world.NetworkManager.GetNamespace(ctx, b.world.Env, b.world.Workspace, b.instance.Identity)
+	namespace, err := b.world.RemoteNetworkManager.GetNamespace(ctx, b.world.Env, b.world.Workspace, b.instance.Identity)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get namespace")
 	}
@@ -100,7 +104,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if resp.Deployment == nil {
 		return outputProperty, nil
 	}
-	err = b.world.DeployManager.Handle(ctx, b.instance.Service, b.instance.Module, resp.Deployment)
+	err = b.world.RemoteManager.Handle(ctx, b.instance.Service, b.instance.Module, resp.Deployment)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot handle deployment")
 	}

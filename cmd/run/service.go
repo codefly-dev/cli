@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -30,7 +31,15 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
-		workspace, module, service := common.LoadRequired(ctx, args)
+		var workspace *resources.Workspace
+		var module *resources.Module
+		var service *resources.Service
+
+		if servicePath != "" {
+			workspace, module, service = common.LoadWithServicePathOverride(ctx, servicePath)
+		} else {
+			workspace, module, service = common.LoadRequired(ctx, args)
+		}
 
 		common.WithSilence(ctx, workspace, silent)
 
@@ -91,6 +100,13 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	// Setup optional naming namingScope
 	env.NamingScope = namingScope
 
+	// Parse remote services
+	remoteServices, err := parseRemote(workspace, remotes)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	w.Info("Running with remotes", wool.Field("remotes", remoteServices))
+
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -98,10 +114,12 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
+	flow.WithOutputEnv(outputEnv)
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithFixture(fixture)
+	flow.WithRemotes(remoteServices)
 
 	err = flow.InitManagers(ctx)
 	if err != nil {
@@ -112,6 +130,25 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, w.Wrap(err)
 	}
 	return flow, nil
+}
+
+func parseRemote(workspace *resources.Workspace, remotes []string) ([]*orchestration.Remote, error) {
+	var out []*orchestration.Remote
+	// Remote should be unique-ish:env
+	for _, remote := range remotes {
+		tokens := strings.Split(remote, ":")
+		if len(tokens) != 2 {
+			return nil, errors.New("Remote should be in the format: service:env")
+		}
+		serviceWithModule, err := resources.ParseServiceWithOptionalModule(tokens[0])
+		if err != nil {
+			return nil, err
+		}
+		// Need to check if we know this environment
+		env := &resources.Environment{Name: tokens[1]}
+		out = append(out, &orchestration.Remote{ServiceWithModule: serviceWithModule, Environment: env})
+	}
+	return out, nil
 }
 
 func runService(ctx context.Context, flow *orchestration.Flow) error {
@@ -140,16 +177,17 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 	return nil
 }
 
-var fixture string
-
 func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
 	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope (for testing encapsulation)")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
+	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
+	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Output environment variables")
 	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")
+	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")
 }
