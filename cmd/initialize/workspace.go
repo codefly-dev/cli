@@ -48,7 +48,35 @@ func newWorkspace(name string) {
 		{Identifier: resources.LayoutKindFlat, Description: "Flat layout (no modules), good for simple projects", Current: true},
 		{Identifier: resources.LayoutKindModules, Description: "Modules layout, good for complex projects with multiple components"},
 	}
-	choice, err := models.Choice(ctx, "Choose the style of the workspace", entries)
+	choice, err := models.Choice(ctx, `Choose the style of the workspace:
+
+For very simple projects, pick a flat layout where all services are in the root module:
+
+workspace/
+├── 📂 configurations
+|   ├── 📂 ${dev}
+│   └── 📂 ${production}
+└── 📂 services
+│   ├── 📂 ${frontend}
+│   ├── 📂 ${backend}
+│   └── 📂 ${database}
+
+For more complex projects, pick a modules layout to group your services:
+
+workspace/
+├── 📂 configurations
+|   ├── 📂 ${dev}
+│   └── 📂 ${prod}
+└── 📂 modules
+│   └── 📂 ${management}
+|       └── 📂services
+|           ├── 📂 ${backend}
+|           ├── 📂 ${cache}
+|           └── 📂 ${database}
+│   └── 📂 ${external}
+|           ├── 📂 ${frontend}
+|           └── 📂 ${api}
+`, entries)
 	cli.ExitOnError(err, "Cannot get choice")
 	var action actions.Action
 	action, err = actionsworkspace.NewActionNewWorkspace(ctx, &actionsworkspace.NewWorkspace{
@@ -69,10 +97,6 @@ func newWorkspace(name string) {
 	}
 
 	cli.Header(2, "Workspace <%s> created in current directory", workspace.Name)
-
-	// cd into the workspace
-	err = os.Chdir(workspace.Path)
-	cli.ExitOnError(err, "Cannot change directory")
 }
 
 func init() {
