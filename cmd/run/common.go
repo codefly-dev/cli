@@ -36,3 +36,6 @@ var loadOnly bool
 
 // init only mode
 var initOnly bool
+
+// Stop after a specific action
+var stopAfter string
