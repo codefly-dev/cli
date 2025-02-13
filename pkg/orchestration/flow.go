@@ -68,6 +68,9 @@ type Flow struct {
 	services []*resources.Service
 	// except when we do remote
 	remoteServices []*Remote
+
+	// Stop after a specific action
+	stopAfter *Action
 }
 
 func MapValues[K comparable, V any](m map[K]V) []V {
@@ -296,6 +299,12 @@ func (flow *Flow) Load(ctx context.Context) error {
 
 	}
 	flow.playbook = playbook
+
+	if flow.stopAfter != nil {
+		flow.playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+			return action.Type == flow.stopAfter.Type && action.Service == flow.stopAfter.Service
+		})
+	}
 
 	// Fix the callback
 	for _, manager := range flow.hub.managers {
@@ -703,3 +712,26 @@ func (flow *Flow) WithRemotes(services []*Remote) {
 }
 
 var _ ExecutorManager = &Flow{}
+
+func ParseStopAfter(stopAfter string) (Action, error) {
+	parts := strings.Split(stopAfter, ":")
+	if len(parts) != 2 {
+		return Action{}, fmt.Errorf("invalid stop-after format")
+	}
+	actionType := ActionType(parts[0])
+	service, err := resources.ParseServiceWithOptionalModule(parts[1])
+	if err != nil {
+		return Action{}, fmt.Errorf("invalid stop-after format")
+	}
+	return Action{Type: actionType, Service: service.Unique()}, nil
+}
+
+func (flow *Flow) WithStopAfter(stopAfter string) {
+	stoppingAfter, err := ParseStopAfter(stopAfter)
+	if err != nil {
+		cli.Error("invalid stop-after format: %s", err)
+		return
+	}
+	fmt.Println("stoppingAfter", stoppingAfter)
+	flow.stopAfter = &stoppingAfter
+}

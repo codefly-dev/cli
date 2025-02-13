@@ -120,7 +120,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithFixture(fixture)
 	flow.WithRemotes(remoteServices)
-
+	flow.WithStopAfter(stopAfter)
 	err = flow.InitManagers(ctx)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -190,4 +190,5 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")
+	ServiceCmd.Flags().StringVar(&stopAfter, "stop-after", "", "Stop after a specific action")
 }
