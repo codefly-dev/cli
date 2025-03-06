@@ -24,7 +24,7 @@ fi
 NEW_VERSION_TYPE=${1:-patch}
 
 CURRENT_VERSION=$(yq -r '.version' "$YAML_FILE")
-NEW_VERSION=$(semver bump "$NEW_VERSION_TYPE" "$CURRENT_VERSION")
+NEW_VERSION=$(semver -i "$NEW_VERSION_TYPE" "$CURRENT_VERSION")
 
 
 # Update the version in the YAML file (for macOS)
