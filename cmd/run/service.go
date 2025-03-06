@@ -68,6 +68,8 @@ var ServiceCmd = &cobra.Command{
 			case err := <-errs:
 				if err != nil {
 					cli.Error("Got service run error: %v\n", errors.Unwrap(err))
+					_ = stopService(ctx, flow)
+					cli.ExitOnError(err, "Cannot stop flow")
 				}
 				errs <- nil
 				break loop
