@@ -28,13 +28,13 @@ jobs:
 
       - name: Build Binary Darwin Intel
         run: |
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags '-s -w' -o codefly-darwin-amd64 main.go
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags '-s -w' -o codefly-darwin-amd64 codefly.go
       - name: Build Binary Darwin ARM
         run: |
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags '-s -w' -o codefly-darwin-arm64 main.go
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags '-s -w' -o codefly-darwin-arm64 codefly.go
       - name: Build Binary Linux
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '-extldflags "-static"' -o codefly-linux-x86_64 main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '-extldflags "-static"' -o codefly-linux-x86_64 codefly.go
       - name: Checkout Target Repository
         uses: actions/checkout@v3
         with:
