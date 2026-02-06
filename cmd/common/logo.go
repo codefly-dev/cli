@@ -36,7 +36,7 @@ func Logo() {
 			return
 		}
 	}
-	golor.Println(fmt.Sprintf(`#(green)[%s]`, string(logo)))
+	golor.Println("%s", fmt.Sprintf(`#(green)[%s]`, string(logo)))
 }
 
 //go:embed media/ascii-codefly.txt
