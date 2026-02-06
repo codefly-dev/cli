@@ -8,7 +8,7 @@ import (
 	"github.com/codefly-dev/core/languages"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 )
 
 func GRPC(ctx context.Context, module *resources.Module, service *resources.Service, language languages.Language, destination string) error {

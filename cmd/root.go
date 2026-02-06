@@ -8,7 +8,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 	"github.com/fatih/color"
 
 	"github.com/spf13/cobra"
@@ -133,6 +133,9 @@ func init() {
 	// Agents
 	RootCmd.AddCommand(AgentCmd)
 
+	// MCP Server
+	RootCmd.AddCommand(MCPCmd)
+
 	// Replay
 	RootCmd.AddCommand(ReplayCmd)
 
@@ -147,6 +150,9 @@ func init() {
 
 	// CI
 	RootCmd.AddCommand(CiCmd)
+
+	// Daemon (background service management)
+	RootCmd.AddCommand(DaemonCmd)
 
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")

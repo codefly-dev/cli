@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 )
 
 func KustomizeDir(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) string {

@@ -33,6 +33,8 @@ var ModuleCmd = &cobra.Command{
 	},
 }
 
+var moduleAgentInput string
+
 func addModule(name string) {
 	ctx, done := common.NewContext()
 	defer done()
@@ -44,18 +46,28 @@ func addModule(name string) {
 		os.Exit(0)
 	}
 
-	confirm := models.Confirm(ctx, fmt.Sprintf("Add an module in your workspace <%s>?", workspace.Name), true)
+	confirm := models.Confirm(ctx, fmt.Sprintf("Add a module in your workspace <%s>?", workspace.Name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
 		os.Exit(0)
 	}
 
+	input := &actionsmodule.AddModule{
+		Name: name,
+	}
+
+	// If a module agent/template was specified, resolve it
+	if moduleAgentInput != "" {
+		agent, err := common.GetModuleAgent(ctx, moduleAgentInput)
+		cli.ExitOnError(err, "cannot resolve module agent")
+		input.Agent = agent.Proto()
+		cli.Header(2, "Using module template: %s", agent.Identifier())
+	}
+
 	var action actions.Action
 	var err error
 
-	action, err = actionsmodule.NewActionAddModule(ctx, &actionsmodule.AddModule{
-		Name: name,
-	})
+	action, err = actionsmodule.NewActionAddModule(ctx, input)
 	cli.ExitOnError(err, "cannot create action")
 	out, err := actions.Run(ctx, action, &actions.Space{Workspace: workspace})
 	if err != nil {
@@ -71,4 +83,5 @@ func addModule(name string) {
 
 func init() {
 	ModuleCmd.PersistentFlags().BoolVarP(&interactive, "interactive", "i", false, "interactive mode")
+	ModuleCmd.Flags().StringVar(&moduleAgentInput, "agent", "", "Module template agent (e.g. user-management, rag)")
 }

@@ -5,7 +5,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/generator"
 	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 	"github.com/spf13/cobra"
 )
 

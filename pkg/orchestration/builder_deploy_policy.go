@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/architecture"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 )
 
 type DeployPolicy struct {

@@ -5,7 +5,7 @@ import (
 
 	"github.com/briandowns/spinner"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 )
 
 type PauseManager struct {

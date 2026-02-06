@@ -16,7 +16,7 @@ import (
 
 	actionsservice "github.com/codefly-dev/core/actions/service"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 	"github.com/spf13/cobra"
 )
 

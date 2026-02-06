@@ -3,7 +3,7 @@ package imports
 import (
 	"context"
 
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 )
 
 type SourceImporter interface {

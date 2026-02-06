@@ -14,7 +14,7 @@ import (
 
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 )
 
 /*
@@ -534,7 +534,11 @@ func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, conf
 	defer file.Close()
 
 	// Write each environment variable to the file
-	for _, env := range m.All() {
+	allEnvs, err := m.All()
+	if err != nil {
+		return w.Wrapf(err, "cannot get environment variables")
+	}
+	for _, env := range allEnvs {
 		_, err := file.WriteString(fmt.Sprintf("%s=%v\n", env.Key, env.Value))
 		if err != nil {
 			return w.Wrapf(err, "cannot write to file")

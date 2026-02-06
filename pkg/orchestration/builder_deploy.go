@@ -8,7 +8,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/deployments"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 )
 
 func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {

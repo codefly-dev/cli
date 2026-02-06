@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/core/cli"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 

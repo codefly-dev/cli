@@ -23,7 +23,7 @@ import (
 	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/wool"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	observabilityv0 "github.com/codefly-dev/core/generated/go/codefly/observability/v0"

@@ -1,6 +1,6 @@
 module github.com/codefly-dev/cli
 
-go 1.23.2
+go 1.25
 
 require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/glamour v0.8.0
 	github.com/charmbracelet/lipgloss v0.13.1
 	github.com/codefly-dev/core v0.1.143
+	github.com/codefly-dev/wool v0.0.0
 	github.com/codefly-dev/golor v0.1.3
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/docker/docker v27.3.1+incompatible

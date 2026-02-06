@@ -15,4 +15,5 @@ func init() {
 	ListCmd.AddCommand(list.WorkspaceCmd)
 	ListCmd.AddCommand(list.ModuleCmd)
 	ListCmd.AddCommand(list.LibraryCmd)
+	ListCmd.AddCommand(list.JobsCmd)
 }

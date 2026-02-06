@@ -13,4 +13,5 @@ var RunCmd = &cobra.Command{
 
 func init() {
 	RunCmd.AddCommand(run.ServiceCmd)
+	RunCmd.AddCommand(run.JobCmd)
 }

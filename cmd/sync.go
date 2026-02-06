@@ -13,4 +13,5 @@ var SyncCmd = &cobra.Command{
 
 func init() {
 	SyncCmd.AddCommand(sync.ServiceCmd)
+	SyncCmd.AddCommand(sync.LibraryDependenciesCmd)
 }
