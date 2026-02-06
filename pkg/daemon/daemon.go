@@ -1,0 +1,225 @@
+// Package daemon manages the codefly background service process.
+//
+// The daemon re-execs the current binary with an internal flag and detaches
+// from the terminal. The PID and log files live under ~/.codefly/.
+package daemon
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+const (
+	pidFileName = "daemon.pid"
+	logFileName = "daemon.log"
+)
+
+// Paths returns the directory used for daemon state files.
+func stateDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	dir := filepath.Join(home, ".codefly")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("cannot create state dir: %w", err)
+	}
+	return dir, nil
+}
+
+// PIDFile returns the path to the PID file.
+func PIDFile() (string, error) {
+	dir, err := stateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, pidFileName), nil
+}
+
+// LogFile returns the path to the daemon log file.
+func LogFile() (string, error) {
+	dir, err := stateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, logFileName), nil
+}
+
+// WritePID writes the current process PID to the PID file.
+func WritePID() error {
+	path, err := PIDFile()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644)
+}
+
+// ReadPID reads the PID from the PID file. Returns 0 if the file doesn't exist.
+func ReadPID() (int, error) {
+	path, err := PIDFile()
+	if err != nil {
+		return 0, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("cannot read PID file: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0, fmt.Errorf("invalid PID in file: %w", err)
+	}
+	return pid, nil
+}
+
+// RemovePID removes the PID file.
+func RemovePID() error {
+	path, err := PIDFile()
+	if err != nil {
+		return err
+	}
+	return os.Remove(path)
+}
+
+// IsRunning checks if a process with the given PID is still alive.
+func IsRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// Signal 0 checks if the process exists without killing it.
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+// Status returns the daemon's current state.
+type Status struct {
+	Running bool
+	PID     int
+	LogPath string
+}
+
+// GetStatus checks if the daemon is currently running.
+func GetStatus() (*Status, error) {
+	pid, err := ReadPID()
+	if err != nil {
+		return nil, err
+	}
+	logPath, _ := LogFile()
+	return &Status{
+		Running: IsRunning(pid),
+		PID:     pid,
+		LogPath: logPath,
+	}, nil
+}
+
+// Start launches the daemon as a detached background process.
+// It re-execs the current binary with the given args, redirecting
+// stdout and stderr to the log file.
+func Start(args []string) (int, error) {
+	// Check if already running
+	status, err := GetStatus()
+	if err != nil {
+		return 0, err
+	}
+	if status.Running {
+		return status.PID, fmt.Errorf("daemon is already running (PID %d)", status.PID)
+	}
+
+	logPath, err := LogFile()
+	if err != nil {
+		return 0, err
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return 0, fmt.Errorf("cannot open log file: %w", err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("cannot find executable: %w", err)
+	}
+
+	cmd := exec.Command(exe, args...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true, // Detach from terminal session
+	}
+	// Don't inherit stdin
+	cmd.Stdin = nil
+
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		return 0, fmt.Errorf("cannot start daemon: %w", err)
+	}
+	logFile.Close()
+
+	pid := cmd.Process.Pid
+
+	// Write PID file
+	pidPath, err := PIDFile()
+	if err != nil {
+		return pid, err
+	}
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+		return pid, fmt.Errorf("cannot write PID file: %w", err)
+	}
+
+	// Release the child process so it doesn't become a zombie
+	_ = cmd.Process.Release()
+
+	return pid, nil
+}
+
+// Stop sends SIGTERM to the daemon and waits for it to exit.
+func Stop() error {
+	pid, err := ReadPID()
+	if err != nil {
+		return err
+	}
+	if pid == 0 {
+		return fmt.Errorf("no daemon PID file found")
+	}
+	if !IsRunning(pid) {
+		// Stale PID file
+		_ = RemovePID()
+		return fmt.Errorf("daemon is not running (stale PID %d)", pid)
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("cannot find process %d: %w", pid, err)
+	}
+
+	// Send SIGTERM for graceful shutdown
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		return fmt.Errorf("cannot send SIGTERM to PID %d: %w", pid, err)
+	}
+
+	// Wait up to 10 seconds for the process to exit
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if !IsRunning(pid) {
+			_ = RemovePID()
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Force kill
+	_ = proc.Signal(syscall.SIGKILL)
+	_ = RemovePID()
+	return nil
+}

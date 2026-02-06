@@ -75,3 +75,9 @@ Thumbs.db
 *.swp
 *.swo
 *.swn
+
+# Claude Code
+.claude/
+
+# Compiled binary
+/codefly
