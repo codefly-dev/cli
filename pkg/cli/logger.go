@@ -8,7 +8,7 @@ import (
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 type Logger struct {

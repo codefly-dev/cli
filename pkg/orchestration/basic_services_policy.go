@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/architecture"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 func BasicNext(ctx context.Context, dependencies *architecture.ServiceDependencies, change *OutputProperty, action Action, nextType ActionType) ([]Action, error) {

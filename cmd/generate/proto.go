@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/core/companions/proto"
 	runners "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 

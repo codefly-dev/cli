@@ -11,8 +11,6 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/codefly-dev/core v0.1.143
 	github.com/codefly-dev/golor v0.1.3
-	github.com/codefly-dev/wool v0.0.0
-	github.com/codefly-dev/wool/otel v0.0.0-00010101000000-000000000000
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/docker/docker v27.3.1+incompatible
 	github.com/fatih/color v1.18.0
@@ -178,8 +176,4 @@ require (
 	modernc.org/token v1.1.0 // indirect
 )
 
-replace github.com/codefly-dev/core => ../core
 
-replace github.com/codefly-dev/wool => ../wool
-
-replace github.com/codefly-dev/wool/otel => ../wool/otel

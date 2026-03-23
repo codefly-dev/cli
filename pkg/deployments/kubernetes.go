@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 func GetK8sConfig(ctx context.Context, env *resources.Environment) (string, error) {

@@ -8,7 +8,7 @@ import (
 	"github.com/codefly-dev/core/languages"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 func OpenAPI(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, language languages.Language, destination string) error {

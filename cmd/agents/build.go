@@ -142,8 +142,8 @@ var monorepoModules = []struct {
 	Module string
 	SubDir string
 }{
-	{"github.com/codefly-dev/wool/otel", "wool/otel"},
-	{"github.com/codefly-dev/wool", "wool"},
+	{"github.com/codefly-dev/core/wool/otel", "wool/otel"},
+	{"github.com/codefly-dev/core/wool", "wool"},
 	{"github.com/codefly-dev/core", "core"},
 }
 

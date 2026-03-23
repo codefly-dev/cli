@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/builder"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 type BuildExecutor struct {

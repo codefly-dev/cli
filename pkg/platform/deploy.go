@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
-	"github.com/codefly-dev/core/cli"
+	"github.com/codefly-dev/core/sdk"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -57,7 +57,7 @@ func (d *DeploymentManager) Deploy(ctx context.Context, workspace *resources.Wor
 	c := http.Client{Timeout: 5 * time.Second}
 
 	for _, deploy := range d.deployments {
-		proto, err := cli.SerializeDirectory(deploy.OutputPath, []string{".yaml"})
+		proto, err := sdk.SerializeDirectory(deploy.OutputPath, []string{".yaml"})
 		if err != nil {
 			return w.Wrapf(err, "cannot serialize workspace")
 		}

@@ -6,7 +6,7 @@ import (
 	"github.com/codefly-dev/core/architecture"
 
 	"github.com/codefly-dev/cli/pkg/builder"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 type BuildPolicy struct {

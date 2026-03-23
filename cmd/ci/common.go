@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 // Silent services in the CLI

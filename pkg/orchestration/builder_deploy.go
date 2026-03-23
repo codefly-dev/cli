@@ -6,7 +6,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {

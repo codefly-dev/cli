@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 	git "github.com/go-git/go-git/v5"
 )
 

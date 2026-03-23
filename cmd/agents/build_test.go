@@ -70,7 +70,7 @@ require (
 		t.Fatalf("write go.mod: %v", err)
 	}
 
-	if !goModRequires(dir, "github.com/codefly-dev/wool") {
+	if !goModRequires(dir, "github.com/codefly-dev/core/wool") {
 		t.Error("goModRequires(wool) = false, want true")
 	}
 	if !goModRequires(dir, "github.com/codefly-dev/core") {
@@ -87,7 +87,7 @@ require (
 func TestGoModRequires_NoGoMod(t *testing.T) {
 	dir := t.TempDir()
 	// No go.mod file
-	if goModRequires(dir, "github.com/codefly-dev/wool") {
+	if goModRequires(dir, "github.com/codefly-dev/core/wool") {
 		t.Error("goModRequires with no go.mod = true, want false")
 	}
 }

@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/core/agents/manager"
 	resources "github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 func GetAgent(ctx context.Context, input string) (*resources.Agent, error) {

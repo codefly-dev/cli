@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	resources "github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 type cancelContextKey struct{}

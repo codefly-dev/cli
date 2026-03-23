@@ -15,7 +15,7 @@ import (
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
 )
 

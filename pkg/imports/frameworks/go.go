@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 	"golang.org/x/mod/modfile"
 )
 

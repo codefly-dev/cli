@@ -8,7 +8,7 @@ import (
 	coreservices "github.com/codefly-dev/core/agents/services"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 // registerSymbolTools adds LSP-backed symbol intelligence tools to the MCP server.

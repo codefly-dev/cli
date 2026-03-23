@@ -10,7 +10,7 @@ import (
 
 	corecode "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/wool"
+	"github.com/codefly-dev/core/wool"
 )
 
 // ToolHandler is the signature for tool implementations
