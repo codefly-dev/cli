@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 
+	corecode "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/wool"
 )
@@ -21,6 +22,7 @@ type ResourceHandler func(ctx context.Context) ([]ResourceContents, error)
 // Server implements the MCP server
 type Server struct {
 	workspace *resources.Workspace
+	vfs       corecode.VFS
 	tools     map[string]ToolHandler
 	toolDefs  []Tool
 	resources map[string]ResourceHandler
@@ -28,11 +30,15 @@ type Server struct {
 	version   string
 }
 
+// WithVFS sets the VFS for file operations. If not set, falls back to os calls.
+func WithVFS(vfs corecode.VFS) func(*Server) {
+	return func(s *Server) { s.vfs = vfs }
+}
+
 // NewServer creates a new MCP server
-func NewServer(ctx context.Context, version string) (*Server, error) {
+func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Server, error) {
 	w := wool.Get(ctx).In("mcp.NewServer")
 
-	// Try to load workspace from current directory
 	ws, err := resources.LoadWorkspaceFromDir(ctx, ".")
 	if err != nil {
 		w.Debug("no workspace loaded, running in limited mode", wool.ErrField(err))
@@ -46,8 +52,12 @@ func NewServer(ctx context.Context, version string) (*Server, error) {
 		resDefs:   []Resource{},
 		version:   version,
 	}
+	for _, o := range opts {
+		o(s)
+	}
 
 	s.registerTools()
+	s.registerSymbolTools()
 	s.registerResources()
 	return s, nil
 }

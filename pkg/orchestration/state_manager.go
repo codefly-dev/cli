@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"sync"
 
 	"github.com/codefly-dev/core/architecture"
 	providers "github.com/codefly-dev/core/configurations"
@@ -12,6 +13,8 @@ import (
 
 // StateManager holds the data that needs to be shared between services
 type StateManager struct {
+	mu sync.RWMutex
+
 	configurationManager *providers.Manager
 	dependencies         *architecture.ServiceDependencies
 
@@ -86,7 +89,9 @@ func (s *StateManager) RecordEndpoints(ctx context.Context, service *resources.S
 	}
 	w := wool.Get(ctx).In("StateManager.RecordEndpoints", wool.ThisField(service))
 	w.Debug("record endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(endpoints)))
+	s.mu.Lock()
 	s.endpoints[service.Unique()] = endpoints
+	s.mu.Unlock()
 	return nil
 }
 
@@ -96,10 +101,12 @@ func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *re
 		return nil, nil
 	}
 	w := wool.Get(ctx).In("StateManager.GetDependenciesEndpoints", wool.ThisField(resources.WithUnique(service)))
+	s.mu.RLock()
 	var endpoints []*basev0.Endpoint
 	for _, req := range service.ServiceDependencies {
 		endpoints = append(endpoints, s.endpoints[req.Unique()]...)
 	}
+	s.mu.RUnlock()
 	w.Debug("got dependencies endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(endpoints)))
 	return endpoints, nil
 }
@@ -109,10 +116,14 @@ func (s *StateManager) GetNetworkMappings(_ context.Context, service *resources.
 	if s == nil {
 		return nil, nil
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.networkMappings[service.Unique()], nil
 }
 
 func (s *StateManager) GetNetworkMappingsFromUnique(unique string) ([]*basev0.NetworkMapping, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	mappings, ok := s.networkMappings[unique]
 	return mappings, ok
 }
@@ -123,10 +134,12 @@ func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, servi
 		return nil, nil
 	}
 	w := wool.Get(ctx).In("StateManager.GetDependenciesNetworkMappings", wool.ThisField(resources.WithUnique(service)))
+	s.mu.RLock()
 	var mappings []*basev0.NetworkMapping
 	for _, req := range service.ServiceDependencies {
 		mappings = append(mappings, s.networkMappings[req.Unique()]...)
 	}
+	s.mu.RUnlock()
 	w.Debug("got network mappings", wool.Field("mappings", resources.MakeManyNetworkMappingSummary(mappings)))
 	return mappings, nil
 }
@@ -142,6 +155,8 @@ func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *resou
 	if err != nil {
 		return w.Wrapf(err, "cannot get service identity")
 	}
+	s.mu.Lock()
 	s.networkMappings[id.Unique()] = mappings
+	s.mu.Unlock()
 	return nil
 }

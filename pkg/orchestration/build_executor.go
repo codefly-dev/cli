@@ -22,6 +22,9 @@ func (b *BuildExecutor) GetExecutor(ctx context.Context, action Action) (OutputP
 		return nil, w.Wrap(err)
 	}
 	helper, err := b.Helper(action)
+	if err != nil {
+		return nil, err
+	}
 
 	switch action.Type {
 	case BuilderBegin:

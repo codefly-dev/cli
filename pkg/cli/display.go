@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/golor"
 )
-
-// Deal with templates the same way as golor
 
 type Wrapper struct {
 	template any
@@ -34,8 +32,7 @@ func (wrapper *Wrapper) Header(level int, s string, args ...any) {
 	case 2:
 		theme = "#(bold,blue)"
 	}
-	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+	fmt.Println(tui.RenderHeader(level, wrapper.View(theme, s, args...)))
 }
 
 func Header(level int, s string, args ...any) {
@@ -45,8 +42,7 @@ func Header(level int, s string, args ...any) {
 
 func (wrapper *Wrapper) Warning(s string, args ...any) {
 	theme := "⚠️ #(bold,magenta)"
-	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+	fmt.Println(tui.RenderWarning(wrapper.View(theme, s, args...)))
 }
 
 func Warning(s string, args ...any) {
@@ -56,8 +52,7 @@ func Warning(s string, args ...any) {
 
 func (wrapper *Wrapper) Trace(s string, args ...any) {
 	theme := "#(italic,green)"
-	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+	fmt.Println(tui.RenderTrace(wrapper.View(theme, s, args...)))
 }
 
 func Trace(s string, args ...any) {
@@ -67,8 +62,7 @@ func Trace(s string, args ...any) {
 
 func (wrapper *Wrapper) Debug(s string, args ...any) {
 	theme := "#(green)"
-	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+	fmt.Println(tui.RenderDebug(wrapper.View(theme, s, args...)))
 }
 
 func Debug(s string, args ...any) {
@@ -78,8 +72,7 @@ func Debug(s string, args ...any) {
 
 func (wrapper *Wrapper) Info(s string, args ...any) {
 	theme := "#(magenta)"
-	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+	fmt.Println(tui.RenderInfo(wrapper.View(theme, s, args...)))
 }
 
 func Info(s string, args ...any) {
@@ -89,14 +82,12 @@ func Info(s string, args ...any) {
 
 func (wrapper *Wrapper) Error(s string, args ...any) {
 	theme := "☠️ #(bold,red)"
-	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+	fmt.Println(tui.RenderError(wrapper.View(theme, s, args...)))
 }
 
 func (wrapper *Wrapper) ErrorDetail(s string, args ...any) {
 	theme := "#(bold,red)"
-	style := lipgloss.NewStyle()
-	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+	fmt.Println(tui.RenderErrorDetail(wrapper.View(theme, s, args...)))
 }
 
 func Error(s string, args ...any) {
@@ -111,8 +102,7 @@ func ErrorDetail(s string, args ...any) {
 
 func (wrapper *Wrapper) Focus(s string, args ...any) {
 	theme := "#(bold,red)"
-	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
-	fmt.Println(style.Render(wrapper.View(theme, s, args...)))
+	fmt.Println(tui.RenderFocus(wrapper.View(theme, s, args...)))
 }
 
 func Focus(s string, args ...any) {

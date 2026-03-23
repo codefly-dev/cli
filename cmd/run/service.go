@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
+	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/wool"
 	"github.com/spf13/cobra"
 )
@@ -43,46 +44,68 @@ var ServiceCmd = &cobra.Command{
 
 		common.WithSilence(ctx, workspace, silent)
 
-		errs := make(chan error, 1) // Buffered channel
-
 		if withCLIServer {
 			server, err := web.NewServer(web.ServerData{Workspace: workspace})
 			cli.ExitOnError(err, "cannot create web server")
 			go func() {
-				errs <- server.Start(ctx)
+				_ = server.Start(ctx)
 			}()
 		}
 
-		flow, err := initRunService(ctx, workspace, module, service)
-		if err != nil {
-			err = errors.Unwrap(err)
-			cli.ExitOnError(err, "Cannot init flow")
-		}
-		go func() {
-			errs <- runService(ctx, flow)
-		}()
+		serviceName := resources.WithUnique(service).Unique()
 
-	loop:
-		for {
-			select {
-			case err := <-errs:
+		var flow *orchestration.Flow
+
+		if withCLIServer {
+			// Headless mode: no TUI (for tests and programmatic use)
+			var err error
+			flow, err = initRunService(ctx, workspace, module, service)
+			if err != nil {
+				cli.Error("init failed: %v", errors.Unwrap(err))
+				cli.Exit()
+				return
+			}
+			err = runService(ctx, flow)
+			if err != nil {
+				cli.Error("run failed: %v", err)
+				cli.Exit()
+				return
+			}
+			<-ctx.Done()
+		} else {
+			// Interactive mode: TUI
+			logCh := tui.NewLogChannel()
+			cli.SuppressOutput()
+
+			tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
+				t.SendState(serviceName, tui.StateLoading)
+
+				var err error
+				flow, err = initRunService(ctx, workspace, module, service)
 				if err != nil {
-					cli.Error("Got service run error: %v\n", errors.Unwrap(err))
+					err = errors.Unwrap(err)
+					t.SendError(err)
+					return
 				}
-				errs <- nil
-				break loop
-			case <-ctx.Done():
-				cli.Header(2, "Got context.Cancel: Exiting...")
-				break loop
+
+				t.SendState(serviceName, tui.StateStarting)
+
+				err = runService(ctx, flow)
+				if err != nil {
+					t.SendError(err)
+					return
+				}
+
+				t.SendReady(serviceName, 0)
+				<-ctx.Done()
+				t.SendDone(nil)
+			})
+			if tuiErr != nil {
+				cli.Error("TUI error: %v", tuiErr)
 			}
 		}
-		stopped := <-errs
-		if stopped != nil {
-			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
-		}
-		err = stopService(ctx, flow)
-		cli.ExitOnError(err, "Cannot stop flow")
-		cli.Header(1, "Work done!")
+
+		_ = stopService(ctx, flow)
 		cli.Exit()
 	},
 }

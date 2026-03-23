@@ -6,6 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	resources "github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/tui"
 )
 
 var _active *ActiveContext
@@ -22,7 +23,6 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 	}
 	active := &ActiveContext{}
 
-	// Override path
 	workspace, err := resources.FindWorkspaceUp(ctx)
 	if err != nil {
 		return nil, err
@@ -33,7 +33,6 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 	}
 	active.Workspace = workspace
 
-	// If in Flat layout, load module automatically
 	if workspace.Layout == resources.LayoutKindFlat {
 		module, err := workspace.LoadModuleFromName(ctx, workspace.Name)
 		if err != nil {
@@ -54,8 +53,69 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 		active.Module = module
 		active.Service = service
 	}
+
+	if active.Service == nil {
+		active.Service, active.Module, err = autoResolveService(ctx, workspace)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	_active = active
 	return active, nil
+}
+
+// autoResolveService picks a service when the user isn't inside a service
+// folder. If exactly one service exists, it's selected automatically.
+// If multiple exist, an interactive prompt lets the user choose.
+func autoResolveService(ctx context.Context, workspace *resources.Workspace) (*resources.Service, *resources.Module, error) {
+	services, err := workspace.LoadServices(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(services) == 0 {
+		return nil, nil, nil
+	}
+
+	var picked *resources.Service
+	if len(services) == 1 {
+		picked = services[0]
+	} else {
+		entries := make([]*tui.Entry, len(services))
+		for i, svc := range services {
+			entries[i] = &tui.Entry{Identifier: svc.Name}
+		}
+		result, selectErr := tui.RunSelect("Multiple services found — pick one:", entries)
+		if selectErr != nil {
+			return nil, nil, selectErr
+		}
+		if result.Stopped {
+			cli.Exit()
+		}
+		for _, svc := range services {
+			if svc.Name == result.Entry.Identifier {
+				picked = svc
+				break
+			}
+		}
+	}
+	if picked == nil {
+		return nil, nil, nil
+	}
+
+	for _, modRef := range workspace.Modules {
+		mod, loadErr := workspace.LoadModuleFromReference(ctx, modRef)
+		if loadErr != nil {
+			continue
+		}
+		for _, svcRef := range mod.ServiceReferences {
+			if svcRef.Name == picked.Name {
+				picked.WithModule(mod.Name)
+				return picked, mod, nil
+			}
+		}
+	}
+	return picked, nil, nil
 }
 
 func Service(ctx context.Context) *resources.Service {

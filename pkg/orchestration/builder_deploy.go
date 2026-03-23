@@ -2,12 +2,10 @@ package orchestration
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/wool"
 )
 
@@ -34,8 +32,6 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
-
-	fmt.Println("NETWORK MAPPINGS", resources.MakeManyNetworkMappingSummary(networkMappings))
 
 	err = b.world.SharedState.RecordNetworkMappings(ctx, b.instance.Service, networkMappings)
 	if err != nil {

@@ -26,10 +26,16 @@ var WorkspaceCmd = &cobra.Command{
 		}
 		if len(args) == 1 {
 			name := args[0]
+			cli.SetWithDefault(withDefault)
 			newWorkspace(name)
 		}
 	},
 }
+
+var (
+	layout      string
+	withDefault bool
+)
 
 func newWorkspace(name string) {
 	ctx, done := common.NewContext()
@@ -43,12 +49,13 @@ func newWorkspace(name string) {
 		cli.Header(2, "Received loud and clear!")
 	}
 
-	// What style for the workspace
-	entries := []*models.Entry{
-		{Identifier: resources.LayoutKindFlat, Description: "Flat layout (no modules), good for simple projects", Current: true},
-		{Identifier: resources.LayoutKindModules, Description: "Modules layout, good for complex projects with multiple components"},
-	}
-	choice, err := models.Choice(ctx, `Choose the style of the workspace:
+	selectedLayout := layout
+	if selectedLayout == "" {
+		entries := []*models.Entry{
+			{Identifier: resources.LayoutKindFlat, Description: "Flat layout (no modules), good for simple projects", Current: true},
+			{Identifier: resources.LayoutKindModules, Description: "Modules layout, good for complex projects with multiple components"},
+		}
+		choice, choiceErr := models.Choice(ctx, `Choose the style of the workspace:
 
 For very simple projects, pick a flat layout where all services are in the root module:
 
@@ -77,11 +84,14 @@ workspace/
 |           ├── 📂 ${frontend}
 |           └── 📂 ${api}
 `, entries)
-	cli.ExitOnError(err, "Cannot get choice")
+		cli.ExitOnError(choiceErr, "Cannot get choice")
+		selectedLayout = choice.Identifier
+	}
+
 	var action actions.Action
 	action, err = actionsworkspace.NewActionNewWorkspace(ctx, &actionsworkspace.NewWorkspace{
 		Name:   name,
-		Layout: choice.Identifier,
+		Layout: selectedLayout,
 		Path:   cur,
 	})
 	cli.ExitOnError(err, "cannot create action")
@@ -101,4 +111,6 @@ workspace/
 
 func init() {
 	WorkspaceCmd.PersistentFlags().BoolVarP(&interactive, "interactive", "i", false, "interactive mode")
+	WorkspaceCmd.PersistentFlags().StringVar(&layout, "layout", "", "workspace layout: flat or modules")
+	WorkspaceCmd.PersistentFlags().BoolVar(&withDefault, "default", false, "use default values for all prompts")
 }

@@ -7,12 +7,12 @@ import (
 	"os/signal"
 	"strings"
 
-	"github.com/charmbracelet/glamour"
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/communicate"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/services"
+	"github.com/codefly-dev/core/tui"
 
 	actionsservice "github.com/codefly-dev/core/actions/service"
 	"github.com/codefly-dev/core/resources"
@@ -132,7 +132,7 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	// Show some information: Read me
 	// TODO: Configuration output
-	rendered, err := glamour.Render(output.ReadMe, "dark")
+	rendered, err := tui.RenderMarkdown(output.ReadMe, "dark")
 	if err != nil {
 		return w.Wrapf(err, "cannot render info README")
 	}

@@ -380,7 +380,7 @@ func (flow *Flow) Sync(ctx context.Context) error {
 }
 
 func (flow *Flow) Deploy(ctx context.Context) error {
-	w := wool.Get(ctx).In("flow.Sync")
+	w := wool.Get(ctx).In("flow.Deploy")
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
 		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
@@ -404,8 +404,8 @@ func (flow *Flow) Stop() error {
 	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
 	var res error
-	for _, manager := range flow.hub.managers {
-		_, err := manager.RunnerDoStop(stoppedContext)
+	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
+		_, err := flow.hub.managers[i].RunnerDoStop(stoppedContext)
 		if err != nil {
 			w.Debug("got error", wool.ErrField(err))
 			res = multierror.Append(res, err)
@@ -423,8 +423,8 @@ func (flow *Flow) Shutdown() error {
 	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
 	var res error
-	for _, manager := range flow.hub.managers {
-		_, err := manager.RunnerDoDestroy(stoppedContext)
+	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
+		_, err := flow.hub.managers[i].RunnerDoDestroy(stoppedContext)
 		if err != nil {
 			w.Debug("got error", wool.ErrField(err))
 			res = multierror.Append(res, err)

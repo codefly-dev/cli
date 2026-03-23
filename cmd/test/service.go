@@ -11,11 +11,11 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
+	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/wool"
 	"github.com/spf13/cobra"
 )
 
-// ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Test a service",
@@ -31,45 +31,44 @@ var ServiceCmd = &cobra.Command{
 
 		workspace, module, service := common.LoadRequired(ctx, args)
 
-		errs := make(chan error, 1) // Buffered channel
+		logCh := tui.NewLogChannel()
+		cli.SuppressOutput()
+		serviceName := resources.WithUnique(service).Unique()
 
-		flow, err := initRunService(ctx, workspace, module, service)
-		if err != nil {
-			err = errors.Unwrap(err)
-			cli.ExitOnError(err, "Cannot init flow")
-		}
-		go func() {
-			errs <- testService(ctx, flow)
-		}()
+		var flow *orchestration.Flow
 
-	loop:
-		for {
-			select {
-			case err := <-errs:
-				if err != nil {
-					cli.Error("Got service run error: %v\n", errors.Unwrap(err))
-				}
-				errs <- nil
-				break loop
-			case <-ctx.Done():
-				cli.Header(2, "Got context.Cancel: Exiting...")
-				break loop
+		tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
+			t.SendState(serviceName, tui.StateLoading)
+
+			var err error
+			flow, err = initRunService(ctx, workspace, module, service)
+			if err != nil {
+				err = errors.Unwrap(err)
+				t.SendError(err)
+				return
 			}
+
+			t.SendState(serviceName, tui.StateTesting)
+
+			err = testService(ctx, flow)
+			if err != nil {
+				t.SendError(err)
+				return
+			}
+
+			t.SendDone(nil)
+		})
+		if tuiErr != nil {
+			cli.Error("TUI error: %v", tuiErr)
 		}
-		stopped := <-errs
-		if stopped != nil {
-			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
-		}
-		err = stopService(ctx, flow)
-		cli.ExitOnError(err, "Cannot stop flow")
-		cli.Header(1, "Work done!")
+
+		_ = stopService(ctx, flow)
 		cli.Exit()
 	},
 }
 
 func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("testService", wool.ThisField(resources.WithUnique(service)))
-	// Catch panic
 	defer w.Catch()
 
 	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
@@ -97,7 +96,6 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 }
 
 func testService(ctx context.Context, flow *orchestration.Flow) error {
-	// Catch panic
 	w := wool.Get(ctx).In("testService")
 	defer w.Catch()
 	err := flow.Start(ctx)
@@ -108,7 +106,6 @@ func testService(ctx context.Context, flow *orchestration.Flow) error {
 }
 
 func stopService(ctx context.Context, flow *orchestration.Flow) error {
-	// Catch panic
 	w := wool.Get(ctx).In("stopService")
 	defer w.Catch()
 	if flow == nil {

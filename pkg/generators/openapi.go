@@ -13,7 +13,7 @@ import (
 
 func OpenAPI(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, language languages.Language, destination string) error {
 	w := wool.Get(ctx).In("generateOpenAPIs", wool.ThisField(resources.WithUnique(service)))
-	endpoints, err := getOpenAPIEndpoints(ctx, module, service)
+	endpoints, err := getOpenAPIEndpoints(ctx, workspace, module, service)
 	if err != nil {
 		return w.Wrapf(err, "cannot get OpenAPI endpoints")
 	}
@@ -24,10 +24,10 @@ func OpenAPI(ctx context.Context, workspace *resources.Workspace, module *resour
 	return nil
 }
 
-func getOpenAPIEndpoints(ctx context.Context, module *resources.Module, service *resources.Service) ([]*basev0.Endpoint, error) {
+func getOpenAPIEndpoints(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) ([]*basev0.Endpoint, error) {
 	w := wool.Get(ctx).In("getOpenAPIEndpoints")
 	// Use the Builder
-	instance, err := services.Load(ctx, module, service)
+	instance, err := services.Load(ctx, workspace, module, service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load builder")
 	}

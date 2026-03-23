@@ -135,7 +135,7 @@ func New(ctx context.Context, module *resources.Module, service *resources.Servi
 func (manager *Manager) Load(ctx context.Context) error {
 	w := wool.Get(ctx).In("hub.New", wool.ThisField(manager))
 
-	instance, err := services.Load(ctx, manager.module, manager.service)
+	instance, err := services.Load(ctx, manager.world.Workspace, manager.module, manager.service)
 	if err != nil {
 		return w.Wrapf(err, "cannot load service instance")
 	}

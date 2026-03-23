@@ -104,6 +104,103 @@ func (s *Server) registerTools() {
 			},
 		},
 	}, s.listJobs)
+
+	// Per-service tools for Mind (design 013)
+	s.RegisterTool(Tool{
+		Name:        "describe",
+		Description: "Get service metadata: name, type, language, file list (for Mind agent)",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+			},
+			Required: []string{"module", "service"},
+		},
+	}, s.describe)
+
+	s.RegisterTool(Tool{
+		Name:        "read_file",
+		Description: "Read a file from the service directory (path relative to service)",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+				"path":    {Type: "string", Description: "Relative path within the service"},
+			},
+			Required: []string{"module", "service", "path"},
+		},
+	}, s.readFile)
+
+	s.RegisterTool(Tool{
+		Name:        "write_file",
+		Description: "Write content to a file in the service directory",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+				"path":    {Type: "string", Description: "Relative path within the service"},
+				"content": {Type: "string", Description: "File content"},
+			},
+			Required: []string{"module", "service", "path", "content"},
+		},
+	}, s.writeFile)
+
+	s.RegisterTool(Tool{
+		Name:        "list_symbols",
+		Description: "List code symbols (functions, types, etc.) from the service via LSP",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+				"file":    {Type: "string", Description: "Optional: restrict to one file (relative path)"},
+			},
+			Required: []string{"module", "service"},
+		},
+	}, s.listSymbols)
+
+	s.RegisterTool(Tool{
+		Name:        "build",
+		Description: "Build the service via the plugin (builder)",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+			},
+			Required: []string{"module", "service"},
+		},
+	}, s.build)
+
+	s.RegisterTool(Tool{
+		Name:        "run_checks",
+		Description: "Run a command in the service directory (e.g. go test ./...). Optional 'command' arg; default: go test ./...",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":   {Type: "string", Description: "Module name"},
+				"service":  {Type: "string", Description: "Service name"},
+				"command":  {Type: "string", Description: "Command to run (default: go test ./...)"},
+			},
+			Required: []string{"module", "service"},
+		},
+	}, s.runChecks)
+
+	s.RegisterTool(Tool{
+		Name:        "stop",
+		Description: "Stop the service runtime if running",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+			},
+			Required: []string{"module", "service"},
+		},
+	}, s.stop)
 }
 
 // workspaceInfo returns information about the current workspace

@@ -81,7 +81,6 @@ var (
 	focus   bool
 	debug   bool
 	trace   bool
-	todo    bool
 	tracker string
 )
 
@@ -157,8 +156,5 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
-	RootCmd.PersistentFlags().BoolVar(&todo, "todo", false, "Print TODOs")
 	RootCmd.PersistentFlags().StringVar(&tracker, "track", "", "Tracker of actions -- advanced usage")
-
-	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }

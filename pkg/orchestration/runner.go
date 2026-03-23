@@ -78,7 +78,7 @@ func NewRunner(ctx context.Context, instance *services.Instance, world *World) (
 		outputPropertyForStart: NewRunnerStartManager(instance.Unique()),
 		outputPropertyForTest:  NewRunnerTestManager(instance.Unique()),
 
-		stopped: make(chan struct{}),
+		stopped: make(chan struct{}, 1),
 	}
 	return runner, nil
 }
@@ -383,7 +383,7 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot set outputProperty for start")
 	}
 
-	outputProperty, err := runner.outputPropertyForLoad.Process(ctx)
+	outputProperty, err := runner.outputPropertyForTest.Process(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty for start")
 	}
@@ -448,13 +448,15 @@ func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
 func (runner *Runner) Follow(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Follow", wool.ThisField(runner.instance))
 	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-runner.stopped:
 				if !runner.restart {
 					return
 				}
-			default:
+			case <-ticker.C:
 				info, err := runner.instance.Runtime.Information(ctx, &runtimev0.InformationRequest{})
 				if err != nil {
 					if !ContextCancelled(err) {
@@ -481,7 +483,6 @@ func (runner *Runner) Follow(ctx context.Context) error {
 						return
 					}
 				}
-				time.Sleep(1000 * time.Millisecond)
 			}
 		}
 	}()
