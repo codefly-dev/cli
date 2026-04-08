@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/agents"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -27,6 +28,12 @@ func NewContext() (context.Context, func()) {
 	provider := wool.New(ctx, resources.CLI.AsResource())
 
 	provider.WithLogger(cli.GetLogger())
+
+	// Enable file logging to ~/.codefly/logs/<date>.log
+	cli.EnableFileLogging()
+	if fl := cli.GetFileLogger(); fl != nil {
+		agents.AddProcessor(fl)
+	}
 
 	ctx = provider.Inject(ctx)
 	return ctx, provider.Done
