@@ -602,6 +602,8 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		}
 		flow.services = append(flow.services, flow.originService)
 		manager.Runner.WithRuntimeContext(flow.runtimeContext)
+		manager.Runner.WithFixture(flow.fixture)
+		manager.Runner.WithOutputEnv(flow.outputEnvPath)
 		if remote, ok := remotes[resources.WithUnique(flow.originService).Unique()]; ok {
 			manager.Runner.WithRemote(remote.Environment)
 		}

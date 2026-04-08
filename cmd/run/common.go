@@ -3,6 +3,9 @@ package run
 // Run codefly frontend companion
 var withCLIServer bool
 
+// Headless mode: no TUI, plain log output (auto-enabled when no TTY)
+var headless bool
+
 // Path where to find the service
 var servicePath string
 
@@ -36,3 +39,4 @@ var loadOnly bool
 
 // init only mode
 var initOnly bool
+

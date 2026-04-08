@@ -12,3 +12,6 @@ var loadOnly bool
 
 // init only mode
 var initOnly bool
+
+// headless mode
+var headless bool

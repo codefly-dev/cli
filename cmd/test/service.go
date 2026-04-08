@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var ServiceCmd = &cobra.Command{
@@ -30,36 +32,54 @@ var ServiceCmd = &cobra.Command{
 		cli.RegisterCleanup(services.ClearAgents)
 
 		workspace, module, service := common.LoadRequired(ctx, args)
-
-		logCh := tui.NewLogChannel()
-		cli.SuppressOutput()
 		serviceName := resources.WithUnique(service).Unique()
+		isHeadless := headless || !term.IsTerminal(int(os.Stdout.Fd()))
 
 		var flow *orchestration.Flow
 
-		tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
-			t.SendState(serviceName, tui.StateLoading)
-
+		if isHeadless {
+			fmt.Printf("[codefly] Testing service %s (headless mode)\n", serviceName)
 			var err error
 			flow, err = initRunService(ctx, workspace, module, service)
 			if err != nil {
-				err = errors.Unwrap(err)
-				t.SendError(err)
+				cli.Error("init failed: %v", errors.Unwrap(err))
+				cli.Exit()
 				return
 			}
-
-			t.SendState(serviceName, tui.StateTesting)
-
 			err = testService(ctx, flow)
 			if err != nil {
-				t.SendError(err)
-				return
+				cli.Error("test failed: %v", err)
+			} else {
+				fmt.Printf("[codefly] Tests passed for %s\n", serviceName)
 			}
+		} else {
+			logCh := tui.NewLogChannel()
+			cli.SuppressOutput()
 
-			t.SendDone(nil)
-		})
-		if tuiErr != nil {
-			cli.Error("TUI error: %v", tuiErr)
+			tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
+				t.SendState(serviceName, tui.StateLoading)
+
+				var err error
+				flow, err = initRunService(ctx, workspace, module, service)
+				if err != nil {
+					err = errors.Unwrap(err)
+					t.SendError(err)
+					return
+				}
+
+				t.SendState(serviceName, tui.StateTesting)
+
+				err = testService(ctx, flow)
+				if err != nil {
+					t.SendError(err)
+					return
+				}
+
+				t.SendDone(nil)
+			})
+			if tuiErr != nil {
+				cli.Error("TUI error: %v", tuiErr)
+			}
 		}
 
 		_ = stopService(ctx, flow)
@@ -124,4 +144,5 @@ func init() {
 	ServiceCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
+	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY)")
 }

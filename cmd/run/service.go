@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -54,10 +55,15 @@ var ServiceCmd = &cobra.Command{
 
 		serviceName := resources.WithUnique(service).Unique()
 
+		// Auto-detect headless: no TTY or explicit --headless flag
+		isHeadless := headless || withCLIServer || !isTerminal()
+
 		var flow *orchestration.Flow
 
-		if withCLIServer {
-			// Headless mode: no TUI (for tests and programmatic use)
+		if isHeadless {
+			// Headless mode: plain log output, no TUI
+			// Works in: MCP, Claude Code, CI, Docker, pipes, scripts
+			fmt.Printf("[codefly] Starting service %s (headless mode)\n", serviceName)
 			var err error
 			flow, err = initRunService(ctx, workspace, module, service)
 			if err != nil {
@@ -65,12 +71,19 @@ var ServiceCmd = &cobra.Command{
 				cli.Exit()
 				return
 			}
+			fmt.Printf("[codefly] Service initialized, starting...\n")
 			err = runService(ctx, flow)
 			if err != nil {
 				cli.Error("run failed: %v", err)
 				cli.Exit()
 				return
 			}
+			fmt.Printf("[codefly] Service %s is running\n", serviceName)
+
+			if withCLIServer {
+				// Keep running with CLI server
+			}
+
 			<-ctx.Done()
 		} else {
 			// Interactive mode: TUI
@@ -110,6 +123,16 @@ var ServiceCmd = &cobra.Command{
 	},
 }
 
+// isTerminal checks if stdout is connected to a terminal.
+// Returns false in: MCP, Claude Code, CI, Docker, piped output.
+func isTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
 func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("runService", wool.ThisField(resources.WithUnique(service)))
 	// Catch panic
@@ -141,6 +164,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
+	fmt.Printf("[DEBUG CLI] fixture=%q\n", fixture)
 	flow.WithFixture(fixture)
 	flow.WithRemotes(remoteServices)
 
@@ -213,4 +237,5 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")
+	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)")
 }
