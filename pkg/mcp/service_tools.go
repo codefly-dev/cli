@@ -11,6 +11,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -282,4 +283,71 @@ func runCommandInDir(ctx context.Context, dir, command string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// listServiceCommands returns commands registered by the service agent.
+func (s *Server) listServiceCommands(ctx context.Context, args map[string]string) ([]Content, error) {
+	_, instance, err := s.getServiceAndInstance(ctx, args["module"], args["service"])
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := instance.Agent.ListCommands(ctx, &agentv0.ListCommandsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("cannot list commands: %w", err)
+	}
+
+	type cmdInfo struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Usage       string   `json:"usage,omitempty"`
+		Tags        []string `json:"tags,omitempty"`
+		Destructive bool     `json:"destructive,omitempty"`
+	}
+	var commands []cmdInfo
+	for _, cmd := range resp.Commands {
+		commands = append(commands, cmdInfo{
+			Name:        cmd.Name,
+			Description: cmd.Description,
+			Usage:       cmd.Usage,
+			Tags:        cmd.Tags,
+			Destructive: cmd.Destructive,
+		})
+	}
+	data, _ := json.MarshalIndent(commands, "", "  ")
+	return []Content{TextContent(string(data))}, nil
+}
+
+// runServiceCommand executes a command on the service agent.
+func (s *Server) runServiceCommand(ctx context.Context, args map[string]string) ([]Content, error) {
+	_, instance, err := s.getServiceAndInstance(ctx, args["module"], args["service"])
+	if err != nil {
+		return nil, err
+	}
+
+	command := args["command"]
+	if command == "" {
+		return nil, fmt.Errorf("command is required")
+	}
+
+	var cmdArgs []string
+	if argsStr := args["args"]; argsStr != "" {
+		// Try JSON array first, fall back to space-separated
+		if err := json.Unmarshal([]byte(argsStr), &cmdArgs); err != nil {
+			cmdArgs = strings.Split(argsStr, " ")
+		}
+	}
+
+	resp, err := instance.Agent.RunPluginCommand(ctx, &agentv0.RunPluginCommandRequest{
+		Command: command,
+		Args:    cmdArgs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("command failed: %w", err)
+	}
+
+	if !resp.Success {
+		return []Content{TextContent(fmt.Sprintf("FAILED: %s", resp.Error))}, nil
+	}
+	return []Content{TextContent(resp.Output)}, nil
 }

@@ -201,6 +201,35 @@ func (s *Server) registerTools() {
 			Required: []string{"module", "service"},
 		},
 	}, s.stop)
+
+	// Agent command tools — expose agent-registered commands to MCP
+	s.RegisterTool(Tool{
+		Name:        "list_service_commands",
+		Description: "List commands available on a service agent (e.g. test, lint, screenshot, health)",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+			},
+			Required: []string{"module", "service"},
+		},
+	}, s.listServiceCommands)
+
+	s.RegisterTool(Tool{
+		Name:        "run_service_command",
+		Description: "Run a command on a service agent (e.g. test, lint, screenshot, health, proto)",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+				"command": {Type: "string", Description: "Command name"},
+				"args":    {Type: "string", Description: "Command arguments (space-separated)"},
+			},
+			Required: []string{"module", "service", "command"},
+		},
+	}, s.runServiceCommand)
 }
 
 // workspaceInfo returns information about the current workspace
