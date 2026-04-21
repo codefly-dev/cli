@@ -2,9 +2,11 @@ package web
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
+	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/golor"
 )
@@ -19,10 +21,21 @@ type ServerData struct {
 	Workspace *resources.Workspace
 }
 
+// NewServer builds the CLI's gRPC and REST servers. Ports are derived
+// deterministically from the workspace name via network.CLIServerPort
+// so different workspaces can run concurrently without colliding on
+// port 10000. Override with CODEFLY_CLI_SERVER_PORT when an explicit
+// port is required.
 func NewServer(input ServerData) (*CodeflyServer, error) {
+	wsName := ""
+	if input.Workspace != nil {
+		wsName = input.Workspace.Name
+	}
+	grpcPort := network.CLIServerPort(wsName)
+	restPort := network.CLIRestPort(wsName)
 	config := go_grpc.Configuration{
-		EndpointGrpc: ":10000",
-		EndpointRest: ":10001",
+		EndpointGrpc: fmt.Sprintf(":%d", grpcPort),
+		EndpointRest: fmt.Sprintf(":%d", restPort),
 	}
 	server, err := go_grpc.NewServer(&config, input.Workspace)
 	if err != nil {

@@ -27,8 +27,6 @@ import (
 	"syscall"
 	"time"
 
-	corecode "github.com/codefly-dev/core/code"
-
 	"github.com/codefly-dev/core/agents/manager"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
@@ -431,82 +429,6 @@ func (s *Server) ListServices(_ context.Context, _ *gatewayv1.ListServicesReques
 // calls proxyExecute, and unpacks the CodeResponse.
 // ═══════════════════════════════════════════════════════════════
 
-// ─── File Operations (via plugin Execute) ────────────────────
-
-func (s *Server) ReadFile(ctx context.Context, req *gatewayv1.ReadFileRequest) (*gatewayv1.ReadFileResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_ReadFile{ReadFile: &codev0.ReadFileRequest{Path: req.Path}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	r := resp.GetReadFile()
-	return &gatewayv1.ReadFileResponse{Content: r.GetContent(), Exists: r.GetExists()}, nil
-}
-
-func (s *Server) WriteFile(ctx context.Context, req *gatewayv1.WriteFileRequest) (*gatewayv1.WriteFileResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{Path: req.Path, Content: req.Content}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	r := resp.GetWriteFile()
-	return &gatewayv1.WriteFileResponse{Success: r.GetSuccess(), Error: r.GetError()}, nil
-}
-
-func (s *Server) ListFiles(ctx context.Context, req *gatewayv1.ListFilesRequest) (*gatewayv1.ListFilesResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_ListFiles{ListFiles: &codev0.ListFilesRequest{
-			Path: req.Path, Extensions: req.Extensions, Recursive: req.Recursive,
-		}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	r := resp.GetListFiles()
-	var files []*gatewayv1.FileInfo
-	for _, f := range r.GetFiles() {
-		files = append(files, &gatewayv1.FileInfo{Path: f.Path, SizeBytes: f.SizeBytes, IsDirectory: f.IsDirectory})
-	}
-	return &gatewayv1.ListFilesResponse{Files: files}, nil
-}
-
-func (s *Server) DeleteFile(ctx context.Context, req *gatewayv1.DeleteFileRequest) (*gatewayv1.DeleteFileResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_DeleteFile{DeleteFile: &codev0.DeleteFileRequest{Path: req.Path}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	r := resp.GetDeleteFile()
-	return &gatewayv1.DeleteFileResponse{Success: r.GetSuccess(), Error: r.GetError()}, nil
-}
-
-func (s *Server) MoveFile(ctx context.Context, req *gatewayv1.MoveFileRequest) (*gatewayv1.MoveFileResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_MoveFile{MoveFile: &codev0.MoveFileRequest{OldPath: req.OldPath, NewPath: req.NewPath}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	r := resp.GetMoveFile()
-	return &gatewayv1.MoveFileResponse{Success: r.GetSuccess(), Error: r.GetError()}, nil
-}
-
-func (s *Server) CreateFile(ctx context.Context, req *gatewayv1.CreateFileRequest) (*gatewayv1.CreateFileResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_CreateFile{CreateFile: &codev0.CreateFileRequest{
-			Path: req.Path, Content: req.Content, Overwrite: req.Overwrite,
-		}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	r := resp.GetCreateFile()
-	return &gatewayv1.CreateFileResponse{Success: r.GetSuccess(), Error: r.GetError()}, nil
-}
-
 // ─── Code Intelligence (via plugin Execute → LSP) ────────────
 
 func (s *Server) ListSymbols(ctx context.Context, req *gatewayv1.ListSymbolsRequest) (*gatewayv1.ListSymbolsResponse, error) {
@@ -665,49 +587,6 @@ func (s *Server) BatchApplyEdits(ctx context.Context, req *gatewayv1.BatchApplyE
 		results = append(results, r)
 	}
 	return &gatewayv1.BatchApplyEditsResponse{Results: results, Succeeded: succeeded, Failed: failed}, nil
-}
-
-// ─── Search (via plugin Execute) ─────────────────────────────
-
-func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gatewayv1.SearchResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_Search{Search: &codev0.SearchRequest{
-			Pattern: req.Pattern, Literal: req.Literal, CaseInsensitive: req.CaseInsensitive,
-			Path: req.Path, Extensions: req.Extensions, Exclude: req.Exclude,
-			MaxResults: req.MaxResults, ContextLines: req.ContextLines,
-		}},
-	})
-	if err != nil {
-		return s.searchLocal(ctx, req)
-	}
-	r := resp.GetSearch()
-	var matches []*gatewayv1.SearchMatch
-	for _, m := range r.GetMatches() {
-		matches = append(matches, &gatewayv1.SearchMatch{File: m.File, Line: m.Line, Text: m.Text})
-	}
-	return &gatewayv1.SearchResponse{Matches: matches, Truncated: r.GetTruncated(), TotalMatches: int32(len(matches))}, nil
-}
-
-// searchLocal is a fallback using the local ripgrep-based search.
-func (s *Server) searchLocal(ctx context.Context, req *gatewayv1.SearchRequest) (*gatewayv1.SearchResponse, error) {
-	result, err := corecode.Search(ctx, s.serviceRoot(), corecode.SearchOpts{
-		Pattern:         req.Pattern,
-		Literal:         req.Literal,
-		CaseInsensitive: req.CaseInsensitive,
-		Path:            req.Path,
-		Extensions:      req.Extensions,
-		Exclude:         req.Exclude,
-		MaxResults:      int(req.MaxResults),
-		ContextLines:    int(req.ContextLines),
-	})
-	if err != nil {
-		return nil, err
-	}
-	var matches []*gatewayv1.SearchMatch
-	for _, m := range result.Matches {
-		matches = append(matches, &gatewayv1.SearchMatch{File: m.File, Line: int32(m.Line), Text: m.Text})
-	}
-	return &gatewayv1.SearchResponse{Matches: matches, Truncated: result.Truncated, TotalMatches: int32(len(matches))}, nil
 }
 
 // ─── Dependencies (via plugin Execute) ───────────────────────
@@ -900,9 +779,6 @@ func (s *Server) ListAllCommands(ctx context.Context, _ *gatewayv1.ListAllComman
 		{Name: "gd", Description: "Git diff", Aliases: []string{"git diff"}, Tags: []string{"git"}},
 		{Name: "gl", Description: "Git log", Aliases: []string{"git log"}, Tags: []string{"git"}},
 		{Name: "gc", Description: "Git commit", Aliases: []string{"git commit"}, Tags: []string{"git"}},
-		{Name: "search", Description: "Search code with ripgrep", Tags: []string{"search", "code"}},
-		{Name: "read", Description: "Read a file", Tags: []string{"file"}},
-		{Name: "tree", Description: "Show project file tree", Tags: []string{"file"}},
 		{Name: "build", Description: "Build the project", Tags: []string{"build"}},
 		{Name: "test", Description: "Run tests", Tags: []string{"test"}},
 		{Name: "lint", Description: "Run linter", Tags: []string{"lint"}},

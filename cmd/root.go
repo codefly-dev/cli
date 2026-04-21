@@ -153,6 +153,9 @@ func init() {
 	// Daemon (background service management)
 	RootCmd.AddCommand(DaemonCmd)
 
+	// Terminal
+	RootCmd.AddCommand(TerminalCmd)
+
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")

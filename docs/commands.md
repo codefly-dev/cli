@@ -334,7 +334,7 @@ Agents are gRPC plugin processes that implement service operations (run, build, 
 | `nextjs` | TypeScript | HTTP | Next.js frontend |
 | `rails` | Ruby | REST | Ruby on Rails application |
 | `krakend` | - | REST, gRPC | KrakenD API Gateway |
-| `external-postgres` | - | TCP | PostgreSQL database |
+| `postgres` | - | TCP | PostgreSQL database |
 | `external-mysql` | - | TCP | MySQL database |
 | `redis` | - | TCP | Redis cache/database |
 | `minio` | - | HTTP | MinIO object storage |

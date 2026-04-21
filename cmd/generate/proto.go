@@ -66,17 +66,29 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) e
 
 	w.Info("Using proto companion image", wool.Field("image", fmt.Sprintf("%s:%s", image.Name, image.Tag)))
 
+	// buf.gen.yaml lives in the proto dir — that's where buf runs from.
+	bufGenPath := filepath.Join(protoDir, "buf.gen.yaml")
+	if ok, _ := shared.FileExists(ctx, bufGenPath); !ok {
+		return w.NewError("buf.gen.yaml not found in proto directory: %s", protoDir)
+	}
+
 	// Ensure output directory exists
 	_, err = shared.CheckDirectoryOrCreate(ctx, outputDir)
 	if err != nil {
 		return w.Wrapf(err, "cannot create output directory")
 	}
 
-	// Check if buf.gen.yaml exists in output dir
-	bufGenPath := filepath.Join(outputDir, "buf.gen.yaml")
-	if ok, _ := shared.FileExists(ctx, bufGenPath); !ok {
-		return w.NewError("buf.gen.yaml not found in output directory: %s", outputDir)
+	// Find the common ancestor of proto and output dirs so that
+	// buf.gen.yaml's relative output paths (e.g. "../code/pkg/gen") resolve
+	// correctly inside the container.
+	commonRoot := commonAncestor(protoDir, outputDir)
+	if commonRoot == "" {
+		return w.NewError("proto dir and output dir must share a common ancestor")
 	}
+
+	// Compute container-internal paths relative to the common root.
+	relProto, _ := filepath.Rel(commonRoot, protoDir)
+	containerProto := filepath.Join("/workspace", relProto)
 
 	// Create a unique container name
 	name := fmt.Sprintf("proto-gen-%d", time.Now().UnixMilli())
@@ -87,10 +99,11 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) e
 		return w.Wrapf(err, "cannot create docker runner")
 	}
 
-	// Mount proto source and output directories
-	runner.WithMount(protoDir, "/proto")
-	runner.WithMount(outputDir, "/output")
-	runner.WithWorkDir("/output")
+	// Mount the common ancestor so both proto and output paths are accessible.
+	// Work from the proto dir where buf.gen.yaml lives — buf resolves output
+	// paths relative to buf.gen.yaml's location.
+	runner.WithMount(commonRoot, "/workspace")
+	runner.WithWorkDir(containerProto)
 	runner.WithPause()
 
 	defer func() {
@@ -119,8 +132,9 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) e
 
 	w.Info("Generating proto code...")
 
-	// Generate code - use local proto as input
-	proc, err = runner.NewProcess("buf", "generate", "/proto")
+	// Generate code from the proto dir — buf.gen.yaml is here, so relative
+	// output paths like "../code/pkg/gen" resolve correctly within /workspace.
+	proc, err = runner.NewProcess("buf", "generate")
 	if err != nil {
 		return w.Wrapf(err, "cannot create process")
 	}
@@ -130,6 +144,48 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) e
 	}
 
 	return nil
+}
+
+// commonAncestor returns the longest shared directory prefix of two absolute paths.
+func commonAncestor(a, b string) string {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	partsA := splitPath(a)
+	partsB := splitPath(b)
+	n := len(partsA)
+	if len(partsB) < n {
+		n = len(partsB)
+	}
+	common := []string{}
+	for i := 0; i < n; i++ {
+		if partsA[i] != partsB[i] {
+			break
+		}
+		common = append(common, partsA[i])
+	}
+	if len(common) == 0 {
+		return ""
+	}
+	return filepath.Join(common...)
+}
+
+func splitPath(p string) []string {
+	var parts []string
+	for {
+		dir, file := filepath.Split(p)
+		if file != "" {
+			parts = append([]string{file}, parts...)
+		}
+		if dir == p {
+			// Root
+			if dir != "" {
+				parts = append([]string{dir}, parts...)
+			}
+			break
+		}
+		p = filepath.Clean(dir)
+	}
+	return parts
 }
 
 func init() {

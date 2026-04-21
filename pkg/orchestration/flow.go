@@ -47,6 +47,12 @@ type Flow struct {
 
 	hub *Hub
 
+	// failures fans in runner crashes from every Manager.Runner.Follow loop
+	// so the top-level `codefly run` command can break out of its <-ctx.Done()
+	// wait when a child service dies (instead of leaking the parent + plugins).
+	// Buffered so a single failure doesn't block the goroutine that posts it.
+	failures chan FlowFailure
+
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
 
@@ -97,6 +103,20 @@ type World struct {
 	RemoteManager deployments.Manager
 }
 
+// FlowFailure carries a runner-level death up to the top-level command.
+// A failure here means a service started OK but its underlying process
+// has since exited (e.g. user binary crashed, agent plugin lost contact).
+// It does NOT cover failures during Load/Init/Start — those bubble up
+// through the normal flow.Start() return error.
+type FlowFailure struct {
+	Service string
+	Message string
+}
+
+func (f FlowFailure) Error() string {
+	return fmt.Sprintf("%s: %s", f.Service, f.Message)
+}
+
 // NewEmptyFlow will run a single agent
 func NewEmptyFlow(ctx context.Context, mode Mode) (*Flow, error) {
 	world := &World{
@@ -104,7 +124,8 @@ func NewEmptyFlow(ctx context.Context, mode Mode) (*Flow, error) {
 		Env:  resources.LocalEnvironment(),
 	}
 	return &Flow{
-		world: world,
+		world:    world,
+		failures: make(chan FlowFailure, 8),
 	}, nil
 }
 
@@ -161,6 +182,8 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		SharedState:          stateManager,
 		ConfigurationManager: configurationManager,
+
+		failures: make(chan FlowFailure, 8),
 
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
@@ -300,6 +323,9 @@ func (flow *Flow) Load(ctx context.Context) error {
 	// Fix the callback
 	for _, manager := range flow.hub.managers {
 		manager.DoSetCallback(flow.playbook.Seed)
+		// Wire runner-level failures (post-start crashes) into the flow's
+		// failures channel so `codefly run` can break out of <-ctx.Done().
+		manager.DoSetFailureSink(flow.reportFailure)
 	}
 
 	currentFlow = flow
@@ -393,6 +419,29 @@ func (flow *Flow) Deploy(ctx context.Context) error {
 	}
 	return nil
 
+}
+
+// Failures returns a read-only channel of runner-level failures.
+// Top-level commands (`codefly run service ...`) should select on this
+// alongside ctx.Done() so an orphaned plugin tree triggers shutdown.
+func (flow *Flow) Failures() <-chan FlowFailure {
+	if flow == nil {
+		return nil
+	}
+	return flow.failures
+}
+
+// reportFailure is called by Manager/Runner when a follow loop detects
+// that a started service died. Non-blocking: drops on a full channel
+// because by then the receiver is already shutting things down.
+func (flow *Flow) reportFailure(unique, msg string) {
+	if flow == nil || flow.failures == nil {
+		return
+	}
+	select {
+	case flow.failures <- FlowFailure{Service: unique, Message: msg}:
+	default:
+	}
 }
 
 func (flow *Flow) Stop() error {

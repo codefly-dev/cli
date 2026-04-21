@@ -44,6 +44,7 @@ type Server struct {
 	logChannel chan *observabilityv0.Log
 	workspace  *resources.Workspace
 	Wool       *wool.Wool
+	Terminal   *TerminalServer
 }
 
 func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty, error) {
@@ -277,13 +278,22 @@ func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {
 func NewServer(c *Configuration, w *resources.Workspace) (*Server, error) {
 	grpcServer := grpc.NewServer()
 	bufferSize := 10000
+
+	// Resolve workspace directory for terminal sessions
+	workspaceDir := "."
+	if w != nil && w.Dir() != "" {
+		workspaceDir = w.Dir()
+	}
+
 	s := Server{
 		config:     c,
 		workspace:  w,
 		gRPC:       grpcServer,
 		logChannel: make(chan *observabilityv0.Log, bufferSize),
+		Terminal:   NewTerminalServer(workspaceDir),
 	}
 	cli.RegisterCLIServer(grpcServer, &s)
+	cli.RegisterTerminalServiceServer(grpcServer, s.Terminal)
 	reflection.Register(grpcServer)
 	return &s, nil
 }

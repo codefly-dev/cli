@@ -43,6 +43,10 @@ type IManager interface {
 	RunnerDoDestroy(ctx context.Context) (*OutputProperty, error)
 
 	DoSetCallback(seed func(ctx context.Context, action Action) error)
+	// DoSetFailureSink registers a callback that the Runner.Follow loop
+	// invokes when a started service is observed dead. Used by Flow to
+	// fan failures into its top-level shutdown channel.
+	DoSetFailureSink(sink func(unique, msg string))
 }
 
 /*
@@ -179,6 +183,13 @@ func (manager *Manager) SetCallback(f Callback) {
 	manager.Runner.callback = f
 }
 
+func (manager *Manager) DoSetFailureSink(sink func(unique, msg string)) {
+	if manager.Runner == nil {
+		return
+	}
+	manager.Runner.failureSink = sink
+}
+
 type Hub struct {
 	managers []IManager
 }
@@ -245,7 +256,9 @@ func (n NoOpManager) RunnerDoStart(ctx context.Context) (*OutputProperty, error)
 }
 
 func (n NoOpManager) DoSetCallback(seed func(ctx context.Context, action Action) error) {
-	return
+}
+
+func (n NoOpManager) DoSetFailureSink(sink func(unique, msg string)) {
 }
 
 func (n NoOpManager) Stop(ctx context.Context) error {

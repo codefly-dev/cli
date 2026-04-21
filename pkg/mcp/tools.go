@@ -466,8 +466,8 @@ func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Cont
 		{"name": "nextjs", "description": "Next.js frontend application", "languages": []string{"TypeScript", "JavaScript"}, "protocols": []string{"HTTP"}},
 		{"name": "rails", "description": "Ruby on Rails application", "languages": []string{"Ruby"}, "protocols": []string{"REST"}},
 		{"name": "krakend", "description": "KrakenD API Gateway", "languages": []string{}, "protocols": []string{"REST", "gRPC"}},
-		{"name": "external-postgres", "description": "External PostgreSQL database", "languages": []string{}, "protocols": []string{"TCP"}},
-		{"name": "external-mysql", "description": "External MySQL database", "languages": []string{}, "protocols": []string{"TCP"}},
+		{"name": "postgres", "description": "PostgreSQL database", "languages": []string{}, "protocols": []string{"TCP"}},
+		{"name": "mysql", "description": "MySQL database", "languages": []string{}, "protocols": []string{"TCP"}},
 		{"name": "redis", "description": "Redis cache/database", "languages": []string{}, "protocols": []string{"TCP"}},
 		{"name": "minio", "description": "MinIO object storage", "languages": []string{}, "protocols": []string{"HTTP"}},
 	}

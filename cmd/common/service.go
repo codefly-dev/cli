@@ -8,17 +8,23 @@ import (
 )
 
 func LoadRequired(ctx context.Context, args []string) (*resources.Workspace, *resources.Module, *resources.Service) {
-	workspace := RequireWorkspace(ctx)
-	if len(args) == 0 {
-		service := RequireService(ctx)
-		module := RequireModule(ctx)
-		service.WithModule(module.Name)
+	if len(args) > 0 {
+		// Service name provided — just load the workspace and look it up directly.
+		// Don't trigger auto-resolve/picker.
+		workspace, err := resources.FindWorkspaceUp(ctx)
+		cli.ExitOnError(err, "Cannot find workspace")
+		if workspace == nil {
+			cli.ExitWithMessage("No workspace found")
+		}
+		service, module, err := workspace.FindUniqueModuleServiceByName(ctx, args[0])
+		cli.ExitOnError(err, "Cannot find service %s", args[0])
 		return workspace, module, service
 	}
-	service, module, err := workspace.FindUniqueModuleServiceByName(ctx, args[0])
-	if err != nil {
-		cli.ExitOnError(err, "Cannot parse service argument")
-	}
+	// No args — use active context (may prompt for selection).
+	workspace := RequireWorkspace(ctx)
+	service := RequireService(ctx)
+	module := RequireModule(ctx)
+	service.WithModule(module.Name)
 	return workspace, module, service
 }
 

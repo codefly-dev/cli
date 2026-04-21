@@ -148,10 +148,18 @@ func RequireModule(ctx context.Context) *resources.Module {
 	return module
 }
 
+// Workspace returns the workspace from the current directory.
+// Does NOT resolve module or service — safe for workspace-level commands
+// (add module, delete module, list modules) and non-interactive/MCP modes.
 func Workspace(ctx context.Context) *resources.Workspace {
-	active, err := LoadActiveContext(ctx)
-	cli.ExitOnError(err, "cannot load active context")
-	return active.Workspace
+	workspace, err := resources.FindWorkspaceUp(ctx)
+	if err != nil || workspace == nil {
+		// Fall back to full context resolution for backward compatibility
+		active, err := LoadActiveContext(ctx)
+		cli.ExitOnError(err, "cannot load active context")
+		return active.Workspace
+	}
+	return workspace
 }
 
 func RequireWorkspace(ctx context.Context) *resources.Workspace {

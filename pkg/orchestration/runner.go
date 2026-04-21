@@ -37,6 +37,12 @@ type Runner struct {
 	// Callback
 	callback Callback
 
+	// failureSink, if set, is invoked when Follow observes a StartStatus_ERROR
+	// after the service was previously up. Used by Flow to abort `codefly run`
+	// when a child process dies (mind os.Exit(1), agent crash, etc.) instead
+	// of leaking the parent + sibling plugins indefinitely.
+	failureSink func(unique, msg string)
+
 	// Requires
 	requires []string
 
@@ -445,6 +451,7 @@ func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
 
 // Follow calls the agent for information and generate a channel of events for the service:
 // - Handle restart
+// - Detect runner death (StartStatus → ERROR) and report up via failureSink
 func (runner *Runner) Follow(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Follow", wool.ThisField(runner.instance))
 	go func() {
@@ -459,11 +466,35 @@ func (runner *Runner) Follow(ctx context.Context) error {
 			case <-ticker.C:
 				info, err := runner.instance.Runtime.Information(ctx, &runtimev0.InformationRequest{})
 				if err != nil {
-					if !ContextCancelled(err) {
-						w.Debug("cannot get information", wool.ErrField(err))
+					if ContextCancelled(err) {
+						return
+					}
+					// gRPC call failed and we're not shutting down — the agent
+					// plugin itself is gone or unreachable. Report up so the
+					// parent can tear the rest of the tree down.
+					w.Debug("cannot get information", wool.ErrField(err))
+					if runner.isStarted && runner.failureSink != nil {
+						runner.failureSink(runner.Unique(), fmt.Sprintf("agent unreachable: %v", err))
 					}
 					return
 				}
+
+				// Detect that the underlying runner process died after a
+				// successful start. The plugin sets StartStatus → ERROR via
+				// MarkRunnerExited; we mirror that into a flow-level failure
+				// so `codefly run` can shut down the rest of the stack.
+				if runner.isStarted && info.StartStatus != nil &&
+					info.StartStatus.State == runtimev0.StartStatus_ERROR &&
+					runner.failureSink != nil {
+					msg := info.StartStatus.Message
+					if msg == "" {
+						msg = "runner exited"
+					}
+					w.Warn("runner died after start", wool.Field("message", msg))
+					runner.failureSink(runner.Unique(), msg)
+					return
+				}
+
 				if info.DesiredState != nil && info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
 					w.Debug("received a request to change SharedState", wool.Field("SharedState", info.DesiredState.Stage))
 					action := Action{Service: runner.Unique()}

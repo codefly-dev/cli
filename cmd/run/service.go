@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -27,7 +28,11 @@ var ServiceCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		// Catch SIGINT (Ctrl-C) AND SIGTERM (kill, container shutdown).
+		// os.Kill / SIGKILL cannot be caught, so listing it was a noop bug —
+		// it gave the false impression the parent would clean up on `kill <pid>`,
+		// but `kill` sends SIGTERM, which fell through and orphaned every plugin.
+		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
 		cli.Init()
@@ -84,7 +89,14 @@ var ServiceCmd = &cobra.Command{
 				// Keep running with CLI server
 			}
 
-			<-ctx.Done()
+			// Wait for SIGINT OR a runner-level failure (e.g. user binary
+			// os.Exit, plugin agent crash). Without the failure case we'd
+			// idle forever with dead children — the orphan-process bug.
+			select {
+			case <-ctx.Done():
+			case f := <-flow.Failures():
+				cli.Error("service failure: %s", f.Error())
+			}
 		} else {
 			// Interactive mode: TUI
 			logCh := tui.NewLogChannel()
@@ -110,7 +122,11 @@ var ServiceCmd = &cobra.Command{
 				}
 
 				t.SendReady(serviceName, 0)
-				<-ctx.Done()
+				select {
+				case <-ctx.Done():
+				case f := <-flow.Failures():
+					t.SendError(f)
+				}
 				t.SendDone(nil)
 			})
 			if tuiErr != nil {

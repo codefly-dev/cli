@@ -22,7 +22,7 @@ func (s *Server) registerMutationTools() {
 			Properties: map[string]PropertySchema{
 				"module":  {Type: "string", Description: "Module to add the service to"},
 				"name":    {Type: "string", Description: "Service name (kebab-case)"},
-				"agent":   {Type: "string", Description: "Agent name (e.g. go-grpc, nextjs, external-postgres, external-vault)"},
+				"agent":   {Type: "string", Description: "Agent name (e.g. go-grpc, nextjs, postgres, vault)"},
 			},
 			Required: []string{"module", "name", "agent"},
 		},
@@ -84,7 +84,7 @@ func (s *Server) registerMutationTools() {
 
 	s.RegisterTool(Tool{
 		Name:        "install_agent",
-		Description: "Install or update a codefly agent (e.g. go-grpc, nextjs, external-postgres)",
+		Description: "Install or update a codefly agent (e.g. go-grpc, nextjs, postgres)",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{

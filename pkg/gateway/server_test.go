@@ -17,12 +17,6 @@ import (
 // mockCodeClient implements codev0.CodeClient via the unified Execute RPC.
 // Tests configure per-operation function fields; Execute dispatches to them.
 type mockCodeClient struct {
-	readFileFn         func(ctx context.Context, in *codev0.ReadFileRequest, opts ...grpc.CallOption) (*codev0.ReadFileResponse, error)
-	writeFileFn        func(ctx context.Context, in *codev0.WriteFileRequest, opts ...grpc.CallOption) (*codev0.WriteFileResponse, error)
-	listFilesFn        func(ctx context.Context, in *codev0.ListFilesRequest, opts ...grpc.CallOption) (*codev0.ListFilesResponse, error)
-	deleteFileFn       func(ctx context.Context, in *codev0.DeleteFileRequest, opts ...grpc.CallOption) (*codev0.DeleteFileResponse, error)
-	moveFileFn         func(ctx context.Context, in *codev0.MoveFileRequest, opts ...grpc.CallOption) (*codev0.MoveFileResponse, error)
-	createFileFn       func(ctx context.Context, in *codev0.CreateFileRequest, opts ...grpc.CallOption) (*codev0.CreateFileResponse, error)
 	listSymbolsFn      func(ctx context.Context, in *codev0.ListSymbolsRequest, opts ...grpc.CallOption) (*codev0.ListSymbolsResponse, error)
 	getDiagnosticsFn   func(ctx context.Context, in *codev0.GetDiagnosticsRequest, opts ...grpc.CallOption) (*codev0.GetDiagnosticsResponse, error)
 	goToDefinitionFn   func(ctx context.Context, in *codev0.GoToDefinitionRequest, opts ...grpc.CallOption) (*codev0.GoToDefinitionResponse, error)
@@ -31,7 +25,6 @@ type mockCodeClient struct {
 	getHoverInfoFn     func(ctx context.Context, in *codev0.GetHoverInfoRequest, opts ...grpc.CallOption) (*codev0.GetHoverInfoResponse, error)
 	fixFn              func(ctx context.Context, in *codev0.FixRequest, opts ...grpc.CallOption) (*codev0.FixResponse, error)
 	applyEditFn        func(ctx context.Context, in *codev0.ApplyEditRequest, opts ...grpc.CallOption) (*codev0.ApplyEditResponse, error)
-	searchFn           func(ctx context.Context, in *codev0.SearchRequest, opts ...grpc.CallOption) (*codev0.SearchResponse, error)
 	listDependenciesFn func(ctx context.Context, in *codev0.ListDependenciesRequest, opts ...grpc.CallOption) (*codev0.ListDependenciesResponse, error)
 	addDependencyFn    func(ctx context.Context, in *codev0.AddDependencyRequest, opts ...grpc.CallOption) (*codev0.AddDependencyResponse, error)
 	removeDependencyFn func(ctx context.Context, in *codev0.RemoveDependencyRequest, opts ...grpc.CallOption) (*codev0.RemoveDependencyResponse, error)
@@ -40,60 +33,6 @@ type mockCodeClient struct {
 
 func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, opts ...grpc.CallOption) (*codev0.CodeResponse, error) {
 	switch op := in.Operation.(type) {
-	case *codev0.CodeRequest_ReadFile:
-		if m.readFileFn == nil {
-			return nil, fmt.Errorf("ReadFile not configured")
-		}
-		r, err := m.readFileFn(ctx, op.ReadFile, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_ReadFile{ReadFile: r}}, nil
-	case *codev0.CodeRequest_WriteFile:
-		if m.writeFileFn == nil {
-			return nil, fmt.Errorf("WriteFile not configured")
-		}
-		r, err := m.writeFileFn(ctx, op.WriteFile, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_WriteFile{WriteFile: r}}, nil
-	case *codev0.CodeRequest_ListFiles:
-		if m.listFilesFn == nil {
-			return nil, fmt.Errorf("ListFiles not configured")
-		}
-		r, err := m.listFilesFn(ctx, op.ListFiles, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_ListFiles{ListFiles: r}}, nil
-	case *codev0.CodeRequest_DeleteFile:
-		if m.deleteFileFn == nil {
-			return nil, fmt.Errorf("DeleteFile not configured")
-		}
-		r, err := m.deleteFileFn(ctx, op.DeleteFile, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_DeleteFile{DeleteFile: r}}, nil
-	case *codev0.CodeRequest_MoveFile:
-		if m.moveFileFn == nil {
-			return nil, fmt.Errorf("MoveFile not configured")
-		}
-		r, err := m.moveFileFn(ctx, op.MoveFile, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_MoveFile{MoveFile: r}}, nil
-	case *codev0.CodeRequest_CreateFile:
-		if m.createFileFn == nil {
-			return nil, fmt.Errorf("CreateFile not configured")
-		}
-		r, err := m.createFileFn(ctx, op.CreateFile, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_CreateFile{CreateFile: r}}, nil
 	case *codev0.CodeRequest_ListSymbols:
 		if m.listSymbolsFn == nil {
 			return nil, fmt.Errorf("ListSymbols not configured")
@@ -166,15 +105,6 @@ func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, op
 			return nil, err
 		}
 		return &codev0.CodeResponse{Result: &codev0.CodeResponse_ApplyEdit{ApplyEdit: r}}, nil
-	case *codev0.CodeRequest_Search:
-		if m.searchFn == nil {
-			return nil, fmt.Errorf("Search not configured")
-		}
-		r, err := m.searchFn(ctx, op.Search, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_Search{Search: r}}, nil
 	case *codev0.CodeRequest_ListDependencies:
 		if m.listDependenciesFn == nil {
 			return nil, fmt.Errorf("ListDependencies not configured")
@@ -216,24 +146,28 @@ func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, op
 	}
 }
 
-// Deprecated per-RPC methods satisfy the CodeClient interface but are no longer called.
+// Deprecated per-RPC methods satisfy the CodeClient interface but are no longer used.
+// File/git/search operations are now handled by Mind's native tools, not the gateway.
 func (m *mockCodeClient) ReadFile(_ context.Context, _ *codev0.ReadFileRequest, _ ...grpc.CallOption) (*codev0.ReadFileResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not implemented: use Mind native tools")
 }
 func (m *mockCodeClient) WriteFile(_ context.Context, _ *codev0.WriteFileRequest, _ ...grpc.CallOption) (*codev0.WriteFileResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not implemented: use Mind native tools")
 }
 func (m *mockCodeClient) ListFiles(_ context.Context, _ *codev0.ListFilesRequest, _ ...grpc.CallOption) (*codev0.ListFilesResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not implemented: use Mind native tools")
 }
 func (m *mockCodeClient) DeleteFile(_ context.Context, _ *codev0.DeleteFileRequest, _ ...grpc.CallOption) (*codev0.DeleteFileResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not implemented: use Mind native tools")
 }
 func (m *mockCodeClient) MoveFile(_ context.Context, _ *codev0.MoveFileRequest, _ ...grpc.CallOption) (*codev0.MoveFileResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not implemented: use Mind native tools")
 }
 func (m *mockCodeClient) CreateFile(_ context.Context, _ *codev0.CreateFileRequest, _ ...grpc.CallOption) (*codev0.CreateFileResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not implemented: use Mind native tools")
+}
+func (m *mockCodeClient) Search(_ context.Context, _ *codev0.SearchRequest, _ ...grpc.CallOption) (*codev0.SearchResponse, error) {
+	return nil, fmt.Errorf("not implemented: use Mind native tools")
 }
 func (m *mockCodeClient) ListSymbols(_ context.Context, _ *codev0.ListSymbolsRequest, _ ...grpc.CallOption) (*codev0.ListSymbolsResponse, error) {
 	return nil, fmt.Errorf("deprecated: use Execute")
@@ -257,9 +191,6 @@ func (m *mockCodeClient) Fix(_ context.Context, _ *codev0.FixRequest, _ ...grpc.
 	return nil, fmt.Errorf("deprecated: use Execute")
 }
 func (m *mockCodeClient) ApplyEdit(_ context.Context, _ *codev0.ApplyEditRequest, _ ...grpc.CallOption) (*codev0.ApplyEditResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
-}
-func (m *mockCodeClient) Search(_ context.Context, _ *codev0.SearchRequest, _ ...grpc.CallOption) (*codev0.SearchResponse, error) {
 	return nil, fmt.Errorf("deprecated: use Execute")
 }
 func (m *mockCodeClient) ListDependencies(_ context.Context, _ *codev0.ListDependenciesRequest, _ ...grpc.CallOption) (*codev0.ListDependenciesResponse, error) {
@@ -291,11 +222,8 @@ func newTestServerWithWorkDir(mock codev0.CodeClient, workDir string) *Server {
 			Service: "test-svc",
 			Plugin:  "generic-go",
 			Config: SvcConfig{
-				Path:  ".",
-				Type:  "go",
-				Build: "echo build-ok",
-				Test:  "echo test-ok",
-				Lint:  "echo lint-ok",
+				Path: ".",
+				Type: "go",
 			},
 		},
 		plugins:    make(map[string]*pluginConn),
@@ -310,103 +238,6 @@ func newTestServerWithWorkDir(mock codev0.CodeClient, workDir string) *Server {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-func TestReadFile_Exists(t *testing.T) {
-	mock := &mockCodeClient{
-		readFileFn: func(_ context.Context, in *codev0.ReadFileRequest, _ ...grpc.CallOption) (*codev0.ReadFileResponse, error) {
-			if in.Path != "main.go" {
-				t.Errorf("expected path main.go, got %s", in.Path)
-			}
-			return &codev0.ReadFileResponse{Content: "package main", Exists: true}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.ReadFile(context.Background(), &gatewayv1.ReadFileRequest{Path: "main.go"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Exists {
-		t.Error("expected Exists=true")
-	}
-	if resp.Content != "package main" {
-		t.Errorf("expected content 'package main', got %q", resp.Content)
-	}
-}
-
-func TestReadFile_NotFound(t *testing.T) {
-	mock := &mockCodeClient{
-		readFileFn: func(_ context.Context, _ *codev0.ReadFileRequest, _ ...grpc.CallOption) (*codev0.ReadFileResponse, error) {
-			return &codev0.ReadFileResponse{Content: "", Exists: false}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.ReadFile(context.Background(), &gatewayv1.ReadFileRequest{Path: "nonexistent.go"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Exists {
-		t.Error("expected Exists=false for nonexistent file")
-	}
-	if resp.Content != "" {
-		t.Errorf("expected empty content, got %q", resp.Content)
-	}
-}
-
-func TestWriteFile(t *testing.T) {
-	mock := &mockCodeClient{
-		writeFileFn: func(_ context.Context, in *codev0.WriteFileRequest, _ ...grpc.CallOption) (*codev0.WriteFileResponse, error) {
-			if in.Path != "new.go" {
-				t.Errorf("expected path new.go, got %s", in.Path)
-			}
-			if in.Content != "package new" {
-				t.Errorf("expected content 'package new', got %q", in.Content)
-			}
-			return &codev0.WriteFileResponse{Success: true}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.WriteFile(context.Background(), &gatewayv1.WriteFileRequest{Path: "new.go", Content: "package new"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Success {
-		t.Error("expected Success=true")
-	}
-}
-
-func TestListFiles(t *testing.T) {
-	mock := &mockCodeClient{
-		listFilesFn: func(_ context.Context, in *codev0.ListFilesRequest, _ ...grpc.CallOption) (*codev0.ListFilesResponse, error) {
-			if !in.Recursive {
-				t.Error("expected Recursive=true")
-			}
-			return &codev0.ListFilesResponse{
-				Files: []*codev0.FileInfo{
-					{Path: "main.go", SizeBytes: 100, IsDirectory: false},
-					{Path: "pkg", SizeBytes: 0, IsDirectory: true},
-					{Path: "pkg/handler.go", SizeBytes: 200, IsDirectory: false},
-				},
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.ListFiles(context.Background(), &gatewayv1.ListFilesRequest{
-		Path:      ".",
-		Recursive: true,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.Files) != 3 {
-		t.Fatalf("expected 3 files, got %d", len(resp.Files))
-	}
-	if resp.Files[0].Path != "main.go" {
-		t.Errorf("expected first file main.go, got %s", resp.Files[0].Path)
-	}
-	if resp.Files[1].IsDirectory != true {
-		t.Error("expected pkg to be a directory")
-	}
-}
 
 func TestListSymbols_Success(t *testing.T) {
 	mock := &mockCodeClient{
@@ -472,39 +303,6 @@ func TestListSymbols_Error(t *testing.T) {
 	}
 	if resp.Error != "LSP not ready" {
 		t.Errorf("expected error 'LSP not ready', got %q", resp.Error)
-	}
-}
-
-func TestSearch(t *testing.T) {
-	mock := &mockCodeClient{
-		searchFn: func(_ context.Context, in *codev0.SearchRequest, _ ...grpc.CallOption) (*codev0.SearchResponse, error) {
-			if in.Pattern != "TODO" {
-				t.Errorf("expected pattern 'TODO', got %s", in.Pattern)
-			}
-			return &codev0.SearchResponse{
-				Matches: []*codev0.SearchMatch{
-					{File: "main.go", Line: 10, Text: "// TODO: implement"},
-					{File: "handler.go", Line: 25, Text: "// TODO: fix this"},
-				},
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.Search(context.Background(), &gatewayv1.SearchRequest{
-		Pattern: "TODO",
-		Literal: true,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.Matches) != 2 {
-		t.Fatalf("expected 2 matches, got %d", len(resp.Matches))
-	}
-	if resp.Matches[0].File != "main.go" {
-		t.Errorf("expected first match in main.go, got %s", resp.Matches[0].File)
-	}
-	if resp.TotalMatches != 2 {
-		t.Errorf("expected TotalMatches=2, got %d", resp.TotalMatches)
 	}
 }
 
@@ -850,57 +648,6 @@ func TestRunCommand_Failure(t *testing.T) {
 	}
 }
 
-func TestBuild(t *testing.T) {
-	dir := t.TempDir()
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
-	s.mindYAML.Config.Build = "echo build-ok"
-
-	resp, err := s.Build(context.Background(), &gatewayv1.BuildRequest{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Success {
-		t.Errorf("expected Success=true, output: %s", resp.Output)
-	}
-	if !strings.Contains(resp.Output, "build-ok") {
-		t.Errorf("expected output to contain 'build-ok', got %q", resp.Output)
-	}
-}
-
-func TestBuild_NoBuildCommand(t *testing.T) {
-	dir := t.TempDir()
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
-	s.mindYAML.Config.Build = ""
-
-	resp, err := s.Build(context.Background(), &gatewayv1.BuildRequest{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Success {
-		t.Error("expected Success=false when no build command configured")
-	}
-	if !strings.Contains(resp.Output, "no build command") {
-		t.Errorf("expected 'no build command' message, got %q", resp.Output)
-	}
-}
-
-func TestBuild_Failure(t *testing.T) {
-	dir := t.TempDir()
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
-	s.mindYAML.Config.Build = "sh -c 'echo fail; exit 1'"
-
-	resp, err := s.Build(context.Background(), &gatewayv1.BuildRequest{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Success {
-		t.Error("expected Success=false on build failure")
-	}
-	if !strings.Contains(resp.Output, "fail") {
-		t.Errorf("expected output to contain 'fail', got %q", resp.Output)
-	}
-}
-
 func TestListServices(t *testing.T) {
 	s := newTestServer(&mockCodeClient{})
 	resp, err := s.ListServices(context.Background(), &gatewayv1.ListServicesRequest{})
@@ -916,68 +663,6 @@ func TestListServices(t *testing.T) {
 	}
 	if svc.Language != "go" {
 		t.Errorf("expected language 'go', got %s", svc.Language)
-	}
-	if svc.BuildCommand != "echo build-ok" {
-		t.Errorf("expected build command 'echo build-ok', got %s", svc.BuildCommand)
-	}
-}
-
-func TestDeleteFile(t *testing.T) {
-	mock := &mockCodeClient{
-		deleteFileFn: func(_ context.Context, in *codev0.DeleteFileRequest, _ ...grpc.CallOption) (*codev0.DeleteFileResponse, error) {
-			if in.Path != "old.go" {
-				t.Errorf("expected path old.go, got %s", in.Path)
-			}
-			return &codev0.DeleteFileResponse{Success: true}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.DeleteFile(context.Background(), &gatewayv1.DeleteFileRequest{Path: "old.go"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Success {
-		t.Error("expected Success=true")
-	}
-}
-
-func TestMoveFile(t *testing.T) {
-	mock := &mockCodeClient{
-		moveFileFn: func(_ context.Context, in *codev0.MoveFileRequest, _ ...grpc.CallOption) (*codev0.MoveFileResponse, error) {
-			if in.OldPath != "a.go" || in.NewPath != "b.go" {
-				t.Errorf("unexpected paths: old=%s new=%s", in.OldPath, in.NewPath)
-			}
-			return &codev0.MoveFileResponse{Success: true}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.MoveFile(context.Background(), &gatewayv1.MoveFileRequest{OldPath: "a.go", NewPath: "b.go"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Success {
-		t.Error("expected Success=true")
-	}
-}
-
-func TestCreateFile(t *testing.T) {
-	mock := &mockCodeClient{
-		createFileFn: func(_ context.Context, in *codev0.CreateFileRequest, _ ...grpc.CallOption) (*codev0.CreateFileResponse, error) {
-			if in.Path != "new.go" || in.Content != "package new" {
-				t.Errorf("unexpected request: path=%s content=%q", in.Path, in.Content)
-			}
-			return &codev0.CreateFileResponse{Success: true}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.CreateFile(context.Background(), &gatewayv1.CreateFileRequest{
-		Path: "new.go", Content: "package new",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Success {
-		t.Error("expected Success=true")
 	}
 }
 
@@ -1089,40 +774,6 @@ func TestBatchApplyEdits(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Errorf("expected 2 applyEdit calls, got %d", callCount)
-	}
-}
-
-func TestLint(t *testing.T) {
-	dir := t.TempDir()
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
-	s.mindYAML.Config.Lint = "echo lint-ok"
-
-	resp, err := s.Lint(context.Background(), &gatewayv1.LintRequest{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Success {
-		t.Errorf("expected Success=true, output: %s", resp.Output)
-	}
-	if !strings.Contains(resp.Output, "lint-ok") {
-		t.Errorf("expected output to contain 'lint-ok', got %q", resp.Output)
-	}
-}
-
-func TestTest(t *testing.T) {
-	dir := t.TempDir()
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
-	s.mindYAML.Config.Test = "echo test-ok"
-
-	resp, err := s.Test(context.Background(), &gatewayv1.TestRequest{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Success {
-		t.Errorf("expected Success=true, output: %s", resp.Output)
-	}
-	if !strings.Contains(resp.Output, "test-ok") {
-		t.Errorf("expected output to contain 'test-ok', got %q", resp.Output)
 	}
 }
 
