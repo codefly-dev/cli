@@ -28,6 +28,13 @@ var ServiceCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
+		// Ignore SIGHUP so the dev stack survives when the invoking shell,
+		// terminal, or parent agent (Claude Code's Bash tool, a closed
+		// Ghostty tab, etc.) hangs up. Without this, a parent-session
+		// teardown cascades SIGHUP through the pgroup and kills every
+		// agent + user binary mid-startup.
+		signal.Ignore(syscall.SIGHUP)
+
 		// Catch SIGINT (Ctrl-C) AND SIGTERM (kill, container shutdown).
 		// os.Kill / SIGKILL cannot be caught, so listing it was a noop bug —
 		// it gave the false impression the parent would clean up on `kill <pid>`,
