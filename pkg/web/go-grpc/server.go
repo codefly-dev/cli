@@ -306,9 +306,25 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
+	// Defensive cleanup: if Serve exits unexpectedly (e.g. transient
+	// listener error), GracefulStop is idempotent and lis.Close is
+	// safe to call after gRPC has already closed it. Without these
+	// the listener would leak the bound port on non-shutdown exits.
+	defer func() {
+		s.gRPC.GracefulStop()
+		_ = lis.Close()
+	}()
 
 	if err := s.gRPC.Serve(lis); err != nil {
 		return fmt.Errorf("failed to serve: %s", err)
 	}
 	return nil
+}
+
+// Shutdown gracefully stops the gRPC server. Safe to call multiple
+// times. Callers external to Run() should prefer this over relying on
+// the Run-internal defer (e.g. when the server is wrapped by a
+// supervisor that owns the lifecycle).
+func (s *Server) Shutdown() {
+	s.gRPC.GracefulStop()
 }
