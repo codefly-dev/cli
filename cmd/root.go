@@ -67,6 +67,11 @@ func Execute() {
 	if focus {
 		wool.SetGlobalLogLevel(wool.FOCUS)
 	}
+	if localAgents {
+		// Propagate to the agent loader (core/agents/manager.AgentSourceLocal).
+		// Setting via env so spawned subprocesses inherit it too.
+		_ = os.Setenv("CODEFLY_AGENT_SOURCE", "local")
+	}
 	if tracker != "" {
 		tr, err := actions.NewActionTracker(context.Background(), resources.CodeflyDir(), tracker)
 		cli.ExitOnError(err, "cannot create action tracker")
@@ -78,10 +83,11 @@ func Execute() {
 
 // Origin of the World
 var (
-	focus   bool
-	debug   bool
-	trace   bool
-	tracker string
+	focus       bool
+	debug       bool
+	trace       bool
+	tracker     string
+	localAgents bool
 )
 
 func init() {
@@ -160,4 +166,8 @@ func init() {
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
 	RootCmd.PersistentFlags().StringVar(&tracker, "track", "", "Tracker of actions -- advanced usage")
+	RootCmd.PersistentFlags().BoolVar(&localAgents, "local-agents", false,
+		"Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). "+
+			"Equivalent to setting CODEFLY_AGENT_SOURCE=local. Use when working "+
+			"on local agent builds or offline.")
 }
