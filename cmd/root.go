@@ -153,6 +153,10 @@ func init() {
 	// Test things
 	RootCmd.AddCommand(TestCmd)
 
+	// Audit + upgrade dependencies
+	RootCmd.AddCommand(AuditCmd)
+	RootCmd.AddCommand(UpgradeCmd)
+
 	// CI
 	RootCmd.AddCommand(CiCmd)
 
