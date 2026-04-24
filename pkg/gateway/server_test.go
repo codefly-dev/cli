@@ -208,6 +208,9 @@ func (m *mockCodeClient) GetProjectInfo(_ context.Context, _ *codev0.GetProjectI
 func (m *mockCodeClient) GetCallGraph(_ context.Context, _ *codev0.GetCallGraphRequest, _ ...grpc.CallOption) (*codev0.GetCallGraphResponse, error) {
 	return nil, fmt.Errorf("deprecated: use Tooling.GetCallGraph")
 }
+func (m *mockCodeClient) ShellExec(_ context.Context, _ *codev0.ShellExecRequest, _ ...grpc.CallOption) (*codev0.ShellExecResponse, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
 
 // newTestServer creates a Server with the mock injected into the plugins map.
 // The service name "test-svc" is used throughout, matching the mindYAML config.
