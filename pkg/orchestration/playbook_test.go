@@ -321,12 +321,17 @@ signalled:
 	executed := playbook.Executed()
 	require.Equal(t, expected, executed)
 
-	// Now we will send a new action from the dependency of start
+	// Now we will send a new action from the dependency of start.
+	// stopAfter predicate pins to Round>=2 so Work can't race: the signal
+	// above fired INSIDE Work's action loop, which emits signal() then
+	// checks stopAfter() on the same iteration. Without the round guard,
+	// a slow scheduler (CI) lets this test's WithStoppingAfter land
+	// between those two calls and the round-1 RuntimeStart on `start`
+	// immediately trips stopAfter, exiting Work before Seed can enqueue
+	// round 2.
 	playbook.WithStoppingAfter(func(ctx context.Context, action orchestration.Action) bool {
-		return action.Type == orchestration.RuntimeStart && action.Service == start
+		return action.Round >= 2 && action.Type == orchestration.RuntimeStart && action.Service == start
 	})
-	// Re-init the "root": organization
-	// We shouldn't have any billing (start)
 
 	err = playbook.Seed(ctx, orchestration.Action{Type: orchestration.RuntimeInit, Service: org})
 	require.NoError(t, err)
@@ -380,9 +385,12 @@ signalled:
 	executed := playbook.Executed()
 	require.Equal(t, expected, executed)
 
-	// Now we will send a new action from the dependency of start
+	// Round>=2 guard — same rationale as TestPlaybookRunOneDependency-
+	// WithRestartWithPropagation above: the signal/stopAfter race in the
+	// Work loop means we must not let the ongoing round-1 action trip
+	// the new stopAfter predicate.
 	playbook.WithStoppingAfter(func(ctx context.Context, action orchestration.Action) bool {
-		return action.Type == orchestration.RuntimeStart && action.Service == start
+		return action.Round >= 2 && action.Type == orchestration.RuntimeStart && action.Service == start
 	})
 
 	err = playbook.Seed(ctx, orchestration.Action{Type: orchestration.RuntimeInit, Service: org})
