@@ -146,70 +146,33 @@ func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, op
 	}
 }
 
-// Deprecated per-RPC methods satisfy the CodeClient interface but are no longer used.
-// File/git/search operations are now handled by Mind's native tools, not the gateway.
-func (m *mockCodeClient) ReadFile(_ context.Context, _ *codev0.ReadFileRequest, _ ...grpc.CallOption) (*codev0.ReadFileResponse, error) {
-	return nil, fmt.Errorf("not implemented: use Mind native tools")
-}
-func (m *mockCodeClient) WriteFile(_ context.Context, _ *codev0.WriteFileRequest, _ ...grpc.CallOption) (*codev0.WriteFileResponse, error) {
-	return nil, fmt.Errorf("not implemented: use Mind native tools")
-}
-func (m *mockCodeClient) ListFiles(_ context.Context, _ *codev0.ListFilesRequest, _ ...grpc.CallOption) (*codev0.ListFilesResponse, error) {
-	return nil, fmt.Errorf("not implemented: use Mind native tools")
-}
-func (m *mockCodeClient) DeleteFile(_ context.Context, _ *codev0.DeleteFileRequest, _ ...grpc.CallOption) (*codev0.DeleteFileResponse, error) {
-	return nil, fmt.Errorf("not implemented: use Mind native tools")
-}
-func (m *mockCodeClient) MoveFile(_ context.Context, _ *codev0.MoveFileRequest, _ ...grpc.CallOption) (*codev0.MoveFileResponse, error) {
-	return nil, fmt.Errorf("not implemented: use Mind native tools")
-}
-func (m *mockCodeClient) CreateFile(_ context.Context, _ *codev0.CreateFileRequest, _ ...grpc.CallOption) (*codev0.CreateFileResponse, error) {
-	return nil, fmt.Errorf("not implemented: use Mind native tools")
-}
-func (m *mockCodeClient) Search(_ context.Context, _ *codev0.SearchRequest, _ ...grpc.CallOption) (*codev0.SearchResponse, error) {
-	return nil, fmt.Errorf("not implemented: use Mind native tools")
-}
+// Per-RPC stubs satisfy the CodeClient interface for the RPCs that still
+// exist post-cleanup (file/git/search/rename/fix/deps/project-info RPCs
+// were deleted from service Code — everything dispatches through Execute).
+// These stubs return errors because tests only exercise the Execute path.
 func (m *mockCodeClient) ListSymbols(_ context.Context, _ *codev0.ListSymbolsRequest, _ ...grpc.CallOption) (*codev0.ListSymbolsResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not exercised in mock; use Execute")
 }
 func (m *mockCodeClient) GetDiagnostics(_ context.Context, _ *codev0.GetDiagnosticsRequest, _ ...grpc.CallOption) (*codev0.GetDiagnosticsResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not exercised in mock; use Execute")
 }
 func (m *mockCodeClient) GoToDefinition(_ context.Context, _ *codev0.GoToDefinitionRequest, _ ...grpc.CallOption) (*codev0.GoToDefinitionResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not exercised in mock; use Execute")
 }
 func (m *mockCodeClient) FindReferences(_ context.Context, _ *codev0.FindReferencesRequest, _ ...grpc.CallOption) (*codev0.FindReferencesResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
-}
-func (m *mockCodeClient) RenameSymbol(_ context.Context, _ *codev0.RenameSymbolRequest, _ ...grpc.CallOption) (*codev0.RenameSymbolResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not exercised in mock; use Execute")
 }
 func (m *mockCodeClient) GetHoverInfo(_ context.Context, _ *codev0.GetHoverInfoRequest, _ ...grpc.CallOption) (*codev0.GetHoverInfoResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
-}
-func (m *mockCodeClient) Fix(_ context.Context, _ *codev0.FixRequest, _ ...grpc.CallOption) (*codev0.FixResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not exercised in mock; use Execute")
 }
 func (m *mockCodeClient) ApplyEdit(_ context.Context, _ *codev0.ApplyEditRequest, _ ...grpc.CallOption) (*codev0.ApplyEditResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
-}
-func (m *mockCodeClient) ListDependencies(_ context.Context, _ *codev0.ListDependenciesRequest, _ ...grpc.CallOption) (*codev0.ListDependenciesResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
-}
-func (m *mockCodeClient) AddDependency(_ context.Context, _ *codev0.AddDependencyRequest, _ ...grpc.CallOption) (*codev0.AddDependencyResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
-}
-func (m *mockCodeClient) RemoveDependency(_ context.Context, _ *codev0.RemoveDependencyRequest, _ ...grpc.CallOption) (*codev0.RemoveDependencyResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
-}
-func (m *mockCodeClient) GetProjectInfo(_ context.Context, _ *codev0.GetProjectInfoRequest, _ ...grpc.CallOption) (*codev0.GetProjectInfoResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Execute")
+	return nil, fmt.Errorf("not exercised in mock; use Execute")
 }
 func (m *mockCodeClient) GetCallGraph(_ context.Context, _ *codev0.GetCallGraphRequest, _ ...grpc.CallOption) (*codev0.GetCallGraphResponse, error) {
-	return nil, fmt.Errorf("deprecated: use Tooling.GetCallGraph")
+	return nil, fmt.Errorf("not exercised in mock; use Tooling.GetCallGraph")
 }
 func (m *mockCodeClient) ShellExec(_ context.Context, _ *codev0.ShellExecRequest, _ ...grpc.CallOption) (*codev0.ShellExecResponse, error) {
-	return nil, fmt.Errorf("not implemented in mock")
+	return nil, fmt.Errorf("not exercised in mock")
 }
 
 // newTestServer creates a Server with the mock injected into the plugins map.
