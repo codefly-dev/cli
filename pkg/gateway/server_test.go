@@ -205,6 +205,9 @@ func (m *mockCodeClient) RemoveDependency(_ context.Context, _ *codev0.RemoveDep
 func (m *mockCodeClient) GetProjectInfo(_ context.Context, _ *codev0.GetProjectInfoRequest, _ ...grpc.CallOption) (*codev0.GetProjectInfoResponse, error) {
 	return nil, fmt.Errorf("deprecated: use Execute")
 }
+func (m *mockCodeClient) GetCallGraph(_ context.Context, _ *codev0.GetCallGraphRequest, _ ...grpc.CallOption) (*codev0.GetCallGraphResponse, error) {
+	return nil, fmt.Errorf("deprecated: use Tooling.GetCallGraph")
+}
 
 // newTestServer creates a Server with the mock injected into the plugins map.
 // The service name "test-svc" is used throughout, matching the mindYAML config.
