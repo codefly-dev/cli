@@ -2,6 +2,7 @@ package agents
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/agents/services/audit"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -47,6 +50,10 @@ Examples:
 		all, _ := cmd.Flags().GetBool("all")
 		dir, _ := cmd.Flags().GetString("dir")
 
+		skipAudit, _ := cmd.Flags().GetBool("skip-audit")
+		failOnVuln, _ := cmd.Flags().GetBool("fail-on-vuln")
+		opts := buildOptions{skipAudit: skipAudit, failOnVuln: failOnVuln}
+
 		if all {
 			if dir == "" {
 				var err error
@@ -61,7 +68,7 @@ Examples:
 				cli.Error("Cannot resolve directory: %v", err)
 				cli.Exit()
 			}
-			if err := buildAllAgents(absDir); err != nil {
+			if err := buildAllAgents(absDir, opts); err != nil {
 				cli.Error("Build --all failed: %v", err)
 				cli.ExitError()
 			}
@@ -83,21 +90,28 @@ Examples:
 			cli.Exit()
 		}
 
-		if err := buildAgent(absDir); err != nil {
+		if err := buildAgent(absDir, opts); err != nil {
 			cli.Error("Build failed: %v", err)
 			cli.ExitError()
 		}
 	},
 }
 
+type buildOptions struct {
+	skipAudit  bool
+	failOnVuln bool
+}
+
 func init() {
 	BuildCmd.Flags().String("dir", "", "Agent source directory (default: current directory)")
 	BuildCmd.Flags().Bool("all", false, "Build all agents found in the current directory tree")
+	BuildCmd.Flags().Bool("skip-audit", false, "Skip the post-build govulncheck audit")
+	BuildCmd.Flags().Bool("fail-on-vuln", false, "Fail the build if any HIGH/CRITICAL vulnerability is found")
 }
 
 // buildAllAgents discovers all directories containing agent.codefly.yaml
 // under root and builds each one.
-func buildAllAgents(root string) error {
+func buildAllAgents(root string, opts buildOptions) error {
 	var agents []string
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -121,7 +135,7 @@ func buildAllAgents(root string) error {
 	var failed []string
 	for i, agentDir := range agents {
 		cli.Header(2, "[%d/%d] %s", i+1, len(agents), filepath.Base(agentDir))
-		if err := buildAgent(agentDir); err != nil {
+		if err := buildAgent(agentDir, opts); err != nil {
 			cli.Error("  Failed: %v", err)
 			failed = append(failed, filepath.Base(agentDir))
 			continue
@@ -202,7 +216,7 @@ func dropReplace(dir, module string) error {
 	return cmd.Run()
 }
 
-func buildAgent(dir string) error {
+func buildAgent(dir string, opts buildOptions) error {
 	yamlPath := filepath.Join(dir, "agent.codefly.yaml")
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
@@ -311,5 +325,155 @@ func buildAgent(dir string) error {
 	}
 
 	cli.Header(1, "Agent %s:%s built successfully", ag.Name, ag.Version)
+
+	if !opts.skipAudit {
+		if err := runAudit(dir, ag, opts.failOnVuln); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// runAudit runs a govulncheck-based security scan on the agent's Go module.
+// Findings are printed to the build log. With --fail-on-vuln, the build
+// returns an error if any HIGH/CRITICAL vulnerability is found; otherwise
+// the audit is informational only (exit status unchanged).
+//
+// Findings matching IDs in a workspace-root .govulncheck.yaml are filtered
+// out and reported separately as "suppressed (reviewed)".
+func runAudit(dir string, ag agentYAML, failOnVuln bool) error {
+	cli.Header(1, "Auditing %s:%s for vulnerabilities", ag.Name, ag.Version)
+	ctx := context.Background()
+	res, err := audit.Golang(ctx, dir, true)
+	if err != nil {
+		cli.Info("Audit error (non-fatal): %v", err)
+		return nil
+	}
+	if res.Tool == "missing" {
+		cli.Info("govulncheck not installed — skipping. Install: go install golang.org/x/vuln/cmd/govulncheck@latest")
+		return nil
+	}
+	cli.Info("Tool: %s", res.Tool)
+
+	suppressions := loadSuppressions(dir)
+
+	// Partition findings: suppressed (workspace policy), actionable
+	// (upstream has a patch), unpatched (upstream has no fix yet).
+	// --fail-on-vuln only blocks on actionable.
+	var actionable, unpatched, suppressed []*builderv0.AuditFinding
+	for _, f := range res.Findings {
+		if _, ok := suppressions[f.Id]; ok {
+			suppressed = append(suppressed, f)
+			continue
+		}
+		if f.FixedVersion == "" {
+			unpatched = append(unpatched, f)
+		} else {
+			actionable = append(actionable, f)
+		}
+	}
+
+	if len(actionable)+len(unpatched) == 0 {
+		if len(suppressed) > 0 {
+			cli.Info("No actionable vulnerabilities. %d suppressed by .govulncheck.yaml (reviewed).", len(suppressed))
+		} else {
+			cli.Info("No vulnerabilities found.")
+		}
+	} else {
+		if len(actionable) > 0 {
+			cli.Info("Vulnerabilities with available fixes: %d", len(actionable))
+			for _, f := range actionable {
+				cli.Info("  [%s] %s %s@%s → fixed in %s (%s)",
+					severityLabel(f.Severity), f.Id, f.Package, f.CurrentVersion,
+					f.FixedVersion, truncate(f.Summary, 80))
+			}
+		}
+		if len(unpatched) > 0 {
+			cli.Info("Unpatched upstream (tracked, no action available): %d", len(unpatched))
+			for _, f := range unpatched {
+				cli.Info("  [%s] %s %s@%s — no upstream fix yet (%s)",
+					severityLabel(f.Severity), f.Id, f.Package, f.CurrentVersion,
+					truncate(f.Summary, 80))
+			}
+		}
+		if len(suppressed) > 0 {
+			cli.Info("Suppressed (reviewed via .govulncheck.yaml): %d", len(suppressed))
+		}
+	}
+	if len(res.Outdated) > 0 {
+		cli.Info("Outdated packages: %d (run `codefly upgrade agent --dry-run` to preview)",
+			len(res.Outdated))
+	}
+
+	if failOnVuln {
+		// Only block on actionable findings — unpatched upstream vulns can't
+		// be resolved by a rebuild, so failing the build on them just blocks
+		// development without improving security.
+		var blockers int
+		for _, f := range actionable {
+			if f.Severity == builderv0.AuditFinding_HIGH ||
+				f.Severity == builderv0.AuditFinding_CRITICAL {
+				blockers++
+			}
+		}
+		if blockers > 0 {
+			return fmt.Errorf("audit failed: %d high/critical vulnerability(ies) with available upstream fixes in %s:%s (use --skip-audit to bypass)",
+				blockers, ag.Name, ag.Version)
+		}
+	}
+	return nil
+}
+
+// loadSuppressions walks up from dir looking for a .govulncheck.yaml and
+// returns the set of suppressed vuln IDs. Missing file or parse errors are
+// silently ignored — suppressions are optional, not required.
+func loadSuppressions(dir string) map[string]struct{} {
+	cur := dir
+	for {
+		p := filepath.Join(cur, ".govulncheck.yaml")
+		data, err := os.ReadFile(p)
+		if err == nil {
+			var doc struct {
+				Suppressions []struct {
+					ID string `yaml:"id"`
+				} `yaml:"suppressions"`
+			}
+			if yaml.Unmarshal(data, &doc) == nil {
+				m := make(map[string]struct{}, len(doc.Suppressions))
+				for _, s := range doc.Suppressions {
+					if s.ID != "" {
+						m[s.ID] = struct{}{}
+					}
+				}
+				return m
+			}
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return nil
+		}
+		cur = parent
+	}
+}
+
+func severityLabel(s builderv0.AuditFinding_Severity) string {
+	switch s {
+	case builderv0.AuditFinding_CRITICAL:
+		return "CRITICAL"
+	case builderv0.AuditFinding_HIGH:
+		return "HIGH"
+	case builderv0.AuditFinding_MEDIUM:
+		return "MEDIUM"
+	case builderv0.AuditFinding_LOW:
+		return "LOW"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }

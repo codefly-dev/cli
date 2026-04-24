@@ -239,13 +239,8 @@ func (s *Server) ensurePlugin(ctx context.Context) (codev0.CodeClient, error) {
 	}
 
 	// Resolve version: prefer local binaries, fall back to GitHub releases.
-	if agent.Version == "latest" {
-		if localErr := manager.FindLocalLatest(ctx, agent); localErr != nil {
-			fmt.Printf("No local build for %s, checking GitHub releases...\n", agent.Name)
-			if err := manager.PinToLatestRelease(ctx, agent); err != nil {
-				return nil, fmt.Errorf("resolve agent %s version: no local build and GitHub failed: %w", agentName, err)
-			}
-		}
+	if err := manager.ResolveLatest(ctx, agent); err != nil {
+		return nil, fmt.Errorf("resolve agent %s version: %w", agentName, err)
 	}
 
 	fmt.Printf("[gateway] Loading plugin %s (v%s)...\n", agent.Name, agent.Version)

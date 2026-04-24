@@ -96,9 +96,14 @@ Examples:
 			cli.ExitError()
 		}
 
-		// Handle SIGWINCH (terminal resize)
+		// Handle SIGWINCH (terminal resize). Stop + close on exit so both
+		// the signal registration and the listener goroutine are released.
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGWINCH)
+		defer func() {
+			signal.Stop(sigCh)
+			close(sigCh)
+		}()
 		go func() {
 			for range sigCh {
 				w, h, err := term.GetSize(int(os.Stdin.Fd()))

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,9 +9,20 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/codefly-dev/core/resources"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 )
+
+// detachSysProcAttr returns the syscall attributes needed to detach a
+// spawned subprocess from the parent's process group so signals delivered
+// to the parent (e.g. MCP server shutdown) don't kill the child. Setpgid
+// is supported on unix; on other platforms this is a no-op returning nil.
+func detachSysProcAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setpgid: true}
+}
 
 // registerMutationTools adds tools that modify the workspace (create services, add deps, etc.)
 func (s *Server) registerMutationTools() {
@@ -273,19 +285,60 @@ func (s *Server) runService(ctx context.Context, args map[string]string) ([]Cont
 		return nil, fmt.Errorf("service not found: %s/%s", moduleName, serviceName)
 	}
 
-	cmdArgs := []string{"run", "service"}
+	cmdArgs := []string{"run", "service", "--headless"}
 	if debug {
 		cmdArgs = append(cmdArgs, "-d")
 	}
 
-	cmd := exec.CommandContext(ctx, "codefly", cmdArgs...)
+	// `codefly run service` is a long-running process — it does NOT return
+	// once the service is up. Using exec.CommandContext + CombinedOutput
+	// would block the MCP handler until the service is stopped, which
+	// defeats the point (the AI tool would hang for the entire session).
+	//
+	// Instead: spawn detached, wait briefly for the subprocess to show
+	// it's running, then return a handle. The caller can use status/logs
+	// tools to check on it afterward. Process lifetime is bounded by the
+	// user via the complementary stop tool.
+	cmd := exec.Command("codefly", cmdArgs...)
 	cmd.Dir = path.Join(svc.Dir(), "code")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return []Content{TextContent(fmt.Sprintf("run failed: %s\n%s", err, string(output)))}, nil
+	// Detach from the MCP server's lifetime — the service should outlive
+	// the tool call. Set a new process group so signals to MCP don't
+	// cascade into the spawned service.
+	cmd.SysProcAttr = detachSysProcAttr()
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+	if err := cmd.Start(); err != nil {
+		return []Content{TextContent(fmt.Sprintf("run failed to start: %v", err))}, nil
+	}
+	// Reap the subprocess in a background goroutine so it doesn't become
+	// a zombie if/when it exits. We don't wait — the caller just needs
+	// to know it's launched.
+	pid := cmd.Process.Pid
+	// Track the detached CLI's pgroup. If the MCP-hosting CLI dies
+	// ungracefully, the child codefly run subprocess would orphan
+	// otherwise — now the next CLI startup's sweep sees the file,
+	// detects the parent (this CLI) is dead, and reaps the subtree.
+	argv := append([]string{"codefly"}, cmdArgs...)
+	if perr := runnersbase.WritePgidFile(pid, cmd.Dir, argv); perr != nil {
+		_ = perr // best-effort; MCP handler returns regardless
+	}
+	go func() {
+		_ = cmd.Wait()
+		_ = runnersbase.RemovePgidFile(pid)
+	}()
+
+	// Sample the initial output briefly so the caller gets a meaningful
+	// confirmation (port binding, error, etc.) rather than an empty string.
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(500 * time.Millisecond):
 	}
 
-	return []Content{TextContent(fmt.Sprintf("Service %s/%s running\n%s", moduleName, serviceName, string(output)))}, nil
+	return []Content{TextContent(fmt.Sprintf(
+		"Service %s/%s launched (pid=%d). Initial output:\n%s",
+		moduleName, serviceName, pid, outBuf.String()))}, nil
 }
 
 func (s *Server) testService(ctx context.Context, args map[string]string) ([]Content, error) {

@@ -19,17 +19,24 @@ type CodeflyServer struct {
 
 type ServerData struct {
 	Workspace *resources.Workspace
+	// NamingScope is appended to the workspace name when deriving the
+	// gRPC/REST port pair. Must match the scope the test SDK uses so the
+	// client and server land on the same port. Empty string = no scope.
+	NamingScope string
 }
 
 // NewServer builds the CLI's gRPC and REST servers. Ports are derived
-// deterministically from the workspace name via network.CLIServerPort
-// so different workspaces can run concurrently without colliding on
-// port 10000. Override with CODEFLY_CLI_SERVER_PORT when an explicit
-// port is required.
+// deterministically from the workspace name (plus optional naming scope)
+// via network.CLIServerPort so different workspaces — and different test
+// scopes within the same workspace — can run concurrently without
+// colliding on port 10000.
 func NewServer(input ServerData) (*CodeflyServer, error) {
 	wsName := ""
 	if input.Workspace != nil {
 		wsName = input.Workspace.Name
+	}
+	if input.NamingScope != "" {
+		wsName = wsName + "-" + input.NamingScope
 	}
 	grpcPort := network.CLIServerPort(wsName)
 	restPort := network.CLIRestPort(wsName)

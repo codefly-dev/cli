@@ -32,6 +32,7 @@ func clearCommand(args []string) {
 	if err != nil {
 		log.Fatalf("can't create docker client %s\n", err)
 	}
+	defer cli.Close()
 	// delete all c with name starting with /codefly
 	cos, err := cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
@@ -47,9 +48,11 @@ func clearCommand(args []string) {
 					}
 				}
 			}
-			err = cli.ContainerKill(ctx, c.ID, "SIGKILL")
-			err = cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
-			if err != nil {
+			// ContainerKill can error when container is already stopped;
+			// the Remove --force below handles cleanup either way, so
+			// a kill error here is noise, not fatal.
+			_ = cli.ContainerKill(ctx, c.ID, "SIGKILL")
+			if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
 				log.Fatalf("can't remove container %s\n", err)
 			}
 		}

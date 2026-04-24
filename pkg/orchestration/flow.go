@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -125,7 +126,11 @@ func NewEmptyFlow(ctx context.Context, mode Mode) (*Flow, error) {
 	}
 	return &Flow{
 		world:    world,
-		failures: make(chan FlowFailure, 8),
+		// Buffer sized to accommodate the largest plausible dependency graph.
+		// With 8 we silently dropped failures under concurrent crash cascades
+		// (the review caught this); 256 covers realistic sizes while still
+		// bounded.
+		failures: make(chan FlowFailure, 256),
 	}, nil
 }
 
@@ -183,7 +188,11 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		SharedState:          stateManager,
 		ConfigurationManager: configurationManager,
 
-		failures: make(chan FlowFailure, 8),
+		// Buffer sized to accommodate the largest plausible dependency graph.
+		// With 8 we silently dropped failures under concurrent crash cascades
+		// (the review caught this); 256 covers realistic sizes while still
+		// bounded.
+		failures: make(chan FlowFailure, 256),
 
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
@@ -441,6 +450,14 @@ func (flow *Flow) reportFailure(unique, msg string) {
 	select {
 	case flow.failures <- FlowFailure{Service: unique, Message: msg}:
 	default:
+		// Buffer saturated. This should never happen in practice (256 is
+		// well above any realistic concurrent failure count) but if it
+		// does, surface it so the operator knows a failure was dropped
+		// rather than silently swallowing it.
+		wool.Get(context.Background()).In("Flow.reportFailure").Warn(
+			"failure channel full — dropping",
+			wool.Field("service", unique),
+			wool.Field("message", msg))
 	}
 }
 
@@ -452,14 +469,35 @@ func (flow *Flow) Stop() error {
 	stoppedContext, done := common.NewContext()
 	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
-	var res error
-	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
-		_, err := flow.hub.managers[i].RunnerDoStop(stoppedContext)
-		if err != nil {
-			w.Debug("got error", wool.ErrField(err))
-			res = multierror.Append(res, err)
-		}
+	// Clear any stale pause state — if a paused action is still sitting
+	// in the PauseManager, the spinner keeps spinning even as Stop tears
+	// everything down. Force-clear so the UI reflects reality.
+	if flow.playbook != nil && flow.playbook.pause != nil {
+		flow.playbook.pause.Clear()
 	}
+	// Fan out stops in parallel — sequential iteration was wasting wall
+	// time (10s timeout × N managers) while the goroutines were mostly
+	// idle waiting on their respective agents. Reverse order is preserved
+	// by walking the slice backwards before the Add, so Destroy targets
+	// newest-started-first which matches dependency rules.
+	var res error
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
+		mgr := flow.hub.managers[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := mgr.RunnerDoStop(stoppedContext)
+			if err != nil {
+				w.Debug("got error", wool.ErrField(err))
+				mu.Lock()
+				res = multierror.Append(res, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 	return res
 }
 
@@ -471,14 +509,27 @@ func (flow *Flow) Shutdown() error {
 	stoppedContext, done := common.NewContext()
 	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
-	var res error
-	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
-		_, err := flow.hub.managers[i].RunnerDoDestroy(stoppedContext)
-		if err != nil {
-			w.Debug("got error", wool.ErrField(err))
-			res = multierror.Append(res, err)
-		}
+	if flow.playbook != nil && flow.playbook.pause != nil {
+		flow.playbook.pause.Clear()
 	}
+	var res error
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
+		mgr := flow.hub.managers[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := mgr.RunnerDoDestroy(stoppedContext)
+			if err != nil {
+				w.Debug("got error", wool.ErrField(err))
+				mu.Lock()
+				res = multierror.Append(res, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 	return res
 
 }

@@ -120,8 +120,15 @@ func (manager *ActionManager) send(ctx context.Context, actions ...Action) {
 	}
 	group := ActionGroup{actions: actions, round: round}
 	w.Trace("sending actions", wool.Field("actions", group))
+	// Respect context cancellation so a stalled receiver doesn't
+	// accumulate goroutines forever. The previous fire-and-forget
+	// `go func() { manager.actions <- group }()` blocked indefinitely
+	// on an unbuffered channel when nobody was reading.
 	go func() {
-		manager.actions <- group
+		select {
+		case manager.actions <- group:
+		case <-ctx.Done():
+		}
 	}()
 	w.Trace("sent actions", wool.Field("actions", group))
 }

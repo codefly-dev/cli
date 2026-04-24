@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -46,9 +47,13 @@ type Runner struct {
 	// Requires
 	requires []string
 
-	// outputProperty hub
-	isStarted bool
-	restart   bool
+	// outputProperty hub.
+	// isStarted and restart are written by Stop/Start/Init handlers from one
+	// goroutine AND read by the Follow ticker goroutine. Use atomic.Bool
+	// so the race detector stays quiet and Follow sees a fresh value on the
+	// next tick regardless of scheduler ordering.
+	isStarted atomic.Bool
+	restart   atomic.Bool
 
 	outputPropertyForLoad  *RunnerLoadManager
 	outputPropertyForInit  *RunnerInitManager
@@ -166,22 +171,28 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 	}
 
-	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(ctx, runner.instance.Service)
+	// Configuration reads can block on a stalled provider (e.g. a dependency
+	// service that failed to export its config). Bound each read with a
+	// timeout so a single bad provider doesn't stall the entire Init.
+	cfgCtx, cfgCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cfgCancel()
+
+	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(cfgCtx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot run init")
 	}
 
-	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(ctx, runner.instance.Identity)
+	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
-	workspaceConfigurations, err := runner.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, runner.instance.Service.WorkspaceConfigurationDependencies...)
+	workspaceConfigurations, err := runner.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(cfgCtx, runner.instance.Service.WorkspaceConfigurationDependencies...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get project configurations")
 	}
 
-	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(ctx, runner.instance.Identity)
+	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
 	}
@@ -337,7 +348,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for start")
 	}
 
-	runner.isStarted = true
+	runner.isStarted.Store(true)
 	return outputProperty, nil
 }
 
@@ -352,7 +363,7 @@ func (runner *Runner) StartRemote(ctx context.Context) (*OutputProperty, error) 
 		return nil, w.Wrapf(err, "cannot process outputProperty for start")
 	}
 
-	runner.isStarted = true
+	runner.isStarted.Store(true)
 	return outputProperty, nil
 }
 
@@ -394,14 +405,14 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for start")
 	}
 
-	runner.isStarted = true
+	runner.isStarted.Store(true)
 	return outputProperty, nil
 }
 
 func (runner *Runner) StopIfNeeded(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.StopIfNeeded", wool.ThisField(runner.instance))
-	w.Debug("stopIfNeeded", wool.Field("isStarted", runner.isStarted), wool.Field("isHotReloading", runner.instance.Runtime.IsHotReloading))
-	if !runner.isStarted {
+	w.Debug("stopIfNeeded", wool.Field("isStarted", runner.isStarted.Load()), wool.Field("isHotReloading", runner.instance.Runtime.IsHotReloading))
+	if !runner.isStarted.Load() {
 		return nil
 	}
 	if runner.instance.Runtime.IsHotReloading {
@@ -423,11 +434,19 @@ func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
 	}
 	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance))
 	w.Debug("stopping")
-	// Build the request
-	runner.isStarted = false
-	go func() {
-		runner.stopped <- struct{}{}
-	}()
+	// Clear the restart flag first — without this, a restart that was
+	// requested but not yet honored could perpetually resurrect the
+	// service on the next Follow tick.
+	runner.restart.Store(false)
+	runner.isStarted.Store(false)
+	// Non-blocking signal to Follow. A blocking goroutine-send here would
+	// leak if Follow had already exited via ctx.Done, and a second Stop
+	// call would try to send to a channel already saturated by the first.
+	select {
+	case runner.stopped <- struct{}{}:
+	case <-ctx.Done():
+	default:
+	}
 	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
@@ -437,8 +456,18 @@ func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
 	return &OutputProperty{}, nil
 }
 
+// Destroy shuts down the agent. Calls Stop first if the runner is still
+// marked started — callers that have already called Stop are unaffected
+// (the isStarted guard makes the inner Stop a no-op), but callers that
+// jump straight to Destroy get a clean two-phase shutdown instead of
+// force-killing the agent mid-flight.
 func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance))
+	if runner.isStarted.Load() {
+		if _, err := runner.Stop(ctx); err != nil {
+			w.Warn("stop before destroy failed — proceeding anyway", wool.ErrField(err))
+		}
+	}
 	w.Debug("shutting down")
 	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -459,8 +488,12 @@ func (runner *Runner) Follow(ctx context.Context) error {
 		defer ticker.Stop()
 		for {
 			select {
+			case <-ctx.Done():
+				// Flow context cancelled (e.g. SIGINT, shutdown); exit so the
+				// goroutine doesn't outlive its caller.
+				return
 			case <-runner.stopped:
-				if !runner.restart {
+				if !runner.restart.Load() {
 					return
 				}
 			case <-ticker.C:
@@ -473,7 +506,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 					// plugin itself is gone or unreachable. Report up so the
 					// parent can tear the rest of the tree down.
 					w.Debug("cannot get information", wool.ErrField(err))
-					if runner.isStarted && runner.failureSink != nil {
+					if runner.isStarted.Load() && runner.failureSink != nil {
 						runner.failureSink(runner.Unique(), fmt.Sprintf("agent unreachable: %v", err))
 					}
 					return
@@ -483,7 +516,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				// successful start. The plugin sets StartStatus → ERROR via
 				// MarkRunnerExited; we mirror that into a flow-level failure
 				// so `codefly run` can shut down the rest of the stack.
-				if runner.isStarted && info.StartStatus != nil &&
+				if runner.isStarted.Load() && info.StartStatus != nil &&
 					info.StartStatus.State == runtimev0.StartStatus_ERROR &&
 					runner.failureSink != nil {
 					msg := info.StartStatus.Message
@@ -506,11 +539,39 @@ func (runner *Runner) Follow(ctx context.Context) error {
 					case runtimev0.DesiredState_START:
 						action.Type = RuntimeStart
 					}
-					runner.restart = true
+					// Tear down the current child process tree before re-seeding.
+					// Without this, the agent's previous run (next dev / go build /
+					// python / etc. and all of its workers) stays alive while a
+					// fresh Load/Init/Start is driven in parallel. The pgid
+					// tree-kill in NativeProc.Stop only runs when Runtime.Stop is
+					// invoked, so silent restarts via DesiredState used to leak
+					// the entire pool each round — which is how a single flaky
+					// service multiplied into a fork bomb under `codefly run`.
+					if runner.isStarted.Load() {
+						stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
+						if _, stopErr := runner.Stop(stopCtx); stopErr != nil {
+							w.Warn("stop-before-restart failed — proceeding anyway", wool.ErrField(stopErr))
+						}
+						stopCancel()
+					}
+					runner.restart.Store(true)
 					w.Trace("sending action", wool.Field("action", action.Type))
-					err = runner.callback(ctx, action)
+					// Bound the callback so a stalled playbook consumer can't
+					// indefinitely block the Follow ticker (which would keep
+					// the agent gRPC conn warm and prevent shutdown).
+					cbCtx, cbCancel := context.WithTimeout(ctx, 5*time.Second)
+					err = runner.callback(cbCtx, action)
+					cbCancel()
 					if err != nil {
+						// Clear restart so we don't re-drive the same failing
+						// action on the next tick. If the action is legit-needed
+						// a human or the runtime will re-request it.
+						runner.restart.Store(false)
 						w.Error("cannot seed", wool.ErrField(err))
+						if runner.failureSink != nil {
+							runner.failureSink(runner.Unique(),
+								fmt.Sprintf("restart action failed: %v", err))
+						}
 						return
 					}
 				}

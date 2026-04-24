@@ -27,12 +27,9 @@ func GetAgentWithKind(ctx context.Context, kind resources.AgentKind, input strin
 		return nil, w.Wrapf(err, "cannot parse agent")
 	}
 
-	// Pin to latest if needed
-	if agent.Version == "latest" {
-		err = manager.PinToLatestRelease(ctx, agent)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot pin to latest release")
-		}
+	// Resolve "latest" (local-first, falls back to GitHub).
+	if err := manager.ResolveLatest(ctx, agent); err != nil {
+		return nil, w.Wrapf(err, "cannot resolve latest version")
 	}
 
 	// Download the agent if required

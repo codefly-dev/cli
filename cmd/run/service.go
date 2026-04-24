@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
@@ -45,6 +46,21 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
+		// Reap any process groups orphaned by a prior ungraceful CLI exit
+		// (parent SIGKILL, terminal force-closed). Without this, zombie
+		// trees from a previous `codefly run` survive and hold ports,
+		// making the next run appear to fork-bomb or fail port binding.
+		if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
+			cli.Warning("stale process-group sweep failed: %v", err)
+		}
+		// Ryuk-adapted container sweep: remove any codefly-labeled Docker
+		// containers whose owning CLI is dead. Same semantics as the pgid
+		// sweep but for Docker-mode agents, which can't participate in
+		// pgid tracking (process groups are namespaced inside containers).
+		if err := runnersbase.ReapStaleContainers(ctx); err != nil {
+			cli.Warning("stale container sweep failed: %v", err)
+		}
+
 		var workspace *resources.Workspace
 		var module *resources.Module
 		var service *resources.Service
@@ -58,7 +74,13 @@ var ServiceCmd = &cobra.Command{
 		common.WithSilence(ctx, workspace, silent)
 
 		if withCLIServer {
-			server, err := web.NewServer(web.ServerData{Workspace: workspace})
+			// Propagate --naming-scope into the server's port derivation.
+			// The test SDK (WithDependencies) appends the naming scope to
+			// the workspace name when deriving CLIServerPort, so the spawned
+			// CLI MUST use the same derivation or the client connects to a
+			// port nobody's listening on — the documented cli-server ready
+			// flake.
+			server, err := web.NewServer(web.ServerData{Workspace: workspace, NamingScope: namingScope})
 			cli.ExitOnError(err, "cannot create web server")
 			go func() {
 				_ = server.Start(ctx)

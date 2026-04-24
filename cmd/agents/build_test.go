@@ -62,7 +62,7 @@ func TestGoModRequires(t *testing.T) {
 go 1.21
 
 require (
-	github.com/codefly-dev/wool v0.1.0
+	github.com/codefly-dev/core/wool v0.1.0
 	github.com/codefly-dev/core v0.1.0
 )
 `
@@ -114,7 +114,7 @@ func TestIsDir(t *testing.T) {
 
 func TestBuildAgent_MissingYAML(t *testing.T) {
 	dir := t.TempDir()
-	err := buildAgent(dir)
+	err := buildAgent(dir, buildOptions{skipAudit: true})
 	if err == nil {
 		t.Fatal("buildAgent: expected error, got nil")
 	}
@@ -131,7 +131,7 @@ func TestBuildAgent_InvalidYAML(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write agent.codefly.yaml: %v", err)
 	}
-	err := buildAgent(dir)
+	err := buildAgent(dir, buildOptions{skipAudit: true})
 	if err == nil {
 		t.Fatal("buildAgent: expected error, got nil")
 	}

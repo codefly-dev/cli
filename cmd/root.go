@@ -72,6 +72,10 @@ func Execute() {
 		// Setting via env so spawned subprocesses inherit it too.
 		_ = os.Setenv("CODEFLY_AGENT_SOURCE", "local")
 	}
+	if pluginPath != "" {
+		// Override ~/.codefly — subprocesses inherit via env.
+		_ = os.Setenv(resources.CodeflyHomeEnv, pluginPath)
+	}
 	if tracker != "" {
 		tr, err := actions.NewActionTracker(context.Background(), resources.CodeflyDir(), tracker)
 		cli.ExitOnError(err, "cannot create action tracker")
@@ -88,6 +92,7 @@ var (
 	trace       bool
 	tracker     string
 	localAgents bool
+	pluginPath  string
 )
 
 func init() {
@@ -174,4 +179,9 @@ func init() {
 		"Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). "+
 			"Equivalent to setting CODEFLY_AGENT_SOURCE=local. Use when working "+
 			"on local agent builds or offline.")
+	RootCmd.PersistentFlags().StringVar(&pluginPath, "plugin-path", "",
+		"Override the codefly home directory (default: ~/.codefly). Plugins, "+
+			"containers and logs resolve from <plugin-path>/agents, "+
+			"<plugin-path>/containers, <plugin-path>/logs. Equivalent to "+
+			"setting CODEFLY_HOME.")
 }
