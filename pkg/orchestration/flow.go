@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
@@ -67,6 +68,11 @@ type Flow struct {
 
 	runtimeContext string
 	fixture        string
+
+	// testRequest carries CLI-provided test filtering/suite/extra-args
+	// to the origin runner when the flow is in TestMode. Dependency
+	// runners ignore it — they only need to be Started, not tested.
+	testRequest *runtimev0.TestRequest
 
 	// Output running configurations
 	outputEnvPath string
@@ -704,6 +710,9 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		manager.Runner.WithRuntimeContext(flow.runtimeContext)
 		manager.Runner.WithFixture(flow.fixture)
 		manager.Runner.WithOutputEnv(flow.outputEnvPath)
+		if flow.testRequest != nil {
+			manager.Runner.WithTestRequest(flow.testRequest)
+		}
 		if remote, ok := remotes[resources.WithUnique(flow.originService).Unique()]; ok {
 			manager.Runner.WithRemote(remote.Environment)
 		}
@@ -774,6 +783,12 @@ func (flow *Flow) Executed() []Action {
 func (flow *Flow) WithLoadOnly(only bool) {
 	flow.loadOnly = only
 
+}
+
+// WithTestRequest sets the TestRequest forwarded to the origin runner's
+// Test RPC. Only relevant in TestMode; ignored otherwise.
+func (flow *Flow) WithTestRequest(req *runtimev0.TestRequest) {
+	flow.testRequest = req
 }
 
 func (flow *Flow) ActiveWorkspace() *resources.Workspace {

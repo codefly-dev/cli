@@ -72,6 +72,17 @@ type Runner struct {
 
 	// Running remote
 	remoteEnvironment *resources.Environment
+
+	// testRequest carries CLI-provided test filtering / suite / extra-args
+	// to the agent's Test RPC. Set by Flow only on the origin runner in
+	// TestMode; nil for dependency runners.
+	testRequest *runtimev0.TestRequest
+}
+
+// WithTestRequest stores the TestRequest to forward to the agent on Test().
+// Wired from CLI flags via Flow.WithTestRequest.
+func (runner *Runner) WithTestRequest(req *runtimev0.TestRequest) {
+	runner.testRequest = req
 }
 
 type Callback func(ctx context.Context, action Action) error
@@ -376,11 +387,20 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot stopAfter service instance if needed")
 	}
 
-	req := &runtimev0.TestRequest{}
+	req := runner.testRequest
+	if req == nil {
+		req = &runtimev0.TestRequest{}
+	}
 	err = resources.Validate(req)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot validate start request")
 	}
+
+	w.Info("dispatching Test RPC",
+		wool.Field("target", req.Target),
+		wool.Field("suite", req.Suite),
+		wool.Field("filters", req.Filters),
+		wool.Field("extra_args", req.ExtraArgs))
 
 	resp, err := runner.instance.Runtime.Test(ctx, req)
 
