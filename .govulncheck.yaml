@@ -1,0 +1,37 @@
+# Known vulnerabilities tracked but suppressed from the build audit.
+#
+# Entries listed here are:
+#   1) Real upstream CVEs we cannot currently fix (no patched release available)
+#   2) Verified unreachable from our usage by manual trace review
+#
+# Each entry MUST include:
+#   - id:         the OSV / Go vuln DB ID (e.g. GO-2026-4887)
+#   - module:     the vulnerable module
+#   - reason:     short justification (visible in build logs)
+#   - reviewed:   YYYY-MM-DD of the last manual trace review
+#
+# `codefly agent build` reads this file and skips matching findings.
+# Running `govulncheck ./...` directly will still show them — by design.
+# Re-review every entry monthly; remove entries as soon as an upstream fix
+# is released.
+
+suppressions:
+  - id: GO-2026-4887
+    module: github.com/docker/docker
+    reason: |
+      Moby AuthZ plugin bypass on oversized request bodies. The vuln is
+      daemon-side (HTTP request handler with AuthZ plugins). We only use
+      the client subpackage (Container{Start,Stop,Inspect,...}). Verified
+      via govulncheck traces: none reach plugins/authorization code —
+      they are all package-init chains in the shared module graph.
+      Upstream fix: pending Moby release (no CVE-fixed version yet).
+    reviewed: 2026-04-23
+
+  - id: GO-2026-4883
+    module: github.com/docker/docker
+    reason: |
+      Moby plugin privilege off-by-one. Daemon-side plugin installation
+      validation; we never install Docker plugins via the API. Verified
+      unreachable — no trace path reaches pkg/authorization/ code.
+      Upstream fix: pending Moby release.
+    reviewed: 2026-04-23
