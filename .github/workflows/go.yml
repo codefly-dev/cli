@@ -30,6 +30,9 @@ jobs:
 
       - name: Install Dependencies
         run: go mod tidy && go mod download
+
+      - name: govulncheck audit
+        run: ./scripts/govulncheck.sh
 #
 #      - name: golangci-lint
 #        uses: golangci/golangci-lint-action@v3 # Using 'latest' automatically fetches the latest version
