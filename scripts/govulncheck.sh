@@ -18,6 +18,13 @@ if ! command -v govulncheck >/dev/null 2>&1; then
     export PATH="$(go env GOPATH)/bin:$PATH"
 fi
 
+# Suppression entries older than this are treated as expired — script
+# fails so reviewers re-check whether the upstream has shipped a patch
+# or our reachability analysis still holds. Stale .govulncheck.yaml
+# entries silently shielding new exploit chains is the failure mode
+# this guards against.
+STALE_AFTER_DAYS=${GOVULN_STALE_AFTER_DAYS:-45}
+
 # Find suppressions file by walking up from the repo root.
 suppressions_file=""
 dir="$(pwd)"
@@ -29,13 +36,44 @@ while [ "$dir" != "/" ]; do
     dir="$(dirname "$dir")"
 done
 
-# Extract suppressed IDs. Plain grep avoids a yq dependency in CI.
+# Extract suppressed IDs and (id, reviewed-date) pairs without a yq dep.
+# Plain awk: the yaml block format is stable enough — `id:` and `reviewed:`
+# are the only keys we care about, and they're emitted in lockstep.
 suppressed_ids=""
+stale_suppressions=""
 if [ -n "$suppressions_file" ]; then
-    suppressed_ids="$(grep -oE 'GO-[0-9]+-[0-9]+' "$suppressions_file" | sort -u || true)"
+    pairs="$(awk '
+        /^[[:space:]]*-[[:space:]]+id:/ {
+            sub(/^[[:space:]]*-[[:space:]]+id:[[:space:]]*/, "")
+            id = $0; sub(/[[:space:]]*$/, "", id)
+        }
+        /^[[:space:]]*reviewed:/ {
+            sub(/^[[:space:]]*reviewed:[[:space:]]*/, "")
+            sub(/[[:space:]]*$/, "")
+            if (id != "") { print id "\t" $0; id = "" }
+        }
+    ' "$suppressions_file")"
+    suppressed_ids="$(echo "$pairs" | awk -F'\t' '{print $1}' | sort -u)"
     if [ -n "$suppressed_ids" ]; then
         echo "Loaded $(echo "$suppressed_ids" | wc -l | tr -d ' ') suppression(s) from $suppressions_file"
     fi
+
+    # Staleness check. macOS `date` (BSD) and GNU `date` differ — handle both.
+    today_epoch=$(date +%s)
+    while IFS=$'\t' read -r id reviewed; do
+        [ -z "$id" ] && continue
+        [ -z "$reviewed" ] && continue
+        if reviewed_epoch=$(date -j -f "%Y-%m-%d" "$reviewed" "+%s" 2>/dev/null); then :
+        elif reviewed_epoch=$(date -d "$reviewed" "+%s" 2>/dev/null); then :
+        else
+            echo "⚠️  $id: cannot parse reviewed date '$reviewed' — skipping staleness check"
+            continue
+        fi
+        age_days=$(( (today_epoch - reviewed_epoch) / 86400 ))
+        if [ "$age_days" -gt "$STALE_AFTER_DAYS" ]; then
+            stale_suppressions="$stale_suppressions $id($age_days days)"
+        fi
+    done <<< "$pairs"
 fi
 
 # Run govulncheck. Don't fail the script on its non-zero exit (3 means
@@ -69,6 +107,13 @@ while IFS=$'\t' read -r id fixed; do
         actionable="$actionable $id(fix:$fixed)"
     fi
 done <<< "$findings"
+
+if [ -n "$stale_suppressions" ]; then
+    echo
+    echo "❌ STALE suppressions (>$STALE_AFTER_DAYS days since last review):$stale_suppressions"
+    echo "Re-verify the suppression rationale, bump the 'reviewed:' date in .govulncheck.yaml, and commit."
+    exit 1
+fi
 
 if [ -n "$actionable" ]; then
     echo
