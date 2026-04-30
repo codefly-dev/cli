@@ -171,6 +171,9 @@ func init() {
 	// Terminal
 	RootCmd.AddCommand(TerminalCmd)
 
+	// Companion images (proto, language toolchains)
+	RootCmd.AddCommand(CompanionCmd)
+
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
