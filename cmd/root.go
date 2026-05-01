@@ -174,6 +174,9 @@ func init() {
 	// Companion images (proto, language toolchains)
 	RootCmd.AddCommand(CompanionCmd)
 
+	// Unified release: bump + commit + tag + push for any codefly repo.
+	RootCmd.AddCommand(PublishCmd)
+
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
