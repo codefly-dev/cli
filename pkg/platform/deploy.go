@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
-	"github.com/codefly-dev/core/sdk"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/sdk"
 	"github.com/codefly-dev/core/wool"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -34,7 +34,7 @@ func (d *DeploymentManager) Handle(ctx context.Context, service *resources.Servi
 	w := wool.Get(ctx).In("Builder")
 	switch v := deploy.Kind.(type) {
 	case *builderv0.DeploymentOutput_Kubernetes:
-		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_Kustomize {
+		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_KUSTOMIZE {
 			d.deployments = append(d.deployments, Deployment{
 				Service:    service,
 				OutputPath: deployments.KustomizeDir(ctx, d.workspace, module, service),

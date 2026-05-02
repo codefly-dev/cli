@@ -43,7 +43,7 @@ func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Servi
 	w := wool.Get(ctx).In("Builder")
 	switch v := deploy.Kind.(type) {
 	case *builderv0.DeploymentOutput_Kubernetes:
-		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_Kustomize {
+		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_KUSTOMIZE {
 			// Import images into k3d if applicable.
 			if err := l.importImagesIfK3d(ctx, module, service); err != nil {
 				w.Warn("k3d image import failed (continuing)", wool.Field("error", err.Error()))
@@ -73,8 +73,23 @@ func (l *LocalApplyManager) KustomizeApply(ctx context.Context, module *resource
 	return nil
 }
 
-// importImagesIfK3d detects k3d and imports built Docker images into the cluster.
+// importImagesIfK3d imports freshly-built Docker images into the k3d
+// cluster so pods can use them without going through a registry.
+//
+// Cluster decision order:
+//  1. If env declares a non-k3d Cluster.Kind (eks, gke, …), skip — those
+//     clusters pull from a registry and image-import is a no-op that just
+//     wastes a `kubectl config current-context` exec.
+//  2. If env declares Cluster.Kind == "k3d" (or no Cluster block at all,
+//     which we treat as legacy = local k3d), run the runtime detection
+//     to discover the actual cluster name.
+//  3. If detection returns "" (no k3d cluster at the current context),
+//     skip silently — user might be on minikube / kind / a real cluster.
 func (l *LocalApplyManager) importImagesIfK3d(ctx context.Context, module *resources.Module, service *resources.Service) error {
+	if l.Env != nil && !l.Env.IsK3d() {
+		return nil
+	}
+
 	cluster := DetectK3dCluster(ctx)
 	if cluster == "" {
 		return nil

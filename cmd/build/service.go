@@ -64,14 +64,44 @@ var ServiceCmd = &cobra.Command{
 
 func initBuildService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("buildService", wool.ThisField(resources.WithUnique(service)))
-	if org != "" {
-		repo := "621829027644.dkr.ecr.us-east-1.amazonaws.com/kopkfeqwuk"
-		builder.SetRepository(repo)
+
+	// Resolve the target environment so we can pick up its registry,
+	// namespace, etc. Falls back to LocalEnvironment when the workspace
+	// hasn't migrated to declared environments yet.
+	env := workspace.FindEnvironment(envInput)
+	if env == nil {
+		env = &resources.Environment{Name: envInput}
 	}
+
+	// Image-registry resolution order:
+	//   1. --org flag (explicit override; wins everything).
+	//   2. env.Registry.URL declared in workspace.codefly.yaml.
+	//   3. legacy default (the existing hardcoded ECR URL, kept for
+	//      back-compat until every workspace declares an env).
+	var registryURL string
+	switch {
+	case org != "":
+		registryURL = org
+	case env.Registry != nil && env.Registry.URL != "":
+		registryURL = env.Registry.URL
+	}
+	if registryURL != "" {
+		builder.SetRepository(registryURL)
+	}
+
 	if push {
+		// Authenticate against the registry before the build runs.
+		// Skip when we don't have a registry to push to (anonymous
+		// build), or when the env doesn't declare an Auth method
+		// (assume pre-existing docker creds in ~/.docker/config.json).
+		if registryURL != "" && env.Registry != nil && env.Registry.Auth != "" {
+			if err := builder.RegistryLogin(ctx, registryURL, env.Registry.Auth); err != nil {
+				return nil, w.Wrapf(err, "registry login failed")
+			}
+		}
 		orchestration.SetBuilderPush()
 	}
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), orchestration.BuildMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.BuildMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -105,9 +135,11 @@ func buildService(ctx context.Context, flow *orchestration.Flow) error {
 var standAlone bool
 var org string
 var push bool
+var envInput string
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
-	ServiceCmd.Flags().StringVar(&org, "org", "", "Organization")
+	ServiceCmd.Flags().StringVar(&org, "org", "", "Image registry override (e.g. ghcr.io/myorg). Wins over the env's registry.url.")
 	ServiceCmd.Flags().BoolVar(&push, "push", false, "Push the image to the repository")
+	ServiceCmd.Flags().StringVar(&envInput, "env", "local", "Environment to build for (looks up registry/cluster from workspace.codefly.yaml)")
 }

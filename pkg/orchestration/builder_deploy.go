@@ -100,6 +100,13 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if resp.Deployment == nil {
 		return outputProperty, nil
 	}
+	// Render-only mode: caller (cli/cmd/deploy) skipped wiring a
+	// deployment manager so manifests get written to disk by the
+	// agent's KustomizeDeploy but no kubectl apply runs. Used by
+	// the gitops flow where ArgoCD picks up the rendered tree.
+	if b.world.RemoteManager == nil {
+		return outputProperty, nil
+	}
 	err = b.world.RemoteManager.Handle(ctx, b.instance.Service, b.instance.Module, resp.Deployment)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot handle deployment")

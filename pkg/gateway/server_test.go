@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"google.golang.org/grpc"
 )
@@ -29,6 +31,10 @@ type mockCodeClient struct {
 	addDependencyFn    func(ctx context.Context, in *codev0.AddDependencyRequest, opts ...grpc.CallOption) (*codev0.AddDependencyResponse, error)
 	removeDependencyFn func(ctx context.Context, in *codev0.RemoveDependencyRequest, opts ...grpc.CallOption) (*codev0.RemoveDependencyResponse, error)
 	getProjectInfoFn   func(ctx context.Context, in *codev0.GetProjectInfoRequest, opts ...grpc.CallOption) (*codev0.GetProjectInfoResponse, error)
+}
+
+type mockRuntimeClient struct {
+	testFn func(ctx context.Context, in *runtimev0.TestRequest, opts ...grpc.CallOption) (*runtimev0.TestResponse, error)
 }
 
 func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, opts ...grpc.CallOption) (*codev0.CodeResponse, error) {
@@ -175,6 +181,40 @@ func (m *mockCodeClient) ShellExec(_ context.Context, _ *codev0.ShellExecRequest
 	return nil, fmt.Errorf("not exercised in mock")
 }
 
+func (m *mockRuntimeClient) Load(context.Context, *runtimev0.LoadRequest, ...grpc.CallOption) (*runtimev0.LoadResponse, error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+func (m *mockRuntimeClient) Init(context.Context, *runtimev0.InitRequest, ...grpc.CallOption) (*runtimev0.InitResponse, error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+func (m *mockRuntimeClient) Start(context.Context, *runtimev0.StartRequest, ...grpc.CallOption) (*runtimev0.StartResponse, error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+func (m *mockRuntimeClient) Stop(context.Context, *runtimev0.StopRequest, ...grpc.CallOption) (*runtimev0.StopResponse, error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+func (m *mockRuntimeClient) Destroy(context.Context, *runtimev0.DestroyRequest, ...grpc.CallOption) (*runtimev0.DestroyResponse, error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+func (m *mockRuntimeClient) Build(context.Context, *runtimev0.BuildRequest, ...grpc.CallOption) (*runtimev0.BuildResponse, error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+func (m *mockRuntimeClient) Test(ctx context.Context, in *runtimev0.TestRequest, opts ...grpc.CallOption) (*runtimev0.TestResponse, error) {
+	if m.testFn == nil {
+		return nil, fmt.Errorf("Test not configured")
+	}
+	return m.testFn(ctx, in, opts...)
+}
+func (m *mockRuntimeClient) Lint(context.Context, *runtimev0.LintRequest, ...grpc.CallOption) (*runtimev0.LintResponse, error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+func (m *mockRuntimeClient) Information(context.Context, *runtimev0.InformationRequest, ...grpc.CallOption) (*runtimev0.InformationResponse, error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+func (m *mockRuntimeClient) Communicate(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[agentv0.Answer, agentv0.Question], error) {
+	return nil, fmt.Errorf("not exercised in mock")
+}
+
 // newTestServer creates a Server with the mock injected into the plugins map.
 // The service name "test-svc" is used throughout, matching the mindYAML config.
 func newTestServer(mock codev0.CodeClient) *Server {
@@ -204,9 +244,67 @@ func newTestServerWithWorkDir(mock codev0.CodeClient, workDir string) *Server {
 	return s
 }
 
+func newTestServerWithRuntime(runtime runtimev0.RuntimeClient) *Server {
+	s := newTestServer(&mockCodeClient{})
+	s.plugins["test-svc"].runtime = runtime
+	return s
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+func TestTestPreservesStructuredRuntimeFields(t *testing.T) {
+	rt := &mockRuntimeClient{
+		testFn: func(_ context.Context, _ *runtimev0.TestRequest, _ ...grpc.CallOption) (*runtimev0.TestResponse, error) {
+			return &runtimev0.TestResponse{
+				Output: "raw output",
+				Result: &runtimev0.TestRunResult{
+					State:   runtimev0.TestRunResult_FAILED,
+					Message: "suite failed",
+				},
+				Counts: &runtimev0.TestCounts{
+					Total:   3,
+					Passed:  1,
+					Failed:  1,
+					Skipped: 1,
+				},
+				Coverage: &runtimev0.TestCoverage{TotalPct: 87.5},
+				Suites: []*runtimev0.TestSuite{
+					{
+						Cases: []*runtimev0.TestCase{
+							{
+								FullName: "pkg.TestFails",
+								Failure:  &runtimev0.TestFailure{Message: "want 1 got 2"},
+							},
+						},
+					},
+				},
+			}, nil
+		},
+	}
+	s := newTestServerWithRuntime(rt)
+
+	resp, err := s.Test(context.Background(), &gatewayv1.TestRequest{})
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if resp.Success {
+		t.Fatal("Success = true, want false")
+	}
+	if resp.Output != "suite failed\nraw output" {
+		t.Fatalf("Output = %q", resp.Output)
+	}
+	if resp.TestsRun != 3 || resp.TestsPassed != 1 || resp.TestsFailed != 1 || resp.TestsSkipped != 1 {
+		t.Fatalf("counts = run:%d passed:%d failed:%d skipped:%d", resp.TestsRun, resp.TestsPassed, resp.TestsFailed, resp.TestsSkipped)
+	}
+	if resp.CoveragePct != 87.5 {
+		t.Fatalf("CoveragePct = %v", resp.CoveragePct)
+	}
+	if len(resp.Failures) != 1 || resp.Failures[0] != "pkg.TestFails: want 1 got 2" {
+		t.Fatalf("Failures = %#v", resp.Failures)
+	}
+}
 
 func TestListSymbols_Success(t *testing.T) {
 	mock := &mockCodeClient{

@@ -75,10 +75,11 @@ var ServiceCmd = &cobra.Command{
 func initDeployService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(resources.WithUnique(service)))
 	orchestration.SetDryRun(dryRun)
-	var env *resources.Environment
-	if envInput == "local" {
-		env = resources.LocalEnvironment()
-	} else {
+	// Look up the declared env from workspace.codefly.yaml; fall back to
+	// a bare-name env if the workspace hasn't migrated yet (FindEnvironment
+	// already special-cases "local" → LocalEnvironment).
+	env := workspace.FindEnvironment(envInput)
+	if env == nil {
 		env = &resources.Environment{Name: envInput}
 	}
 
@@ -97,9 +98,19 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	// Use Local Deployment NewManager
 
-	flow.WithDeploymentManager(deployments.NewLocalApplyManager(ctx, workspace, env))
+	// Apply mode (default): the LocalApplyManager runs `kustomize build
+	// | kubectl apply` after each agent renders its manifests, plus
+	// imports built images into k3d when the env declares it.
+	//
+	// Render-only mode (--render-only): skip the manager wiring. Agents
+	// still write the rendered kustomize tree to disk via KustomizeDeploy
+	// (in builder_deploy.go), but no kubectl apply runs. ArgoCD or a
+	// separate gitops sync picks the rendered tree up from the workspace
+	// once it's committed.
+	if !renderOnly {
+		flow.WithDeploymentManager(deployments.NewLocalApplyManager(ctx, workspace, env))
+	}
 	return flow, nil
 }
 
@@ -121,9 +132,11 @@ func deployService(ctx context.Context, flow *orchestration.Flow) error {
 var standAlone bool
 var envInput string
 var dryRun bool
+var renderOnly bool
 
 func init() {
 	ServiceCmd.Flags().StringVar(&envInput, "env", "local", "Environment to deploy the service")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Dry run the deployment")
+	ServiceCmd.Flags().BoolVar(&renderOnly, "render-only", false, "Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.")
 }

@@ -13,4 +13,5 @@ var BuildCmd = &cobra.Command{
 
 func init() {
 	BuildCmd.AddCommand(build.ServiceCmd)
+	BuildCmd.AddCommand(build.ModuleCmd)
 }

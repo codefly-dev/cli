@@ -59,17 +59,17 @@ type Server struct {
 	// Plugin management: one Code agent per service.
 	pluginMu   sync.Mutex
 	plugins    map[string]*pluginConn // service name → plugin connection
-	stopHealth chan struct{}           // closed to stop all health-monitor goroutines
+	stopHealth chan struct{}          // closed to stop all health-monitor goroutines
 	healthWg   sync.WaitGroup         // tracks running health-monitor goroutines
 }
 
 // pluginConn holds a running agent process and its gRPC clients.
 type pluginConn struct {
-	agent      *resources.Agent
-	agentConn  *manager.AgentConn
-	code       codev0.CodeClient
-	agentSvc   agentv0.AgentClient
-	runtime    runtimev0.RuntimeClient
+	agent     *resources.Agent
+	agentConn *manager.AgentConn
+	code      codev0.CodeClient
+	agentSvc  agentv0.AgentClient
+	runtime   runtimev0.RuntimeClient
 }
 
 // MindYAML mirrors the mind.yaml config structure.
@@ -710,18 +710,127 @@ func (s *Server) Test(ctx context.Context, _ *gatewayv1.TestRequest) (*gatewayv1
 	if err != nil {
 		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin test RPC failed: %v", err)}, nil
 	}
-	success := resp.Status != nil && resp.Status.State == runtimev0.TestStatus_SUCCESS
-	output := resp.Output
-	if !success && resp.Status != nil {
-		output = resp.Status.Message + "\n" + output
-	}
+	success := runtimeTestSuccess(resp)
+	output := runtimeTestOutput(resp, success)
+	run, passed, failed, skipped := runtimeTestCounts(resp)
 	return &gatewayv1.TestResponse{
-		Success:     success,
-		Output:      output,
-		TestsRun:    resp.TestsRun,
-		TestsPassed: resp.TestsPassed,
-		TestsFailed: resp.TestsFailed,
+		Success:      success,
+		Output:       output,
+		TestsRun:     run,
+		TestsPassed:  passed,
+		TestsFailed:  failed,
+		TestsSkipped: skipped,
+		CoveragePct:  runtimeTestCoverage(resp),
+		Failures:     runtimeTestFailures(resp),
 	}, nil
+}
+
+func runtimeTestSuccess(resp *runtimev0.TestResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if result := resp.GetResult(); result != nil {
+		switch result.GetState() {
+		case runtimev0.TestRunResult_PASSED:
+			return true
+		case runtimev0.TestRunResult_FAILED, runtimev0.TestRunResult_ERRORED, runtimev0.TestRunResult_TIMED_OUT:
+			return false
+		}
+	}
+	if status := resp.GetStatus(); status != nil {
+		return status.GetState() == runtimev0.TestStatus_SUCCESS
+	}
+	return resp.GetTestsFailed() == 0 && len(resp.GetFailures()) == 0
+}
+
+func runtimeTestOutput(resp *runtimev0.TestResponse, success bool) string {
+	if resp == nil {
+		return ""
+	}
+	output := resp.GetOutput()
+	if success {
+		return output
+	}
+	var msg string
+	if result := resp.GetResult(); result != nil {
+		msg = result.GetMessage()
+	}
+	if msg == "" {
+		if status := resp.GetStatus(); status != nil {
+			msg = status.GetMessage()
+		}
+	}
+	if msg == "" {
+		return output
+	}
+	if output == "" {
+		return msg
+	}
+	return msg + "\n" + output
+}
+
+func runtimeTestCounts(resp *runtimev0.TestResponse) (run, passed, failed, skipped int32) {
+	if resp == nil {
+		return 0, 0, 0, 0
+	}
+	if counts := resp.GetCounts(); counts != nil {
+		return counts.GetTotal(), counts.GetPassed(), counts.GetFailed() + counts.GetErrored(), counts.GetSkipped()
+	}
+	return resp.GetTestsRun(), resp.GetTestsPassed(), resp.GetTestsFailed(), resp.GetTestsSkipped()
+}
+
+func runtimeTestCoverage(resp *runtimev0.TestResponse) float32 {
+	if resp == nil {
+		return 0
+	}
+	if coverage := resp.GetCoverage(); coverage != nil {
+		return coverage.GetTotalPct()
+	}
+	return resp.GetCoveragePct()
+}
+
+func runtimeTestFailures(resp *runtimev0.TestResponse) []string {
+	if resp == nil {
+		return nil
+	}
+	if len(resp.GetFailures()) > 0 {
+		return append([]string(nil), resp.GetFailures()...)
+	}
+	failures := runtimeTestSuiteFailures(nil, resp.GetSuites())
+	if len(failures) == 0 {
+		if result := resp.GetResult(); result != nil && result.GetMessage() != "" && !runtimeTestSuccess(resp) {
+			failures = append(failures, result.GetMessage())
+		}
+	}
+	return failures
+}
+
+func runtimeTestSuiteFailures(out []string, suites []*runtimev0.TestSuite) []string {
+	for _, suite := range suites {
+		for _, tc := range suite.GetCases() {
+			failure := tc.GetFailure()
+			if failure == nil {
+				continue
+			}
+			name := tc.GetFullName()
+			if name == "" {
+				name = tc.GetName()
+			}
+			msg := failure.GetMessage()
+			if msg == "" {
+				msg = failure.GetDetail()
+			}
+			if name != "" && msg != "" {
+				out = append(out, name+": "+msg)
+			} else if name != "" {
+				out = append(out, name)
+			} else if msg != "" {
+				out = append(out, msg)
+			}
+		}
+		out = runtimeTestSuiteFailures(out, suite.GetSuites())
+	}
+	return out
 }
 
 // ─── Execution ───────────────────────────────────────────────

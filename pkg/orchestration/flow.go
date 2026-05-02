@@ -3,9 +3,14 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -131,7 +136,7 @@ func NewEmptyFlow(ctx context.Context, mode Mode) (*Flow, error) {
 		Env:  resources.LocalEnvironment(),
 	}
 	return &Flow{
-		world:    world,
+		world: world,
 		// Buffer sized to accommodate the largest plausible dependency graph.
 		// With 8 we silently dropped failures under concurrent crash cascades
 		// (the review caught this); 256 covers realistic sizes while still
@@ -740,12 +745,148 @@ func (flow *Flow) CreateManager(ctx context.Context) error {
 }
 
 func (flow *Flow) Ready(ctx context.Context) bool {
-	if flow == nil {
+	if flow == nil || flow.playbook == nil {
 		return false
 	}
-	// We want the originService to have ran
-	for _, action := range flow.playbook.Executed() {
-		if action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == RuntimeStart {
+	origin := resources.WithUnique(flow.originService).Unique()
+	executed := flow.playbook.Executed()
+	if !flow.excludeRoot {
+		return runtimeStarted(executed, origin)
+	}
+
+	return flow.dependenciesReady(ctx, origin)
+}
+
+func (flow *Flow) dependenciesReady(ctx context.Context, origin string) bool {
+	if flow.world == nil || flow.world.Dependencies == nil {
+		return true
+	}
+	required, err := flow.world.Dependencies.DirectRequires(ctx, origin)
+	if err != nil {
+		wool.Get(ctx).In("flow.Ready").Debug("cannot resolve dependencies", wool.ErrField(err))
+		return false
+	}
+	if len(required) == 0 {
+		return true
+	}
+	if flow.SharedState == nil {
+		return false
+	}
+	for _, service := range required {
+		svc, err := flow.world.Dependencies.ServiceFromUnique(service.Unique)
+		if err != nil {
+			wool.Get(ctx).In("flow.Ready").Debug("cannot resolve dependency service", wool.ErrField(err))
+			return false
+		}
+		if len(svc.Endpoints) == 0 {
+			continue
+		}
+		mappings, ok := flow.SharedState.GetNetworkMappingsFromUnique(service.Unique)
+		if !ok || len(mappings) == 0 {
+			return false
+		}
+		if !networkMappingsReachable(mappings) {
+			return false
+		}
+	}
+	return true
+}
+
+func networkMappingsReachable(mappings []*basev0.NetworkMapping) bool {
+	byName := make(map[string]*basev0.NetworkMapping)
+	for _, mapping := range mappings {
+		if mapping.Endpoint != nil {
+			byName[mapping.Endpoint.Name] = mapping
+		}
+	}
+	if bolt, hasBolt := byName["bolt"]; hasBolt {
+		if httpMapping, hasHTTP := byName["http"]; hasHTTP {
+			return networkMappingTCPReachable(bolt) && networkMappingHTTPReachable(httpMapping)
+		}
+	}
+
+	anyReachable := false
+	for _, mapping := range mappings {
+		if networkMappingTCPReachable(mapping) {
+			anyReachable = true
+		}
+	}
+	return anyReachable
+}
+
+func networkMappingTCPReachable(mapping *basev0.NetworkMapping) bool {
+	instance := reachableNetworkInstance(mapping.Instances)
+	if instance == nil {
+		return false
+	}
+	address := networkInstanceDialAddress(instance)
+	if address == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func networkMappingHTTPReachable(mapping *basev0.NetworkMapping) bool {
+	instance := reachableNetworkInstance(mapping.Instances)
+	if instance == nil {
+		return false
+	}
+	address := networkInstanceDialAddress(instance)
+	if address == "" {
+		return false
+	}
+	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
+		address = "http://" + address
+	}
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	resp, err := client.Get(address)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return true
+}
+
+func reachableNetworkInstance(instances []*basev0.NetworkInstance) *basev0.NetworkInstance {
+	for _, instance := range instances {
+		if instance.GetAccess().GetKind() == resources.NetworkAccessNative {
+			return instance
+		}
+	}
+	for _, instance := range instances {
+		if instance.GetAccess().GetKind() == resources.NetworkAccessPublic {
+			return instance
+		}
+	}
+	if len(instances) == 0 {
+		return nil
+	}
+	return instances[0]
+}
+
+func networkInstanceDialAddress(instance *basev0.NetworkInstance) string {
+	if instance.GetHost() != "" {
+		return instance.GetHost()
+	}
+	if instance.GetHostname() != "" && instance.GetPort() != 0 {
+		return net.JoinHostPort(instance.GetHostname(), strconv.Itoa(int(instance.GetPort())))
+	}
+	address := instance.GetAddress()
+	u, err := url.Parse(address)
+	if err == nil && u.Host != "" {
+		return u.Host
+	}
+	return address
+}
+
+func runtimeStarted(actions []Action, unique string) bool {
+	for _, action := range actions {
+		if action.Service == unique && action.Type == RuntimeStart && !action.Failed {
 			return true
 		}
 	}
