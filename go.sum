@@ -75,8 +75,8 @@ github.com/clipperhouse/uax29/v2 v2.7.0 h1:+gs4oBZ2gPfVrKPthwbMzWZDaAFPGYK72F0NJ
 github.com/clipperhouse/uax29/v2 v2.7.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJSwu5BF98AuoVM=
 github.com/cloudflare/circl v1.6.3 h1:9GPOhQGF9MCYUeXyMYlqTR6a5gTrgR/fBLXvUgtVcg8=
 github.com/cloudflare/circl v1.6.3/go.mod h1:2eXP6Qfat4O/Yhh8BznvKnJ+uzEoTQ6jVKJRn81BiS4=
-github.com/codefly-dev/core v0.1.157 h1:6wDKT8GMbEjaWmIAI4a7YIaAJ/WQcORs9VIkj0ndjJs=
-github.com/codefly-dev/core v0.1.157/go.mod h1:eVAj7uDzKM1Xe/szwxTtZdlxRQcQqNgYHFaNtolgHh8=
+github.com/codefly-dev/core v0.1.159 h1:sHXryzTtcrl8q4J6ypJfVwuX/Phc5rmSxk1EYpzzy9Q=
+github.com/codefly-dev/core v0.1.159/go.mod h1:kNgKh/2VO70NrsfAxZ+Yn0odezHelOeVRA2e/olTYj4=
 github.com/codefly-dev/golor v0.1.3 h1:xmo+ceyJFRYZdvpWE2fNd0jeaadp/Ibm1BnganiGKOc=
 github.com/codefly-dev/golor v0.1.3/go.mod h1:sl/u/K1l7J0Pr3xyVZp8fOJYQItKKst1No9JqgzLLoY=
 github.com/compose-spec/compose-go v1.20.2 h1:u/yfZHn4EaHGdidrZycWpxXgFffjYULlTbRfJ51ykjQ=
