@@ -86,6 +86,8 @@ type Flow struct {
 	services []*resources.Service
 	// except when we do remote
 	remoteServices []*Remote
+
+	excludedDependencyServices []string
 }
 
 func MapValues[K comparable, V any](m map[K]V) []V {
@@ -632,17 +634,27 @@ func (flow *Flow) ServiceFromUnique(unique string) (*resources.Service, error) {
 func (flow *Flow) InitManagers(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
 	remotes := make(map[string]*Remote)
+	var dependencyOptions []architecture.DependencyOption
 	if len(flow.remoteServices) > 0 {
 		var cutoffs []string
 		for _, remote := range flow.remoteServices {
 			remotes[remote.Unique()] = remote
 			cutoffs = append(cutoffs, remote.Unique())
 		}
-		dep, err := architecture.NewServiceDependencies(ctx, flow.workspace, architecture.SkipDependencyFor(cutoffs...))
+		dependencyOptions = append(dependencyOptions, architecture.SkipDependencyFor(cutoffs...))
+	}
+	if len(flow.excludedDependencyServices) > 0 {
+		dependencyOptions = append(dependencyOptions, architecture.ExcludeServices(flow.excludedDependencyServices...))
+	}
+	if len(dependencyOptions) > 0 {
+		dep, err := architecture.NewServiceDependencies(ctx, flow.workspace, dependencyOptions...)
 		if err != nil {
 			return w.Wrap(err)
 		}
 		flow.world.Dependencies = dep
+		if flow.SharedState != nil {
+			flow.SharedState.SetDependencies(dep)
+		}
 	}
 
 	// Create manager for all service required by this service if not standalone
@@ -958,6 +970,10 @@ type Remote struct {
 
 func (flow *Flow) WithRemotes(services []*Remote) {
 	flow.remoteServices = services
+}
+
+func (flow *Flow) WithExcludedDependencies(services []string) {
+	flow.excludedDependencyServices = services
 }
 
 var _ ExecutorManager = &Flow{}

@@ -16,10 +16,37 @@ type StateManager struct {
 	mu sync.RWMutex
 
 	configurationManager *providers.Manager
-	dependencies         *architecture.ServiceDependencies
+
+	// dependencies is normally set-once during Flow.InitManagers
+	// BEFORE any runner is started, but SetDependencies can be
+	// invoked when filters rebuild the graph. Both writes and
+	// reads of this pointer go through mu so the race detector
+	// stays clean; readers snapshot via deps() and release the
+	// lock before calling methods on the snapshot.
+	dependencies *architecture.ServiceDependencies
 
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
+}
+
+// SetDependencies rebinds the dependency graph. Used by Flow when
+// remote/exclude filters change the graph after construction.
+func (s *StateManager) SetDependencies(deps *architecture.ServiceDependencies) {
+	s.mu.Lock()
+	s.dependencies = deps
+	s.mu.Unlock()
+}
+
+// deps returns the current dependencies pointer under RLock and
+// releases the lock before returning. Callers can safely call
+// methods on the returned pointer; ServiceDependencies itself is
+// internally immutable post-construction so there's no further
+// read-side lock to take.
+func (s *StateManager) deps() *architecture.ServiceDependencies {
+	s.mu.RLock()
+	d := s.dependencies
+	s.mu.RUnlock()
+	return d
 }
 
 func NewStateManager(_ context.Context, configurationManager *providers.Manager, dependencies *architecture.ServiceDependencies) (*StateManager, error) {
@@ -40,7 +67,7 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 	w := wool.Get(ctx).In("StateManager.GetConfigurations", wool.ThisField(service))
 	var confs []*basev0.Configuration
 	// We get the shared information from the direct requirements
-	requires, err := s.dependencies.DirectRequires(ctx, service.Unique())
+	requires, err := s.deps().DirectRequires(ctx, service.Unique())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get direct requires")
 	}
@@ -71,7 +98,7 @@ func (s *StateManager) GetDependentConfigurationsForUnique(ctx context.Context, 
 		return nil, nil
 	}
 	w := wool.Get(ctx).In("StateManager.GetDependentConfigurationsForUnique", wool.Field("this", unique))
-	svc, err := s.dependencies.ServiceFromUnique(unique)
+	svc, err := s.deps().ServiceFromUnique(unique)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get service from unique")
 	}

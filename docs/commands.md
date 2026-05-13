@@ -40,6 +40,7 @@ codefly run service api --fixture seed            # Use a named fixture
 codefly run service api --remote backend/db:staging  # Use remote dependency
 codefly run service api --output-env .env         # Write endpoint env vars to file
 codefly run service api --exclude-root            # Only run dependencies, not the service itself
+codefly run service api --exclude-dependency infra/temporal  # Omit optional dependency
 codefly run service api --silent backend/db       # Suppress log output for a dependency
 codefly run service api --with-server             # Run with web companion UI
 ```
@@ -50,6 +51,7 @@ codefly run service api --with-server             # Run with web companion UI
 |------|-------------|
 | `--standalone` | Don't start dependency services |
 | `--exclude-root` | Start dependencies only, skip the target service |
+| `--exclude-dependency` | Exclude optional dependency services from this run. Repeatable; accepts `module/service` or an unambiguous service name. |
 | `--service-path` | Override the path to the service directory |
 | `--runtime-context` | Runtime context (e.g., `nix`, `docker`) |
 | `--fixture` | Named fixture for test data |

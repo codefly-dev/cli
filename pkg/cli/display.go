@@ -41,7 +41,7 @@ func Header(level int, s string, args ...any) {
 }
 
 func (wrapper *Wrapper) Warning(s string, args ...any) {
-	theme := "⚠️ #(bold,magenta)"
+	theme := "#(bold,magenta)"
 	fmt.Println(tui.RenderWarning(wrapper.View(theme, s, args...)))
 }
 
@@ -81,7 +81,7 @@ func Info(s string, args ...any) {
 }
 
 func (wrapper *Wrapper) Error(s string, args ...any) {
-	theme := "☠️ #(bold,red)"
+	theme := "#(bold,red)"
 	fmt.Println(tui.RenderError(wrapper.View(theme, s, args...)))
 }
 

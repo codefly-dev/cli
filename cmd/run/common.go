@@ -18,6 +18,9 @@ var remotes []string
 // Silent services in the CLI
 var silent []string
 
+// Services to omit from the dependency graph for this run.
+var excludeDependencies []string
+
 // With fixture across the runtime
 var fixture string
 
@@ -39,4 +42,3 @@ var loadOnly bool
 
 // init only mode
 var initOnly bool
-

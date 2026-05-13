@@ -209,9 +209,13 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
-	fmt.Printf("[DEBUG CLI] fixture=%q\n", fixture)
 	flow.WithFixture(fixture)
 	flow.WithRemotes(remoteServices)
+	excludedDependencies, err := resolveExcludedDependencies(ctx, workspace, excludeDependencies)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	flow.WithExcludedDependencies(excludedDependencies)
 
 	err = flow.InitManagers(ctx)
 	if err != nil {
@@ -222,6 +226,33 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, w.Wrap(err)
 	}
 	return flow, nil
+}
+
+func resolveExcludedDependencies(ctx context.Context, workspace *resources.Workspace, inputs []string) ([]string, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, input := range inputs {
+		for _, raw := range strings.Split(input, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			ref, err := workspace.FindUniqueServiceAndModuleByName(ctx, raw)
+			if err != nil {
+				return nil, fmt.Errorf("resolving --exclude-dependency %q: %w", raw, err)
+			}
+			unique := ref.Unique()
+			if seen[unique] {
+				continue
+			}
+			seen[unique] = true
+			out = append(out, unique)
+		}
+	}
+	return out, nil
 }
 
 func parseRemote(workspace *resources.Workspace, remotes []string) ([]*orchestration.Remote, error) {
@@ -280,6 +311,7 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
+	ServiceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")
 	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)")

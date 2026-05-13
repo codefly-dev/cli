@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/services/audit"
@@ -292,6 +293,7 @@ func buildAgent(dir string, opts buildOptions) error {
 	}
 
 	cli.Header(1, "Building %s:%s (%s/%s)", ag.Name, ag.Version, runtime.GOOS, runtime.GOARCH)
+	nativeStarted := time.Now()
 	build := exec.Command("go", "build", "-o", nativePath, ".")
 	build.Dir = dir
 	build.Stdout = os.Stdout
@@ -299,6 +301,7 @@ func buildAgent(dir string, opts buildOptions) error {
 	if err := build.Run(); err != nil {
 		return fmt.Errorf("go build (native): %w", err)
 	}
+	cli.Info("Binary build done (%s/%s) elapsed=%s", runtime.GOOS, runtime.GOARCH, time.Since(nativeStarted).Round(100*time.Millisecond))
 	cli.Info("Installed: %s", nativePath)
 
 	containerDir := filepath.Join(home, ".codefly", "containers", "agents", subdir, ag.Publisher)
@@ -308,6 +311,7 @@ func buildAgent(dir string, opts buildOptions) error {
 	}
 
 	cli.Info("Building Linux/amd64 static binary...")
+	containerStarted := time.Now()
 	ldflags := `-extldflags "-static"`
 	crossBuild := exec.Command("go", "build", "-ldflags", ldflags, "-o", containerPath, ".")
 	crossBuild.Dir = dir
@@ -321,6 +325,7 @@ func buildAgent(dir string, opts buildOptions) error {
 	if err := crossBuild.Run(); err != nil {
 		cli.Info("Warning: Linux cross-build failed (non-fatal): %v", err)
 	} else {
+		cli.Info("Binary build done (linux/amd64) elapsed=%s", time.Since(containerStarted).Round(100*time.Millisecond))
 		cli.Info("Installed (container): %s", containerPath)
 	}
 
