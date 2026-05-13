@@ -6,7 +6,7 @@ require (
 	github.com/Masterminds/semver v1.5.0
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.1.159
+	github.com/codefly-dev/core v0.1.160
 	github.com/codefly-dev/golor v0.1.3
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/creack/pty v1.1.24
