@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -94,6 +95,17 @@ var ServiceCmd = &cobra.Command{
 
 		var flow *orchestration.Flow
 
+		// stopFresh tears down whatever the flow started, using a FRESH context
+		// (ctx/runCtx are cancelled by the time we shut down) with a generous
+		// timeout so docker stop + agent shutdown run to completion. Used on
+		// every exit path — including failures — so a partially-started flow
+		// never orphans agents or containers.
+		stopFresh := func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = stopService(shutdownCtx, flow)
+			shutdownCancel()
+		}
+
 		if isHeadless {
 			// Headless mode: plain log output, no TUI
 			// Works in: MCP, Claude Code, CI, Docker, pipes, scripts
@@ -101,15 +113,17 @@ var ServiceCmd = &cobra.Command{
 			var err error
 			flow, err = initRunService(ctx, workspace, module, service)
 			if err != nil {
-				cli.Error("init failed: %v", errors.Unwrap(err))
-				cli.Exit()
+				cli.ErrorChain(err, "cannot initialize service %s", serviceName)
+				stopFresh() // tear down anything Init partially started
+				cli.ExitError()
 				return
 			}
 			fmt.Printf("[codefly] Service initialized, starting...\n")
 			err = runService(ctx, flow)
 			if err != nil {
-				cli.Error("run failed: %v", err)
-				cli.Exit()
+				cli.ErrorChain(err, "cannot start service %s", serviceName)
+				stopFresh() // tear down partially-started dependencies
+				cli.ExitError()
 				return
 			}
 			fmt.Printf("[codefly] Service %s is running\n", serviceName)
@@ -131,41 +145,111 @@ var ServiceCmd = &cobra.Command{
 			logCh := tui.NewLogChannel()
 			cli.SuppressOutput()
 
+			// The TUI quits on a Ctrl-C KEYPRESS (raw mode → byte 0x03 →
+			// tea.Quit), NOT a SIGINT — so the process-level signal context is
+			// NOT cancelled when the user quits the TUI. We therefore drive the
+			// flow with our own cancelable context and cancel it explicitly once
+			// the TUI exits, so flow.Start's action loop unwinds before we stop.
+			runCtx, runCancel := context.WithCancel(ctx)
+			defer runCancel()
+
+			// runErr is written by the startFn goroutine and read only after
+			// <-finished, which the deferred close synchronizes — so the read
+			// (and the read of `flow` below) is race-free.
+			var runErr error
+			finished := make(chan struct{})
+
 			tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
-				t.SendState(serviceName, tui.StateLoading)
+				defer close(finished)
 
 				var err error
-				flow, err = initRunService(ctx, workspace, module, service)
+				t.SendState(serviceName, tui.StateLoading)
+				flow, err = initRunService(runCtx, workspace, module, service)
 				if err != nil {
-					err = errors.Unwrap(err)
-					t.SendError(err)
+					runErr = errors.Unwrap(err)
+					t.SendError(runErr)
+					t.SendDone(runErr) // quit the TUI instead of hanging on the error
 					return
 				}
 
 				t.SendState(serviceName, tui.StateStarting)
 
-				err = runService(ctx, flow)
-				if err != nil {
-					t.SendError(err)
-					return
+				// flow.Start runs the playbook action loop and only returns
+				// once runCtx is cancelled (or start fails), so run it in the
+				// background and watch flow.Ready to flip "Starting" → "Running".
+				startErr := make(chan error, 1)
+				go func() { startErr <- runService(runCtx, flow) }()
+
+				// drainStart waits for the background flow.Start goroutine to
+				// return, so it is never still running when stopService begins.
+				drainStart := func() { runCancel(); runErr = orFirst(runErr, <-startErr) }
+
+				ticker := time.NewTicker(150 * time.Millisecond)
+				defer ticker.Stop()
+				for !flow.Ready(runCtx) {
+					select {
+					case <-runCtx.Done():
+						drainStart()
+						t.SendDone(runErr)
+						return
+					case err := <-startErr:
+						// flow.Start returned before readiness: a start failure
+						// or a clean early exit (init-only / immediate stop).
+						runErr = err
+						if err != nil {
+							t.SendError(err)
+						}
+						t.SendDone(err) // quit instead of spinning on "Starting"
+						return
+					case <-ticker.C:
+					}
 				}
 
 				t.SendReady(serviceName, 0)
 				select {
-				case <-ctx.Done():
+				case <-runCtx.Done():
 				case f := <-flow.Failures():
+					runErr = f
 					t.SendError(f)
+				case err := <-startErr:
+					// flow.Start returned on its own after readiness — already
+					// drained, so don't call drainStart (it would block).
+					runErr = err
+					if err != nil {
+						t.SendError(err)
+					}
+					t.SendDone(err)
+					return
 				}
-				t.SendDone(nil)
+				drainStart()
+				t.SendDone(runErr)
 			})
 			if tuiErr != nil {
 				cli.Error("TUI error: %v", tuiErr)
 			}
+
+			// TUI exited (quit/Done). Cancel the run context so flow.Start
+			// unwinds, then wait for the startFn goroutine to finish before we
+			// tear down — this also establishes happens-before on `flow`.
+			runCancel()
+			<-finished
+			if runErr != nil {
+				cli.ErrorChain(runErr, "service %s stopped with an error", serviceName)
+			}
 		}
 
-		_ = stopService(ctx, flow)
+		stopFresh()
 		cli.Exit()
 	},
+}
+
+// orFirst returns a when it is non-nil, otherwise b. Used to keep the first
+// (more meaningful) error when draining a secondary error source.
+func orFirst(a, b error) error {
+	if a != nil {
+		return a
+	}
+	return b
 }
 
 // isTerminal checks if stdout is connected to a terminal.
@@ -178,6 +262,41 @@ func isTerminal() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
+// resolveRuntimeContext turns the "free" runtime context (the default, meaning
+// "codefly picks the best available backend") into a concrete one:
+//   - Docker engine running        → free (the Docker path, unchanged behavior)
+//   - Docker down but nix available → nix  (Docker-free local dev)
+//   - neither                       → free (startup surfaces a clear Docker error)
+//
+// An explicit request (native/container/nix) is honored as-is — only "free"
+// auto-resolves. CODEFLY__RUNTIME_CONTEXT feeds the flag default (see init), so
+// `CODEFLY__RUNTIME_CONTEXT=nix go test ...` forces nix without a flag.
+// defaultRuntimeContext seeds the --runtime-context flag default from
+// CODEFLY__RUNTIME_CONTEXT when set (so dependency stacks spawned by the SDK
+// inherit it), otherwise "free" (codefly auto-picks Docker-or-nix at run time).
+func defaultRuntimeContext() string {
+	if rc := strings.TrimSpace(os.Getenv("CODEFLY__RUNTIME_CONTEXT")); rc != "" {
+		return rc
+	}
+	return resources.RuntimeContextFree
+}
+
+func resolveRuntimeContext(ctx context.Context, requested string) string {
+	if requested != resources.RuntimeContextFree {
+		return requested
+	}
+	w := wool.Get(ctx).In("run.resolveRuntimeContext")
+	if runnersbase.DockerEngineRunning(ctx) {
+		return resources.RuntimeContextFree
+	}
+	if runnersbase.CheckNixInstalled() && runnersbase.IsNixSupported() {
+		w.Info("Docker engine not running — falling back to the nix runtime (Docker-free)")
+		return resources.RuntimeContextNix
+	}
+	w.Warn("Docker engine not running and nix unavailable — continuing with Docker (startup will fail with a Docker error)")
+	return resources.RuntimeContextFree
+}
+
 func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("runService", wool.ThisField(resources.WithUnique(service)))
 	// Catch panic
@@ -186,6 +305,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
+	runtimeContext = resolveRuntimeContext(ctx, runtimeContext)
 
 	env := resources.LocalEnvironment()
 	// Setup optional naming namingScope
@@ -292,7 +412,7 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 	if flow == nil {
 		return nil
 	}
-	w.Info("Stopping services")
+	w.Debug("Stopping services")
 	err := flow.Stop()
 	if err != nil {
 		return w.Wrapf(err, "cannot stop service")
@@ -302,7 +422,7 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
-	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
+	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free auto-picks Docker-or-nix)")
 	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope (for testing encapsulation)")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
