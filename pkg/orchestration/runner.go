@@ -498,6 +498,23 @@ func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
 	return &OutputProperty{}, nil
 }
 
+// restartActionType maps the stage the agent asks to restart at into the
+// action to re-seed. A watch event fires a START request, but for compiled
+// services the compile happens during configure (Init): re-running only Start
+// would relaunch the stale binary and never surface a fresh compiler error.
+// So a START request re-enters at Init, which the policy cascades back into
+// Start.
+func restartActionType(stage runtimev0.DesiredState_Stage) ActionType {
+	switch stage {
+	case runtimev0.DesiredState_LOAD:
+		return RuntimeLoad
+	case runtimev0.DesiredState_INIT, runtimev0.DesiredState_START:
+		return RuntimeInit
+	default:
+		return ""
+	}
+}
+
 // Follow calls the agent for information and generate a channel of events for the service:
 // - Handle restart
 // - Detect runner death (StartStatus → ERROR) and report up via failureSink
@@ -550,15 +567,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 
 				if info.DesiredState != nil && info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
 					w.Debug("received a request to change SharedState", wool.Field("SharedState", info.DesiredState.Stage))
-					action := Action{Service: runner.Unique()}
-					switch info.DesiredState.Stage {
-					case runtimev0.DesiredState_LOAD:
-						action.Type = RuntimeLoad
-					case runtimev0.DesiredState_INIT:
-						action.Type = RuntimeInit
-					case runtimev0.DesiredState_START:
-						action.Type = RuntimeStart
-					}
+					action := Action{Service: runner.Unique(), Type: restartActionType(info.DesiredState.Stage)}
 					// Tear down the current child process tree before re-seeding.
 					// Without this, the agent's previous run (next dev / go build /
 					// python / etc. and all of its workers) stays alive while a
