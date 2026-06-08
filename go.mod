@@ -2,6 +2,8 @@ module github.com/codefly-dev/cli
 
 go 1.25.5
 
+toolchain go1.26.4
+
 require (
 	github.com/Masterminds/semver v1.5.0
 	github.com/asottile/dockerfile v3.1.0+incompatible

@@ -54,6 +54,16 @@ var ServiceCmd = &cobra.Command{
 		if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
 			cli.Warning("stale process-group sweep failed: %v", err)
 		}
+		// SDK / test runs (`codefly run --cli-server`) spawn per-run dependency
+		// containers under a unique naming scope that are never reused. Mark
+		// them ephemeral BEFORE provisioning so the sweep can reap them even
+		// while running — otherwise a killed test leaks its Neo4j/Postgres and
+		// they accumulate (the OrbStack-memory-blowup bug). Must be set before
+		// the flow creates any container.
+		if withCLIServer {
+			runnersbase.SetEphemeralContainers(true)
+		}
+
 		// Ryuk-adapted container sweep: remove any codefly-labeled Docker
 		// containers whose owning CLI is dead. Same semantics as the pgid
 		// sweep but for Docker-mode agents, which can't participate in
@@ -206,6 +216,12 @@ var ServiceCmd = &cobra.Command{
 				}
 
 				t.SendReady(serviceName, 0)
+				// Tell the TUI which dependencies are running alongside the
+				// origin, so the shutdown view names exactly what gets torn down
+				// on quit (origin + these — none stay alive).
+				if _, deps := flow.ManagedServices(); len(deps) > 0 {
+					t.SendStopPlan(deps)
+				}
 				select {
 				case <-runCtx.Done():
 				case f := <-flow.Failures():

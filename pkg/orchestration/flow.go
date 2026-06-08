@@ -474,6 +474,27 @@ func (flow *Flow) reportFailure(unique, msg string) {
 	}
 }
 
+// ManagedServices returns the origin service name and the dependency service
+// names this flow manages. flow.Stop() tears DOWN all of them — origin AND
+// dependencies (neo4j, postgres, …) alike — so the runner UI can name exactly
+// what is going away instead of a vague "stopping service". Nothing the flow
+// started "stays alive" on stop; only nix-run service DATA persists on disk.
+func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
+	if flow == nil {
+		return "", nil
+	}
+	if flow.originService != nil {
+		origin = flow.originService.Name
+	}
+	for _, s := range flow.services {
+		if s == nil || s.Name == origin {
+			continue
+		}
+		dependencies = append(dependencies, s.Name)
+	}
+	return origin, dependencies
+}
+
 func (flow *Flow) Stop() error {
 	if flow == nil {
 		return nil

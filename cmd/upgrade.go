@@ -5,8 +5,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// UpgradeCmd is the parent for `codefly upgrade service` and
-// `codefly upgrade workspace`.
+// UpgradeCmd is the parent for `codefly upgrade service`,
+// `codefly upgrade workspace`, and `codefly upgrade security`.
 var UpgradeCmd = &cobra.Command{
 	Use:   "upgrade",
 	Short: "Apply semver-safe dependency bumps",
@@ -15,4 +15,5 @@ var UpgradeCmd = &cobra.Command{
 func init() {
 	UpgradeCmd.AddCommand(upgrade.ServiceCmd)
 	UpgradeCmd.AddCommand(upgrade.WorkspaceCmd)
+	UpgradeCmd.AddCommand(upgrade.SecurityCmd)
 }

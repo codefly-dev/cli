@@ -23,6 +23,15 @@ type agentYAML struct {
 	Kind      string `yaml:"kind"`
 	Name      string `yaml:"name"`
 	Version   string `yaml:"version"`
+
+	// Quarantine marks an agent as NOT ready for the new-style architecture.
+	// `agent build --all` (and `self build --with-agents`) SKIP quarantined
+	// agents so a bulk rebuild only touches agents that have been migrated —
+	// you don't ship half-converted plugins. An explicit single build
+	// (`agent build --dir X`) still builds it, with a warning, so you can
+	// iterate on the fix. QuarantineReason is shown in the skip/warn line.
+	Quarantine       bool   `yaml:"quarantine"`
+	QuarantineReason string `yaml:"quarantine_reason"`
 }
 
 // BuildCmd builds an agent binary from source and installs it locally.
@@ -103,6 +112,20 @@ type buildOptions struct {
 	failOnVuln bool
 }
 
+// BuildOptions is the exported form of buildOptions for callers in other
+// packages (e.g. `codefly self build --with-agents`).
+type BuildOptions struct {
+	SkipAudit  bool
+	FailOnVuln bool
+}
+
+// BuildAllAgents builds every agent under root. It is the exported entry point
+// for `codefly self build --with-agents`, so one command rebuilds the CLI and
+// all agents together. root is typically <monorepo>/agents/services.
+func BuildAllAgents(root string, opts BuildOptions) error {
+	return buildAllAgents(root, buildOptions{skipAudit: opts.SkipAudit, failOnVuln: opts.FailOnVuln})
+}
+
 func init() {
 	BuildCmd.Flags().String("dir", "", "Agent source directory (default: current directory)")
 	BuildCmd.Flags().Bool("all", false, "Build all agents found in the current directory tree")
@@ -110,10 +133,20 @@ func init() {
 	BuildCmd.Flags().Bool("fail-on-vuln", false, "Fail the build if any HIGH/CRITICAL vulnerability is found")
 }
 
+// quarantinedAgent records an agent skipped by a bulk build because its
+// manifest sets quarantine: true.
+type quarantinedAgent struct {
+	name   string
+	reason string
+}
+
 // buildAllAgents discovers all directories containing agent.codefly.yaml
-// under root and builds each one.
+// under root and builds each one — SKIPPING agents whose manifest marks them
+// quarantine: true (not yet migrated to the new style). Quarantined agents are
+// reported so a bulk rebuild is honest about what it did and didn't touch.
 func buildAllAgents(root string, opts buildOptions) error {
 	var agents []string
+	var quarantined []quarantinedAgent
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return fmt.Errorf("read directory %s: %w", root, err)
@@ -122,13 +155,36 @@ func buildAllAgents(root string, opts buildOptions) error {
 		if !e.IsDir() {
 			continue
 		}
-		yamlPath := filepath.Join(root, e.Name(), "agent.codefly.yaml")
-		if _, err := os.Stat(yamlPath); err == nil {
-			agents = append(agents, filepath.Join(root, e.Name()))
+		dir := filepath.Join(root, e.Name())
+		yamlPath := filepath.Join(dir, "agent.codefly.yaml")
+		data, rerr := os.ReadFile(yamlPath)
+		if rerr != nil {
+			continue // not an agent directory
 		}
+		var ag agentYAML
+		if yaml.Unmarshal(data, &ag) == nil && ag.Quarantine {
+			quarantined = append(quarantined, quarantinedAgent{name: e.Name(), reason: ag.QuarantineReason})
+			continue
+		}
+		agents = append(agents, dir)
+	}
+
+	if len(quarantined) > 0 {
+		cli.Header(2, "Skipping %d quarantined agent(s) (not migrated to the new style):", len(quarantined))
+		for _, q := range quarantined {
+			if q.reason != "" {
+				cli.Info("  - %s — %s", q.name, q.reason)
+			} else {
+				cli.Info("  - %s", q.name)
+			}
+		}
+		cli.Info("  (build one explicitly with `codefly agent build --dir <path>` to work on it)")
 	}
 
 	if len(agents) == 0 {
+		if len(quarantined) > 0 {
+			return fmt.Errorf("no buildable agents under %s — all %d are quarantined", root, len(quarantined))
+		}
 		return fmt.Errorf("no agent directories found under %s", root)
 	}
 
@@ -147,7 +203,11 @@ func buildAllAgents(root string, opts buildOptions) error {
 		return fmt.Errorf("%d agent(s) failed to build: %s", len(failed), strings.Join(failed, ", "))
 	}
 
-	cli.Header(1, "All %d agents built successfully", len(agents))
+	if len(quarantined) > 0 {
+		cli.Header(1, "%d agents built successfully (%d quarantined, skipped)", len(agents), len(quarantined))
+	} else {
+		cli.Header(1, "All %d agents built successfully", len(agents))
+	}
 	return nil
 }
 
@@ -230,6 +290,15 @@ func buildAgent(dir string, opts buildOptions) error {
 	}
 	if ag.Name == "" || ag.Version == "" || ag.Publisher == "" {
 		return fmt.Errorf("agent.codefly.yaml must have publisher, name, and version")
+	}
+	// A quarantined agent is excluded from bulk builds; an explicit single
+	// build still proceeds (that's how you fix it) but says so loudly.
+	if ag.Quarantine {
+		if ag.QuarantineReason != "" {
+			cli.Info("⚠ %s is QUARANTINED (%s) — building anyway because you asked for it explicitly", ag.Name, ag.QuarantineReason)
+		} else {
+			cli.Info("⚠ %s is QUARANTINED — building anyway because you asked for it explicitly", ag.Name)
+		}
 	}
 
 	home, err := os.UserHomeDir()
