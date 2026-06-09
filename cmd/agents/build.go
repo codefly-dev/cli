@@ -162,7 +162,15 @@ func buildAllAgents(root string, opts buildOptions) error {
 			continue // not an agent directory
 		}
 		var ag agentYAML
-		if yaml.Unmarshal(data, &ag) == nil && ag.Quarantine {
+		if uerr := yaml.Unmarshal(data, &ag); uerr != nil {
+			// A malformed manifest must NOT silently fall through to the
+			// buildable list — that could build an agent meant to be
+			// quarantined (whose quarantine flag we just failed to read). Skip
+			// it loudly so a broken manifest is visible, not built.
+			cli.Info("  ⚠ skipping %s — unreadable agent.codefly.yaml: %v", e.Name(), uerr)
+			continue
+		}
+		if ag.Quarantine {
 			quarantined = append(quarantined, quarantinedAgent{name: e.Name(), reason: ag.QuarantineReason})
 			continue
 		}

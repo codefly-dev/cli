@@ -189,11 +189,17 @@ func upgradeModuleSecurity(dir string, dryRun bool) error {
 	if err != nil {
 		return fmt.Errorf("re-audit failed: %w", err)
 	}
-	stillActionable, _, _ := planFixes(after.Findings)
-	if len(stillActionable) > 0 {
+	stillActionable, stillToolchain, _ := planFixes(after.Findings)
+	if len(stillActionable) > 0 || stillToolchain != "" {
 		var ids []string
 		for _, b := range stillActionable {
 			ids = append(ids, b.module+"@"+b.version)
+		}
+		// A still-required toolchain bump means a stdlib vuln did NOT clear
+		// (e.g. GOTOOLCHAIN couldn't fetch the fixed Go) — surface it instead
+		// of reporting success on an unresolved stdlib advisory.
+		if stillToolchain != "" {
+			ids = append(ids, "stdlib→go"+stillToolchain)
 		}
 		return fmt.Errorf("actionable findings remain after upgrade: %s", strings.Join(ids, ", "))
 	}
