@@ -25,7 +25,7 @@ suppressions:
       via govulncheck traces: none reach plugins/authorization code —
       they are all package-init chains in the shared module graph.
       Upstream fix: pending Moby release (no CVE-fixed version yet).
-    reviewed: 2026-04-23
+    reviewed: 2026-06-11
 
   - id: GO-2026-4883
     module: github.com/docker/docker
@@ -34,4 +34,4 @@ suppressions:
       validation; we never install Docker plugins via the API. Verified
       unreachable — no trace path reaches pkg/authorization/ code.
       Upstream fix: pending Moby release.
-    reviewed: 2026-04-23
+    reviewed: 2026-06-11
