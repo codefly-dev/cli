@@ -181,9 +181,9 @@ func (s *Server) registerTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":   {Type: "string", Description: "Module name"},
-				"service":  {Type: "string", Description: "Service name"},
-				"command":  {Type: "string", Description: "Command to run (default: go test ./...)"},
+				"module":  {Type: "string", Description: "Module name"},
+				"service": {Type: "string", Description: "Service name"},
+				"command": {Type: "string", Description: "Command to run (default: go test ./...)"},
 			},
 			Required: []string{"module", "service"},
 		},

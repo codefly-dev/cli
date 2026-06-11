@@ -128,7 +128,7 @@ func RequireService(ctx context.Context) *resources.Service {
 	service := Service(ctx)
 	if service == nil {
 		cli.Error("No service found: run inside a service folder or use workspace")
-		cli.Exit()
+		cli.ExitError()
 	}
 	return service
 }
@@ -143,7 +143,7 @@ func RequireModule(ctx context.Context) *resources.Module {
 	module := Module(ctx)
 	if module == nil {
 		cli.Error("No module found: run inside an module folder or use workspace")
-		cli.Exit()
+		cli.ExitError()
 	}
 	return module
 }
@@ -166,7 +166,7 @@ func RequireWorkspace(ctx context.Context) *resources.Workspace {
 	workspace := Workspace(ctx)
 	if workspace == nil {
 		cli.Error("No workspace found: run inside a workspace folder or use workspace")
-		cli.Exit()
+		cli.ExitError()
 	}
 	return workspace
 }

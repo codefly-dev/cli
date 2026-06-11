@@ -70,13 +70,13 @@ Examples:
 				dir, err = os.Getwd()
 				if err != nil {
 					cli.Error("Cannot get working directory: %v", err)
-					cli.Exit()
+					cli.ExitError()
 				}
 			}
 			absDir, err := filepath.Abs(dir)
 			if err != nil {
 				cli.Error("Cannot resolve directory: %v", err)
-				cli.Exit()
+				cli.ExitError()
 			}
 			if err := buildAllAgents(absDir, opts); err != nil {
 				cli.Error("Build --all failed: %v", err)
@@ -90,14 +90,14 @@ Examples:
 			dir, err = os.Getwd()
 			if err != nil {
 				cli.Error("Cannot get working directory: %v", err)
-				cli.Exit()
+				cli.ExitError()
 			}
 		}
 
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
 			cli.Error("Cannot resolve directory: %v", err)
-			cli.Exit()
+			cli.ExitError()
 		}
 
 		if err := buildAgent(absDir, opts); err != nil {

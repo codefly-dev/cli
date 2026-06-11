@@ -13,6 +13,9 @@ var CompletionCmd = &cobra.Command{
 	Long:                  "To load completions",
 	DisableFlagsInUseLine: true,
 	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+	// Require exactly one of the valid shell args. Without this, bare
+	// `codefly completion` indexed args[0] and panicked (index out of range).
+	Args: cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
 	Run: func(cmd *cobra.Command, args []string) {
 		var err error
 		switch args[0] {
@@ -26,7 +29,7 @@ var CompletionCmd = &cobra.Command{
 			err = cmd.Root().GenPowerShellCompletionWithDesc(os.Stdout)
 		default:
 			cli.Error("Unsupported shell type <%s>.", args[0])
-			cli.Exit()
+			cli.ExitError()
 		}
 		cli.ExitOnError(err, "cannot generate completion script")
 	},

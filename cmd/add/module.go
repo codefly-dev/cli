@@ -24,7 +24,7 @@ var ModuleCmd = &cobra.Command{
 
 		if interactive {
 			cli.Error("Interactive mode not implemented yet")
-			cli.Exit()
+			cli.ExitError()
 		}
 		if len(args) != 1 {
 			cli.Error("You must provide a name for the module as the single argument")

@@ -3,18 +3,19 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/services"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -27,7 +28,7 @@ func (s *Server) getServiceOnly(ctx context.Context, moduleName, serviceName str
 		return nil, fmt.Errorf("no workspace loaded - run from a codefly workspace directory")
 	}
 	if moduleName == "" || serviceName == "" {
-		return nil, fmt.Errorf(serviceModuleService)
+		return nil, errors.New(serviceModuleService)
 	}
 	mod, err := s.workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
@@ -47,7 +48,7 @@ func (s *Server) getServiceAndInstance(ctx context.Context, moduleName, serviceN
 		return nil, nil, fmt.Errorf("no workspace loaded - run from a codefly workspace directory")
 	}
 	if moduleName == "" || serviceName == "" {
-		return nil, nil, fmt.Errorf(serviceModuleService)
+		return nil, nil, errors.New(serviceModuleService)
 	}
 	mod, err := s.workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {

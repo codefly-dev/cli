@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/cmd/endpoint"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/resources"
@@ -168,6 +169,9 @@ func init() {
 	// Daemon (background service management)
 	RootCmd.AddCommand(DaemonCmd)
 
+	// Logs (show the CLI session logs)
+	RootCmd.AddCommand(LogsCmd)
+
 	// Terminal
 	RootCmd.AddCommand(TerminalCmd)
 
@@ -176,6 +180,15 @@ func init() {
 
 	// Unified release: bump + commit + tag + push for any codefly repo.
 	RootCmd.AddCommand(PublishCmd)
+
+	// Rebuild the codefly CLI itself from source.
+	RootCmd.AddCommand(SelfCmd)
+
+	// Query services/endpoints against the running daemon.
+	RootCmd.AddCommand(GetCmd)
+
+	// Resolve a single endpoint to bare host:port (script-friendly).
+	RootCmd.AddCommand(endpoint.Cmd)
 
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")

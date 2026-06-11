@@ -2,10 +2,8 @@ package test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -43,7 +41,7 @@ Examples:
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
 		cli.Init()
@@ -62,21 +60,17 @@ Examples:
 		isHeadless := headless || !term.IsTerminal(int(os.Stdout.Fd()))
 
 		var flow *orchestration.Flow
+		// testErr is the run/RPC error (init failure, crash, non-success exit).
+		// It is the authoritative signal for the exit code.
+		var testErr error
 
 		if isHeadless {
 			fmt.Printf("[codefly] Testing service %s (headless mode)\n", serviceName)
-			var err error
-			flow, err = initRunService(ctx, workspace, module, service)
-			if err != nil {
-				cli.Error("init failed: %v", errors.Unwrap(err))
-				cli.Exit()
-				return
-			}
-			err = testService(ctx, flow)
-			if err != nil {
-				cli.Error("test failed: %v", err)
-			} else {
-				fmt.Printf("[codefly] Tests passed for %s\n", serviceName)
+			flow, testErr = initRunService(ctx, workspace, module, service)
+			if testErr == nil {
+				testErr = common.WithHeartbeat(ctx, "running tests for "+serviceName, func() error {
+					return testService(ctx, flow)
+				})
 			}
 		} else {
 			logCh := tui.NewLogChannel()
@@ -85,30 +79,53 @@ Examples:
 			tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
 				t.SendState(serviceName, tui.StateLoading)
 
-				var err error
-				flow, err = initRunService(ctx, workspace, module, service)
-				if err != nil {
-					err = errors.Unwrap(err)
-					t.SendError(err)
+				flow, testErr = initRunService(ctx, workspace, module, service)
+				if testErr != nil {
+					t.SendError(testErr)
 					return
 				}
 
 				t.SendState(serviceName, tui.StateTesting)
 
-				err = testService(ctx, flow)
-				if err != nil {
-					t.SendError(err)
+				testErr = testService(ctx, flow)
+				if testErr != nil {
+					t.SendError(testErr)
 					return
 				}
 
 				t.SendDone(nil)
 			})
-			if tuiErr != nil {
-				cli.Error("TUI error: %v", tuiErr)
+			if tuiErr != nil && testErr == nil {
+				testErr = tuiErr
 			}
+			// TUI suppressed stdout; restore it before printing the report.
+			cli.RestoreOutput()
+		}
+
+		// Render the structured test report (counts + failed cases with
+		// captured output) whenever the agent returned one — on success and
+		// failure alike. This is the agent's Test RPC structured response.
+		resp := flow.OriginTestResponse()
+		if resp != nil {
+			fmt.Println(orchestration.RenderTestReport(resp))
 		}
 
 		_ = stopService(ctx, flow)
+
+		// Exit non-zero if the run errored OR the structured result is not a
+		// pass. Previously this always called cli.Exit() (os.Exit(0)), so a
+		// failing test suite reported success to CI.
+		failed := testErr != nil || (resp != nil && !orchestration.TestSucceeded(resp))
+		if failed {
+			if testErr != nil {
+				cli.ErrorChain(testErr, "tests failed for %s", serviceName)
+			} else {
+				cli.Error("tests failed for %s", serviceName)
+			}
+			cli.ExitError()
+			return
+		}
+		fmt.Printf("[codefly] Tests passed for %s\n", serviceName)
 		cli.Exit()
 	},
 }
@@ -158,7 +175,7 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 	if flow == nil {
 		return nil
 	}
-	w.Info("Stopping services")
+	w.Debug("Stopping services")
 	err := flow.Stop()
 	if err != nil {
 		return w.Wrapf(err, "cannot stop service")

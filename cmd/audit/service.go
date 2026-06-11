@@ -56,6 +56,9 @@ plus outdated patch+minor releases. Read-only — never modifies code.`,
 		}
 
 		if failOnVuln && hasHighSeverity(resp) {
+			// os.Exit skips the deferred ClearAgents — run it explicitly so the
+			// loaded builder agent isn't orphaned in the CI fail path.
+			services.ClearAgents()
 			os.Exit(1)
 		}
 	},

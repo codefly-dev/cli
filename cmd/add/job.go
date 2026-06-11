@@ -12,11 +12,11 @@ import (
 )
 
 var (
-	jobModule       string
-	jobAgent        string
+	jobModule        string
+	jobAgent         string
 	jobExecutionType string
-	jobSchedule     string
-	jobTimeout      string
+	jobSchedule      string
+	jobTimeout       string
 )
 
 // JobCmd represents the add job command

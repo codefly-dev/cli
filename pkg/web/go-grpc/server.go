@@ -261,9 +261,14 @@ func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 		Message: removeANSICodes(log.String()),
 		Kind:    source.Kind,
 	}
-	go func() {
-		s.logChannel <- logEntry
-	}()
+	// Non-blocking send. The previous `go func(){ ch <- entry }()` spawned a
+	// goroutine per log line; when no Logs consumer is attached (headless/CI),
+	// the buffered channel fills and every such goroutine blocks forever —
+	// an unbounded leak. Drop the line instead when the buffer is full.
+	select {
+	case s.logChannel <- logEntry:
+	default:
+	}
 }
 
 func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {

@@ -33,6 +33,12 @@ func SuppressOutput() {
 	cliLogger.suppressed = true
 }
 
+// RestoreOutput re-enables CLI logger stdout after SuppressOutput, e.g. once a
+// TUI has exited and the command needs to print a final report.
+func RestoreOutput() {
+	cliLogger.suppressed = false
+}
+
 var maxUnique int
 
 func RegisterLoggingResource(unique string) {
@@ -43,21 +49,24 @@ func (logger *Logger) Process(log *wool.Log) {
 	if logger.suppressed || log.Level < wool.GlobalLogLevel() {
 		return
 	}
+	// log is a fmt.Stringer; call String() directly instead of routing every
+	// line through fmt.Sprintf("%s", ...)'s reflection path.
+	s := log.String()
 	switch log.Level {
 	case wool.TRACE:
-		Trace(fmt.Sprintf("%s", log))
+		Trace(s)
 	case wool.DEBUG:
-		Debug(fmt.Sprintf("%s", log))
+		Debug(s)
 	case wool.INFO:
-		Info(fmt.Sprintf("%s", log))
+		Info(s)
 	case wool.WARN:
-		Warning(fmt.Sprintf("%s", log))
+		Warning(s)
 	case wool.ERROR:
-		Error(fmt.Sprintf("%s", log))
+		Error(s)
 	case wool.FOCUS:
-		Focus(fmt.Sprintf("%s", log))
+		Focus(s)
 	default:
-		fmt.Printf("%s\n", log)
+		fmt.Println(s)
 	}
 }
 

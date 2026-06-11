@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/daemon"
 	"github.com/codefly-dev/cli/pkg/gateway"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/spf13/cobra"
 )
 
@@ -194,7 +196,11 @@ var daemonGatewayCmd = &cobra.Command{
 	Long:   "Starts the Mind Gateway gRPC server in the foreground. Typically invoked by 'daemon start --gateway' or by Mind automatically.",
 	Hidden: false,
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		// Catch SIGTERM too: `daemon stop` sends SIGTERM for graceful shutdown.
+		// Listening only for SIGINT meant SIGTERM killed the gateway by default
+		// disposition, skipping the deferred RemovePortFile and the server's
+		// graceful unwind — leaving a stale port file read as a live gateway.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
 		absDir := gatewayDir
@@ -202,9 +208,13 @@ var daemonGatewayCmd = &cobra.Command{
 			absDir = "."
 		}
 
+		// CODEFLY_GATEWAY_HOST lets a container expose the gateway over the
+		// network (set it to 0.0.0.0). Empty keeps the local-only 127.0.0.1
+		// default — no behavior change for normal local runs.
 		srv, err := gateway.NewServer(gateway.Config{
 			WorkDir: absDir,
 			Port:    gatewayPort,
+			Host:    os.Getenv("CODEFLY_GATEWAY_HOST"),
 		})
 		if err != nil {
 			cli.Error("Cannot create gateway server: %v", err)
@@ -286,24 +296,19 @@ Use --kill-orphans to clean up orphaned agent processes.`,
 		cfg := daemon.DefaultMonitorConfig()
 
 		if monitorKill {
-			// One-shot: kill orphaned agents
-			procs, err := daemon.CheckProcesses()
-			if err != nil {
-				cli.Error("Cannot check processes: %v", err)
+			// Delegate to the pgid-aware reaper. It only kills process groups
+			// whose owning CLI is dead (and escalates SIGTERM→SIGKILL with a
+			// grace period). The previous implementation killed EVERY go-grpc /
+			// go-generic agent by name with no liveness check — which SIGKILLed
+			// the agents of any concurrent `codefly run`, re-creating the exact
+			// orphan/zombie state this command exists to clean up.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
+				cli.Error("Cannot reap orphaned process groups: %v", err)
 				cli.ExitError()
 			}
-			killed := 0
-			for _, p := range procs {
-				if (p.Name == "go-grpc" || p.Name == "go-generic") {
-					fmt.Printf("Killing orphaned %s (PID %d, CPU %.1f%%)\n", p.Name, p.PID, p.CPU)
-					proc, _ := os.FindProcess(p.PID)
-					if proc != nil {
-						proc.Kill()
-						killed++
-					}
-				}
-			}
-			fmt.Printf("Killed %d orphaned agent processes.\n", killed)
+			fmt.Println("Reaped orphaned agent process groups (live runs left untouched).")
 			return
 		}
 

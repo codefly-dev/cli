@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -32,9 +33,9 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module to add the service to"},
-				"name":    {Type: "string", Description: "Service name (kebab-case)"},
-				"agent":   {Type: "string", Description: "Agent name (e.g. go-grpc, nextjs, postgres, vault)"},
+				"module": {Type: "string", Description: "Module to add the service to"},
+				"name":   {Type: "string", Description: "Service name (kebab-case)"},
+				"agent":  {Type: "string", Description: "Agent name (e.g. go-grpc, nextjs, postgres, vault)"},
 			},
 			Required: []string{"module", "name", "agent"},
 		},
@@ -108,6 +109,25 @@ func (s *Server) registerMutationTools() {
 	}, s.installAgent)
 }
 
+// isSafeAgentName allows only the conservative identifier set used by real
+// agent names (letters, digits, hyphen, underscore, dot). Anything else is
+// rejected so attacker-controlled input can never reach a shell or escape a
+// glob/path.
+func isSafeAgentName(name string) bool {
+	if name == "" || len(name) > 100 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) addService(ctx context.Context, args map[string]string) ([]Content, error) {
 	ws, err := s.requireWorkspace()
 	if err != nil {
@@ -120,6 +140,11 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 
 	if moduleName == "" || serviceName == "" || agentName == "" {
 		return []Content{TextContent("module, name, and agent are required")}, nil
+	}
+	// serviceName is joined into a filesystem path below — reject anything that
+	// could traverse out of the services directory.
+	if !isSafeAgentName(serviceName) {
+		return []Content{TextContent(fmt.Sprintf("invalid service name %q", serviceName))}, nil
 	}
 
 	// Find the module
@@ -140,12 +165,20 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 		return nil, fmt.Errorf("cannot create service directory: %w", err)
 	}
 
-	// Determine agent version from installed agents
+	// Reject agent names with anything but the safe identifier set. agentName
+	// is attacker-controllable (MCP tool argument); it used to be interpolated
+	// into `sh -c "... %s ..."` — a command-injection hole. We also no longer
+	// shell out: filepath.Glob does the lookup natively.
+	if !isSafeAgentName(agentName) {
+		return []Content{TextContent(fmt.Sprintf("invalid agent name %q", agentName))}, nil
+	}
+
+	// Determine agent version from installed agents (last match wins).
 	agentVersion := "0.0.1"
-	agentDir := fmt.Sprintf("%s/.codefly/agents/services/codefly.dev/%s__*", os.Getenv("HOME"), agentName)
-	matches, _ := exec.Command("sh", "-c", fmt.Sprintf("ls -d %s 2>/dev/null | tail -1", agentDir)).Output()
-	if len(matches) > 0 {
-		parts := strings.Split(strings.TrimSpace(string(matches)), "__")
+	pattern := filepath.Join(os.Getenv("HOME"), ".codefly", "agents", "services", "codefly.dev", agentName+"__*")
+	if dirs, globErr := filepath.Glob(pattern); globErr == nil && len(dirs) > 0 {
+		last := dirs[len(dirs)-1]
+		parts := strings.Split(filepath.Base(last), "__")
 		if len(parts) == 2 {
 			agentVersion = parts[1]
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/wool"
@@ -120,14 +121,22 @@ func (manager *ActionManager) send(ctx context.Context, actions ...Action) {
 	}
 	group := ActionGroup{actions: actions, round: round}
 	w.Trace("sending actions", wool.Field("actions", group))
-	// Respect context cancellation so a stalled receiver doesn't
-	// accumulate goroutines forever. The previous fire-and-forget
-	// `go func() { manager.actions <- group }()` blocked indefinitely
-	// on an unbuffered channel when nobody was reading.
+	// Deliver asynchronously, but DETACHED from the caller's ctx. send() is
+	// fire-and-forget — callers (notably the Follow loop driving a hot-reload
+	// restart) bound their callback ctx and cancel it the instant the call
+	// returns. Tying delivery to that ctx loses the race against this
+	// goroutine, silently DROPPING the queued action (e.g. the runtime-run
+	// that restarts the rebuilt binary — hot-reload then stops but never comes
+	// back). WithoutCancel keeps wool values for logging; an independent
+	// timeout is the leak-guard so a permanently-absent reader can't pile up
+	// goroutines forever.
+	deliverCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	go func() {
+		defer cancel()
 		select {
 		case manager.actions <- group:
-		case <-ctx.Done():
+		case <-deliverCtx.Done():
+			w.Warn("dropped action group: no reader within delivery window", wool.Field("actions", group))
 		}
 	}()
 	w.Trace("sent actions", wool.Field("actions", group))

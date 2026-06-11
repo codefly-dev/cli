@@ -2,9 +2,6 @@ package deploy
 
 import (
 	"context"
-	"errors"
-	"os"
-	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -24,7 +21,7 @@ var ServiceCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
 		cli.Init()
@@ -38,15 +35,14 @@ var ServiceCmd = &cobra.Command{
 		cli.ExitOnError(err, "Cannot initialize service")
 
 		go func() {
-			err = deployService(ctx, flow)
+			err = common.WithHeartbeat(ctx, "deploying "+service.Name, func() error {
+				return deployService(ctx, flow)
+			})
 			if err != nil {
 				errs <- err
 			}
 			errs <- nil
 		}()
-		defer func(flow *orchestration.Flow) {
-
-		}(flow)
 
 	loop:
 		for {
@@ -64,8 +60,8 @@ var ServiceCmd = &cobra.Command{
 		err = cleanDeployService(flow)
 		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
-			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
-			return
+			cli.ErrorChain(stopped, "Got error while stopping service")
+			cli.ExitError()
 		}
 		cli.Header(1, "Deployment done!")
 		cli.Done()

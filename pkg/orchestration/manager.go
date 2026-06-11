@@ -42,6 +42,10 @@ type IManager interface {
 	RunnerDoStop(ctx context.Context) (*OutputProperty, error)
 	RunnerDoDestroy(ctx context.Context) (*OutputProperty, error)
 
+	// RunnerTestResponse returns the structured response from the last Test
+	// RPC dispatched by this manager's runner, or nil if untested.
+	RunnerTestResponse() *runtimev0.TestResponse
+
 	DoSetCallback(seed func(ctx context.Context, action Action) error)
 	// DoSetFailureSink registers a callback that the Runner.Follow loop
 	// invokes when a started service is observed dead. Used by Flow to
@@ -115,6 +119,13 @@ func (manager *Manager) RunnerDoStop(ctx context.Context) (*OutputProperty, erro
 
 func (manager *Manager) RunnerDoDestroy(ctx context.Context) (*OutputProperty, error) {
 	return manager.Runner.Destroy(ctx)
+}
+
+func (manager *Manager) RunnerTestResponse() *runtimev0.TestResponse {
+	if manager.Runner == nil {
+		return nil
+	}
+	return manager.Runner.TestResponse()
 }
 
 func (manager *Manager) DoSetCallback(callback func(ctx context.Context, action Action) error) {
@@ -217,6 +228,10 @@ func (n NoOpManager) RunnerDoStop(ctx context.Context) (*OutputProperty, error) 
 
 func (n NoOpManager) RunnerDoDestroy(ctx context.Context) (*OutputProperty, error) {
 	return nil, nil
+}
+
+func (n NoOpManager) RunnerTestResponse() *runtimev0.TestResponse {
+	return nil
 }
 
 func (n NoOpManager) Unique() string {

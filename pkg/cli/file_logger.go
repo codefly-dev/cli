@@ -67,11 +67,11 @@ func (fl *FileLogger) rotate() error {
 }
 
 type fileEntry struct {
-	Time    string         `json:"time"`
-	Level   string         `json:"level"`
-	Source  string         `json:"source,omitempty"`
-	Header  string         `json:"header,omitempty"`
-	Message string         `json:"message"`
+	Time    string           `json:"time"`
+	Level   string           `json:"level"`
+	Source  string           `json:"source,omitempty"`
+	Header  string           `json:"header,omitempty"`
+	Message string           `json:"message"`
 	Fields  []*wool.LogField `json:"fields,omitempty"`
 }
 
@@ -136,4 +136,36 @@ func EnableFileLogging() {
 // GetFileLogger returns the global file logger (nil if not enabled).
 func GetFileLogger() *FileLogger {
 	return globalFileLogger
+}
+
+// Path returns the absolute path of the file currently being written, or ""
+// if the logger isn't open.
+func (fl *FileLogger) Path() string {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	if fl.file == nil {
+		return ""
+	}
+	return fl.file.Name()
+}
+
+// LogFilePath returns the active log file path (or "" when file logging is off).
+// Used to point users at the detailed log on failure.
+func LogFilePath() string {
+	if globalFileLogger == nil {
+		return ""
+	}
+	return globalFileLogger.Path()
+}
+
+// LogsDir returns the directory codefly writes its logs to (~/.codefly/logs),
+// or "" if the home directory can't be resolved. Standalone — does not enable
+// file logging, so the `codefly logs` command can read existing logs without
+// creating a new file.
+func LogsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codefly", "logs")
 }

@@ -3,17 +3,51 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/codefly-dev/core/agents/manager"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 )
 
+// codeflyOwnedPIDs returns the PIDs of running codefly-owned processes: the
+// `codefly` CLI binary itself and any agent binary under ~/.codefly/agents/.
+// It matches on the EXECUTABLE path, never on a substring of the full command
+// line, so unrelated processes that merely mention the repo path are spared.
+// The caller's own PID (self) is always excluded.
+func codeflyOwnedPIDs(ctx context.Context, self int) []int {
+	// `command=` prints the full argv; the first token is the executable.
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, convErr := strconv.Atoi(fields[0])
+		if convErr != nil || pid == self {
+			continue
+		}
+		exePath := fields[1]
+		owned := filepath.Base(exePath) == "codefly" || strings.Contains(exePath, "/.codefly/agents/")
+		if owned {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
 var (
-	clearKeepProcesses bool
+	clearKeepProcesses  bool
 	clearKeepContainers bool
 	clearDryRun         bool
 )
@@ -65,22 +99,50 @@ func clearCommand(args []string) {
 	}
 
 	if !clearKeepProcesses {
-		// Capture matching PIDs first so we can REPORT the count — a silent
-		// kill made `clear` look like it did nothing.
-		c := exec.CommandContext(ctx, "bash", "-c", "ps aux | grep codefly.dev | grep -v grep | awk '{print $2}'")
-		out, _ := c.Output()
-		pids := strings.Fields(strings.TrimSpace(string(out)))
+		// Match codefly-owned processes by their EXECUTABLE, not by a substring
+		// over the whole command line. The old `ps aux | grep codefly.dev`
+		// matched any process whose argv merely mentioned the repo path — an
+		// editor, a `tail -f`, a build — and kill -9'd it. Agent binaries always
+		// live under ~/.codefly/agents/, and the CLI itself is the `codefly`
+		// executable; nothing else qualifies.
+		self := os.Getpid()
+		pids := codeflyOwnedPIDs(ctx, self)
 		if clearDryRun {
 			fmt.Printf("processes: would kill %d codefly process(es): %v\n", len(pids), pids)
 		} else if len(pids) == 0 {
 			fmt.Println("processes: none running")
 		} else {
-			k := exec.CommandContext(ctx, "bash", "-c", "ps aux | grep codefly.dev | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null; true")
-			_ = k.Run()
+			for _, pid := range pids {
+				if p, err := os.FindProcess(pid); err == nil {
+					_ = p.Kill()
+				}
+			}
 			fmt.Printf("processes: killed %d codefly process(es)\n", len(pids))
 		}
 	} else {
 		fmt.Println("processes: kept (--keep-processes)")
+	}
+
+	// Stale state left by crashed/exited CLIs: per-spawn UDS sockets under
+	// /tmp/codefly-uds and process-group tracking files under ~/.codefly/runs.
+	// These accumulate over time and were never cleaned by `clear`.
+	if clearDryRun {
+		if n := manager.CountStaleAgentSockets(); n > 0 {
+			fmt.Printf("sockets: would remove %d stale agent socket(s) (dry-run)\n", n)
+		} else {
+			fmt.Println("sockets: none stale")
+		}
+	} else {
+		if n := manager.SweepStaleAgentSockets(); n > 0 {
+			fmt.Printf("sockets: removed %d stale agent socket(s)\n", n)
+		} else {
+			fmt.Println("sockets: none stale")
+		}
+		if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
+			fmt.Printf("process-groups: reap error: %v\n", err)
+		} else {
+			fmt.Println("process-groups: reaped orphaned groups")
+		}
 	}
 
 	if clearKeepContainers {
@@ -136,7 +198,10 @@ func clearCommand(args []string) {
 		// a kill error here is noise, not fatal.
 		_ = cli.ContainerKill(ctx, c.ID, "SIGKILL")
 		if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
-			log.Fatalf("can't remove container %s: %s\n", name, err)
+			// Don't abort the whole sweep on one stubborn container — warn and
+			// keep going so the rest still get cleaned (was log.Fatalf).
+			fmt.Printf("warning: can't remove container %s: %v\n", strings.TrimPrefix(name, "/"), err)
+			continue
 		}
 		removed++
 	}

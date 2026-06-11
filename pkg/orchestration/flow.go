@@ -397,6 +397,25 @@ func (flow *Flow) Test(ctx context.Context) error {
 	return nil
 }
 
+// OriginTestResponse returns the structured TestResponse from the origin
+// service's Test RPC, or nil if it was never tested (e.g. the flow ran in a
+// non-test mode, or the RPC failed before returning a response).
+func (flow *Flow) OriginTestResponse() *runtimev0.TestResponse {
+	if flow == nil || flow.hub == nil {
+		return nil
+	}
+	origin := resources.WithUnique(flow.originService).Unique()
+	for _, manager := range flow.hub.managers {
+		if manager == nil {
+			continue
+		}
+		if manager.Unique() == origin {
+			return manager.RunnerTestResponse()
+		}
+	}
+	return nil
+}
+
 func (flow *Flow) Build(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Build")
 	// In stand-alone Mode, we set an ignore policy

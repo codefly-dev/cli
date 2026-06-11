@@ -77,12 +77,24 @@ type Runner struct {
 	// to the agent's Test RPC. Set by Flow only on the origin runner in
 	// TestMode; nil for dependency runners.
 	testRequest *runtimev0.TestRequest
+
+	// testResponse holds the structured result of the last Test RPC so the
+	// CLI can render counts / failed cases and set an accurate exit code.
+	// Populated on both success and failure (whenever the RPC itself returns
+	// a response, even if tests failed).
+	testResponse *runtimev0.TestResponse
 }
 
 // WithTestRequest stores the TestRequest to forward to the agent on Test().
 // Wired from CLI flags via Flow.WithTestRequest.
 func (runner *Runner) WithTestRequest(req *runtimev0.TestRequest) {
 	runner.testRequest = req
+}
+
+// TestResponse returns the structured response from the last Test RPC, or nil
+// if this runner has not been tested (or the RPC failed before responding).
+func (runner *Runner) TestResponse() *runtimev0.TestResponse {
+	return runner.testResponse
 }
 
 type Callback func(ctx context.Context, action Action) error
@@ -411,8 +423,12 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "got error from test request")
 	}
 
-	if resp.Status != nil && resp.Status.State != runtimev0.TestStatus_SUCCESS {
-		return nil, w.NewError("service instance testing failed")
+	// Keep the structured response so the CLI can render counts / failed
+	// cases and exit with an accurate code, regardless of pass/fail.
+	runner.testResponse = resp
+
+	if resp.GetStatus() != nil && resp.GetStatus().GetState() != runtimev0.TestStatus_SUCCESS {
+		return nil, w.NewError("tests failed for %s: %s", runner.Unique(), summarizeTestResponse(resp))
 	}
 
 	err = runner.outputPropertyForTest.Set(ctx, &RunnerTestOutput{})
@@ -453,7 +469,10 @@ func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
 		return &OutputProperty{}, nil
 	}
 	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance))
-	w.Debug("stopping")
+	// Info-level so a user watching `codefly run service` shutdown
+	// sees WHICH service is being stopped, not just a silent hang.
+	w.Info(fmt.Sprintf("stopping %s", runner.Unique()))
+	start := time.Now()
 	// Clear the restart flag first — without this, a restart that was
 	// requested but not yet honored could perpetually resurrect the
 	// service on the next Follow tick.
@@ -473,6 +492,7 @@ func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot stop service instance: %s", runner.Unique())
 	}
+	w.Info(fmt.Sprintf("stopped %s in %s", runner.Unique(), time.Since(start).Round(time.Millisecond)))
 	return &OutputProperty{}, nil
 }
 

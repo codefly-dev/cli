@@ -67,7 +67,7 @@ func run(c *cobra.Command, args []string) {
 	manifest, workDir, err := loadManifest(dir)
 	if err != nil {
 		cli.Error("%v", err)
-		cli.Exit()
+		cli.ExitError()
 	}
 
 	fmt.Printf("==> %s mode (%s); current version %s\n",
@@ -126,7 +126,7 @@ func runReTag(c *cobra.Command, _ []string) {
 	manifest, workDir, err := loadManifest(dir)
 	if err != nil {
 		cli.Error("%v", err)
-		cli.Exit()
+		cli.ExitError()
 	}
 
 	fmt.Printf("==> re-tag %s @ HEAD (%s mode, manifest %s)\n",
