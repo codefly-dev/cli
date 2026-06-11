@@ -3,8 +3,6 @@ package add
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/signal"
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -42,7 +40,7 @@ var ApplicationCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
 		errs := make(chan error, 1)

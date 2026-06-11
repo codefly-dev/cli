@@ -61,7 +61,12 @@ var WorkspaceCmd = &cobra.Command{
 			}
 		}
 
-		if failOnVuln && (anyHighSeverity || anyError) {
+		// Exit non-zero when a service audit errored (the run is incomplete and
+		// CI should notice), or when --fail-on-vuln is set and a HIGH/CRITICAL
+		// finding surfaced. ClearAgents must run explicitly: os.Exit skips the
+		// deferred cleanup, which would orphan the per-service builder agents.
+		if anyError || (failOnVuln && anyHighSeverity) {
+			services.ClearAgents()
 			os.Exit(1)
 		}
 	},
@@ -93,5 +98,12 @@ func loadAllServices(ctx context.Context, ws *resources.Workspace) ([]moduleServ
 }
 
 func init() {
-	// (Flag definitions are shared via service.go — they're package-level vars.)
+	// The audit flags are package-level vars, but cobra flags must be
+	// registered on EACH command that accepts them — service.go only binds
+	// them to ServiceCmd. Without these, `audit workspace --fail-on-vuln`
+	// errored ("unknown flag") and failOnVuln was always false, so the
+	// workspace CI gate could never exit non-zero.
+	WorkspaceCmd.Flags().BoolVar(&jsonOut, "json", false, "Emit raw JSON instead of a table")
+	WorkspaceCmd.Flags().BoolVar(&includeOutdated, "outdated", true, "Also report outdated patch+minor releases")
+	WorkspaceCmd.Flags().BoolVar(&failOnVuln, "fail-on-vuln", false, "Exit non-zero if any HIGH/CRITICAL finding is present")
 }

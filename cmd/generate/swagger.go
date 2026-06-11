@@ -2,8 +2,6 @@ package generate
 
 import (
 	"context"
-	"os"
-	"os/signal"
 
 	"github.com/codefly-dev/cli/pkg/generators"
 
@@ -24,7 +22,7 @@ var OpenAPICmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
 		cli.RegisterCleanup(services.ClearAgents)

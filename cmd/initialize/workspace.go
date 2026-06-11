@@ -17,18 +17,17 @@ import (
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Create a new workspace",
+	Args:  cobra.ExactArgs(1),
 
 	Run: func(cmd *cobra.Command, args []string) {
 
 		if interactive {
 			cli.Error("Interactive mode not implemented yet")
-			cli.Exit()
+			cli.ExitError()
 		}
-		if len(args) == 1 {
-			name := args[0]
-			cli.SetWithDefault(withDefault)
-			newWorkspace(name)
-		}
+		name := args[0]
+		cli.SetWithDefault(withDefault)
+		newWorkspace(name)
 	},
 }
 
@@ -47,6 +46,7 @@ func newWorkspace(name string) {
 	confirm := models.Confirm(ctx, fmt.Sprintf("codefly will create a workspace <%s> in the current folder. Proceed?", name), true)
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
+		return
 	}
 
 	selectedLayout := layout

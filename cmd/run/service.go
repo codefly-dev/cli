@@ -116,6 +116,11 @@ var ServiceCmd = &cobra.Command{
 			shutdownCancel()
 		}
 
+		// runFailed records whether the run ended in a failure (init/start error
+		// or a post-readiness runtime failure) so the process exits non-zero.
+		// Previously every path fell through to cli.Exit() (os.Exit(0)).
+		runFailed := false
+
 		if isHeadless {
 			// Headless mode: plain log output, no TUI
 			// Works in: MCP, Claude Code, CI, Docker, pipes, scripts
@@ -129,7 +134,9 @@ var ServiceCmd = &cobra.Command{
 				return
 			}
 			fmt.Printf("[codefly] Service initialized, starting...\n")
-			err = runService(ctx, flow)
+			err = common.WithHeartbeat(ctx, "still starting "+serviceName, func() error {
+				return runService(ctx, flow)
+			})
 			if err != nil {
 				cli.ErrorChain(err, "cannot start service %s", serviceName)
 				stopFresh() // tear down partially-started dependencies
@@ -149,6 +156,7 @@ var ServiceCmd = &cobra.Command{
 			case <-ctx.Done():
 			case f := <-flow.Failures():
 				cli.Error("service failure: %s", f.Error())
+				runFailed = true
 			}
 		} else {
 			// Interactive mode: TUI
@@ -176,7 +184,10 @@ var ServiceCmd = &cobra.Command{
 				t.SendState(serviceName, tui.StateLoading)
 				flow, err = initRunService(runCtx, workspace, module, service)
 				if err != nil {
-					runErr = errors.Unwrap(err)
+					// Keep the full error: initRunService returns w.NewError
+					// (unwrapped) for an invalid runtime context, so Unwrap
+					// returned nil and silently swallowed the failure.
+					runErr = err
 					t.SendError(runErr)
 					t.SendDone(runErr) // quit the TUI instead of hanging on the error
 					return
@@ -251,10 +262,15 @@ var ServiceCmd = &cobra.Command{
 			<-finished
 			if runErr != nil {
 				cli.ErrorChain(runErr, "service %s stopped with an error", serviceName)
+				runFailed = true
 			}
 		}
 
 		stopFresh()
+		if runFailed {
+			cli.ExitError()
+			return
+		}
 		cli.Exit()
 	},
 }
@@ -397,7 +413,7 @@ func parseRemote(workspace *resources.Workspace, remotes []string) ([]*orchestra
 	for _, remote := range remotes {
 		tokens := strings.Split(remote, ":")
 		if len(tokens) != 2 {
-			return nil, errors.New("Remote should be in the format: service:env")
+			return nil, errors.New("remote should be in the format: service:env")
 		}
 		serviceWithModule, err := resources.ParseServiceWithOptionalModule(tokens[0])
 		if err != nil {

@@ -9,6 +9,8 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	cliv0 "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	"github.com/codefly-dev/core/network"
+	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
@@ -36,6 +38,20 @@ Examples:
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+
+		// Resolve the server address. By default it is derived from the
+		// workspace name (the CLI server binds a deterministic per-workspace
+		// port in [20000,29900]); the legacy fixed `localhost:10000` is no
+		// longer listened on, so a hard-coded default always failed. --server
+		// still overrides for unusual setups.
+		if termServer == "" {
+			ws, wsErr := resources.FindWorkspaceUp(ctx)
+			if wsErr != nil || ws == nil {
+				cli.Error("Cannot find workspace to locate the codefly server (pass --server host:port): %v", wsErr)
+				cli.ExitError()
+			}
+			termServer = fmt.Sprintf("127.0.0.1:%d", network.CLIServerPort(ws.Name))
+		}
 
 		// Connect to the daemon gRPC server
 		conn, err := grpc.NewClient(termServer, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -163,5 +179,5 @@ func init() {
 	TerminalCmd.Flags().StringVar(&termModule, "module", "", "Module name (optional)")
 	TerminalCmd.Flags().StringVar(&termService, "service", "", "Service name (optional)")
 	TerminalCmd.Flags().StringVar(&termShell, "shell", "", "Shell override (default: $SHELL)")
-	TerminalCmd.Flags().StringVar(&termServer, "server", "localhost:10000", "codefly gRPC server address")
+	TerminalCmd.Flags().StringVar(&termServer, "server", "", "codefly gRPC server address (default: derived from workspace)")
 }

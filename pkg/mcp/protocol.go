@@ -56,9 +56,9 @@ type ServerInfo struct {
 }
 
 type ServerCapabilities struct {
-	Tools     *ToolsCapability     `json:"tools,omitempty"`
-	Resources *ResourceCapability  `json:"resources,omitempty"`
-	Prompts   *PromptsCapability   `json:"prompts,omitempty"`
+	Tools     *ToolsCapability    `json:"tools,omitempty"`
+	Resources *ResourceCapability `json:"resources,omitempty"`
+	Prompts   *PromptsCapability  `json:"prompts,omitempty"`
 }
 
 type ToolsCapability struct {

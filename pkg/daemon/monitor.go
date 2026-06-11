@@ -17,11 +17,11 @@ import (
 
 // MonitorConfig configures the process monitor.
 type MonitorConfig struct {
-	CheckInterval  time.Duration // how often to check (default 30s)
-	CPUThreshold   float64       // kill if CPU% exceeds this for 2 checks (default 200%)
-	MemoryMB       int           // warn if RSS exceeds this (default 512MB)
-	MaxOrphans     int           // max orphaned agent processes (default 3)
-	LogPath        string        // monitor log file
+	CheckInterval time.Duration // how often to check (default 30s)
+	CPUThreshold  float64       // kill if CPU% exceeds this for 2 checks (default 200%)
+	MemoryMB      int           // warn if RSS exceeds this (default 512MB)
+	MaxOrphans    int           // max orphaned agent processes (default 3)
+	LogPath       string        // monitor log file
 }
 
 // DefaultMonitorConfig returns sensible defaults.
@@ -40,7 +40,7 @@ func DefaultMonitorConfig() MonitorConfig {
 type ProcessInfo struct {
 	PID     int
 	CPU     float64 // percentage
-	MemRSS int     // KB
+	MemRSS  int     // KB
 	Command string
 	Name    string // extracted: "go-grpc", "go-generic", "neo4j", etc.
 }

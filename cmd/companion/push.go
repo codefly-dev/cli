@@ -37,7 +37,7 @@ func runPush(cmd *cobra.Command, args []string) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		cli.Error("cannot read working directory: %v", err)
-		cli.Exit()
+		cli.ExitError()
 	}
 	coreDir := coreDirFlag
 	if coreDir == "" {
@@ -47,7 +47,7 @@ func runPush(cmd *cobra.Command, args []string) {
 	c, err := LoadCompanion(filepath.Join(coreDir, "companions", args[0]))
 	if err != nil {
 		cli.Error("cannot load companion %q: %v", args[0], err)
-		cli.Exit()
+		cli.ExitError()
 	}
 	fmt.Printf("==> Pushing %s\n", c.Tag())
 	if err := pushImage(c.Tag()); err != nil {

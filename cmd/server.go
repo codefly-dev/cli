@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -19,7 +17,7 @@ var ServerCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
 		errs := make(chan error, 1) // Buffered channel
@@ -27,7 +25,7 @@ var ServerCmd = &cobra.Command{
 		workspace := common.Workspace(ctx)
 		if workspace == nil {
 			cli.Error("No workspace found")
-			cli.Exit()
+			cli.ExitError()
 		}
 		go func() {
 			w, err := web.NewServer(web.ServerData{Workspace: workspace})

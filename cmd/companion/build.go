@@ -61,7 +61,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		cli.Error("cannot read working directory: %v", err)
-		cli.Exit()
+		cli.ExitError()
 	}
 	coreDir := coreDirFlag
 	if coreDir == "" {
@@ -70,12 +70,12 @@ func runBuild(cmd *cobra.Command, args []string) {
 	companionsDir := filepath.Join(coreDir, "companions")
 	if info, err := os.Stat(companionsDir); err != nil || !info.IsDir() {
 		cli.Error("companions directory not found at %s; pass --core-dir or run from within the codefly.dev tree", companionsDir)
-		cli.Exit()
+		cli.ExitError()
 	}
 
 	if !all && len(args) == 0 {
 		cli.Error("must specify a companion name or --all")
-		cli.Exit()
+		cli.ExitError()
 	}
 
 	var targets []*Companion
@@ -88,7 +88,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 		c, err := LoadCompanion(filepath.Join(companionsDir, args[0]))
 		if err != nil {
 			cli.Error("cannot load companion %q: %v", args[0], err)
-			cli.Exit()
+			cli.ExitError()
 		}
 		targets = []*Companion{c}
 	}
@@ -101,7 +101,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 	if needsLinuxCLI(targets) {
 		if err := buildLinuxCLI(coreDir); err != nil {
 			cli.Error("cross-compile codefly CLI for linux/amd64: %v", err)
-			cli.Exit()
+			cli.ExitError()
 		}
 	}
 
@@ -143,11 +143,11 @@ func mustListCompanions(root string) []*Companion {
 	cs, err := ListCompanions(root)
 	if err != nil {
 		cli.Error("scan companions: %v", err)
-		cli.Exit()
+		cli.ExitError()
 	}
 	if len(cs) == 0 {
 		cli.Error("no companions found under %s/companions/", root)
-		cli.Exit()
+		cli.ExitError()
 	}
 	return cs
 }

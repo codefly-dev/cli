@@ -962,3 +962,18 @@ func TestDiagSeverityToString(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigBindHostDefaultsToLoopback(t *testing.T) {
+	// Empty Host = local-only, the safe default.
+	if got := (Config{}).bindHost(); got != "127.0.0.1" {
+		t.Fatalf("empty Host bindHost() = %q, want 127.0.0.1", got)
+	}
+	if got := (Config{Host: "  "}).bindHost(); got != "127.0.0.1" {
+		t.Fatalf("blank Host bindHost() = %q, want 127.0.0.1", got)
+	}
+	// Explicit host is honored — 0.0.0.0 exposes the gateway for the
+	// codefly-in-Docker data-plane model.
+	if got := (Config{Host: "0.0.0.0"}).bindHost(); got != "0.0.0.0" {
+		t.Fatalf("Host=0.0.0.0 bindHost() = %q, want 0.0.0.0", got)
+	}
+}

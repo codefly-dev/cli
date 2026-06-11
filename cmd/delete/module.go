@@ -17,7 +17,7 @@ var ModuleCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
 			cli.Error("You must provide a name for the module as the single argument")
-			cli.Exit()
+			cli.ExitError()
 		}
 		name := args[0]
 		deleteModule(name)

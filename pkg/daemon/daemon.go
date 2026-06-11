@@ -103,6 +103,27 @@ func IsRunning(pid int) bool {
 	return err == nil
 }
 
+// isOurDaemon verifies that the live process at pid is actually a codefly
+// daemon, not an unrelated process that recycled the PID after our daemon
+// exited. Without this, Stop() could SIGTERM/SIGKILL a stranger. Best-effort:
+// when the process command can't be read (permissions, platform), it returns
+// true so Stop still works on hosts where `ps` is unavailable — liveness alone
+// is the pre-existing behavior.
+func isOurDaemon(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return true // can't introspect — fall back to liveness-only
+	}
+	cmd := strings.ToLower(strings.TrimSpace(string(out)))
+	if cmd == "" {
+		return true
+	}
+	return strings.Contains(cmd, "codefly")
+}
+
 // Status returns the daemon's current state.
 type Status struct {
 	Running bool
@@ -118,7 +139,9 @@ func GetStatus() (*Status, error) {
 	}
 	logPath, _ := LogFile()
 	return &Status{
-		Running: IsRunning(pid),
+		// Running only if the PID is alive AND is actually our daemon (guards
+		// against a recycled PID being reported as a live daemon).
+		Running: IsRunning(pid) && isOurDaemon(pid),
 		PID:     pid,
 		LogPath: logPath,
 	}, nil
@@ -192,8 +215,9 @@ func Stop() error {
 	if pid == 0 {
 		return fmt.Errorf("no daemon PID file found")
 	}
-	if !IsRunning(pid) {
-		// Stale PID file
+	if !IsRunning(pid) || !isOurDaemon(pid) {
+		// Stale PID file, or the PID was recycled by an unrelated process —
+		// either way we must NOT signal it. Clear the file and report stale.
 		_ = RemovePID()
 		return fmt.Errorf("daemon is not running (stale PID %d)", pid)
 	}

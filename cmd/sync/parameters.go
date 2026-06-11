@@ -1,6 +1,3 @@
 package sync
 
-var (
-	current  bool
-	initOnly bool
-)
+var initOnly bool

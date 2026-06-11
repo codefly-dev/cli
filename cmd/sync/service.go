@@ -2,9 +2,6 @@ package sync
 
 import (
 	"context"
-	"errors"
-	"os"
-	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -23,7 +20,7 @@ var ServiceCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
 		defer services.ClearAgents()
@@ -35,7 +32,9 @@ var ServiceCmd = &cobra.Command{
 		flow, err := initSyncService(ctx, workspace, module, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
-			errs <- syncService(ctx, flow)
+			errs <- common.WithHeartbeat(ctx, "syncing "+service.Name, func() error {
+				return syncService(ctx, flow)
+			})
 		}()
 
 	loop:
@@ -54,8 +53,8 @@ var ServiceCmd = &cobra.Command{
 		err = cleanSyncService(flow)
 		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
-			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
-			return
+			cli.ErrorChain(stopped, "Got error while stopping service")
+			cli.ExitError()
 		}
 		cli.Header(1, "Work done!")
 	},

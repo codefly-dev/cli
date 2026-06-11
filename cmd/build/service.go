@@ -2,9 +2,6 @@ package build
 
 import (
 	"context"
-	"errors"
-	"os"
-	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/builder"
@@ -24,7 +21,7 @@ var ServiceCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
 		cli.RegisterCleanup(services.ClearAgents)
@@ -36,7 +33,9 @@ var ServiceCmd = &cobra.Command{
 		flow, err := initBuildService(ctx, workspace, module, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 		go func() {
-			errs <- buildService(ctx, flow)
+			errs <- common.WithHeartbeat(ctx, "building "+service.Name, func() error {
+				return buildService(ctx, flow)
+			})
 		}()
 
 	loop:
@@ -55,8 +54,8 @@ var ServiceCmd = &cobra.Command{
 		err = cleanBuildService(flow)
 		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
-			cli.Error("Got error while stopping service: %v", errors.Unwrap(stopped))
-			return
+			cli.ErrorChain(stopped, "Got error while stopping service")
+			cli.ExitError()
 		}
 		cli.Header(1, "Work done!")
 	},

@@ -26,7 +26,7 @@ func runList(cmd *cobra.Command, _ []string) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		cli.Error("cannot read working directory: %v", err)
-		cli.Exit()
+		cli.ExitError()
 	}
 	coreDir := coreDirFlag
 	if coreDir == "" {
@@ -36,7 +36,7 @@ func runList(cmd *cobra.Command, _ []string) {
 	cs, err := ListCompanions(coreDir)
 	if err != nil {
 		cli.Error("scan companions: %v", err)
-		cli.Exit()
+		cli.ExitError()
 	}
 	if len(cs) == 0 {
 		fmt.Printf("(no companions found under %s/companions/)\n", coreDir)

@@ -47,6 +47,19 @@ import (
 type Config struct {
 	WorkDir string // directory containing mind.yaml
 	Port    int    // gRPC listen port
+	// Host is the bind interface. Empty defaults to "127.0.0.1" (local-only,
+	// the safe default). Set to "0.0.0.0" to expose the gateway over the
+	// network — required when the gateway runs inside a container that a
+	// remote Mind connects to (the codefly-in-Docker / SaaS data-plane model).
+	Host string
+}
+
+// bindHost returns the interface to listen on, defaulting to local-only.
+func (c Config) bindHost() string {
+	if strings.TrimSpace(c.Host) == "" {
+		return "127.0.0.1"
+	}
+	return c.Host
 }
 
 // Server implements the Gateway gRPC service.
@@ -133,7 +146,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		w.Warn("OTEL init failed (tracing disabled)", wool.ErrField(err))
 	}
 
-	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.Port)
+	addr := fmt.Sprintf("%s:%d", s.cfg.bindHost(), s.cfg.Port)
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
@@ -311,15 +324,34 @@ func (s *Server) monitorPlugin(svcName string, ac *manager.AgentConn) {
 				s.evictPlugin(svcName)
 				return
 			}
-			// Check if the gRPC connection is still viable.
-			state := conn.GetState()
-			if state == connectivity.Shutdown {
+			// Primary check: is the agent PROCESS still alive? A crashed plugin
+			// leaves its gRPC conn in TransientFailure (endlessly reconnecting),
+			// NOT Shutdown — so the state check alone parked dead plugins in
+			// cache forever. Probe the PID directly (this is what the doc
+			// comment promised).
+			if pi := ac.ProcessInfo(); pi != nil && pi.PID > 0 && !processAlive(pi.PID) {
+				fmt.Printf("[gateway] Plugin %q process (PID %d) is dead, evicting from cache\n", svcName, pi.PID)
+				s.evictPlugin(svcName)
+				return
+			}
+			// Secondary: the gRPC connection was explicitly shut down.
+			if conn.GetState() == connectivity.Shutdown {
 				fmt.Printf("[gateway] Plugin %q connection shut down, evicting from cache\n", svcName)
 				s.evictPlugin(svcName)
 				return
 			}
 		}
 	}
+}
+
+// processAlive reports whether the process with the given pid is still running
+// (signal 0 probes existence without affecting the process).
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 // evictPlugin removes a plugin from the cache so ensurePlugin will reload it.

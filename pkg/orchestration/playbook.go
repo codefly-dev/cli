@@ -176,7 +176,12 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 				// If some failure: next becomes []Action of type Failing
 				next, err := playbook.policy.Execute(ctx, action)
 				if err != nil {
-					return w.Wrapf(err, "invalid execution for action: %v", action)
+					// Keep the wrap short so the actual error stays close
+					// to the start of the rendered message. The original
+					// `%v action` printed the full Action struct, pushing
+					// the underlying cause past terminal width and making
+					// the message look truncated.
+					return w.Wrapf(err, "action %s on %s failed", action.Type, action.Service)
 				}
 
 				if p, ok := playbook.pause.IsPause(ctx, next); ok {

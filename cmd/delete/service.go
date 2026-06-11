@@ -2,8 +2,6 @@ package delete
 
 import (
 	"fmt"
-	"os"
-	"os/signal"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -21,12 +19,12 @@ var ServiceCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
 			cli.Error("You must provide a name for the service as the single argument")
-			cli.Exit()
+			cli.ExitError()
 		}
 		ctx, done := common.NewContext()
 		defer done()
 
-		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
 		cli.Init()
