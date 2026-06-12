@@ -3,7 +3,9 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -83,6 +85,7 @@ log the failure hint points at, so the usual flow after a command fails is:
 			return err
 		}
 		reader := bufio.NewReader(f)
+		var retryCount int
 		for {
 			select {
 			case <-ctx.Done():
@@ -92,10 +95,33 @@ log the failure hint points at, so the usual flow after a command fails is:
 			line, err := reader.ReadString('\n')
 			if len(line) > 0 {
 				printLogLine(strings.TrimRight(line, "\n"))
+				retryCount = 0 // reset on any successful read
 			}
 			if err != nil {
-				// EOF or transient — wait a beat and retry.
-				time.Sleep(200 * time.Millisecond)
+				if errors.Is(err, io.EOF) {
+					// Expected when following a live file — wait a beat, then
+					// only resume reading once the file has actually grown.
+					// Avoids a tight poll loop when the file ends without a
+					// newline and stops growing.
+					time.Sleep(200 * time.Millisecond)
+					pos, errSeek := f.Seek(0, io.SeekCurrent)
+					if errSeek != nil {
+						fmt.Fprintf(os.Stderr, "error reading log: %v\n", errSeek)
+						return errSeek
+					}
+					if stat, errStat := f.Stat(); errStat == nil && stat.Size() > pos {
+						reader = bufio.NewReader(f)
+					}
+				} else {
+					// Real error (permission denied, I/O error, etc.). Retry a
+					// few times to ride out transient blips, then give up loud.
+					retryCount++
+					if retryCount > 5 {
+						fmt.Fprintf(os.Stderr, "error reading log: %v\n", err)
+						return err
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
 			}
 		}
 	},

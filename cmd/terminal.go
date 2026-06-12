@@ -152,8 +152,12 @@ Examples:
 			}
 		}()
 
-		// Read from stdin, send to server
+		// Read from stdin, send to server. If this reader exits (stdin error or
+		// send failure), cancel the context so stream.Recv() in the stdout
+		// reader unblocks and that goroutine can close done — otherwise the
+		// main goroutine would hang forever on <-done.
 		go func() {
+			defer cancel()
 			buf := make([]byte, 1024)
 			for {
 				n, err := os.Stdin.Read(buf)

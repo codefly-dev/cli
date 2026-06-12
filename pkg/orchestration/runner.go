@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -186,6 +187,22 @@ func ContextCancelled(err error) bool {
 	return false
 }
 
+// ContextDeadlineExceeded reports whether err represents a deadline-exceeded
+// condition, either as a plain context.DeadlineExceeded or as a gRPC status
+// with codes.DeadlineExceeded.
+func ContextDeadlineExceeded(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if grpcErr, ok := status.FromError(err); ok {
+		return grpcErr.Code() == codes.DeadlineExceeded
+	}
+	return false
+}
+
 func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Runner.Init", wool.ThisField(runner.instance))
 
@@ -202,21 +219,37 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(cfgCtx, runner.instance.Service)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot run init")
+		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
+			w.Warn("timeout waiting for dependency endpoints after 30s; check that dependency services are reachable")
+			return nil, w.Wrapf(err, "init timeout: dependencies endpoints not available within 30s")
+		}
+		return nil, w.Wrapf(err, "cannot get dependencies endpoints")
 	}
 
 	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
 	if err != nil {
+		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
+			w.Warn("timeout waiting for service configuration after 30s; check that dependency services are reachable")
+			return nil, w.Wrapf(err, "init timeout: service configuration not available within 30s")
+		}
 		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
 	workspaceConfigurations, err := runner.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(cfgCtx, runner.instance.Service.WorkspaceConfigurationDependencies...)
 	if err != nil {
+		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
+			w.Warn("timeout waiting for workspace dependencies configurations after 30s; check that dependency services are reachable")
+			return nil, w.Wrapf(err, "init timeout: workspace dependencies configurations not available within 30s")
+		}
 		return nil, w.Wrapf(err, "cannot get project configurations")
 	}
 
 	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
 	if err != nil {
+		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
+			w.Warn("timeout waiting for dependencies configurations after 30s; check that dependency services are reachable")
+			return nil, w.Wrapf(err, "init timeout: dependencies configurations not available within 30s")
+		}
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
 	}
 

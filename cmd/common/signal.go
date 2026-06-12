@@ -25,13 +25,17 @@ func SignalContext(parent context.Context) (context.Context, func()) {
 	// has cancelled ctx, so the first signal stays graceful (NotifyContext
 	// consumes it) and only the next one hard-exits while teardown runs.
 	forced := make(chan os.Signal, 1)
+	// Register for signals up front so a second Ctrl-C that arrives before the
+	// goroutine wakes on ctx.Done() is queued (buffered) rather than discarded
+	// by the runtime. NotifyContext independently consumes the first signal to
+	// cancel ctx, so the first signal still stays graceful.
+	signal.Notify(forced, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		select {
 		case <-ctx.Done():
 		case <-parent.Done():
 			return
 		}
-		signal.Notify(forced, os.Interrupt, syscall.SIGTERM)
 		select {
 		case <-forced:
 			fmt.Fprintln(os.Stderr, "\nForced quit — spawned containers/agents may be left running.")

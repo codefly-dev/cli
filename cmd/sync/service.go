@@ -23,7 +23,7 @@ var ServiceCmd = &cobra.Command{
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		defer services.ClearAgents()
+		cli.RegisterCleanup(services.ClearAgents)
 
 		errs := make(chan error, 1) // Buffered channel
 
@@ -37,11 +37,15 @@ var ServiceCmd = &cobra.Command{
 			})
 		}()
 
+		// syncErr captures a non-nil sync failure so it can be reported AFTER
+		// cleanup runs. Exiting here (e.g. cli.ExitOnError) would skip
+		// cleanSyncService and orphan agents/containers holding ports.
+		var syncErr error
 	loop:
 		for {
 			select {
 			case err := <-errs:
-				cli.ExitOnError(err, "Got service sync error: %v\n", err)
+				syncErr = err
 				errs <- nil
 				break loop
 			case <-ctx.Done():
@@ -51,6 +55,10 @@ var ServiceCmd = &cobra.Command{
 		}
 		stopped := <-errs
 		err = cleanSyncService(flow)
+		if syncErr != nil {
+			cli.ErrorChain(syncErr, "Got service sync error")
+			cli.ExitError()
+		}
 		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
 			cli.ErrorChain(stopped, "Got error while stopping service")

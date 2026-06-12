@@ -34,6 +34,21 @@ var ServiceCmd = &cobra.Command{
 		flow, err := initDeployService(ctx, workspace, module, service, standAlone)
 		cli.ExitOnError(err, "Cannot initialize service")
 
+		// Guarantee flow.Stop() (kills agents/containers) runs before exit.
+		// cleanDeployService is guarded so it only ever runs once. The defer
+		// is a panic/early-return safety net; the normal error path captures
+		// deployErr and runs cleanup explicitly BEFORE exiting, because
+		// os.Exit (via cli.ExitError) does NOT run defers.
+		var cleaned bool
+		cleanup := func() error {
+			if cleaned {
+				return nil
+			}
+			cleaned = true
+			return cleanDeployService(flow)
+		}
+		defer func() { _ = cleanup() }()
+
 		go func() {
 			err = common.WithHeartbeat(ctx, "deploying "+service.Name, func() error {
 				return deployService(ctx, flow)
@@ -44,11 +59,15 @@ var ServiceCmd = &cobra.Command{
 			errs <- nil
 		}()
 
+		// deployErr captures a non-nil deploy failure so it can be reported
+		// AFTER cleanup runs. Exiting here (cli.ExitOnError) would skip
+		// cleanDeployService and orphan agents/containers holding ports.
+		var deployErr error
 	loop:
 		for {
 			select {
 			case err := <-errs:
-				cli.ExitOnError(err, "Got service deploy error: %v\n", err)
+				deployErr = err
 				errs <- nil
 				break loop
 			case <-ctx.Done():
@@ -57,7 +76,11 @@ var ServiceCmd = &cobra.Command{
 			}
 		}
 		stopped := <-errs
-		err = cleanDeployService(flow)
+		err = cleanup()
+		if deployErr != nil {
+			cli.ErrorChain(deployErr, "Got service deploy error")
+			cli.ExitError()
+		}
 		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
 			cli.ErrorChain(stopped, "Got error while stopping service")

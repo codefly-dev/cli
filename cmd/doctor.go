@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/daemon"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
@@ -61,7 +60,7 @@ processes — and tells you how to fix each one.`,
 		fmt.Println()
 		if anyFail {
 			fmt.Println(tui.RenderError("Some checks FAILED — fix the items marked ✗ above."))
-			cli.ExitError()
+			return fmt.Errorf("some checks failed")
 		}
 		fmt.Println(tui.RenderInfo("All critical checks passed."))
 		return nil
