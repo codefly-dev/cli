@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/wool"
@@ -152,14 +151,13 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			w.Info("context cancelled")
-			// Graceful drain: send() delivers action groups from detached
-			// goroutines that block on the actions channel until they either
-			// succeed or hit their own 30s timeout. Now that we're the last
-			// reader and about to leave, briefly keep draining so those
-			// in-flight deliveries complete their send and exit promptly
-			// instead of blocking for up to 30s (delaying shutdown and
-			// piling up goroutines).
-			playbook.drain(w)
+			// send() delivers action groups from detached goroutines that block
+			// on the actions channel until they either succeed or hit their own
+			// 30s timeout. As the last reader leaving, drain them so those
+			// in-flight deliveries complete and exit immediately instead of
+			// blocking up to 30s (delaying shutdown, piling up goroutines).
+			// Deterministic: gated on the senders' WaitGroup, not a fixed wait.
+			playbook.actions.drainPending()
 			return nil
 		case group := <-playbook.actions.Group():
 			plan := playbook.actions.NewActionPlan()
@@ -216,23 +214,6 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 			}
 			// Done looping on actions
 			playbook.actions.send(ctx, plan.actions...)
-		}
-	}
-}
-
-// drain reads any queued or in-flight action groups for a short window so the
-// detached delivery goroutines spawned by ActionManager.send() can complete
-// their channel send and return, rather than each blocking until its own 30s
-// timeout. Drained groups are intentionally discarded: Work() is shutting down.
-func (playbook *Playbook) drain(w *wool.Wool) {
-	timeout := time.NewTimer(200 * time.Millisecond)
-	defer timeout.Stop()
-	for {
-		select {
-		case group := <-playbook.actions.Group():
-			w.Trace("draining action group on shutdown", wool.Field("actions", group))
-		case <-timeout.C:
-			return
 		}
 	}
 }

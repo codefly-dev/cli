@@ -88,6 +88,10 @@ type ActionManager struct {
 	sync.Mutex
 	actions chan ActionGroup
 	round   int
+	// pending tracks in-flight detached send() delivery goroutines so a
+	// shutting-down reader can drain them deterministically (see drainPending)
+	// instead of guessing a fixed wait.
+	pending sync.WaitGroup
 }
 
 func NewActionManager() *ActionManager {
@@ -141,7 +145,9 @@ func (manager *ActionManager) send(ctx context.Context, actions ...Action) {
 	default:
 	}
 	deliverCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	manager.pending.Add(1)
 	go func() {
+		defer manager.pending.Done()
 		defer cancel()
 		select {
 		case manager.actions <- group:
@@ -150,6 +156,27 @@ func (manager *ActionManager) send(ctx context.Context, actions ...Action) {
 		}
 	}()
 	w.Trace("sent actions", wool.Field("actions", group))
+}
+
+// drainPending unblocks any in-flight send() delivery goroutines when the
+// reader is shutting down. It reads (and discards) queued groups until every
+// detached sender has completed — delivered or self-timed-out. Termination is
+// deterministic: it's gated on the pending WaitGroup, so it returns the instant
+// the last sender drains rather than after a guessed fixed interval. Each
+// blocked sender is freed by exactly one channel read here, so this can't spin.
+func (manager *ActionManager) drainPending() {
+	done := make(chan struct{})
+	go func() {
+		manager.pending.Wait()
+		close(done)
+	}()
+	for {
+		select {
+		case <-manager.actions:
+		case <-done:
+			return
+		}
+	}
 }
 
 func (manager *ActionManager) Group() chan ActionGroup {
