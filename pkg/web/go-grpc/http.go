@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"io/fs"
+	"net"
 	"net/http"
 
 	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
@@ -60,11 +61,30 @@ func (s *HttpServer) Run(ctx context.Context) error {
 	// Begin HTTP server (and proxy calls to gRPC server endpoint)
 
 	handler := cors.Default().Handler(mux)
-	err = http.ListenAndServe(s.config.EndpointRest, handler)
+
+	srv := &http.Server{Addr: s.config.EndpointRest, Handler: handler}
+	lis, err := net.Listen("tcp", s.config.EndpointRest)
 	if err != nil {
 		return err
 	}
-	return nil
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.Serve(lis)
+	}()
+
+	select {
+	case <-ctx.Done():
+		if err := srv.Shutdown(context.Background()); err != nil {
+			return err
+		}
+		return nil
+	case err := <-serveErr:
+		if err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
+	}
 }
 
 //go:embed out/*

@@ -154,9 +154,23 @@ var daemonLogsCmd = &cobra.Command{
 		}
 
 		if logFollow {
-			// Simple follow: keep reading as new data arrives
+			// Follow: keep reading as new data arrives. Catch SIGINT/SIGTERM so
+			// Ctrl-C (or `kill`) exits gracefully instead of forcing the user to
+			// force-kill a loop that otherwise never returns.
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
 			for {
-				n, _ := io.Copy(os.Stdout, f)
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				n, err := io.Copy(os.Stdout, f)
+				if err != nil && err != io.EOF {
+					cli.Error("log read error: %v", err)
+					return
+				}
 				if n == 0 {
 					// Small sleep to avoid busy-wait
 					time.Sleep(250 * time.Millisecond)

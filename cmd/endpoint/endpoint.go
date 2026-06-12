@@ -50,7 +50,7 @@ Examples:
 
 		apiType, err := common.NormalizeAPIType(mustString(cmd, "type"))
 		if err != nil {
-			fail("%v", err)
+			fail(done, "%v", err)
 		}
 		wantName := strings.TrimSpace(mustString(cmd, "endpoint"))
 		namingScope := mustString(cmd, "naming-scope")
@@ -61,29 +61,29 @@ Examples:
 		matches := common.FilterEndpoints(service.Endpoints, apiType, wantName)
 		switch {
 		case len(matches) == 0:
-			fail("no endpoint on %s matches (type=%q endpoint=%q)", service.Name, apiType, wantName)
+			fail(done, "no endpoint on %s matches (type=%q endpoint=%q)", service.Name, apiType, wantName)
 		case len(matches) > 1:
 			names := make([]string, len(matches))
 			for i, ep := range matches {
 				names[i] = ep.Name
 			}
-			fail("%s has %d matching endpoints (%s) — narrow with --type or --endpoint",
+			fail(done, "%s has %d matching endpoints (%s) — narrow with --type or --endpoint",
 				service.Name, len(matches), strings.Join(names, ", "))
 		}
 
 		ep := matches[0]
 		resolved, err := common.ResolveNative(ctx, workspace.Name, module.Name, service.Name, namingScope, ep)
 		if err != nil {
-			fail("cannot resolve %s/%s endpoint %q: %v", module.Name, service.Name, ep.Name, err)
+			fail(done, "cannot resolve %s/%s endpoint %q: %v", module.Name, service.Name, ep.Name, err)
 		}
 		if resolved.External {
-			fail("endpoint %q is external (DNS-resolved at runtime); cannot resolve offline", ep.Name)
+			fail(done, "endpoint %q is external (DNS-resolved at runtime); cannot resolve offline", ep.Name)
 		}
 		if resolved.Unsupported {
-			fail("endpoint %q has an unsupported api (%q); codefly binds no port for it", ep.Name, ep.API)
+			fail(done, "endpoint %q has an unsupported api (%q); codefly binds no port for it", ep.Name, ep.API)
 		}
 		if requireUp && !common.Reachable(resolved.HostPort) {
-			fail("endpoint %q is not reachable at %s — is `codefly run service %s` up?", ep.Name, resolved.HostPort, service.Name)
+			fail(done, "endpoint %q is not reachable at %s — is `codefly run service %s` up?", ep.Name, resolved.HostPort, service.Name)
 		}
 
 		// The ONLY thing on stdout: the address. Everything else is stderr.
@@ -108,9 +108,12 @@ func mustBool(cmd *cobra.Command, name string) bool {
 	return v
 }
 
-// fail writes a diagnostic to stderr and exits non-zero, keeping stdout clean
-// for the (absent) address so callers can rely on `$( ... )` being empty.
-func fail(format string, a ...any) {
+// fail writes a diagnostic to stderr, runs context cleanup, and exits non-zero,
+// keeping stdout clean for the (absent) address so callers can rely on
+// `$( ... )` being empty. done() is invoked before os.Exit so deferred cleanup
+// (wool flush, file logging, signal handlers) is not bypassed.
+func fail(done func(), format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "codefly endpoint: "+format+"\n", a...)
+	done()
 	os.Exit(1)
 }

@@ -43,7 +43,9 @@ func (fl *FileLogger) rotate() error {
 		return nil
 	}
 	if fl.file != nil {
-		_ = fl.file.Close()
+		if err := fl.file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot close log file: %v\n", err)
+		}
 	}
 	fl.date = today
 	name := filepath.Join(fl.dir, today+".log")
@@ -83,7 +85,10 @@ func (fl *FileLogger) ProcessWithSource(source *wool.Identifier, log *wool.Log) 
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
 
-	_ = fl.rotate()
+	if err := fl.rotate(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: log rotation failed: %v\n", err)
+		return
+	}
 
 	entry := fileEntry{
 		Time:    time.Now().Format("15:04:05.000"),
@@ -97,9 +102,14 @@ func (fl *FileLogger) ProcessWithSource(source *wool.Identifier, log *wool.Log) 
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot marshal log entry: %v\n", err)
 		return
 	}
-	n, _ := fl.file.Write(append(data, '\n'))
+	n, err := fl.file.Write(append(data, '\n'))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to write log entry: %v\n", err)
+		return
+	}
 	fl.size += int64(n)
 }
 

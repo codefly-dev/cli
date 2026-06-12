@@ -38,11 +38,15 @@ var ServiceCmd = &cobra.Command{
 			})
 		}()
 
+		// buildErr captures a non-nil build failure so it can be reported AFTER
+		// cleanup runs. Exiting here (e.g. cli.ExitOnError) would skip
+		// cleanBuildService and orphan agents/containers holding ports.
+		var buildErr error
 	loop:
 		for {
 			select {
 			case err := <-errs:
-				cli.ExitOnError(err, "Got service build error: %v\n", err)
+				buildErr = err
 				errs <- nil
 				break loop
 			case <-ctx.Done():
@@ -52,6 +56,10 @@ var ServiceCmd = &cobra.Command{
 		}
 		stopped := <-errs
 		err = cleanBuildService(flow)
+		if buildErr != nil {
+			cli.ErrorChain(buildErr, "Got service build error")
+			cli.ExitError()
+		}
 		cli.ExitOnError(err, "Cannot stop flow")
 		if stopped != nil {
 			cli.ErrorChain(stopped, "Got error while stopping service")

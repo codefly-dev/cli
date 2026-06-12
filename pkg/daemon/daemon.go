@@ -232,18 +232,26 @@ func Stop() error {
 		return fmt.Errorf("cannot send SIGTERM to PID %d: %w", pid, err)
 	}
 
-	// Wait up to 10 seconds for the process to exit
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if !IsRunning(pid) {
+	// Wait up to 10 seconds for the process to exit. Using timer/ticker
+	// channels instead of time.Now() makes this immune to wall-clock
+	// adjustments and avoids busy polling.
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if !IsRunning(pid) {
+				_ = RemovePID()
+				return nil
+			}
+		case <-timer.C:
+			// Timeout reached: force kill.
+			_ = proc.Signal(syscall.SIGKILL)
 			_ = RemovePID()
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
 	}
-
-	// Force kill
-	_ = proc.Signal(syscall.SIGKILL)
-	_ = RemovePID()
-	return nil
 }

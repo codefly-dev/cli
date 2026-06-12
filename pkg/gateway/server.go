@@ -198,12 +198,20 @@ func (s *Server) shutdownPlugins() {
 			// Send SIGTERM for graceful shutdown.
 			_ = syscall.Kill(pid, syscall.SIGTERM)
 
-			// Poll every 100ms to see if the process exited.
+			// Poll every 100ms to see if the process exited. The poll
+			// goroutine is cancellable so it stops immediately on the
+			// timeout path instead of spinning until the next interval.
+			pollCtx, cancelPoll := context.WithCancel(context.Background())
 			exited := make(chan struct{})
 			go func() {
+				defer close(exited)
 				for {
+					select {
+					case <-pollCtx.Done():
+						return
+					default:
+					}
 					if err := syscall.Kill(pid, 0); err != nil {
-						close(exited)
 						return
 					}
 					time.Sleep(100 * time.Millisecond)
@@ -217,6 +225,7 @@ func (s *Server) shutdownPlugins() {
 				fmt.Printf("[gateway] Plugin %q (PID %d) did not exit in 5s, sending SIGKILL\n", name, pid)
 				_ = syscall.Kill(pid, syscall.SIGKILL)
 			}
+			cancelPoll()
 
 			pc.agentConn.Close()
 			fmt.Printf("[gateway] Plugin %q stopped\n", name)

@@ -2,7 +2,9 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
+	"sync/atomic"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -183,7 +185,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot call build")
 	}
 	if resp == nil {
-		return &OutputProperty{UpdateWithRequiredPropagation: true}, nil
+		return nil, w.Wrapf(fmt.Errorf("builder returned nil response without error"), "gRPC contract violation")
 	}
 
 	if resp.State != nil && resp.State.State != builderv0.BuildStatus_SUCCESS {
@@ -200,7 +202,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
-	if push && resp.Result != nil {
+	if push.Load() && resp.Result != nil {
 		if buildResult := resp.Result.Kind.(*builderv0.BuildResult_DockerBuildResult); buildResult != nil {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.DockerBuildResult.Images {
@@ -215,10 +217,10 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-var push bool
+var push atomic.Bool
 
 func SetBuilderPush() {
-	push = true
+	push.Store(true)
 }
 
 func (b *Builder) Unique() string {

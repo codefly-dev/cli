@@ -137,6 +137,7 @@ func formattedLogLines(source string, separator string, log *wool.Log) []string 
 
 func (logger *Logger) Oops(format string, args ...any) {
 	Error(format, args...)
+	Done()
 	os.Exit(1)
 }
 

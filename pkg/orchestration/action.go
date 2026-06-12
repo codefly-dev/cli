@@ -93,7 +93,7 @@ type ActionManager struct {
 func NewActionManager() *ActionManager {
 	// Use a 1-buffered channel to ensure order
 	return &ActionManager{
-		actions: make(chan ActionGroup),
+		actions: make(chan ActionGroup, 1),
 	}
 }
 
@@ -130,6 +130,16 @@ func (manager *ActionManager) send(ctx context.Context, actions ...Action) {
 	// back). WithoutCancel keeps wool values for logging; an independent
 	// timeout is the leak-guard so a permanently-absent reader can't pile up
 	// goroutines forever.
+	// If the caller's ctx is already cancelled we're in an actual shutdown, not
+	// the brief hot-reload callback cancellation the WithoutCancel detach guards
+	// against. Don't spawn a goroutine that would idle for the full delivery
+	// window during a SIGINT/SIGTERM pile-up.
+	select {
+	case <-ctx.Done():
+		w.Trace("ctx already cancelled, not delivering actions", wool.Field("actions", group))
+		return
+	default:
+	}
 	deliverCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	go func() {
 		defer cancel()
