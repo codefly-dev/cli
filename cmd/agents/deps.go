@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -227,6 +228,14 @@ func findGoModDirs(root string) []string {
 func pinCore(dir, version string) error {
 	const core = "github.com/codefly-dev/core"
 	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	// Strip committed filesystem `replace => ../path` directives first: those are
+	// local-dev overrides that don't exist in a single-repo CI checkout, so they
+	// break the standalone build. Local builds keep working via the root go.work.
+	if dropped, err := stripLocalReplaces(dir, env); err != nil {
+		return err
+	} else if len(dropped) > 0 {
+		cli.Info("  stripped %d local replace(s): %s", len(dropped), strings.Join(dropped, ", "))
+	}
 	if err := runGoEnv(dir, env, "get", core+"@"+version); err != nil {
 		return fmt.Errorf("go get %s@%s: %w", core, version, err)
 	}
@@ -241,6 +250,44 @@ func pinCore(dir, version string) error {
 	got := goModVersion(dir, core)
 	cli.Info("  pinned → %s@%s (standalone build OK)", core, got)
 	return nil
+}
+
+// stripLocalReplaces removes every filesystem `replace X => ../path` directive
+// from dir's go.mod (those whose replacement has no version — i.e. a local
+// path, not a module). Returns the module paths dropped. Module-version
+// replaces (replace X => Y v1.2.3) are left untouched.
+func stripLocalReplaces(dir string, env []string) ([]string, error) {
+	cmd := exec.Command("go", "mod", "edit", "-json")
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go mod edit -json: %w", err)
+	}
+	var mf struct {
+		Replace []struct {
+			Old struct{ Path, Version string }
+			New struct{ Path, Version string }
+		}
+	}
+	if err := json.Unmarshal(out, &mf); err != nil {
+		return nil, fmt.Errorf("parse go.mod json: %w", err)
+	}
+	var dropped []string
+	for _, r := range mf.Replace {
+		if r.New.Version != "" {
+			continue // a module-version replace, not a local path — keep it
+		}
+		arg := r.Old.Path
+		if r.Old.Version != "" {
+			arg = r.Old.Path + "@" + r.Old.Version
+		}
+		if err := runGoEnv(dir, env, "mod", "edit", "-dropreplace", arg); err != nil {
+			return nil, fmt.Errorf("dropreplace %s: %w", arg, err)
+		}
+		dropped = append(dropped, r.Old.Path)
+	}
+	return dropped, nil
 }
 
 // scaffoldCI writes .github/workflows/ci.yml (build+vet against published core,
