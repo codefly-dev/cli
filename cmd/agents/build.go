@@ -231,13 +231,14 @@ var monorepoModules = []struct {
 }
 
 // findMonorepoRoot walks up from dir looking for the codefly.dev monorepo
-// root (identified by having both wool/ and core/ directories).
+// root, identified by a core/ subdir that is the codefly core module. (The
+// standalone top-level wool/ module was removed — core/wool is now a package
+// inside core — so requiring a wool/ dir here, as the old code did, made this
+// ALWAYS return "" and silently disabled local-core replace detection.)
 func findMonorepoRoot(dir string) string {
 	cur := dir
 	for {
-		woolDir := filepath.Join(cur, "wool")
-		coreDir := filepath.Join(cur, "core")
-		if isDir(woolDir) && isDir(coreDir) {
+		if isCoreModuleDir(filepath.Join(cur, "core")) {
 			return cur
 		}
 		parent := filepath.Dir(cur)
@@ -246,6 +247,23 @@ func findMonorepoRoot(dir string) string {
 		}
 		cur = parent
 	}
+}
+
+// isCoreModuleDir reports whether dir is the codefly core Go module (its go.mod
+// declares `module github.com/codefly-dev/core`).
+func isCoreModuleDir(dir string) bool {
+	f, err := os.Open(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == "module github.com/codefly-dev/core" {
+			return true
+		}
+	}
+	return false
 }
 
 func isDir(p string) bool {
