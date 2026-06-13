@@ -12,12 +12,15 @@ import (
 func TestFindMonorepoRoot(t *testing.T) {
 	root := t.TempDir()
 
-	// Create monorepo structure: root/wool/ + root/core/ + root/agents/services/myagent/
-	if err := os.MkdirAll(filepath.Join(root, "wool"), 0o755); err != nil {
-		t.Fatalf("mkdir wool: %v", err)
-	}
+	// Root is detected by core/ being the codefly core module (its go.mod
+	// declares module github.com/codefly-dev/core). The old top-level wool/
+	// dir is gone, so detection keys off core/go.mod, not bare dirs.
 	if err := os.MkdirAll(filepath.Join(root, "core"), 0o755); err != nil {
 		t.Fatalf("mkdir core: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "core", "go.mod"),
+		[]byte("module github.com/codefly-dev/core\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatalf("write core/go.mod: %v", err)
 	}
 	myagent := filepath.Join(root, "agents", "services", "myagent")
 	if err := os.MkdirAll(myagent, 0o755); err != nil {
