@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 
+	connectcors "connectrpc.com/cors"
 	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
 	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
 	"github.com/codefly-dev/golor"
@@ -70,7 +71,17 @@ func (s *HttpServer) Run(ctx context.Context) error {
 	golor.Println(`Serving #(bold,blue)[codefly] webserver at http://localhost:10001`)
 	// Begin HTTP server (and proxy calls to gRPC server endpoint)
 
-	handler := cors.Default().Handler(mux)
+	// Connect-aware CORS so the dashboard works cross-origin in dev
+	// (`next dev` on :3000 hitting the CLI on its web port). The CLI binds
+	// localhost only, so allowing any origin is safe — and required for the
+	// browser to send Connect's custom headers (Connect-Protocol-Version, …)
+	// and read the streamed response headers. Production is same-origin.
+	handler := cors.New(cors.Options{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: connectcors.AllowedMethods(),
+		AllowedHeaders: connectcors.AllowedHeaders(),
+		ExposedHeaders: connectcors.ExposedHeaders(),
+	}).Handler(mux)
 
 	srv := &http.Server{Addr: s.config.EndpointRest, Handler: handler}
 	lis, err := net.Listen("tcp", s.config.EndpointRest)
