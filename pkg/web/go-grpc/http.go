@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
 	"github.com/codefly-dev/golor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"
@@ -18,10 +19,11 @@ import (
 
 type HttpServer struct {
 	config *Configuration
+	impl   *Server
 }
 
-func NewHttpServer(c *Configuration) (*HttpServer, error) {
-	server := &HttpServer{config: c}
+func NewHttpServer(c *Configuration, impl *Server) (*HttpServer, error) {
+	server := &HttpServer{config: c, impl: impl}
 	// Begin HTTP server (and proxy calls to gRPC server endpoint)
 	return server, nil
 }
@@ -46,6 +48,14 @@ func (s *HttpServer) Run(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", http.StripPrefix("/api", gwHandler))
+
+	// Connect endpoint for the browser dashboard (Connect-ES). Serves the same
+	// CLI service impl over the Connect/gRPC-Web protocols at /codefly.cli.v0.CLI/.
+	// More specific than "/" so it wins over the static file server below.
+	if s.impl != nil {
+		path, connectHandler := cliconnect.NewCLIHandler(&cliConnect{s: s.impl})
+		mux.Handle(path, connectHandler)
+	}
 
 	// Route requests to the file server.
 	outFs, err := fs.Sub(content, "out")

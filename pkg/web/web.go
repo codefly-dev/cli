@@ -48,7 +48,7 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	rest, err := go_grpc.NewHttpServer(&config)
+	rest, err := go_grpc.NewHttpServer(&config, server)
 	if err != nil {
 		return nil, err
 	}
