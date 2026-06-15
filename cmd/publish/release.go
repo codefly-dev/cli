@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/Masterminds/semver"
 )
 
 // Engine runs the actual release flow. Holds the Manifest plus the
@@ -27,6 +29,17 @@ type Engine struct {
 func (e *Engine) Release(ctx context.Context) (string, error) {
 	if err := e.preflight(ctx); err != nil {
 		return "", err
+	}
+
+	// Reconcile the bump base against what's ACTUALLY been released. The
+	// manifest's version drifts behind the git tags (tags get cut by CI /
+	// older tooling without bumping info.codefly.yaml), so bumping the
+	// manifest alone collides with an existing tag. Bump from
+	// max(manifest, latest tag) instead — the version we've truly shipped.
+	if latest := e.latestTaggedVersion(ctx); latest != nil && latest.GreaterThan(e.Manifest.Version) {
+		fmt.Printf("==> manifest %s is behind latest tag v%s; bumping from v%s\n",
+			e.Manifest.Version, latest, latest)
+		e.Manifest.Version = latest
 	}
 
 	newVer, err := e.Manifest.Bump(e.BumpType)
@@ -106,17 +119,22 @@ func (e *Engine) assertSyncedWithOrigin(ctx context.Context) error {
 	if _, err := e.git(ctx, "fetch", "origin", "main", "--quiet"); err != nil {
 		return fmt.Errorf("fetch origin/main: %w", err)
 	}
-	local, err := e.git(ctx, "rev-parse", "HEAD")
+	// Refuse only when local is BEHIND origin (a release commit couldn't
+	// fast-forward) or the histories diverged. Being purely AHEAD is fine:
+	// the release commit + tag push fast-forwards origin. This lets you
+	// commit local changes (e.g. a toolchain bump) and publish in one step
+	// without a separate manual push first.
+	counts, err := e.git(ctx, "rev-list", "--left-right", "--count", "origin/main...HEAD")
 	if err != nil {
-		return fmt.Errorf("git rev-parse HEAD: %w", err)
+		return fmt.Errorf("compare with origin/main: %w", err)
 	}
-	remote, err := e.git(ctx, "rev-parse", "origin/main")
-	if err != nil {
-		return fmt.Errorf("git rev-parse origin/main: %w", err)
+	fields := strings.Fields(counts)
+	if len(fields) != 2 {
+		return fmt.Errorf("unexpected rev-list output %q", strings.TrimSpace(counts))
 	}
-	if strings.TrimSpace(local) != strings.TrimSpace(remote) {
-		return fmt.Errorf("local main (%s) diverged from origin/main (%s); pull or push first — refusing to overwrite",
-			strings.TrimSpace(local), strings.TrimSpace(remote))
+	behind := fields[0]
+	if behind != "0" {
+		return fmt.Errorf("local main is behind origin/main by %s commit(s); pull first — refusing to overwrite", behind)
 	}
 	return nil
 }
@@ -133,6 +151,44 @@ func (e *Engine) assertTagDoesNotExist(ctx context.Context, tag string) error {
 		return fmt.Errorf("tag %s already exists on origin — pick a different bump", tag)
 	}
 	return nil
+}
+
+// latestTaggedVersion returns the highest semver among this repo's
+// `v*` tags, considering BOTH local tags and origin's (the manifest is
+// not authoritative — tags are). Returns nil when there are no parseable
+// version tags yet (first release).
+func (e *Engine) latestTaggedVersion(ctx context.Context) *semver.Version {
+	var best *semver.Version
+	consider := func(ref string) {
+		ref = strings.TrimSpace(ref)
+		ref = strings.TrimPrefix(ref, "refs/tags/")
+		if !strings.HasPrefix(ref, "v") {
+			return
+		}
+		// Annotated-tag deref lines (refs/tags/vX^{}) fail to parse and
+		// are skipped, which is what we want.
+		v, err := semver.NewVersion(strings.TrimPrefix(ref, "v"))
+		if err != nil {
+			return
+		}
+		if best == nil || v.GreaterThan(best) {
+			best = v
+		}
+	}
+	if out, err := e.git(ctx, "tag", "-l", "v*"); err == nil {
+		for l := range strings.SplitSeq(out, "\n") {
+			consider(l)
+		}
+	}
+	if out, err := e.git(ctx, "ls-remote", "--tags", "origin"); err == nil {
+		for l := range strings.SplitSeq(out, "\n") {
+			fields := strings.Fields(l)
+			if len(fields) == 2 {
+				consider(fields[1])
+			}
+		}
+	}
+	return best
 }
 
 // --- Mutations -----------------------------------------------------

@@ -136,6 +136,14 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 	}
 
 	for _, c := range targets {
+		// Skip companions that aren't built as images. A directory with an
+		// info.codefly.yaml but neither a Dockerfile nor a flake.nix (e.g.
+		// the `golang` Go-package companion) is discovered by ListCompanions
+		// but has no image to produce — building it would hard-fail.
+		if !c.HasDockerfile && !c.HasFlake {
+			fmt.Printf("==> Skipping %s (no Dockerfile or flake.nix — not an image companion)\n", c.Name)
+			continue
+		}
 		method := "docker"
 		if c.HasFlake && !opts.ForceDocker && nixOnPath() {
 			method = "nix"
