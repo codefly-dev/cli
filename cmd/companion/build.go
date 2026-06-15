@@ -50,6 +50,26 @@ func init() {
 	BuildCmd.Flags().String("core-dir", "", "Path to the core directory (default: walk up from cwd looking for companions/)")
 	BuildCmd.Flags().Bool("push", false, "Push each image to the registry after a successful build")
 	BuildCmd.Flags().Bool("force-docker", false, "Skip the flake.nix path even when present + nix is installed")
+	BuildCmd.Flags().Bool("pull", false, "Always pull a newer base image (docker build --pull) — picks up upstream patch releases (e.g. golang:1.26-alpine → latest 1.26.x)")
+}
+
+// BuildOptions controls a companion build run. Shared by the `companion
+// build` command and by `codefly update deps --companions`.
+type BuildOptions struct {
+	Push        bool
+	ForceDocker bool
+	// Pull forces `docker build --pull` so a floating base tag
+	// (golang:1.26-alpine, …) is refreshed to its latest patch. This is
+	// how `update deps` clears base-image CVEs like the Go stdlib bumps.
+	Pull bool
+}
+
+// BuildAll builds every companion under coreDir/companions in dependency
+// order (codefly base first). Reusable entry point so `update deps` can
+// rebuild the whole companion set with fresh base images.
+func BuildAll(coreDir string, opts BuildOptions) error {
+	targets := sortCompanionsForBuild(mustListCompanions(coreDir))
+	return buildTargets(coreDir, targets, opts)
 }
 
 func runBuild(cmd *cobra.Command, args []string) {
@@ -57,6 +77,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 	coreDirFlag, _ := cmd.Flags().GetString("core-dir")
 	push, _ := cmd.Flags().GetBool("push")
 	forceDocker, _ := cmd.Flags().GetBool("force-docker")
+	pull, _ := cmd.Flags().GetBool("pull")
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -93,21 +114,30 @@ func runBuild(cmd *cobra.Command, args []string) {
 		targets = []*Companion{c}
 	}
 
-	// When --all is set we'll be building language companions that
-	// COPY a linux/amd64 codefly binary; produce it once up front.
-	// When building a single language companion, do the same so the
-	// build isn't broken by a stale binary. Cheap to skip when no
-	// language companion is in the target set.
+	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull}
+	if err := buildTargets(coreDir, targets, opts); err != nil {
+		cli.Error("%v", err)
+		cli.ExitError()
+	}
+}
+
+// buildTargets builds the given companions in the order provided. It
+// cross-compiles the linux CLI once up front when any target needs it
+// (language companions COPY it). Returns the first build/push error.
+func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error {
+	// When a language companion is in the set it COPYs a linux/amd64
+	// codefly binary; produce it once up front so the build isn't broken
+	// by a stale binary. Cheap to skip when no language companion is
+	// targeted.
 	if needsLinuxCLI(targets) {
 		if err := buildLinuxCLI(coreDir); err != nil {
-			cli.Error("cross-compile codefly CLI for linux/amd64: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cross-compile codefly CLI for linux/amd64: %w", err)
 		}
 	}
 
 	for _, c := range targets {
 		method := "docker"
-		if c.HasFlake && !forceDocker && nixOnPath() {
+		if c.HasFlake && !opts.ForceDocker && nixOnPath() {
 			method = "nix"
 		}
 		fmt.Printf("==> Building %s (%s) via %s\n", c.Tag(), c.Dir, method)
@@ -117,22 +147,21 @@ func runBuild(cmd *cobra.Command, args []string) {
 		case "nix":
 			buildErr = buildWithNix(c)
 		default:
-			buildErr = buildWithDocker(c, coreDir)
+			buildErr = buildWithDocker(c, coreDir, opts.Pull)
 		}
 		if buildErr != nil {
-			cli.Error("build %s failed: %v", c.Name, buildErr)
-			cli.ExitError()
+			return fmt.Errorf("build %s failed: %w", c.Name, buildErr)
 		}
 		fmt.Printf("    built %s\n", c.Tag())
 
-		if push {
+		if opts.Push {
 			if err := pushImage(c.Tag()); err != nil {
-				cli.Error("push %s failed: %v", c.Name, err)
-				cli.ExitError()
+				return fmt.Errorf("push %s failed: %w", c.Name, err)
 			}
 			fmt.Printf("    pushed %s\n", c.Tag())
 		}
 	}
+	return nil
 }
 
 // mustListCompanions lists every companion under root or exits the
@@ -238,19 +267,22 @@ func buildLinuxCLI(coreDir string) error {
 // are fast; CI matrices that need cross-arch must opt in via
 // `docker buildx`. We deliberately don't try to be clever about that
 // here — the sh path was already explicit about it.
-func buildWithDocker(c *Companion, coreDir string) error {
+func buildWithDocker(c *Companion, coreDir string, pull bool) error {
 	if !c.HasDockerfile {
 		return fmt.Errorf("no Dockerfile in %s", c.Dir)
 	}
 	platform := "linux/" + dockerArch()
 	dockerfile := filepath.Join("companions", c.Name, "Dockerfile")
 
-	cmd := exec.Command("docker", "build",
-		"--platform", platform,
-		"-f", dockerfile,
-		"-t", c.Tag(),
-		".",
-	)
+	dockerArgs := []string{"build", "--platform", platform}
+	if pull {
+		// --pull re-resolves floating base tags (golang:1.26-alpine) to the
+		// latest patch, so a rebuild clears upstream base-image CVEs instead
+		// of reusing the cached older layer.
+		dockerArgs = append(dockerArgs, "--pull")
+	}
+	dockerArgs = append(dockerArgs, "-f", dockerfile, "-t", c.Tag(), ".")
+	cmd := exec.Command("docker", dockerArgs...)
 	cmd.Dir = coreDir // build context is core/
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

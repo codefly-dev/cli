@@ -15,4 +15,5 @@ var AuditCmd = &cobra.Command{
 func init() {
 	AuditCmd.AddCommand(audit.ServiceCmd)
 	AuditCmd.AddCommand(audit.WorkspaceCmd)
+	AuditCmd.AddCommand(audit.GoCmd)
 }

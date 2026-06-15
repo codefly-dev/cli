@@ -48,11 +48,39 @@ Examples:
 		dir, _ := cmd.Flags().GetString("dir")
 		output, _ := cmd.Flags().GetString("output")
 		withAgents, _ := cmd.Flags().GetBool("with-agents")
+		goos, _ := cmd.Flags().GetString("os")
+		goarch, _ := cmd.Flags().GetString("arch")
 
 		srcDir, err := resolveCLISource(dir)
 		if err != nil {
 			cli.Error("Cannot locate codefly CLI source: %v", err)
 			cli.ExitError()
+			return
+		}
+
+		// Cross-compile mode (--os/--arch): produce a static binary for
+		// another platform. This replaces scripts/build/linux.sh. We never
+		// install over the running binary in this mode — a foreign-arch
+		// binary can't replace the one in use — so --output is required
+		// (defaulting to a conventional bin/<os>/codefly under the monorepo).
+		cross := goos != "" || goarch != ""
+		if cross {
+			if goos == "" {
+				goos = "linux"
+			}
+			if goarch == "" {
+				goarch = "amd64"
+			}
+			if output == "" {
+				output = defaultCrossOutput(srcDir, goos)
+			}
+			cli.Info("Cross-compiling codefly from %s for %s/%s", srcDir, goos, goarch)
+			if err := buildCLICross(srcDir, output, goos, goarch); err != nil {
+				cli.Error("Build failed: %v", err)
+				cli.ExitError()
+				return
+			}
+			cli.Info("Built %s/%s codefly at %s", goos, goarch, output)
 			return
 		}
 
@@ -115,8 +143,52 @@ func resolveAgentsServices(cliSrcDir string) (string, error) {
 
 func init() {
 	BuildCmd.Flags().String("dir", "", "CLI source directory (default: auto-detect from current directory)")
-	BuildCmd.Flags().String("output", "", "Install path (default: the running codefly binary)")
+	BuildCmd.Flags().String("output", "", "Install path (default: the running codefly binary; for --os/--arch: bin/<os>/codefly)")
 	BuildCmd.Flags().Bool("with-agents", false, "After rebuilding the CLI, also rebuild every agent under agents/services/")
+	BuildCmd.Flags().String("os", "", "Cross-compile for this GOOS (e.g. linux); produces a static binary instead of installing")
+	BuildCmd.Flags().String("arch", "", "Cross-compile for this GOARCH (e.g. amd64); implies cross-compile")
+}
+
+// defaultCrossOutput returns the conventional cross-compiled binary path:
+// <monorepo>/core/bin/<os>/codefly when the core dir can be located
+// (matches the path the companion build expects), else bin/<os>/codefly
+// under the CLI source. Mirrors scripts/build/linux.sh's destination.
+func defaultCrossOutput(cliSrcDir, goos string) string {
+	for d := cliSrcDir; ; {
+		if info, err := os.Stat(filepath.Join(d, "core")); err == nil && info.IsDir() {
+			return filepath.Join(d, "core", "bin", goos, "codefly")
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	return filepath.Join(cliSrcDir, "bin", goos, "codefly")
+}
+
+// buildCLICross compiles a static CLI binary for goos/goarch. Static
+// (CGO_ENABLED=0 + -extldflags "-static") so alpine images can run it
+// without glibc; stripped (-s -w) for size. Replaces scripts/build/linux.sh.
+func buildCLICross(srcDir, output, goos, goarch string) error {
+	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	start := time.Now()
+	build := exec.Command("go", "build",
+		"-ldflags", `-s -w -extldflags "-static"`,
+		"-o", output,
+		".",
+	)
+	build.Dir = srcDir
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+	build.Stdout = os.Stdout
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		return fmt.Errorf("go build: %w", err)
+	}
+	cli.Info("Built in %s", time.Since(start).Round(time.Millisecond))
+	return nil
 }
 
 // buildCLI compiles the CLI in srcDir and atomically installs it to output.

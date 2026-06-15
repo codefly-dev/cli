@@ -5,6 +5,8 @@ go 1.25.5
 toolchain go1.26.4
 
 require (
+	connectrpc.com/connect v1.20.0
+	connectrpc.com/cors v0.1.0
 	github.com/Masterminds/semver v1.5.0
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/briandowns/spinner v1.23.2
@@ -17,12 +19,10 @@ require (
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
-	github.com/tmc/grpc-websocket-proxy v0.0.0-20220101234140-673ab2c3ae75
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/mod v0.35.0
@@ -38,8 +38,6 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1 // indirect
 	buf.build/go/protovalidate v1.2.0 // indirect
 	cel.dev/expr v0.25.1 // indirect
-	connectrpc.com/connect v1.20.0 // indirect
-	connectrpc.com/cors v0.1.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -106,7 +104,7 @@ require (
 	github.com/google/go-github/v37 v37.0.0 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/imdario/mergo v0.3.16 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
