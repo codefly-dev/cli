@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -177,8 +178,36 @@ var ServiceCmd = &cobra.Command{
 			var runErr error
 			finished := make(chan struct{})
 
+			// The async update check started in cli.Init() lands at an arbitrary
+			// time. Routed to stderr (its default) it fires mid-render and leaves
+			// a stale duplicate of the status bar (#57); route it into the TUI as
+			// a one-shot log line above the live status bar instead. Set up the
+			// capture before the TUI starts so no notice ever reaches stderr while
+			// it owns the terminal, buffering until the ServiceTUI exists.
+			var noticeMu sync.Mutex
+			var noticeTUI *tui.ServiceTUI
+			var pendingNotice string
+			restoreNotice := cli.CaptureUpdateNotice(func(msg string) {
+				noticeMu.Lock()
+				defer noticeMu.Unlock()
+				if noticeTUI != nil {
+					noticeTUI.SendLog(wool.WARN, "codefly", msg)
+				} else {
+					pendingNotice = msg
+				}
+			})
+			defer restoreNotice()
+
 			tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
 				defer close(finished)
+
+				noticeMu.Lock()
+				noticeTUI = t
+				if pendingNotice != "" {
+					t.SendLog(wool.WARN, "codefly", pendingNotice)
+					pendingNotice = ""
+				}
+				noticeMu.Unlock()
 
 				var err error
 				t.SendState(serviceName, tui.StateLoading)

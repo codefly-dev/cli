@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v2"
@@ -23,6 +24,38 @@ type Release struct {
 	TagName string `json:"tag_name"`
 }
 
+var (
+	noticeMu sync.Mutex
+	noticeFn = func(msg string) { Warning("%s", msg) }
+)
+
+// emitUpdateNotice delivers a message from the background update check to the
+// active sink. It exists because the check runs in a goroutine that finishes
+// at an arbitrary time — including mid-render while a TUI owns the terminal.
+func emitUpdateNotice(format string, args ...any) {
+	noticeMu.Lock()
+	fn := noticeFn
+	noticeMu.Unlock()
+	fn(fmt.Sprintf(format, args...))
+}
+
+// CaptureUpdateNotice redirects the background update check's output away from
+// stderr — where, firing mid-render, it corrupts Bubbletea's inline status bar
+// and leaves a stale, duplicated footer (#57) — into sink. sink may be invoked
+// from the update goroutine at any time, so it must be goroutine-safe. The
+// returned func restores the default stderr delivery.
+func CaptureUpdateNotice(sink func(msg string)) (restore func()) {
+	noticeMu.Lock()
+	prev := noticeFn
+	noticeFn = sink
+	noticeMu.Unlock()
+	return func() {
+		noticeMu.Lock()
+		noticeFn = prev
+		noticeMu.Unlock()
+	}
+}
+
 func CheckForCLIForUpdate() {
 	go checkForCLIForUpdate()
 }
@@ -32,16 +65,16 @@ func checkForCLIForUpdate() {
 	if errors.Is(err, NoInternetError{}) {
 		return
 	} else if err != nil {
-		Warning("Cannot get latest release for CLI")
+		emitUpdateNotice("Cannot get latest release for CLI")
 		return
 	}
 	current, err := GetCurrentVersion()
 	if err != nil {
-		Warning("Cannot get current version for CLI")
+		emitUpdateNotice("Cannot get current version for CLI")
 		return
 	}
 	if fmt.Sprintf("v%s", current) != latest {
-		Warning("A new version of codefly is available. Please update to %s", latest)
+		emitUpdateNotice("A new version of codefly is available. Please update to %s", latest)
 	}
 }
 

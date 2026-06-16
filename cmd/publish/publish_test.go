@@ -322,22 +322,44 @@ func TestEngine_Release_AbortsOnNonMainBranch(t *testing.T) {
 		"non-main branch must be refused with a clear message")
 }
 
-func TestEngine_Release_AbortsOnExistingTag(t *testing.T) {
+// TestEngine_Release_ReconcilesPastExistingTag pins the bump-from-latest-tag
+// behavior: the manifest (0.1.0) lags behind the highest existing tag
+// (v0.1.1), so a naive patch bump would re-create v0.1.1 and collide. The
+// engine must instead reconcile the bump base up to the latest tag and cut the
+// next free tag (v0.1.2), leaving the existing tag untouched. We NEVER
+// overwrite an existing tag — we skip past it.
+func TestEngine_Release_ReconcilesPastExistingTag(t *testing.T) {
 	dir := t.TempDir()
-	initBareGitRepo(t, dir)
+	origin := initBareGitRepo(t, dir)
 	target := writeManifest(t, dir, "agent.codefly.yaml", "0.1.0")
 	require.NoError(t, addAndCommit(dir, target, "add manifest"))
-	// Pre-create the tag we'd otherwise create.
+	// Pre-create the tag a naive manifest-only bump would collide with.
 	require.NoError(t, runGit(dir, "tag", "v0.1.1"))
 	require.NoError(t, runGit(dir, "push", "origin", "main"))
+	require.NoError(t, runGit(dir, "push", "origin", "v0.1.1"))
 
 	m, _ := publish.Detect(dir)
 	engine := &publish.Engine{Manifest: m, BumpType: "patch", WorkDir: dir}
 
-	_, err := engine.Release(context.Background())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "v0.1.1 already exists",
-		"existing tag must be refused — never overwrite")
+	tag, err := engine.Release(context.Background())
+	require.NoError(t, err, "must reconcile past the existing tag, not abort")
+	require.Equal(t, "v0.1.2", tag,
+		"bump base reconciles to the latest tag (v0.1.1) → next free tag is v0.1.2")
+
+	// The pre-existing tag must be left exactly where it was — never overwritten.
+	out, err := exec.Command("git", "-C", origin, "rev-parse", "v0.1.1").Output()
+	require.NoError(t, err, "v0.1.1 must still exist on origin")
+	preExisting := string(out)
+
+	out, err = exec.Command("git", "-C", dir, "rev-parse", "v0.1.1").Output()
+	require.NoError(t, err)
+	require.Equal(t, preExisting, string(out),
+		"the existing v0.1.1 tag must point at its original commit — never moved")
+
+	// And the new tag landed on origin.
+	out, err = exec.Command("git", "-C", origin, "tag", "-l", "v0.1.2").Output()
+	require.NoError(t, err)
+	require.Contains(t, string(out), "v0.1.2", "the reconciled tag must be pushed to origin")
 }
 
 // --- Helpers --------------------------------------------------------
