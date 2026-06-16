@@ -159,6 +159,9 @@ func init() {
 	// Test things
 	RootCmd.AddCommand(TestCmd)
 
+	// Verify base-file integrity of composed modules
+	RootCmd.AddCommand(VerifyCmd)
+
 	// Audit + upgrade dependencies
 	RootCmd.AddCommand(AuditCmd)
 	RootCmd.AddCommand(UpgradeCmd)
