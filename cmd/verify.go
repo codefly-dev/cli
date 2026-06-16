@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -74,8 +76,21 @@ func verifyCommand() {
 		}
 		allow := loadBaseIntegrityAllow(filepath.Join(dir, "tools", "base-integrity-allow.json"))
 
+		// A consumer may compose a SUBSET of the base's services (e.g. mind takes
+		// the backend and brings its own gateway, omitting auth-sidecar + frontend).
+		// Files under an omitted service are legitimately absent, not "missing".
+		composed := map[string]bool{}
+		for _, ref := range mod.ServiceReferences {
+			composed[ref.Name] = true
+		}
+		omitted := map[string]int{}
+
 		var modified, missing []string
 		for rel, want := range m.Files {
+			if svc := serviceOf(rel); svc != "" && len(composed) > 0 && !composed[svc] {
+				omitted[svc]++
+				continue
+			}
 			got, err := sha256File(filepath.Join(dir, rel))
 			if err != nil {
 				if _, ok := allow[rel]; !ok {
@@ -92,6 +107,17 @@ func verifyCommand() {
 			}
 		}
 
+		if len(omitted) > 0 {
+			total := 0
+			svcs := make([]string, 0, len(omitted))
+			for s, n := range omitted {
+				total += n
+				svcs = append(svcs, s)
+			}
+			sort.Strings(svcs)
+			cli.Info("  module <%s>: composed subset — skipped %d base files for non-composed service(s): %s",
+				mod.Name, total, strings.Join(svcs, ", "))
+		}
 		if len(modified) == 0 && len(missing) == 0 {
 			cli.Info("✓ module <%s>: base intact (%d base files)", mod.Name, len(m.Files))
 			continue
@@ -116,6 +142,20 @@ func verifyCommand() {
 			"base-integrity verification failed")
 	}
 	cli.Info("base-integrity OK across %d module(s)", checked)
+}
+
+// serviceOf returns the service a base file belongs to (services/<svc>/...),
+// or "" for module-level files (always enforced regardless of composition).
+func serviceOf(rel string) string {
+	const p = "services/"
+	if !strings.HasPrefix(rel, p) {
+		return ""
+	}
+	rest := rel[len(p):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i]
+	}
+	return ""
 }
 
 func sha256File(path string) (string, error) {
