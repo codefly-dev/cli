@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -17,6 +18,7 @@ func TestFormattedLogLinesTrimsForwardNewlines(t *testing.T) {
 	oldMax := maxUnique
 	maxUnique = len("infra/postgres")
 	defer func() { maxUnique = oldMax }()
+	defer withTimestamps(false)()
 
 	lines := formattedLogLines("infra/postgres", ">", &wool.Log{
 		Level:   wool.FORWARD,
@@ -35,6 +37,7 @@ func TestFormattedLogLinesPrefixesEachMultilineEntry(t *testing.T) {
 	oldMax := maxUnique
 	maxUnique = len("infra/postgres")
 	defer func() { maxUnique = oldMax }()
+	defer withTimestamps(false)()
 
 	lines := formattedLogLines("infra/postgres", ">", &wool.Log{
 		Level:   wool.FORWARD,
@@ -52,6 +55,34 @@ func TestFormattedLogLinesPrefixesEachMultilineEntry(t *testing.T) {
 		if lines[i] != expected[i] {
 			t.Fatalf("line %d: expected %q, got %q", i, expected[i], lines[i])
 		}
+	}
+}
+
+// withTimestamps sets the package-level timestamp toggle and returns a
+// restore func, so a test can pin it without leaking into others.
+func withTimestamps(on bool) func() {
+	prev := timestamps.Load()
+	timestamps.Store(on)
+	return func() { timestamps.Store(prev) }
+}
+
+func TestFormattedLogLinesPrependsWallClockWhenEnabled(t *testing.T) {
+	oldMax := maxUnique
+	maxUnique = len("infra/postgres")
+	defer func() { maxUnique = oldMax }()
+	defer withTimestamps(true)()
+
+	lines := formattedLogLines("infra/postgres", ">", &wool.Log{
+		Level:   wool.FORWARD,
+		Message: "database ready",
+	})
+
+	if len(lines) != 1 {
+		t.Fatalf("expected one rendered line, got %d: %#v", len(lines), lines)
+	}
+	want := regexp.MustCompile(`^\d{2}:\d{2}:\d{2} infra/postgres > database ready$`)
+	if !want.MatchString(lines[0]) {
+		t.Fatalf("line missing wall-clock prefix: %q", lines[0])
 	}
 }
 
