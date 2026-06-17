@@ -121,7 +121,7 @@ Commands are in `cmd/` with subcommands in `cmd/{command}/`.
 ```bash
 # Build
 go build -o codefly .
-./scripts/dev/install.sh          # Build and install to PATH
+codefly self build                 # Build from source and install over the running binary (replaces the old install script)
 
 # Test
 go test ./...                      # All tests

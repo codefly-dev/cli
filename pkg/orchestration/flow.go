@@ -72,7 +72,12 @@ type Flow struct {
 	scope string
 
 	runtimeContext string
-	fixture        string
+	// preferences are this developer's machine-local choices (~/.codefly/
+	// preferences.yaml), e.g. run Go services native but postgres nix. They
+	// override runtimeContext PER SERVICE; runtimeContext is the fallback.
+	// Loaded best-effort in NewFlow (a missing/!malformed file = empty prefs).
+	preferences *resources.UserPreferences
+	fixture     string
 
 	// testRequest carries CLI-provided test filtering/suite/extra-args
 	// to the origin runner when the flow is in TestMode. Dependency
@@ -210,8 +215,36 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
 	}
+	// Per-developer runtime preferences (~/.codefly/preferences.yaml). Best
+	// effort: a missing file = empty prefs (everything falls back to the global
+	// runtime context); a malformed file is logged, not fatal — debugging should
+	// never be blocked by a bad preference file.
+	prefs, prefErr := resources.LoadUserPreferences(workspace.Dir())
+	if prefErr != nil {
+		w.Warn("ignoring malformed user preferences", wool.ErrField(prefErr))
+		prefs = &resources.UserPreferences{}
+	}
+	flow.preferences = prefs
+
 	currentFlow = flow
 	return flow, nil
+}
+
+// runtimeContextFor resolves the runtime context for a service: the developer's
+// per-service/per-agent preference (~/.codefly/preferences.yaml) wins, else the
+// global runtime context the run was launched with. This is what lets
+// `codefly run service mind` run mind native (fast local Go) while its postgres
+// dependency runs nix (Docker-free), with no committed project config.
+func (flow *Flow) runtimeContextFor(svc *resources.Service) string {
+	agentName := ""
+	if svc != nil && svc.Agent != nil {
+		agentName = svc.Agent.Name
+	}
+	serviceName := ""
+	if svc != nil {
+		serviceName = svc.Name
+	}
+	return flow.preferences.RuntimeContextFor(serviceName, agentName, flow.runtimeContext)
 }
 
 func (flow *Flow) Load(ctx context.Context) error {
@@ -746,7 +779,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 			return w.Wrap(err)
 		}
 
-		manager.Runner.WithRuntimeContext(flow.runtimeContext)
+		manager.Runner.WithRuntimeContext(flow.runtimeContextFor(svc))
 		manager.Runner.WithFixture(flow.fixture)
 		manager.Runner.WithOutputEnv(flow.outputEnvPath)
 		if remote, ok := remotes[unique]; ok {
@@ -764,7 +797,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 			return w.Wrap(err)
 		}
 		flow.services = append(flow.services, flow.originService)
-		manager.Runner.WithRuntimeContext(flow.runtimeContext)
+		manager.Runner.WithRuntimeContext(flow.runtimeContextFor(flow.originService))
 		manager.Runner.WithFixture(flow.fixture)
 		manager.Runner.WithOutputEnv(flow.outputEnvPath)
 		if flow.testRequest != nil {

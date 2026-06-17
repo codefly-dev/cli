@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/companions/proto"
-	runners "github.com/codefly-dev/core/runners/base"
+	runners "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
