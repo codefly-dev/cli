@@ -13,4 +13,5 @@ var SelfCmd = &cobra.Command{
 
 func init() {
 	SelfCmd.AddCommand(self.BuildCmd)
+	SelfCmd.AddCommand(self.PullCmd)
 }

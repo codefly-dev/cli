@@ -37,17 +37,20 @@ automatically via go.work.
 With --with-agents, after the CLI is installed it also rebuilds every
 agent under agents/services/ (the same set as ` + "`codefly agent build --all`" + `).
 This is the ONE command to pick up local changes to both the CLI and the
-agents in a single step.
+agents in a single step. The per-agent govulncheck audit is skipped during
+the bulk build (it adds minutes); pass --audit-agents to run it.
 
 Examples:
   codefly self build
   codefly self build --with-agents
+  codefly self build --with-agents --audit-agents
   codefly self build --dir ./cli
   codefly self build --output /usr/local/bin/codefly`,
 	Run: func(cmd *cobra.Command, args []string) {
 		dir, _ := cmd.Flags().GetString("dir")
 		output, _ := cmd.Flags().GetString("output")
 		withAgents, _ := cmd.Flags().GetBool("with-agents")
+		auditAgents, _ := cmd.Flags().GetBool("audit-agents")
 		goos, _ := cmd.Flags().GetString("os")
 		goarch, _ := cmd.Flags().GetString("arch")
 
@@ -113,7 +116,11 @@ Examples:
 				return
 			}
 			cli.Info("Building all agents in %s", agentsDir)
-			if berr := agents.BuildAllAgents(agentsDir, agents.BuildOptions{}); berr != nil {
+			// Skip the per-agent govulncheck audit by default: `self build
+			// --with-agents` is a fast "rebuild to pick up local changes" loop,
+			// and auditing every agent adds minutes (each runs govulncheck
+			// against the vuln DB). Opt in with --audit-agents when you want it.
+			if berr := agents.BuildAllAgents(agentsDir, agents.BuildOptions{SkipAudit: !auditAgents}); berr != nil {
 				cli.Error("Agent build failed: %v", berr)
 				cli.ExitError()
 				return
@@ -145,6 +152,7 @@ func init() {
 	BuildCmd.Flags().String("dir", "", "CLI source directory (default: auto-detect from current directory)")
 	BuildCmd.Flags().String("output", "", "Install path (default: the running codefly binary; for --os/--arch: bin/<os>/codefly)")
 	BuildCmd.Flags().Bool("with-agents", false, "After rebuilding the CLI, also rebuild every agent under agents/services/")
+	BuildCmd.Flags().Bool("audit-agents", false, "Run the govulncheck audit on each agent during --with-agents (slow; off by default)")
 	BuildCmd.Flags().String("os", "", "Cross-compile for this GOOS (e.g. linux); produces a static binary instead of installing")
 	BuildCmd.Flags().String("arch", "", "Cross-compile for this GOARCH (e.g. amd64); implies cross-compile")
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
 	runnersbase "github.com/codefly-dev/core/runners/base"
+	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
@@ -62,14 +63,14 @@ var ServiceCmd = &cobra.Command{
 		// they accumulate (the OrbStack-memory-blowup bug). Must be set before
 		// the flow creates any container.
 		if withCLIServer {
-			runnersbase.SetEphemeralContainers(true)
+			dockerrun.SetEphemeralContainers(true)
 		}
 
 		// Ryuk-adapted container sweep: remove any codefly-labeled Docker
 		// containers whose owning CLI is dead. Same semantics as the pgid
 		// sweep but for Docker-mode agents, which can't participate in
 		// pgid tracking (process groups are namespaced inside containers).
-		if err := runnersbase.ReapStaleContainers(ctx); err != nil {
+		if err := dockerrun.ReapStaleContainers(ctx); err != nil {
 			cli.Warning("stale container sweep failed: %v", err)
 		}
 
@@ -123,9 +124,18 @@ var ServiceCmd = &cobra.Command{
 		runFailed := false
 
 		if isHeadless {
-			// Headless mode: plain log output, no TUI
-			// Works in: MCP, Claude Code, CI, Docker, pipes, scripts
-			fmt.Printf("[codefly] Starting service %s (headless mode)\n", serviceName)
+			// Headless mode: plain log output, no TUI.
+			// Works in: MCP, Claude Code, CI, Docker, pipes, scripts.
+			//
+			// phase reports a lifecycle phase using the SAME names as the TUI
+			// (tui.ServiceState.String()), so headless and interactive runs
+			// share one vocabulary — Loading → Starting → Running — instead of
+			// the old ad-hoc "Starting service"/"initialized"/"is running" mix.
+			phase := func(state tui.ServiceState) {
+				fmt.Printf("[codefly] %s: %s\n", serviceName, state)
+			}
+
+			phase(tui.StateLoading)
 			var err error
 			flow, err = initRunService(ctx, workspace, module, service)
 			if err != nil {
@@ -134,7 +144,7 @@ var ServiceCmd = &cobra.Command{
 				cli.ExitError()
 				return
 			}
-			fmt.Printf("[codefly] Service initialized, starting...\n")
+			phase(tui.StateStarting)
 			err = common.WithHeartbeat(ctx, "still starting "+serviceName, func() error {
 				return runService(ctx, flow)
 			})
@@ -144,7 +154,7 @@ var ServiceCmd = &cobra.Command{
 				cli.ExitError()
 				return
 			}
-			fmt.Printf("[codefly] Service %s is running\n", serviceName)
+			phase(tui.StateRunning)
 
 			if withCLIServer {
 				// Keep running with CLI server
@@ -347,7 +357,7 @@ func resolveRuntimeContext(ctx context.Context, requested string) string {
 		return requested
 	}
 	w := wool.Get(ctx).In("run.resolveRuntimeContext")
-	if runnersbase.DockerEngineRunning(ctx) {
+	if dockerrun.DockerEngineRunning(ctx) {
 		return resources.RuntimeContextFree
 	}
 	if runnersbase.CheckNixInstalled() && runnersbase.IsNixSupported() {
