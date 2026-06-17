@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/resources"
@@ -18,9 +20,21 @@ type Logger struct {
 
 var cliLogger *Logger
 
+// timestamps controls whether streamed log lines are prefixed with a
+// wall-clock HH:MM:SS timestamp. On by default so output correlates with
+// other tools' logs out of the box; toggled by the --timestamps flag.
+var timestamps atomic.Bool
+
 func init() {
 	cliLogger = &Logger{}
 	agents.AddProcessor(cliLogger)
+	timestamps.Store(true)
+}
+
+// SetTimestamps enables or disables the wall-clock timestamp prefix on
+// streamed log lines.
+func SetTimestamps(on bool) {
+	timestamps.Store(on)
 }
 
 func GetLogger() *Logger {
@@ -124,6 +138,9 @@ func formattedLogLines(source string, separator string, log *wool.Log) []string 
 	message = strings.TrimRight(message, "\r\n")
 	lines := strings.Split(message, "\n")
 	prefix := fmt.Sprintf("%s %s ", padRight(source, maxUnique), separator)
+	if timestamps.Load() {
+		prefix = time.Now().Format("15:04:05") + " " + prefix
+	}
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimRight(line, " \t\r")

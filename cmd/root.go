@@ -68,6 +68,7 @@ func Execute() {
 	if focus {
 		wool.SetGlobalLogLevel(wool.FOCUS)
 	}
+	cli.SetTimestamps(showTimestamps)
 	if localAgents {
 		// Propagate to the agent loader (core/agents/manager.AgentSourceLocal).
 		// Setting via env so spawned subprocesses inherit it too.
@@ -88,12 +89,13 @@ func Execute() {
 
 // Origin of the World
 var (
-	focus       bool
-	debug       bool
-	trace       bool
-	tracker     string
-	localAgents bool
-	pluginPath  string
+	focus          bool
+	debug          bool
+	trace          bool
+	tracker        string
+	localAgents    bool
+	pluginPath     string
+	showTimestamps bool
 )
 
 func init() {
@@ -196,6 +198,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")
 	RootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace mode")
+	RootCmd.PersistentFlags().BoolVar(&showTimestamps, "timestamps", true, "Prefix log output with a wall-clock timestamp (HH:MM:SS); use --timestamps=false to hide it")
 	RootCmd.PersistentFlags().StringVar(&tracker, "track", "", "Tracker of actions -- advanced usage")
 	RootCmd.PersistentFlags().BoolVar(&localAgents, "local-agents", false,
 		"Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). "+
