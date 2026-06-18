@@ -127,14 +127,16 @@ var ServiceCmd = &cobra.Command{
 			// Headless mode: plain log output, no TUI.
 			// Works in: MCP, Claude Code, CI, Docker, pipes, scripts.
 			//
-			// phase reports a lifecycle phase using the SAME names as the TUI
-			// (tui.ServiceState.String()), so headless and interactive runs
-			// share one vocabulary — Loading → Starting → Running — instead of
-			// the old ad-hoc "Starting service"/"initialized"/"is running" mix.
+			// phase reports a lifecycle milestone using the SAME marker (">>")
+			// and vocabulary (tui.ServiceState.String()) as the core/tui
+			// aggregate layer, so headless and interactive runs share one form —
+			// ">> svc: Loading → Starting → Running" — instead of the old ad-hoc
+			// "[codefly] svc: ..." colon form that collided with the TUI's ">>".
 			phase := func(state tui.ServiceState) {
-				fmt.Printf("[codefly] %s: %s\n", serviceName, state)
+				fmt.Printf("%s %s: %s\n", cli.MarkerMilestone, serviceName, state)
 			}
 
+			fmt.Printf("[codefly] %s\n", cli.Legend())
 			phase(tui.StateLoading)
 			var err error
 			flow, err = initRunService(ctx, workspace, module, service)
