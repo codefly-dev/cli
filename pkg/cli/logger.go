@@ -14,6 +14,27 @@ import (
 	"github.com/codefly-dev/core/wool"
 )
 
+// Log-line markers form a small fixed taxonomy so a streamed run stays
+// scannable: a single glance at the leading marker tells you who is speaking.
+//
+//	>>  an aggregate lifecycle milestone for a named service, e.g.
+//	    ">> mind/mind: Running". Emitted both here (headless) and by the
+//	    core/tui aggregate layer (interactive), so the two modes share one form.
+//	>   codefly narrating about one service (forwarded wool logs).
+//	|   the service's own output (its stdout / wool logs).
+const (
+	MarkerMilestone = ">>"
+	MarkerNarration = ">"
+	MarkerService   = "|"
+)
+
+// Legend returns a one-line key to the log-line markers, suitable for printing
+// once at the top of a run so users can decode the stream.
+func Legend() string {
+	return fmt.Sprintf("markers: %s lifecycle milestone   %s codefly narration   %s service output",
+		MarkerMilestone, MarkerNarration, MarkerService)
+}
+
 type Logger struct {
 	suppressed bool
 }
@@ -112,7 +133,7 @@ func Log(identifier *wool.Identifier, log *wool.Log) {
 	if identifier == nil || log == nil {
 		return
 	}
-	sep := "|"
+	sep := MarkerService
 	if log.Level == wool.FORWARD {
 		silentMu.RLock()
 		for _, s := range silent {
@@ -122,7 +143,7 @@ func Log(identifier *wool.Identifier, log *wool.Log) {
 			}
 		}
 		silentMu.RUnlock()
-		sep = ">"
+		sep = MarkerNarration
 	}
 	for _, text := range formattedLogLines(identifier.Unique, sep, log) {
 		if log.Level == wool.FOCUS {

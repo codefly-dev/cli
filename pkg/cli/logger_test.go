@@ -2,11 +2,37 @@ package cli
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
+
+func TestLogUsesNarrationMarkerForForward(t *testing.T) {
+	oldMax := maxUnique
+	maxUnique = len("infra/postgres")
+	defer func() { maxUnique = oldMax }()
+	defer withTimestamps(false)()
+
+	lines := formattedLogLines("infra/postgres", MarkerNarration, &wool.Log{
+		Level:   wool.FORWARD,
+		Message: "database ready",
+	})
+
+	if len(lines) != 1 || lines[0] != "infra/postgres > database ready" {
+		t.Fatalf("unexpected rendered line: %#v", lines)
+	}
+}
+
+func TestLegendNamesEveryMarker(t *testing.T) {
+	legend := Legend()
+	for _, marker := range []string{MarkerMilestone, MarkerNarration, MarkerService} {
+		if !strings.Contains(legend, marker) {
+			t.Fatalf("legend %q missing marker %q", legend, marker)
+		}
+	}
+}
 
 // NOTE: these tests mutate the package-level maxUnique global to
 // pin the padding width. Do NOT call t.Parallel() in this file —
