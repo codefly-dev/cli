@@ -401,6 +401,11 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithFixture(fixture)
+	overrides, err := parseSetOverrides(setOverrides)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	flow.WithOverrides(overrides)
 	flow.WithRemotes(remoteServices)
 	excludedDependencies, err := resolveExcludedDependencies(ctx, workspace, excludeDependencies)
 	if err != nil {
@@ -442,6 +447,36 @@ func resolveExcludedDependencies(ctx context.Context, workspace *resources.Works
 			seen[unique] = true
 			out = append(out, unique)
 		}
+	}
+	return out, nil
+}
+
+// parseSetOverrides turns repeatable --set entries of the form
+// "service:KEY=VAL" into a serviceName -> KEY -> VAL map. It splits on the
+// first ':' (so the service prefix is unambiguous) and the first '=' (so the
+// value may contain '=' or ':'). Malformed entries are rejected with a clear error.
+func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]map[string]string)
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		service, kv, ok := strings.Cut(entry, ":")
+		if !ok || service == "" {
+			return nil, fmt.Errorf("--set %q is malformed: expected <service>:KEY=VAL", entry)
+		}
+		key, value, ok := strings.Cut(kv, "=")
+		if !ok || key == "" {
+			return nil, fmt.Errorf("--set %q is malformed: expected <service>:KEY=VAL", entry)
+		}
+		if out[service] == nil {
+			out[service] = make(map[string]string)
+		}
+		out[service][key] = value
 	}
 	return out, nil
 }
@@ -504,6 +539,7 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")
+	ServiceCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood")
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")
 	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)")
 }

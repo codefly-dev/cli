@@ -68,6 +68,9 @@ type Runner struct {
 	// Path fixture Name
 	fixture string
 
+	// Per-service runtime overrides (KEY=VAL) injected into this service's process.
+	overrides map[string]string
+
 	// Output environment variables
 	outputEnv string
 
@@ -375,6 +378,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	req := &runtimev0.StartRequest{
 		DependenciesNetworkMappings: dependenciesNetworkMappings,
 		Fixture:                     runner.fixture,
+		Overrides:                   runner.overrides,
 	}
 	err = resources.Validate(req)
 	if err != nil {
@@ -679,6 +683,13 @@ func (runner *Runner) WithFixture(fixture string) {
 		return
 	}
 	runner.fixture = fixture
+}
+
+func (runner *Runner) WithOverrides(overrides map[string]string) {
+	if runner == nil {
+		return
+	}
+	runner.overrides = overrides
 }
 
 func (runner *Runner) WithOutputEnv(path string) {

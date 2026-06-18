@@ -79,6 +79,10 @@ type Flow struct {
 	preferences *resources.UserPreferences
 	fixture     string
 
+	// overrides are per-service runtime env-var overrides: serviceName -> KEY -> VAL.
+	// Set via `codefly run ... --set <service>:KEY=VAL`; applied to each runner.
+	overrides map[string]map[string]string
+
 	// testRequest carries CLI-provided test filtering/suite/extra-args
 	// to the origin runner when the flow is in TestMode. Dependency
 	// runners ignore it — they only need to be Started, not tested.
@@ -781,6 +785,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 
 		manager.Runner.WithRuntimeContext(flow.runtimeContextFor(svc))
 		manager.Runner.WithFixture(flow.fixture)
+		manager.Runner.WithOverrides(flow.overrides[svc.Name])
 		manager.Runner.WithOutputEnv(flow.outputEnvPath)
 		if remote, ok := remotes[unique]; ok {
 			manager.Runner.WithRemote(remote.Environment)
@@ -799,6 +804,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		flow.services = append(flow.services, flow.originService)
 		manager.Runner.WithRuntimeContext(flow.runtimeContextFor(flow.originService))
 		manager.Runner.WithFixture(flow.fixture)
+		manager.Runner.WithOverrides(flow.overrides[flow.originService.Name])
 		manager.Runner.WithOutputEnv(flow.outputEnvPath)
 		if flow.testRequest != nil {
 			manager.Runner.WithTestRequest(flow.testRequest)
@@ -992,6 +998,10 @@ func (flow *Flow) WithRuntimeContext(runtimeContext string) {
 
 func (flow *Flow) WithFixture(fixture string) {
 	flow.fixture = fixture
+}
+
+func (flow *Flow) WithOverrides(overrides map[string]map[string]string) {
+	flow.overrides = overrides
 }
 
 func (flow *Flow) WithExcludeRoot(excludeRoot bool) {

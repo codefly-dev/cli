@@ -24,6 +24,9 @@ var excludeDependencies []string
 // With fixture across the runtime
 var fixture string
 
+// Per-service runtime overrides: each entry is "service:KEY=VAL".
+var setOverrides []string
+
 // Scope for the runtime: affect ports to avoid conflict with run
 // Useful for testing/CI
 var namingScope string
