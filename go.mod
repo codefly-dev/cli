@@ -10,7 +10,7 @@ require (
 	github.com/Masterminds/semver v1.5.0
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.2.4
+	github.com/codefly-dev/core v0.2.10
 	github.com/codefly-dev/golor v0.1.3
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/creack/pty v1.1.24
@@ -120,6 +120,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/mattn/go-shellwords v1.0.13 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
+	github.com/mind-build/gortk v0.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/moby/buildkit v0.29.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
