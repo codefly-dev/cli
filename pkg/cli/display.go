@@ -5,10 +5,39 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/codefly-dev/core/tui"
+	"github.com/codefly-dev/core/wool"
 	"github.com/codefly-dev/golor"
 )
+
+// outputSink, when set, receives codefly's own narration (Info/Header/Warning)
+// as plain text instead of letting it go to stdout/stderr. The interactive run
+// sets it while a full-screen TUI owns the terminal, so progress like "Handling
+// <frontend> with these dependent services: …" lands in the scrollable log pane
+// rather than being painted to stdout and instantly overwritten by the alt
+// screen (which is why it looked like nothing was happening for ~25s on start).
+var outputSink atomic.Pointer[func(level wool.Loglevel, msg string)]
+
+// SetOutputSink installs (or, with nil, removes) the narration sink.
+func SetOutputSink(fn func(level wool.Loglevel, msg string)) {
+	if fn == nil {
+		outputSink.Store(nil)
+		return
+	}
+	outputSink.Store(&fn)
+}
+
+// emitToSink forwards a line to the sink if one is installed, returning true
+// when it handled the line (so the caller skips its stdout/stderr write).
+func emitToSink(level wool.Loglevel, msg string) bool {
+	if p := outputSink.Load(); p != nil {
+		(*p)(level, msg)
+		return true
+	}
+	return false
+}
 
 type Wrapper struct {
 	template any
@@ -27,6 +56,9 @@ func (wrapper *Wrapper) Header(level int, s string, args ...any) {
 	if len(s) == 0 {
 		return
 	}
+	if emitToSink(wool.INFO, fmt.Sprintf(s, args...)) {
+		return
+	}
 	var theme string
 	switch level {
 	case 1:
@@ -43,6 +75,9 @@ func Header(level int, s string, args ...any) {
 }
 
 func (wrapper *Wrapper) Warning(s string, args ...any) {
+	if emitToSink(wool.WARN, fmt.Sprintf(s, args...)) {
+		return
+	}
 	theme := "#(bold,magenta)"
 	// Diagnostics (warnings/errors/trace/debug) go to STDERR so they never
 	// pollute stdout, which carries the command's real output — `$(codefly
@@ -56,6 +91,9 @@ func Warning(s string, args ...any) {
 }
 
 func (wrapper *Wrapper) Trace(s string, args ...any) {
+	if emitToSink(wool.TRACE, fmt.Sprintf(s, args...)) {
+		return
+	}
 	theme := "#(italic,green)"
 	fmt.Fprintln(os.Stderr, tui.RenderTrace(wrapper.View(theme, s, args...)))
 }
@@ -66,6 +104,9 @@ func Trace(s string, args ...any) {
 }
 
 func (wrapper *Wrapper) Debug(s string, args ...any) {
+	if emitToSink(wool.DEBUG, fmt.Sprintf(s, args...)) {
+		return
+	}
 	theme := "#(green)"
 	fmt.Fprintln(os.Stderr, tui.RenderDebug(wrapper.View(theme, s, args...)))
 }
@@ -76,6 +117,9 @@ func Debug(s string, args ...any) {
 }
 
 func (wrapper *Wrapper) Info(s string, args ...any) {
+	if emitToSink(wool.INFO, fmt.Sprintf(s, args...)) {
+		return
+	}
 	theme := "#(magenta)"
 	fmt.Println(tui.RenderInfo(wrapper.View(theme, s, args...)))
 }
@@ -86,11 +130,17 @@ func Info(s string, args ...any) {
 }
 
 func (wrapper *Wrapper) Error(s string, args ...any) {
+	if emitToSink(wool.ERROR, fmt.Sprintf(s, args...)) {
+		return
+	}
 	theme := "#(bold,red)"
 	fmt.Fprintln(os.Stderr, tui.RenderError(wrapper.View(theme, s, args...)))
 }
 
 func (wrapper *Wrapper) ErrorDetail(s string, args ...any) {
+	if emitToSink(wool.ERROR, fmt.Sprintf(s, args...)) {
+		return
+	}
 	theme := "#(bold,red)"
 	fmt.Fprintln(os.Stderr, tui.RenderErrorDetail(wrapper.View(theme, s, args...)))
 }
@@ -106,6 +156,9 @@ func ErrorDetail(s string, args ...any) {
 }
 
 func (wrapper *Wrapper) Focus(s string, args ...any) {
+	if emitToSink(wool.FOCUS, fmt.Sprintf(s, args...)) {
+		return
+	}
 	theme := "#(bold,red)"
 	fmt.Println(tui.RenderFocus(wrapper.View(theme, s, args...)))
 }
@@ -132,18 +185,29 @@ func ErrorChain(err error, format string, args ...any) {
 	printErrorChain(err)
 }
 
-// printErrorChain renders a wrapped error as a vertical chain so the
-// root cause is always visible — not buried past terminal width.
-// Each `errors.Wrap` layer becomes its own line, indented to show
-// nesting; the innermost (root cause) is printed bold in red so the
-// user knows exactly what blew up. Prior layers are dim so the eye
-// flows straight to the bottom.
+// printErrorChain renders a wrapped error so the user sees what blew up.
+//
+// In normal mode we show ONLY the root cause — the innermost layer is what
+// the user can actually act on ("docker daemon not reachable"), and the
+// "↳ full logs … (re-run with --debug for more)" hint points anyone who
+// needs the wrap chain at it. Dumping every `errors.Wrap` layer to the
+// terminal on each failure is noise.
+//
+// In debug mode we render the full vertical chain (each layer on its own
+// indented row, root cause highlighted) so the wrap path is visible without
+// opening the log file.
 func printErrorChain(err error) {
 	layers := unwrapErrorLayers(err)
 	if len(layers) == 0 {
 		return
 	}
-	// Render each layer on its own row. Last layer = root cause.
+	if !wool.IsDebug() {
+		// Just the root cause, indented one level under the headline.
+		root := layers[len(layers)-1]
+		fmt.Fprintln(os.Stderr, tui.RenderError("  ↳ "+root))
+		return
+	}
+	// Debug: render each layer on its own row. Last layer = root cause.
 	for i, msg := range layers {
 		indent := strings.Repeat("  ", i)
 		marker := "↳"

@@ -22,6 +22,7 @@ import (
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
 )
@@ -97,7 +98,27 @@ type Flow struct {
 	remoteServices []*Remote
 
 	excludedDependencyServices []string
+
+	// stateListener, when set, is invoked on every runtime lifecycle transition
+	// of every managed service (not just the origin) so a UI can render live
+	// per-service status.
+	stateListener StateListener
+
+	// beganMu guards begun. begun records every service whose runtime lifecycle
+	// THIS run has emitted (via emitState). ServiceReachable consults it so a
+	// readiness probe can only ever confirm a service we actually launched —
+	// never a zombie from a previous run squatting on the same deterministically
+	// hashed port. Written from the orchestration goroutine, read from the UI
+	// poller, hence the lock.
+	beganMu sync.Mutex
+	begun   map[string]bool
 }
+
+// StateListener observes per-service runtime lifecycle transitions. service is
+// the Unique ("saas/vault"); port is the service's primary port once known
+// (0 otherwise). Wired from the TUI in `codefly run` so dependencies show
+// their own progress instead of hiding behind the origin's spinner.
+type StateListener func(service string, state tui.ServiceState, port int)
 
 func MapValues[K comparable, V any](m map[K]V) []V {
 	var values []V
@@ -535,6 +556,147 @@ func (flow *Flow) reportFailure(unique, msg string) {
 // dependencies (neo4j, postgres, …) alike — so the runner UI can name exactly
 // what is going away instead of a vague "stopping service". Nothing the flow
 // started "stays alive" on stop; only nix-run service DATA persists on disk.
+// WithStateListener registers a per-service lifecycle observer. Returns the
+// flow for chaining.
+func (flow *Flow) WithStateListener(l StateListener) *Flow {
+	if flow != nil {
+		flow.stateListener = l
+	}
+	return flow
+}
+
+// emitState forwards a transition to the listener if one is set. Satisfies the
+// stateEmitter interface so the runtime policy can report without knowing the
+// flow concretely.
+func (flow *Flow) emitState(service string, state tui.ServiceState, port int) {
+	if flow == nil {
+		return
+	}
+	// Record that THIS run has begun driving this service's runtime, so a later
+	// readiness probe can trust the port belongs to us and not a leftover
+	// process on the same hashed port. emitState is only ever called for a
+	// service we are actively orchestrating, so recording unconditionally is
+	// correct regardless of which phase this transition is.
+	flow.beganMu.Lock()
+	if flow.begun == nil {
+		flow.begun = map[string]bool{}
+	}
+	flow.begun[service] = true
+	flow.beganMu.Unlock()
+
+	if flow.stateListener != nil {
+		flow.stateListener(service, state, port)
+	}
+}
+
+// beganRun reports whether this run has emitted any runtime transition for the
+// service — i.e. we actually launched it, as opposed to a stale process from a
+// previous run holding the same deterministically hashed port.
+func (flow *Flow) beganRun(service string) bool {
+	flow.beganMu.Lock()
+	defer flow.beganMu.Unlock()
+	return flow.begun[service]
+}
+
+// ServicePort returns a service's primary (first non-zero) port from the
+// recorded network mappings, or 0 if not yet known. Used to surface "vault
+// waiting(8721)" in the live status.
+func (flow *Flow) ServicePort(service string) int {
+	if flow == nil || flow.SharedState == nil {
+		return 0
+	}
+	mappings, ok := flow.SharedState.GetNetworkMappingsFromUnique(service)
+	if !ok {
+		return 0
+	}
+	for _, m := range mappings {
+		for _, inst := range m.Instances {
+			if inst.Port > 0 {
+				return int(inst.Port)
+			}
+		}
+	}
+	return 0
+}
+
+// ServiceReachable reports whether a service's recorded network endpoints are
+// actually accepting connections (a real readiness probe), independent of where
+// the synchronous action loop currently is. The loop emits a dependency's
+// StateRunning only when its RuntimeStart call returns; while the loop is parked
+// inside a long-blocking phase — typically the origin's `go build` — that emit
+// is stuck, so an already-listening dependency keeps showing as "slow". Driving
+// the live status off this probe instead makes it reflect reality, not loop
+// timing. Returns false for services with no probeable endpoints (their status
+// stays driven by the action-loop emit).
+func (flow *Flow) ServiceReachable(service string) bool {
+	if flow == nil || flow.SharedState == nil {
+		return false
+	}
+	// Only trust a probe for a service this run actually launched. Codefly hashes
+	// ports deterministically, so a zombie from a previous run squats on the very
+	// port this run would use — probing before we've begun starting the service
+	// would report that ghost as "ready". Requiring beganRun closes that window.
+	if !flow.beganRun(service) {
+		return false
+	}
+	mappings, ok := flow.SharedState.GetNetworkMappingsFromUnique(service)
+	if !ok || len(mappings) == 0 {
+		return false
+	}
+	return networkMappingsReachable(mappings)
+}
+
+// PromoteReachable invokes onReady once for each managed dependency (origin
+// excluded) that this run launched and is now accepting connections. It exists
+// because the action loop emits a dependency's StateRunning only when its
+// (blocking) Start call returns; while the loop is parked in a long phase — the
+// origin's go compile being the usual culprit — an already-listening dependency
+// keeps showing as "slow". Polling this from the UI drives status off real
+// readiness instead. promoted dedupes across calls (each dep is reported once)
+// and is owned by the caller's goroutine.
+func (flow *Flow) PromoteReachable(origin string, promoted map[string]bool, onReady func(service string, port int)) {
+	if flow == nil {
+		return
+	}
+	for _, dep := range flow.OrderedServiceUniques() {
+		if dep == origin || promoted[dep] {
+			continue
+		}
+		if flow.ServiceReachable(dep) {
+			promoted[dep] = true
+			onReady(dep, flow.ServicePort(dep))
+		}
+	}
+}
+
+// OrderedServiceUniques returns the Unique of every managed service in
+// dependency order (dependencies first, origin last) so the live status can
+// show the "what's next" frontier before anything starts.
+func (flow *Flow) OrderedServiceUniques() []string {
+	if flow == nil {
+		return nil
+	}
+	origin := ""
+	if flow.originService != nil {
+		origin = resources.WithUnique(flow.originService).Unique()
+	}
+	var out []string
+	for _, s := range flow.services {
+		if s == nil {
+			continue
+		}
+		u := resources.WithUnique(s).Unique()
+		if u == origin {
+			continue
+		}
+		out = append(out, u)
+	}
+	if origin != "" {
+		out = append(out, origin)
+	}
+	return out
+}
+
 func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
 	if flow == nil {
 		return "", nil
@@ -746,13 +908,11 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		}
 		w.Debug("service dependencies", wool.NameField(flow.originService.Name), wool.Field("dependencies", required))
 	}
-	if len(required) == 0 {
-		cli.Info("Handling <%s>", flow.originService.Name)
-	} else {
-		cli.Info("Handling <%s> with these dependent services: %s", flow.originService.Name, strings.Join(required, ", "))
-	}
 	// We run in the proper order
 	slices.Reverse(required)
+	if err := flow.logRunPlan(ctx, required, remotes); err != nil {
+		return w.Wrapf(err, "cannot describe service run plan")
+	}
 
 	var managers []IManager
 
@@ -821,6 +981,54 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 
 	flow.hub = &Hub{managers: managers}
 	return nil
+}
+
+func (flow *Flow) logRunPlan(ctx context.Context, dependencyUniques []string, remotes map[string]*Remote) error {
+	if flow == nil || flow.originService == nil {
+		return nil
+	}
+	origin := resources.WithUnique(flow.originService).Unique()
+	runSet := append([]string{}, dependencyUniques...)
+	if !flow.excludeRoot {
+		runSet = append(runSet, origin)
+	}
+	if len(runSet) == 0 {
+		cli.Info("Will run no local services for <%s>", origin)
+		return nil
+	}
+
+	entries := make([]string, 0, len(runSet))
+	for _, unique := range runSet {
+		svc := flow.originService
+		if unique != origin {
+			var err error
+			svc, err = flow.world.Dependencies.ServiceFromUnique(unique)
+			if err != nil {
+				return err
+			}
+		}
+		entries = append(entries, formatServiceRunPlanEntry(unique, svc, remotes[unique]))
+	}
+	cli.Info("Will run %d service(s): %s", len(entries), strings.Join(entries, "; "))
+	return nil
+}
+
+func formatServiceRunPlanEntry(unique string, service *resources.Service, remote *Remote) string {
+	serviceVersion := "unknown"
+	agent := "agent unknown"
+	if service != nil {
+		if service.Version != "" {
+			serviceVersion = service.Version
+		}
+		if service.Agent != nil {
+			agent = service.Agent.Identifier()
+		}
+	}
+	entry := fmt.Sprintf("%s@%s via %s", unique, serviceVersion, agent)
+	if remote != nil && remote.Environment != nil && remote.Environment.Name != "" {
+		entry += fmt.Sprintf(" remote:%s", remote.Environment.Name)
+	}
+	return entry
 }
 
 func (flow *Flow) CreateManager(ctx context.Context) error {

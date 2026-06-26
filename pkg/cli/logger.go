@@ -81,25 +81,29 @@ func RegisterLoggingResource(unique string) {
 }
 
 func (logger *Logger) Process(log *wool.Log) {
-	if logger.suppressed || log.Level < wool.GlobalLogLevel() {
+	if log.Level < wool.GlobalLogLevel() {
 		return
 	}
 	// log is a fmt.Stringer; call String() directly instead of routing every
 	// line through fmt.Sprintf("%s", ...)'s reflection path.
 	s := log.String()
+	if logger.suppressed {
+		emitToSink(log.Level, s)
+		return
+	}
 	switch log.Level {
 	case wool.TRACE:
-		Trace(s)
+		Trace("%s", s)
 	case wool.DEBUG:
-		Debug(s)
+		Debug("%s", s)
 	case wool.INFO:
-		Info(s)
+		Info("%s", s)
 	case wool.WARN:
-		Warning(s)
+		Warning("%s", s)
 	case wool.ERROR:
-		Error(s)
+		Error("%s", s)
 	case wool.FOCUS:
-		Focus(s)
+		Focus("%s", s)
 	default:
 		fmt.Println(s)
 	}

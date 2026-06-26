@@ -12,11 +12,42 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+
+	"github.com/codefly-dev/core/wool"
 )
 
 func TestUnwrapErrorLayers_Nil(t *testing.T) {
 	if got := unwrapErrorLayers(nil); got != nil {
 		t.Errorf("nil err: want nil, got %v", got)
+	}
+}
+
+func TestOutputSinkReceivesAllDisplayLevels(t *testing.T) {
+	var got []wool.Loglevel
+	SetOutputSink(func(level wool.Loglevel, msg string) {
+		got = append(got, level)
+	})
+	defer SetOutputSink(nil)
+
+	Trace("trace")
+	Debug("debug")
+	Info("info")
+	Warning("warn")
+	Error("error")
+	ErrorDetail("detail")
+	Focus("focus")
+
+	want := []wool.Loglevel{
+		wool.TRACE,
+		wool.DEBUG,
+		wool.INFO,
+		wool.WARN,
+		wool.ERROR,
+		wool.ERROR,
+		wool.FOCUS,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sink levels got %#v, want %#v", got, want)
 	}
 }
 

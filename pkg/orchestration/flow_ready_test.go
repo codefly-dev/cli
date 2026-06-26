@@ -56,6 +56,22 @@ func TestFlowReadyExcludeRootWaitsForDependenciesOnly(t *testing.T) {
 	require.True(t, flow.Ready(ctx))
 }
 
+func TestFormatServiceRunPlanEntryIncludesServiceAndAgentVersions(t *testing.T) {
+	service := &resources.Service{
+		Name:    "api",
+		Version: "0.0.7",
+		Agent: &resources.Agent{
+			Kind:      resources.ServiceAgent,
+			Publisher: "codefly.dev",
+			Name:      "go-grpc",
+			Version:   "latest",
+		},
+	}
+
+	got := formatServiceRunPlanEntry("users/api", service, nil)
+	require.Equal(t, "users/api@0.0.7 via codefly.dev/go-grpc:latest", got)
+}
+
 func TestNetworkMappingsReachableRequiresHTTPForBoltHTTPServices(t *testing.T) {
 	bolt, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

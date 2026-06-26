@@ -146,10 +146,71 @@ var ServiceCmd = &cobra.Command{
 				cli.ExitError()
 				return
 			}
+			// Print each dependency's lifecycle (Loading→Init→Starting→Running,
+			// or Failed) using the same ">>" milestone form as the origin, so a
+			// stalled dependency (e.g. vault waiting on its health probe) is
+			// visible in headless/MCP/CI logs instead of silent until timeout.
+			// printReady prints a dependency's "Running on :port" milestone
+			// exactly once, whichever source observes it first — the action-loop
+			// emit below or the readiness poller further down — so the loop's
+			// eventual StateRunning doesn't duplicate a line the poller printed.
+			var promotedMu sync.Mutex
+			promoted := map[string]bool{}
+			printReady := func(service string, port int) {
+				promotedMu.Lock()
+				already := promoted[service]
+				promoted[service] = true
+				promotedMu.Unlock()
+				if already {
+					return
+				}
+				line := fmt.Sprintf("%s %s: %s", cli.MarkerMilestone, service, tui.StateRunning)
+				if port > 0 {
+					line += fmt.Sprintf(" on :%d", port)
+				}
+				fmt.Println(line)
+			}
+
+			flow.WithStateListener(func(service string, state tui.ServiceState, port int) {
+				if service == serviceName {
+					return
+				}
+				if state == tui.StateRunning {
+					printReady(service, port)
+					return
+				}
+				fmt.Printf("%s %s: %s\n", cli.MarkerMilestone, service, state)
+			})
+
 			phase(tui.StateStarting)
+
+			// Drive dependency readiness off a real probe concurrently with the
+			// blocking run. The action loop can't emit a dependency's StateRunning
+			// until its own (blocking) Start returns, so while it is parked in the
+			// origin's go compile an already-listening dependency would otherwise
+			// stay silent. Mirrors the interactive TUI's ticker; printReady dedupes
+			// against the loop's eventual emit.
+			pollCtx, pollCancel := context.WithCancel(ctx)
+			var pollWg sync.WaitGroup
+			pollWg.Go(func() {
+				pollPromoted := map[string]bool{}
+				ticker := time.NewTicker(150 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-pollCtx.Done():
+						return
+					case <-ticker.C:
+						flow.PromoteReachable(serviceName, pollPromoted, printReady)
+					}
+				}
+			})
+
 			err = common.WithHeartbeat(ctx, "still starting "+serviceName, func() error {
 				return runService(ctx, flow)
 			})
+			pollCancel()
+			pollWg.Wait()
 			if err != nil {
 				cli.ErrorChain(err, "cannot start service %s", serviceName)
 				stopFresh() // tear down partially-started dependencies
@@ -221,6 +282,17 @@ var ServiceCmd = &cobra.Command{
 				}
 				noticeMu.Unlock()
 
+				// Route codefly's own narration (e.g. "Handling <frontend> with
+				// these dependent services: …") into the TUI log pane while it
+				// owns the screen — otherwise it goes to stdout and the alt
+				// screen overwrites it, leaving a blank "Loading" for the whole
+				// init phase. Cleared when the flow returns so the post-TUI
+				// error report prints to the real terminal again.
+				cli.SetOutputSink(func(level wool.Loglevel, msg string) {
+					t.SendLog(level, "codefly", msg)
+				})
+				defer cli.SetOutputSink(nil)
+
 				var err error
 				t.SendState(serviceName, tui.StateLoading)
 				flow, err = initRunService(runCtx, workspace, module, service)
@@ -233,6 +305,26 @@ var ServiceCmd = &cobra.Command{
 					t.SendDone(runErr) // quit the TUI instead of hanging on the error
 					return
 				}
+
+				// Drive per-dependency live status from the orchestrator so each
+				// dependency shows its own Loading→Init→Starting→Running (and any
+				// stall) instead of hiding behind the origin's spinner. The origin
+				// is already driven by the control flow here, so skip it to avoid
+				// double milestones.
+				flow.WithStateListener(func(service string, state tui.ServiceState, port int) {
+					if service == serviceName {
+						return
+					}
+					switch state {
+					case tui.StateRunning:
+						t.SendReady(service, port)
+					case tui.StateFailed:
+						t.SendFailed(service)
+					default:
+						t.SendState(service, state)
+					}
+				})
+				t.SendPlan(flow.OrderedServiceUniques())
 
 				t.SendState(serviceName, tui.StateStarting)
 
@@ -248,6 +340,17 @@ var ServiceCmd = &cobra.Command{
 
 				ticker := time.NewTicker(150 * time.Millisecond)
 				defer ticker.Stop()
+
+				// While the action loop is blocked inside a long phase (the origin's
+				// go compile being the usual culprit), it can't emit a dependency's
+				// StateRunning even after that dependency is actually listening — so
+				// an up-and-ready postgres keeps showing as "slow". Promote each
+				// dependency to ready from a real readiness probe instead, so the
+				// live status reflects what's actually up rather than where the
+				// synchronous loop happens to be parked. `promoted` is touched only
+				// by this goroutine.
+				promoted := map[string]bool{}
+
 				for !flow.Ready(runCtx) {
 					select {
 					case <-runCtx.Done():
@@ -264,6 +367,7 @@ var ServiceCmd = &cobra.Command{
 						t.SendDone(err) // quit instead of spinning on "Starting"
 						return
 					case <-ticker.C:
+						flow.PromoteReachable(serviceName, promoted, t.SendReady)
 					}
 				}
 
@@ -301,6 +405,7 @@ var ServiceCmd = &cobra.Command{
 			// tear down — this also establishes happens-before on `flow`.
 			runCancel()
 			<-finished
+			cli.RestoreOutput()
 			if runErr != nil {
 				cli.ErrorChain(runErr, "service %s stopped with an error", serviceName)
 				runFailed = true

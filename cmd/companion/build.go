@@ -219,14 +219,15 @@ func sortCompanionsForBuild(in []*Companion) []*Companion {
 }
 
 // needsLinuxCLI returns true when at least one target companion is a
-// language runtime — those COPY --from=codeflydev/codefly the
-// cross-compiled CLI, so we must produce a fresh linux/amd64 binary.
-// The codefly base companion itself ALSO needs the binary (it's the
-// source of the COPY --from), so we treat it as needing the CLI too.
+// language or execution runtime — those embed the cross-compiled CLI,
+// so we must produce a fresh linux/amd64 binary. The codefly base
+// companion itself ALSO needs the binary (it's the source of the
+// COPY --from used by language images), so we treat it as needing the
+// CLI too.
 func needsLinuxCLI(targets []*Companion) bool {
 	for _, c := range targets {
 		switch c.Name {
-		case "codefly", "go", "python", "node":
+		case "codefly", "go", "python", "node", "execution":
 			return true
 		}
 	}

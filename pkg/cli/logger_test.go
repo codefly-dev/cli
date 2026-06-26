@@ -34,6 +34,29 @@ func TestLegendNamesEveryMarker(t *testing.T) {
 	}
 }
 
+func TestSuppressedLoggerRoutesUnsourcedLogsToOutputSink(t *testing.T) {
+	logger := &Logger{suppressed: true}
+	var gotLevel wool.Loglevel
+	var gotMessage string
+	SetOutputSink(func(level wool.Loglevel, msg string) {
+		gotLevel = level
+		gotMessage = msg
+	})
+	defer SetOutputSink(nil)
+
+	logger.Process(&wool.Log{
+		Level:   wool.INFO,
+		Message: "loading service agent codefly.dev/go-grpc:0.1.4",
+	})
+
+	if gotLevel != wool.INFO {
+		t.Fatalf("expected INFO level, got %s", gotLevel)
+	}
+	if !strings.Contains(gotMessage, "codefly.dev/go-grpc:0.1.4") {
+		t.Fatalf("sink did not receive rendered log message, got %q", gotMessage)
+	}
+}
+
 // NOTE: these tests mutate the package-level maxUnique global to
 // pin the padding width. Do NOT call t.Parallel() in this file —
 // concurrent assignment to maxUnique races and produces flaky
