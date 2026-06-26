@@ -149,20 +149,6 @@ func (s *Server) registerTools() {
 	}, s.writeFile)
 
 	s.RegisterTool(Tool{
-		Name:        "list_symbols",
-		Description: "List code symbols (functions, types, etc.) from the service via LSP",
-		InputSchema: InputSchema{
-			Type: "object",
-			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
-				"file":    {Type: "string", Description: "Optional: restrict to one file (relative path)"},
-			},
-			Required: []string{"module", "service"},
-		},
-	}, s.listSymbols)
-
-	s.RegisterTool(Tool{
 		Name:        "build",
 		Description: "Build the service via the plugin (builder)",
 		InputSchema: InputSchema{

@@ -142,7 +142,7 @@ The CLI never calls agent code directly. Every interaction goes through gRPC:
 - `runtimev0.RuntimeClient` — Load, Init, Start, Stop, Destroy, Test, Information
 - `builderv0.BuilderClient` — Load, Init, Create, Update, Sync, Build, Deploy
 - `agentv0.AgentClient` — Communicate (interactive Q&A)
-- `codev0.CodeClient` — ListSymbols, GetSymbol
+- `codev0.CodeClient` — Execute/apply-edit/shell/project/dependency operations. Semantic code intelligence lives in Mind.
 
 ### State Management
 `StateManager` in orchestration tracks:

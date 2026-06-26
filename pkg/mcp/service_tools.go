@@ -12,11 +12,9 @@ import (
 
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/wool"
 )
 
 // serviceModuleService is the common param set for per-service tools.
@@ -175,45 +173,6 @@ func (s *Server) writeFile(ctx context.Context, args map[string]string) ([]Conte
 		}
 	}
 	return []Content{TextContent("ok")}, nil
-}
-
-// listSymbols calls the plugin Code.ListSymbols and returns symbols as JSON.
-func (s *Server) listSymbols(ctx context.Context, args map[string]string) ([]Content, error) {
-	w := wool.Get(ctx).In("mcp.listSymbols")
-	_, instance, err := s.getServiceAndInstance(ctx, args["module"], args["service"])
-	if err != nil {
-		return nil, err
-	}
-	codeAgent, err := services.LoadCode(ctx, instance.Service)
-	if err != nil {
-		return nil, fmt.Errorf("cannot load code agent: %w", err)
-	}
-	req := &codev0.ListSymbolsRequest{}
-	if f := args["file"]; f != "" {
-		req.File = f
-	}
-	resp, err := codeAgent.ListSymbols(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("list_symbols: %w", err)
-	}
-	if resp.Status != nil && resp.Status.State == codev0.ListSymbolsStatus_ERROR {
-		return nil, fmt.Errorf("list_symbols: %s", resp.Status.Message)
-	}
-	out := make([]map[string]any, 0, len(resp.Symbols))
-	for _, sym := range resp.Symbols {
-		entry := map[string]any{"name": sym.Name, "kind": sym.Kind.String()}
-		if sym.Location != nil {
-			entry["file"] = sym.Location.File
-			entry["line"] = sym.Location.Line
-		}
-		if sym.Signature != "" {
-			entry["signature"] = sym.Signature
-		}
-		out = append(out, entry)
-	}
-	w.Debug("list_symbols", wool.Field("count", len(out)))
-	data, _ := json.MarshalIndent(out, "", "  ")
-	return []Content{TextContent(string(data))}, nil
 }
 
 // build triggers the plugin Builder.Build. Uses minimal DockerBuildContext (empty repo for local).

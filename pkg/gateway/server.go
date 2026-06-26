@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/agents/manager"
+	codecore "github.com/codefly-dev/core/code"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -440,6 +441,64 @@ func (s *Server) serviceRoot() string {
 	return s.cfg.WorkDir
 }
 
+func (s *Server) fileOps() codecore.FileOperation {
+	return codecore.NewFileOps(codecore.LocalVFS{}, s.serviceRoot())
+}
+
+func (s *Server) validateService(service string) error {
+	service = strings.TrimSpace(service)
+	if service == "" || s.mindYAML == nil {
+		return nil
+	}
+	if service != s.mindYAML.Service {
+		return status.Errorf(codes.NotFound, "service %q not found in gateway workspace", service)
+	}
+	return nil
+}
+
+func cleanGatewayPath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", nil
+	}
+	if strings.ContainsRune(p, '\x00') {
+		return "", fmt.Errorf("path contains NUL byte")
+	}
+	if filepath.IsAbs(p) {
+		return "", fmt.Errorf("path must be relative: %s", p)
+	}
+	clean := filepath.Clean(p)
+	if clean == "." {
+		return "", nil
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("path escapes workspace: %s", p)
+	}
+	return clean, nil
+}
+
+func (s *Server) resolveWorkspacePath(rel string) (root, abs string, err error) {
+	root = filepath.Clean(s.serviceRoot())
+	abs = filepath.Join(root, rel)
+	check, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", "", err
+	}
+	if check == ".." || strings.HasPrefix(check, ".."+string(filepath.Separator)) || filepath.IsAbs(check) {
+		return "", "", fmt.Errorf("path escapes workspace: %s", rel)
+	}
+	return root, abs, nil
+}
+
+func shouldSkipGatewayDir(name string) bool {
+	switch name {
+	case ".git", ".hg", ".svn", "node_modules", "vendor", "__pycache__", "dist", "build", "target", ".cache":
+		return true
+	default:
+		return strings.HasPrefix(name, ".")
+	}
+}
+
 // language returns the language string for the current service.
 func (s *Server) language() string {
 	return pluginToLang(s.mindYAML.Plugin)
@@ -449,6 +508,13 @@ func (s *Server) language() string {
 
 func (s *Server) ListServices(_ context.Context, _ *gatewayv1.ListServicesRequest) (*gatewayv1.ListServicesResponse, error) {
 	my := s.mindYAML
+	// The server starts successfully without mind.yaml (plugin-dependent RPCs
+	// fail individually); topology must degrade the same way, not panic. A
+	// remote Mind probes ListServices at startup before any workspace is
+	// configured, so a nil mindYAML is a normal state, not an error.
+	if my == nil {
+		return &gatewayv1.ListServicesResponse{}, nil
+	}
 	return &gatewayv1.ListServicesResponse{
 		Services: []*gatewayv1.ServiceInfo{{
 			Name:     my.Service,
@@ -459,115 +525,161 @@ func (s *Server) ListServices(_ context.Context, _ *gatewayv1.ListServicesReques
 	}, nil
 }
 
+// ─── File Operations (direct workspace I/O) ──────────────────
+
+func (s *Server) ReadFile(ctx context.Context, req *gatewayv1.ReadFileRequest) (*gatewayv1.ReadFileResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	rel, err := cleanGatewayPath(req.GetPath())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	data, err := s.fileOps().ReadFile(ctx, rel)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &gatewayv1.ReadFileResponse{Exists: false}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "read %s: %v", rel, err)
+	}
+	return &gatewayv1.ReadFileResponse{Content: string(data), Exists: true}, nil
+}
+
+func (s *Server) WriteFile(ctx context.Context, req *gatewayv1.WriteFileRequest) (*gatewayv1.WriteFileResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	rel, err := cleanGatewayPath(req.GetPath())
+	if err != nil {
+		return &gatewayv1.WriteFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	if err := s.fileOps().WriteFile(ctx, rel, []byte(req.GetContent())); err != nil {
+		return &gatewayv1.WriteFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.WriteFileResponse{Success: true}, nil
+}
+
+func (s *Server) ListFiles(ctx context.Context, req *gatewayv1.ListFilesRequest) (*gatewayv1.ListFilesResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	rel, err := cleanGatewayPath(req.GetPath())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	root, base, err := s.resolveWorkspacePath(rel)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	extSet := make(map[string]bool, len(req.GetExtensions()))
+	for _, ext := range req.GetExtensions() {
+		if ext == "" {
+			continue
+		}
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		extSet[ext] = true
+	}
+
+	var files []*gatewayv1.FileInfo
+	err = filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() && path != base && shouldSkipGatewayDir(d.Name()) {
+			return filepath.SkipDir
+		}
+		if !req.GetRecursive() && d.IsDir() && path != base {
+			return filepath.SkipDir
+		}
+		if path == base {
+			return nil
+		}
+		if len(extSet) > 0 && !d.IsDir() && !extSet[filepath.Ext(path)] {
+			return nil
+		}
+		info, _ := d.Info()
+		var size int64
+		if info != nil {
+			size = info.Size()
+		}
+		itemRel, _ := filepath.Rel(root, path)
+		files = append(files, &gatewayv1.FileInfo{
+			Path:        filepath.ToSlash(itemRel),
+			SizeBytes:   size,
+			IsDirectory: d.IsDir(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list files under %s: %v", rel, err)
+	}
+	return &gatewayv1.ListFilesResponse{Files: files}, nil
+}
+
+func (s *Server) DeleteFile(ctx context.Context, req *gatewayv1.DeleteFileRequest) (*gatewayv1.DeleteFileResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	rel, err := cleanGatewayPath(req.GetPath())
+	if err != nil {
+		return &gatewayv1.DeleteFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	if err := s.fileOps().DeleteFile(ctx, rel); err != nil {
+		if os.IsNotExist(err) {
+			return &gatewayv1.DeleteFileResponse{Success: false, Error: "file not found"}, nil
+		}
+		return &gatewayv1.DeleteFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.DeleteFileResponse{Success: true}, nil
+}
+
+func (s *Server) MoveFile(ctx context.Context, req *gatewayv1.MoveFileRequest) (*gatewayv1.MoveFileResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	oldRel, err := cleanGatewayPath(req.GetOldPath())
+	if err != nil {
+		return &gatewayv1.MoveFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	newRel, err := cleanGatewayPath(req.GetNewPath())
+	if err != nil {
+		return &gatewayv1.MoveFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	if err := s.fileOps().MoveFile(ctx, oldRel, newRel); err != nil {
+		return &gatewayv1.MoveFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.MoveFileResponse{Success: true}, nil
+}
+
+func (s *Server) CreateFile(ctx context.Context, req *gatewayv1.CreateFileRequest) (*gatewayv1.CreateFileResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	rel, err := cleanGatewayPath(req.GetPath())
+	if err != nil {
+		return &gatewayv1.CreateFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	if !req.GetOverwrite() {
+		if _, err := s.fileOps().ReadFile(ctx, rel); err == nil {
+			return &gatewayv1.CreateFileResponse{Success: false, Error: "file already exists"}, nil
+		} else if !os.IsNotExist(err) {
+			return &gatewayv1.CreateFileResponse{Success: false, Error: err.Error()}, nil
+		}
+	}
+	if err := s.fileOps().WriteFile(ctx, rel, []byte(req.GetContent())); err != nil {
+		return &gatewayv1.CreateFileResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.CreateFileResponse{Success: true}, nil
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Plugin-proxied RPCs — all delegated via the unified Execute RPC.
 // Each method wraps its gateway request into a CodeRequest oneof,
 // calls proxyExecute, and unpacks the CodeResponse.
 // ═══════════════════════════════════════════════════════════════
-
-// ─── Code Intelligence (via plugin Execute → LSP) ────────────
-
-func (s *Server) ListSymbols(ctx context.Context, req *gatewayv1.ListSymbolsRequest) (*gatewayv1.ListSymbolsResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_ListSymbols{ListSymbols: &codev0.ListSymbolsRequest{File: req.File}},
-	})
-	if err != nil {
-		return &gatewayv1.ListSymbolsResponse{Error: err.Error()}, nil
-	}
-	r := resp.GetListSymbols()
-	if r.GetStatus() != nil && r.GetStatus().Message != "" {
-		return &gatewayv1.ListSymbolsResponse{Error: r.GetStatus().Message}, nil
-	}
-	var symbols []*gatewayv1.Symbol
-	for _, cs := range r.GetSymbols() {
-		symbols = append(symbols, codeSymbolToGateway(cs, s.mindYAML.Service))
-	}
-	return &gatewayv1.ListSymbolsResponse{Symbols: symbols}, nil
-}
-
-func (s *Server) GetDiagnostics(ctx context.Context, req *gatewayv1.GetDiagnosticsRequest) (*gatewayv1.GetDiagnosticsResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_GetDiagnostics{GetDiagnostics: &codev0.GetDiagnosticsRequest{File: req.File}},
-	})
-	if err != nil {
-		return &gatewayv1.GetDiagnosticsResponse{Error: err.Error()}, nil
-	}
-	r := resp.GetGetDiagnostics()
-	var out []*gatewayv1.Diagnostic
-	for _, d := range r.GetDiagnostics() {
-		out = append(out, &gatewayv1.Diagnostic{
-			File: d.File, Line: d.Line, Column: d.Column, EndLine: d.EndLine, EndColumn: d.EndColumn,
-			Message: d.Message, Severity: diagSeverityToString(d.Severity), Source: d.Source, Code: d.Code,
-		})
-	}
-	return &gatewayv1.GetDiagnosticsResponse{Diagnostics: out}, nil
-}
-
-func (s *Server) GoToDefinition(ctx context.Context, req *gatewayv1.GoToDefinitionRequest) (*gatewayv1.GoToDefinitionResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_GoToDefinition{GoToDefinition: &codev0.GoToDefinitionRequest{
-			File: req.File, Line: req.Line, Column: req.Column,
-		}},
-	})
-	if err != nil {
-		return &gatewayv1.GoToDefinitionResponse{Error: err.Error()}, nil
-	}
-	return &gatewayv1.GoToDefinitionResponse{Locations: codeLocsToGateway(resp.GetGoToDefinition().GetLocations())}, nil
-}
-
-func (s *Server) FindReferences(ctx context.Context, req *gatewayv1.FindReferencesRequest) (*gatewayv1.FindReferencesResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_FindReferences{FindReferences: &codev0.FindReferencesRequest{
-			File: req.File, Line: req.Line, Column: req.Column,
-		}},
-	})
-	if err != nil {
-		return &gatewayv1.FindReferencesResponse{Error: err.Error()}, nil
-	}
-	return &gatewayv1.FindReferencesResponse{Locations: codeLocsToGateway(resp.GetFindReferences().GetLocations())}, nil
-}
-
-func (s *Server) RenameSymbol(ctx context.Context, req *gatewayv1.RenameSymbolRequest) (*gatewayv1.RenameSymbolResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_RenameSymbol{RenameSymbol: &codev0.RenameSymbolRequest{
-			File: req.File, Line: req.Line, Column: req.Column, NewName: req.NewName,
-		}},
-	})
-	if err != nil {
-		return &gatewayv1.RenameSymbolResponse{Success: false, Error: err.Error()}, nil
-	}
-	r := resp.GetRenameSymbol()
-	if !r.GetSuccess() {
-		return &gatewayv1.RenameSymbolResponse{Success: false, Error: r.GetError()}, nil
-	}
-	var edits []*gatewayv1.TextEdit
-	fileSet := make(map[string]bool)
-	for _, e := range r.GetEdits() {
-		edits = append(edits, &gatewayv1.TextEdit{
-			File: e.File, StartLine: e.StartLine, StartColumn: e.StartColumn,
-			EndLine: e.EndLine, EndColumn: e.EndColumn, NewText: e.NewText,
-		})
-		fileSet[e.File] = true
-	}
-	var files []string
-	for f := range fileSet {
-		files = append(files, f)
-	}
-	return &gatewayv1.RenameSymbolResponse{Success: true, Edits: edits, Files: files}, nil
-}
-
-func (s *Server) GetHoverInfo(ctx context.Context, req *gatewayv1.GetHoverInfoRequest) (*gatewayv1.GetHoverInfoResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_GetHoverInfo{GetHoverInfo: &codev0.GetHoverInfoRequest{
-			File: req.File, Line: req.Line, Column: req.Column,
-		}},
-	})
-	if err != nil {
-		return &gatewayv1.GetHoverInfoResponse{Error: err.Error()}, nil
-	}
-	r := resp.GetGetHoverInfo()
-	return &gatewayv1.GetHoverInfoResponse{Content: r.GetContent(), Language: r.GetLanguage()}, nil
-}
 
 // ─── Code Editing (via plugin Execute) ───────────────────────
 
@@ -585,18 +697,31 @@ func (s *Server) Fix(ctx context.Context, req *gatewayv1.FixRequest) (*gatewayv1
 }
 
 func (s *Server) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest) (*gatewayv1.ApplyEditResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_ApplyEdit{ApplyEdit: &codev0.ApplyEditRequest{
-			File: req.File, Find: req.Find, Replace: req.Replace, AutoFix: req.AutoFix,
-		}},
-	})
-	if err != nil {
+	if err := s.validateService(req.GetService()); err != nil {
 		return nil, err
 	}
-	r := resp.GetApplyEdit()
+	rel, err := cleanGatewayPath(req.GetFile())
+	if err != nil {
+		return &gatewayv1.ApplyEditResponse{Success: false, Error: err.Error()}, nil
+	}
+	data, err := s.fileOps().ReadFile(ctx, rel)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &gatewayv1.ApplyEditResponse{Success: false, Error: fmt.Sprintf("file not found: %s", rel)}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "read %s: %v", rel, err)
+	}
+	result := codecore.SmartEdit(string(data), req.GetFind(), req.GetReplace())
+	if !result.OK {
+		return &gatewayv1.ApplyEditResponse{Success: false, Error: "FIND block does not match any content in the file"}, nil
+	}
+	if err := s.fileOps().WriteFile(ctx, rel, []byte(result.Content)); err != nil {
+		return &gatewayv1.ApplyEditResponse{Success: false, Error: fmt.Sprintf("write: %v", err)}, nil
+	}
 	return &gatewayv1.ApplyEditResponse{
-		Success: r.GetSuccess(), Content: r.GetContent(), Strategy: r.GetStrategy(),
-		Error: r.GetError(), FixActions: r.GetFixActions(),
+		Success:  true,
+		Content:  result.Content,
+		Strategy: result.Strategy,
 	}, nil
 }
 
@@ -623,6 +748,42 @@ func (s *Server) BatchApplyEdits(ctx context.Context, req *gatewayv1.BatchApplyE
 		results = append(results, r)
 	}
 	return &gatewayv1.BatchApplyEditsResponse{Results: results, Succeeded: succeeded, Failed: failed}, nil
+}
+
+func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gatewayv1.SearchResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	rel, err := cleanGatewayPath(req.GetPath())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	result, err := s.fileOps().Search(ctx, codecore.SearchOpts{
+		Pattern:         req.GetPattern(),
+		Literal:         req.GetLiteral(),
+		CaseInsensitive: req.GetCaseInsensitive(),
+		Path:            rel,
+		Extensions:      req.GetExtensions(),
+		Exclude:         req.GetExclude(),
+		MaxResults:      int(req.GetMaxResults()),
+		ContextLines:    int(req.GetContextLines()),
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "search: %v", err)
+	}
+	matches := make([]*gatewayv1.SearchMatch, 0, len(result.Matches))
+	for _, m := range result.Matches {
+		matches = append(matches, &gatewayv1.SearchMatch{
+			File: filepath.ToSlash(m.File),
+			Line: int32(m.Line),
+			Text: m.Text,
+		})
+	}
+	return &gatewayv1.SearchResponse{
+		Matches:      matches,
+		Truncated:    result.Truncated,
+		TotalMatches: int32(len(result.Matches)),
+	}, nil
 }
 
 // ─── Dependencies (via plugin Execute) ───────────────────────
@@ -1290,80 +1451,6 @@ func pluginToLang(plugin string) string {
 	default:
 		return plugin
 	}
-}
-
-func diagSeverityToString(sev codev0.DiagnosticSeverity) string {
-	switch sev {
-	case codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_ERROR:
-		return "error"
-	case codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_WARNING:
-		return "warning"
-	case codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_INFORMATION:
-		return "information"
-	case codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_HINT:
-		return "hint"
-	default:
-		return "unknown"
-	}
-}
-
-func codeSymbolToGateway(cs *codev0.Symbol, service string) *gatewayv1.Symbol {
-	sym := &gatewayv1.Symbol{
-		Name:          cs.GetName(),
-		Kind:          symbolKindString(int32(cs.GetKind())),
-		Signature:     cs.GetSignature(),
-		Service:       service,
-		Documentation: cs.GetDocumentation(),
-		Parent:        cs.GetParent(),
-	}
-	if loc := cs.GetLocation(); loc != nil {
-		sym.File = loc.GetFile()
-		sym.Line = loc.GetLine()
-	}
-	return sym
-}
-
-func symbolKindString(kind int32) string {
-	switch kind {
-	case 1:
-		return "function"
-	case 2:
-		return "method"
-	case 3:
-		return "struct"
-	case 4:
-		return "interface"
-	case 5:
-		return "constant"
-	case 6:
-		return "variable"
-	case 7:
-		return "type_alias"
-	case 8:
-		return "package"
-	case 9:
-		return "field"
-	case 10:
-		return "enum"
-	case 11:
-		return "class"
-	default:
-		return "unknown"
-	}
-}
-
-func codeLocsToGateway(locs []*codev0.Location) []*gatewayv1.Location {
-	var out []*gatewayv1.Location
-	for _, l := range locs {
-		out = append(out, &gatewayv1.Location{
-			File:      l.File,
-			Line:      l.Line,
-			Column:    l.Column,
-			EndLine:   l.EndLine,
-			EndColumn: l.EndColumn,
-		})
-	}
-	return out
 }
 
 func gitStatusString(xy string) string {

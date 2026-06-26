@@ -83,29 +83,9 @@ These tools operate on a specific service within a module.
 | `describe` | Service metadata: name, type, agent, file list | `module`, `service` |
 | `read_file` | Read a file from the service directory | `module`, `service`, `path` |
 | `write_file` | Write content to a file in the service directory | `module`, `service`, `path`, `content` |
-| `list_symbols` | List code symbols (functions, types) via LSP | `module`, `service`, `file` (optional) |
 | `build` | Build the service via the agent's builder | `module`, `service` |
 | `run_checks` | Run a command in the service directory | `module`, `service`, `command` (optional, default: `go test ./...`) |
 | `stop` | Stop the service runtime | `module`, `service` |
-
-### Symbol Intelligence Tools
-
-These tools wrap the agent's Code gRPC service (backed by gopls or equivalent LSP) to provide semantic code understanding.
-
-| Tool | Description | Required Args |
-|------|-------------|---------------|
-| `symbols/references` | Find all references to a symbol at file:line:column | `module`, `service`, `file`, `line`, `column` |
-| `symbols/definition` | Go to the definition of a symbol | `module`, `service`, `file`, `line`, `column` |
-| `symbols/diagnostics` | Get compiler/linter diagnostics for a file or service | `module`, `service`, `file` (optional) |
-| `symbols/hover` | Get type info and documentation for a symbol | `module`, `service`, `file`, `line`, `column` |
-| `symbols/impact` | Compute transitive impact surface of modifying symbols | `module`, `service`, `symbols` (JSON), `depth` (optional) |
-
-**`symbols/impact` detail:** Given a list of symbol positions, this tool performs a BFS traversal of references up to a configurable depth (max 3). It returns all symbols that would be affected by modifying the input symbols. This is the key tool for surface-based conflict detection.
-
-Input `symbols` format:
-```json
-[{"file": "main.go", "line": 42, "column": 5}]
-```
 
 ---
 
@@ -226,26 +206,11 @@ AI → tools/call: write_file {module: "backend", service: "api", path: "handler
 Server → "ok"
 ```
 
-### AI runs tests and checks diagnostics
+### AI runs tests
 
 ```
 AI → tools/call: run_checks {module: "backend", service: "api"}
 Server → <test output>
-
-AI → tools/call: symbols/diagnostics {module: "backend", service: "api"}
-Server → [{"file": "handler.go", "line": 42, "message": "unused variable", "severity": "WARNING"}]
-```
-
-### AI analyzes impact of a change
-
-```
-AI → tools/call: symbols/impact {
-  module: "backend",
-  service: "api",
-  symbols: "[{\"file\": \"handler.go\", \"line\": 15, \"column\": 6}]",
-  depth: "2"
-}
-Server → {"input_symbols": 1, "impact_count": 7, "impact": [...]}
 ```
 
 ---

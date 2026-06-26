@@ -14,7 +14,7 @@ func TestMCPServer_ListTools_IncludesServiceTools(t *testing.T) {
 	}
 
 	tools := server.ListTools()
-	expectedServiceTools := []string{"describe", "read_file", "write_file", "list_symbols", "build", "run_checks", "stop"}
+	expectedServiceTools := []string{"describe", "read_file", "write_file", "build", "run_checks", "stop"}
 	for _, name := range expectedServiceTools {
 		found := false
 		for _, tool := range tools {

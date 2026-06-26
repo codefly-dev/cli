@@ -14,17 +14,13 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // mockCodeClient implements codev0.CodeClient via the unified Execute RPC.
 // Tests configure per-operation function fields; Execute dispatches to them.
 type mockCodeClient struct {
-	listSymbolsFn      func(ctx context.Context, in *codev0.ListSymbolsRequest, opts ...grpc.CallOption) (*codev0.ListSymbolsResponse, error)
-	getDiagnosticsFn   func(ctx context.Context, in *codev0.GetDiagnosticsRequest, opts ...grpc.CallOption) (*codev0.GetDiagnosticsResponse, error)
-	goToDefinitionFn   func(ctx context.Context, in *codev0.GoToDefinitionRequest, opts ...grpc.CallOption) (*codev0.GoToDefinitionResponse, error)
-	findReferencesFn   func(ctx context.Context, in *codev0.FindReferencesRequest, opts ...grpc.CallOption) (*codev0.FindReferencesResponse, error)
-	renameSymbolFn     func(ctx context.Context, in *codev0.RenameSymbolRequest, opts ...grpc.CallOption) (*codev0.RenameSymbolResponse, error)
-	getHoverInfoFn     func(ctx context.Context, in *codev0.GetHoverInfoRequest, opts ...grpc.CallOption) (*codev0.GetHoverInfoResponse, error)
 	fixFn              func(ctx context.Context, in *codev0.FixRequest, opts ...grpc.CallOption) (*codev0.FixResponse, error)
 	applyEditFn        func(ctx context.Context, in *codev0.ApplyEditRequest, opts ...grpc.CallOption) (*codev0.ApplyEditResponse, error)
 	listDependenciesFn func(ctx context.Context, in *codev0.ListDependenciesRequest, opts ...grpc.CallOption) (*codev0.ListDependenciesResponse, error)
@@ -39,60 +35,6 @@ type mockRuntimeClient struct {
 
 func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, opts ...grpc.CallOption) (*codev0.CodeResponse, error) {
 	switch op := in.Operation.(type) {
-	case *codev0.CodeRequest_ListSymbols:
-		if m.listSymbolsFn == nil {
-			return nil, fmt.Errorf("ListSymbols not configured")
-		}
-		r, err := m.listSymbolsFn(ctx, op.ListSymbols, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_ListSymbols{ListSymbols: r}}, nil
-	case *codev0.CodeRequest_GetDiagnostics:
-		if m.getDiagnosticsFn == nil {
-			return nil, fmt.Errorf("GetDiagnostics not configured")
-		}
-		r, err := m.getDiagnosticsFn(ctx, op.GetDiagnostics, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_GetDiagnostics{GetDiagnostics: r}}, nil
-	case *codev0.CodeRequest_GoToDefinition:
-		if m.goToDefinitionFn == nil {
-			return nil, fmt.Errorf("GoToDefinition not configured")
-		}
-		r, err := m.goToDefinitionFn(ctx, op.GoToDefinition, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_GoToDefinition{GoToDefinition: r}}, nil
-	case *codev0.CodeRequest_FindReferences:
-		if m.findReferencesFn == nil {
-			return nil, fmt.Errorf("FindReferences not configured")
-		}
-		r, err := m.findReferencesFn(ctx, op.FindReferences, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_FindReferences{FindReferences: r}}, nil
-	case *codev0.CodeRequest_RenameSymbol:
-		if m.renameSymbolFn == nil {
-			return nil, fmt.Errorf("RenameSymbol not configured")
-		}
-		r, err := m.renameSymbolFn(ctx, op.RenameSymbol, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_RenameSymbol{RenameSymbol: r}}, nil
-	case *codev0.CodeRequest_GetHoverInfo:
-		if m.getHoverInfoFn == nil {
-			return nil, fmt.Errorf("GetHoverInfo not configured")
-		}
-		r, err := m.getHoverInfoFn(ctx, op.GetHoverInfo, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &codev0.CodeResponse{Result: &codev0.CodeResponse_GetHoverInfo{GetHoverInfo: r}}, nil
 	case *codev0.CodeRequest_Fix:
 		if m.fixFn == nil {
 			return nil, fmt.Errorf("Fix not configured")
@@ -153,29 +95,10 @@ func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, op
 }
 
 // Per-RPC stubs satisfy the CodeClient interface for the RPCs that still
-// exist post-cleanup (file/git/search/rename/fix/deps/project-info RPCs
-// were deleted from service Code — everything dispatches through Execute).
+// exist post-cleanup. Tests only exercise the Execute path.
 // These stubs return errors because tests only exercise the Execute path.
-func (m *mockCodeClient) ListSymbols(_ context.Context, _ *codev0.ListSymbolsRequest, _ ...grpc.CallOption) (*codev0.ListSymbolsResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock; use Execute")
-}
-func (m *mockCodeClient) GetDiagnostics(_ context.Context, _ *codev0.GetDiagnosticsRequest, _ ...grpc.CallOption) (*codev0.GetDiagnosticsResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock; use Execute")
-}
-func (m *mockCodeClient) GoToDefinition(_ context.Context, _ *codev0.GoToDefinitionRequest, _ ...grpc.CallOption) (*codev0.GoToDefinitionResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock; use Execute")
-}
-func (m *mockCodeClient) FindReferences(_ context.Context, _ *codev0.FindReferencesRequest, _ ...grpc.CallOption) (*codev0.FindReferencesResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock; use Execute")
-}
-func (m *mockCodeClient) GetHoverInfo(_ context.Context, _ *codev0.GetHoverInfoRequest, _ ...grpc.CallOption) (*codev0.GetHoverInfoResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock; use Execute")
-}
 func (m *mockCodeClient) ApplyEdit(_ context.Context, _ *codev0.ApplyEditRequest, _ ...grpc.CallOption) (*codev0.ApplyEditResponse, error) {
 	return nil, fmt.Errorf("not exercised in mock; use Execute")
-}
-func (m *mockCodeClient) GetCallGraph(_ context.Context, _ *codev0.GetCallGraphRequest, _ ...grpc.CallOption) (*codev0.GetCallGraphResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock; use Tooling.GetCallGraph")
 }
 func (m *mockCodeClient) ShellExec(_ context.Context, _ *codev0.ShellExecRequest, _ ...grpc.CallOption) (*codev0.ShellExecResponse, error) {
 	return nil, fmt.Errorf("not exercised in mock")
@@ -306,212 +229,6 @@ func TestTestPreservesStructuredRuntimeFields(t *testing.T) {
 	}
 }
 
-func TestListSymbols_Success(t *testing.T) {
-	mock := &mockCodeClient{
-		listSymbolsFn: func(_ context.Context, in *codev0.ListSymbolsRequest, _ ...grpc.CallOption) (*codev0.ListSymbolsResponse, error) {
-			if in.File != "main.go" {
-				t.Errorf("expected file main.go, got %s", in.File)
-			}
-			return &codev0.ListSymbolsResponse{
-				Symbols: []*codev0.Symbol{
-					{
-						Name:      "main",
-						Kind:      codev0.SymbolKind_SYMBOL_KIND_FUNCTION,
-						Signature: "func main()",
-						Location:  &codev0.Location{File: "main.go", Line: 5, Column: 1},
-					},
-					{
-						Name:      "Server",
-						Kind:      codev0.SymbolKind_SYMBOL_KIND_STRUCT,
-						Signature: "type Server struct",
-						Location:  &codev0.Location{File: "main.go", Line: 10, Column: 1},
-					},
-				},
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.ListSymbols(context.Background(), &gatewayv1.ListSymbolsRequest{File: "main.go"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Error != "" {
-		t.Errorf("unexpected error field: %s", resp.Error)
-	}
-	if len(resp.Symbols) != 2 {
-		t.Fatalf("expected 2 symbols, got %d", len(resp.Symbols))
-	}
-	if resp.Symbols[0].Name != "main" {
-		t.Errorf("expected first symbol 'main', got %s", resp.Symbols[0].Name)
-	}
-	if resp.Symbols[0].Kind != "function" {
-		t.Errorf("expected kind 'function', got %s", resp.Symbols[0].Kind)
-	}
-	if resp.Symbols[1].Name != "Server" {
-		t.Errorf("expected second symbol 'Server', got %s", resp.Symbols[1].Name)
-	}
-}
-
-func TestListSymbols_Error(t *testing.T) {
-	mock := &mockCodeClient{
-		listSymbolsFn: func(_ context.Context, _ *codev0.ListSymbolsRequest, _ ...grpc.CallOption) (*codev0.ListSymbolsResponse, error) {
-			return &codev0.ListSymbolsResponse{
-				Status: &codev0.ListSymbolsStatus{
-					State:   codev0.ListSymbolsStatus_ERROR,
-					Message: "LSP not ready",
-				},
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.ListSymbols(context.Background(), &gatewayv1.ListSymbolsRequest{File: "main.go"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Error != "LSP not ready" {
-		t.Errorf("expected error 'LSP not ready', got %q", resp.Error)
-	}
-}
-
-func TestGetDiagnostics(t *testing.T) {
-	mock := &mockCodeClient{
-		getDiagnosticsFn: func(_ context.Context, in *codev0.GetDiagnosticsRequest, _ ...grpc.CallOption) (*codev0.GetDiagnosticsResponse, error) {
-			if in.File != "main.go" {
-				t.Errorf("expected file main.go, got %s", in.File)
-			}
-			return &codev0.GetDiagnosticsResponse{
-				Diagnostics: []*codev0.Diagnostic{
-					{
-						File:     "main.go",
-						Line:     10,
-						Column:   5,
-						Message:  "unused variable 'x'",
-						Severity: codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_WARNING,
-						Source:   "gopls",
-						Code:     "unusedvar",
-					},
-					{
-						File:     "main.go",
-						Line:     20,
-						Column:   1,
-						Message:  "missing return",
-						Severity: codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_ERROR,
-						Source:   "gopls",
-					},
-				},
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.GetDiagnostics(context.Background(), &gatewayv1.GetDiagnosticsRequest{File: "main.go"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.Diagnostics) != 2 {
-		t.Fatalf("expected 2 diagnostics, got %d", len(resp.Diagnostics))
-	}
-	d := resp.Diagnostics[0]
-	if d.Message != "unused variable 'x'" {
-		t.Errorf("expected message 'unused variable x', got %q", d.Message)
-	}
-	if d.Severity != "warning" {
-		t.Errorf("expected severity 'warning', got %s", d.Severity)
-	}
-	if d.Source != "gopls" {
-		t.Errorf("expected source 'gopls', got %s", d.Source)
-	}
-	d2 := resp.Diagnostics[1]
-	if d2.Severity != "error" {
-		t.Errorf("expected severity 'error', got %s", d2.Severity)
-	}
-}
-
-func TestGoToDefinition(t *testing.T) {
-	mock := &mockCodeClient{
-		goToDefinitionFn: func(_ context.Context, in *codev0.GoToDefinitionRequest, _ ...grpc.CallOption) (*codev0.GoToDefinitionResponse, error) {
-			if in.File != "main.go" || in.Line != 15 || in.Column != 10 {
-				t.Errorf("unexpected request: file=%s line=%d col=%d", in.File, in.Line, in.Column)
-			}
-			return &codev0.GoToDefinitionResponse{
-				Locations: []*codev0.Location{
-					{File: "server.go", Line: 42, Column: 6, EndLine: 42, EndColumn: 12},
-				},
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.GoToDefinition(context.Background(), &gatewayv1.GoToDefinitionRequest{
-		File: "main.go", Line: 15, Column: 10,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.Locations) != 1 {
-		t.Fatalf("expected 1 location, got %d", len(resp.Locations))
-	}
-	loc := resp.Locations[0]
-	if loc.File != "server.go" {
-		t.Errorf("expected file server.go, got %s", loc.File)
-	}
-	if loc.Line != 42 {
-		t.Errorf("expected line 42, got %d", loc.Line)
-	}
-}
-
-func TestFindReferences(t *testing.T) {
-	mock := &mockCodeClient{
-		findReferencesFn: func(_ context.Context, in *codev0.FindReferencesRequest, _ ...grpc.CallOption) (*codev0.FindReferencesResponse, error) {
-			return &codev0.FindReferencesResponse{
-				Locations: []*codev0.Location{
-					{File: "main.go", Line: 5, Column: 2},
-					{File: "handler.go", Line: 12, Column: 8},
-					{File: "test.go", Line: 30, Column: 4},
-				},
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.FindReferences(context.Background(), &gatewayv1.FindReferencesRequest{
-		File: "main.go", Line: 5, Column: 2,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.Locations) != 3 {
-		t.Fatalf("expected 3 references, got %d", len(resp.Locations))
-	}
-	if resp.Locations[1].File != "handler.go" {
-		t.Errorf("expected second ref in handler.go, got %s", resp.Locations[1].File)
-	}
-}
-
-func TestGetHoverInfo(t *testing.T) {
-	mock := &mockCodeClient{
-		getHoverInfoFn: func(_ context.Context, in *codev0.GetHoverInfoRequest, _ ...grpc.CallOption) (*codev0.GetHoverInfoResponse, error) {
-			if in.File != "main.go" || in.Line != 10 || in.Column != 5 {
-				t.Errorf("unexpected request: file=%s line=%d col=%d", in.File, in.Line, in.Column)
-			}
-			return &codev0.GetHoverInfoResponse{
-				Content:  "func Serve(ctx context.Context) error",
-				Language: "go",
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.GetHoverInfo(context.Background(), &gatewayv1.GetHoverInfoRequest{
-		File: "main.go", Line: 10, Column: 5,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Content != "func Serve(ctx context.Context) error" {
-		t.Errorf("unexpected content: %q", resp.Content)
-	}
-	if resp.Language != "go" {
-		t.Errorf("expected language 'go', got %s", resp.Language)
-	}
-}
-
 func TestFix(t *testing.T) {
 	mock := &mockCodeClient{
 		fixFn: func(_ context.Context, in *codev0.FixRequest, _ ...grpc.CallOption) (*codev0.FixResponse, error) {
@@ -542,20 +259,11 @@ func TestFix(t *testing.T) {
 }
 
 func TestApplyEdit(t *testing.T) {
-	mock := &mockCodeClient{
-		applyEditFn: func(_ context.Context, in *codev0.ApplyEditRequest, _ ...grpc.CallOption) (*codev0.ApplyEditResponse, error) {
-			if in.File != "main.go" || in.Find != "old code" || in.Replace != "new code" {
-				t.Errorf("unexpected request: file=%s find=%q replace=%q", in.File, in.Find, in.Replace)
-			}
-			return &codev0.ApplyEditResponse{
-				Success:    true,
-				Content:    "package main\n\nnew code\n",
-				Strategy:   "exact",
-				FixActions: []string{"goimports"},
-			}, nil
-		},
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nold code\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	s := newTestServer(mock)
+	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
 	resp, err := s.ApplyEdit(context.Background(), &gatewayv1.ApplyEditRequest{
 		File: "main.go", Find: "old code", Replace: "new code", AutoFix: true,
 	})
@@ -568,8 +276,162 @@ func TestApplyEdit(t *testing.T) {
 	if resp.Strategy != "exact" {
 		t.Errorf("expected strategy 'exact', got %s", resp.Strategy)
 	}
-	if len(resp.FixActions) != 1 || resp.FixActions[0] != "goimports" {
-		t.Errorf("unexpected fix actions: %v", resp.FixActions)
+	content, err := os.ReadFile(filepath.Join(dir, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(content); got != "package main\n\nnew code\n" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestDirectWorkspaceFileOperations(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc needle() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "note.txt"), []byte("needle in text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
+
+	writeResp, err := s.WriteFile(context.Background(), &gatewayv1.WriteFileRequest{
+		Service: "test-svc",
+		Path:    "nested/new.txt",
+		Content: "created by gateway",
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if !writeResp.Success {
+		t.Fatalf("WriteFile failed: %s", writeResp.Error)
+	}
+
+	readResp, err := s.ReadFile(context.Background(), &gatewayv1.ReadFileRequest{
+		Service: "test-svc",
+		Path:    "nested/new.txt",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if !readResp.Exists || readResp.Content != "created by gateway" {
+		t.Fatalf("ReadFile = exists:%v content:%q", readResp.Exists, readResp.Content)
+	}
+
+	createResp, err := s.CreateFile(context.Background(), &gatewayv1.CreateFileRequest{
+		Service:   "test-svc",
+		Path:      "nested/new.txt",
+		Content:   "replacement",
+		Overwrite: false,
+	})
+	if err != nil {
+		t.Fatalf("CreateFile returned error: %v", err)
+	}
+	if createResp.Success {
+		t.Fatal("CreateFile overwrote an existing file with overwrite=false")
+	}
+
+	listResp, err := s.ListFiles(context.Background(), &gatewayv1.ListFilesRequest{
+		Service:    "test-svc",
+		Path:       ".",
+		Recursive:  true,
+		Extensions: []string{".go"},
+	})
+	if err != nil {
+		t.Fatalf("ListFiles returned error: %v", err)
+	}
+	if !fileInfoContains(listResp.Files, "main.go") {
+		t.Fatalf("ListFiles did not include main.go: %#v", listResp.Files)
+	}
+
+	searchResp, err := s.Search(context.Background(), &gatewayv1.SearchRequest{
+		Service:    "test-svc",
+		Pattern:    "needle",
+		Literal:    true,
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if searchResp.TotalMatches < 2 {
+		t.Fatalf("Search TotalMatches = %d, want at least 2", searchResp.TotalMatches)
+	}
+
+	editResp, err := s.ApplyEdit(context.Background(), &gatewayv1.ApplyEditRequest{
+		Service: "test-svc",
+		File:    "main.go",
+		Find:    "func needle() {}",
+		Replace: "func renamed() {}",
+	})
+	if err != nil {
+		t.Fatalf("ApplyEdit returned error: %v", err)
+	}
+	if !editResp.Success {
+		t.Fatalf("ApplyEdit failed: %s", editResp.Error)
+	}
+
+	moveResp, err := s.MoveFile(context.Background(), &gatewayv1.MoveFileRequest{
+		Service: "test-svc",
+		OldPath: "nested/new.txt",
+		NewPath: "nested/moved.txt",
+	})
+	if err != nil {
+		t.Fatalf("MoveFile returned error: %v", err)
+	}
+	if !moveResp.Success {
+		t.Fatalf("MoveFile failed: %s", moveResp.Error)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "nested", "moved.txt")); err != nil {
+		t.Fatalf("moved file not present: %v", err)
+	}
+
+	deleteResp, err := s.DeleteFile(context.Background(), &gatewayv1.DeleteFileRequest{
+		Service: "test-svc",
+		Path:    "nested/moved.txt",
+	})
+	if err != nil {
+		t.Fatalf("DeleteFile returned error: %v", err)
+	}
+	if !deleteResp.Success {
+		t.Fatalf("DeleteFile failed: %s", deleteResp.Error)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "nested", "moved.txt")); !os.IsNotExist(err) {
+		t.Fatalf("deleted file still exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func fileInfoContains(files []*gatewayv1.FileInfo, path string) bool {
+	for _, file := range files {
+		if file.GetPath() == path {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDirectWorkspaceFileOperationsRejectPathEscape(t *testing.T) {
+	s := newTestServerWithWorkDir(&mockCodeClient{}, t.TempDir())
+	_, err := s.ReadFile(context.Background(), &gatewayv1.ReadFileRequest{
+		Service: "test-svc",
+		Path:    "../outside.txt",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("ReadFile path escape code = %s, want %s (err=%v)", status.Code(err), codes.InvalidArgument, err)
+	}
+}
+
+func TestDirectWorkspaceFileOperationsRejectUnknownService(t *testing.T) {
+	s := newTestServerWithWorkDir(&mockCodeClient{}, t.TempDir())
+	_, err := s.ReadFile(context.Background(), &gatewayv1.ReadFileRequest{
+		Service: "other",
+		Path:    "main.go",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("ReadFile unknown service code = %s, want %s (err=%v)", status.Code(err), codes.NotFound, err)
 	}
 }
 
@@ -733,39 +595,6 @@ func TestListServices(t *testing.T) {
 	}
 }
 
-func TestRenameSymbol(t *testing.T) {
-	mock := &mockCodeClient{
-		renameSymbolFn: func(_ context.Context, in *codev0.RenameSymbolRequest, _ ...grpc.CallOption) (*codev0.RenameSymbolResponse, error) {
-			if in.NewName != "NewName" {
-				t.Errorf("expected NewName, got %s", in.NewName)
-			}
-			return &codev0.RenameSymbolResponse{
-				Success: true,
-				Edits: []*codev0.TextEdit{
-					{File: "main.go", StartLine: 5, StartColumn: 6, EndLine: 5, EndColumn: 13, NewText: "NewName"},
-				},
-				Files: []string{"main.go"},
-			}, nil
-		},
-	}
-	s := newTestServer(mock)
-	resp, err := s.RenameSymbol(context.Background(), &gatewayv1.RenameSymbolRequest{
-		File: "main.go", Line: 5, Column: 6, NewName: "NewName",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resp.Success {
-		t.Errorf("expected Success=true, error=%s", resp.Error)
-	}
-	if len(resp.Edits) != 1 {
-		t.Fatalf("expected 1 edit, got %d", len(resp.Edits))
-	}
-	if resp.Edits[0].NewText != "NewName" {
-		t.Errorf("expected NewText 'NewName', got %s", resp.Edits[0].NewText)
-	}
-}
-
 func TestAddDependency(t *testing.T) {
 	mock := &mockCodeClient{
 		addDependencyFn: func(_ context.Context, in *codev0.AddDependencyRequest, _ ...grpc.CallOption) (*codev0.AddDependencyResponse, error) {
@@ -812,18 +641,14 @@ func TestRemoveDependency(t *testing.T) {
 }
 
 func TestBatchApplyEdits(t *testing.T) {
-	callCount := 0
-	mock := &mockCodeClient{
-		applyEditFn: func(_ context.Context, in *codev0.ApplyEditRequest, _ ...grpc.CallOption) (*codev0.ApplyEditResponse, error) {
-			callCount++
-			return &codev0.ApplyEditResponse{
-				Success:  true,
-				Content:  "updated content",
-				Strategy: "exact",
-			}, nil
-		},
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("old1\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	s := newTestServer(mock)
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("old2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
 	resp, err := s.BatchApplyEdits(context.Background(), &gatewayv1.BatchApplyEditsRequest{
 		Edits: []*gatewayv1.ApplyEditRequest{
 			{File: "a.go", Find: "old1", Replace: "new1"},
@@ -839,8 +664,16 @@ func TestBatchApplyEdits(t *testing.T) {
 	if resp.Failed != 0 {
 		t.Errorf("expected 0 failed, got %d", resp.Failed)
 	}
-	if callCount != 2 {
-		t.Errorf("expected 2 applyEdit calls, got %d", callCount)
+	a, err := os.ReadFile(filepath.Join(dir, "a.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "b.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != "new1\n" || string(b) != "new2\n" {
+		t.Fatalf("batch content = a:%q b:%q", a, b)
 	}
 }
 
@@ -940,25 +773,6 @@ func TestGitStatusString(t *testing.T) {
 		got := gitStatusString(tt.xy)
 		if got != tt.want {
 			t.Errorf("gitStatusString(%q) = %q, want %q", tt.xy, got, tt.want)
-		}
-	}
-}
-
-func TestDiagSeverityToString(t *testing.T) {
-	tests := []struct {
-		sev  codev0.DiagnosticSeverity
-		want string
-	}{
-		{codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_ERROR, "error"},
-		{codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_WARNING, "warning"},
-		{codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_INFORMATION, "information"},
-		{codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_HINT, "hint"},
-		{codev0.DiagnosticSeverity_DIAGNOSTIC_SEVERITY_UNKNOWN, "unknown"},
-	}
-	for _, tt := range tests {
-		got := diagSeverityToString(tt.sev)
-		if got != tt.want {
-			t.Errorf("diagSeverityToString(%v) = %q, want %q", tt.sev, got, tt.want)
 		}
 	}
 }
