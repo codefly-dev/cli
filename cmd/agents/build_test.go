@@ -2,9 +2,13 @@ package agents
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -112,6 +116,70 @@ func TestIsDir(t *testing.T) {
 	nonexistent := filepath.Join(dir, "nonexistent")
 	if isDir(nonexistent) {
 		t.Errorf("isDir(%q) = true, want false (nonexistent)", nonexistent)
+	}
+}
+
+func TestAgentBuildResultSummary(t *testing.T) {
+	r := &agentBuildResult{
+		ag:     agentYAML{Name: "go", Version: "0.0.7"},
+		native: 8700 * time.Millisecond,
+		linux:  3600 * time.Millisecond,
+	}
+	want := "go:0.0.7 ✓ " + runtime.GOOS + " 8.7s · linux 3.6s"
+	if got := r.summary(); got != want {
+		t.Errorf("summary() = %q, want %q", got, want)
+	}
+
+	r.linuxFailed = true
+	if got := r.summary(); !strings.Contains(got, "linux ✗") {
+		t.Errorf("summary() with failed linux = %q, want it to contain \"linux ✗\"", got)
+	}
+}
+
+func TestAgentLoggerBufferedAndFlush(t *testing.T) {
+	// Buffered mode holds lines and command output instead of streaming them,
+	// so parallel builds can flush each agent's block without interleaving.
+	log := &agentLogger{}
+	log.Info("hello %s", "world")
+	log.Header(1, "building %s", "go")
+	if err := log.run(exec.Command("printf", "compiler error\n")); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if len(log.lines) != 3 {
+		t.Fatalf("buffered lines = %d, want 3: %v", len(log.lines), log.lines)
+	}
+	if log.lines[0] != "hello world" {
+		t.Errorf("line 0 = %q, want %q", log.lines[0], "hello world")
+	}
+	if log.lines[2] != "compiler error" {
+		t.Errorf("line 2 = %q, want %q (trailing newline trimmed)", log.lines[2], "compiler error")
+	}
+}
+
+func TestAgentLoggerRunReturnsCommandError(t *testing.T) {
+	log := &agentLogger{}
+	if err := log.run(exec.Command("false")); err == nil {
+		t.Error("run(false): expected error, got nil")
+	}
+}
+
+func TestCompileAgentSerializesTidy(t *testing.T) {
+	// compileAgent must hold tidyMu while it shells out to `go mod tidy`. A
+	// missing manifest fails before that point, so use a real manifest whose
+	// build will fail later — the tidy step still runs under the lock. We can't
+	// observe the lock directly, but a nil tidyMu would panic, which guards the
+	// contract that callers always pass one.
+	dir := t.TempDir()
+	manifest := "publisher: codefly\nkind: codefly:service\nname: x\nversion: 0.0.1\n"
+	if err := os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	// No go.mod, so `go mod tidy` fails; we only assert it doesn't panic and
+	// surfaces the failure as res.err rather than crashing.
+	res := compileAgent(dir, &agentLogger{}, &sync.Mutex{})
+	if res.err == nil {
+		t.Fatal("compileAgent: expected error (no go.mod), got nil")
 	}
 }
 
