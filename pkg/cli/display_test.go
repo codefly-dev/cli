@@ -51,6 +51,55 @@ func TestOutputSinkReceivesAllDisplayLevels(t *testing.T) {
 	}
 }
 
+func TestCaptureRecordsNarrationUntilDrained(t *testing.T) {
+	StartCapture()
+	defer DrainCapture() // ensure capturing is off if an assertion fails early
+
+	Info("loading workspace")
+	Warning("stale sweep failed")
+
+	got := DrainCapture()
+	want := []CapturedLine{
+		{Level: wool.INFO, Message: "loading workspace"},
+		{Level: wool.WARN, Message: "stale sweep failed"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("captured got %#v, want %#v", got, want)
+	}
+
+	// After draining, capturing must be off — later narration is not recorded.
+	Info("after the TUI is up")
+	if again := DrainCapture(); len(again) != 0 {
+		t.Fatalf("expected no capture after drain, got %#v", again)
+	}
+}
+
+func TestCaptureIsTeeNotDiversion(t *testing.T) {
+	// Capture must not swallow the line: with no output sink installed,
+	// emitToSink still returns false so the helper takes its normal output
+	// path. This is what keeps a load failure visible when it prints-and-exits
+	// before the TUI starts.
+	SetOutputSink(nil)
+	StartCapture()
+	defer DrainCapture()
+
+	if emitToSink(wool.ERROR, "boom") {
+		t.Fatal("emitToSink diverted the line while only capturing; want passthrough (false)")
+	}
+	if got := DrainCapture(); len(got) != 1 || got[0].Message != "boom" {
+		t.Fatalf("capture got %#v, want one line %q", got, "boom")
+	}
+}
+
+func TestRecordCaptureNoOpWhenNotCapturing(t *testing.T) {
+	// Headless runs never StartCapture; emitToSink must not accumulate.
+	DrainCapture() // make sure we start from a clean, non-capturing state
+	emitToSink(wool.INFO, "headless line")
+	if got := DrainCapture(); len(got) != 0 {
+		t.Fatalf("expected nothing captured when not capturing, got %#v", got)
+	}
+}
+
 func TestUnwrapErrorLayers_FlatError(t *testing.T) {
 	err := errors.New("boom")
 	got := unwrapErrorLayers(err)
