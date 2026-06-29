@@ -196,7 +196,7 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentI
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	loaded, err := services.LoadAgent(ctx, agent)
+	loaded, err := services.LoadAgent(ctx, agent, "")
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}

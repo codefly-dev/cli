@@ -50,6 +50,9 @@ var (
 	clearKeepProcesses  bool
 	clearKeepContainers bool
 	clearDryRun         bool
+	// clearVerb is "clear" by default; `codefly stop` sets it to "stop" so the
+	// announce line names the command the user actually invoked.
+	clearVerb string
 )
 
 // ClearCmd removes codefly state (running processes + docker containers).
@@ -90,12 +93,21 @@ func clearCommand(args []string) {
 
 	// Always announce what we're doing — `clear` was silent on the common path
 	// (no docker containers + a quiet process kill), so it looked like a no-op.
-	if clearDryRun {
-		fmt.Println("codefly clear (dry-run): nothing will be removed")
-	} else if len(args) > 0 {
-		fmt.Printf("codefly clear: scope=%v\n", args)
-	} else {
-		fmt.Println("codefly clear: full reset")
+	// `clearVerb` is "clear" by default and "stop" when invoked via `codefly stop`
+	// (which keeps containers), so the announce matches the command.
+	verb := clearVerb
+	if verb == "" {
+		verb = "clear"
+	}
+	switch {
+	case clearDryRun:
+		fmt.Printf("codefly %s (dry-run): nothing will be removed\n", verb)
+	case len(args) > 0:
+		fmt.Printf("codefly %s: scope=%v\n", verb, args)
+	case clearKeepContainers:
+		fmt.Printf("codefly %s: reap processes + orphaned groups (containers kept for reuse)\n", verb)
+	default:
+		fmt.Printf("codefly %s: full reset\n", verb)
 	}
 
 	if !clearKeepProcesses {

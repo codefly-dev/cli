@@ -35,7 +35,7 @@ func serviceInfo(ctx context.Context, input string) {
 
 	cli.Header(1, "Fetching information about Service Agent <%s> information", conf)
 
-	agent, err := services.LoadAgent(ctx, conf)
+	agent, err := services.LoadAgent(ctx, conf, "")
 	cli.ExitOnError(err, "Cannot load agentInput")
 	cli.Header(2, "Successfully loaded service agent <%s>", conf)
 

@@ -226,7 +226,13 @@ var ServiceCmd = &cobra.Command{
 			pollCancel()
 			pollWg.Wait()
 			if err != nil {
-				cli.ErrorChain(err, "cannot start service %s", serviceName)
+				// Attribute the failure to the service that actually failed (e.g. a
+				// dependency that couldn't start), not always to the origin.
+				if culprit, phase, ok := flow.FailedService(); ok && culprit != serviceName {
+					cli.ErrorChain(err, "service %s failed during %s (while starting %s)", culprit, phase, serviceName)
+				} else {
+					cli.ErrorChain(err, "cannot start service %s", serviceName)
+				}
 				stopFresh() // tear down partially-started dependencies
 				cli.ExitError()
 				return

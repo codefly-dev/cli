@@ -530,6 +530,17 @@ func (flow *Flow) Failures() <-chan FlowFailure {
 	return flow.failures
 }
 
+// FailedService returns the service whose action failed the flow, the phase it
+// failed in, and ok=false if the flow did not fail on a specific service's action.
+// Lets the top-level command attribute a failure to the real culprit (e.g. a
+// dependency that couldn't start) instead of always blaming the origin.
+func (flow *Flow) FailedService() (string, ActionType, bool) {
+	if flow == nil || flow.playbook == nil {
+		return "", "", false
+	}
+	return flow.playbook.FailedService()
+}
+
 // reportFailure is called by Manager/Runner when a follow loop detects
 // that a started service died. Non-blocking: drops on a full channel
 // because by then the receiver is already shutting things down.

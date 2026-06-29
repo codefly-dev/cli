@@ -42,6 +42,30 @@ type Playbook struct {
 	lock sync.RWMutex
 	// mostly for testing
 	stopLock sync.RWMutex
+
+	// failedService records WHICH service's action errored the flow (and the
+	// phase), so the top-level command reports the real culprit instead of always
+	// blaming the origin. Set once, under lock, on the first action error.
+	failedService string
+	failedPhase   ActionType
+}
+
+// recordFailure remembers the first service whose action errored.
+func (playbook *Playbook) recordFailure(action Action) {
+	playbook.lock.Lock()
+	defer playbook.lock.Unlock()
+	if playbook.failedService == "" {
+		playbook.failedService = action.Service
+		playbook.failedPhase = action.Type
+	}
+}
+
+// FailedService returns the service whose action failed the flow, the phase it
+// failed in, and ok=false if the flow did not fail on a service action.
+func (playbook *Playbook) FailedService() (string, ActionType, bool) {
+	playbook.lock.RLock()
+	defer playbook.lock.RUnlock()
+	return playbook.failedService, playbook.failedPhase, playbook.failedService != ""
 }
 
 type StopAfterFunc func(ctx context.Context, action Action) bool
@@ -183,6 +207,9 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 				// If some failure: next becomes []Action of type Failing
 				next, err := playbook.policy.Execute(ctx, action)
 				if err != nil {
+					// Remember WHICH service failed so the top-level command can
+					// attribute the failure correctly (not to the origin).
+					playbook.recordFailure(action)
 					// Keep the wrap short so the actual error stays close
 					// to the start of the rendered message. The original
 					// `%v action` printed the full Action struct, pushing

@@ -113,6 +113,12 @@ func init() {
 
 	RootCmd.AddCommand(ListCmd)
 
+	// Read-only inspection: dependency graph, network configuration, …
+	RootCmd.AddCommand(ShowCmd)
+
+	// Stop a running stack (reap processes + orphaned groups, keep containers).
+	RootCmd.AddCommand(StopCmd)
+
 	// Generate client code
 	RootCmd.AddCommand(GenerateCmd)
 
