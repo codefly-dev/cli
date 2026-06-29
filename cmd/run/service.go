@@ -49,6 +49,19 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
+		// Auto-detect headless: no TTY or explicit --headless flag.
+		isHeadless := headless || withCLIServer || !isTerminal()
+
+		// In interactive mode the TUI takes over the terminal further down. Start
+		// recording codefly's narration now so the pre-flow work below (stale-process
+		// reaping, workspace load) is replayed into the log pane when the TUI opens,
+		// instead of being painted to a terminal the alt screen then erases — which
+		// is why the interactive log pane used to start mid-init. Capture tees rather
+		// than diverts, so a load failure that prints-and-exits here stays visible.
+		if !isHeadless {
+			cli.StartCapture()
+		}
+
 		// Reap any process groups orphaned by a prior ungraceful CLI exit
 		// (parent SIGKILL, terminal force-closed). Without this, zombie
 		// trees from a previous `codefly run` survive and hold ports,
@@ -101,9 +114,6 @@ var ServiceCmd = &cobra.Command{
 		}
 
 		serviceName := resources.WithUnique(service).Unique()
-
-		// Auto-detect headless: no TTY or explicit --headless flag
-		isHeadless := headless || withCLIServer || !isTerminal()
 
 		var flow *orchestration.Flow
 
@@ -281,6 +291,13 @@ var ServiceCmd = &cobra.Command{
 					pendingNotice = ""
 				}
 				noticeMu.Unlock()
+
+				// Replay everything narrated before the TUI owned the screen
+				// (stale-process reaping, workspace load) so the log pane starts
+				// where a headless run does instead of mid-init.
+				for _, line := range cli.DrainCapture() {
+					t.SendLog(line.Level, "codefly", line.Message)
+				}
 
 				// Route codefly's own narration (e.g. "Handling <frontend> with
 				// these dependent services: …") into the TUI log pane while it

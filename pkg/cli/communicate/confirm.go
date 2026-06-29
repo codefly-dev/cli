@@ -9,7 +9,7 @@ import (
 )
 
 func Confirm(ctx context.Context, msg *agentv0.Message, c *agentv0.Confirm) (*agentv0.Answer, error) {
-	cli.Header(2, msg.Description)
+	cli.Header(2, "%s", msg.Description)
 	confirm := models.Confirm(ctx, msg.Message, c.Default)
 	return &agentv0.Answer{
 		Value: &agentv0.Answer_Confirm{

@@ -9,7 +9,7 @@ import (
 )
 
 func Input(ctx context.Context, msg *agentv0.Message, c *agentv0.Input) (*agentv0.Answer, error) {
-	cli.Header(2, msg.Description)
+	cli.Header(2, "%s", msg.Description)
 	// TODO: Deal with int
 	input := models.Input(msg.Message, c.GetStringDefault())
 	return &agentv0.Answer{

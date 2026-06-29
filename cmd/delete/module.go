@@ -31,7 +31,7 @@ func deleteModule(name string) {
 	workspace := common.Workspace(ctx)
 
 	if !workspace.ExistsModule(name) {
-		cli.Error("Module <%s> does not exist in workspace <%s>", name, workspace)
+		cli.Error("Module <%s> does not exist in workspace <%s>", name, workspace.Name)
 		return
 	}
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm deletion of module <%s> in workspace <%s>?", name, workspace.Name), false)

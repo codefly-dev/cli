@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/codefly-dev/core/tui"
@@ -32,11 +33,62 @@ func SetOutputSink(fn func(level wool.Loglevel, msg string)) {
 // emitToSink forwards a line to the sink if one is installed, returning true
 // when it handled the line (so the caller skips its stdout/stderr write).
 func emitToSink(level wool.Loglevel, msg string) bool {
+	recordCapture(level, msg)
 	if p := outputSink.Load(); p != nil {
 		(*p)(level, msg)
 		return true
 	}
 	return false
+}
+
+// CapturedLine is one narration line recorded during the pre-TUI startup
+// window, kept so it can be replayed into the log pane once the interactive
+// TUI owns the terminal.
+type CapturedLine struct {
+	Level   wool.Loglevel
+	Message string
+}
+
+// capturing tees narration into `captured` while the interactive run is still
+// doing its pre-flow work (stale-process reaping, workspace load) before the
+// TUI exists. It is a TEE, not a diversion: lines still take their normal
+// stdout/stderr path, so a load failure that prints-and-exits before the TUI
+// starts stays visible. DrainCapture replays the buffer into the log pane.
+var (
+	capturing atomic.Bool
+	captureMu sync.Mutex
+	captured  []CapturedLine
+)
+
+// StartCapture begins recording narration lines in addition to their normal
+// output. Called at the very start of an interactive run so the startup window
+// can be shown in the TUI log pane instead of being painted to a terminal the
+// alt screen then erases.
+func StartCapture() {
+	captureMu.Lock()
+	captured = nil
+	captureMu.Unlock()
+	capturing.Store(true)
+}
+
+// DrainCapture stops recording and returns everything captured since
+// StartCapture, in emission order.
+func DrainCapture() []CapturedLine {
+	capturing.Store(false)
+	captureMu.Lock()
+	out := captured
+	captured = nil
+	captureMu.Unlock()
+	return out
+}
+
+func recordCapture(level wool.Loglevel, msg string) {
+	if !capturing.Load() {
+		return
+	}
+	captureMu.Lock()
+	captured = append(captured, CapturedLine{Level: level, Message: msg})
+	captureMu.Unlock()
 }
 
 type Wrapper struct {
