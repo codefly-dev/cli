@@ -142,8 +142,16 @@ var ServiceCmd = &cobra.Command{
 			// aggregate layer, so headless and interactive runs share one form —
 			// ">> svc: Loading → Starting → Running" — instead of the old ad-hoc
 			// "[codefly] svc: ..." colon form that collided with the TUI's ">>".
+			// milestones de-dupes exact per-service repeats so the action loop
+			// and the readiness poller can't print the same ">>" line twice.
+			milestones := cli.NewMilestoneEmitter()
+			runStart := time.Now()
 			phase := func(state tui.ServiceState) {
-				fmt.Printf("%s %s: %s\n", cli.MarkerMilestone, serviceName, state)
+				var elapsed time.Duration
+				if state == tui.StateRunning {
+					elapsed = time.Since(runStart)
+				}
+				milestones.Emit(serviceName, cli.Milestone(serviceName, state.String(), 0, elapsed))
 			}
 
 			fmt.Printf("[codefly] %s\n", cli.Legend())
@@ -174,11 +182,7 @@ var ServiceCmd = &cobra.Command{
 				if already {
 					return
 				}
-				line := fmt.Sprintf("%s %s: %s", cli.MarkerMilestone, service, tui.StateRunning)
-				if port > 0 {
-					line += fmt.Sprintf(" on :%d", port)
-				}
-				fmt.Println(line)
+				milestones.Emit(service, cli.Milestone(service, tui.StateRunning.String(), port, 0))
 			}
 
 			flow.WithStateListener(func(service string, state tui.ServiceState, port int) {
@@ -189,7 +193,7 @@ var ServiceCmd = &cobra.Command{
 					printReady(service, port)
 					return
 				}
-				fmt.Printf("%s %s: %s\n", cli.MarkerMilestone, service, state)
+				milestones.Emit(service, cli.Milestone(service, state.String(), 0, 0))
 			})
 
 			phase(tui.StateStarting)

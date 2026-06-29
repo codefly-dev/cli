@@ -92,7 +92,7 @@ func (fl *FileLogger) ProcessWithSource(source *wool.Identifier, log *wool.Log) 
 
 	entry := fileEntry{
 		Time:    time.Now().Format("15:04:05.000"),
-		Level:   fmt.Sprintf("%d", log.Level),
+		Level:   log.Level.String(),
 		Header:  log.Header,
 		Message: log.Message,
 		Fields:  log.Fields,
