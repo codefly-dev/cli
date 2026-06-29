@@ -35,6 +35,50 @@ func Legend() string {
 		MarkerMilestone, MarkerNarration, MarkerService)
 }
 
+// Milestone renders a ">>" lifecycle milestone line for a service. A positive
+// port is appended as " on :PORT" and a positive elapsed as " in 1.2s", so a
+// reached phase carries its bound port and timing inline instead of forcing a
+// reader to correlate separate lines — e.g. ">> infra/postgres: Running on :41840 in 1.2s".
+func Milestone(service, state string, port int, elapsed time.Duration) string {
+	line := fmt.Sprintf("%s %s: %s", MarkerMilestone, service, state)
+	if port > 0 {
+		line += fmt.Sprintf(" on :%d", port)
+	}
+	if elapsed > 0 {
+		line += fmt.Sprintf(" in %s", elapsed.Round(100*time.Millisecond))
+	}
+	return line
+}
+
+// MilestoneEmitter prints lifecycle milestones to stdout, suppressing a line
+// that exactly repeats the previous milestone for the same service. The two
+// observers that drive the headless run — the orchestrator state listener and
+// the readiness poller — both report phases as they see them and can announce
+// the same one twice; collapsing exact per-service repeats keeps the ">>"
+// stream a monotonic progression. Safe for concurrent use.
+type MilestoneEmitter struct {
+	mu   sync.Mutex
+	last map[string]string
+}
+
+// NewMilestoneEmitter returns an emitter with empty per-service history.
+func NewMilestoneEmitter() *MilestoneEmitter {
+	return &MilestoneEmitter{last: map[string]string{}}
+}
+
+// Emit prints line unless it is identical to the previous line emitted for
+// service. Returns true when it printed.
+func (e *MilestoneEmitter) Emit(service, line string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.last[service] == line {
+		return false
+	}
+	e.last[service] = line
+	fmt.Println(line)
+	return true
+}
+
 type Logger struct {
 	suppressed bool
 }

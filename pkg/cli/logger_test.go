@@ -4,10 +4,56 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
+
+func TestMilestoneRendersPortAndElapsedInline(t *testing.T) {
+	cases := []struct {
+		name    string
+		port    int
+		elapsed time.Duration
+		want    string
+	}{
+		{"plain", 0, 0, ">> infra/postgres: Running"},
+		{"port", 41840, 0, ">> infra/postgres: Running on :41840"},
+		{"elapsed", 0, 1234 * time.Millisecond, ">> infra/postgres: Running in 1.2s"},
+		{"port and elapsed", 41840, 1234 * time.Millisecond, ">> infra/postgres: Running on :41840 in 1.2s"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Milestone("infra/postgres", "Running", tc.port, tc.elapsed)
+			if got != tc.want {
+				t.Fatalf("Milestone = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMilestoneEmitterSuppressesConsecutiveRepeats(t *testing.T) {
+	e := NewMilestoneEmitter()
+
+	if !e.Emit("infra/postgres", ">> infra/postgres: Running on :41840") {
+		t.Fatal("first emit should print")
+	}
+	if e.Emit("infra/postgres", ">> infra/postgres: Running on :41840") {
+		t.Fatal("identical consecutive emit should be suppressed")
+	}
+	// A different line for the same service prints again.
+	if !e.Emit("infra/postgres", ">> infra/postgres: Starting") {
+		t.Fatal("changed milestone should print")
+	}
+	// The same line as before is no longer the *previous* one, so it prints.
+	if !e.Emit("infra/postgres", ">> infra/postgres: Running on :41840") {
+		t.Fatal("non-consecutive repeat should print")
+	}
+	// Another service's history is independent.
+	if !e.Emit("mind/mind", ">> mind/mind: Running") {
+		t.Fatal("first emit for a second service should print")
+	}
+}
 
 func TestLogUsesNarrationMarkerForForward(t *testing.T) {
 	oldMax := maxUnique
