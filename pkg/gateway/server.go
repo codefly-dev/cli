@@ -70,6 +70,10 @@ type Server struct {
 	mindYAML *MindYAML
 	grpcSrv  *grpc.Server
 
+	// terminals holds the PTY-backed interactive shells running in this gateway
+	// (the gateway IS inside the execution box, so the PTY lives here).
+	terminals *terminalManager
+
 	// Plugin management: one Code agent per service.
 	pluginMu   sync.Mutex
 	plugins    map[string]*pluginConn // service name → plugin connection
@@ -110,6 +114,7 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg:        cfg,
 		plugins:    make(map[string]*pluginConn),
 		stopHealth: make(chan struct{}),
+		terminals:  newTerminalManager(),
 	}
 
 	path := filepath.Join(cfg.WorkDir, "mind.yaml")
