@@ -130,7 +130,7 @@ func addAppToAppDependency(ctx context.Context, workspace *resources.Workspace, 
 	err = application.Save(ctx)
 	cli.ExitOnError(err, "cannot save application")
 
-	cli.Header(2, fmt.Sprintf("Application dependency on %s/%s added", depApp.Module(), depApp.Name))
+	cli.Header(2, "Application dependency on %s/%s added", depApp.Module(), depApp.Name)
 }
 
 func addAppToServiceDependency(ctx context.Context, workspace *resources.Workspace, mod *resources.Module, application *resources.Application) {
@@ -188,7 +188,7 @@ func addAppToServiceDependency(ctx context.Context, workspace *resources.Workspa
 	err = application.Save(ctx)
 	cli.ExitOnError(err, "cannot save application")
 
-	cli.Header(2, fmt.Sprintf("Service dependency on %s/%s added", depSvc.Module, depSvc.Name))
+	cli.Header(2, "Service dependency on %s/%s added", depSvc.Module, depSvc.Name)
 }
 
 func findAppByIdentifier(apps []*resources.Application, identifier string) *resources.Application {
