@@ -267,7 +267,7 @@ func (s *Server) ensurePlugin(ctx context.Context) (codev0.CodeClient, error) {
 	}
 
 	// Resolve version: prefer local binaries, fall back to GitHub releases.
-	if err := manager.ResolveLatest(ctx, agent); err != nil {
+	if _, err := manager.ResolveLatest(ctx, agent); err != nil {
 		return nil, fmt.Errorf("resolve agent %s version: %w", agentName, err)
 	}
 

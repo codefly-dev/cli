@@ -28,7 +28,7 @@ func GetAgentWithKind(ctx context.Context, kind resources.AgentKind, input strin
 	}
 
 	// Resolve "latest" (local-first, falls back to GitHub).
-	if err := manager.ResolveLatest(ctx, agent); err != nil {
+	if _, err := manager.ResolveLatest(ctx, agent); err != nil {
 		return nil, w.Wrapf(err, "cannot resolve latest version")
 	}
 
