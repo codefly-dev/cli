@@ -10,6 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -676,6 +677,22 @@ func (runner *Runner) WithRuntimeContext(runtimeContext string) {
 		return
 	}
 	runner.runtimeContext = runtimeContext
+}
+
+// SupportsNix reports whether the agent advertises the nix runtime among its
+// RuntimeRequirements — i.e. the service can run Docker-free via nix. Used to
+// gate the free→nix fallback: a service that supports nix can fall back when
+// Docker is unavailable, one that does not can only run under Docker.
+func (runner *Runner) SupportsNix() bool {
+	if runner == nil || runner.instance == nil || runner.instance.Info == nil {
+		return false
+	}
+	for _, r := range runner.instance.Info.RuntimeRequirements {
+		if r.Type == agentv0.Runtime_NIX {
+			return true
+		}
+	}
+	return false
 }
 
 func (runner *Runner) WithFixture(fixture string) {
