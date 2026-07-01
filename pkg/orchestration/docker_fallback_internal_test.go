@@ -24,7 +24,7 @@ func fakeManager(module, name, runtimeContext string, runtimes ...agentv0.Runtim
 }
 
 func flowWith(docker DockerStatus, managers ...IManager) *Flow {
-	return &Flow{docker: docker, hub: &Hub{managers: managers}}
+	return &Flow{docker: docker, dockerProbed: true, hub: &Hub{managers: managers}}
 }
 
 func TestResolveDockerFallback_DockerRunning_LeavesContextsUntouched(t *testing.T) {
@@ -53,6 +53,21 @@ func TestResolveDockerFallback_DockerDown_DockerOnlyServiceStops(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("error %q missing %q", msg, want)
 		}
+	}
+}
+
+func TestResolveDockerFallback_Unprobed_IsNoOp(t *testing.T) {
+	// test/build/deploy/sync flows never supply a docker status; the fallback
+	// must stay disabled and leave "free" services untouched (their prior
+	// behavior), even though DockerStatus.Running defaults to false.
+	m := fakeManager("infra", "postgres", resources.RuntimeContextFree)
+	flow := &Flow{hub: &Hub{managers: []IManager{m}}} // dockerProbed == false
+
+	if err := flow.resolveDockerFallback(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := m.Runner.runtimeContext; got != resources.RuntimeContextFree {
+		t.Fatalf("runtime context = %q, want it left as %q", got, resources.RuntimeContextFree)
 	}
 }
 

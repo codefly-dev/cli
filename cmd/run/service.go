@@ -547,7 +547,12 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
-	flow.WithDockerStatus(probeDocker(ctx))
+	// Only the "free" default lets codefly pick Docker-or-nix, so only then do
+	// we probe Docker (which shells out to the docker CLI). An explicit context
+	// is honored as-is and needs no probe.
+	if runtimeContext == resources.RuntimeContextFree {
+		flow.WithDockerStatus(probeDocker(ctx))
+	}
 	flow.WithFixture(fixture)
 	overrides, err := parseSetOverrides(setOverrides)
 	if err != nil {

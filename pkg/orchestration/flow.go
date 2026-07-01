@@ -76,8 +76,11 @@ type Flow struct {
 	runtimeContext string
 	// docker records whether the Docker engine is reachable and, for messaging,
 	// the docker context/endpoint the run command resolved. Gates the free→nix
-	// fallback per service (see resolveDockerFallback).
-	docker DockerStatus
+	// fallback per service (see resolveDockerFallback). dockerProbed is set only
+	// when the run command supplied a status; other entry points (test/build/
+	// deploy/sync) leave the fallback disabled and keep their prior behavior.
+	docker       DockerStatus
+	dockerProbed bool
 	// preferences are this developer's machine-local choices (~/.codefly/
 	// preferences.yaml), e.g. run Go services native but postgres nix. They
 	// override runtimeContext PER SERVICE; runtimeContext is the fallback.
@@ -310,7 +313,7 @@ func (d DockerStatus) where() string {
 // global nix switch that failed deep in startup.
 func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.resolveDockerFallback")
-	if flow.hub == nil || flow.docker.Running {
+	if flow.hub == nil || !flow.dockerProbed || flow.docker.Running {
 		return nil
 	}
 	nixAvailable := runnersbase.CheckNixInstalled() && runnersbase.IsNixSupported()
@@ -1311,6 +1314,7 @@ func (flow *Flow) WithRuntimeContext(runtimeContext string) {
 
 func (flow *Flow) WithDockerStatus(status DockerStatus) {
 	flow.docker = status
+	flow.dockerProbed = true
 }
 
 func (flow *Flow) WithFixture(fixture string) {
