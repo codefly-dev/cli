@@ -80,12 +80,6 @@ var ServiceCmd = &cobra.Command{
 			dockerrun.SetEphemeralContainers(true)
 		}
 
-		// Resolve the active docker context and export DOCKER_HOST before any
-		// dockerrun client is built, so the sweep below (and later detection +
-		// runners) targets the daemon the docker CLI uses rather than blindly
-		// pinging /var/run/docker.sock.
-		detectDocker(ctx)
-
 		// Ryuk-adapted container sweep: remove any codefly-labeled Docker
 		// containers whose owning CLI is dead. Same semantics as the pgid
 		// sweep but for Docker-mode agents, which can't participate in
@@ -484,37 +478,24 @@ func defaultRuntimeContext() string {
 	return resources.RuntimeContextFree
 }
 
-// dockerOnce guards a single Docker probe per process: resolving the endpoint
-// (which may shell out to `docker`) and pinging it. The run command probes
-// early so the container sweep uses the right host; initRunService reuses the
-// cached result to decide the runtime fallback.
-var (
-	dockerOnce   sync.Once
-	dockerCached orchestration.DockerStatus
-)
-
-// detectDocker resolves the active docker endpoint, exports DOCKER_HOST so every
-// dockerrun client (built from client.FromEnv) targets it, and pings the daemon.
-func detectDocker(ctx context.Context) orchestration.DockerStatus {
-	dockerOnce.Do(func() {
-		name, endpoint := resolveDockerHost(ctx)
-		dockerCached = orchestration.DockerStatus{
-			Running:  dockerrun.DockerEngineRunning(ctx),
-			Context:  name,
-			Endpoint: endpoint,
-		}
-	})
-	return dockerCached
+// probeDocker reports whether the Docker engine is reachable and, for the
+// fallback error/warning, names the docker context/endpoint being probed.
+// core's dockerrun clients resolve the active docker context internally for the
+// actual connection; resolveDockerHost is a read-only mirror used only to make
+// the message actionable ("docker context "orbstack" → unix:///…").
+func probeDocker(ctx context.Context) orchestration.DockerStatus {
+	name, endpoint := resolveDockerHost(ctx)
+	return orchestration.DockerStatus{
+		Running:  dockerrun.DockerEngineRunning(ctx),
+		Context:  name,
+		Endpoint: endpoint,
+	}
 }
 
-// resolveDockerHost resolves the Docker daemon endpoint the way the docker CLI
-// does — an explicit DOCKER_HOST wins, otherwise the active `docker context`
-// endpoint — and exports DOCKER_HOST so the Go SDK's client.FromEnv targets the
-// same daemon. The SDK never reads docker contexts on its own, so on Docker
-// Desktop / OrbStack / colima / rootless setups (where the active context's
-// endpoint ≠ /var/run/docker.sock) it otherwise pings the wrong socket and
-// wrongly reports Docker as down. Returns the resolved context name (empty when
-// DOCKER_HOST was already set) and endpoint for user-facing messaging.
+// resolveDockerHost resolves the Docker endpoint the way the docker CLI does —
+// an explicit DOCKER_HOST wins, otherwise the active `docker context` endpoint —
+// for user-facing messaging only (it does not mutate the environment). Returns
+// the resolved context name (empty when DOCKER_HOST is set) and endpoint.
 func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 	if h := strings.TrimSpace(os.Getenv("DOCKER_HOST")); h != "" {
 		return "", h
@@ -525,23 +506,14 @@ func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 			name = strings.TrimSpace(string(out))
 		}
 	}
-	if name == "" {
-		name = "default"
-	}
-	if name == "default" {
-		// The default context is exactly what client.FromEnv already targets;
-		// nothing to export.
+	if name == "" || name == "default" {
 		return name, ""
 	}
 	out, err := exec.CommandContext(ctx, "docker", "context", "inspect", name, "--format", "{{ .Endpoints.docker.Host }}").Output()
 	if err != nil {
 		return name, ""
 	}
-	endpoint = strings.TrimSpace(string(out))
-	if endpoint != "" {
-		_ = os.Setenv("DOCKER_HOST", endpoint)
-	}
-	return name, endpoint
+	return name, strings.TrimSpace(string(out))
 }
 
 func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
@@ -575,7 +547,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
-	flow.WithDockerStatus(detectDocker(ctx))
+	flow.WithDockerStatus(probeDocker(ctx))
 	flow.WithFixture(fixture)
 	overrides, err := parseSetOverrides(setOverrides)
 	if err != nil {
