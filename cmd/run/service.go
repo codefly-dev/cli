@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -467,15 +468,6 @@ func isTerminal() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-// resolveRuntimeContext turns the "free" runtime context (the default, meaning
-// "codefly picks the best available backend") into a concrete one:
-//   - Docker engine running        → free (the Docker path, unchanged behavior)
-//   - Docker down but nix available → nix  (Docker-free local dev)
-//   - neither                       → free (startup surfaces a clear Docker error)
-//
-// An explicit request (native/container/nix) is honored as-is — only "free"
-// auto-resolves. CODEFLY__RUNTIME_CONTEXT feeds the flag default (see init), so
-// `CODEFLY__RUNTIME_CONTEXT=nix go test ...` forces nix without a flag.
 // defaultRuntimeContext seeds the --runtime-context flag default from
 // CODEFLY__RUNTIME_CONTEXT when set (so dependency stacks spawned by the SDK
 // inherit it), otherwise "free" (codefly auto-picks Docker-or-nix at run time).
@@ -486,20 +478,42 @@ func defaultRuntimeContext() string {
 	return resources.RuntimeContextFree
 }
 
-func resolveRuntimeContext(ctx context.Context, requested string) string {
-	if requested != resources.RuntimeContextFree {
-		return requested
+// probeDocker reports whether the Docker engine is reachable and, for the
+// fallback error/warning, names the docker context/endpoint being probed.
+// core's dockerrun clients resolve the active docker context internally for the
+// actual connection; resolveDockerHost is a read-only mirror used only to make
+// the message actionable ("docker context "orbstack" → unix:///…").
+func probeDocker(ctx context.Context) orchestration.DockerStatus {
+	name, endpoint := resolveDockerHost(ctx)
+	return orchestration.DockerStatus{
+		Running:  dockerrun.DockerEngineRunning(ctx),
+		Context:  name,
+		Endpoint: endpoint,
 	}
-	w := wool.Get(ctx).In("run.resolveRuntimeContext")
-	if dockerrun.DockerEngineRunning(ctx) {
-		return resources.RuntimeContextFree
+}
+
+// resolveDockerHost resolves the Docker endpoint the way the docker CLI does —
+// an explicit DOCKER_HOST wins, otherwise the active `docker context` endpoint —
+// for user-facing messaging only (it does not mutate the environment). Returns
+// the resolved context name (empty when DOCKER_HOST is set) and endpoint.
+func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
+	if h := strings.TrimSpace(os.Getenv("DOCKER_HOST")); h != "" {
+		return "", h
 	}
-	if runnersbase.CheckNixInstalled() && runnersbase.IsNixSupported() {
-		w.Info("Docker engine not running — falling back to the nix runtime (Docker-free)")
-		return resources.RuntimeContextNix
+	name := strings.TrimSpace(os.Getenv("DOCKER_CONTEXT"))
+	if name == "" {
+		if out, err := exec.CommandContext(ctx, "docker", "context", "show").Output(); err == nil {
+			name = strings.TrimSpace(string(out))
+		}
 	}
-	w.Warn("Docker engine not running and nix unavailable — continuing with Docker (startup will fail with a Docker error)")
-	return resources.RuntimeContextFree
+	if name == "" || name == "default" {
+		return name, ""
+	}
+	out, err := exec.CommandContext(ctx, "docker", "context", "inspect", name, "--format", "{{ .Endpoints.docker.Host }}").Output()
+	if err != nil {
+		return name, ""
+	}
+	return name, strings.TrimSpace(string(out))
 }
 
 func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
@@ -510,7 +524,6 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
-	runtimeContext = resolveRuntimeContext(ctx, runtimeContext)
 
 	env := resources.LocalEnvironment()
 	// Setup optional naming namingScope
@@ -534,6 +547,12 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
+	// Only the "free" default lets codefly pick Docker-or-nix, so only then do
+	// we probe Docker (which shells out to the docker CLI). An explicit context
+	// is honored as-is and needs no probe.
+	if runtimeContext == resources.RuntimeContextFree {
+		flow.WithDockerStatus(probeDocker(ctx))
+	}
 	flow.WithFixture(fixture)
 	overrides, err := parseSetOverrides(setOverrides)
 	if err != nil {
