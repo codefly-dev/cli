@@ -148,13 +148,18 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTestRequest(buildTestRequest())
 
+	// Return the flow even when init fails: InitManagers spawns agents
+	// incrementally (and Load can fail after they're live), so a partial failure
+	// leaves live runners the caller must tear down via stopService(). Handing
+	// back a nil flow here silently orphaned them — their process groups then
+	// survived until the next run's reaper.
 	err = flow.InitManagers(ctx)
 	if err != nil {
-		return nil, w.Wrap(err)
+		return flow, w.Wrap(err)
 	}
 	err = flow.Load(ctx)
 	if err != nil {
-		return nil, w.Wrap(err)
+		return flow, w.Wrap(err)
 	}
 	return flow, nil
 }

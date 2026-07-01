@@ -815,7 +815,7 @@ func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
 }
 
 func (flow *Flow) Stop() error {
-	if flow == nil {
+	if flow == nil || flow.hub == nil {
 		return nil
 	}
 	// Don't call on a possibly Done context
@@ -855,7 +855,7 @@ func (flow *Flow) Stop() error {
 }
 
 func (flow *Flow) Shutdown() error {
-	if flow == nil {
+	if flow == nil || flow.hub == nil {
 		return nil
 	}
 	// Don't call on a possibly Done context
@@ -1015,7 +1015,13 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		return w.Wrapf(err, "cannot describe service run plan")
 	}
 
-	var managers []IManager
+	// Register the hub up front and append each manager the moment it is
+	// created. New() spawns the service's agent process (and its pgid tracking
+	// file), so a failure partway through must still leave every
+	// already-spawned runner reachable by flow.Stop() — otherwise a partial
+	// init orphans those agents (and any process group they hold) until the
+	// next run's reaper sweeps them.
+	flow.hub = &Hub{}
 
 	for _, unique := range required {
 		cli.RegisterLoggingResource(unique)
@@ -1051,7 +1057,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		if remote, ok := remotes[unique]; ok {
 			manager.Runner.WithRemote(remote.Environment)
 		}
-		managers = append(managers, manager)
+		flow.hub.managers = append(flow.hub.managers, manager)
 	}
 
 	// Now add the current one
@@ -1073,14 +1079,12 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		if remote, ok := remotes[resources.WithUnique(flow.originService).Unique()]; ok {
 			manager.Runner.WithRemote(remote.Environment)
 		}
-		managers = append(managers, manager)
+		flow.hub.managers = append(flow.hub.managers, manager)
 	} else {
 		// We use a NoOP NewManager
-		managers = append(managers, &NoOpManager{service: flow.originService})
+		flow.hub.managers = append(flow.hub.managers, &NoOpManager{service: flow.originService})
 
 	}
-
-	flow.hub = &Hub{managers: managers}
 
 	// Now that every agent is loaded and advertises its RuntimeRequirements,
 	// finalize the Docker/nix decision per service — falling back where safe and
