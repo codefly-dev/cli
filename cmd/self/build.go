@@ -46,10 +46,14 @@ everything natively the Linux binary is never executed, so --native-only
 skips that cross-build and rebuilds only the host binaries — halving the
 agent build work for a local edit→rebuild→run loop.
 
+Agents build in parallel, defaulting to one job per CPU. Use -j/--jobs to
+cap that concurrency (mirrors ` + "`codefly agent build --all -j`" + `).
+
 Examples:
   codefly self build
   codefly self build --with-agents
   codefly self build --with-agents --native-only
+  codefly self build --with-agents -j 4
   codefly self build --with-agents --audit-agents
   codefly self build --dir ./cli
   codefly self build --output /usr/local/bin/codefly`,

@@ -605,18 +605,28 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 	}
 
 	log.Header(1, "Building %s:%s (%s/%s)", ag.Name, ag.Version, runtime.GOOS, runtime.GOARCH)
-	nativeStarted := time.Now()
-	build := exec.Command("go", "build", "-o", nativePath, ".")
-	build.Dir = dir
-	if err := log.run(build); err != nil {
-		res.err = fmt.Errorf("go build (native): %w", err)
-		return res
+
+	// buildNative compiles the host-platform binary. It runs on its own on the
+	// --native-only path and as one of two concurrent builds on the default
+	// (both-binaries) path, so it lives in a closure to avoid duplicating it.
+	buildNative := func() {
+		nativeStarted := time.Now()
+		build := exec.Command("go", "build", "-o", nativePath, ".")
+		build.Dir = dir
+		if err := log.run(build); err != nil {
+			res.err = fmt.Errorf("go build (native): %w", err)
+			return
+		}
+		res.native = time.Since(nativeStarted).Round(100 * time.Millisecond)
+		log.Info("Binary build done (%s/%s) elapsed=%s", runtime.GOOS, runtime.GOARCH, res.native)
+		log.Info("Installed: %s", nativePath)
 	}
-	res.native = time.Since(nativeStarted).Round(100 * time.Millisecond)
-	log.Info("Binary build done (%s/%s) elapsed=%s", runtime.GOOS, runtime.GOARCH, res.native)
-	log.Info("Installed: %s", nativePath)
 
 	if nativeOnly {
+		buildNative()
+		if res.err != nil {
+			return res
+		}
 		res.linuxSkipped = true
 		log.Info("Skipping Linux/amd64 container cross-build (--native-only)")
 		log.Header(1, "Agent %s:%s built successfully (native only)", ag.Name, ag.Version)
@@ -630,23 +640,39 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 		return res
 	}
 
-	log.Info("Building Linux/amd64 static binary...")
-	containerStarted := time.Now()
-	ldflags := `-extldflags "-static"`
-	crossBuild := exec.Command("go", "build", "-ldflags", ldflags, "-o", containerPath, ".")
-	crossBuild.Dir = dir
-	crossBuild.Env = append(os.Environ(),
-		"CGO_ENABLED=0",
-		"GOOS=linux",
-		"GOARCH=amd64",
-	)
-	if err := log.run(crossBuild); err != nil {
-		res.linuxFailed = true
-		log.Info("Warning: Linux cross-build failed (non-fatal): %v", err)
-	} else {
+	// The native and Linux binaries are independent `go build`s writing to
+	// distinct outputs, so run them concurrently: per-agent wall time becomes
+	// max(native, linux) instead of native+linux. They share Go's build cache,
+	// which is concurrency-safe, and touch separate result fields (no race).
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		buildNative()
+	}()
+	go func() {
+		defer wg.Done()
+		containerStarted := time.Now()
+		ldflags := `-extldflags "-static"`
+		crossBuild := exec.Command("go", "build", "-ldflags", ldflags, "-o", containerPath, ".")
+		crossBuild.Dir = dir
+		crossBuild.Env = append(os.Environ(),
+			"CGO_ENABLED=0",
+			"GOOS=linux",
+			"GOARCH=amd64",
+		)
+		if err := log.run(crossBuild); err != nil {
+			res.linuxFailed = true
+			log.Info("Warning: Linux cross-build failed (non-fatal): %v", err)
+			return
+		}
 		res.linux = time.Since(containerStarted).Round(100 * time.Millisecond)
 		log.Info("Binary build done (linux/amd64) elapsed=%s", res.linux)
 		log.Info("Installed (container): %s", containerPath)
+	}()
+	wg.Wait()
+	if res.err != nil {
+		return res
 	}
 
 	log.Header(1, "Agent %s:%s built successfully", ag.Name, ag.Version)
