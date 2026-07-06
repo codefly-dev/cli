@@ -207,6 +207,26 @@ var ServiceCmd = &cobra.Command{
 			// against the loop's eventual emit.
 			pollCtx, pollCancel := context.WithCancel(ctx)
 			var pollWg sync.WaitGroup
+
+			// In run mode runService blocks for the LIFETIME of the stack —
+			// the playbook action loop only returns on cancellation or a
+			// failure — so the "still starting" heartbeat below must be
+			// stopped by READINESS, not by runService returning. Without
+			// this, a healthy long-lived headless run (e.g. a bench under
+			// sdk.WithDependencies) prints "still starting <svc>… Ns"
+			// forever even though every dependency has been Running for
+			// hours. markRunning emits the Running milestone exactly once,
+			// whichever observer sees readiness first, and silences the
+			// heartbeat.
+			hbCtx, hbCancel := context.WithCancel(ctx)
+			defer hbCancel()
+			var runningOnce sync.Once
+			markRunning := func() {
+				runningOnce.Do(func() {
+					phase(tui.StateRunning)
+					hbCancel()
+				})
+			}
 			pollWg.Go(func() {
 				pollPromoted := map[string]bool{}
 				ticker := time.NewTicker(150 * time.Millisecond)
@@ -217,11 +237,16 @@ var ServiceCmd = &cobra.Command{
 						return
 					case <-ticker.C:
 						flow.PromoteReachable(serviceName, pollPromoted, printReady)
+						if hbCtx.Err() == nil && flow.Ready(pollCtx) {
+							markRunning()
+						}
 					}
 				}
 			})
 
-			err = common.WithHeartbeat(ctx, "still starting "+serviceName, func() error {
+			// hbCtx only scopes the heartbeat TICKER; runService still runs
+			// under the real ctx.
+			err = common.WithHeartbeat(hbCtx, "still starting "+serviceName, func() error {
 				return runService(ctx, flow)
 			})
 			pollCancel()
@@ -238,7 +263,10 @@ var ServiceCmd = &cobra.Command{
 				cli.ExitError()
 				return
 			}
-			phase(tui.StateRunning)
+			// loadOnly/initOnly runs return before the flow ever reports
+			// Ready; runningOnce keeps this from double-printing when the
+			// poller already announced readiness.
+			markRunning()
 
 			if withCLIServer {
 				// Keep running with CLI server
