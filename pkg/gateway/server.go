@@ -1058,6 +1058,15 @@ func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandReques
 	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
 	cmd.Dir = dir
 
+	// Optional single-shot stdin. CONTRACT: the full payload is written
+	// to the child's standard input and the stream closes at EOF; stdout
+	// and stderr are read to completion afterwards. Not a bidirectional
+	// pipe — enough for batch protocols with a fixed upfront request
+	// list, e.g. feeding `git cat-file --batch` a list of object names.
+	if len(req.Stdin) > 0 {
+		cmd.Stdin = bytes.NewReader(req.Stdin)
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
