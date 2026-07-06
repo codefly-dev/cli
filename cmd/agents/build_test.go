@@ -134,6 +134,55 @@ func TestAgentBuildResultSummary(t *testing.T) {
 	if got := r.summary(); !strings.Contains(got, "linux ✗") {
 		t.Errorf("summary() with failed linux = %q, want it to contain \"linux ✗\"", got)
 	}
+
+	r2 := &agentBuildResult{
+		ag:           agentYAML{Name: "go", Version: "0.0.7"},
+		native:       8700 * time.Millisecond,
+		linuxSkipped: true,
+	}
+	if got := r2.summary(); !strings.Contains(got, "linux skipped") {
+		t.Errorf("summary() with skipped linux = %q, want it to contain \"linux skipped\"", got)
+	}
+}
+
+func TestCompileAgentNativeOnly(t *testing.T) {
+	// A real build (no mocks): a self-contained agent module with no external
+	// deps compiles offline. With nativeOnly the host binary is produced and
+	// the Linux/amd64 container binary is never written.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "agent.codefly.yaml"),
+		"publisher: codefly\nkind: codefly:service\nname: nativeonly\nversion: 0.0.1\n")
+	writeFile(t, filepath.Join(dir, "go.mod"),
+		"module example.com/nativeonly\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(dir, "main.go"),
+		"package main\n\nfunc main() {}\n")
+
+	res := compileAgent(dir, &agentLogger{}, &sync.Mutex{}, true)
+	if res.err != nil {
+		t.Fatalf("compileAgent native-only: %v", res.err)
+	}
+	if !res.linuxSkipped {
+		t.Error("res.linuxSkipped = false, want true")
+	}
+
+	nativePath := filepath.Join(home, ".codefly", "agents", "services", "codefly", "nativeonly__0.0.1")
+	if _, err := os.Stat(nativePath); err != nil {
+		t.Errorf("native binary not produced at %s: %v", nativePath, err)
+	}
+	containerPath := filepath.Join(home, ".codefly", "containers", "agents", "services", "codefly", "nativeonly__0.0.1")
+	if _, err := os.Stat(containerPath); err == nil {
+		t.Errorf("container binary should not exist with --native-only, but found %s", containerPath)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 func TestAgentLoggerBufferedAndFlush(t *testing.T) {
@@ -177,7 +226,7 @@ func TestCompileAgentSerializesTidy(t *testing.T) {
 	}
 	// No go.mod, so `go mod tidy` fails; we only assert it doesn't panic and
 	// surfaces the failure as res.err rather than crashing.
-	res := compileAgent(dir, &agentLogger{}, &sync.Mutex{})
+	res := compileAgent(dir, &agentLogger{}, &sync.Mutex{}, false)
 	if res.err == nil {
 		t.Fatal("compileAgent: expected error (no go.mod), got nil")
 	}

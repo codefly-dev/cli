@@ -67,7 +67,8 @@ Examples:
 		skipAudit, _ := cmd.Flags().GetBool("skip-audit")
 		failOnVuln, _ := cmd.Flags().GetBool("fail-on-vuln")
 		jobs, _ := cmd.Flags().GetInt("jobs")
-		opts := buildOptions{skipAudit: skipAudit, failOnVuln: failOnVuln, jobs: jobs}
+		nativeOnly, _ := cmd.Flags().GetBool("native-only")
+		opts := buildOptions{skipAudit: skipAudit, failOnVuln: failOnVuln, jobs: jobs, nativeOnly: nativeOnly}
 
 		if all {
 			if dir == "" {
@@ -118,6 +119,10 @@ type buildOptions struct {
 	// jobs caps how many agents `--all` builds concurrently. <= 0 means
 	// runtime.NumCPU(). Ignored for a single-agent build.
 	jobs int
+	// nativeOnly skips the Linux/amd64 container cross-build, producing only
+	// the host-platform binary. The container binary is only needed for
+	// Docker-mode runs, so local mac/native dev doesn't require it.
+	nativeOnly bool
 }
 
 // BuildOptions is the exported form of buildOptions for callers in other
@@ -126,13 +131,14 @@ type BuildOptions struct {
 	SkipAudit  bool
 	FailOnVuln bool
 	Jobs       int
+	NativeOnly bool
 }
 
 // BuildAllAgents builds every agent under root. It is the exported entry point
 // for `codefly self build --with-agents`, so one command rebuilds the CLI and
 // all agents together. root is typically <monorepo>/agents/services.
 func BuildAllAgents(root string, opts BuildOptions) error {
-	return buildAllAgents(root, buildOptions{skipAudit: opts.SkipAudit, failOnVuln: opts.FailOnVuln, jobs: opts.Jobs})
+	return buildAllAgents(root, buildOptions{skipAudit: opts.SkipAudit, failOnVuln: opts.FailOnVuln, jobs: opts.Jobs, nativeOnly: opts.NativeOnly})
 }
 
 func init() {
@@ -141,6 +147,7 @@ func init() {
 	BuildCmd.Flags().Bool("skip-audit", false, "Skip the post-build govulncheck audit")
 	BuildCmd.Flags().Bool("fail-on-vuln", false, "Fail the build if any HIGH/CRITICAL vulnerability is found")
 	BuildCmd.Flags().IntP("jobs", "j", 0, "Max agents to build in parallel with --all (default: number of CPUs)")
+	BuildCmd.Flags().Bool("native-only", false, "Build only the host-platform binary; skip the Linux/amd64 container cross-build (local dev fast path)")
 }
 
 // quarantinedAgent records an agent skipped by a bulk build because its
@@ -239,7 +246,7 @@ func buildAllAgents(root string, opts buildOptions) error {
 	for i := range agents {
 		g.Go(func() error {
 			log := &agentLogger{}
-			res := compileAgent(agents[i], log, &tidyMu)
+			res := compileAgent(agents[i], log, &tidyMu, opts.nativeOnly)
 			results[i] = res
 			n := completed.Add(1)
 			if res.err != nil {
@@ -452,23 +459,27 @@ type agentBuildResult struct {
 	label       string // source dir base name, used before the manifest is parsed
 	dir         string
 	ag          agentYAML
-	native      time.Duration
-	linux       time.Duration
-	linuxFailed bool
-	err         error
+	native       time.Duration
+	linux        time.Duration
+	linuxFailed  bool
+	linuxSkipped bool
+	err          error
 }
 
 // summary is the one-line success digest, e.g. "go:0.0.7 ✓ darwin 8.7s · linux 3.6s".
 func (r *agentBuildResult) summary() string {
 	linux := r.linux.String()
-	if r.linuxFailed {
+	switch {
+	case r.linuxSkipped:
+		linux = "skipped"
+	case r.linuxFailed:
 		linux = "✗"
 	}
 	return fmt.Sprintf("%s:%s ✓ %s %s · linux %s", r.ag.Name, r.ag.Version, runtime.GOOS, r.native, linux)
 }
 
 func buildAgent(dir string, opts buildOptions) error {
-	res := compileAgent(dir, &agentLogger{direct: true}, &sync.Mutex{})
+	res := compileAgent(dir, &agentLogger{direct: true}, &sync.Mutex{}, opts.nativeOnly)
 	if res.err != nil {
 		return res.err
 	}
@@ -483,8 +494,9 @@ func buildAgent(dir string, opts buildOptions) error {
 // parallel compile phase). tidyMu serializes the go.mod mutation + `go mod
 // tidy` critical section across concurrent builds; the actual `go build` runs
 // without the lock. The returned result always carries the outcome — a non-nil
-// res.err means the build failed.
-func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex) *agentBuildResult {
+// res.err means the build failed. When nativeOnly is set the Linux/amd64
+// container cross-build is skipped, producing only the host-platform binary.
+func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly bool) *agentBuildResult {
 	res := &agentBuildResult{label: filepath.Base(dir), dir: dir}
 
 	yamlPath := filepath.Join(dir, "agent.codefly.yaml")
@@ -603,6 +615,13 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex) *agentBuildR
 	res.native = time.Since(nativeStarted).Round(100 * time.Millisecond)
 	log.Info("Binary build done (%s/%s) elapsed=%s", runtime.GOOS, runtime.GOARCH, res.native)
 	log.Info("Installed: %s", nativePath)
+
+	if nativeOnly {
+		res.linuxSkipped = true
+		log.Info("Skipping Linux/amd64 container cross-build (--native-only)")
+		log.Header(1, "Agent %s:%s built successfully (native only)", ag.Name, ag.Version)
+		return res
+	}
 
 	containerDir := filepath.Join(home, ".codefly", "containers", "agents", subdir, ag.Publisher)
 	containerPath := filepath.Join(containerDir, binaryName)
