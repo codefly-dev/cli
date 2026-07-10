@@ -2,7 +2,7 @@ module github.com/codefly-dev/cli
 
 go 1.25.5
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	connectrpc.com/connect v1.20.0
