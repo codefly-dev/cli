@@ -273,20 +273,43 @@ func resolveCLISource(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for d := cwd; ; {
+	if found := walkForCLIModule(cwd); found != "" {
+		return found, nil
+	}
+
+	// Fall back to the running binary's own location. The installed codefly is a
+	// symlink (~/.local/bin/codefly -> <repo>/cli/codefly), so the resolved
+	// executable lives INSIDE the CLI source tree. This lets `self build` work
+	// from anywhere — e.g. a sibling workspace like ./mind, from which the
+	// monorepo's cli/ is never an ancestor of cwd and the walk above finds
+	// nothing.
+	if exe, exeErr := os.Executable(); exeErr == nil {
+		if resolved, symErr := filepath.EvalSymlinks(exe); symErr == nil {
+			if found := walkForCLIModule(filepath.Dir(resolved)); found != "" {
+				return found, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no codefly CLI source found from %s or the codefly binary location (use --dir)", cwd)
+}
+
+// walkForCLIModule walks up from start looking for the cli module directly, or a
+// monorepo root that contains cli/. Returns "" if neither is found.
+func walkForCLIModule(start string) string {
+	for d := start; ; {
 		if isCLIModule(d) {
-			return d, nil
+			return d
 		}
 		if cliDir := filepath.Join(d, "cli"); isCLIModule(cliDir) {
-			return cliDir, nil
+			return cliDir
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
-			break
+			return ""
 		}
 		d = parent
 	}
-	return "", fmt.Errorf("no codefly CLI source found from %s (use --dir)", cwd)
 }
 
 // isCLIModule reports whether dir contains main.go and a go.mod declaring the
