@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Masterminds/semver"
 	"gopkg.in/yaml.v2"
 )
 
@@ -73,9 +73,26 @@ func checkForCLIForUpdate() {
 		emitUpdateNotice("Cannot get current version for CLI")
 		return
 	}
-	if fmt.Sprintf("v%s", current) != latest {
+	newer, err := isNewerVersion(current, latest)
+	if err != nil {
+		emitUpdateNotice("Cannot compare CLI release versions")
+		return
+	}
+	if newer {
 		emitUpdateNotice("A new version of codefly is available. Please update to %s", latest)
 	}
+}
+
+func isNewerVersion(current, latest string) (bool, error) {
+	currentVersion, err := semver.NewVersion(current)
+	if err != nil {
+		return false, fmt.Errorf("parse current version %q: %w", current, err)
+	}
+	latestVersion, err := semver.NewVersion(latest)
+	if err != nil {
+		return false, fmt.Errorf("parse latest version %q: %w", latest, err)
+	}
+	return latestVersion.GreaterThan(currentVersion), nil
 }
 
 type NoInternetError struct {
@@ -113,7 +130,7 @@ func getLatestRelease() (string, error) {
 func GetCurrentVersion() (string, error) {
 	data, err := fs.ReadFile(infoFS, "info.yaml")
 	if err != nil {
-		log.Fatalf("error: %v", err)
+		return "", fmt.Errorf("read embedded CLI version: %w", err)
 	}
 
 	// Unmarshal YAML into a struct
