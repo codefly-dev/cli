@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -237,12 +236,6 @@ func formattedLogLines(source string, separator string, log *wool.Log) []string 
 		out = append(out, prefix+line)
 	}
 	return out
-}
-
-func (logger *Logger) Oops(format string, args ...any) {
-	Error(format, args...)
-	Done()
-	os.Exit(1)
 }
 
 func WithSilence(services []*resources.ServiceWithModule) {

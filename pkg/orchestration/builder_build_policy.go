@@ -4,38 +4,21 @@ import (
 	"context"
 
 	"github.com/codefly-dev/core/architecture"
-
-	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/core/wool"
 )
 
 type BuildPolicy struct {
 	ExecutorManager
-	world  *World
-	builds builder.Repository
-	//org          builder.OrganizationRepository
+	world        *World
 	dependencies *architecture.ServiceDependencies
 }
 
 func NewBuildPolicy(ctx context.Context, hub *Hub, world *World) (*BuildPolicy, error) {
-	//w := wool.Get(ctx).In("NewBuildPolicy")
-	// Create a Build Executor
-	var repo builder.Repository
-	//var org platform.OrganizationRepository
-	var err error
-	//repo, err = builder.NewService(ctx)
-	//if err != nil {
-	//	w.Warn("cannot create repository: bootstrap mode", wool.ErrField(err))
-	//}
-	//org, err = builder.NewOrganizationService(ctx)
-	//if err != nil {
-	//	w.Warn("cannot create organization repository: bootstrap mode", wool.ErrField(err))
-	//}
-	executorManager, err := NewBuildExecutor(ctx, hub, repo)
+	executorManager, err := NewBuildExecutor(ctx, hub)
 	if err != nil {
 		return nil, wool.Get(ctx).Wrapf(err, "cannot create BuildExecutor")
 	}
-	return &BuildPolicy{builds: repo, world: world, dependencies: world.Dependencies, ExecutorManager: executorManager}, nil
+	return &BuildPolicy{world: world, dependencies: world.Dependencies, ExecutorManager: executorManager}, nil
 }
 
 func (policy *BuildPolicy) Execute(ctx context.Context, action Action) ([]Action, error) {

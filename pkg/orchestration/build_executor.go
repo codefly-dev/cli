@@ -4,15 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/core/wool"
 )
 
 type BuildExecutor struct {
 	hub      *Hub
 	builders []*BuildExecutorHelper
-
-	repo builder.Repository
 }
 
 func (b *BuildExecutor) GetExecutor(ctx context.Context, action Action) (OutputProcessorFunc, error) {
@@ -59,7 +56,7 @@ func (h *BuildExecutorHelper) Build(ctx context.Context) (*OutputProperty, error
 	return h.manager.BuilderDoBuild(ctx)
 }
 
-func NewBuildExecutor(ctx context.Context, hub *Hub, repo builder.Repository) (*BuildExecutor, error) {
+func NewBuildExecutor(ctx context.Context, hub *Hub) (*BuildExecutor, error) {
 	w := wool.Get(ctx).In("NewBuildExecutor")
 	if hub == nil {
 		return nil, w.NewError("hub cannot be nil")
@@ -68,5 +65,5 @@ func NewBuildExecutor(ctx context.Context, hub *Hub, repo builder.Repository) (*
 	for _, manager := range hub.managers {
 		builders = append(builders, &BuildExecutorHelper{manager: manager})
 	}
-	return &BuildExecutor{hub: hub, builders: builders, repo: repo}, nil
+	return &BuildExecutor{hub: hub, builders: builders}, nil
 }

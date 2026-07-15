@@ -31,32 +31,3 @@ func LoadTemplate(local embed.FS, f string, obj any) (string, error) {
 	}
 	return ApplyTemplate(string(data), obj)
 }
-
-//
-//func CopyTemplateFile(local embed.FS, f string, destination string, obj any) error {
-//	if _, err := os.Stat(destination); err == nil {
-//		selected := prompt.Options(
-//			fmt.Sprintf("Do you want to override the file %s? ", destination),
-//			func(d prompt.Document) []prompt.Suggest {
-//				return []prompt.Suggest{}
-//			}, prompt.OptionInitialBufferText("Yes"))
-//
-//		if !slices.Contains([]string{"Yes", "yes", "Y", "y"}, selected) {
-//			return nil
-//		}
-//	}
-//	// Read the file from the embedded file system
-//	data, err := fs.ReadFile(local, fmt.Sprintf("templates/%s", f))
-//	if err != nil {
-//		return fmt.Errorf("could not read file: %v", err)
-//	}
-//	out, err := ApplyTemplate(string(data), obj)
-//	if err != nil {
-//		return fmt.Errorf("cannot apply template: %v", err)
-//	}
-//	err = os.WriteFile(destination, []byte(out), 0o644)
-//	if err != nil {
-//		return fmt.Errorf("cannot write template to file: %v", err)
-//	}
-//	return nil
-//}

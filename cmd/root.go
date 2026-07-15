@@ -59,10 +59,9 @@ func init() {
 	RootCmd.SetHelpTemplate(customHelpTemplate)
 }
 
-// Execute adds codefly-sdk child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
-func Execute() {
-	cli.ExitOnError(RootCmd.Execute(), "cannot execute command")
+// Execute runs the root command and returns any failure to the process boundary.
+func Execute() error {
+	return RootCmd.Execute()
 }
 
 // applyRootOptions runs after Cobra has parsed the selected command and all of

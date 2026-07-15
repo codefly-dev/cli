@@ -220,14 +220,6 @@ func Focus(s string, args ...any) {
 	wrapper.Focus(s, args...)
 }
 
-func ExitOnError(err error, format string, args ...any) {
-	if err != nil {
-		Error(format, args...)
-		printErrorChain(err)
-		ExitError()
-	}
-}
-
 // ErrorChain prints a headline followed by the wrapped error rendered as a
 // vertical chain (root cause highlighted), WITHOUT exiting. Use for failures
 // that must still run cleanup/shutdown afterwards — e.g. a service that failed
@@ -235,6 +227,9 @@ func ExitOnError(err error, format string, args ...any) {
 func ErrorChain(err error, format string, args ...any) {
 	Error(format, args...)
 	printErrorChain(err)
+	if path := LogFilePath(); path != "" {
+		fmt.Fprintln(os.Stderr, tui.RenderErrorDetail(fmt.Sprintf("↳ full logs: %s   (re-run with --debug for more)", path)))
+	}
 }
 
 // printErrorChain renders a wrapped error so the user sees what blew up.
@@ -301,32 +296,4 @@ func unwrapErrorLayers(err error) []string {
 		layers = append(layers, msg)
 	}
 	return layers
-}
-
-func ExitIf(b bool, format string, args ...any) {
-	if b {
-		Error(format, args...)
-		ExitError()
-	}
-}
-
-func ExitWithMessage(format string, args ...any) {
-	Error(format, args...)
-	ExitError()
-}
-
-func Exit() {
-	Done()
-	os.Exit(0)
-}
-
-func ExitError() {
-	// Point the user at the detailed log on every failure exit — the single
-	// biggest debuggability win: they no longer have to know that
-	// ~/.codefly/logs/<date>.log exists. Printed to stderr, dim, once.
-	if p := LogFilePath(); p != "" {
-		fmt.Fprintln(os.Stderr, tui.RenderErrorDetail(fmt.Sprintf("↳ full logs: %s   (re-run with --debug for more)", p)))
-	}
-	Done()
-	os.Exit(1)
 }

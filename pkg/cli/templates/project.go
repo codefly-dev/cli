@@ -18,14 +18,6 @@ func ShowWorkspace(workspace *resources.Workspace, current bool) {
 	}
 	d := WorkspaceDisplay{Workspace: workspace, Action: "Workspace", Current: currentSign}
 	golor.Template(d).Println(`#(blue,bold)[🔎 Workspace <#bold[{{.Workspace.Name}}{{.Current}}]>]`)
-
-	//mods, err := resources.ListModules()
-	//shared.ExitOnError(err, "Cannot list modules")
-	//
-	//for _, mod :=  range apps {
-	//	current := workspace.Current() == app.Name
-	//	ShowModule(app, current, "  ")
-	//}
 }
 
 func CreatedWorkspace(workspace *resources.Workspace) {

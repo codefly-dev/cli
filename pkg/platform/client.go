@@ -61,17 +61,3 @@ func NewClient(ctx context.Context) (*Client, error) {
 }
 
 var platformClient *Client
-
-//
-//func NewClient(ctx context.Context) (*Client, error) {
-//	// Define the custom endpoint
-//	customEndpoint, err := url.Parse("http://localhost:21172")
-//	if err != nil {
-//		return nil, err
-//	}
-//	transport := httptransport.New(customEndpoint.Host, customEndpoint.Path, []string{customEndpoint.Scheme})
-//	transport.DefaultAuthentication = httptransport.BearerToken(token)
-//
-//	platformClient := api.New(transport, strfmt.Default)
-//	return platformClient, nil
-//}
