@@ -285,9 +285,12 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			}
 			return fmt.Errorf("cannot start service %s: %w", serviceName, err)
 		}
-		// loadOnly/initOnly runs return before the flow ever reports
-		// Ready; runningOnce keeps this from double-printing when the
-		// poller already announced readiness.
+		if !shouldWaitForRun(loadOnly, initOnly) {
+			phase(tui.StateStopped)
+			return nil
+		}
+		// runningOnce keeps this from double-printing when the poller already
+		// announced readiness.
 		markRunning()
 
 		if withCLIServer {
@@ -488,6 +491,10 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("service %s stopped with an error: %w", serviceName, runErr)
 	}
 	return nil
+}
+
+func shouldWaitForRun(loadOnly, initOnly bool) bool {
+	return !loadOnly && !initOnly
 }
 
 // orFirst returns a when it is non-nil, otherwise b. Used to keep the first
