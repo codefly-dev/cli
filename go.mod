@@ -9,8 +9,9 @@ require (
 	connectrpc.com/cors v0.1.0
 	github.com/Masterminds/semver v1.5.0
 	github.com/asottile/dockerfile v3.1.0+incompatible
+	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.2.13
+	github.com/codefly-dev/core v0.2.18
 	github.com/codefly-dev/golor v0.1.3
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/creack/pty v1.1.24
@@ -27,6 +28,7 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/mod v0.35.0
 	golang.org/x/sync v0.20.0
+	golang.org/x/sys v0.45.0
 	golang.org/x/term v0.43.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
@@ -48,7 +50,6 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
-	github.com/blang/semver v3.5.1+incompatible // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/bubbles v1.0.0 // indirect
@@ -171,7 +172,6 @@ require (
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260420184626-e10c466a9529 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260420184626-e10c466a9529 // indirect
