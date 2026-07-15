@@ -33,6 +33,39 @@ func TestBuildCmdJobsFlag(t *testing.T) {
 	}
 }
 
+func TestResolveAgentRootFindsFlatWorkspace(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "cli")
+	agentDir := filepath.Join(root, "service-example")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "agent.codefly.yaml"), []byte("name: example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveAgentRoot(cliDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != root {
+		t.Fatalf("resolveAgentRoot() = %q, want %q", got, root)
+	}
+}
+
+func TestResolveAgentRootRejectsWorkspaceWithoutAgents(t *testing.T) {
+	cliDir := filepath.Join(t.TempDir(), "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveAgentRoot(cliDir); err == nil {
+		t.Fatal("resolveAgentRoot unexpectedly accepted a workspace without agents")
+	}
+}
+
 func TestSelfCommandsReturnErrors(t *testing.T) {
 	for name, command := range map[string]*cobra.Command{
 		"build": BuildCmd,

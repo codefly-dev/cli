@@ -36,8 +36,9 @@ directory: it looks for the cli module (the directory whose go.mod is
 codefly.dev monorepo the build picks up local core/ and wool/ changes
 automatically via go.work.
 
-With --with-agents, after the CLI is installed it also rebuilds every
-agent under agents/services/ (the same set as ` + "`codefly agent build --all`" + `).
+With --with-agents, after the CLI is installed it also rebuilds every agent
+repository in the Codefly workspace (the same set as ` + "`codefly agent build --all`" + `).
+Agent repositories are discovered by their top-level agent.codefly.yaml.
 This is the ONE command to pick up local changes to both the CLI and the
 agents in a single step. The per-agent govulncheck audit is skipped during
 the bulk build (it adds minutes); pass --audit-agents to run it.
@@ -146,7 +147,7 @@ Examples:
 		cli.Info("Installed codefly to %s", output)
 
 		if withAgents {
-			agentsDir, aerr := resolveAgentsServices(srcDir)
+			agentsDir, aerr := resolveAgentRoot(srcDir)
 			if aerr != nil {
 				return fmt.Errorf("cannot locate agents to build (--with-agents): %w", aerr)
 			}
@@ -163,15 +164,23 @@ Examples:
 	},
 }
 
-// resolveAgentsServices finds the monorepo's agents/services directory by
-// walking up from the CLI source dir. This is where `agent build --all`
-// discovers every agent — reusing it keeps `self build --with-agents` and
-// `agent build --all` pointed at the same set.
-func resolveAgentsServices(cliSrcDir string) (string, error) {
+// resolveAgentRoot finds the flat Codefly workspace containing the CLI and
+// sibling agent repositories. An agent repository is identified by a
+// top-level agent.codefly.yaml, which is the same boundary consumed by
+// agent build --all.
+func resolveAgentRoot(cliSrcDir string) (string, error) {
 	for d := cliSrcDir; ; {
-		candidate := filepath.Join(d, "agents", "services")
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate, nil
+		entries, err := os.ReadDir(d)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				manifest := filepath.Join(d, entry.Name(), "agent.codefly.yaml")
+				if info, statErr := os.Stat(manifest); statErr == nil && !info.IsDir() {
+					return d, nil
+				}
+			}
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
@@ -179,13 +188,13 @@ func resolveAgentsServices(cliSrcDir string) (string, error) {
 		}
 		d = parent
 	}
-	return "", fmt.Errorf("no agents/services directory found above %s", cliSrcDir)
+	return "", fmt.Errorf("no workspace with agent repositories found above %s", cliSrcDir)
 }
 
 func init() {
 	BuildCmd.Flags().String("dir", "", "CLI source directory (default: auto-detect from current directory)")
 	BuildCmd.Flags().String("output", "", "Install path (default: the running codefly binary; for --os/--arch: bin/<os>/codefly)")
-	BuildCmd.Flags().Bool("with-agents", false, "After rebuilding the CLI, also rebuild every agent under agents/services/")
+	BuildCmd.Flags().Bool("with-agents", false, "After rebuilding the CLI, also rebuild every agent repository in the Codefly workspace")
 	BuildCmd.Flags().Bool("audit-agents", false, "Run the govulncheck audit on each agent during --with-agents (slow; off by default)")
 	BuildCmd.Flags().Bool("native-only", false, "With --with-agents: build only host-platform agent binaries; skip the Linux/amd64 container cross-build (local dev fast path)")
 	BuildCmd.Flags().IntP("jobs", "j", 0, "With --with-agents: max agents to build in parallel (default: number of CPUs)")
