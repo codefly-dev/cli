@@ -3,39 +3,34 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"sync"
+	"io"
 	"time"
 
 	cliv0 "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	"github.com/codefly-dev/core/network"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// terminalClient manages a lazy gRPC connection to the codefly daemon's TerminalService.
-type terminalClient struct {
-	mu     sync.Mutex
-	conn   *grpc.ClientConn
-	client cliv0.TerminalServiceClient
+func terminalAddress(workspaceName string) string {
+	return fmt.Sprintf("127.0.0.1:%d", network.CLIServerPort(workspaceName))
 }
 
-var globalTermClient = &terminalClient{}
-
-const daemonAddr = "localhost:10000"
-
-func (tc *terminalClient) getClient() (cliv0.TerminalServiceClient, error) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	if tc.client != nil {
-		return tc.client, nil
-	}
-	conn, err := grpc.NewClient(daemonAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// terminalClient connects to the same deterministic per-workspace endpoint as
+// `codefly terminal`. The old fixed localhost:10000 listener no longer exists.
+func (s *Server) terminalClient() (cliv0.TerminalServiceClient, *grpc.ClientConn, error) {
+	workspace, err := s.requireWorkspace()
 	if err != nil {
-		return nil, fmt.Errorf("cannot connect to codefly daemon at %s: %w", daemonAddr, err)
+		return nil, nil, err
 	}
-	tc.conn = conn
-	tc.client = cliv0.NewTerminalServiceClient(conn)
-	return tc.client, nil
+	addr := terminalAddress(workspace.Name)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot connect to codefly server at %s: %w", addr, err)
+	}
+	return cliv0.NewTerminalServiceClient(conn), conn, nil
 }
 
 // registerTerminalTools adds terminal MCP tools.
@@ -101,10 +96,11 @@ func (s *Server) registerTerminalTools() {
 }
 
 func (s *Server) openTerminal(ctx context.Context, args map[string]string) ([]Content, error) {
-	client, err := globalTermClient.getClient()
+	client, conn, err := s.terminalClient()
 	if err != nil {
 		return nil, err
 	}
+	defer conn.Close()
 
 	resp, err := client.Open(ctx, &cliv0.OpenTerminalRequest{
 		Module:  args["module"],
@@ -127,10 +123,11 @@ func (s *Server) openTerminal(ctx context.Context, args map[string]string) ([]Co
 }
 
 func (s *Server) sendTerminalInput(ctx context.Context, args map[string]string) ([]Content, error) {
-	client, err := globalTermClient.getClient()
+	client, conn, err := s.terminalClient()
 	if err != nil {
 		return nil, err
 	}
+	defer conn.Close()
 
 	sessionID := args["session_id"]
 	input := args["input"]
@@ -138,46 +135,13 @@ func (s *Server) sendTerminalInput(ctx context.Context, args map[string]string) 
 		return nil, fmt.Errorf("session_id and input are required")
 	}
 
-	// Open a short-lived Attach stream: send input, collect output for a brief window
-	stream, err := client.Attach(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("send_terminal_input: cannot attach: %w", err)
-	}
-
-	// Send the input
-	if err := stream.Send(&cliv0.TerminalInput{
+	output, err := collectTerminalOutput(ctx, client, &cliv0.TerminalInput{
 		SessionId: sessionID,
 		Data:      []byte(input),
-	}); err != nil {
-		return nil, fmt.Errorf("send_terminal_input: cannot send: %w", err)
+	}, 2*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("send_terminal_input: %w", err)
 	}
-
-	// Collect output for up to 2 seconds or until we get a pause in output
-	var output []byte
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			msg, err := stream.Recv()
-			if err != nil {
-				return
-			}
-			if len(msg.Data) > 0 {
-				output = append(output, msg.Data...)
-			}
-			if msg.Done {
-				return
-			}
-		}
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-	}
-
-	_ = stream.CloseSend()
 
 	if len(output) == 0 {
 		return []Content{TextContent("(no output)")}, nil
@@ -186,52 +150,21 @@ func (s *Server) sendTerminalInput(ctx context.Context, args map[string]string) 
 }
 
 func (s *Server) readTerminalOutput(ctx context.Context, args map[string]string) ([]Content, error) {
-	client, err := globalTermClient.getClient()
+	client, conn, err := s.terminalClient()
 	if err != nil {
 		return nil, err
 	}
+	defer conn.Close()
 
 	sessionID := args["session_id"]
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
 
-	// Attach briefly to read any pending output
-	stream, err := client.Attach(ctx)
+	output, err := collectTerminalOutput(ctx, client, &cliv0.TerminalInput{SessionId: sessionID}, time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("read_terminal_output: cannot attach: %w", err)
+		return nil, fmt.Errorf("read_terminal_output: %w", err)
 	}
-
-	// Send session ID (no input data)
-	if err := stream.Send(&cliv0.TerminalInput{SessionId: sessionID}); err != nil {
-		return nil, fmt.Errorf("read_terminal_output: cannot send: %w", err)
-	}
-
-	var output []byte
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			msg, err := stream.Recv()
-			if err != nil {
-				return
-			}
-			if len(msg.Data) > 0 {
-				output = append(output, msg.Data...)
-			}
-			if msg.Done {
-				return
-			}
-		}
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(1 * time.Second):
-	}
-
-	_ = stream.CloseSend()
 
 	if len(output) == 0 {
 		return []Content{TextContent("(no output)")}, nil
@@ -240,10 +173,11 @@ func (s *Server) readTerminalOutput(ctx context.Context, args map[string]string)
 }
 
 func (s *Server) closeTerminal(ctx context.Context, args map[string]string) ([]Content, error) {
-	client, err := globalTermClient.getClient()
+	client, conn, err := s.terminalClient()
 	if err != nil {
 		return nil, err
 	}
+	defer conn.Close()
 
 	sessionID := args["session_id"]
 	if sessionID == "" {
@@ -259,10 +193,11 @@ func (s *Server) closeTerminal(ctx context.Context, args map[string]string) ([]C
 }
 
 func (s *Server) listTerminals(ctx context.Context, args map[string]string) ([]Content, error) {
-	client, err := globalTermClient.getClient()
+	client, conn, err := s.terminalClient()
 	if err != nil {
 		return nil, err
 	}
+	defer conn.Close()
 
 	resp, err := client.List(ctx, &cliv0.ListTerminalsRequest{})
 	if err != nil {
@@ -294,4 +229,43 @@ func (s *Server) listTerminals(ctx context.Context, args map[string]string) ([]C
 
 	data, _ := json.MarshalIndent(terminals, "", "  ")
 	return []Content{TextContent(string(data))}, nil
+}
+
+// collectTerminalOutput keeps all stream reads in the calling goroutine. The
+// former timeout goroutine appended to a shared byte slice after handlers had
+// started reading or returned, which was a data race and retained goroutines
+// on quiet streams.
+func collectTerminalOutput(ctx context.Context, client cliv0.TerminalServiceClient, input *cliv0.TerminalInput, timeout time.Duration) ([]byte, error) {
+	readCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	stream, err := client.Attach(readCtx)
+	if err != nil {
+		return nil, fmt.Errorf("cannot attach: %w", err)
+	}
+	defer stream.CloseSend()
+	if err := stream.Send(input); err != nil {
+		return nil, fmt.Errorf("cannot send: %w", err)
+	}
+
+	var output []byte
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			switch {
+			case errors.Is(err, io.EOF):
+				return output, nil
+			case readCtx.Err() != nil && ctx.Err() == nil:
+				return output, nil
+			case ctx.Err() != nil:
+				return nil, ctx.Err()
+			default:
+				return nil, fmt.Errorf("cannot receive: %w", err)
+			}
+		}
+		output = append(output, msg.Data...)
+		if msg.Done {
+			return output, nil
+		}
+	}
 }

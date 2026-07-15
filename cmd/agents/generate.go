@@ -1,8 +1,9 @@
 package agents
 
 import (
+	"context"
+
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/generator"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
@@ -13,17 +14,19 @@ import (
 var GenerateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "generate service template",
-	Run: func(cmd *cobra.Command, args []string) {
-		err := generateService(servicePath)
-		cli.ExitOnError(err, "cannot generate service")
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+		return generateService(ctx, servicePath)
 	},
 }
 
 var servicePath string
 
-func generateService(p string) error {
-	ctx, done := common.NewContext()
-	defer done()
+func generateService(ctx context.Context, p string) error {
 	w := wool.Get(ctx).In("agents.GenerateCmd")
 	p, err := shared.SolvePath(p)
 	if err != nil {

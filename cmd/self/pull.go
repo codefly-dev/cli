@@ -2,14 +2,19 @@ package self
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/monorepo"
 	"github.com/spf13/cobra"
 )
 
@@ -54,18 +59,43 @@ Examples:
   codefly self pull --branch develop
   codefly self pull --remote upstream
   codefly self pull --dir ~/Development/deus/codefly.dev`,
-	Run: func(cmd *cobra.Command, args []string) {
-		dir, _ := cmd.Flags().GetString("dir")
-		branch, _ := cmd.Flags().GetString("branch")
-		remote, _ := cmd.Flags().GetString("remote")
-		all, _ := cmd.Flags().GetBool("all")
-		withAgents, _ := cmd.Flags().GetBool("with-agents")
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+
+		dir, err := cmd.Flags().GetString("dir")
+		if err != nil {
+			return fmt.Errorf("cannot read --dir: %w", err)
+		}
+		branch, err := cmd.Flags().GetString("branch")
+		if err != nil {
+			return fmt.Errorf("cannot read --branch: %w", err)
+		}
+		remote, err := cmd.Flags().GetString("remote")
+		if err != nil {
+			return fmt.Errorf("cannot read --remote: %w", err)
+		}
+		all, err := cmd.Flags().GetBool("all")
+		if err != nil {
+			return fmt.Errorf("cannot read --all: %w", err)
+		}
+		withAgents, err := cmd.Flags().GetBool("with-agents")
+		if err != nil {
+			return fmt.Errorf("cannot read --with-agents: %w", err)
+		}
+		if remote == "" || strings.HasPrefix(remote, "-") {
+			return fmt.Errorf("invalid --remote %q", remote)
+		}
+		if branch == "" || strings.HasPrefix(branch, "-") {
+			return fmt.Errorf("invalid --branch %q", branch)
+		}
 
 		root, err := resolveMonorepoRoot(dir)
 		if err != nil {
-			cli.Error("Cannot locate the codefly monorepo root: %v", err)
-			cli.ExitError()
-			return
+			return fmt.Errorf("cannot locate the codefly monorepo root: %w", err)
 		}
 		scope := "the codefly module repos"
 		if all {
@@ -78,9 +108,7 @@ Examples:
 
 		names, err := pullTargets(root, all)
 		if err != nil {
-			cli.Error("Cannot read %s: %v", root, err)
-			cli.ExitError()
-			return
+			return fmt.Errorf("cannot read %s: %w", root, err)
 		}
 
 		// Build the unified target list. agents/ is not a git repo itself —
@@ -94,7 +122,11 @@ Examples:
 			targets = append(targets, repoTarget{label: name, path: filepath.Join(root, name)})
 		}
 		if withAgents {
-			targets = append(targets, discoverAgentRepos(root)...)
+			agentTargets, err := discoverAgentRepos(root)
+			if err != nil {
+				return fmt.Errorf("cannot discover agent repositories: %w", err)
+			}
+			targets = append(targets, agentTargets...)
 		}
 
 		// Width the label column to the longest label (agent paths are long).
@@ -106,7 +138,12 @@ Examples:
 		}
 
 		var pulled, skipped, failed int
+		var failures []error
 		for _, t := range targets {
+			if err := ctx.Err(); err != nil {
+				failures = append(failures, err)
+				break
+			}
 			if !isGitRepo(t.path) {
 				// Only flag module-looking dirs so we don't spam about
 				// node_modules, bin, etc. A bare agents/ lands here.
@@ -116,10 +153,11 @@ Examples:
 				}
 				continue
 			}
-			res, perr := pullRepo(t.path, remote, branch)
+			res, perr := pullRepo(ctx, t.path, remote, branch)
 			if perr != nil {
 				cli.Error("%-*s %v", width, t.label, perr)
 				failed++
+				failures = append(failures, fmt.Errorf("%s: %w", t.label, perr))
 				continue
 			}
 			cli.Info("%-*s %s", width, t.label, res)
@@ -127,9 +165,7 @@ Examples:
 		}
 
 		cli.Info("Done: %d pulled, %d skipped, %d failed", pulled, skipped, failed)
-		if failed > 0 {
-			cli.ExitError()
-		}
+		return errors.Join(failures...)
 	},
 }
 
@@ -156,13 +192,16 @@ var agentCategories = []string{"services", "modules", "toolboxes", "applications
 // discoverAgentRepos returns every agent git repo under root/agents, as
 // targets labelled by their path relative to root (so the output reads
 // "agents/services/go-grpc"). Sorted for stable, grouped output.
-func discoverAgentRepos(root string) []repoTarget {
+func discoverAgentRepos(root string) ([]repoTarget, error) {
 	var targets []repoTarget
 	for _, category := range agentCategories {
 		base := filepath.Join(root, "agents", category)
 		entries, err := os.ReadDir(base)
 		if err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", base, err)
 		}
 		for _, e := range entries {
 			if !e.IsDir() {
@@ -179,7 +218,7 @@ func discoverAgentRepos(root string) []repoTarget {
 		}
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].label < targets[j].label })
-	return targets
+	return targets, nil
 }
 
 // codeflyRepos is the default set pulled by `self pull` — the codefly module
@@ -218,55 +257,81 @@ func pullTargets(root string, all bool) ([]string, error) {
 // discarding local work. It fetches, stashes any dirty state, merges, then
 // restores the stash. On a merge conflict it aborts cleanly and returns an
 // error; the repo is left as it was found.
-func pullRepo(repo, remote, branch string) (string, error) {
-	if out, err := git(repo, "fetch", remote, branch); err != nil {
+func pullRepo(ctx context.Context, repo, remote, branch string) (string, error) {
+	if out, err := git(ctx, repo, "fetch", "--", remote, branch); err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", fmt.Errorf("fetch failed: %s", firstLine(out))
 	}
 
-	before, _ := git(repo, "rev-parse", "HEAD")
+	before, err := git(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve current HEAD: %s", firstLine(before))
+	}
 	before = strings.TrimSpace(before)
 
 	// Stash uncommitted changes (including untracked) so the merge can't touch
 	// them; restore afterward. dirty is true only if something was stashed.
 	dirty := false
-	if status, _ := git(repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
-		if _, err := git(repo, "stash", "push", "--include-untracked", "-m", "codefly self pull"); err != nil {
+	status, err := git(ctx, repo, "status", "--porcelain")
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("inspect local changes: %s", firstLine(status))
+	}
+	if strings.TrimSpace(status) != "" {
+		if _, err := git(ctx, repo, "stash", "push", "--include-untracked", "-m", "codefly self pull"); err != nil {
 			return "", fmt.Errorf("could not stash local changes; left untouched")
 		}
 		dirty = true
 	}
 
-	mergeOut, mergeErr := git(repo, "merge", "--no-edit", "FETCH_HEAD")
+	mergeOut, mergeErr := git(ctx, repo, "merge", "--no-edit", "FETCH_HEAD")
 	if mergeErr != nil {
-		// Abort so the working tree is exactly as we found it, then restore.
-		_, _ = git(repo, "merge", "--abort")
+		// Cancellation must not prevent rollback: use a fresh bounded context to
+		// abort the merge and restore the user's stashed work.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_, _ = git(cleanupCtx, repo, "merge", "--abort")
 		if dirty {
-			_, _ = git(repo, "stash", "pop")
+			if restoreOut, restoreErr := git(cleanupCtx, repo, "stash", "pop"); restoreErr != nil {
+				return "", errors.Join(
+					fmt.Errorf("merge failed: %s", firstLine(mergeOut)),
+					fmt.Errorf("could not restore local changes; backup remains in git stash: %s", firstLine(restoreOut)),
+				)
+			}
 		}
-		return "", fmt.Errorf("merge conflict; left untouched (%s)", firstLine(mergeOut))
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("merge failed; local work restored (%s)", firstLine(mergeOut))
 	}
 
-	restoreNote := ""
 	if dirty {
-		if _, err := git(repo, "stash", "pop"); err != nil {
+		if restoreOut, err := git(ctx, repo, "stash", "pop"); err != nil {
 			// Merge landed, but reapplying local changes hit conflicts: git
 			// left conflict markers in the tree AND retained the stash as a
-			// backup. Nothing is lost — flag it loudly for manual resolution.
-			restoreNote = " (merged, but your local changes conflict — resolve markers; backup kept in `git stash`)"
+			// backup. This is not a successful pull: flag it for manual repair.
+			return "", fmt.Errorf("merge completed but local changes could not be restored; resolve the working tree and use the backup retained in git stash: %s", firstLine(restoreOut))
 		}
 	}
 
-	after, _ := git(repo, "rev-parse", "HEAD")
+	after, err := git(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve updated HEAD: %s", firstLine(after))
+	}
 	after = strings.TrimSpace(after)
 	if after == before {
-		return "already up to date" + restoreNote, nil
+		return "already up to date", nil
 	}
-	return fmt.Sprintf("updated %s..%s", short(before), short(after)) + restoreNote, nil
+	return fmt.Sprintf("updated %s..%s", short(before), short(after)), nil
 }
 
 // git runs a git command in repo and returns combined output.
-func git(repo string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func git(ctx context.Context, repo string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repo
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -276,8 +341,8 @@ func git(repo string, args ...string) (string, error) {
 }
 
 func isGitRepo(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, ".git"))
-	return err == nil && info.IsDir()
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 // looksLikeModule reports whether dir is a codefly module worth mentioning when
@@ -326,20 +391,8 @@ func resolveMonorepoRoot(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for d := abs; ; {
-		// Inside the cli module itself: root is its parent.
-		if isCLIModule(d) {
-			return filepath.Dir(d), nil
-		}
-		// At the monorepo root: it has a cli/ child module.
-		if isCLIModule(filepath.Join(d, "cli")) {
-			return d, nil
-		}
-		parent := filepath.Dir(d)
-		if parent == d {
-			break
-		}
-		d = parent
+	if root := monorepo.FindRoot(abs); root != "" {
+		return root, nil
 	}
 	return "", fmt.Errorf("no codefly monorepo root found from %s (use --dir)", abs)
 }

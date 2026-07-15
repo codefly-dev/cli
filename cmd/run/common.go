@@ -45,3 +45,7 @@ var loadOnly bool
 
 // init only mode
 var initOnly bool
+
+// startDocker auto-starts a local Docker engine (OrbStack/Docker Desktop/colima/…)
+// when a service can only run under Docker and the daemon is not reachable.
+var startDocker bool

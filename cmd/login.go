@@ -1,8 +1,9 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/platform"
 	"github.com/spf13/cobra"
 )
@@ -11,22 +12,27 @@ import (
 var LoginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Login to codefly platform",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		workspace := common.Workspace(ctx)
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return fmt.Errorf("cannot load workspace: %w", err)
+		}
 
 		token, err := platform.LoadToken(ctx, workspace)
+		if err != nil {
+			return fmt.Errorf("cannot load login token: %w", err)
+		}
 
-		cli.ExitOnError(err, "Cannot login service")
-
-		err = platform.Login(ctx, token)
-
-		cli.ExitOnError(err, "Cannot login service")
+		if err = platform.Login(ctx, token); err != nil {
+			return fmt.Errorf("cannot login: %w", err)
+		}
 		//token, err := loadToken(ctx)
 		//if err != nil {
 		//	cli.Error("Cannot load token")
@@ -34,6 +40,7 @@ var LoginCmd = &cobra.Command{
 
 		//err := login(ctx)
 		//cli.ExitOnError(err, "Cannot login service")
+		return nil
 	},
 }
 

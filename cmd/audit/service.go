@@ -37,17 +37,25 @@ var ServiceCmd = &cobra.Command{
 	Long: `Run the service agent's Builder.Audit RPC. Reports CVEs from the
 language's canonical scanner (govulncheck, npm audit, pip-audit, trivy)
 plus outdated patch+minor releases. Read-only — never modifies code.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		defer services.ClearAgents()
 
-		workspace, module, service := common.LoadRequired(ctx, args)
+		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		if err != nil {
+			return err
+		}
 		resp, err := auditService(ctx, workspace, module, service)
-		cli.ExitOnError(err, "audit failed")
+		if err != nil {
+			return fmt.Errorf("audit failed: %w", err)
+		}
 
 		identity, err := service.Identity()
-		cli.ExitOnError(err, "cannot get service identity")
+		if err != nil {
+			return fmt.Errorf("cannot get service identity: %w", err)
+		}
 
 		if jsonOut {
 			emitJSON(resp)
@@ -56,11 +64,9 @@ plus outdated patch+minor releases. Read-only — never modifies code.`,
 		}
 
 		if failOnVuln && hasHighSeverity(resp) {
-			// os.Exit skips the deferred ClearAgents — run it explicitly so the
-			// loaded builder agent isn't orphaned in the CI fail path.
-			services.ClearAgents()
-			os.Exit(1)
+			return fmt.Errorf("audit found HIGH or CRITICAL vulnerabilities")
 		}
+		return nil
 	},
 }
 

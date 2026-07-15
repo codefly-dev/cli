@@ -1,5 +1,5 @@
 [![Go CLI](https://github.com/codefly-dev/cli/actions/workflows/go.yml/badge.svg)](https://github.com/codefly-dev/cli/actions/workflows/go.yml)
-[![Release](https://github.com/codefly-dev/cli/actions/workflows/release.yml/badge.svg)](https://github.com/codefly-dev/cli/actions/workflows/release.yml)
+[![Release](https://github.com/codefly-dev/cli/actions/workflows/release.yaml/badge.svg)](https://github.com/codefly-dev/cli/actions/workflows/release.yaml)
 
 # Welcome to the `codefly.ai` CLI 😇
 
@@ -7,214 +7,151 @@
 
 ![](docs/media/dragonfly.png)
 
-
-
-
+---
 
 # Development
 
+## Repository layout
+
+codefly is developed as several repos checked out **side by side**. Put this `cli`
+repo next to `core` and the agent repos (one repo per agent):
+
+```
+codefly/
+├── cli/            # this repo — the `codefly` binary
+├── core/           # shared library (github.com/codefly-dev/core)
+├── service-go/     # agents: service-*, toolbox-*, module-* (one repo each)
+├── service-rust/
+├── toolbox-web/
+└── ...
+```
+
+`core/` must be a sibling of `cli/` and of every agent repo — the build tooling
+locates it by walking **up** the directory tree looking for the `core/` module.
+
+Pull/refresh every repo at once:
+
+```shell
+codefly self pull        # pull latest main into every codefly repo (non-destructive)
+```
+
 ## Requirements
 
-### Automatic versioning of CLI and agents
+- Go **1.25+** (see `go.mod`)
+- `govulncheck` (optional) for the post-build agent audit:
+  `go install golang.org/x/vuln/cmd/govulncheck@latest`
 
-`scripts/publish.sh` uses `semver` to automatically version the CLI.
+## Building the CLI
 
-- https://github.com/usvc/semver
+Local development builds against your **local** `core` (and every other local
+repo), not the pinned published versions in `go.mod`. codefly does this with a
+single **shared `go.work` at the workspace root** — gitignored, so CI keeps
+building against the pinned versions (`GOWORK=off`).
 
-### Debugging of Agents
-
-It can be very handy to be able to "drop in" into the agent code and debug it.
-
-To do so:
-
-- run the CLI with a breakpoint
-- get the PID of the agent from the log
-- set a breakpoint in the agent code
-- attach the process in the IDE with your agent code
-- let the magic happens!
-
-> Note: this process will be the same to allow debugging into the client code: CLI exposes an endpoint with the PID of the client process.
-
-This is by far the best experience to advance debugging! I would say 99% of developers don't know about this is even possible.
-
-
-### Generating client code
-```shell
-gm generate gRPC -d --service management/build --destination pkg/builder/clients/builder --language go
-```
-
-
-# OLD
-
-
-TODO: golang ci lint
-
-## Local Development
-
-### Setup
-We use `go.work` for local development so the structure of the projects should be this for now:
+Bootstrap it once, then build:
 
 ```shell
-codefly.dev
-├── cli
-├── core
-├── golor
-├── agents
-│   ├── libraries
-│   └── services
-└── sdk
-    └── sdk-go
+cd <workspace>                       # the folder holding cli/ and core/
+go work init ./cli ./core ./sdk-go   # one-time: seed the shared workspace
+(cd cli && go build -o codefly .)    # build the CLI against local core
 ```
 
-You can use `go.work` to use the local `core` package if you make changes to it. This is the most common developer setup -- it's not setup in the repo to allow CI to work.
-
-Note: I don't include `go.work` anymore in the repo so you can order your directories any way you like as long as you use a proper `go.work` file.
-
-For the previous layout, `go.work` looks like this:
-
-```go
-go 1.21.5
-
-use (
-.
-../core
-)
-```
-
-
-### Building the CLI
-
-This also does the `zsh` completion. Bash or other shells are supported as well but not in this script.
+Once the CLI exists, it manages the workspace itself — link every agent's source
+into the same `go.work` so inter-repo dependencies also resolve locally:
 
 ```shell
-./scripts/dev/install.sh && source ~/.zshrc
+codefly agent deps --link --all      # add every agent to the shared go.work
 ```
 
-### Init
+Rebuild the CLI later with `codefly self build` (compiles from source and installs
+over the binary currently on your PATH; picks up local `core` via the `go.work`).
+
+## Building agents
+
+Each agent lives in its own repo with an `agent.codefly.yaml` (publisher, kind,
+name, version). Build one, or every agent in the workspace:
 
 ```shell
-codefly init
+# a single agent
+codefly agent build --dir ./service-go
+
+# every agent under a directory (e.g. run from the codefly/ workspace root)
+codefly agent build --all --dir .
 ```
 
-### Building agents
+`codefly agent build`:
 
-Inside each agent you want to build, run:
+- auto-detects the workspace root (the directory whose `core/` is the local core
+  module) and adds a local `replace` so the agent compiles against **local core**;
+- installs each binary to `~/.codefly/agents/<kind>/<publisher>/<name>__<version>`;
+- also cross-builds a Linux/amd64 static binary for Docker-mode runs. Running
+  natively on a mac? Add `--native-only` to skip that and roughly halve build time.
+
+Agents whose manifest sets `quarantine: true` are skipped by `--all`; build them
+explicitly with `--dir` to work on the migration.
+
+> **Flat checkout note:** `codefly self build --with-agents` rebuilds the CLI and
+> all agents in one step, but it expects the agents under an `agents/services/`
+> subdirectory. With repos cloned flat (side by side), use
+> `codefly agent build --all --dir <workspace>` instead.
+
+> **Version drift:** an agent only builds against local `core` HEAD if it has been
+> migrated to the current core API.
+> - An agent that depends on an older *published* sibling agent (e.g.
+>   `service-go-grpc` → `service-go`) builds once that sibling is linked into the
+>   shared `go.work` — `codefly agent deps --link --all` handles this.
+> - An agent that imports *removed* core packages still needs migration; until then,
+>   pin it to a compatible published core with `codefly agent deps --pin <version>`.
+
+## Using local (latest) agents at runtime
+
+Building an agent installs it under `~/.codefly/agents/`. To make codefly use those
+local builds instead of downloading published agents, resolve agents locally:
 
 ```shell
-./build.sh
+codefly run service --local-agents        # or: export CODEFLY_AGENT_SOURCE=local
 ```
 
-To use private repositories, TODO docs based on
-https://medium.com/@joeponzio/how-to-use-a-private-github-repo-as-a-go-module-442fbedc80c9
+`--local-agents` resolves agent versions from `~/.codefly/agents/` only (skips
+GitHub); an agent referenced as `latest` resolves **local-first**.
 
+## Managing an agent's `core` dependency
 
-# TODO: Will be in the main docs
-# HERE WE WANT README FOR CLI DEVELOPERS
+`codefly agent deps` controls how a single agent (or `--all` of them) resolves core:
 
-## Tracks
+| Command | Effect |
+| --- | --- |
+| `codefly agent deps` (or `--link`) | wire a local `go.work` → local core (default; no network pull) |
+| `codefly agent deps --unlink` | remove the local `go.work` (revert to published core) |
+| `codefly agent deps --pin <version>` | pin `go.mod` to a published core version + tidy + verify the standalone build (`latest` allowed; the **only** mode that pulls) |
+| `codefly agent deps --ci` | scaffold/repair the agent's `.github/workflows/ci.yml` |
 
-
-## Getting started
-
-Sometime, you want to run the CLI in the proper directory, for example, it will "pin" the project and application to wherever you are.
-
-If you run outside, for example, running `go run main.go` in the `cli` directory, you can rely on the *current* application and project as defined in the `~/.codefly/codefly.yaml` file.
-
-In other words, everywhere, in the CLI directory when developing, replace `codefly` with `go run main.go` in the commands.
-
-To change context, you can run:
+## Common commands
 
 ```shell
-codefly context switch
+codefly init workspace                    # create a workspace
+codefly add service my-svc --agent go     # add a service backed by the `go` agent
+codefly run service -d                     # run a service (with debug)
+codefly doctor                             # check your environment for common problems
 ```
 
-This is the interactive version, code for the argument version would be useful too.
+> Tip: while developing in the `cli` directory you can replace `codefly` with
+> `go run main.go` in any of the commands above.
 
+## Debugging into agent code
 
-### Creating an application
+You can attach a debugger and step into a running agent:
+
+- run the CLI with a breakpoint,
+- get the agent PID from the log,
+- set a breakpoint in the agent code,
+- attach to that process in your IDE.
+
+The CLI also exposes an endpoint carrying the client process PID, so the same
+technique works for debugging the client code.
+
+## Generating client code
 
 ```shell
-codefly add application your-app
+codefly generate proto --proto ../proto --output . --local
 ```
-
-### Creating a service
-
-```shell
- codefly add service my-service --agent=python
-```
-
-### Running things
-I recommend running with debugging
-```shell
-codefly run application -d
-```
-
-Generate templates code
-```shell
-codefly agent generate -d --todo --service=../agents/services/go-grpc
-```
-
-
-
-TODO: Move this somewhere else
-
-## Go
-
-### Error handling
-
-#### User error vs system error
-
-- [x] User error: the user did something wrong, action can be taken and should be given
-
-```go
-
-TODO
-```
-
-- [x] System error: something went wrong, it is a bug
-
-```go
-importer, err := imports.NewApplicationImporter()
-shared.UnexpectedExitOnError(err, "cannot create applications importer")
-```
-
-#### To wrap or not to wrap
-
-- [x] Don't wrap when the context is clear
-
-```go
-func ImportApplication(imp ApplicationImporter) error {
-    err := imp.Fetch()
-    if err != nil {
-        return err
-    }
-	//...
-}
-```
-
-Here we are in the same domain: it should be clear from the import error what is going on
-
-- [x] Wrap when the context is not clear
-
-```go
-TODO
-```
-
-
-### Tips for a Cool README:
-
-1. **Engaging Visuals**: Include badges for build status, code quality, etc., and consider adding a project logo or screenshots/gifs of your project in action.
-
-2. **Clear and Concise**: Make your README easy to read with clear headings and concise descriptions.
-
-3. **Examples**: Include usage examples, as they are extremely helpful to new users.
-
-4. **Contribution Guidelines**: Encourage community involvement with clear contribution guidelines.
-
-5. **License Information**: Always specify the license to inform users about how they can use your project.
-
-6. **Acknowledgments**: Give credit where it's due if you're building upon others' work.
-
-7. **Keep it Updated**: Regularly update the README as your project evolves.
-
-Remember, the README is often the first thing users or potential contributors see, so making it informative, welcoming, and visually appealing can greatly impact the success of your project.

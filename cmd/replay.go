@@ -2,10 +2,8 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
@@ -15,36 +13,40 @@ import (
 var ReplayCmd = &cobra.Command{
 	Use:   "replay",
 	Short: "Replay",
-	Run: func(cmd *cobra.Command, args []string) {
-
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if track == "" {
-			cli.Error("You must provide a track to replay")
-			os.Exit(0)
+			return fmt.Errorf("you must provide a track to replay")
 		}
-		replayCodefly(track)
+		return replayCodefly(track)
 	},
 }
 
-func replayCodefly(track string) {
+func replayCodefly(track string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
 	actionTracker, err := actions.NewActionTracker(ctx, resources.CodeflyDir(), track)
-	cli.ExitOnError(err, "cannot create action tracker")
+	if err != nil {
+		return fmt.Errorf("cannot create action tracker: %w", err)
+	}
 	actionTracker.Replay = true
 
 	// Optionally override the directory
 	actionTracker.WithDir(dir)
 
 	steps, err := actionTracker.GetActions(ctx)
-	cli.ExitOnError(err, "cannot get actions")
+	if err != nil {
+		return fmt.Errorf("cannot get actions: %w", err)
+	}
 	for _, action := range steps {
 		fmt.Println("Running action equivalent to:", action.Command())
 		// TODO: Need to update the action space from the output
 		_, err := actions.Run(ctx, action, nil)
-		cli.ExitOnError(err, "cannot run action")
+		if err != nil {
+			return fmt.Errorf("cannot run action: %w", err)
+		}
 	}
-
+	return nil
 }
 
 var track string

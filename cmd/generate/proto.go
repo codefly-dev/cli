@@ -2,6 +2,7 @@ package generate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,9 +54,12 @@ Examples:
   codefly generate proto --proto ../proto --output ./generated --local
   codefly generate proto --proto ../proto --output . --local --template buf.gen.local.yaml
 `,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
 
 		var err error
 		if protoLocal {
@@ -63,9 +67,14 @@ Examples:
 		} else {
 			err = generateProtoCode(ctx, protoDir, outputDir)
 		}
-		cli.ExitOnError(err, "Cannot generate proto code")
+		if err != nil {
+			return fmt.Errorf("cannot generate proto code: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		cli.Header(1, "Proto code generated successfully!")
-		cli.Done()
+		return nil
 	},
 }
 
@@ -148,7 +157,7 @@ func trimNL(b []byte) []byte {
 	return b
 }
 
-func generateProtoCode(ctx context.Context, protoDir string, outputDir string) error {
+func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (result error) {
 	w := wool.Get(ctx).In("generateProtoCode")
 
 	// Resolve paths
@@ -216,9 +225,9 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) e
 	runner.WithPause()
 
 	defer func() {
-		err = runner.Shutdown(ctx)
-		if err != nil {
-			w.Warn("cannot shutdown runner", wool.ErrField(err))
+		cleanupCtx := context.WithoutCancel(ctx)
+		if err := runner.Shutdown(cleanupCtx); err != nil {
+			result = errors.Join(result, w.Wrapf(err, "cannot shutdown proto runner"))
 		}
 	}()
 

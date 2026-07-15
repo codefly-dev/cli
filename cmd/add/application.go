@@ -9,6 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/applications"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
 
 	actionapplication "github.com/codefly-dev/core/actions/application"
@@ -21,21 +22,17 @@ import (
 var ApplicationCmd = &cobra.Command{
 	Use:   "application",
 	Short: "Add an application",
-
-	Run: func(cmd *cobra.Command, args []string) {
-
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {
-			cli.GetLogger().Oops("Interactive mode not implemented yet")
-		}
-		if len(args) != 1 {
-			cli.GetLogger().Oops("You must provide a name for the application as the single argument")
+			return fmt.Errorf("interactive mode not implemented yet")
 		}
 		if appAgentInput == "" {
-			cli.GetLogger().Oops("You must provide an agent for the application, use --agent=<agent>, for example --agent=go-cli or --agent=tauri")
+			return fmt.Errorf("application agent is required; use --agent=<agent>")
 		}
-		name := args[0]
 
 		cli.Init()
+		defer services.ClearAgents()
 
 		ctx, done := common.NewContext()
 		defer done()
@@ -43,30 +40,14 @@ var ApplicationCmd = &cobra.Command{
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		errs := make(chan error, 1)
-
-		go func() {
-			errs <- addApplication(ctx, name, appAgentInput)
-		}()
-	loop:
-		for {
-			select {
-			case err := <-errs:
-				cli.ExitOnError(err, "Got application add error: %v\n", err)
-				errs <- nil
-				break loop
-			case <-ctx.Done():
-				cli.Header(2, "Got context.Cancel: Exiting...")
-				cli.Header(1, "TODO: Cleanup")
-				break loop
-			}
+		if err := addApplication(ctx, args[0], appAgentInput); err != nil {
+			return fmt.Errorf("cannot add application: %w", err)
 		}
-		stopped := <-errs
-		if stopped != nil {
-			cli.Error("Got error while stopping: %v", stopped)
-			return
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		cli.Header(1, "Application added successfully")
+		return nil
 	},
 }
 
@@ -75,7 +56,10 @@ func addApplication(ctx context.Context, name string, agentInput string) error {
 
 	cli.SetWithDefault(appWithDefault)
 
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot load workspace")
+	}
 
 	appWithMod, err := resources.ParseServiceWithOptionalModule(name)
 	if err != nil {
@@ -89,11 +73,14 @@ func addApplication(ctx context.Context, name string, agentInput string) error {
 			return w.Wrapf(err, "cannot load module")
 		}
 	} else {
-		mod = common.RequireModule(ctx)
+		mod, err = common.LoadModule(ctx)
+		if err != nil {
+			return w.Wrapf(err, "cannot load active module")
+		}
 	}
 
 	if mod.ExistsApplication(ctx, appWithMod.Name) && !appOverride {
-		cli.GetLogger().Oops("Application <%s> already exists", appWithMod.Name)
+		return w.NewError("application <%s> already exists", appWithMod.Name)
 	}
 
 	w.Debug("input", wool.Field("agent", agentInput))
@@ -103,10 +90,13 @@ func addApplication(ctx context.Context, name string, agentInput string) error {
 		return w.Wrapf(err, "cannot get agent")
 	}
 
-	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding an application <%s> in module <%s>?", appWithMod.Name, mod.Name), true)
+	confirm, err := models.ConfirmE(ctx, fmt.Sprintf("Confirm adding an application <%s> in module <%s>?", appWithMod.Name, mod.Name), true)
+	if err != nil {
+		return w.Wrapf(err, "cannot confirm application creation")
+	}
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		cli.Exit()
+		return nil
 	}
 
 	input := &actionapplication.AddApplication{
@@ -114,9 +104,15 @@ func addApplication(ctx context.Context, name string, agentInput string) error {
 		Agent: agent.Proto(),
 	}
 
-	addDescription := models.Confirm(ctx, "Do you want to add a short description?", false)
+	addDescription, err := models.ConfirmE(ctx, "Do you want to add a short description?", false)
+	if err != nil {
+		return w.Wrapf(err, "cannot confirm application description")
+	}
 	if addDescription {
-		input.Description = models.Input("Description", "Build amazing things")
+		input.Description, err = models.Input("Description", "Build amazing things")
+		if err != nil {
+			return w.Wrapf(err, "cannot read application description")
+		}
 	}
 
 	output, err := applications.Add(ctx, workspace, mod, input)

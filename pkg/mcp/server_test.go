@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMCPServer_Initialize(t *testing.T) {
@@ -34,6 +37,71 @@ func TestMCPServer_Initialize(t *testing.T) {
 
 	// Wait for response
 	// Note: In a real test, we'd use proper synchronization
+}
+
+func TestMCPServerServeIOHonorsCancellationWhileInputBlocks(t *testing.T) {
+	server, err := NewServer(context.Background(), "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.ServeIO(ctx, reader, io.Discard) }()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ServeIO error = %v, want context cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeIO did not stop after context cancellation")
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestMCPServerParseErrorPropagatesWriteFailure(t *testing.T) {
+	server, err := NewServer(context.Background(), "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.ServeIO(context.Background(), strings.NewReader("not-json\n"), failingWriter{})
+	if err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("ServeIO error = %v", err)
+	}
+}
+
+func TestMCPServer_NotificationsDoNotWriteResponses(t *testing.T) {
+	server, err := NewServer(context.Background(), "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","method":"notifications/unknown"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"ping"}`,
+	}, "\n") + "\n"
+	var output bytes.Buffer
+	if err := server.ServeIO(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected responses only for the two requests, got %d lines: %q", len(lines), output.String())
+	}
+	if strings.Contains(output.String(), "null\n") || strings.Contains(output.String(), "notifications/unknown") {
+		t.Fatalf("notification leaked a protocol response: %q", output.String())
+	}
 }
 
 func TestMCPServer_ListTools(t *testing.T) {

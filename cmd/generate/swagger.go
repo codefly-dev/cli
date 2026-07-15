@@ -2,6 +2,7 @@ package generate
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/generators"
 
@@ -18,27 +19,41 @@ import (
 var OpenAPICmd = &cobra.Command{
 	Use:   "openAPI",
 	Short: "generate openAPI client code",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		cli.RegisterCleanup(services.ClearAgents)
+		defer services.ClearAgents()
 
-		workspace := common.RequireWorkspace(ctx)
-		svc, mod, err := workspace.FindUniqueModuleServiceByName(ctx, serviceInput)
-		cli.ExitOnError(err, "Cannot find service from input")
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return err
+		}
+		service, module, err := workspace.FindUniqueModuleServiceByName(ctx, serviceInput)
+		if err != nil {
+			return fmt.Errorf("cannot find service from input: %w", err)
+		}
 
 		destination, err = shared.SolvePath(destination)
-		cli.ExitOnError(err, "Cannot solve path")
+		if err != nil {
+			return fmt.Errorf("cannot solve destination path: %w", err)
+		}
 		language := languages.FromString(languageInput)
-		cli.ExitIf(language == languages.NotSupported, "Language not supported")
-		err = generateOpenAPI(ctx, workspace, mod, svc, language, destination)
-		cli.ExitOnError(err, "Cannot generate openAPI client code")
+		if language == languages.NotSupported {
+			return fmt.Errorf("language %q is not supported", languageInput)
+		}
+		if err := generateOpenAPI(ctx, workspace, module, service, language, destination); err != nil {
+			return fmt.Errorf("cannot generate openAPI client code: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		cli.Header(1, "Work done!")
-		cli.Done()
+		return nil
 	},
 }
 

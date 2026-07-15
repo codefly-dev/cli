@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/daemon"
 	"github.com/codefly-dev/cli/pkg/gateway"
@@ -36,7 +35,7 @@ Examples:
   codefly daemon start
   codefly daemon start -- --runtime-context nix
   codefly daemon start -- -d --service-path ./my-svc`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		var childArgs []string
 
 		// Propagate global log-level flags to the child process so the
@@ -61,8 +60,7 @@ Examples:
 
 		pid, err := daemon.Start(childArgs)
 		if err != nil {
-			cli.Error("Cannot start daemon: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot start daemon: %w", err)
 		}
 
 		logPath, _ := daemon.LogFile()
@@ -72,6 +70,7 @@ Examples:
 		if startGateway {
 			fmt.Printf("  Gateway: 127.0.0.1:%d\n", gatewayPort)
 		}
+		return nil
 	},
 }
 
@@ -80,23 +79,23 @@ Examples:
 var daemonStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the running daemon",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		status, err := daemon.GetStatus()
 		if err != nil {
-			cli.Error("Cannot check daemon status: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot check daemon status: %w", err)
 		}
 		if !status.Running {
 			fmt.Println("Daemon is not running.")
-			return
+			return nil
 		}
 
 		fmt.Printf("Stopping daemon (PID %d)...\n", status.PID)
 		if err := daemon.Stop(); err != nil {
-			cli.Error("Cannot stop daemon: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot stop daemon: %w", err)
 		}
 		fmt.Println("Daemon stopped.")
+		return nil
 	},
 }
 
@@ -105,11 +104,11 @@ var daemonStopCmd = &cobra.Command{
 var daemonStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Check if the daemon is running",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		status, err := daemon.GetStatus()
 		if err != nil {
-			cli.Error("Cannot check daemon status: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot check daemon status: %w", err)
 		}
 		if status.Running {
 			fmt.Printf("Daemon is running (PID %d)\n", status.PID)
@@ -117,6 +116,7 @@ var daemonStatusCmd = &cobra.Command{
 		} else {
 			fmt.Println("Daemon is not running.")
 		}
+		return nil
 	},
 }
 
@@ -130,46 +130,48 @@ var (
 var daemonLogsCmd = &cobra.Command{
 	Use:   "logs",
 	Short: "Show daemon log output",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		logPath, err := daemon.LogFile()
 		if err != nil {
-			cli.Error("Cannot determine log path: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot determine log path: %w", err)
 		}
 		f, err := os.Open(logPath)
 		if os.IsNotExist(err) {
 			fmt.Println("No daemon logs found.")
-			return
+			return nil
 		}
 		if err != nil {
-			cli.Error("Cannot open log file: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot open log file: %w", err)
 		}
 		defer f.Close()
 
 		if logTail > 0 {
-			printTail(f, logTail)
+			if err := printTail(f, logTail); err != nil {
+				return fmt.Errorf("read daemon log tail: %w", err)
+			}
 		} else {
-			io.Copy(os.Stdout, f)
+			if _, err := io.Copy(os.Stdout, f); err != nil {
+				return fmt.Errorf("read daemon log: %w", err)
+			}
 		}
 
 		if logFollow {
 			// Follow: keep reading as new data arrives. Catch SIGINT/SIGTERM so
 			// Ctrl-C (or `kill`) exits gracefully instead of forcing the user to
 			// force-kill a loop that otherwise never returns.
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			ctx, stop := common.SignalContext(cmd.Context())
 			defer stop()
 
 			for {
 				select {
 				case <-ctx.Done():
-					return
+					return nil
 				default:
 				}
 				n, err := io.Copy(os.Stdout, f)
 				if err != nil && err != io.EOF {
-					cli.Error("log read error: %v", err)
-					return
+					return fmt.Errorf("log read error: %w", err)
 				}
 				if n == 0 {
 					// Small sleep to avoid busy-wait
@@ -177,15 +179,16 @@ var daemonLogsCmd = &cobra.Command{
 				}
 			}
 		}
+		return nil
 	},
 }
 
 // printTail prints the last n lines of a file.
-func printTail(f *os.File, n int) {
+func printTail(f *os.File, n int) error {
 	// Read entire file (daemon logs should be manageable in size)
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return
+		return err
 	}
 	lines := strings.Split(string(data), "\n")
 	start := len(lines) - n
@@ -195,6 +198,7 @@ func printTail(f *os.File, n int) {
 	for _, line := range lines[start:] {
 		fmt.Println(line)
 	}
+	return nil
 }
 
 // --- daemon gateway (internal: runs the gateway gRPC server in foreground) ---
@@ -209,12 +213,13 @@ var daemonGatewayCmd = &cobra.Command{
 	Short:  "Run the Mind Gateway gRPC server (foreground)",
 	Long:   "Starts the Mind Gateway gRPC server in the foreground. Typically invoked by 'daemon start --gateway' or by Mind automatically.",
 	Hidden: false,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:   cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		// Catch SIGTERM too: `daemon stop` sends SIGTERM for graceful shutdown.
 		// Listening only for SIGINT meant SIGTERM killed the gateway by default
 		// disposition, skipping the deferred RemovePortFile and the server's
 		// graceful unwind — leaving a stale port file read as a live gateway.
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, stop := common.SignalContext(cmd.Context())
 		defer stop()
 
 		absDir := gatewayDir
@@ -223,25 +228,30 @@ var daemonGatewayCmd = &cobra.Command{
 		}
 
 		// CODEFLY_GATEWAY_HOST lets a container expose the gateway over the
-		// network (set it to 0.0.0.0). Empty keeps the local-only 127.0.0.1
-		// default — no behavior change for normal local runs.
+		// network (set it to 0.0.0.0). Non-loopback binds require a bearer
+		// token plus a TLS certificate/key. Supplying a client CA additionally
+		// requires verified client certificates (mTLS). Empty host keeps the
+		// local-only 127.0.0.1 default.
 		srv, err := gateway.NewServer(gateway.Config{
-			WorkDir: absDir,
-			Port:    gatewayPort,
-			Host:    os.Getenv("CODEFLY_GATEWAY_HOST"),
+			WorkDir:         absDir,
+			Port:            gatewayPort,
+			Host:            os.Getenv("CODEFLY_GATEWAY_HOST"),
+			Token:           os.Getenv("CODEFLY_GATEWAY_TOKEN"),
+			TLSCertFile:     os.Getenv("CODEFLY_GATEWAY_TLS_CERT"),
+			TLSKeyFile:      os.Getenv("CODEFLY_GATEWAY_TLS_KEY"),
+			TLSClientCAFile: os.Getenv("CODEFLY_GATEWAY_TLS_CLIENT_CA"),
 		})
 		if err != nil {
-			cli.Error("Cannot create gateway server: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot create gateway server: %w", err)
 		}
 
 		// Clean up port file on exit.
 		defer gateway.RemovePortFile()
 
 		if err := srv.Serve(ctx); err != nil {
-			cli.Error("Gateway server error: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("gateway server error: %w", err)
 		}
+		return nil
 	},
 }
 
@@ -250,18 +260,16 @@ var daemonGatewayCmd = &cobra.Command{
 var daemonRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart the running daemon (stop then start)",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		// Stop if running.
 		status, err := daemon.GetStatus()
 		if err != nil {
-			cli.Error("Cannot check daemon status: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot check daemon status: %w", err)
 		}
 		if status.Running {
 			fmt.Printf("Stopping daemon (PID %d)...\n", status.PID)
 			if err := daemon.Stop(); err != nil {
-				cli.Error("Cannot stop daemon: %v", err)
-				cli.ExitError()
+				return fmt.Errorf("cannot stop daemon: %w", err)
 			}
 			fmt.Println("Daemon stopped.")
 		}
@@ -278,14 +286,14 @@ var daemonRestartCmd = &cobra.Command{
 
 		pid, err := daemon.Start(childArgs)
 		if err != nil {
-			cli.Error("Cannot start daemon: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot start daemon: %w", err)
 		}
 
 		logPath, _ := daemon.LogFile()
 		cli.Header(1, "Daemon restarted (PID %d)", pid)
 		fmt.Printf("  Logs: %s\n", logPath)
 		fmt.Printf("  Stop: codefly daemon stop\n")
+		return nil
 	},
 }
 
@@ -306,7 +314,8 @@ var daemonMonitorCmd = &cobra.Command{
 
 Use -w/--watch for continuous monitoring.
 Use --kill-orphans to clean up orphaned agent processes.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := daemon.DefaultMonitorConfig()
 
 		if monitorKill {
@@ -316,29 +325,29 @@ Use --kill-orphans to clean up orphaned agent processes.`,
 			// go-generic agent by name with no liveness check — which SIGKILLed
 			// the agents of any concurrent `codefly run`, re-creating the exact
 			// orphan/zombie state this command exists to clean up.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 			defer cancel()
 			if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
-				cli.Error("Cannot reap orphaned process groups: %v", err)
-				cli.ExitError()
+				return fmt.Errorf("cannot reap orphaned process groups: %w", err)
 			}
 			fmt.Println("Reaped orphaned agent process groups (live runs left untouched).")
-			return
+			return nil
 		}
 
 		if monitorWatch {
 			fmt.Println("Monitoring codefly processes (Ctrl+C to stop)...")
-			daemon.RunMonitorLoop(cfg)
-			return
+			ctx, stop := common.SignalContext(cmd.Context())
+			defer stop()
+			return daemon.RunMonitorLoop(ctx, cfg)
 		}
 
 		// One-shot check
 		result, err := daemon.Monitor(cfg)
 		if err != nil {
-			cli.Error("Monitor failed: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("monitor failed: %w", err)
 		}
 		fmt.Print(daemon.FormatStatus(result))
+		return nil
 	},
 }
 

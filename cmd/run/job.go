@@ -1,7 +1,7 @@
 package run
 
 import (
-	"os"
+	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -30,41 +30,42 @@ Examples:
   codefly run job db-migration --module=backend --with-services
 `,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		name := args[0]
-		runJob(name)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJob(args[0])
 	},
 }
 
-func runJob(name string) {
+func runJob(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace := common.RequireWorkspace(ctx)
-
-	// Get module
-	if runJobModule == "" {
-		// Try to get from active context
-		mod := common.Module(ctx)
-		if mod != nil {
-			runJobModule = mod.Name
-		} else {
-			cli.Error("Please specify --module")
-			os.Exit(1)
-		}
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
 	}
 
-	mod, err := workspace.LoadModuleFromName(ctx, runJobModule)
+	// Get module
+	moduleName := runJobModule
+	if moduleName == "" {
+		// Try to get from active context
+		activeModule, loadErr := common.LoadModule(ctx)
+		if loadErr != nil {
+			return fmt.Errorf("please specify --module: %w", loadErr)
+		}
+		moduleName = activeModule.Name
+	}
+
+	mod, err := workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
-		cli.ExitOnError(err, "module not found")
+		return fmt.Errorf("module not found: %w", err)
 	}
 
 	job, err := mod.LoadJobFromName(ctx, name)
 	if err != nil {
-		cli.ExitOnError(err, "job not found")
+		return fmt.Errorf("job not found: %w", err)
 	}
 
-	cli.Header(2, "Running job <%s/%s>", runJobModule, name)
+	cli.Header(2, "Running job <%s/%s>", moduleName, name)
 	cli.Info("Version: %s", job.Version)
 	if job.Description != "" {
 		cli.Info("Description: %s", job.Description)
@@ -99,6 +100,7 @@ func runJob(name string) {
 	cli.Warning("Job execution not yet fully implemented.")
 	cli.Info("Job configuration loaded successfully.")
 	cli.Info("Agent: %v", job.Agent)
+	return nil
 }
 
 func init() {

@@ -4,12 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
 )
-
-var _active *ActiveContext
 
 type ActiveContext struct {
 	Workspace *resources.Workspace
@@ -18,9 +15,6 @@ type ActiveContext struct {
 }
 
 func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
-	if _active != nil {
-		return _active, nil
-	}
 	active := &ActiveContext{}
 
 	workspace, err := resources.FindWorkspaceUp(ctx)
@@ -61,7 +55,6 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 		}
 	}
 
-	_active = active
 	return active, nil
 }
 
@@ -90,7 +83,10 @@ func autoResolveService(ctx context.Context, workspace *resources.Workspace) (*r
 			return nil, nil, selectErr
 		}
 		if result.Stopped {
-			cli.Exit()
+			return nil, nil, fmt.Errorf("service selection cancelled")
+		}
+		if result.Entry == nil {
+			return nil, nil, fmt.Errorf("service selection returned no entry")
 		}
 		for _, svc := range services {
 			if svc.Name == result.Entry.Identifier {
@@ -118,55 +114,40 @@ func autoResolveService(ctx context.Context, workspace *resources.Workspace) (*r
 	return picked, nil, nil
 }
 
-func Service(ctx context.Context) *resources.Service {
+// LoadService returns the active service without terminating the process.
+func LoadService(ctx context.Context) (*resources.Service, error) {
 	active, err := LoadActiveContext(ctx)
-	cli.ExitOnError(err, "cannot load active context")
-	return active.Service
-}
-
-func RequireService(ctx context.Context) *resources.Service {
-	service := Service(ctx)
-	if service == nil {
-		cli.Error("No service found: run inside a service folder or use workspace")
-		cli.ExitError()
+	if err != nil {
+		return nil, err
 	}
-	return service
+	if active.Service == nil {
+		return nil, fmt.Errorf("no service found")
+	}
+	return active.Service, nil
 }
 
-func Module(ctx context.Context) *resources.Module {
+// LoadModule returns the active module without terminating the process.
+func LoadModule(ctx context.Context) (*resources.Module, error) {
 	active, err := LoadActiveContext(ctx)
-	cli.ExitOnError(err, "cannot load active context")
-	return active.Module
-}
-
-func RequireModule(ctx context.Context) *resources.Module {
-	module := Module(ctx)
-	if module == nil {
-		cli.Error("No module found: run inside an module folder or use workspace")
-		cli.ExitError()
+	if err != nil {
+		return nil, err
 	}
-	return module
+	if active.Module == nil {
+		return nil, fmt.Errorf("no module found")
+	}
+	return active.Module, nil
 }
 
-// Workspace returns the workspace from the current directory.
-// Does NOT resolve module or service — safe for workspace-level commands
-// (add module, delete module, list modules) and non-interactive/MCP modes.
-func Workspace(ctx context.Context) *resources.Workspace {
+// LoadWorkspace returns the enclosing workspace without terminating the
+// process. RunE commands should prefer this over Workspace/RequireWorkspace so
+// Cobra and deferred cleanup can observe failures.
+func LoadWorkspace(ctx context.Context) (*resources.Workspace, error) {
 	workspace, err := resources.FindWorkspaceUp(ctx)
-	if err != nil || workspace == nil {
-		// Fall back to full context resolution for backward compatibility
-		active, err := LoadActiveContext(ctx)
-		cli.ExitOnError(err, "cannot load active context")
-		return active.Workspace
+	if err != nil {
+		return nil, err
 	}
-	return workspace
-}
-
-func RequireWorkspace(ctx context.Context) *resources.Workspace {
-	workspace := Workspace(ctx)
 	if workspace == nil {
-		cli.Error("No workspace found: run inside a workspace folder or use workspace")
-		cli.ExitError()
+		return nil, fmt.Errorf("no workspace found")
 	}
-	return workspace
+	return workspace, nil
 }

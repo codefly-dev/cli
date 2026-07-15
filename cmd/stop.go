@@ -1,8 +1,13 @@
 package cmd
 
 import (
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/spf13/cobra"
 )
+
+func stopClearOptions() clearOptions {
+	return clearOptions{verb: "stop", keepContainers: true}
+}
 
 // StopCmd stops a running codefly stack — the command muscle-memory reaches for.
 // Its ABSENCE was a real footgun: `codefly stop` errored "unknown command" and
@@ -18,10 +23,12 @@ var StopCmd = &cobra.Command{
 	Use:     "stop [name-filter...]",
 	Short:   "Stop codefly processes + reap orphaned groups (keeps stateful containers; use `clear` for a full reset)",
 	Aliases: []string{"down", "kill"},
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
 		// Same machinery as `clear`, but keep containers (reuse stateful infra).
-		clearVerb = "stop"
-		clearKeepContainers = true
-		clearCommand(args)
+		return clearCommand(ctx, args, stopClearOptions())
 	},
 }

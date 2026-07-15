@@ -1,10 +1,12 @@
-// Process monitor for codefly — detects runaway agent processes.
-// Runs in the background, checks CPU/memory of all codefly-related processes.
-// Kills anything that exceeds thresholds and logs warnings.
+// Process monitor for codefly — observes agent process resource usage.
+// Runs in the background, checks CPU/memory of codefly-related processes, and
+// logs warnings. Process termination belongs to the session-aware reaper, which
+// knows the process group and parentage; this monitor deliberately never kills.
 
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -18,7 +20,7 @@ import (
 // MonitorConfig configures the process monitor.
 type MonitorConfig struct {
 	CheckInterval time.Duration // how often to check (default 30s)
-	CPUThreshold  float64       // kill if CPU% exceeds this for 2 checks (default 200%)
+	CPUThreshold  float64       // warn if CPU% exceeds this (default 200%)
 	MemoryMB      int           // warn if RSS exceeds this (default 512MB)
 	MaxOrphans    int           // max orphaned agent processes (default 3)
 	LogPath       string        // monitor log file
@@ -50,36 +52,23 @@ type MonitorResult struct {
 	Timestamp  time.Time
 	Processes  []ProcessInfo
 	Warnings   []string
-	Killed     []int // PIDs that were killed
+	Killed     []int // Deprecated: retained for compatibility; always empty.
 	TotalCPU   float64
 	TotalMemMB float64
 }
 
 // CheckProcesses scans for codefly-related processes and returns their status.
 func CheckProcesses() ([]ProcessInfo, error) {
-	// Use ps to get all processes with CPU and memory
+	// Use ps to get all processes with CPU and memory.
 	out, err := exec.Command("ps", "aux").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ps failed: %w", err)
 	}
 
 	var processes []ProcessInfo
-	patterns := []string{"go-grpc", "go-generic", "codefly", "neo4j", "mind-server"}
-
 	for _, line := range strings.Split(string(out), "\n") {
-		matched := false
-		for _, pat := range patterns {
-			if strings.Contains(line, pat) && !strings.Contains(line, "grep") {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			continue
-		}
-
 		info := parsePSLine(line)
-		if info != nil {
+		if info != nil && isCodeflyRelatedProcess(info.Command) {
 			processes = append(processes, *info)
 		}
 	}
@@ -111,14 +100,6 @@ func Monitor(cfg MonitorConfig) (*MonitorResult, error) {
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("HIGH CPU: PID %d (%s) at %.1f%% CPU", p.PID, p.Name, p.CPU))
 
-			// Kill runaway agent processes (not the main codefly process)
-			if isAgentProcess(p.Name) {
-				if err := killProcess(p.PID); err == nil {
-					result.Killed = append(result.Killed, p.PID)
-					result.Warnings = append(result.Warnings,
-						fmt.Sprintf("KILLED: PID %d (%s) — CPU exceeded %.0f%%", p.PID, p.Name, cfg.CPUThreshold))
-				}
-			}
 		}
 
 		// Memory threshold check
@@ -144,7 +125,7 @@ func Monitor(cfg MonitorConfig) (*MonitorResult, error) {
 
 // RunMonitorLoop runs the monitor continuously in the background.
 // Call this as a goroutine from the codefly daemon.
-func RunMonitorLoop(cfg MonitorConfig) {
+func RunMonitorLoop(ctx context.Context, cfg MonitorConfig) error {
 	var logger *log.Logger
 	if cfg.LogPath != "" {
 		f, err := os.OpenFile(cfg.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -157,51 +138,29 @@ func RunMonitorLoop(cfg MonitorConfig) {
 		logger = log.New(os.Stderr, "[monitor] ", log.LstdFlags)
 	}
 
-	// Track consecutive high-CPU for the same PID (kill after 2 checks)
-	highCPUCount := make(map[int]int)
-
 	ticker := time.NewTicker(cfg.CheckInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		result, err := Monitor(cfg)
-		if err != nil {
-			logger.Printf("check failed: %v", err)
-			continue
-		}
-
-		// Update high-CPU tracking
-		currentPIDs := make(map[int]bool)
-		for _, p := range result.Processes {
-			currentPIDs[p.PID] = true
-			if p.CPU > cfg.CPUThreshold/2 { // track at half threshold
-				highCPUCount[p.PID]++
-				if highCPUCount[p.PID] >= 2 && isAgentProcess(p.Name) {
-					logger.Printf("KILLING PID %d (%s): high CPU for %d consecutive checks (%.1f%%)",
-						p.PID, p.Name, highCPUCount[p.PID], p.CPU)
-					killProcess(p.PID)
-				}
-			} else {
-				highCPUCount[p.PID] = 0
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			result, err := Monitor(cfg)
+			if err != nil {
+				logger.Printf("check failed: %v", err)
+				continue
 			}
-		}
 
-		// Clean up tracking for dead processes
-		for pid := range highCPUCount {
-			if !currentPIDs[pid] {
-				delete(highCPUCount, pid)
+			// Log warnings
+			for _, w := range result.Warnings {
+				logger.Println(w)
 			}
-		}
 
-		// Log warnings
-		for _, w := range result.Warnings {
-			logger.Println(w)
-		}
-
-		// Periodic status (every 10 checks)
-		if len(result.Processes) > 0 {
-			logger.Printf("status: %d processes, %.1f%% total CPU, %.0fMB total memory",
-				len(result.Processes), result.TotalCPU, result.TotalMemMB)
+			if len(result.Processes) > 0 {
+				logger.Printf("status: %d processes, %.1f%% total CPU, %.0fMB total memory",
+					len(result.Processes), result.TotalCPU, result.TotalMemMB)
+			}
 		}
 	}
 }
@@ -267,22 +226,43 @@ func parsePSLine(line string) *ProcessInfo {
 }
 
 func extractProcessName(command string) string {
-	for _, name := range []string{"go-grpc", "go-generic", "mind-server", "neo4j", "codefly"} {
-		if strings.Contains(command, name) {
-			return name
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	executable := filepath.Base(strings.Trim(fields[0], "\"'"))
+	switch executable {
+	case "go-grpc", "go-generic", "mind-server", "neo4j", "codefly":
+		return executable
+	}
+	for _, field := range fields[1:] {
+		name := filepath.Base(strings.Trim(field, "\"'"))
+		if strings.HasPrefix(name, "org.neo4j.") {
+			return "neo4j"
 		}
 	}
-	return filepath.Base(strings.Fields(command)[0])
+	return executable
+}
+
+func isCodeflyRelatedProcess(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	executable := filepath.Base(strings.Trim(fields[0], "\"'"))
+	switch executable {
+	case "go-grpc", "go-generic", "mind-server", "neo4j", "codefly":
+		return true
+	}
+	for _, field := range fields[1:] {
+		name := filepath.Base(strings.Trim(field, "\"'"))
+		if strings.HasPrefix(name, "org.neo4j.") {
+			return true
+		}
+	}
+	return false
 }
 
 func isAgentProcess(name string) bool {
 	return name == "go-grpc" || name == "go-generic"
-}
-
-func killProcess(pid int) error {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	return proc.Signal(os.Kill)
 }

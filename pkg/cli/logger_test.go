@@ -3,6 +3,7 @@ package cli
 import (
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,9 +57,7 @@ func TestMilestoneEmitterSuppressesConsecutiveRepeats(t *testing.T) {
 }
 
 func TestLogUsesNarrationMarkerForForward(t *testing.T) {
-	oldMax := maxUnique
-	maxUnique = len("infra/postgres")
-	defer func() { maxUnique = oldMax }()
+	defer withMaxUnique(len("infra/postgres"))()
 	defer withTimestamps(false)()
 
 	lines := formattedLogLines("infra/postgres", MarkerNarration, &wool.Log{
@@ -103,16 +102,8 @@ func TestSuppressedLoggerRoutesUnsourcedLogsToOutputSink(t *testing.T) {
 	}
 }
 
-// NOTE: these tests mutate the package-level maxUnique global to
-// pin the padding width. Do NOT call t.Parallel() in this file —
-// concurrent assignment to maxUnique races and produces flaky
-// width assertions. If you need parallelism here, refactor
-// formattedLogLines to take width as a parameter instead.
-
 func TestFormattedLogLinesTrimsForwardNewlines(t *testing.T) {
-	oldMax := maxUnique
-	maxUnique = len("infra/postgres")
-	defer func() { maxUnique = oldMax }()
+	defer withMaxUnique(len("infra/postgres"))()
 	defer withTimestamps(false)()
 
 	lines := formattedLogLines("infra/postgres", ">", &wool.Log{
@@ -129,9 +120,7 @@ func TestFormattedLogLinesTrimsForwardNewlines(t *testing.T) {
 }
 
 func TestFormattedLogLinesPrefixesEachMultilineEntry(t *testing.T) {
-	oldMax := maxUnique
-	maxUnique = len("infra/postgres")
-	defer func() { maxUnique = oldMax }()
+	defer withMaxUnique(len("infra/postgres"))()
 	defer withTimestamps(false)()
 
 	lines := formattedLogLines("infra/postgres", ">", &wool.Log{
@@ -161,10 +150,13 @@ func withTimestamps(on bool) func() {
 	return func() { timestamps.Store(prev) }
 }
 
+func withMaxUnique(width int) func() {
+	previous := maxUnique.Swap(int64(width))
+	return func() { maxUnique.Store(previous) }
+}
+
 func TestFormattedLogLinesPrependsWallClockWhenEnabled(t *testing.T) {
-	oldMax := maxUnique
-	maxUnique = len("infra/postgres")
-	defer func() { maxUnique = oldMax }()
+	defer withMaxUnique(len("infra/postgres"))()
 	defer withTimestamps(true)()
 
 	lines := formattedLogLines("infra/postgres", ">", &wool.Log{
@@ -218,4 +210,22 @@ func TestWithSilence_ConcurrentLog_RaceFree(t *testing.T) {
 
 	close(stop)
 	<-done
+}
+
+func TestLoggerStateConcurrentAccess(t *testing.T) {
+	logger := &Logger{}
+	var wg sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < 1_000; i++ {
+				logger.setSuppressed((worker+i)%2 == 0)
+				_ = logger.isSuppressed()
+				RegisterLoggingResource(strings.Repeat("x", (worker+i)%128))
+				_ = maxUnique.Load()
+			}
+		}(worker)
+	}
+	wg.Wait()
 }

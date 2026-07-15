@@ -2,7 +2,6 @@ package add
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -40,52 +39,51 @@ Examples:
   codefly add library-dependency shared-models --service=api --module=backend --languages=go
 `,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		libraryName := args[0]
-		addLibraryDependency(libraryName)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return addLibraryDependency(args[0])
 	},
 }
 
-func addLibraryDependency(libraryName string) {
+func addLibraryDependency(libraryName string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
 
 	// Validate library exists
 	lib, err := workspace.LoadLibraryFromName(ctx, libraryName)
 	if err != nil {
-		cli.ExitOnError(err, "library not found")
+		return fmt.Errorf("library not found: %w", err)
 	}
 
 	// Get service
-	if libDepModule == "" || libDepService == "" {
+	moduleName, serviceName := libDepModule, libDepService
+	if moduleName == "" || serviceName == "" {
 		// Try to get from active context
-		active := common.Service(ctx)
-		if active != nil {
-			libDepModule = common.Module(ctx).Name
-			libDepService = active.Name
-		} else {
-			cli.Error("Please specify --service and --module")
-			os.Exit(1)
+		active, loadErr := common.LoadActiveContext(ctx)
+		if loadErr != nil || active.Module == nil || active.Service == nil {
+			return fmt.Errorf("please specify --service and --module")
 		}
+		moduleName, serviceName = active.Module.Name, active.Service.Name
 	}
 
-	mod, err := workspace.LoadModuleFromName(ctx, libDepModule)
+	mod, err := workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
-		cli.ExitOnError(err, "module not found")
+		return fmt.Errorf("module not found: %w", err)
 	}
 
-	svc, err := mod.LoadServiceFromName(ctx, libDepService)
+	svc, err := mod.LoadServiceFromName(ctx, serviceName)
 	if err != nil {
-		cli.ExitOnError(err, "service not found")
+		return fmt.Errorf("service not found: %w", err)
 	}
 
 	// Check if dependency already exists
 	for _, dep := range svc.LibraryDependencies {
 		if dep.Name == libraryName {
-			cli.Error("Service already depends on library <%s>", libraryName)
-			os.Exit(1)
+			return fmt.Errorf("service already depends on library <%s>", libraryName)
 		}
 	}
 
@@ -106,11 +104,11 @@ func addLibraryDependency(libraryName string) {
 
 	confirm := models.Confirm(ctx,
 		fmt.Sprintf("Add library <%s> (%s) as dependency to service <%s/%s>?",
-			libraryName, version, libDepModule, libDepService),
+			libraryName, version, moduleName, serviceName),
 		true)
 	if !confirm {
 		cli.Header(2, "Cancelled.")
-		os.Exit(0)
+		return nil
 	}
 
 	// Add the dependency
@@ -122,10 +120,10 @@ func addLibraryDependency(libraryName string) {
 
 	// Save service
 	if err := svc.Save(ctx); err != nil {
-		cli.ExitOnError(err, "failed to save service")
+		return fmt.Errorf("failed to save service: %w", err)
 	}
 
-	cli.Header(2, "Library dependency added to %s/%s", libDepModule, libDepService)
+	cli.Header(2, "Library dependency added to %s/%s", moduleName, serviceName)
 
 	// Setup local development if requested
 	if libDepSetupLocal {
@@ -140,8 +138,9 @@ func addLibraryDependency(libraryName string) {
 	} else {
 		cli.Info("")
 		cli.Info("To setup local development (go.mod replace, etc), run:")
-		cli.Info("  codefly sync library-dependencies --service=%s --module=%s", libDepService, libDepModule)
+		cli.Info("  codefly sync library-dependencies --service=%s --module=%s", serviceName, moduleName)
 	}
+	return nil
 }
 
 func init() {

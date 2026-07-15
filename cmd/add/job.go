@@ -2,7 +2,6 @@ package add
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -42,40 +41,41 @@ Examples:
   codefly add job data-import --module=backend --timeout=1h
 `,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		name := args[0]
-		addJob(name)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return addJob(args[0])
 	},
 }
 
-func addJob(name string) {
+func addJob(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace := common.RequireWorkspace(ctx)
-
-	// Get module
-	if jobModule == "" {
-		// Try to get from active context
-		mod := common.Module(ctx)
-		if mod != nil {
-			jobModule = mod.Name
-		} else {
-			cli.Error("Please specify --module")
-			os.Exit(1)
-		}
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
 	}
 
-	mod, err := workspace.LoadModuleFromName(ctx, jobModule)
+	// Get module
+	moduleName := jobModule
+	if moduleName == "" {
+		// Try to get from active context
+		activeModule, loadErr := common.LoadModule(ctx)
+		if loadErr != nil {
+			return fmt.Errorf("please specify --module: %w", loadErr)
+		}
+		moduleName = activeModule.Name
+	}
+
+	mod, err := workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
-		cli.ExitOnError(err, "module not found")
+		return fmt.Errorf("module not found: %w", err)
 	}
 
 	// Check if job already exists
-	_, err = mod.LoadJobFromName(ctx, name)
-	if err == nil {
-		cli.Error("Job <%s> already exists in module <%s>", name, jobModule)
-		os.Exit(1)
+	for _, ref := range mod.JobReferences {
+		if resources.ReferenceMatch(ref.Name, name) {
+			return fmt.Errorf("job <%s> already exists in module <%s>", name, moduleName)
+		}
 	}
 
 	// Determine execution type
@@ -89,15 +89,13 @@ func addJob(name string) {
 		case "triggered":
 			execType = resources.JobExecutionTriggered
 		default:
-			cli.Error("Invalid execution type: %s (use one-shot, scheduled, or triggered)", jobExecutionType)
-			os.Exit(1)
+			return fmt.Errorf("invalid execution type %q (use one-shot, scheduled, or triggered)", jobExecutionType)
 		}
 	}
 
 	// Validate scheduled jobs have a schedule
 	if execType == resources.JobExecutionScheduled && jobSchedule == "" {
-		cli.Error("Scheduled jobs require --schedule with a cron expression")
-		os.Exit(1)
+		return fmt.Errorf("scheduled jobs require --schedule with a cron expression")
 	}
 
 	// Default timeout
@@ -107,17 +105,17 @@ func addJob(name string) {
 	}
 
 	confirm := models.Confirm(ctx,
-		fmt.Sprintf("Add job <%s> to module <%s>?", name, jobModule),
+		fmt.Sprintf("Add job <%s> to module <%s>?", name, moduleName),
 		true)
 	if !confirm {
 		cli.Header(2, "Cancelled.")
-		os.Exit(0)
+		return nil
 	}
 
 	// Create the job
 	job, err := mod.NewJob(ctx, name)
 	if err != nil {
-		cli.ExitOnError(err, "cannot create job")
+		return fmt.Errorf("cannot create job: %w", err)
 	}
 
 	// Configure execution
@@ -139,26 +137,27 @@ func addJob(name string) {
 
 	// Save job
 	if err := job.Save(ctx); err != nil {
-		cli.ExitOnError(err, "failed to save job")
+		return fmt.Errorf("failed to save job: %w", err)
 	}
 
 	// Add job reference to module
 	if err := mod.AddJobReference(ctx, &resources.JobReference{Name: name}); err != nil {
-		cli.ExitOnError(err, "failed to add job reference to module")
+		return fmt.Errorf("failed to add job reference to module: %w", err)
 	}
 
 	// Save module
 	if err := mod.Save(ctx); err != nil {
-		cli.ExitOnError(err, "failed to save module")
+		return fmt.Errorf("failed to save module: %w", err)
 	}
 
-	cli.Header(2, "Job <%s> created in module <%s>", name, jobModule)
+	cli.Header(2, "Job <%s> created in module <%s>", name, moduleName)
 	cli.Info("Path: %s", job.Dir())
 	cli.Info("")
 	cli.Info("Next steps:")
 	cli.Info("  1. Configure the job agent in %s/job.codefly.yaml", job.Dir())
 	cli.Info("  2. Add your job code")
-	cli.Info("  3. Run with: codefly run job %s --module=%s", name, jobModule)
+	cli.Info("  3. Run with: codefly run job %s --module=%s", name, moduleName)
+	return nil
 }
 
 func init() {

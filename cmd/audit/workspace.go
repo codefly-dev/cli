@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -21,19 +20,24 @@ import (
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Audit every service in the workspace",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		defer services.ClearAgents()
 
 		workspace, err := resources.FindWorkspaceUp(ctx)
-		cli.ExitOnError(err, "cannot find workspace")
+		if err != nil {
+			return fmt.Errorf("cannot find workspace: %w", err)
+		}
 		if workspace == nil {
-			cli.ExitWithMessage("no workspace found")
+			return fmt.Errorf("no workspace found")
 		}
 
 		all, err := loadAllServices(ctx, workspace)
-		cli.ExitOnError(err, "cannot enumerate services")
+		if err != nil {
+			return fmt.Errorf("cannot enumerate services: %w", err)
+		}
 
 		anyHighSeverity := false
 		anyError := false
@@ -61,15 +65,21 @@ var WorkspaceCmd = &cobra.Command{
 			}
 		}
 
-		// Exit non-zero when a service audit errored (the run is incomplete and
-		// CI should notice), or when --fail-on-vuln is set and a HIGH/CRITICAL
-		// finding surfaced. ClearAgents must run explicitly: os.Exit skips the
-		// deferred cleanup, which would orphan the per-service builder agents.
-		if anyError || (failOnVuln && anyHighSeverity) {
-			services.ClearAgents()
-			os.Exit(1)
+		if err := workspaceAuditResult(anyError, failOnVuln, anyHighSeverity); err != nil {
+			return err
 		}
+		return nil
 	},
+}
+
+func workspaceAuditResult(anyError, failOnVuln, anyHighSeverity bool) error {
+	if anyError {
+		return fmt.Errorf("workspace audit incomplete because one or more services failed")
+	}
+	if failOnVuln && anyHighSeverity {
+		return fmt.Errorf("workspace audit found HIGH or CRITICAL vulnerabilities")
+	}
+	return nil
 }
 
 type moduleService struct {

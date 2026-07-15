@@ -2,9 +2,13 @@ package ci
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -25,6 +29,42 @@ var loadOnly bool
 var initOnly bool
 
 type Action func(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error
+
+type flowStopper interface {
+	Stop() error
+}
+
+// runAndStopFlow guarantees that every CI flow is stopped exactly once. Both
+// the operation and teardown errors are retained so a cleanup failure cannot
+// hide the original build/test/deploy failure (or vice versa).
+func runAndStopFlow(flow flowStopper, action func() error) (result error) {
+	stopped := false
+	stop := func() error {
+		if stopped {
+			return nil
+		}
+		stopped = true
+		defer services.ClearAgents()
+		if flow == nil {
+			return nil
+		}
+		return flow.Stop()
+	}
+	defer func() {
+		if err := stop(); err != nil {
+			result = errors.Join(result, fmt.Errorf("cannot stop flow: %w", err))
+		}
+	}()
+
+	if action == nil {
+		return nil
+	}
+	return action()
+}
+
+func stopFlowAfterError(flow *orchestration.Flow, err error) error {
+	return runAndStopFlow(flow, func() error { return err })
+}
 
 func CI(ctx context.Context, workspace *resources.Workspace, action Action) error {
 	w := wool.Get(ctx).In("deployCI")

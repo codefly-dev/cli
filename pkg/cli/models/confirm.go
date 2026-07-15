@@ -9,16 +9,24 @@ import (
 )
 
 func Confirm(ctx context.Context, s string, defaultValue bool) bool {
+	confirmed, _ := ConfirmE(ctx, s, defaultValue)
+	return confirmed
+}
+
+// ConfirmE distinguishes an explicit negative answer from Ctrl+C. Command
+// call sites that treat both as a clean decline can use Confirm; RPC prompt
+// bridges should propagate ErrPromptCancelled to their caller.
+func ConfirmE(ctx context.Context, s string, defaultValue bool) (bool, error) {
 	if cli.WithDefault() {
-		return defaultValue
+		return defaultValue, nil
 	}
 	result, err := tui.RunConfirm(s, defaultValue)
 	if err != nil {
-		return false
+		return false, err
 	}
 	if result.Stopped {
 		common.Cancel(ctx)
-		cli.Exit()
+		return false, ErrPromptCancelled
 	}
-	return result.Confirmed
+	return result.Confirmed, nil
 }

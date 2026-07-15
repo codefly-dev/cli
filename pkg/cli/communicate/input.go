@@ -11,7 +11,10 @@ import (
 func Input(ctx context.Context, msg *agentv0.Message, c *agentv0.Input) (*agentv0.Answer, error) {
 	cli.Header(2, "%s", msg.Description)
 	// TODO: Deal with int
-	input := models.Input(msg.Message, c.GetStringDefault())
+	input, err := models.Input(msg.Message, c.GetStringDefault())
+	if err != nil {
+		return nil, err
+	}
 	return &agentv0.Answer{
 		Value: &agentv0.Answer_Input{
 			Input: &agentv0.InputAnswer{

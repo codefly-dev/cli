@@ -19,26 +19,20 @@ import (
 var ModuleCmd = &cobra.Command{
 	Use:   "module",
 	Short: "Add a module",
+	Args:  cobra.ExactArgs(1),
 
-	Run: func(cmd *cobra.Command, args []string) {
-
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {
-			cli.Error("Interactive mode not implemented yet")
-			cli.ExitError()
+			return fmt.Errorf("interactive mode not implemented yet")
 		}
-		if len(args) != 1 {
-			cli.Error("You must provide a name for the module as the single argument")
-			return
-		}
-		name := args[0]
-		addModule(name)
+		return addModule(args[0])
 	},
 }
 
 var moduleAgentInput string
 var moduleWithDefault bool
 
-func addModule(name string) {
+func addModule(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
@@ -47,11 +41,13 @@ func addModule(name string) {
 	// Non-interactive mode: skip all TUI prompts (for MCP, CI, scripts)
 	cli.SetWithDefault(moduleWithDefault)
 
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
 
 	if workspace.ExistsModule(name) {
-		cli.Error("Module <%s> already exists", name)
-		os.Exit(0)
+		return fmt.Errorf("module <%s> already exists", name)
 	}
 
 	// In non-interactive mode (--yes), skip confirmation
@@ -59,7 +55,7 @@ func addModule(name string) {
 		confirm := models.Confirm(ctx, fmt.Sprintf("Add a module in your workspace <%s>?", workspace.Name), true)
 		if !confirm {
 			cli.Header(2, "Received loud and clear!")
-			os.Exit(0)
+			return nil
 		}
 	}
 
@@ -68,7 +64,9 @@ func addModule(name string) {
 	if moduleAgentInput != "" {
 		var err error
 		agent, err = common.GetModuleAgent(ctx, moduleAgentInput)
-		cli.ExitOnError(err, "cannot resolve module agent")
+		if err != nil {
+			return fmt.Errorf("cannot resolve module agent: %w", err)
+		}
 		cli.Header(2, "Using module template: %s", agent.Identifier())
 	}
 
@@ -80,12 +78,18 @@ func addModule(name string) {
 	}
 
 	action, err := actionsmodule.NewActionAddModule(ctx, input)
-	cli.ExitOnError(err, "cannot create action")
+	if err != nil {
+		return fmt.Errorf("cannot create action: %w", err)
+	}
 	out, err := actions.Run(ctx, action, &actions.Space{Workspace: workspace})
-	cli.ExitOnError(err, "cannot add module")
+	if err != nil {
+		return fmt.Errorf("cannot add module: %w", err)
+	}
 
 	mod, err := actions.As[resources.Module](out)
-	cli.ExitOnError(err, "cannot add module")
+	if err != nil {
+		return fmt.Errorf("cannot read added module: %w", err)
+	}
 
 	// If a module agent was specified, execute it to scaffold services and templates
 	if agent != nil {
@@ -99,13 +103,14 @@ func addModule(name string) {
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
-				cli.ExitOnError(err, "module agent failed")
+				return fmt.Errorf("module agent failed: %w", err)
 			}
 			cli.Header(2, "Module agent scaffolded services for <%s>", name)
 		}
 	}
 
 	cli.Header(2, "Module <%s> added.", mod.Name)
+	return nil
 }
 
 func init() {

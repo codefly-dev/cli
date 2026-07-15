@@ -6,15 +6,17 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
 
 var completionInstall bool
 
 var CompletionCmd = &cobra.Command{
-	Use:                   "completion [bash|zsh|fish|powershell]",
-	Short:                 "Generate (or --install) the shell completion script",
+	Use:   "completion [bash|zsh|fish|powershell]",
+	Short: "Generate (or --install) the shell completion script",
 	Long: `Generate the completion script for the given shell to stdout, or
 write it to that shell's conventional location with --install.
 
@@ -27,7 +29,10 @@ write it to that shell's conventional location with --install.
 	// Require exactly one of the valid shell args. Without this, bare
 	// `codefly completion` indexed args[0] and panicked (index out of range).
 	Args: cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+
 		var buf bytes.Buffer
 		var err error
 		switch args[0] {
@@ -40,22 +45,28 @@ write it to that shell's conventional location with --install.
 		case "powershell":
 			err = cmd.Root().GenPowerShellCompletionWithDesc(&buf)
 		default:
-			cli.Error("Unsupported shell type <%s>.", args[0])
-			cli.ExitError()
+			return fmt.Errorf("unsupported shell type %q", args[0])
 		}
-		cli.ExitOnError(err, "cannot generate completion script")
+		if err != nil {
+			return fmt.Errorf("cannot generate completion script: %w", err)
+		}
 
 		if !completionInstall {
-			_, err = os.Stdout.Write(buf.Bytes())
-			cli.ExitOnError(err, "cannot write completion script")
-			return
+			if _, err := os.Stdout.Write(buf.Bytes()); err != nil {
+				return fmt.Errorf("cannot write completion script: %w", err)
+			}
+			return nil
 		}
 
 		dest, err := completionInstallPath(args[0])
-		cli.ExitOnError(err, "cannot resolve completion install path")
-		cli.ExitOnError(os.MkdirAll(filepath.Dir(dest), 0o755), "cannot create completion directory")
-		cli.ExitOnError(os.WriteFile(dest, buf.Bytes(), 0o644), "cannot write completion file")
+		if err != nil {
+			return fmt.Errorf("cannot resolve completion install path: %w", err)
+		}
+		if err := shared.WriteFileAtomic(ctx, dest, buf.Bytes(), 0o644); err != nil {
+			return fmt.Errorf("cannot write completion file: %w", err)
+		}
 		cli.Info("Installed %s completion to %s", args[0], dest)
+		return nil
 	},
 }
 

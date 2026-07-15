@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
 )
@@ -9,9 +11,13 @@ import (
 var VersionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Version of codefly",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		version, err := cli.GetCurrentVersion()
-		cli.ExitOnError(err, "Cannot get current version")
+		if err != nil {
+			return fmt.Errorf("cannot get current version: %w", err)
+		}
 		cmd.Println(version)
+		return nil
 	},
 }

@@ -19,15 +19,12 @@ var WorkspaceCmd = &cobra.Command{
 	Short: "Create a new workspace",
 	Args:  cobra.ExactArgs(1),
 
-	Run: func(cmd *cobra.Command, args []string) {
-
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {
-			cli.Error("Interactive mode not implemented yet")
-			cli.ExitError()
+			return fmt.Errorf("interactive mode not implemented yet")
 		}
-		name := args[0]
 		cli.SetWithDefault(withDefault)
-		newWorkspace(name)
+		return newWorkspace(args[0])
 	},
 }
 
@@ -36,17 +33,24 @@ var (
 	withDefault bool
 )
 
-func newWorkspace(name string) {
+func newWorkspace(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
+	ctx, stop := common.SignalContext(ctx)
+	defer stop()
 
 	cur, err := os.Getwd()
-	cli.ExitOnError(err, "Cannot get current directory")
+	if err != nil {
+		return fmt.Errorf("cannot get current directory: %w", err)
+	}
 
-	confirm := models.Confirm(ctx, fmt.Sprintf("codefly will create a workspace <%s> in the current folder. Proceed?", name), true)
+	confirm, err := models.ConfirmE(ctx, fmt.Sprintf("codefly will create a workspace <%s> in the current folder. Proceed?", name), true)
+	if err != nil {
+		return fmt.Errorf("cannot confirm workspace creation: %w", err)
+	}
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		return
+		return nil
 	}
 
 	selectedLayout := layout
@@ -84,7 +88,12 @@ workspace/
 |           ├── 📂 ${frontend}
 |           └── 📂 ${api}
 `, entries)
-		cli.ExitOnError(choiceErr, "Cannot get choice")
+		if choiceErr != nil {
+			return fmt.Errorf("cannot choose workspace layout: %w", choiceErr)
+		}
+		if choice == nil {
+			return fmt.Errorf("workspace layout selection returned no choice")
+		}
 		selectedLayout = choice.Identifier
 	}
 
@@ -94,19 +103,22 @@ workspace/
 		Layout: selectedLayout,
 		Path:   cur,
 	})
-	cli.ExitOnError(err, "cannot create action")
+	if err != nil {
+		return fmt.Errorf("cannot create workspace action: %w", err)
+	}
 
 	out, err := actions.Run(ctx, action, nil)
 	if err != nil {
-		cli.ExitOnError(err, "cannot add workspace")
+		return fmt.Errorf("cannot create workspace: %w", err)
 	}
 
 	workspace, err := actions.As[resources.Workspace](out)
 	if err != nil {
-		cli.ExitOnError(err, "cannot add workspace")
+		return fmt.Errorf("cannot read created workspace: %w", err)
 	}
 
 	cli.Header(2, "Workspace <%s> created in current directory", workspace.Name)
+	return ctx.Err()
 }
 
 func init() {

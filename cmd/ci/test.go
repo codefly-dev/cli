@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -16,7 +17,8 @@ import (
 var TestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Run CI Testing",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -24,17 +26,25 @@ var TestCmd = &cobra.Command{
 		defer stop()
 
 		cli.Init()
-		cli.RegisterCleanup(services.ClearAgents)
+		defer services.ClearAgents()
 
-		workspace := common.RequireWorkspace(ctx)
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return err
+		}
 
-		common.WithSilence(ctx, workspace, silent)
+		if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+			return fmt.Errorf("cannot configure silent services: %w", err)
+		}
 
-		err := CI(ctx, workspace, runTestService)
-
-		cli.ExitOnError(err, "Cannot test CI")
+		if err := CI(ctx, workspace, runTestService); err != nil {
+			return fmt.Errorf("cannot run CI tests: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		cli.Header(1, "Work done!")
-		cli.Exit()
+		return nil
 	},
 }
 
@@ -44,18 +54,16 @@ func runTestService(ctx context.Context, workspace *resources.Workspace, module 
 	if err != nil {
 		return w.Wrapf(err, "Cannot init flow")
 	}
-	err = testService(ctx, flow)
-	if err != nil {
-		return w.Wrapf(err, "Cannot test service")
-	}
-	return nil
+	return runAndStopFlow(flow, func() error {
+		if err := testService(ctx, flow); err != nil {
+			return w.Wrapf(err, "Cannot test service")
+		}
+		return nil
+	})
 }
 
 func initTestService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("TestService", wool.ThisField(resources.WithUnique(service)))
-	// Catch panic
-	defer w.Catch()
-
 	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
@@ -71,19 +79,17 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 
 	err = flow.InitManagers(ctx)
 	if err != nil {
-		return nil, w.Wrap(err)
+		return nil, stopFlowAfterError(flow, w.Wrap(err))
 	}
 	err = flow.Load(ctx)
 	if err != nil {
-		return nil, w.Wrap(err)
+		return nil, stopFlowAfterError(flow, w.Wrap(err))
 	}
 	return flow, nil
 }
 
 func testService(ctx context.Context, flow *orchestration.Flow) error {
-	// Catch panic
 	w := wool.Get(ctx).In("TestService")
-	defer w.Catch()
 	err := flow.Start(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot start service")

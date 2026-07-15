@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -47,7 +46,7 @@ Examples:
   codefly publish all --dry-run    # print the full plan, change nothing
   codefly publish all --root DIR   # workspace root (default: nearest go.work, else cwd)`,
 	Args: cobra.MaximumNArgs(1),
-	Run:  runAll,
+	RunE: runAll,
 }
 
 func init() {
@@ -77,7 +76,7 @@ func (t *repoTarget) engine(bump string, dry bool) *Engine {
 	}
 }
 
-func runAll(c *cobra.Command, args []string) {
+func runAll(c *cobra.Command, args []string) error {
 	bumpType := "patch"
 	if len(args) == 1 {
 		bumpType = args[0]
@@ -87,18 +86,15 @@ func runAll(c *cobra.Command, args []string) {
 
 	root, err := resolveWorkspaceRoot(rootFlag)
 	if err != nil {
-		cli.Error("%v", err)
-		cli.ExitError()
+		return err
 	}
 
 	targets, err := discoverRepos(root)
 	if err != nil {
-		cli.Error("discover repos under %s: %v", root, err)
-		cli.ExitError()
+		return fmt.Errorf("discover repos under %s: %w", root, err)
 	}
 	if len(targets) == 0 {
-		cli.Error("no codefly manifest repos found under %s", root)
-		cli.ExitError()
+		return fmt.Errorf("no codefly manifest repos found under %s", root)
 	}
 	sortTargets(targets)
 
@@ -125,14 +121,13 @@ func runAll(c *cobra.Command, args []string) {
 		fmt.Printf("    ✓ %-30s → %s\n", relOrBase(root, t.Dir), tag)
 	}
 	if len(failures) > 0 {
-		cli.Error("pre-flight failed for %d repo(s) — nothing was pushed:\n%s",
+		return fmt.Errorf("pre-flight failed for %d repo(s) — nothing was pushed:\n%s",
 			len(failures), strings.Join(failures, "\n"))
-		cli.ExitError()
 	}
 
 	if dryRun {
 		fmt.Printf("==> dry-run complete; %d repo(s) ready, no tags created\n", len(targets))
-		return
+		return nil
 	}
 
 	// Phase 2 — execute in dependency order. Every repo already passed
@@ -146,14 +141,14 @@ func runAll(c *cobra.Command, args []string) {
 		tag, rerr := t.engine(bumpType, false).Release(ctx)
 		cancel()
 		if rerr != nil {
-			cli.Error("publish failed at %s: %v\n  already released: %s",
+			return fmt.Errorf("publish failed at %s: %w\n  already released: %s",
 				relOrBase(root, t.Dir), rerr, strings.Join(done, ", "))
-			cli.ExitError()
 		}
 		done = append(done, relOrBase(root, t.Dir)+" "+tag)
 		fmt.Printf("    ✓ released %-30s %s\n", relOrBase(root, t.Dir), tag)
 	}
 	fmt.Printf("==> published %d repo(s)\n", len(done))
+	return nil
 }
 
 // resolveWorkspaceRoot returns the dir to scan. An explicit --root wins;

@@ -1,6 +1,8 @@
 package list
 
 import (
+	"fmt"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
@@ -19,34 +21,38 @@ Examples:
   codefly list jobs
 
   # List jobs in a specific module
-  codefly list jobs --module=backend
+	codefly list jobs --module=backend
 `,
-	Run: func(cmd *cobra.Command, args []string) {
-		listJobs()
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return listJobs()
 	},
 }
 
-func listJobs() {
+func listJobs() error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
 
 	if listJobsModule != "" {
 		// List jobs in specific module
 		mod, err := workspace.LoadModuleFromName(ctx, listJobsModule)
 		if err != nil {
-			cli.ExitOnError(err, "module not found")
+			return fmt.Errorf("module not found: %w", err)
 		}
 
 		jobs, err := mod.LoadJobs(ctx)
 		if err != nil {
-			cli.ExitOnError(err, "failed to load jobs")
+			return fmt.Errorf("failed to load jobs: %w", err)
 		}
 
 		if len(jobs) == 0 {
 			cli.Info("No jobs found in module <%s>", listJobsModule)
-			return
+			return nil
 		}
 
 		cli.Header(2, "Jobs in module <%s>:", listJobsModule)
@@ -60,18 +66,18 @@ func listJobs() {
 				cli.Info("    %s", job.Description)
 			}
 		}
-		return
+		return nil
 	}
 
 	// List all jobs
 	jobs, err := workspace.LoadAllJobs(ctx)
 	if err != nil {
-		cli.ExitOnError(err, "failed to load jobs")
+		return fmt.Errorf("failed to load jobs: %w", err)
 	}
 
 	if len(jobs) == 0 {
 		cli.Info("No jobs found in workspace <%s>", workspace.Name)
-		return
+		return nil
 	}
 
 	cli.Header(2, "Jobs in workspace <%s>:", workspace.Name)
@@ -85,6 +91,7 @@ func listJobs() {
 			cli.Info("    %s", job.Description)
 		}
 	}
+	return nil
 }
 
 func init() {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -14,19 +13,18 @@ import (
 var ListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List companion images discovered under <core>/companions/",
-	Run:   runList,
+	RunE:  runList,
 }
 
 func init() {
 	ListCmd.Flags().String("core-dir", "", "Path to the core directory (default: walk up from cwd)")
 }
 
-func runList(cmd *cobra.Command, _ []string) {
+func runList(cmd *cobra.Command, _ []string) error {
 	coreDirFlag, _ := cmd.Flags().GetString("core-dir")
 	cwd, err := os.Getwd()
 	if err != nil {
-		cli.Error("cannot read working directory: %v", err)
-		cli.ExitError()
+		return fmt.Errorf("cannot read working directory: %w", err)
 	}
 	coreDir := coreDirFlag
 	if coreDir == "" {
@@ -35,12 +33,11 @@ func runList(cmd *cobra.Command, _ []string) {
 
 	cs, err := ListCompanions(coreDir)
 	if err != nil {
-		cli.Error("scan companions: %v", err)
-		cli.ExitError()
+		return fmt.Errorf("scan companions: %w", err)
 	}
 	if len(cs) == 0 {
 		fmt.Printf("(no companions found under %s/companions/)\n", coreDir)
-		return
+		return nil
 	}
 	for _, c := range cs {
 		// Format: name@version  flake?docker?  dir
@@ -53,4 +50,5 @@ func runList(cmd *cobra.Command, _ []string) {
 		}
 		fmt.Printf("%-12s %-10s [%s]  %s\n", c.Name, c.Info.Version, flags, c.Dir)
 	}
+	return nil
 }

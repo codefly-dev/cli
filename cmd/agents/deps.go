@@ -1,14 +1,19 @@
 package agents
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
 
@@ -47,19 +52,41 @@ Examples:
   codefly agent deps --all                 # link every agent in the tree
   codefly agent deps --pin latest --ci     # pin to latest published core + add CI
   codefly agent deps --unlink --all        # drop local go.work everywhere`,
-	Run: func(cmd *cobra.Command, _ []string) {
-		dir, _ := cmd.Flags().GetString("dir")
-		all, _ := cmd.Flags().GetBool("all")
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+
+		dir, err := cmd.Flags().GetString("dir")
+		if err != nil {
+			return fmt.Errorf("cannot read --dir: %w", err)
+		}
+		all, err := cmd.Flags().GetBool("all")
+		if err != nil {
+			return fmt.Errorf("cannot read --all: %w", err)
+		}
 		o := depsOptions{}
-		o.link, _ = cmd.Flags().GetBool("link")
-		o.unlink, _ = cmd.Flags().GetBool("unlink")
-		o.pin, _ = cmd.Flags().GetString("pin")
-		o.ci, _ = cmd.Flags().GetBool("ci")
+		o.link, err = cmd.Flags().GetBool("link")
+		if err != nil {
+			return fmt.Errorf("cannot read --link: %w", err)
+		}
+		o.unlink, err = cmd.Flags().GetBool("unlink")
+		if err != nil {
+			return fmt.Errorf("cannot read --unlink: %w", err)
+		}
+		o.pin, err = cmd.Flags().GetString("pin")
+		if err != nil {
+			return fmt.Errorf("cannot read --pin: %w", err)
+		}
+		o.ci, err = cmd.Flags().GetBool("ci")
+		if err != nil {
+			return fmt.Errorf("cannot read --ci: %w", err)
+		}
 
 		if o.unlink && o.link {
-			cli.Error("--link and --unlink are mutually exclusive")
-			cli.ExitError()
-			return
+			return fmt.Errorf("--link and --unlink are mutually exclusive")
 		}
 		// Default action when no mode flag is given: link locally (the internal
 		// sync). --pin / --ci / --unlink alone don't imply a link.
@@ -69,42 +96,49 @@ Examples:
 
 		if dir == "" {
 			cwd, err := os.Getwd()
-			cli.ExitOnError(err, "cannot get working directory")
+			if err != nil {
+				return fmt.Errorf("cannot get working directory: %w", err)
+			}
 			dir = cwd
 		}
-		dir, err := filepath.Abs(dir)
-		cli.ExitOnError(err, "cannot resolve directory")
+		dir, err = filepath.Abs(dir)
+		if err != nil {
+			return fmt.Errorf("cannot resolve directory: %w", err)
+		}
 
 		var targets []string
 		if all {
 			targets, err = discoverAgentDirs(dir)
-			cli.ExitOnError(err, "cannot discover agents")
+			if err != nil {
+				return fmt.Errorf("cannot discover agents: %w", err)
+			}
 			if len(targets) == 0 {
-				cli.Error("no agent directories (agent.codefly.yaml) found under %s", dir)
-				cli.ExitError()
-				return
+				return fmt.Errorf("no agent directories (agent.codefly.yaml) found under %s", dir)
 			}
 			cli.Header(1, "Applying deps to %d agent(s)", len(targets))
 		} else {
 			targets = []string{dir}
 		}
 
-		var failed []string
+		var failures []error
 		for _, t := range targets {
+			if err := ctx.Err(); err != nil {
+				failures = append(failures, err)
+				break
+			}
 			if all {
 				cli.Header(2, "%s", filepath.Base(t))
 			}
-			if err := applyDeps(t, o); err != nil {
+			if err := applyDeps(ctx, t, o); err != nil {
 				cli.Error("  %v", err)
-				failed = append(failed, filepath.Base(t))
+				failures = append(failures, fmt.Errorf("%s: %w", filepath.Base(t), err))
 			}
 		}
-		if len(failed) > 0 {
-			cli.Error("%d agent(s) failed: %s", len(failed), strings.Join(failed, ", "))
-			cli.ExitError()
-			return
+		if len(failures) > 0 {
+			return errors.Join(failures...)
 		}
 		cli.Header(1, "Done")
+		return nil
 	},
 }
 
@@ -115,29 +149,29 @@ type depsOptions struct {
 	ci     bool
 }
 
-func applyDeps(dir string, o depsOptions) error {
+func applyDeps(ctx context.Context, dir string, o depsOptions) error {
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
 		return fmt.Errorf("%s has no go.mod (not a Go module)", dir)
 	}
 	// pin first: it rewrites go.mod/go.sum from a pulled published version, then
 	// link/ci operate on the result.
 	if o.pin != "" {
-		if err := pinCore(dir, o.pin); err != nil {
+		if err := pinCore(ctx, dir, o.pin); err != nil {
 			return err
 		}
 	}
 	if o.unlink {
-		if err := unlinkLocal(dir); err != nil {
+		if err := unlinkLocal(ctx, dir); err != nil {
 			return err
 		}
 	}
 	if o.link {
-		if err := linkLocal(dir); err != nil {
+		if err := linkLocal(ctx, dir); err != nil {
 			return err
 		}
 	}
 	if o.ci {
-		if err := scaffoldCI(dir); err != nil {
+		if err := scaffoldCI(ctx, dir); err != nil {
 			return err
 		}
 	}
@@ -150,11 +184,21 @@ func applyDeps(dir string, o depsOptions) error {
 // root-level go.work (gitignored; CI sets GOWORK=off), so we maintain that
 // shared file additively rather than scatter per-agent go.work files (which Go
 // rejects as nested workspaces anyway).
-func linkLocal(dir string) error {
+func linkLocal(ctx context.Context, dir string) (returnErr error) {
 	root := findMonorepoRoot(dir)
 	if root == "" {
 		return fmt.Errorf("not inside the codefly.dev monorepo (no core/ module found above %s) — can't link local core", dir)
 	}
+	snapshots, err := snapshotFiles(filepath.Join(root, "go.work"), filepath.Join(root, "go.work.sum"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if returnErr != nil {
+			returnErr = errors.Join(returnErr, restoreFiles(context.WithoutCancel(ctx), snapshots))
+		}
+	}()
+
 	// Create the workspace with the shared modules if it doesn't exist yet.
 	if !fileExists(filepath.Join(root, "go.work")) {
 		seed := []string{"work", "init"}
@@ -163,16 +207,19 @@ func linkLocal(dir string) error {
 				seed = append(seed, "./"+m)
 			}
 		}
-		if err := runGo(root, seed...); err != nil {
+		if err := runGo(ctx, root, seed...); err != nil {
 			return fmt.Errorf("go work init: %w", err)
 		}
 	}
 	// Add the agent itself + any nested modules (base/code, module/services/*/code).
-	mods := findGoModDirs(dir)
+	mods, err := findGoModDirs(dir)
+	if err != nil {
+		return err
+	}
 	if len(mods) == 0 {
 		return fmt.Errorf("no go.mod found under %s", dir)
 	}
-	if err := runGo(root, append([]string{"work", "use"}, mods...)...); err != nil {
+	if err := runGo(ctx, root, append([]string{"work", "use"}, mods...)...); err != nil {
 		return fmt.Errorf("go work use: %w", err)
 	}
 	cli.Info("  linked → %d module(s) in %s/go.work [GOWORK=off bypasses]", len(mods), root)
@@ -181,15 +228,27 @@ func linkLocal(dir string) error {
 
 // unlinkLocal drops the agent's module(s) from the root go.work — it does NOT
 // delete the shared file (that would break every other agent's local build).
-func unlinkLocal(dir string) error {
+func unlinkLocal(ctx context.Context, dir string) (returnErr error) {
 	root := findMonorepoRoot(dir)
 	if root == "" || !fileExists(filepath.Join(root, "go.work")) {
 		cli.Info("  no root go.work to edit")
 		return nil
 	}
-	mods := findGoModDirs(dir)
+	snapshots, err := snapshotFiles(filepath.Join(root, "go.work"), filepath.Join(root, "go.work.sum"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if returnErr != nil {
+			returnErr = errors.Join(returnErr, restoreFiles(context.WithoutCancel(ctx), snapshots))
+		}
+	}()
+	mods, err := findGoModDirs(dir)
+	if err != nil {
+		return err
+	}
 	for _, m := range mods {
-		if err := runGo(root, "work", "edit", "-dropuse", m); err != nil {
+		if err := runGo(ctx, root, "work", "edit", "-dropuse", m); err != nil {
 			return fmt.Errorf("go work edit -dropuse %s: %w", m, err)
 		}
 	}
@@ -200,11 +259,11 @@ func unlinkLocal(dir string) error {
 // findGoModDirs returns every directory under root that contains a go.mod
 // (the agent root plus nested modules like base/code), skipping vendor and
 // node_modules trees.
-func findGoModDirs(root string) []string {
+func findGoModDirs(root string) ([]string, error) {
 	var dirs []string
-	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			n := d.Name()
@@ -218,33 +277,46 @@ func findGoModDirs(root string) []string {
 		}
 		return nil
 	})
-	return dirs
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(dirs)
+	return dirs, nil
 }
 
 // pinCore bumps go.mod to a published core version and verifies the agent builds
 // standalone. This is the only mode that touches the network. Runs with
 // GOWORK=off so the local go.work can't mask a missing/incompatible published
 // version.
-func pinCore(dir, version string) error {
+func pinCore(ctx context.Context, dir, version string) (returnErr error) {
 	const core = "github.com/codefly-dev/core"
 	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	snapshots, err := snapshotFiles(filepath.Join(dir, "go.mod"), filepath.Join(dir, "go.sum"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if returnErr != nil {
+			returnErr = errors.Join(returnErr, restoreFiles(context.WithoutCancel(ctx), snapshots))
+		}
+	}()
 	// Strip committed filesystem `replace => ../path` directives first: those are
 	// local-dev overrides that don't exist in a single-repo CI checkout, so they
 	// break the standalone build. Local builds keep working via the root go.work.
-	if dropped, err := stripLocalReplaces(dir, env); err != nil {
+	if dropped, err := stripLocalReplaces(ctx, dir, env); err != nil {
 		return err
 	} else if len(dropped) > 0 {
 		cli.Info("  stripped %d local replace(s): %s", len(dropped), strings.Join(dropped, ", "))
 	}
-	if err := runGoEnv(dir, env, "get", core+"@"+version); err != nil {
+	if err := runGoEnv(ctx, dir, env, "get", core+"@"+version); err != nil {
 		return fmt.Errorf("go get %s@%s: %w", core, version, err)
 	}
-	if err := runGoEnv(dir, env, "mod", "tidy"); err != nil {
+	if err := runGoEnv(ctx, dir, env, "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
 	}
 	// Verify the standalone (published-core) build — fail loudly if the agent
 	// uses an API the pinned version doesn't have.
-	if err := runGoEnv(dir, env, "build", "./..."); err != nil {
+	if err := runGoEnv(ctx, dir, env, "build", "./..."); err != nil {
 		return fmt.Errorf("standalone build against %s@%s FAILED — the agent likely uses an API not in that version: %w", core, version, err)
 	}
 	got := goModVersion(dir, core)
@@ -256,8 +328,8 @@ func pinCore(dir, version string) error {
 // from dir's go.mod (those whose replacement has no version — i.e. a local
 // path, not a module). Returns the module paths dropped. Module-version
 // replaces (replace X => Y v1.2.3) are left untouched.
-func stripLocalReplaces(dir string, env []string) ([]string, error) {
-	cmd := exec.Command("go", "mod", "edit", "-json")
+func stripLocalReplaces(ctx context.Context, dir string, env []string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-json")
 	cmd.Dir = dir
 	cmd.Env = env
 	out, err := cmd.Output()
@@ -282,7 +354,7 @@ func stripLocalReplaces(dir string, env []string) ([]string, error) {
 		if r.Old.Version != "" {
 			arg = r.Old.Path + "@" + r.Old.Version
 		}
-		if err := runGoEnv(dir, env, "mod", "edit", "-dropreplace", arg); err != nil {
+		if err := runGoEnv(ctx, dir, env, "mod", "edit", "-dropreplace", arg); err != nil {
 			return nil, fmt.Errorf("dropreplace %s: %w", arg, err)
 		}
 		dropped = append(dropped, r.Old.Path)
@@ -292,12 +364,9 @@ func stripLocalReplaces(dir string, env []string) ([]string, error) {
 
 // scaffoldCI writes .github/workflows/ci.yml (build+vet against published core,
 // Go version read from go.mod). Idempotent — overwrites the managed file.
-func scaffoldCI(dir string) error {
+func scaffoldCI(ctx context.Context, dir string) error {
 	wf := filepath.Join(dir, ".github", "workflows")
-	if err := os.MkdirAll(wf, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", wf, err)
-	}
-	if err := os.WriteFile(filepath.Join(wf, "ci.yml"), []byte(ciWorkflow), 0o644); err != nil {
+	if err := shared.WriteFileAtomic(ctx, filepath.Join(wf, "ci.yml"), []byte(ciWorkflow), 0o644); err != nil {
 		return fmt.Errorf("write ci.yml: %w", err)
 	}
 	cli.Info("  ci → wrote .github/workflows/ci.yml (build+vet)")
@@ -335,34 +404,30 @@ jobs:
 // agent.codefly.yaml (including quarantined ones — they still need dep wiring).
 func discoverAgentDirs(root string) ([]string, error) {
 	var dirs []string
-	// First: is root itself an agent?
-	if fileExists(filepath.Join(root, "agent.codefly.yaml")) {
-		return []string{root}, nil
-	}
-	walk := func(base string) {
-		entries, err := os.ReadDir(base)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			return
+			return err
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "node_modules", "vendor", "testdata":
+				if path != root {
+					return filepath.SkipDir
+				}
 			}
-			d := filepath.Join(base, e.Name())
-			if fileExists(filepath.Join(d, "agent.codefly.yaml")) {
-				dirs = append(dirs, d)
-			}
+			return nil
 		}
-	}
-	// Look one and two levels deep (agents/services/<name>, agents/<group>/<name>).
-	walk(root)
-	entries, _ := os.ReadDir(root)
-	for _, e := range entries {
-		if e.IsDir() {
-			walk(filepath.Join(root, e.Name()))
+		if entry.Name() == "agent.codefly.yaml" {
+			dirs = append(dirs, filepath.Dir(path))
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return dedupeStrings(dirs), nil
+	dirs = dedupeStrings(dirs)
+	sort.Strings(dirs)
+	return dirs, nil
 }
 
 func dedupeStrings(in []string) []string {
@@ -382,17 +447,60 @@ func fileExists(p string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func runGo(dir string, args ...string) error {
-	return runGoEnv(dir, os.Environ(), args...)
+func runGo(ctx context.Context, dir string, args ...string) error {
+	return runGoEnv(ctx, dir, os.Environ(), args...)
 }
 
-func runGoEnv(dir string, env []string, args ...string) error {
-	cmd := exec.Command("go", args...)
+func runGoEnv(ctx context.Context, dir string, env []string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+type fileSnapshot struct {
+	path   string
+	data   []byte
+	mode   os.FileMode
+	exists bool
+}
+
+func snapshotFiles(paths ...string) ([]fileSnapshot, error) {
+	snapshots := make([]fileSnapshot, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				snapshots = append(snapshots, fileSnapshot{path: path})
+				continue
+			}
+			return nil, fmt.Errorf("snapshot %s: %w", path, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		snapshots = append(snapshots, fileSnapshot{path: path, data: data, mode: info.Mode().Perm(), exists: true})
+	}
+	return snapshots, nil
+}
+
+func restoreFiles(ctx context.Context, snapshots []fileSnapshot) error {
+	var failures []error
+	for _, snapshot := range snapshots {
+		if !snapshot.exists {
+			if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+				failures = append(failures, fmt.Errorf("remove newly created %s: %w", snapshot.path, err))
+			}
+			continue
+		}
+		if err := shared.WriteFileAtomic(ctx, snapshot.path, snapshot.data, snapshot.mode); err != nil {
+			failures = append(failures, fmt.Errorf("restore %s: %w", snapshot.path, err))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // goModVersion returns the required version of module in dir's go.mod (or "?").

@@ -1,20 +1,20 @@
 package models
 
 import (
-	"os"
-
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/tui"
 )
 
-func Input(msg string, defaultValue string) string {
+func Input(msg string, defaultValue string) (string, error) {
 	if cli.WithDefault() {
-		return defaultValue
+		return defaultValue, nil
 	}
 	result, err := tui.RunInput(msg, defaultValue)
-	cli.ExitOnError(err, "cannot run Input prompt")
-	if result.Stopped {
-		os.Exit(0)
+	if err != nil {
+		return "", err
 	}
-	return result.Value
+	if result.Stopped {
+		return "", ErrPromptCancelled
+	}
+	return result.Value, nil
 }

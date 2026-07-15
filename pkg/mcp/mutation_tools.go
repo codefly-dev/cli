@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,26 @@ import (
 // is supported on unix; on other platforms this is a no-op returning nil.
 func detachSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true}
+}
+
+// synchronizedBuffer is an io.Writer whose snapshots are safe while a child
+// process is still writing. bytes.Buffer itself cannot be read concurrently
+// with exec.Cmd's stdout/stderr copy goroutines.
+type synchronizedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
 }
 
 // registerMutationTools adds tools that modify the workspace (create services, add deps, etc.)
@@ -338,7 +359,7 @@ func (s *Server) runService(ctx context.Context, args map[string]string) ([]Cont
 	// the tool call. Set a new process group so signals to MCP don't
 	// cascade into the spawned service.
 	cmd.SysProcAttr = detachSysProcAttr()
-	var outBuf bytes.Buffer
+	var outBuf synchronizedBuffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &outBuf
 	if err := cmd.Start(); err != nil {
@@ -406,8 +427,11 @@ func (s *Server) testService(ctx context.Context, args map[string]string) ([]Con
 func (s *Server) installAgent(ctx context.Context, args map[string]string) ([]Content, error) {
 	agentName := args["name"]
 	version := args["version"]
+	if !isSafeAgentName(agentName) {
+		return []Content{TextContent(fmt.Sprintf("invalid agent name %q", agentName))}, nil
+	}
 
-	cmdArgs := []string{"install", "agent", "codefly.dev/" + agentName}
+	cmdArgs := []string{"agent", "install", "codefly.dev/" + agentName}
 	if version != "" {
 		cmdArgs = append(cmdArgs, "--version", version)
 	}

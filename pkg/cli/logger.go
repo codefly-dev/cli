@@ -80,6 +80,7 @@ func (e *MilestoneEmitter) Emit(service, line string) bool {
 }
 
 type Logger struct {
+	mu         sync.RWMutex
 	suppressed bool
 }
 
@@ -109,19 +110,36 @@ func GetLogger() *Logger {
 // SuppressOutput stops the CLI logger from printing to stdout.
 // Use when a TUI is active and consuming logs via a channel instead.
 func SuppressOutput() {
-	cliLogger.suppressed = true
+	cliLogger.setSuppressed(true)
 }
 
 // RestoreOutput re-enables CLI logger stdout after SuppressOutput, e.g. once a
 // TUI has exited and the command needs to print a final report.
 func RestoreOutput() {
-	cliLogger.suppressed = false
+	cliLogger.setSuppressed(false)
 }
 
-var maxUnique int
+func (logger *Logger) setSuppressed(suppressed bool) {
+	logger.mu.Lock()
+	logger.suppressed = suppressed
+	logger.mu.Unlock()
+}
+
+func (logger *Logger) isSuppressed() bool {
+	logger.mu.RLock()
+	defer logger.mu.RUnlock()
+	return logger.suppressed
+}
+
+var maxUnique atomic.Int64
 
 func RegisterLoggingResource(unique string) {
-	maxUnique = max(maxUnique, len(unique))
+	want := int64(len(unique))
+	for current := maxUnique.Load(); want > current; current = maxUnique.Load() {
+		if maxUnique.CompareAndSwap(current, want) {
+			return
+		}
+	}
 }
 
 func (logger *Logger) Process(log *wool.Log) {
@@ -131,7 +149,7 @@ func (logger *Logger) Process(log *wool.Log) {
 	// log is a fmt.Stringer; call String() directly instead of routing every
 	// line through fmt.Sprintf("%s", ...)'s reflection path.
 	s := log.String()
-	if logger.suppressed {
+	if logger.isSuppressed() {
 		emitToSink(log.Level, s)
 		return
 	}
@@ -154,7 +172,7 @@ func (logger *Logger) Process(log *wool.Log) {
 }
 
 func (logger *Logger) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
-	if logger.suppressed || log.Level < wool.GlobalLogLevel() {
+	if logger.isSuppressed() || log.Level < wool.GlobalLogLevel() {
 		return
 	}
 	if source == nil {
@@ -206,7 +224,7 @@ func formattedLogLines(source string, separator string, log *wool.Log) []string 
 	message := strings.ReplaceAll(log.String(), "\r\n", "\n")
 	message = strings.TrimRight(message, "\r\n")
 	lines := strings.Split(message, "\n")
-	prefix := fmt.Sprintf("%s %s ", padRight(source, maxUnique), separator)
+	prefix := fmt.Sprintf("%s %s ", padRight(source, int(maxUnique.Load())), separator)
 	if timestamps.Load() {
 		prefix = time.Now().Format("15:04:05") + " " + prefix
 	}

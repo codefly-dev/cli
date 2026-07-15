@@ -30,21 +30,24 @@ column reflects a live TCP probe: "up" means something is listening now.
 
 Examples:
   codefly get endpoints                 # active service
-  codefly get endpoints mind            # by name
-  codefly get endpoints mind --type grpc`,
-	Run: func(cmd *cobra.Command, args []string) {
+	codefly get endpoints mind            # by name
+	codefly get endpoints mind --type grpc`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		cli.Init()
 
 		apiType, err := common.NormalizeAPIType(mustString(cmd, "type"))
 		if err != nil {
-			cli.ExitWithMessage("%v", err)
-			return
+			return err
 		}
 		namingScope := mustString(cmd, "naming-scope")
 
-		workspace, module, service := common.LoadRequired(ctx, args)
+		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		if err != nil {
+			return err
+		}
 
 		endpoints := common.FilterEndpoints(service.Endpoints, apiType, "")
 		if len(endpoints) == 0 {
@@ -53,7 +56,7 @@ Examples:
 			} else {
 				cli.Info("Service %s has no endpoints", service.Name)
 			}
-			return
+			return nil
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -84,6 +87,7 @@ Examples:
 		if !anyUp {
 			cli.Info("Nothing listening yet — start it with `codefly run service %s`.", service.Name)
 		}
+		return nil
 	},
 }
 

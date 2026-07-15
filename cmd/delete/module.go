@@ -13,33 +13,34 @@ import (
 var ModuleCmd = &cobra.Command{
 	Use:   "module",
 	Short: "Delete an module",
+	Args:  cobra.ExactArgs(1),
 
-	Run: func(cmd *cobra.Command, args []string) {
-		if len(args) != 1 {
-			cli.Error("You must provide a name for the module as the single argument")
-			cli.ExitError()
-		}
-		name := args[0]
-		deleteModule(name)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return deleteModule(args[0])
 	},
 }
 
-func deleteModule(name string) {
+func deleteModule(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace := common.Workspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
 
 	if !workspace.ExistsModule(name) {
-		cli.Error("Module <%s> does not exist in workspace <%s>", name, workspace.Name)
-		return
+		return fmt.Errorf("module <%s> does not exist in workspace <%s>", name, workspace.Name)
 	}
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm deletion of module <%s> in workspace <%s>?", name, workspace.Name), false)
 	if confirm {
 		err := workspace.DeleteModule(ctx, name)
-		cli.ExitOnError(err, "cannot delete module")
+		if err != nil {
+			return fmt.Errorf("cannot delete module: %w", err)
+		}
 		cli.Header(2, "Module <%s> deleted!", name)
 	} else {
 		cli.Header(2, "Abort! Heard loud and clear.")
 	}
+	return nil
 }

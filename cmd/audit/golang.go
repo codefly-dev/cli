@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/services/audit"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -48,27 +49,38 @@ Suppression entries whose 'reviewed:' date is older than --stale-days fail
 the command so the rationale gets re-verified.
 
 This replaces scripts/govulncheck.sh; CI calls it after building the CLI.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		// The go audit needs no workspace/agent/tracing machinery, so it
-		// uses a bare context to stay usable from a plain repo checkout in
+		// stays usable from a plain repo checkout in
 		// CI (no workspace.codefly.yaml required).
-		ctx := context.Background()
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
 
 		dir := goAuditDir
 		if dir == "" {
 			wd, err := os.Getwd()
-			cli.ExitOnError(err, "cannot read working directory")
+			if err != nil {
+				return fmt.Errorf("cannot read working directory: %w", err)
+			}
 			dir = wd
 		}
 		abs, err := filepath.Abs(dir)
-		cli.ExitOnError(err, "cannot resolve --dir")
+		if err != nil {
+			return fmt.Errorf("cannot resolve --dir: %w", err)
+		}
 
 		blocked, err := RunGoAudit(ctx, abs, goAuditStaleDays, goAuditFail)
-		cli.ExitOnError(err, "audit failed")
+		if err != nil {
+			return fmt.Errorf("audit failed: %w", err)
+		}
 		if blocked {
-			cli.ExitError()
+			return fmt.Errorf("audit found actionable vulnerabilities or stale suppressions")
 		}
 		cli.Done()
+		return nil
 	},
 }
 
@@ -160,8 +172,7 @@ func RunGoAudit(ctx context.Context, dir string, staleDays int, failOnVuln bool)
 		return false, err
 	}
 	if res.Tool == "missing" {
-		cli.Info("govulncheck not installed — skipping. Install: go install golang.org/x/vuln/cmd/govulncheck@latest")
-		return false, nil
+		return false, fmt.Errorf("govulncheck is not installed; install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
 	}
 	cli.Info("Tool: %s", res.Tool)
 

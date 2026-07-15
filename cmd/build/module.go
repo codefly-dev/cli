@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/builder"
@@ -21,13 +22,16 @@ var ModuleCmd = &cobra.Command{
 	Use:   "module [name]",
 	Short: "Build every service in a module",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
 		cli.RegisterCleanup(services.ClearAgents)
 
-		workspace, module := loadModule(ctx, args)
+		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		if err != nil {
+			return err
+		}
 
 		env := workspace.FindEnvironment(envInput)
 		if env == nil {
@@ -49,7 +53,9 @@ var ModuleCmd = &cobra.Command{
 		}
 		if push {
 			if registryURL != "" && env.Registry != nil && env.Registry.Auth != "" {
-				cli.ExitOnError(builder.RegistryLogin(ctx, registryURL, env.Registry.Auth), "registry login failed")
+				if err := builder.RegistryLogin(ctx, registryURL, env.Registry.Auth); err != nil {
+					return fmt.Errorf("registry login failed: %w", err)
+				}
 			}
 			orchestration.SetBuilderPush()
 		}
@@ -59,28 +65,13 @@ var ModuleCmd = &cobra.Command{
 		for _, ref := range module.ServiceReferences {
 			cli.Header(2, "Building service %s", ref.Name)
 			if err := buildOneService(ctx, workspace, module, ref.Name, env); err != nil {
-				cli.ExitOnError(err, "Cannot build service %s", ref.Name)
+				return fmt.Errorf("cannot build service %s: %w", ref.Name, err)
 			}
 		}
 
 		cli.Header(1, "Module build done!")
+		return nil
 	},
-}
-
-func loadModule(ctx context.Context, args []string) (*resources.Workspace, *resources.Module) {
-	if len(args) == 0 {
-		workspace := common.RequireWorkspace(ctx)
-		module := common.RequireModule(ctx)
-		return workspace, module
-	}
-	workspace, err := resources.FindWorkspaceUp(ctx)
-	cli.ExitOnError(err, "Cannot find workspace")
-	if workspace == nil {
-		cli.ExitWithMessage("No workspace found")
-	}
-	module, err := workspace.LoadModuleFromName(ctx, args[0])
-	cli.ExitOnError(err, "Cannot load module %s", args[0])
-	return workspace, module
 }
 
 func buildOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment) error {
@@ -95,6 +86,12 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return w.Wrap(err)
 	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = flow.Stop()
+		}
+	}()
 	flow.WithStandAlone(true)
 	if err := flow.InitManagers(ctx); err != nil {
 		return w.Wrapf(err, "cannot initialize managers")
@@ -103,10 +100,11 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 		return w.Wrap(err)
 	}
 	if err := flow.Build(ctx); err != nil {
-		_ = flow.Stop()
 		return w.Wrapf(err, "build failed")
 	}
-	return flow.Stop()
+	err = flow.Stop()
+	stopped = true
+	return err
 }
 
 func init() {

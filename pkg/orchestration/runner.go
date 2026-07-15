@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -144,6 +145,9 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 			return nil, nil
 		}
 		w.Warn(fmt.Sprintf("cannot load runtime instance for <%s> %v", runner.instance.Unique(), err))
+		if runner.outputPropertyForLoad.processed == nil {
+			return nil, w.Wrapf(err, "cannot load runtime instance for %s", runner.instance.Unique())
+		}
 		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: err.Error()})
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot set outputProperty for load")
@@ -151,9 +155,16 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 		return runner.outputPropertyForLoad.Process(ctx)
 	}
 
-	if resp.Status != nil && resp.Status.State != runtimev0.LoadStatus_READY {
-		w.Warn(fmt.Sprintf("load returned error: %v", resp.Status.Message))
-		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: resp.Status.Message})
+	if resp == nil || resp.Status == nil {
+		return nil, w.NewError("cannot load runtime instance for %s: agent returned no status", runner.instance.Unique())
+	}
+	if resp.Status.State != runtimev0.LoadStatus_READY {
+		message := statusDiagnostic(resp.Status.Message, "agent reported load failure")
+		w.Warn(fmt.Sprintf("load failed for %s: %s", runner.instance.Unique(), message))
+		if runner.outputPropertyForLoad.processed == nil {
+			return nil, w.NewError("cannot load runtime instance for %s: %s", runner.instance.Unique(), message)
+		}
+		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: message})
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot set outputProperty for load")
 		}
@@ -293,9 +304,18 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot call init")
 	}
 
-	if resp.Status != nil && resp.Status.State != runtimev0.InitStatus_READY {
-		w.Debug("init failed: waiting")
-		err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true})
+	if resp == nil || resp.Status == nil {
+		return nil, w.NewError("cannot initialize %s: agent returned no status", runner.instance.Unique())
+	}
+	if resp.Status.State != runtimev0.InitStatus_READY {
+		message := statusDiagnostic(resp.Status.Message, "agent reported initialization failure")
+		w.Warn(fmt.Sprintf("initialization failed for %s: %s", runner.instance.Unique(), message))
+		if runner.outputPropertyForInit.processed == nil {
+			return nil, w.NewError("cannot initialize %s: %s", runner.instance.Unique(), message)
+		}
+		if err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true}); err != nil {
+			return nil, w.Wrapf(err, "cannot set failed init output for %s", runner.instance.Unique())
+		}
 		return runner.outputPropertyForInit.Process(ctx)
 	}
 
@@ -392,11 +412,15 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		if ContextCancelled(err) {
 			return nil, nil
 		}
-		return nil, w.Wrapf(err, "context cancelled: cannot stopAfter service instance")
+		return nil, w.Wrapf(err, "cannot start service instance")
 	}
 
-	if resp.Status != nil && resp.Status.State != runtimev0.StartStatus_STARTED {
-		return nil, w.NewError("service instance is not started")
+	if resp == nil || resp.Status == nil {
+		return nil, w.NewError("cannot start %s: agent returned no status", runner.instance.Unique())
+	}
+	if resp.Status.State != runtimev0.StartStatus_STARTED {
+		message := statusDiagnostic(resp.Status.Message, "agent reported start failure")
+		return nil, w.NewError("cannot start %s: %s", runner.instance.Unique(), message)
 	}
 
 	err = runner.outputPropertyForStart.Set(ctx, &RunnerStartOutput{})
@@ -411,6 +435,13 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 	runner.isStarted.Store(true)
 	return outputProperty, nil
+}
+
+func statusDiagnostic(message, fallback string) string {
+	if message = strings.TrimSpace(message); message != "" {
+		return message
+	}
+	return fallback
 }
 
 func (runner *Runner) StartRemote(ctx context.Context) (*OutputProperty, error) {
@@ -626,6 +657,14 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				if info.DesiredState != nil && info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
 					w.Debug("received a request to change SharedState", wool.Field("SharedState", info.DesiredState.Stage))
 					action := Action{Service: runner.Unique(), Type: restartActionType(info.DesiredState.Stage)}
+					if runner.callback == nil {
+						const message = "restart requested before the orchestration callback was initialized"
+						w.Error(message)
+						if runner.failureSink != nil {
+							runner.failureSink(runner.Unique(), message)
+						}
+						return
+					}
 					// Tear down the current child process tree before re-seeding.
 					// Without this, the agent's previous run (next dev / go build /
 					// python / etc. and all of its workers) stays alive while a
@@ -679,20 +718,41 @@ func (runner *Runner) WithRuntimeContext(runtimeContext string) {
 	runner.runtimeContext = runtimeContext
 }
 
-// SupportsNix reports whether the agent advertises the nix runtime among its
-// RuntimeRequirements — i.e. the service can run Docker-free via nix. Used to
-// gate the free→nix fallback: a service that supports nix can fall back when
-// Docker is unavailable, one that does not can only run under Docker.
-func (runner *Runner) SupportsNix() bool {
+// SupportsBackend reports whether the agent advertises the given execution
+// backend among its SupportedBackends. The CLI uses this to resolve the runtime
+// context — e.g. gating the free→nix fallback when Docker is unavailable.
+func (runner *Runner) SupportsBackend(backend agentv0.Backend_Type) bool {
 	if runner == nil || runner.instance == nil || runner.instance.Info == nil {
 		return false
 	}
-	for _, r := range runner.instance.Info.RuntimeRequirements {
-		if r.Type == agentv0.Runtime_NIX {
+	for _, b := range runner.instance.Info.SupportedBackends {
+		if b.Type == backend {
 			return true
 		}
 	}
 	return false
+}
+
+// SupportsNix reports whether the service can run Docker-free via nix — i.e. it
+// advertises the NIX backend. Used to gate the free→nix fallback: a service that
+// supports nix can fall back when Docker is unavailable, one that does not can
+// only run under Docker.
+func (runner *Runner) SupportsNix() bool {
+	return runner.SupportsBackend(agentv0.Backend_NIX)
+}
+
+// SupportedBackends returns the plugin's execution backends in PREFERENCE ORDER
+// ([0] = preferred). The CLI walks this to resolve a "free" service to the first
+// backend actually available in the environment.
+func (runner *Runner) SupportedBackends() []agentv0.Backend_Type {
+	if runner == nil || runner.instance == nil || runner.instance.Info == nil {
+		return nil
+	}
+	out := make([]agentv0.Backend_Type, 0, len(runner.instance.Info.SupportedBackends))
+	for _, b := range runner.instance.Info.SupportedBackends {
+		out = append(out, b.Type)
+	}
+	return out
 }
 
 func (runner *Runner) WithFixture(fixture string) {

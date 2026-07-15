@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/core/agents/manager"
 	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/docker/docker/api/types/container"
@@ -21,12 +23,16 @@ import (
 // It matches on the EXECUTABLE path, never on a substring of the full command
 // line, so unrelated processes that merely mention the repo path are spared.
 // The caller's own PID (self) is always excluded.
-func codeflyOwnedPIDs(ctx context.Context, self int) []int {
+func codeflyOwnedPIDs(ctx context.Context, self int) ([]int, error) {
 	// `command=` prints the full argv; the first token is the executable.
 	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("list processes: %w", err)
 	}
+	return parseCodeflyOwnedPIDs(out, self), nil
+}
+
+func parseCodeflyOwnedPIDs(out []byte, self int) []int {
 	var pids []int
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
@@ -50,10 +56,23 @@ var (
 	clearKeepProcesses  bool
 	clearKeepContainers bool
 	clearDryRun         bool
-	// clearVerb is "clear" by default; `codefly stop` sets it to "stop" so the
-	// announce line names the command the user actually invoked.
-	clearVerb string
 )
+
+type clearOptions struct {
+	verb           string
+	keepProcesses  bool
+	keepContainers bool
+	dryRun         bool
+}
+
+func clearCommandOptions() clearOptions {
+	return clearOptions{
+		verb:           "clear",
+		keepProcesses:  clearKeepProcesses,
+		keepContainers: clearKeepContainers,
+		dryRun:         clearDryRun,
+	}
+}
 
 // ClearCmd removes codefly state (running processes + docker containers).
 // Without arguments: removes EVERYTHING codefly-owned.
@@ -77,8 +96,12 @@ Examples:
   codefly clear neo4j postgres      # both
   codefly clear --keep-processes neo4j  # only the container, leave running codefly alone
   codefly clear --dry-run           # list what would be removed without doing it`,
-	Run: func(cmd *cobra.Command, args []string) {
-		clearCommand(args)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+		return clearCommand(ctx, args, clearCommandOptions())
 	},
 }
 
@@ -88,29 +111,26 @@ func init() {
 	ClearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "List what would be removed without removing anything")
 }
 
-func clearCommand(args []string) {
-	ctx := context.Background()
+func clearCommand(ctx context.Context, args []string, options clearOptions) (returnErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var failures []error
 
 	// Always announce what we're doing — `clear` was silent on the common path
 	// (no docker containers + a quiet process kill), so it looked like a no-op.
-	// `clearVerb` is "clear" by default and "stop" when invoked via `codefly stop`
-	// (which keeps containers), so the announce matches the command.
-	verb := clearVerb
-	if verb == "" {
-		verb = "clear"
-	}
 	switch {
-	case clearDryRun:
-		fmt.Printf("codefly %s (dry-run): nothing will be removed\n", verb)
+	case options.dryRun:
+		fmt.Printf("codefly %s (dry-run): nothing will be removed\n", options.verb)
 	case len(args) > 0:
-		fmt.Printf("codefly %s: scope=%v\n", verb, args)
-	case clearKeepContainers:
-		fmt.Printf("codefly %s: reap processes + orphaned groups (containers kept for reuse)\n", verb)
+		fmt.Printf("codefly %s: scope=%v\n", options.verb, args)
+	case options.keepContainers:
+		fmt.Printf("codefly %s: reap processes + orphaned groups (containers kept for reuse)\n", options.verb)
 	default:
-		fmt.Printf("codefly %s: full reset\n", verb)
+		fmt.Printf("codefly %s: full reset\n", options.verb)
 	}
 
-	if !clearKeepProcesses {
+	if !options.keepProcesses {
 		// Match codefly-owned processes by their EXECUTABLE, not by a substring
 		// over the whole command line. The old `ps aux | grep codefly.dev`
 		// matched any process whose argv merely mentioned the repo path — an
@@ -118,18 +138,30 @@ func clearCommand(args []string) {
 		// live under ~/.codefly/agents/, and the CLI itself is the `codefly`
 		// executable; nothing else qualifies.
 		self := os.Getpid()
-		pids := codeflyOwnedPIDs(ctx, self)
-		if clearDryRun {
+		pids, err := codeflyOwnedPIDs(ctx, self)
+		if err != nil {
+			fmt.Printf("processes: cannot enumerate: %v\n", err)
+			failures = append(failures, err)
+		}
+		if options.dryRun {
 			fmt.Printf("processes: would kill %d codefly process(es): %v\n", len(pids), pids)
 		} else if len(pids) == 0 {
 			fmt.Println("processes: none running")
 		} else {
+			killed := 0
 			for _, pid := range pids {
-				if p, err := os.FindProcess(pid); err == nil {
-					_ = p.Kill()
+				p, err := os.FindProcess(pid)
+				if err != nil {
+					failures = append(failures, fmt.Errorf("find process %d: %w", pid, err))
+					continue
 				}
+				if err := p.Kill(); err != nil {
+					failures = append(failures, fmt.Errorf("kill process %d: %w", pid, err))
+					continue
+				}
+				killed++
 			}
-			fmt.Printf("processes: killed %d codefly process(es)\n", len(pids))
+			fmt.Printf("processes: killed %d of %d codefly process(es)\n", killed, len(pids))
 		}
 	} else {
 		fmt.Println("processes: kept (--keep-processes)")
@@ -138,7 +170,7 @@ func clearCommand(args []string) {
 	// Stale state left by crashed/exited CLIs: per-spawn UDS sockets under
 	// /tmp/codefly-uds and process-group tracking files under ~/.codefly/runs.
 	// These accumulate over time and were never cleaned by `clear`.
-	if clearDryRun {
+	if options.dryRun {
 		if n := manager.CountStaleAgentSockets(); n > 0 {
 			fmt.Printf("sockets: would remove %d stale agent socket(s) (dry-run)\n", n)
 		} else {
@@ -152,27 +184,35 @@ func clearCommand(args []string) {
 		}
 		if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
 			fmt.Printf("process-groups: reap error: %v\n", err)
+			failures = append(failures, fmt.Errorf("reap stale process groups: %w", err))
 		} else {
 			fmt.Println("process-groups: reaped orphaned groups")
 		}
 	}
 
-	if clearKeepContainers {
-		return
+	if options.keepContainers {
+		return errors.Join(failures...)
 	}
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		fmt.Printf("containers: docker unavailable (%v) — skipping (nix-run services are not docker containers)\n", err)
 		clearNixDataNote()
-		return
+		return errors.Join(failures...)
 	}
-	defer cli.Close()
-	cos, err := cli.ContainerList(ctx, container.ListOptions{All: true})
+	defer func() {
+		if err := dockerCLI.Close(); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("close docker client: %w", err))
+		}
+	}()
+	cos, err := dockerCLI.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		fmt.Printf("containers: cannot list (%v) — docker may be down; skipping\n", err)
 		clearNixDataNote()
-		return
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+		}
+		return errors.Join(failures...)
 	}
 
 	removed := 0
@@ -199,7 +239,7 @@ func clearCommand(args []string) {
 				continue
 			}
 		}
-		if clearDryRun {
+		if options.dryRun {
 			fmt.Printf("would remove container: %s (%s)\n", strings.TrimPrefix(name, "/"), c.State)
 			removed++
 			continue
@@ -208,11 +248,12 @@ func clearCommand(args []string) {
 		// ContainerKill can error when container is already stopped;
 		// the Remove --force below handles cleanup either way, so
 		// a kill error here is noise, not fatal.
-		_ = cli.ContainerKill(ctx, c.ID, "SIGKILL")
-		if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+		_ = dockerCLI.ContainerKill(ctx, c.ID, "SIGKILL")
+		if err := dockerCLI.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
 			// Don't abort the whole sweep on one stubborn container — warn and
 			// keep going so the rest still get cleaned (was log.Fatalf).
 			fmt.Printf("warning: can't remove container %s: %v\n", strings.TrimPrefix(name, "/"), err)
+			failures = append(failures, fmt.Errorf("remove container %s: %w", strings.TrimPrefix(name, "/"), err))
 			continue
 		}
 		removed++
@@ -223,12 +264,13 @@ func clearCommand(args []string) {
 		} else {
 			fmt.Println("containers: none found")
 		}
-	} else if clearDryRun {
+	} else if options.dryRun {
 		fmt.Printf("containers: %d would be removed (dry-run)\n", removed)
 	} else {
 		fmt.Printf("containers: %d removed\n", removed)
 	}
 	clearNixDataNote()
+	return errors.Join(failures...)
 }
 
 // clearNixDataNote explains the one thing `clear` deliberately does NOT touch:

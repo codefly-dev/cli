@@ -2,9 +2,11 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"strconv"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
@@ -41,8 +43,8 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 	grpcPort := network.CLIServerPort(wsName)
 	restPort := network.CLIRestPort(wsName)
 	config := go_grpc.Configuration{
-		EndpointGrpc: fmt.Sprintf(":%d", grpcPort),
-		EndpointRest: fmt.Sprintf(":%d", restPort),
+		EndpointGrpc: loopbackEndpoint(grpcPort),
+		EndpointRest: loopbackEndpoint(restPort),
 	}
 	server, err := go_grpc.NewServer(&config, input.Workspace)
 	if err != nil {
@@ -58,13 +60,36 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 	}, nil
 }
 
+func loopbackEndpoint(port uint16) string {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
+}
+
 func (server *CodeflyServer) Start(ctx context.Context) error {
 	golor.Println(`#(blue)[Starting server...]`)
-	go func() {
-		err := server.rest.Run(ctx)
-		if err != nil {
-			cli.ExitOnError(err, "cannot start rest server")
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		name string
+		err  error
+	}
+	results := make(chan result, 2)
+	go func() { results <- result{name: "REST", err: server.rest.Run(runCtx)} }()
+	go func() { results <- result{name: "gRPC", err: server.server.Run(runCtx)} }()
+
+	first := <-results
+	cancel()
+	second := <-results
+	var failures []error
+	for _, res := range []result{first, second} {
+		if res.err != nil && !errors.Is(res.err, context.Canceled) {
+			failures = append(failures, fmt.Errorf("%s server: %w", res.name, res.err))
 		}
-	}()
-	return server.server.Run(ctx)
+	}
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return fmt.Errorf("%s server stopped unexpectedly", first.name)
 }

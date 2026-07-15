@@ -1,7 +1,7 @@
 package open
 
 import (
-	"context"
+	"fmt"
 	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -15,8 +15,9 @@ import (
 var ModuleCmd = &cobra.Command{
 	Use:   "module",
 	Short: "Open a module in your editor",
-	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 
 		provider := wool.New(ctx, resources.CLI.AsResource())
 
@@ -24,10 +25,14 @@ var ModuleCmd = &cobra.Command{
 		defer provider.Done()
 
 		ctx = provider.Inject(ctx)
-		module := common.Module(ctx)
-		c := exec.Command(editor, module.Dir())
-		err := c.Run()
-		cli.ExitOnError(err, "cannot open module")
+		module, err := common.LoadModule(ctx)
+		if err != nil {
+			return fmt.Errorf("cannot load module: %w", err)
+		}
+		if err := exec.CommandContext(ctx, editor, module.Dir()).Run(); err != nil {
+			return fmt.Errorf("cannot open module: %w", err)
+		}
+		return nil
 	},
 }
 

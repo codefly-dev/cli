@@ -2,6 +2,7 @@ package go_grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -205,7 +206,10 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentI
 }
 
 func (s *Server) GetWorkspaceInventory(ctx context.Context, request *emptypb.Empty) (*basev0.Workspace, error) {
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
 	view, err := architecture.LoadWorkspace(ctx, workspace)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -218,7 +222,10 @@ func (s *Server) GetWorkspaceServiceDependencyGraph(ctx context.Context, request
 }
 
 func (s *Server) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, request *emptypb.Empty) (*cli.MultiGraphResponse, error) {
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
 	gs, err := architecture.LoadPublicModuleGraph(ctx, workspace)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -319,8 +326,24 @@ func (s *Server) Run(ctx context.Context) error {
 		s.gRPC.GracefulStop()
 		_ = lis.Close()
 	}()
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Close terminal PTYs first so active attach streams can finish, then
+			// stop the transport. Stop (rather than an unbounded GracefulStop)
+			// guarantees SIGTERM can actually terminate a server with a live RPC.
+			s.Terminal.Shutdown()
+			s.gRPC.Stop()
+		case <-stopped:
+		}
+	}()
 
 	if err := s.gRPC.Serve(lis); err != nil {
+		if ctx.Err() != nil || errors.Is(err, grpc.ErrServerStopped) {
+			return nil
+		}
 		return fmt.Errorf("failed to serve: %s", err)
 	}
 	return nil
@@ -331,5 +354,6 @@ func (s *Server) Run(ctx context.Context) error {
 // the Run-internal defer (e.g. when the server is wrapped by a
 // supervisor that owns the lifecycle).
 func (s *Server) Shutdown() {
+	s.Terminal.Shutdown()
 	s.gRPC.GracefulStop()
 }

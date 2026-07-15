@@ -32,6 +32,4 @@ var (
 	testRace bool
 	// testCoverage — coverage instrumentation.
 	testCoverage bool
-	// testExtraArgs — passthrough args after `--` on the command line.
-	testExtraArgs []string
 )

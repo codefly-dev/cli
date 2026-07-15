@@ -36,27 +36,49 @@ var ServiceCmd = &cobra.Command{
 	Long: `Run the service agent's Builder.Upgrade RPC. Defaults to
 patch+minor (semver-safe) bumps. Pass --major to allow breaking
 upgrades. Pass --dry-run to preview without writing the lockfile.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
 		defer services.ClearAgents()
 
-		workspace, module, service := common.LoadRequired(ctx, args)
+		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		if err != nil {
+			return err
+		}
 		resp, err := upgradeService(ctx, workspace, module, service)
-		cli.ExitOnError(err, "upgrade failed")
+		if err != nil {
+			return fmt.Errorf("upgrade failed: %w", err)
+		}
 
 		identity, err := service.Identity()
-		cli.ExitOnError(err, "cannot get service identity")
+		if err != nil {
+			return fmt.Errorf("cannot get service identity: %w", err)
+		}
 
 		if jsonOut {
-			emitJSON(resp)
+			if err := emitJSON(resp); err != nil {
+				return err
+			}
 		} else {
 			emitTable(identity, resp)
 		}
+		return ctx.Err()
 	},
 }
 
 func upgradeService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*builderv0.UpgradeResponse, error) {
+	if workspace == nil {
+		return nil, fmt.Errorf("workspace is nil")
+	}
+	if module == nil {
+		return nil, fmt.Errorf("module is nil")
+	}
+	if service == nil {
+		return nil, fmt.Errorf("service is nil")
+	}
 	w := wool.Get(ctx).In("upgradeService", wool.NameField(service.Name))
 	instance, err := services.Load(ctx, workspace, module, service)
 	if err != nil {
@@ -75,10 +97,13 @@ func upgradeService(ctx context.Context, workspace *resources.Workspace, module 
 	})
 }
 
-func emitJSON(r *builderv0.UpgradeResponse) {
+func emitJSON(r *builderv0.UpgradeResponse) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(r)
+	if err := enc.Encode(r); err != nil {
+		return fmt.Errorf("cannot encode upgrade response: %w", err)
+	}
+	return nil
 }
 
 func emitTable(identity *resources.ServiceIdentity, r *builderv0.UpgradeResponse) {

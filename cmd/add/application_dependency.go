@@ -16,29 +16,37 @@ import (
 var ApplicationDependencyCmd = &cobra.Command{
 	Use:   "application-dependency",
 	Short: "Add an application dependency",
-
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {
-			cli.GetLogger().Oops("Interactive mode not implemented yet")
+			return fmt.Errorf("interactive mode not implemented yet")
 		}
-		addApplicationDependency(args)
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+
+		if err := addApplicationDependency(ctx); err != nil {
+			return fmt.Errorf("cannot add application dependency: %w", err)
+		}
+		return ctx.Err()
 	},
 }
 
-func addApplicationDependency(args []string) {
-	ctx, done := common.NewContext()
-	defer done()
-
-	workspace := common.RequireWorkspace(ctx)
-	mod := common.RequireModule(ctx)
+func addApplicationDependency(ctx context.Context) error {
+	workspace, mod, err := common.LoadRequiredModuleE(ctx, nil)
+	if err != nil {
+		return err
+	}
 
 	// Load applications in the module
 	apps, err := mod.LoadApplications(ctx)
-	cli.ExitOnError(err, "can't load applications")
+	if err != nil {
+		return fmt.Errorf("cannot load applications: %w", err)
+	}
 
 	if len(apps) == 0 {
-		cli.Error("No applications found in module")
-		return
+		return fmt.Errorf("no applications found in module %q", mod.Name)
 	}
 
 	// Select the application to add dependency to
@@ -54,15 +62,22 @@ func addApplicationDependency(args []string) {
 		application = apps[0]
 	} else {
 		selected, err := models.Select("Select the application to add the dependency to", appEntries)
-		cli.ExitOnError(err, "cannot select application")
+		if err != nil {
+			return fmt.Errorf("cannot select application: %w", err)
+		}
 		application, err = mod.LoadApplicationFromName(ctx, selected.Identifier)
-		cli.ExitOnError(err, "cannot load application")
+		if err != nil {
+			return fmt.Errorf("cannot load application: %w", err)
+		}
 	}
 
-	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding an application dependency for <%s>?", application.Name), true)
+	confirm, err := models.ConfirmE(ctx, fmt.Sprintf("Confirm adding an application dependency for <%s>?", application.Name), true)
+	if err != nil {
+		return fmt.Errorf("cannot confirm dependency creation: %w", err)
+	}
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		cli.Exit()
+		return nil
 	}
 
 	// Choose dependency type
@@ -71,26 +86,30 @@ func addApplicationDependency(args []string) {
 		{Identifier: "service", Description: "A Service"},
 	}
 	depType, err := models.Select("What type of dependency?", depTypeEntries)
-	cli.ExitOnError(err, "cannot select dependency type")
+	if err != nil {
+		return fmt.Errorf("cannot select dependency type: %w", err)
+	}
 
 	if depType.Identifier == "application" {
-		addAppToAppDependency(ctx, workspace, mod, application)
-	} else {
-		addAppToServiceDependency(ctx, workspace, mod, application)
+		return addAppToAppDependency(ctx, workspace, mod, application)
 	}
+	if depType.Identifier == "service" {
+		return addAppToServiceDependency(ctx, workspace, application)
+	}
+	return fmt.Errorf("unsupported dependency type %q", depType.Identifier)
 }
 
-func addAppToAppDependency(ctx context.Context, workspace *resources.Workspace, mod *resources.Module, application *resources.Application) {
+func addAppToAppDependency(ctx context.Context, workspace *resources.Workspace, mod *resources.Module, application *resources.Application) error {
 	// Collect all applications from all modules
 	var allApps []*resources.Application
 	for _, modRef := range workspace.Modules {
 		m, err := workspace.LoadModuleFromName(ctx, modRef.Name)
 		if err != nil {
-			continue
+			return fmt.Errorf("cannot load module %q: %w", modRef.Name, err)
 		}
 		apps, err := m.LoadApplications(ctx)
 		if err != nil {
-			continue
+			return fmt.Errorf("cannot load applications from module %q: %w", m.Name, err)
 		}
 		for _, app := range apps {
 			// Don't include self
@@ -103,8 +122,7 @@ func addAppToAppDependency(ctx context.Context, workspace *resources.Workspace, 
 	}
 
 	if len(allApps) == 0 {
-		cli.Error("No other applications found")
-		return
+		return fmt.Errorf("no other applications found")
 	}
 
 	var entries []*models.Entry
@@ -116,24 +134,28 @@ func addAppToAppDependency(ctx context.Context, workspace *resources.Workspace, 
 	}
 
 	selected, err := models.Select("Select the application dependency", entries)
-	cli.ExitOnError(err, "cannot select application")
+	if err != nil {
+		return fmt.Errorf("cannot select application dependency: %w", err)
+	}
 
 	// Parse the selected application
 	depApp := findAppByIdentifier(allApps, selected.Identifier)
 	if depApp == nil {
-		cli.Error("Cannot find selected application")
-		return
+		return fmt.Errorf("cannot find selected application %q", selected.Identifier)
 	}
 
 	// Add the dependency
 	application.AddApplicationDependency(depApp.Name, depApp.Module())
 	err = application.Save(ctx)
-	cli.ExitOnError(err, "cannot save application")
+	if err != nil {
+		return fmt.Errorf("cannot save application: %w", err)
+	}
 
 	cli.Header(2, "Application dependency on %s/%s added", depApp.Module(), depApp.Name)
+	return nil
 }
 
-func addAppToServiceDependency(ctx context.Context, workspace *resources.Workspace, mod *resources.Module, application *resources.Application) {
+func addAppToServiceDependency(ctx context.Context, workspace *resources.Workspace, application *resources.Application) error {
 	// Collect all services from all modules
 	type serviceEntry struct {
 		Name   string
@@ -144,7 +166,7 @@ func addAppToServiceDependency(ctx context.Context, workspace *resources.Workspa
 	for _, modRef := range workspace.Modules {
 		m, err := workspace.LoadModuleFromName(ctx, modRef.Name)
 		if err != nil {
-			continue
+			return fmt.Errorf("cannot load module %q: %w", modRef.Name, err)
 		}
 		for _, svcRef := range m.ServiceReferences {
 			allServices = append(allServices, serviceEntry{
@@ -155,8 +177,7 @@ func addAppToServiceDependency(ctx context.Context, workspace *resources.Workspa
 	}
 
 	if len(allServices) == 0 {
-		cli.Error("No services found")
-		return
+		return fmt.Errorf("no services found")
 	}
 
 	var entries []*models.Entry
@@ -168,27 +189,31 @@ func addAppToServiceDependency(ctx context.Context, workspace *resources.Workspa
 	}
 
 	selected, err := models.Select("Select the service dependency", entries)
-	cli.ExitOnError(err, "cannot select service")
+	if err != nil {
+		return fmt.Errorf("cannot select service dependency: %w", err)
+	}
 
 	// Parse the selected service
 	var depSvc *serviceEntry
-	for _, svc := range allServices {
-		if fmt.Sprintf("%s/%s", svc.Module, svc.Name) == selected.Identifier {
-			depSvc = &svc
+	for i := range allServices {
+		if fmt.Sprintf("%s/%s", allServices[i].Module, allServices[i].Name) == selected.Identifier {
+			depSvc = &allServices[i]
 			break
 		}
 	}
 	if depSvc == nil {
-		cli.Error("Cannot find selected service")
-		return
+		return fmt.Errorf("cannot find selected service %q", selected.Identifier)
 	}
 
 	// Add the dependency
 	application.AddServiceDependency(depSvc.Name, depSvc.Module)
 	err = application.Save(ctx)
-	cli.ExitOnError(err, "cannot save application")
+	if err != nil {
+		return fmt.Errorf("cannot save application: %w", err)
+	}
 
 	cli.Header(2, "Service dependency on %s/%s added", depSvc.Module, depSvc.Name)
+	return nil
 }
 
 func findAppByIdentifier(apps []*resources.Application, identifier string) *resources.Application {

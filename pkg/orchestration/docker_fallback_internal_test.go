@@ -11,14 +11,14 @@ import (
 	"github.com/codefly-dev/core/services"
 )
 
-func fakeManager(module, name, runtimeContext string, runtimes ...agentv0.Runtime_Type) *Manager {
-	reqs := make([]*agentv0.Runtime, 0, len(runtimes))
-	for _, t := range runtimes {
-		reqs = append(reqs, &agentv0.Runtime{Type: t})
+func fakeManager(module, name, runtimeContext string, backends ...agentv0.Backend_Type) *Manager {
+	supported := make([]*agentv0.Backend, 0, len(backends))
+	for _, t := range backends {
+		supported = append(supported, &agentv0.Backend{Type: t})
 	}
 	instance := &services.Instance{
 		Identity: &resources.ServiceIdentity{Module: module, Name: name},
-		Info:     &agentv0.AgentInformation{RuntimeRequirements: reqs},
+		Info:     &agentv0.AgentInformation{SupportedBackends: supported},
 	}
 	return &Manager{Runner: &Runner{instance: instance, runtimeContext: runtimeContext}}
 }
@@ -40,8 +40,9 @@ func TestResolveDockerFallback_DockerRunning_LeavesContextsUntouched(t *testing.
 }
 
 func TestResolveDockerFallback_DockerDown_DockerOnlyServiceStops(t *testing.T) {
-	// A container-only agent advertises no nix/native runtime requirements.
-	m := fakeManager("infra", "postgres", resources.RuntimeContextFree)
+	// A container-only agent advertises DOCKER as its only backend — nothing to
+	// fall back to when Docker is down.
+	m := fakeManager("infra", "postgres", resources.RuntimeContextFree, agentv0.Backend_DOCKER)
 	flow := flowWith(DockerStatus{Running: false, Context: "orbstack", Endpoint: "unix:///orb.sock"}, m)
 
 	err := flow.resolveDockerFallback(context.Background())
@@ -89,7 +90,7 @@ func TestResolveDockerFallback_DockerDown_NixServiceFallsBack(t *testing.T) {
 		t.Skip("nix not available on this machine")
 	}
 	// A nix-capable service falls back to nix rather than stopping the run.
-	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Runtime_GO, agentv0.Runtime_NIX)
+	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_NIX)
 	flow := flowWith(DockerStatus{Running: false}, m)
 
 	if err := flow.resolveDockerFallback(context.Background()); err != nil {
@@ -100,8 +101,23 @@ func TestResolveDockerFallback_DockerDown_NixServiceFallsBack(t *testing.T) {
 	}
 }
 
+func TestResolveDockerFallback_DockerDown_PrefersLocalOverNix(t *testing.T) {
+	// A LOCAL-first service with no host toolchain requirement (LOCAL is always
+	// available) resolves to native — honoring preference order — even when nix
+	// is installed, rather than being forced onto nix.
+	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_LOCAL, agentv0.Backend_NIX)
+	flow := flowWith(DockerStatus{Running: false}, m)
+
+	if err := flow.resolveDockerFallback(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := m.Runner.runtimeContext; got != resources.RuntimeContextNative {
+		t.Fatalf("runtime context = %q, want %q (LOCAL preferred over NIX)", got, resources.RuntimeContextNative)
+	}
+}
+
 func TestRunnerSupportsNix(t *testing.T) {
-	withNix := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Runtime_GO, agentv0.Runtime_NIX).Runner
+	withNix := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_NIX).Runner
 	if !withNix.SupportsNix() {
 		t.Fatal("expected SupportsNix() = true when NIX is advertised")
 	}

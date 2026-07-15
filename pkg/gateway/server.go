@@ -14,6 +14,9 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,6 +43,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 )
@@ -53,6 +58,17 @@ type Config struct {
 	// network — required when the gateway runs inside a container that a
 	// remote Mind connects to (the codefly-in-Docker / SaaS data-plane model).
 	Host string
+	// Token is required for every RPC when set, and is mandatory for any
+	// non-loopback bind. Clients send it as "authorization: Bearer <token>".
+	Token string
+	// TLSCertFile and TLSKeyFile configure server TLS. Both are mandatory for
+	// non-loopback binds so bearer credentials and privileged RPC payloads are
+	// never sent in clear text.
+	TLSCertFile string
+	TLSKeyFile  string
+	// TLSClientCAFile optionally enables mutual TLS. When set, clients must
+	// present a certificate signed by this CA in addition to the bearer token.
+	TLSClientCAFile string
 }
 
 // bindHost returns the interface to listen on, defaulting to local-only.
@@ -66,9 +82,10 @@ func (c Config) bindHost() string {
 // Server implements the Gateway gRPC service.
 type Server struct {
 	gatewayv1.UnimplementedGatewayServer
-	cfg      Config
-	mindYAML *MindYAML
-	grpcSrv  *grpc.Server
+	cfg       Config
+	mindYAML  *MindYAML
+	grpcSrv   *grpc.Server
+	tlsConfig *tls.Config
 
 	// terminals holds the PTY-backed interactive shells running in this gateway
 	// (the gateway IS inside the execution box, so the PTY lives here).
@@ -110,8 +127,28 @@ type SvcConfig struct {
 // will return a clear error until a mind.yaml is present or the config is
 // provided at runtime.
 func NewServer(cfg Config) (*Server, error) {
+	remote := !isLoopbackHost(cfg.bindHost())
+	if remote && strings.TrimSpace(cfg.Token) == "" {
+		return nil, fmt.Errorf("gateway authentication token is required for non-loopback host %q", cfg.bindHost())
+	}
+	tlsConfig, err := loadGatewayTLSConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if remote && tlsConfig == nil {
+		return nil, fmt.Errorf("gateway TLS certificate and key are required for non-loopback host %q", cfg.bindHost())
+	}
+	if strings.TrimSpace(cfg.WorkDir) == "" {
+		cfg.WorkDir = "."
+	}
+	absWorkDir, err := filepath.Abs(cfg.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve gateway work directory: %w", err)
+	}
+	cfg.WorkDir = filepath.Clean(absWorkDir)
 	s := &Server{
 		cfg:        cfg,
+		tlsConfig:  tlsConfig,
 		plugins:    make(map[string]*pluginConn),
 		stopHealth: make(chan struct{}),
 		terminals:  newTerminalManager(),
@@ -130,6 +167,45 @@ func NewServer(cfg Config) (*Server, error) {
 	// and will report a clear error for plugin-dependent operations.
 
 	return s, nil
+}
+
+func loadGatewayTLSConfig(cfg Config) (*tls.Config, error) {
+	certFile := strings.TrimSpace(cfg.TLSCertFile)
+	keyFile := strings.TrimSpace(cfg.TLSKeyFile)
+	caFile := strings.TrimSpace(cfg.TLSClientCAFile)
+	if certFile == "" && keyFile == "" {
+		if caFile != "" {
+			return nil, fmt.Errorf("gateway TLS client CA requires a server certificate and key")
+		}
+		return nil, nil
+	}
+	if certFile == "" || keyFile == "" {
+		return nil, fmt.Errorf("gateway TLS certificate and key must be configured together")
+	}
+
+	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load gateway TLS certificate: %w", err)
+	}
+	tlsConfig := &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{certificate},
+	}
+	if caFile == "" {
+		return tlsConfig, nil
+	}
+
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read gateway TLS client CA: %w", err)
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("parse gateway TLS client CA %s: no certificates found", caFile)
+	}
+	tlsConfig.ClientCAs = clientCAs
+	tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	return tlsConfig, nil
 }
 
 // requireConfig returns an error if mind.yaml was not loaded.
@@ -152,19 +228,25 @@ func (s *Server) Serve(ctx context.Context) error {
 		w.Warn("OTEL init failed (tracing disabled)", wool.ErrField(err))
 	}
 
-	addr := fmt.Sprintf("%s:%d", s.cfg.bindHost(), s.cfg.Port)
+	addr := net.JoinHostPort(s.cfg.bindHost(), fmt.Sprintf("%d", s.cfg.Port))
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
-	s.grpcSrv = grpc.NewServer(
+	serverOptions := []grpc.ServerOption{
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.UnaryInterceptor(rpcLogInterceptor()),
-	)
+		grpc.ChainUnaryInterceptor(gatewayAuthUnaryInterceptor(s.cfg.Token), rpcLogInterceptor()),
+		grpc.StreamInterceptor(gatewayAuthStreamInterceptor(s.cfg.Token)),
+	}
+	if s.tlsConfig != nil {
+		serverOptions = append(serverOptions, grpc.Creds(credentials.NewTLS(s.tlsConfig.Clone())))
+	}
+	s.grpcSrv = grpc.NewServer(serverOptions...)
 	gatewayv1.RegisterGatewayServer(s.grpcSrv, s)
 
 	if err := writePortFile(s.cfg.Port); err != nil {
+		_ = lis.Close()
 		return fmt.Errorf("write port file: %w", err)
 	}
 
@@ -493,6 +575,37 @@ func (s *Server) resolveWorkspacePath(rel string) (root, abs string, err error) 
 		return "", "", fmt.Errorf("path escapes workspace: %s", rel)
 	}
 	return root, abs, nil
+}
+
+func (s *Server) resolveCommandDir(rel string) (string, error) {
+	clean, err := cleanGatewayPath(rel)
+	if err != nil {
+		return "", err
+	}
+	root, abs, err := s.resolveWorkspacePath(clean)
+	if err != nil {
+		return "", err
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace root: %w", err)
+	}
+	realDir, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory: %w", err)
+	}
+	check, err := filepath.Rel(realRoot, realDir)
+	if err != nil || check == ".." || strings.HasPrefix(check, ".."+string(filepath.Separator)) || filepath.IsAbs(check) {
+		return "", fmt.Errorf("working directory escapes workspace: %s", rel)
+	}
+	info, err := os.Stat(realDir)
+	if err != nil {
+		return "", fmt.Errorf("stat working directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("working directory is not a directory: %s", rel)
+	}
+	return realDir, nil
 }
 
 func shouldSkipGatewayDir(name string) bool {
@@ -1043,6 +1156,19 @@ func runtimeTestSuiteFailures(out []string, suites []*runtimev0.TestSuite) []str
 // ─── Execution ───────────────────────────────────────────────
 
 func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandRequest) (*gatewayv1.RunCommandResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "run command request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.GetCommand()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "command is required")
+	}
+	const maxTimeoutSeconds = int32(600)
+	if req.TimeoutSeconds > maxTimeoutSeconds {
+		return nil, status.Errorf(codes.InvalidArgument, "timeout_seconds must be at most %d", maxTimeoutSeconds)
+	}
 	timeout := 30 * time.Second
 	if req.TimeoutSeconds > 0 {
 		timeout = time.Duration(req.TimeoutSeconds) * time.Second
@@ -1050,9 +1176,9 @@ func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandReques
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	dir := s.serviceRoot()
-	if req.WorkingDir != "" {
-		dir = filepath.Join(dir, req.WorkingDir)
+	dir, err := s.resolveCommandDir(req.GetWorkingDir())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
@@ -1067,23 +1193,24 @@ func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandReques
 		cmd.Stdin = bytes.NewReader(req.Stdin)
 	}
 
-	var stdout, stderr bytes.Buffer
+	stdout := newBoundedCommandBuffer()
+	stderr := newBoundedCommandBuffer()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
-			return &gatewayv1.RunCommandResponse{ExitCode: -1, Stderr: err.Error()}, nil
+			return &gatewayv1.RunCommandResponse{ExitCode: -1, Stdout: stdout.Output(), Stderr: appendCommandError(stderr.Output(), err)}, nil
 		}
 	}
 	return &gatewayv1.RunCommandResponse{
 		ExitCode: int32(exitCode),
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
+		Stdout:   stdout.Output(),
+		Stderr:   stderr.Output(),
 	}, nil
 }
 
@@ -1223,7 +1350,11 @@ func (s *Server) GitDiff(ctx context.Context, req *gatewayv1.GitDiffRequest) (*g
 		args = append(args, "--cached")
 	}
 	if req.Path != "" {
-		args = append(args, "--", req.Path)
+		path, err := cleanGatewayPath(req.Path)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		args = append(args, "--", path)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
@@ -1239,6 +1370,9 @@ func (s *Server) GitLog(ctx context.Context, req *gatewayv1.GitLogRequest) (*gat
 	count := int(req.Count)
 	if count <= 0 {
 		count = 10
+	}
+	if count > 1000 {
+		return nil, status.Error(codes.InvalidArgument, "git log count must be at most 1000")
 	}
 	cmd := exec.CommandContext(ctx, "git", "log",
 		fmt.Sprintf("--max-count=%d", count),
@@ -1268,7 +1402,18 @@ func (s *Server) GitCommit(ctx context.Context, req *gatewayv1.GitCommitRequest)
 	dir := s.serviceRoot()
 
 	if len(req.Paths) > 0 {
-		args := append([]string{"add"}, req.Paths...)
+		paths := make([]string, 0, len(req.Paths))
+		for _, requested := range req.Paths {
+			path, err := cleanGatewayPath(requested)
+			if err != nil || path == "" {
+				if err == nil {
+					err = fmt.Errorf("git path cannot be empty")
+				}
+				return nil, status.Error(codes.InvalidArgument, err.Error())
+			}
+			paths = append(paths, path)
+		}
+		args := append([]string{"add", "--"}, paths...)
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -1300,12 +1445,13 @@ func (s *Server) runCommandCheck(ctx context.Context, name string, ch *gatewayv1
 	cmd := exec.CommandContext(ctx, "sh", "-c", ch.Run)
 	cmd.Dir = s.serviceRoot()
 
-	var stdout, stderr bytes.Buffer
+	stdout := newBoundedCommandBuffer()
+	stderr := newBoundedCommandBuffer()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
-	combined := stdout.String() + stderr.String()
+	combined := stdout.Output() + stderr.Output()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -1321,6 +1467,51 @@ func (s *Server) runCommandCheck(ctx context.Context, name string, ch *gatewayv1
 		return &gatewayv1.CheckResult{Name: name, Passed: false, Output: combined, Error: fmt.Sprintf("output does not contain %q", ch.OutputContains)}
 	}
 	return &gatewayv1.CheckResult{Name: name, Passed: true, Output: combined}
+}
+
+const maxGatewayCommandOutput = 4 << 20
+
+type boundedCommandBuffer struct {
+	buf       bytes.Buffer
+	truncated bool
+}
+
+func newBoundedCommandBuffer() boundedCommandBuffer {
+	var b boundedCommandBuffer
+	b.buf.Grow(64 << 10)
+	return b
+}
+
+func (b *boundedCommandBuffer) Write(p []byte) (int, error) {
+	original := len(p)
+	remaining := maxGatewayCommandOutput - b.buf.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = b.buf.Write(p)
+	}
+	if original > remaining {
+		b.truncated = true
+	}
+	// Report the full write and keep draining the pipe; returning a short write
+	// would stop os/exec's copier and can deadlock or SIGPIPE the child.
+	return original, nil
+}
+
+func (b *boundedCommandBuffer) Output() string {
+	out := b.buf.String()
+	if b.truncated {
+		out += "\n[codefly gateway: output truncated]\n"
+	}
+	return out
+}
+
+func appendCommandError(output string, err error) string {
+	if output == "" {
+		return err.Error()
+	}
+	return output + "\n" + err.Error()
 }
 
 func (s *Server) runHTTPCheck(ctx context.Context, name string, ch *gatewayv1.HttpCheck, baseURL string) *gatewayv1.CheckResult {
@@ -1405,6 +1596,56 @@ func rpcLogInterceptor() grpc.UnaryServerInterceptor {
 		}
 		fmt.Printf("[gateway] %s %dms %s\n", method, dur.Milliseconds(), errStr)
 		return resp, err
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func authenticateGatewayRequest(ctx context.Context, token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "gateway authentication required")
+	}
+	want := "Bearer " + token
+	for _, value := range md.Get("authorization") {
+		if subtle.ConstantTimeCompare([]byte(value), []byte(want)) == 1 {
+			return nil
+		}
+	}
+	for _, value := range md.Get("x-codefly-gateway-token") {
+		if subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1 {
+			return nil
+		}
+	}
+	return status.Error(codes.Unauthenticated, "invalid gateway authentication token")
+}
+
+func gatewayAuthUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if err := authenticateGatewayRequest(ctx, token); err != nil {
+			return nil, err
+		}
+		return handler(ctx, req)
+	}
+}
+
+func gatewayAuthStreamInterceptor(token string) grpc.StreamServerInterceptor {
+	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if err := authenticateGatewayRequest(stream.Context(), token); err != nil {
+			return err
+		}
+		return handler(srv, stream)
 	}
 }
 

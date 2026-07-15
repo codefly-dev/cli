@@ -15,12 +15,9 @@ import (
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Delete a service",
+	Args:  cobra.ExactArgs(1),
 
-	Run: func(cmd *cobra.Command, args []string) {
-		if len(args) != 1 {
-			cli.Error("You must provide a name for the service as the single argument")
-			cli.ExitError()
-		}
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -30,30 +27,39 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
-		workspace, module, service := common.LoadRequired(ctx, args)
-		deleteService(workspace, module, service)
+		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		if err != nil {
+			return err
+		}
+		return deleteService(workspace, module, service)
 	},
 }
 
-func deleteService(workspace *resources.Workspace, module *resources.Module, service *resources.Service) {
+func deleteService(workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
 	ctx, done := common.NewContext()
 	defer done()
 
 	mod, err := workspace.LoadModuleFromName(ctx, module.Name)
-	cli.ExitOnError(err, "cannot load module")
+	if err != nil {
+		return fmt.Errorf("cannot load module: %w", err)
+	}
 
 	if !mod.ExistsService(ctx, service.Name) {
-		cli.Error("Service <%s> does not exist in module <%s>", service.Name, mod.Name)
-		return
+		return fmt.Errorf("service <%s> does not exist in module <%s>", service.Name, mod.Name)
 	}
 	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm deletion of service <%s> in module <%s> in workspace <%s>?", service.Name, mod.Name, workspace.Name), false)
 	if confirm {
 		err = mod.DeleteService(ctx, service.Name)
-		cli.ExitOnError(err, "cannot delete service")
+		if err != nil {
+			return fmt.Errorf("cannot delete service: %w", err)
+		}
 		err = workspace.DeleteServiceDependencies(ctx, &resources.ServiceReference{Module: mod.Name, Name: service.Name})
-		cli.ExitOnError(err, "cannot delete service dependencies")
+		if err != nil {
+			return fmt.Errorf("cannot delete service dependencies: %w", err)
+		}
 		cli.Header(2, "Service <%s> deleted!", service.Name)
 	} else {
 		cli.Header(2, "Abort! Heard loud and clear.")
 	}
+	return nil
 }

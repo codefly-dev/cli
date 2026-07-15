@@ -43,20 +43,26 @@ var VerifyCmd = &cobra.Command{
 For each module with a tools/base-manifest.json, re-hash the recorded base files
 and fail on any modified or missing one. Files not in the manifest are legal
 side-additions. To change a base file, promote the change upstream into canonical
-(making the original stronger) or express it as a side-addition — never edit the
+	(making the original stronger) or express it as a side-addition — never edit the
 synced copy.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		verifyCommand()
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return verifyCommand()
 	},
 }
 
-func verifyCommand() {
+func verifyCommand() error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
 	modules, err := workspace.LoadModules(ctx)
-	cli.ExitOnError(err, "cannot load workspace modules")
+	if err != nil {
+		return fmt.Errorf("cannot load workspace modules: %w", err)
+	}
 
 	checked, failed := 0, 0
 	for _, mod := range modules {
@@ -134,14 +140,13 @@ func verifyCommand() {
 
 	if checked == 0 {
 		cli.Info("base-integrity: no module carries a base-manifest.json — nothing to verify")
-		return
+		return nil
 	}
 	if failed > 0 {
-		cli.ExitOnError(
-			fmt.Errorf("%d module(s) failed: promote the change upstream into canonical, or express it as a side-addition", failed),
-			"base-integrity verification failed")
+		return fmt.Errorf("base-integrity verification failed: %d module(s) failed; promote the change upstream into canonical, or express it as a side-addition", failed)
 	}
 	cli.Info("base-integrity OK across %d module(s)", checked)
+	return nil
 }
 
 // serviceOf returns the service a base file belongs to (services/<svc>/...),

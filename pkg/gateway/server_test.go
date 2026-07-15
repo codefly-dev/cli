@@ -2,12 +2,20 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
@@ -15,6 +23,7 @@ import (
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -484,6 +493,7 @@ func TestGitStatus(t *testing.T) {
 	run("init")
 	run("config", "user.email", "test@test.com")
 	run("config", "user.name", "Test")
+	run("config", "commit.gpgsign", "false")
 
 	if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
@@ -703,6 +713,93 @@ func TestRunCommand_WorkingDir(t *testing.T) {
 	}
 }
 
+func TestRunCommandRejectsEscapingWorkingDir(t *testing.T) {
+	root := t.TempDir()
+	s := newTestServerWithWorkDir(&mockCodeClient{}, root)
+	for _, workDir := range []string{"../outside", "/tmp"} {
+		_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "pwd", WorkingDir: workDir})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("working_dir %q returned %v", workDir, err)
+		}
+	}
+
+	outside := t.TempDir()
+	link := filepath.Join(root, "escape-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "pwd", WorkingDir: "escape-link"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("symlink escape returned %v", err)
+	}
+}
+
+func TestRunCommandRejectsExcessiveTimeout(t *testing.T) {
+	s := newTestServerWithWorkDir(&mockCodeClient{}, t.TempDir())
+	_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "true", TimeoutSeconds: 601})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("timeout returned %v", err)
+	}
+}
+
+func TestBoundedCommandBufferKeepsDrainingAndTruncates(t *testing.T) {
+	b := newBoundedCommandBuffer()
+	payload := []byte(strings.Repeat("x", maxGatewayCommandOutput+1024))
+	n, err := b.Write(payload)
+	if err != nil || n != len(payload) {
+		t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(payload))
+	}
+	out := b.Output()
+	if !strings.Contains(out, "output truncated") {
+		t.Fatal("truncation marker missing")
+	}
+	if len(out) > maxGatewayCommandOutput+100 {
+		t.Fatalf("bounded output length = %d", len(out))
+	}
+}
+
+func TestGitRPCInputBoundsAndOptionBoundary(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	run("init")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+	run("config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
+
+	if _, err := s.GitDiff(context.Background(), &gatewayv1.GitDiffRequest{Path: "../outside"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("GitDiff traversal returned %v", err)
+	}
+	if _, err := s.GitLog(context.Background(), &gatewayv1.GitLogRequest{Count: 1001}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("GitLog excessive count returned %v", err)
+	}
+
+	// "--all" is a valid filename but must be placed after git's -- option
+	// boundary. The old argv interpreted it as an option and staged every file.
+	resp, err := s.GitCommit(context.Background(), &gatewayv1.GitCommitRequest{Paths: []string{"--all"}, Message: "should not commit"})
+	if err != nil {
+		t.Fatalf("GitCommit: %v", err)
+	}
+	if resp.Success {
+		t.Fatal("option-like path was interpreted as git add --all")
+	}
+	if statusOut := run("status", "--porcelain=v1"); !strings.Contains(statusOut, "?? untracked.txt") {
+		t.Fatalf("untracked file was unexpectedly staged: %q", statusOut)
+	}
+}
+
 func TestPluginToAgentName(t *testing.T) {
 	tests := []struct {
 		plugin string
@@ -789,5 +886,107 @@ func TestConfigBindHostDefaultsToLoopback(t *testing.T) {
 	// codefly-in-Docker data-plane model.
 	if got := (Config{Host: "0.0.0.0"}).bindHost(); got != "0.0.0.0" {
 		t.Fatalf("Host=0.0.0.0 bindHost() = %q, want 0.0.0.0", got)
+	}
+}
+
+func TestNewServerRequiresTokenForNonLoopbackBind(t *testing.T) {
+	if _, err := NewServer(Config{WorkDir: t.TempDir(), Host: "0.0.0.0"}); err == nil {
+		t.Fatal("non-loopback gateway started without authentication")
+	}
+	if _, err := NewServer(Config{WorkDir: t.TempDir(), Host: "0.0.0.0", Token: "secret"}); err == nil {
+		t.Fatal("non-loopback gateway started without TLS")
+	}
+	certFile, keyFile := writeTestTLSCertificate(t)
+	if _, err := NewServer(Config{
+		WorkDir: t.TempDir(), Host: "0.0.0.0", Token: "secret",
+		TLSCertFile: certFile, TLSKeyFile: keyFile,
+	}); err != nil {
+		t.Fatalf("token-and-TLS-authenticated non-loopback gateway was rejected: %v", err)
+	}
+}
+
+func TestNewServerTLSConfiguration(t *testing.T) {
+	certFile, keyFile := writeTestTLSCertificate(t)
+	if _, err := NewServer(Config{WorkDir: t.TempDir(), TLSCertFile: certFile}); err == nil {
+		t.Fatal("gateway accepted a TLS certificate without a key")
+	}
+	if _, err := NewServer(Config{WorkDir: t.TempDir(), TLSClientCAFile: certFile}); err == nil {
+		t.Fatal("gateway accepted a client CA without a server certificate")
+	}
+
+	s, err := NewServer(Config{
+		WorkDir: t.TempDir(), TLSCertFile: certFile, TLSKeyFile: keyFile,
+		TLSClientCAFile: certFile,
+	})
+	if err != nil {
+		t.Fatalf("create mTLS gateway: %v", err)
+	}
+	if s.tlsConfig == nil || s.tlsConfig.ClientAuth != tls.RequireAndVerifyClientCert {
+		t.Fatal("client CA did not enable required client-certificate verification")
+	}
+}
+
+func writeTestTLSCertificate(t *testing.T) (string, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "codefly-gateway-test"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "gateway.crt")
+	keyFile := filepath.Join(dir, "gateway.key")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile
+}
+
+func TestNewServerNormalizesWorkDirToAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	s, err := NewServer(Config{WorkDir: "."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(s.cfg.WorkDir) || s.cfg.WorkDir != dir {
+		t.Fatalf("WorkDir = %q, want %q", s.cfg.WorkDir, dir)
+	}
+}
+
+func TestAuthenticateGatewayRequest(t *testing.T) {
+	if err := authenticateGatewayRequest(context.Background(), ""); err != nil {
+		t.Fatalf("local tokenless mode should pass: %v", err)
+	}
+	if err := authenticateGatewayRequest(context.Background(), "secret"); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("missing token returned %v", err)
+	}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer secret"))
+	if err := authenticateGatewayRequest(ctx, "secret"); err != nil {
+		t.Fatalf("valid token rejected: %v", err)
+	}
+	headerCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-codefly-gateway-token", "secret"))
+	if err := authenticateGatewayRequest(headerCtx, "secret"); err != nil {
+		t.Fatalf("valid gateway header token rejected: %v", err)
+	}
+	bad := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer wrong"))
+	if err := authenticateGatewayRequest(bad, "secret"); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("invalid token returned %v", err)
 	}
 }

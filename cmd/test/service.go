@@ -2,8 +2,10 @@ package test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -37,7 +39,8 @@ Examples:
   codefly test service --suite e2e               # run e2e suite (Playwright, etc.)
   codefly test service --target ./pkg/business   # scope to a package/dir
   codefly test service -- --shard 1/2            # pass --shard 1/2 to runner`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args: serviceArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -45,17 +48,21 @@ Examples:
 		defer stop()
 
 		cli.Init()
-		cli.RegisterCleanup(services.ClearAgents)
+		defer services.ClearAgents()
 
 		// Anything after `--` becomes extra_args. cobra puts it in args
 		// past ArgsLenAtDash().
+		request := buildTestRequest(nil)
 		dashAt := cmd.ArgsLenAtDash()
 		if dashAt >= 0 && dashAt < len(args) {
-			testExtraArgs = append(testExtraArgs, args[dashAt:]...)
+			request.ExtraArgs = append(request.ExtraArgs, args[dashAt:]...)
 			args = args[:dashAt]
 		}
 
-		workspace, module, service := common.LoadRequired(ctx, args)
+		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		if err != nil {
+			return fmt.Errorf("cannot load required service: %w", err)
+		}
 		serviceName := resources.WithUnique(service).Unique()
 		isHeadless := headless || !term.IsTerminal(int(os.Stdout.Fd()))
 
@@ -66,7 +73,7 @@ Examples:
 
 		if isHeadless {
 			fmt.Printf("[codefly] Testing service %s (headless mode)\n", serviceName)
-			flow, testErr = initRunService(ctx, workspace, module, service)
+			flow, testErr = initRunService(ctx, workspace, module, service, request)
 			if testErr == nil {
 				testErr = common.WithHeartbeat(ctx, "running tests for "+serviceName, func() error {
 					return testService(ctx, flow)
@@ -75,13 +82,15 @@ Examples:
 		} else {
 			logCh := tui.NewLogChannel()
 			cli.SuppressOutput()
+			defer cli.RestoreOutput()
 
 			tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
 				t.SendState(serviceName, tui.StateLoading)
 
-				flow, testErr = initRunService(ctx, workspace, module, service)
+				flow, testErr = initRunService(ctx, workspace, module, service, request)
 				if testErr != nil {
 					t.SendError(testErr)
+					t.SendDone(testErr)
 					return
 				}
 
@@ -90,6 +99,7 @@ Examples:
 				testErr = testService(ctx, flow)
 				if testErr != nil {
 					t.SendError(testErr)
+					t.SendDone(testErr)
 					return
 				}
 
@@ -98,19 +108,23 @@ Examples:
 			if tuiErr != nil && testErr == nil {
 				testErr = tuiErr
 			}
-			// TUI suppressed stdout; restore it before printing the report.
 			cli.RestoreOutput()
 		}
 
 		// Render the structured test report (counts + failed cases with
 		// captured output) whenever the agent returned one — on success and
 		// failure alike. This is the agent's Test RPC structured response.
-		resp := flow.OriginTestResponse()
+		var resp *runtimev0.TestResponse
+		if flow != nil {
+			resp = flow.OriginTestResponse()
+		}
 		if resp != nil {
 			fmt.Println(orchestration.RenderTestReport(resp))
 		}
 
-		_ = stopService(ctx, flow)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		stopErr := stopService(shutdownCtx, flow)
+		shutdownCancel()
 
 		// Exit non-zero if the run errored OR the structured result is not a
 		// pass. Previously this always called cli.Exit() (os.Exit(0)), so a
@@ -118,19 +132,27 @@ Examples:
 		failed := testErr != nil || (resp != nil && !orchestration.TestSucceeded(resp))
 		if failed {
 			if testErr != nil {
-				cli.ErrorChain(testErr, "tests failed for %s", serviceName)
-			} else {
-				cli.Error("tests failed for %s", serviceName)
+				return errors.Join(fmt.Errorf("tests failed for %s: %w", serviceName, testErr), stopErr)
 			}
-			cli.ExitError()
-			return
+			return errors.Join(fmt.Errorf("tests failed for %s", serviceName), stopErr)
+		}
+		if stopErr != nil {
+			return fmt.Errorf("tests passed but service cleanup failed: %w", stopErr)
 		}
 		fmt.Printf("[codefly] Tests passed for %s\n", serviceName)
-		cli.Exit()
+		return nil
 	},
 }
 
-func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
+func serviceArgs(cmd *cobra.Command, args []string) error {
+	positional := args
+	if dashAt := cmd.ArgsLenAtDash(); dashAt >= 0 && dashAt <= len(args) {
+		positional = args[:dashAt]
+	}
+	return cobra.MaximumNArgs(1)(cmd, positional)
+}
+
+func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *runtimev0.TestRequest) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("testService", wool.ThisField(resources.WithUnique(service)))
 	defer w.Catch()
 
@@ -146,7 +168,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithInitOnly(initOnly)
 	flow.WithStandAlone(true)
 	flow.WithRuntimeContext(runtimeContext)
-	flow.WithTestRequest(buildTestRequest())
+	flow.WithTestRequest(request)
 
 	// Return the flow even when init fails: InitManagers spawns agents
 	// incrementally (and Load can fail after they're live), so a partial failure
@@ -191,16 +213,16 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 // buildTestRequest assembles a TestRequest from the CLI flags. Returns
 // a zero-value request (run all tests, default settings) when no flags
 // were supplied so existing callers see no behavioural change.
-func buildTestRequest() *runtimev0.TestRequest {
+func buildTestRequest(extraArgs []string) *runtimev0.TestRequest {
 	return &runtimev0.TestRequest{
 		Target:    testTarget,
 		Verbose:   testVerbose,
 		Race:      testRace,
 		Timeout:   testTimeout,
 		Coverage:  testCoverage,
-		Filters:   testFilters,
+		Filters:   append([]string(nil), testFilters...),
 		Suite:     testSuite,
-		ExtraArgs: testExtraArgs,
+		ExtraArgs: append([]string(nil), extraArgs...),
 	}
 }
 

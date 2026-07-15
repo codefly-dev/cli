@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os/exec"
 	"path"
 	"strings"
@@ -36,14 +37,17 @@ var ModuleCmd = &cobra.Command{
 	Use:   "module [name]",
 	Short: "Deploy every service in a module + apply the module-level kustomize",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
-		workspace, module := loadModule(ctx, args)
+		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		if err != nil {
+			return err
+		}
 
 		// Resolve env up-front: same workspace.FindEnvironment fallback
 		// as deploy service. Reused for every per-service flow + the
@@ -66,7 +70,7 @@ var ModuleCmd = &cobra.Command{
 		for _, ref := range module.ServiceReferences {
 			cli.Header(2, "Deploying service %s", ref.Name)
 			if err := deployOneService(ctx, workspace, module, ref.Name, env); err != nil {
-				cli.ExitOnError(err, "Cannot deploy service %s", ref.Name)
+				return fmt.Errorf("cannot deploy service %s: %w", ref.Name, err)
 			}
 		}
 
@@ -75,33 +79,14 @@ var ModuleCmd = &cobra.Command{
 		// committed already). Skipped silently when the module hasn't
 		// scaffolded a deployment/ folder yet.
 		if !renderOnly {
-			err := applyModuleKustomize(ctx, module, env)
-			cli.ExitOnError(err, "Cannot apply module-level kustomize")
+			if err := applyModuleKustomize(ctx, module, env); err != nil {
+				return fmt.Errorf("cannot apply module-level kustomize: %w", err)
+			}
 		}
 
 		cli.Header(1, "Module deployment done!")
-		cli.Done()
+		return nil
 	},
-}
-
-// loadModule resolves the workspace + the named module. With no arg,
-// uses the active context (active.Module). Service-less variant of
-// common.LoadRequired since deploy module doesn't need a single
-// service as origin.
-func loadModule(ctx context.Context, args []string) (*resources.Workspace, *resources.Module) {
-	if len(args) == 0 {
-		workspace := common.RequireWorkspace(ctx)
-		module := common.RequireModule(ctx)
-		return workspace, module
-	}
-	workspace, err := resources.FindWorkspaceUp(ctx)
-	cli.ExitOnError(err, "Cannot find workspace")
-	if workspace == nil {
-		cli.ExitWithMessage("No workspace found")
-	}
-	module, err := workspace.LoadModuleFromName(ctx, args[0])
-	cli.ExitOnError(err, "Cannot load module %s", args[0])
-	return workspace, module
 }
 
 // deployOneService runs a one-shot deploy Flow for a single service.
@@ -121,6 +106,12 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 	if err != nil {
 		return w.Wrap(err)
 	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = flow.Stop()
+		}
+	}()
 	// Stand-alone: the module loop is the dependency walker. If we let
 	// each Flow walk deps, we'd re-deploy shared services N times.
 	flow.WithStandAlone(true)
@@ -136,10 +127,11 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 	}
 
 	if err := flow.Deploy(ctx); err != nil {
-		_ = flow.Stop()
 		return w.Wrapf(err, "deploy failed")
 	}
-	return flow.Stop()
+	err = flow.Stop()
+	stopped = true
+	return err
 }
 
 // applyModuleKustomize runs `kustomize build <dir> | kubectl apply -f -`

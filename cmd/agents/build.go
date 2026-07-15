@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,7 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/monorepo"
 	"github.com/codefly-dev/core/agents/services/audit"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/spf13/cobra"
@@ -60,56 +63,72 @@ Examples:
   cd agents/services/go-generic && codefly agent build
   codefly agent build --dir ./agents/services/go-generic
   cd agents/services && codefly agent build --all`,
-	Run: func(cmd *cobra.Command, args []string) {
-		all, _ := cmd.Flags().GetBool("all")
-		dir, _ := cmd.Flags().GetString("dir")
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
 
-		skipAudit, _ := cmd.Flags().GetBool("skip-audit")
-		failOnVuln, _ := cmd.Flags().GetBool("fail-on-vuln")
-		jobs, _ := cmd.Flags().GetInt("jobs")
-		nativeOnly, _ := cmd.Flags().GetBool("native-only")
+		all, err := cmd.Flags().GetBool("all")
+		if err != nil {
+			return fmt.Errorf("cannot read --all: %w", err)
+		}
+		dir, err := cmd.Flags().GetString("dir")
+		if err != nil {
+			return fmt.Errorf("cannot read --dir: %w", err)
+		}
+		skipAudit, err := cmd.Flags().GetBool("skip-audit")
+		if err != nil {
+			return fmt.Errorf("cannot read --skip-audit: %w", err)
+		}
+		failOnVuln, err := cmd.Flags().GetBool("fail-on-vuln")
+		if err != nil {
+			return fmt.Errorf("cannot read --fail-on-vuln: %w", err)
+		}
+		jobs, err := cmd.Flags().GetInt("jobs")
+		if err != nil {
+			return fmt.Errorf("cannot read --jobs: %w", err)
+		}
+		nativeOnly, err := cmd.Flags().GetBool("native-only")
+		if err != nil {
+			return fmt.Errorf("cannot read --native-only: %w", err)
+		}
 		opts := buildOptions{skipAudit: skipAudit, failOnVuln: failOnVuln, jobs: jobs, nativeOnly: nativeOnly}
 
 		if all {
 			if dir == "" {
-				var err error
 				dir, err = os.Getwd()
 				if err != nil {
-					cli.Error("Cannot get working directory: %v", err)
-					cli.ExitError()
+					return fmt.Errorf("cannot get working directory: %w", err)
 				}
 			}
 			absDir, err := filepath.Abs(dir)
 			if err != nil {
-				cli.Error("Cannot resolve directory: %v", err)
-				cli.ExitError()
+				return fmt.Errorf("cannot resolve directory: %w", err)
 			}
-			if err := buildAllAgents(absDir, opts); err != nil {
-				cli.Error("Build --all failed: %v", err)
-				cli.ExitError()
+			if err := buildAllAgents(ctx, absDir, opts); err != nil {
+				return fmt.Errorf("build --all failed: %w", err)
 			}
-			return
+			return nil
 		}
 
 		if dir == "" {
-			var err error
 			dir, err = os.Getwd()
 			if err != nil {
-				cli.Error("Cannot get working directory: %v", err)
-				cli.ExitError()
+				return fmt.Errorf("cannot get working directory: %w", err)
 			}
 		}
 
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
-			cli.Error("Cannot resolve directory: %v", err)
-			cli.ExitError()
+			return fmt.Errorf("cannot resolve directory: %w", err)
 		}
 
-		if err := buildAgent(absDir, opts); err != nil {
-			cli.Error("Build failed: %v", err)
-			cli.ExitError()
+		if err := buildAgent(ctx, absDir, opts); err != nil {
+			return fmt.Errorf("build failed: %w", err)
 		}
+		return nil
 	},
 }
 
@@ -137,8 +156,8 @@ type BuildOptions struct {
 // BuildAllAgents builds every agent under root. It is the exported entry point
 // for `codefly self build --with-agents`, so one command rebuilds the CLI and
 // all agents together. root is typically <monorepo>/agents/services.
-func BuildAllAgents(root string, opts BuildOptions) error {
-	return buildAllAgents(root, buildOptions{skipAudit: opts.SkipAudit, failOnVuln: opts.FailOnVuln, jobs: opts.Jobs, nativeOnly: opts.NativeOnly})
+func BuildAllAgents(ctx context.Context, root string, opts BuildOptions) error {
+	return buildAllAgents(ctx, root, buildOptions{skipAudit: opts.SkipAudit, failOnVuln: opts.FailOnVuln, jobs: opts.Jobs, nativeOnly: opts.NativeOnly})
 }
 
 func init() {
@@ -161,9 +180,10 @@ type quarantinedAgent struct {
 // under root and builds each one — SKIPPING agents whose manifest marks them
 // quarantine: true (not yet migrated to the new style). Quarantined agents are
 // reported so a bulk rebuild is honest about what it did and didn't touch.
-func buildAllAgents(root string, opts buildOptions) error {
+func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 	var agents []string
 	var quarantined []quarantinedAgent
+	var discoveryFailures []error
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return fmt.Errorf("read directory %s: %w", root, err)
@@ -176,6 +196,9 @@ func buildAllAgents(root string, opts buildOptions) error {
 		yamlPath := filepath.Join(dir, "agent.codefly.yaml")
 		data, rerr := os.ReadFile(yamlPath)
 		if rerr != nil {
+			if !os.IsNotExist(rerr) {
+				discoveryFailures = append(discoveryFailures, fmt.Errorf("read %s: %w", yamlPath, rerr))
+			}
 			continue // not an agent directory
 		}
 		var ag agentYAML
@@ -185,6 +208,7 @@ func buildAllAgents(root string, opts buildOptions) error {
 			// quarantined (whose quarantine flag we just failed to read). Skip
 			// it loudly so a broken manifest is visible, not built.
 			cli.Info("  ⚠ skipping %s — unreadable agent.codefly.yaml: %v", e.Name(), uerr)
+			discoveryFailures = append(discoveryFailures, fmt.Errorf("parse %s: %w", yamlPath, uerr))
 			continue
 		}
 		if ag.Quarantine {
@@ -208,9 +232,9 @@ func buildAllAgents(root string, opts buildOptions) error {
 
 	if len(agents) == 0 {
 		if len(quarantined) > 0 {
-			return fmt.Errorf("no buildable agents under %s — all %d are quarantined", root, len(quarantined))
+			return errors.Join(append(discoveryFailures, fmt.Errorf("no buildable agents under %s — all %d are quarantined", root, len(quarantined)))...)
 		}
-		return fmt.Errorf("no agent directories found under %s", root)
+		return errors.Join(append(discoveryFailures, fmt.Errorf("no agent directories found under %s", root))...)
 	}
 
 	cli.Header(1, "Building %d agents", len(agents))
@@ -241,12 +265,16 @@ func buildAllAgents(root string, opts buildOptions) error {
 	var completed atomic.Int64
 
 	started := time.Now()
-	g := new(errgroup.Group)
+	g, groupCtx := errgroup.WithContext(ctx)
 	g.SetLimit(jobs)
 	for i := range agents {
+		if err := groupCtx.Err(); err != nil {
+			results[i] = &agentBuildResult{label: filepath.Base(agents[i]), dir: agents[i], err: err}
+			continue
+		}
 		g.Go(func() error {
 			log := &agentLogger{}
-			res := compileAgent(agents[i], log, &tidyMu, opts.nativeOnly)
+			res := compileAgent(groupCtx, agents[i], log, &tidyMu, opts.nativeOnly)
 			results[i] = res
 			n := completed.Add(1)
 			if res.err != nil {
@@ -269,7 +297,7 @@ func buildAllAgents(root string, opts buildOptions) error {
 			if res.err != nil {
 				continue
 			}
-			if err := runAudit(res.dir, res.ag, opts.failOnVuln); err != nil {
+			if err := runAudit(ctx, res.dir, res.ag, opts.failOnVuln); err != nil {
 				res.err = err
 			}
 		}
@@ -303,7 +331,10 @@ func buildAllAgents(root string, opts buildOptions) error {
 	cli.Info("  %d built, %d failed in %s%s", built, len(failed), elapsed.Round(100*time.Millisecond), speedup)
 
 	if len(failed) > 0 {
-		return fmt.Errorf("%d agent(s) failed to build: %s", len(failed), strings.Join(failed, ", "))
+		discoveryFailures = append(discoveryFailures, fmt.Errorf("%d agent(s) failed to build: %s", len(failed), strings.Join(failed, ", ")))
+	}
+	if len(discoveryFailures) > 0 {
+		return errors.Join(discoveryFailures...)
 	}
 
 	if len(quarantined) > 0 {
@@ -331,34 +362,7 @@ var monorepoModules = []struct {
 // inside core — so requiring a wool/ dir here, as the old code did, made this
 // ALWAYS return "" and silently disabled local-core replace detection.)
 func findMonorepoRoot(dir string) string {
-	cur := dir
-	for {
-		if isCoreModuleDir(filepath.Join(cur, "core")) {
-			return cur
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return ""
-		}
-		cur = parent
-	}
-}
-
-// isCoreModuleDir reports whether dir is the codefly core Go module (its go.mod
-// declares `module github.com/codefly-dev/core`).
-func isCoreModuleDir(dir string) bool {
-	f, err := os.Open(filepath.Join(dir, "go.mod"))
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		if strings.TrimSpace(scanner.Text()) == "module github.com/codefly-dev/core" {
-			return true
-		}
-	}
-	return false
+	return monorepo.FindRoot(dir)
 }
 
 func isDir(p string) bool {
@@ -381,15 +385,15 @@ func goModRequires(dir, module string) bool {
 	return false
 }
 
-func addReplace(dir, module, localPath string, log *agentLogger) error {
-	cmd := exec.Command("go", "mod", "edit",
+func addReplace(ctx context.Context, dir, module, localPath string, log *agentLogger) error {
+	cmd := exec.CommandContext(ctx, "go", "mod", "edit",
 		"-replace", fmt.Sprintf("%s=%s", module, localPath))
 	cmd.Dir = dir
 	return log.run(cmd)
 }
 
-func dropReplace(dir, module string, log *agentLogger) error {
-	cmd := exec.Command("go", "mod", "edit", "-dropreplace", module)
+func dropReplace(ctx context.Context, dir, module string, log *agentLogger) error {
+	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-dropreplace", module)
 	cmd.Dir = dir
 	return log.run(cmd)
 }
@@ -456,9 +460,9 @@ func (l *agentLogger) flush() {
 
 // agentBuildResult is the outcome of compiling one agent.
 type agentBuildResult struct {
-	label       string // source dir base name, used before the manifest is parsed
-	dir         string
-	ag          agentYAML
+	label        string // source dir base name, used before the manifest is parsed
+	dir          string
+	ag           agentYAML
 	native       time.Duration
 	linux        time.Duration
 	linuxFailed  bool
@@ -478,13 +482,13 @@ func (r *agentBuildResult) summary() string {
 	return fmt.Sprintf("%s:%s ✓ %s %s · linux %s", r.ag.Name, r.ag.Version, runtime.GOOS, r.native, linux)
 }
 
-func buildAgent(dir string, opts buildOptions) error {
-	res := compileAgent(dir, &agentLogger{direct: true}, &sync.Mutex{}, opts.nativeOnly)
+func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
+	res := compileAgent(ctx, dir, &agentLogger{direct: true}, &sync.Mutex{}, opts.nativeOnly)
 	if res.err != nil {
 		return res.err
 	}
 	if !opts.skipAudit {
-		return runAudit(dir, res.ag, opts.failOnVuln)
+		return runAudit(ctx, dir, res.ag, opts.failOnVuln)
 	}
 	return nil
 }
@@ -496,8 +500,12 @@ func buildAgent(dir string, opts buildOptions) error {
 // without the lock. The returned result always carries the outcome — a non-nil
 // res.err means the build failed. When nativeOnly is set the Linux/amd64
 // container cross-build is skipped, producing only the host-platform binary.
-func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly bool) *agentBuildResult {
+func compileAgent(ctx context.Context, dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly bool) *agentBuildResult {
 	res := &agentBuildResult{label: filepath.Base(dir), dir: dir}
+	if err := ctx.Err(); err != nil {
+		res.err = err
+		return res
+	}
 
 	yamlPath := filepath.Join(dir, "agent.codefly.yaml")
 	data, err := os.ReadFile(yamlPath)
@@ -516,6 +524,16 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 		return res
 	}
 	res.ag = ag
+	moduleSnapshots, err := snapshotFiles(filepath.Join(dir, "go.mod"), filepath.Join(dir, "go.sum"))
+	if err != nil {
+		res.err = err
+		return res
+	}
+	defer func() {
+		if err := restoreFiles(context.WithoutCancel(ctx), moduleSnapshots); err != nil {
+			res.err = errors.Join(res.err, fmt.Errorf("restore module files: %w", err))
+		}
+	}()
 	// A quarantined agent is excluded from bulk builds; an explicit single
 	// build still proceeds (that's how you fix it) but says so loudly.
 	if ag.Quarantine {
@@ -562,8 +580,9 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 		}
 		tidyMu.Lock()
 		defer tidyMu.Unlock()
+		cleanupCtx := context.WithoutCancel(ctx)
 		for _, mod := range addedReplaces {
-			_ = dropReplace(dir, mod, log)
+			_ = dropReplace(cleanupCtx, dir, mod, log)
 		}
 	}()
 
@@ -585,7 +604,7 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 					continue
 				}
 				log.Info("  Adding replace: %s => %s", m.Module, localPath)
-				if err := addReplace(dir, m.Module, localPath, log); err != nil {
+				if err := addReplace(ctx, dir, m.Module, localPath, log); err != nil {
 					res.err = fmt.Errorf("add replace for %s: %w", m.Module, err)
 					return
 				}
@@ -594,7 +613,7 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 		}
 
 		log.Info("Tidying modules...")
-		tidy := exec.Command("go", "mod", "tidy")
+		tidy := exec.CommandContext(ctx, "go", "mod", "tidy")
 		tidy.Dir = dir
 		if err := log.run(tidy); err != nil {
 			res.err = fmt.Errorf("go mod tidy: %w", err)
@@ -611,10 +630,20 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 	// (both-binaries) path, so it lives in a closure to avoid duplicating it.
 	buildNative := func() {
 		nativeStarted := time.Now()
-		build := exec.Command("go", "build", "-o", nativePath, ".")
+		tmpPath, cleanup, err := buildTargetTemp(nativePath)
+		if err != nil {
+			res.err = fmt.Errorf("prepare native build output: %w", err)
+			return
+		}
+		defer cleanup()
+		build := exec.CommandContext(ctx, "go", "build", "-o", tmpPath, ".")
 		build.Dir = dir
 		if err := log.run(build); err != nil {
 			res.err = fmt.Errorf("go build (native): %w", err)
+			return
+		}
+		if err := installBuiltArtifact(tmpPath, nativePath); err != nil {
+			res.err = fmt.Errorf("install native build: %w", err)
 			return
 		}
 		res.native = time.Since(nativeStarted).Round(100 * time.Millisecond)
@@ -645,6 +674,7 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 	// max(native, linux) instead of native+linux. They share Go's build cache,
 	// which is concurrency-safe, and touch separate result fields (no race).
 	var wg sync.WaitGroup
+	var linuxErr error
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -653,8 +683,15 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 	go func() {
 		defer wg.Done()
 		containerStarted := time.Now()
+		tmpPath, cleanup, err := buildTargetTemp(containerPath)
+		if err != nil {
+			res.linuxFailed = true
+			linuxErr = fmt.Errorf("prepare Linux build output: %w", err)
+			return
+		}
+		defer cleanup()
 		ldflags := `-extldflags "-static"`
-		crossBuild := exec.Command("go", "build", "-ldflags", ldflags, "-o", containerPath, ".")
+		crossBuild := exec.CommandContext(ctx, "go", "build", "-ldflags", ldflags, "-o", tmpPath, ".")
 		crossBuild.Dir = dir
 		crossBuild.Env = append(os.Environ(),
 			"CGO_ENABLED=0",
@@ -663,7 +700,13 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 		)
 		if err := log.run(crossBuild); err != nil {
 			res.linuxFailed = true
-			log.Info("Warning: Linux cross-build failed (non-fatal): %v", err)
+			linuxErr = fmt.Errorf("go build (linux/amd64): %w", err)
+			log.Info("Linux cross-build failed: %v", err)
+			return
+		}
+		if err := installBuiltArtifact(tmpPath, containerPath); err != nil {
+			res.linuxFailed = true
+			linuxErr = fmt.Errorf("install Linux build: %w", err)
 			return
 		}
 		res.linux = time.Since(containerStarted).Round(100 * time.Millisecond)
@@ -671,12 +714,38 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 		log.Info("Installed (container): %s", containerPath)
 	}()
 	wg.Wait()
+	if res.err == nil && linuxErr != nil {
+		res.err = linuxErr
+	}
 	if res.err != nil {
 		return res
 	}
 
 	log.Header(1, "Agent %s:%s built successfully", ag.Name, ag.Version)
 	return res
+}
+
+func buildTargetTemp(destination string) (string, func(), error) {
+	tmp, err := os.CreateTemp(filepath.Dir(destination), ".codefly-agent-build-*")
+	if err != nil {
+		return "", nil, err
+	}
+	path := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", nil, err
+	}
+	return path, func() { _ = os.Remove(path) }, nil
+}
+
+func installBuiltArtifact(source, destination string) error {
+	if err := os.Chmod(source, 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(source, destination); err != nil {
+		return err
+	}
+	return nil
 }
 
 // runAudit runs a govulncheck-based security scan on the agent's Go module.
@@ -686,15 +755,20 @@ func compileAgent(dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly b
 //
 // Findings matching IDs in a workspace-root .govulncheck.yaml are filtered
 // out and reported separately as "suppressed (reviewed)".
-func runAudit(dir string, ag agentYAML, failOnVuln bool) error {
+func runAudit(ctx context.Context, dir string, ag agentYAML, failOnVuln bool) error {
 	cli.Header(1, "Auditing %s:%s for vulnerabilities", ag.Name, ag.Version)
-	ctx := context.Background()
 	res, err := audit.Golang(ctx, dir, true)
 	if err != nil {
+		if failOnVuln {
+			return fmt.Errorf("audit could not complete: %w", err)
+		}
 		cli.Info("Audit error (non-fatal): %v", err)
 		return nil
 	}
 	if res.Tool == "missing" {
+		if failOnVuln {
+			return fmt.Errorf("govulncheck is not installed; cannot enforce --fail-on-vuln")
+		}
 		cli.Info("govulncheck not installed — skipping. Install: go install golang.org/x/vuln/cmd/govulncheck@latest")
 		return nil
 	}

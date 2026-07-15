@@ -53,7 +53,6 @@ func (d *DeploymentManager) Deploy(ctx context.Context, workspace *resources.Wor
 	w := wool.Get(ctx).In("UpdateWorkspace")
 	w.Info("deploying workspace", wool.Field("workspace", workspace))
 	url := fmt.Sprintf("%s/deploy", GetClient().URL("platform/workspace"))
-	fmt.Println("URL", url)
 	c := http.Client{Timeout: 5 * time.Second}
 
 	for _, deploy := range d.deployments {
@@ -66,7 +65,7 @@ func (d *DeploymentManager) Deploy(ctx context.Context, workspace *resources.Wor
 			return w.Wrapf(err, "cannot serialize workspace")
 		}
 		payload := fmt.Sprintf(`{"directory": %s}`, string(json))
-		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(payload))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(payload))
 		if err != nil {
 			return w.Wrapf(err, "cannot create update workspace http request")
 		}
@@ -75,10 +74,11 @@ func (d *DeploymentManager) Deploy(ctx context.Context, workspace *resources.Wor
 		if err != nil {
 			return w.Wrapf(err, "cannot update workspace")
 		}
-		if resp.StatusCode != http.StatusOK {
+		status := resp.StatusCode
+		_ = resp.Body.Close()
+		if status != http.StatusOK {
 			return w.NewError("unexpected status code: %s", resp.Status)
 		}
-		return nil
 	}
 	return nil
 }

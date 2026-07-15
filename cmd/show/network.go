@@ -7,7 +7,6 @@ import (
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -20,17 +19,19 @@ var namingScope string
 var NetworkCmd = &cobra.Command{
 	Use:   "network",
 	Short: "Show each service's endpoints, the address it binds to, and its dependency endpoints",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		w := wool.Get(ctx).In("show.network")
 
-		workspace, _, _ := common.LoadRequired(ctx, args)
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return fmt.Errorf("cannot load workspace: %w", err)
+		}
 
 		deps, err := architecture.NewServiceDependencies(ctx, workspace)
 		if err != nil {
-			w.Error("cannot build dependency graph", wool.ErrField(err))
-			return
+			return fmt.Errorf("cannot build dependency graph: %w", err)
 		}
 
 		fmt.Printf("Network configuration for workspace %q (naming-scope=%q):\n\n", workspace.Name, namingScope)
@@ -79,6 +80,7 @@ var NetworkCmd = &cobra.Command{
 				fmt.Printf("    ↳ needs %s [%s]\n", dep.Unique(), wanted)
 			}
 		}
+		return nil
 	},
 }
 

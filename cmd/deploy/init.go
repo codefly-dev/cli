@@ -1,8 +1,9 @@
 package deploy
 
 import (
+	"fmt"
+
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/spf13/cobra"
 )
@@ -11,19 +12,25 @@ import (
 var InitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Init deployment",
-
-	Run: func(cmd *cobra.Command, args []string) {
-		setup()
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return setup()
 	},
 }
 
-func setup() {
+func setup() error {
 	ctx, done := common.NewContext()
 	defer done()
+	ctx, stop := common.SignalContext(ctx)
+	defer stop()
 
-	active, err := common.LoadActiveContext(ctx)
-	cli.ExitOnError(err, "cannot load active context")
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
 
-	err = deployments.SetupBaseVersionControl(ctx, active.Workspace)
-	cli.ExitOnError(err, "cannot setup base version control")
+	if err := deployments.SetupBaseVersionControl(ctx, workspace); err != nil {
+		return fmt.Errorf("cannot setup base version control: %w", err)
+	}
+	return ctx.Err()
 }

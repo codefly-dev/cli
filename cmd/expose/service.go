@@ -1,7 +1,8 @@
 package expose
 
 import (
-	"github.com/codefly-dev/cli/pkg/cli"
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -10,10 +11,10 @@ var ServiceCmd = &cobra.Command{
 	Use:    "service",
 	Short:  "Expose a service",
 	Hidden: true, // not implemented yet
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:   cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		// Not implemented — do NOT print "Work done!" (it lied about success
 		// and exited 0, so scripts couldn't tell nothing happened).
-		cli.Error("`codefly expose service` is not implemented yet")
-		cli.ExitError()
+		return fmt.Errorf("codefly expose service is not implemented yet")
 	},
 }

@@ -2,46 +2,86 @@ package common
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	resources "github.com/codefly-dev/core/resources"
 )
 
-func LoadRequired(ctx context.Context, args []string) (*resources.Workspace, *resources.Module, *resources.Service) {
+// LoadRequiredE resolves the requested or active service without terminating
+// the process. RunE commands should use this form so Cobra can propagate the
+// failure and deferred cleanup still runs.
+func LoadRequiredE(ctx context.Context, args []string) (*resources.Workspace, *resources.Module, *resources.Service, error) {
 	if len(args) > 0 {
 		// Service name provided — just load the workspace and look it up directly.
 		// Don't trigger auto-resolve/picker.
 		workspace, err := resources.FindWorkspaceUp(ctx)
-		cli.ExitOnError(err, "Cannot find workspace")
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("cannot find workspace: %w", err)
+		}
 		if workspace == nil {
-			cli.ExitWithMessage("No workspace found")
+			return nil, nil, nil, fmt.Errorf("no workspace found")
 		}
 		service, module, err := workspace.FindUniqueModuleServiceByName(ctx, args[0])
-		cli.ExitOnError(err, "Cannot find service %s", args[0])
-		return workspace, module, service
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("cannot find service %s: %w", args[0], err)
+		}
+		return workspace, module, service, nil
 	}
 	// No args — use active context (may prompt for selection).
-	workspace := RequireWorkspace(ctx)
-	service := RequireService(ctx)
-	module := RequireModule(ctx)
+	active, err := LoadActiveContext(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cannot load active context: %w", err)
+	}
+	if active.Workspace == nil || active.Module == nil || active.Service == nil {
+		return nil, nil, nil, fmt.Errorf("active context does not contain a workspace, module, and service")
+	}
+	workspace, module, service := active.Workspace, active.Module, active.Service
 	service.WithModule(module.Name)
-	return workspace, module, service
+	return workspace, module, service, nil
 }
 
-func LoadWithServicePathOverride(ctx context.Context, servicePath string) (*resources.Workspace, *resources.Module, *resources.Service) {
-	workspace := RequireWorkspace(ctx)
+// LoadRequiredModuleE resolves an explicitly named or active module without
+// terminating the process.
+func LoadRequiredModuleE(ctx context.Context, args []string) (*resources.Workspace, *resources.Module, error) {
+	if len(args) > 0 {
+		workspace, err := LoadWorkspace(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		module, err := workspace.LoadModuleFromName(ctx, args[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("cannot load module %s: %w", args[0], err)
+		}
+		return workspace, module, nil
+	}
+	active, err := LoadActiveContext(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot load active context: %w", err)
+	}
+	if active.Workspace == nil || active.Module == nil {
+		return nil, nil, fmt.Errorf("active context does not contain a workspace and module")
+	}
+	return active.Workspace, active.Module, nil
+}
+
+// LoadWithServicePathOverrideE resolves a service path without terminating the
+// process, allowing long-running RunE commands to execute deferred teardown.
+func LoadWithServicePathOverrideE(ctx context.Context, servicePath string) (*resources.Workspace, *resources.Module, *resources.Service, error) {
+	workspace, err := LoadWorkspace(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	service, err := resources.LoadServiceFromDir(ctx, servicePath)
 	if err != nil {
-		cli.ExitOnError(err, "Cannot load service")
+		return nil, nil, nil, fmt.Errorf("cannot load service: %w", err)
 	}
 	if workspace.Layout == resources.LayoutKindFlat {
 		module, err := workspace.LoadModuleFromName(ctx, workspace.Name)
 		if err != nil {
-			cli.ExitOnError(err, "Cannot load module")
+			return nil, nil, nil, fmt.Errorf("cannot load module: %w", err)
 		}
 		service.WithModule(module.Name)
-		return workspace, module, service
+		return workspace, module, service, nil
 	}
-	cli.ExitWithMessage("Cannot load service in non-flat layout for now")
-	return nil, nil, nil
+	return nil, nil, nil, fmt.Errorf("cannot load a service path override in a non-flat workspace")
 }

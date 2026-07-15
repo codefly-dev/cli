@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/monorepo"
 	"github.com/codefly-dev/core/agents/services/audit"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/spf13/cobra"
@@ -42,75 +45,87 @@ followed by go mod tidy and a re-audit. Unpatched-upstream findings (no fix
 available) are reported but never fail the command.
 
 By default it operates on the Go module in the current directory. Use --all to
-sweep every Go module in the codefly.dev monorepo (cli, core, wool, and every
-agent under agents/services/). Use --dry-run to see the plan without changing
+sweep every Go module in the codefly.dev monorepo (cli, core, and every
+service/toolbox plugin). Use --dry-run to see the plan without changing
 anything.
 
 Examples:
   codefly upgrade security                 # fix the current module
   codefly upgrade security --all           # fix every module in the monorepo
   codefly upgrade security --all --dry-run # preview the monorepo-wide plan`,
-	Run: func(cmd *cobra.Command, args []string) {
-		all, _ := cmd.Flags().GetBool("all")
-		dryRun, _ := cmd.Flags().GetBool("dry-run")
-		dir, _ := cmd.Flags().GetString("dir")
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+
+		all, err := cmd.Flags().GetBool("all")
+		if err != nil {
+			return fmt.Errorf("cannot read --all: %w", err)
+		}
+		dryRun, err := cmd.Flags().GetBool("dry-run")
+		if err != nil {
+			return fmt.Errorf("cannot read --dry-run: %w", err)
+		}
+		dir, err := cmd.Flags().GetString("dir")
+		if err != nil {
+			return fmt.Errorf("cannot read --dir: %w", err)
+		}
 
 		if dir == "" {
-			var err error
 			dir, err = os.Getwd()
 			if err != nil {
-				cli.Error("Cannot get working directory: %v", err)
-				cli.ExitError()
-				return
+				return fmt.Errorf("cannot get working directory: %w", err)
 			}
 		}
 		absDir, err := filepath.Abs(dir)
 		if err != nil {
-			cli.Error("Cannot resolve directory: %v", err)
-			cli.ExitError()
-			return
+			return fmt.Errorf("cannot resolve directory: %w", err)
 		}
 
 		var modules []string
 		if all {
-			root := monorepoRoot(absDir)
+			root := monorepo.FindRoot(absDir)
 			if root == "" {
-				cli.Error("--all: not inside the codefly.dev monorepo (no dir with both core/ and wool/ above %s)", absDir)
-				cli.ExitError()
-				return
+				return fmt.Errorf("--all: not inside the codefly.dev monorepo (no codefly core module found above %s)", absDir)
 			}
-			modules = goModules(root)
+			modules, err = goModules(root)
+			if err != nil {
+				return fmt.Errorf("cannot enumerate Go modules: %w", err)
+			}
 			if len(modules) == 0 {
-				cli.Error("--all: no Go modules found under %s", root)
-				cli.ExitError()
-				return
+				return fmt.Errorf("--all: no Go modules found under %s", root)
 			}
 			cli.Header(1, "Upgrading %d Go module(s) under %s", len(modules), root)
 		} else {
 			modules = []string{absDir}
 		}
 
-		var failed []string
+		var failures []error
 		for i, m := range modules {
+			if err := ctx.Err(); err != nil {
+				failures = append(failures, err)
+				break
+			}
 			if len(modules) > 1 {
 				cli.Header(2, "[%d/%d] %s", i+1, len(modules), shortPath(m))
 			}
-			if err := upgradeModuleSecurity(m, dryRun); err != nil {
+			if err := upgradeModuleSecurity(ctx, m, dryRun); err != nil {
 				cli.Error("  %v", err)
-				failed = append(failed, shortPath(m))
+				failures = append(failures, fmt.Errorf("%s: %w", shortPath(m), err))
 			}
 		}
 
-		if len(failed) > 0 {
-			cli.Error("Security upgrade left actionable findings in %d module(s): %s", len(failed), strings.Join(failed, ", "))
-			cli.ExitError()
-			return
+		if len(failures) > 0 {
+			return errors.Join(failures...)
 		}
 		if dryRun {
 			cli.Header(1, "Dry-run complete — no changes written")
 		} else {
 			cli.Header(1, "Security upgrade complete — no actionable vulnerabilities remain")
 		}
+		return nil
 	},
 }
 
@@ -123,15 +138,13 @@ func init() {
 // upgradeModuleSecurity audits one module, applies the actionable fixes, then
 // re-audits. It returns an error if actionable findings remain after the
 // upgrade (so --all can report which modules still need a human).
-func upgradeModuleSecurity(dir string, dryRun bool) error {
-	ctx := context.Background()
+func upgradeModuleSecurity(ctx context.Context, dir string, dryRun bool) error {
 	res, err := audit.Golang(ctx, dir, false)
 	if err != nil {
 		return fmt.Errorf("audit failed: %w", err)
 	}
 	if res.Tool == "missing" {
-		cli.Info("  govulncheck not installed — skipping. Install: go install golang.org/x/vuln/cmd/govulncheck@latest")
-		return nil
+		return fmt.Errorf("govulncheck is not installed; install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
 	}
 
 	modBumps, toolchain, unpatched := planFixes(res.Findings)
@@ -162,7 +175,7 @@ func upgradeModuleSecurity(dir string, dryRun bool) error {
 
 	// Apply: toolchain first (so go get resolves against the right stdlib).
 	if toolchain != "" {
-		if err := runGo(dir, "mod", "edit", "-toolchain=go"+toolchain); err != nil {
+		if err := runGo(ctx, dir, "mod", "edit", "-toolchain=go"+toolchain); err != nil {
 			return fmt.Errorf("set toolchain go%s: %w", toolchain, err)
 		}
 	}
@@ -176,11 +189,11 @@ func upgradeModuleSecurity(dir string, dryRun bool) error {
 		for _, b := range modBumps {
 			getArgs = append(getArgs, b.module+"@"+b.version)
 		}
-		if err := runGo(dir, getArgs...); err != nil {
+		if err := runGo(ctx, dir, getArgs...); err != nil {
 			return fmt.Errorf("go get: %w", err)
 		}
 	}
-	if err := runGo(dir, "mod", "tidy"); err != nil {
+	if err := runGo(ctx, dir, "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
 	}
 
@@ -301,51 +314,36 @@ func compareDotted(a, b string) int {
 
 // runGo runs a go command in dir with GOTOOLCHAIN=auto so a bumped toolchain
 // directive auto-downloads the required Go.
-func runGo(dir string, args ...string) error {
+func runGo(ctx context.Context, dir string, args ...string) error {
 	cli.Info("  $ go %s", strings.Join(args, " "))
-	c := exec.Command("go", args...)
+	commandCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	c := exec.CommandContext(commandCtx, "go", args...)
 	c.Dir = dir
 	c.Env = append(os.Environ(), "GOTOOLCHAIN=auto")
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
-	// A generous timeout: toolchain auto-download + module fetch can be slow.
-	done := make(chan error, 1)
-	if err := c.Start(); err != nil {
-		return err
-	}
-	go func() { done <- c.Wait() }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(10 * time.Minute):
-		_ = c.Process.Kill()
+	err := c.Run()
+	if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("go %s timed out after 10m", strings.Join(args, " "))
 	}
-}
-
-// monorepoRoot walks up from dir to the codefly.dev root (the dir containing
-// both core/ and wool/), mirroring the agent build's detection.
-func monorepoRoot(dir string) string {
-	for cur := dir; ; {
-		if isDirPresent(filepath.Join(cur, "core")) && isDirPresent(filepath.Join(cur, "wool")) {
-			return cur
+	if err != nil {
+		if ctxErr := commandCtx.Err(); ctxErr != nil {
+			return ctxErr
 		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return ""
-		}
-		cur = parent
+		return err
 	}
+	return commandCtx.Err()
 }
 
 // goModules returns every directory under root that holds a go.mod, skipping
 // vendor/ and testdata/ trees (their go.mod files are fixtures, not real
 // modules to upgrade).
-func goModules(root string) []string {
+func goModules(root string) ([]string, error) {
 	var mods []string
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
@@ -360,16 +358,11 @@ func goModules(root string) []string {
 		return nil
 	})
 	sort.Strings(mods)
-	return mods
-}
-
-func isDirPresent(p string) bool {
-	info, err := os.Stat(p)
-	return err == nil && info.IsDir()
+	return mods, err
 }
 
 func shortPath(p string) string {
-	if root := monorepoRoot(p); root != "" {
+	if root := monorepo.FindRoot(p); root != "" {
 		if rel, err := filepath.Rel(root, p); err == nil {
 			if rel == "." {
 				return filepath.Base(p)

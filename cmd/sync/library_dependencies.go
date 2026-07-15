@@ -1,7 +1,7 @@
 package sync
 
 import (
-	"os"
+	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -33,67 +33,70 @@ Examples:
   # Cleanup local development setup (for production builds)
   codefly sync library-dependencies --service=api --module=backend --cleanup
 `,
-	Run: func(cmd *cobra.Command, args []string) {
-		syncLibraryDependencies()
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return syncLibraryDependencies()
 	},
 }
 
-func syncLibraryDependencies() {
+func syncLibraryDependencies() error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
 
 	// Get service
-	if libSyncModule == "" || libSyncService == "" {
+	moduleName, serviceName := libSyncModule, libSyncService
+	if moduleName == "" || serviceName == "" {
 		// Try to get from active context
-		active := common.Service(ctx)
-		if active != nil {
-			libSyncModule = common.Module(ctx).Name
-			libSyncService = active.Name
-		} else {
-			cli.Error("Please specify --service and --module")
-			os.Exit(1)
+		active, loadErr := common.LoadActiveContext(ctx)
+		if loadErr != nil || active.Module == nil || active.Service == nil {
+			return fmt.Errorf("please specify --service and --module")
 		}
+		moduleName, serviceName = active.Module.Name, active.Service.Name
 	}
 
-	mod, err := workspace.LoadModuleFromName(ctx, libSyncModule)
+	mod, err := workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
-		cli.ExitOnError(err, "module not found")
+		return fmt.Errorf("module not found: %w", err)
 	}
 
-	svc, err := mod.LoadServiceFromName(ctx, libSyncService)
+	svc, err := mod.LoadServiceFromName(ctx, serviceName)
 	if err != nil {
-		cli.ExitOnError(err, "service not found")
+		return fmt.Errorf("service not found: %w", err)
 	}
 
 	if len(svc.LibraryDependencies) == 0 {
-		cli.Info("Service <%s/%s> has no library dependencies", libSyncModule, libSyncService)
-		return
+		cli.Info("Service <%s/%s> has no library dependencies", moduleName, serviceName)
+		return nil
 	}
 
 	resolver := resources.NewLibraryResolver(workspace)
 
 	if libSyncCleanup {
-		cli.Info("Cleaning up local development setup for <%s/%s>...", libSyncModule, libSyncService)
+		cli.Info("Cleaning up local development setup for <%s/%s>...", moduleName, serviceName)
 		if err := resolver.CleanupLocalDevelopment(ctx, svc); err != nil {
-			cli.ExitOnError(err, "failed to cleanup local development")
+			return fmt.Errorf("failed to cleanup local development: %w", err)
 		}
 		cli.Header(2, "Local development cleanup complete")
-		return
+		return nil
 	}
 
-	cli.Info("Setting up local development for <%s/%s>...", libSyncModule, libSyncService)
+	cli.Info("Setting up local development for <%s/%s>...", moduleName, serviceName)
 	cli.Info("Library dependencies:")
 	for _, dep := range svc.LibraryDependencies {
 		cli.Info("  - %s (%s) [%v]", dep.Name, dep.Version, dep.Languages)
 	}
 
 	if err := resolver.SetupLocalDevelopment(ctx, svc); err != nil {
-		cli.ExitOnError(err, "failed to setup local development")
+		return fmt.Errorf("failed to setup local development: %w", err)
 	}
 
-	cli.Header(2, "Local development setup complete for %s/%s", libSyncModule, libSyncService)
+	cli.Header(2, "Local development setup complete for %s/%s", moduleName, serviceName)
+	return nil
 }
 
 func init() {

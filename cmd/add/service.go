@@ -22,22 +22,17 @@ import (
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Add a service",
-
-	Run: func(cmd *cobra.Command, args []string) {
-
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {
-			cli.GetLogger().Oops("Interactive mode not implemented yet")
-		}
-		if len(args) != 1 {
-			cli.GetLogger().Oops("You must provide a name for the module as the single argument")
+			return fmt.Errorf("interactive mode not implemented yet")
 		}
 		if agentInput == "" {
-			cli.GetLogger().Oops("You must provide an agent for the service, use --agent=<agent>, for example --agent=python, --agent=go, --agent=nextjs or more advanced agent. See TODO")
+			return fmt.Errorf("service agent is required; use --agent=<agent>")
 		}
-		name := args[0]
 
 		cli.Init()
-		cli.RegisterCleanup(services.ClearAgents)
+		defer services.ClearAgents()
 
 		ctx, done := common.NewContext()
 		defer done()
@@ -45,31 +40,14 @@ var ServiceCmd = &cobra.Command{
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		errs := make(chan error, 1) // Buffered channel
-
-		go func() {
-			errs <- addService(ctx, name, agentInput)
-		}()
-	loop:
-		for {
-			select {
-			case err := <-errs:
-				cli.ExitOnError(err, "Got service add error: %v\n", err)
-				// TODO: get rid when flow works
-				errs <- nil
-				break loop
-			case <-ctx.Done():
-				cli.Header(2, "Got context.Cancel: Exiting...")
-				cli.Header(1, "TODO: Cleanup")
-				break loop
-			}
+		if err := addService(ctx, args[0], agentInput); err != nil {
+			return fmt.Errorf("cannot add service: %w", err)
 		}
-		stopped := <-errs
-		if stopped != nil {
-			cli.Error("Got error while stopping: %v", stopped)
-			return
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		cli.Header(1, "Service added successfully")
+		return nil
 	},
 }
 
@@ -78,7 +56,10 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	cli.SetWithDefault(withDefault)
 
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot load workspace")
+	}
 
 	svcWithMod, err := resources.ParseServiceWithOptionalModule(name)
 	if err != nil {
@@ -92,11 +73,14 @@ func addService(ctx context.Context, name string, agentInput string) error {
 			return w.Wrapf(err, "cannot load module")
 		}
 	} else {
-		mod = common.RequireModule(ctx)
+		mod, err = common.LoadModule(ctx)
+		if err != nil {
+			return w.Wrapf(err, "cannot load active module")
+		}
 	}
 
 	if mod.ExistsService(ctx, svcWithMod.Name) && !override {
-		cli.GetLogger().Oops("Service <%s> already exists", svcWithMod.Name)
+		return w.NewError("service <%s> already exists", svcWithMod.Name)
 	}
 
 	w.Debug("input", wool.Field("agent", agentInput))
@@ -106,10 +90,13 @@ func addService(ctx context.Context, name string, agentInput string) error {
 		return w.Wrapf(err, "cannot get agent")
 	}
 
-	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service <%s> in module <%s>?", svcWithMod.Name, mod.Name), true)
+	confirm, err := models.ConfirmE(ctx, fmt.Sprintf("Confirm adding a service <%s> in module <%s>?", svcWithMod.Name, mod.Name), true)
+	if err != nil {
+		return w.Wrapf(err, "cannot confirm service creation")
+	}
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		cli.Exit()
+		return nil
 	}
 
 	input := &actionsservice.AddService{
@@ -117,9 +104,15 @@ func addService(ctx context.Context, name string, agentInput string) error {
 		Agent: agent.Proto(),
 	}
 
-	addDescription := models.Confirm(ctx, "Do you want to add a short description?", false)
+	addDescription, err := models.ConfirmE(ctx, "Do you want to add a short description?", false)
+	if err != nil {
+		return w.Wrapf(err, "cannot confirm service description")
+	}
 	if addDescription {
-		input.Description = models.Input("Description", "Make some magic 🪄")
+		input.Description, err = models.Input("Description", "Make some magic 🪄")
+		if err != nil {
+			return w.Wrapf(err, "cannot read service description")
+		}
 
 	}
 

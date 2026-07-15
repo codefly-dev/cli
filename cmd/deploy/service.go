@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -17,7 +19,8 @@ import (
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Handle a service",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -27,18 +30,19 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
-		errs := make(chan error, 1) // Buffered channel
-
-		workspace, module, service := common.LoadRequired(ctx, args)
+		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		if err != nil {
+			return err
+		}
 
 		flow, err := initDeployService(ctx, workspace, module, service, standAlone)
-		cli.ExitOnError(err, "Cannot initialize service")
+		if err != nil {
+			return fmt.Errorf("cannot initialize service: %w", err)
+		}
 
 		// Guarantee flow.Stop() (kills agents/containers) runs before exit.
 		// cleanDeployService is guarded so it only ever runs once. The defer
-		// is a panic/early-return safety net; the normal error path captures
-		// deployErr and runs cleanup explicitly BEFORE exiting, because
-		// os.Exit (via cli.ExitError) does NOT run defers.
+		// is a panic/early-return safety net.
 		var cleaned bool
 		cleanup := func() error {
 			if cleaned {
@@ -49,45 +53,25 @@ var ServiceCmd = &cobra.Command{
 		}
 		defer func() { _ = cleanup() }()
 
-		go func() {
-			err = common.WithHeartbeat(ctx, "deploying "+service.Name, func() error {
-				return deployService(ctx, flow)
-			})
-			if err != nil {
-				errs <- err
-			}
-			errs <- nil
-		}()
-
-		// deployErr captures a non-nil deploy failure so it can be reported
-		// AFTER cleanup runs. Exiting here (cli.ExitOnError) would skip
-		// cleanDeployService and orphan agents/containers holding ports.
-		var deployErr error
-	loop:
-		for {
-			select {
-			case err := <-errs:
-				deployErr = err
-				errs <- nil
-				break loop
-			case <-ctx.Done():
-				cli.Header(2, "Got context.Cancel: Exiting...")
-				break loop
-			}
-		}
-		stopped := <-errs
-		err = cleanup()
+		deployErr := common.WithHeartbeat(ctx, "deploying "+service.Name, func() error {
+			return deployService(ctx, flow)
+		})
+		stopErr := cleanup()
+		var result []error
 		if deployErr != nil {
-			cli.ErrorChain(deployErr, "Got service deploy error")
-			cli.ExitError()
+			result = append(result, fmt.Errorf("service deploy failed: %w", deployErr))
 		}
-		cli.ExitOnError(err, "Cannot stop flow")
-		if stopped != nil {
-			cli.ErrorChain(stopped, "Got error while stopping service")
-			cli.ExitError()
+		if stopErr != nil {
+			result = append(result, fmt.Errorf("cannot stop flow: %w", stopErr))
+		}
+		if len(result) > 0 {
+			return errors.Join(result...)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		cli.Header(1, "Deployment done!")
-		cli.Done()
+		return nil
 	},
 }
 

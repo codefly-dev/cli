@@ -2,6 +2,8 @@ package build
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/builder"
@@ -17,7 +19,8 @@ import (
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Build a service",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -26,46 +29,44 @@ var ServiceCmd = &cobra.Command{
 
 		cli.RegisterCleanup(services.ClearAgents)
 
-		errs := make(chan error, 1) // Buffered channel
-
-		workspace, module, service := common.LoadRequired(ctx, args)
+		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		if err != nil {
+			return err
+		}
 
 		flow, err := initBuildService(ctx, workspace, module, service, standAlone)
-		cli.ExitOnError(err, "Cannot initialize service")
-		go func() {
-			errs <- common.WithHeartbeat(ctx, "building "+service.Name, func() error {
-				return buildService(ctx, flow)
-			})
-		}()
-
-		// buildErr captures a non-nil build failure so it can be reported AFTER
-		// cleanup runs. Exiting here (e.g. cli.ExitOnError) would skip
-		// cleanBuildService and orphan agents/containers holding ports.
-		var buildErr error
-	loop:
-		for {
-			select {
-			case err := <-errs:
-				buildErr = err
-				errs <- nil
-				break loop
-			case <-ctx.Done():
-				cli.Header(2, "Got context.Cancel: Exiting...")
-				break loop
+		if err != nil {
+			return fmt.Errorf("cannot initialize service: %w", err)
+		}
+		cleaned := false
+		cleanup := func() error {
+			if cleaned {
+				return nil
 			}
+			cleaned = true
+			return cleanBuildService(flow)
 		}
-		stopped := <-errs
-		err = cleanBuildService(flow)
+		defer func() { _ = cleanup() }()
+
+		buildErr := common.WithHeartbeat(ctx, "building "+service.Name, func() error {
+			return buildService(ctx, flow)
+		})
+		stopErr := cleanup()
+		var result []error
 		if buildErr != nil {
-			cli.ErrorChain(buildErr, "Got service build error")
-			cli.ExitError()
+			result = append(result, fmt.Errorf("service build failed: %w", buildErr))
 		}
-		cli.ExitOnError(err, "Cannot stop flow")
-		if stopped != nil {
-			cli.ErrorChain(stopped, "Got error while stopping service")
-			cli.ExitError()
+		if stopErr != nil {
+			result = append(result, fmt.Errorf("cannot stop flow: %w", stopErr))
+		}
+		if len(result) > 0 {
+			return errors.Join(result...)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		cli.Header(1, "Work done!")
+		return nil
 	},
 }
 

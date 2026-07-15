@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/web"
+	"github.com/codefly-dev/core/services"
 	"github.com/spf13/cobra"
 )
 
@@ -13,39 +13,25 @@ import (
 var ServerCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Server for codefly",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
+		defer services.ClearAgents()
 
-		errs := make(chan error, 1) // Buffered channel
-
-		workspace := common.Workspace(ctx)
-		if workspace == nil {
-			cli.Error("No workspace found")
-			cli.ExitError()
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return fmt.Errorf("cannot load workspace: %w", err)
 		}
-		go func() {
-			w, err := web.NewServer(web.ServerData{Workspace: workspace})
-			cli.ExitOnError(err, "cannot create web server")
-			errs <- w.Start(ctx)
-		}()
-
-	loop:
-		for {
-			select {
-			case err := <-errs:
-				if err != nil {
-					fmt.Printf("Got modules run error: %v\n", err)
-				}
-				break loop
-			case <-ctx.Done():
-				fmt.Println("Got context.Cancel: Exiting...")
-				break loop
-			}
+		server, err := web.NewServer(web.ServerData{Workspace: workspace})
+		if err != nil {
+			return fmt.Errorf("cannot create web server: %w", err)
 		}
-
+		if err := server.Start(ctx); err != nil {
+			return fmt.Errorf("server failed: %w", err)
+		}
+		return nil
 	},
 }

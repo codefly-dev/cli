@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -25,19 +24,18 @@ to compute the tag, then runs "docker push codeflydev/<name>:<version>".
 The image must already exist locally. Build it first with
 "codefly companion build <name>".`,
 	Args: cobra.ExactArgs(1),
-	Run:  runPush,
+	RunE: runPush,
 }
 
 func init() {
 	PushCmd.Flags().String("core-dir", "", "Path to the core directory (default: walk up from cwd)")
 }
 
-func runPush(cmd *cobra.Command, args []string) {
+func runPush(cmd *cobra.Command, args []string) error {
 	coreDirFlag, _ := cmd.Flags().GetString("core-dir")
 	cwd, err := os.Getwd()
 	if err != nil {
-		cli.Error("cannot read working directory: %v", err)
-		cli.ExitError()
+		return fmt.Errorf("cannot read working directory: %w", err)
 	}
 	coreDir := coreDirFlag
 	if coreDir == "" {
@@ -46,13 +44,12 @@ func runPush(cmd *cobra.Command, args []string) {
 
 	c, err := LoadCompanion(filepath.Join(coreDir, "companions", args[0]))
 	if err != nil {
-		cli.Error("cannot load companion %q: %v", args[0], err)
-		cli.ExitError()
+		return fmt.Errorf("cannot load companion %q: %w", args[0], err)
 	}
 	fmt.Printf("==> Pushing %s\n", c.Tag())
 	if err := pushImage(c.Tag()); err != nil {
-		cli.Error("push failed: %v", err)
-		cli.ExitError()
+		return fmt.Errorf("push failed: %w", err)
 	}
 	fmt.Printf("    pushed %s\n", c.Tag())
+	return nil
 }

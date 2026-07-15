@@ -1,7 +1,7 @@
 package open
 
 import (
-	"context"
+	"fmt"
 	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -15,8 +15,9 @@ import (
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Open a workspace in your editor",
-	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 
 		provider := wool.New(ctx, resources.CLI.AsResource())
 
@@ -24,11 +25,14 @@ var WorkspaceCmd = &cobra.Command{
 		defer provider.Done()
 
 		ctx = provider.Inject(ctx)
-		workspace := common.Workspace(ctx)
-		c := exec.Command(editor, workspace.Dir())
-		err := c.Run()
-		cli.ExitOnError(err, "cannot open workspace")
-
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return fmt.Errorf("cannot load workspace: %w", err)
+		}
+		if err := exec.CommandContext(ctx, editor, workspace.Dir()).Run(); err != nil {
+			return fmt.Errorf("cannot open workspace: %w", err)
+		}
+		return nil
 	},
 }
 

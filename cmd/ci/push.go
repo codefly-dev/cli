@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -16,7 +17,8 @@ import (
 var PushCmd = &cobra.Command{
 	Use:   "push",
 	Short: "Run CI Push",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -24,19 +26,29 @@ var PushCmd = &cobra.Command{
 		defer stop()
 
 		cli.Init()
-		cli.RegisterCleanup(services.ClearAgents)
+		defer services.ClearAgents()
 
-		err := platform.InitClient(ctx)
-		cli.ExitOnError(err, "Cannot initialize platform client")
+		if err := platform.InitClient(ctx); err != nil {
+			return fmt.Errorf("cannot initialize platform client: %w", err)
+		}
 
-		workspace := common.RequireWorkspace(ctx)
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return err
+		}
 
-		common.WithSilence(ctx, workspace, silent)
+		if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+			return fmt.Errorf("cannot configure silent services: %w", err)
+		}
 
-		err = pushWorkspace(ctx, workspace)
-		cli.ExitOnError(err, "Cannot CI push")
+		if err := pushWorkspace(ctx, workspace); err != nil {
+			return fmt.Errorf("cannot run CI push: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		cli.Header(1, "Work done!")
-		cli.Exit()
+		return nil
 	},
 }
 

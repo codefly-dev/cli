@@ -2,7 +2,6 @@ package add
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -37,48 +36,49 @@ Examples:
   codefly add library shared-models --git=git@github.com:myorg/shared-models.git
 `,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		name := args[0]
-		addLibrary(name)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return addLibrary(args[0])
 	},
 }
 
-func addLibrary(name string) {
+func addLibrary(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace := common.RequireWorkspace(ctx)
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
 
 	// Check if library already exists
-	_, err := workspace.LoadLibraryFromName(ctx, name)
+	_, err = workspace.LoadLibraryFromName(ctx, name)
 	if err == nil {
-		cli.Error("Library <%s> already exists", name)
-		os.Exit(1)
+		return fmt.Errorf("library <%s> already exists", name)
 	}
 
 	// Handle git submodule case
 	if libraryGitRemote != "" {
-		addLibraryAsSubmodule(workspace, name)
-		return
+		return addLibraryAsSubmodule(workspace, name)
 	}
 
 	// Validate languages
-	if len(libraryLanguages) == 0 {
-		libraryLanguages = []string{"go"} // Default to Go
+	languages := libraryLanguages
+	if len(languages) == 0 {
+		languages = []string{"go"} // Default to Go
 	}
 
 	confirm := models.Confirm(ctx,
 		fmt.Sprintf("Add library <%s> with languages %v to workspace <%s>?",
-			name, libraryLanguages, workspace.Name),
+			name, languages, workspace.Name),
 		true)
 	if !confirm {
 		cli.Header(2, "Cancelled.")
-		os.Exit(0)
+		return nil
 	}
 
-	lib, err := workspace.CreateLibrary(ctx, name, libraryLanguages)
+	lib, err := workspace.CreateLibrary(ctx, name, languages)
 	if err != nil {
-		cli.ExitOnError(err, "cannot create library")
+		return fmt.Errorf("cannot create library: %w", err)
 	}
 
 	cli.Header(2, "Library <%s> created at %s", lib.Name, lib.Dir())
@@ -89,9 +89,10 @@ func addLibrary(name string) {
 	cli.Info("")
 	cli.Info("Then add it as a dependency to your services:")
 	cli.Info("  codefly add library-dependency %s --service=<service> --module=<module>", name)
+	return nil
 }
 
-func addLibraryAsSubmodule(workspace *resources.Workspace, name string) {
+func addLibraryAsSubmodule(workspace *resources.Workspace, name string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
@@ -105,17 +106,18 @@ func addLibraryAsSubmodule(workspace *resources.Workspace, name string) {
 		true)
 	if !confirm {
 		cli.Header(2, "Cancelled.")
-		os.Exit(0)
+		return nil
 	}
 
 	lib, err := workspace.AddLibraryAsSubmodule(ctx, name, libraryGitRemote, branch)
 	if err != nil {
-		cli.ExitOnError(err, "cannot add library as submodule")
+		return fmt.Errorf("cannot add library as submodule: %w", err)
 	}
 
 	cli.Header(2, "Library <%s> added as git submodule", lib.Name)
 	cli.Info("Version: %s", lib.Version)
 	cli.Info("Path: %s", lib.Dir())
+	return nil
 }
 
 func init() {

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -47,7 +46,7 @@ Examples:
   codefly publish major
   codefly publish --dry-run    # show what would happen, change nothing`,
 	Args: cobra.MaximumNArgs(1),
-	Run:  run,
+	RunE: run,
 }
 
 func init() {
@@ -56,7 +55,7 @@ func init() {
 	Cmd.AddCommand(reTagCmd)
 }
 
-func run(c *cobra.Command, args []string) {
+func run(c *cobra.Command, args []string) error {
 	bumpType := "patch"
 	if len(args) == 1 {
 		bumpType = args[0]
@@ -66,8 +65,7 @@ func run(c *cobra.Command, args []string) {
 
 	manifest, workDir, err := loadManifest(dir)
 	if err != nil {
-		cli.Error("%v", err)
-		cli.ExitError()
+		return err
 	}
 
 	fmt.Printf("==> %s mode (%s); current version %s\n",
@@ -85,14 +83,14 @@ func run(c *cobra.Command, args []string) {
 
 	tag, err := engine.Release(ctx)
 	if err != nil {
-		cli.Error("publish failed: %v", err)
-		cli.ExitError()
+		return fmt.Errorf("publish failed: %w", err)
 	}
 	if dryRun {
 		fmt.Printf("==> dry-run complete; tag %s NOT created\n", tag)
-		return
+		return nil
 	}
 	fmt.Printf("==> released %s\n", tag)
+	return nil
 }
 
 // reTagCmd implements `codefly publish re-tag` — re-cut an existing
@@ -111,7 +109,7 @@ touched. Pre-flight checks are the same as publish minus the
 
 If the tag doesn't exist, re-tag refuses and points at plain
 publish — first-time releases use the bump path.`,
-	Run: runReTag,
+	RunE: runReTag,
 }
 
 func init() {
@@ -119,14 +117,13 @@ func init() {
 	reTagCmd.Flags().String("dir", "", "manifest directory (default: cwd)")
 }
 
-func runReTag(c *cobra.Command, _ []string) {
+func runReTag(c *cobra.Command, _ []string) error {
 	dryRun, _ := c.Flags().GetBool("dry-run")
 	dir, _ := c.Flags().GetString("dir")
 
 	manifest, workDir, err := loadManifest(dir)
 	if err != nil {
-		cli.Error("%v", err)
-		cli.ExitError()
+		return err
 	}
 
 	fmt.Printf("==> re-tag %s @ HEAD (%s mode, manifest %s)\n",
@@ -143,14 +140,14 @@ func runReTag(c *cobra.Command, _ []string) {
 
 	tag, err := engine.ReTag(ctx)
 	if err != nil {
-		cli.Error("re-tag failed: %v", err)
-		cli.ExitError()
+		return fmt.Errorf("re-tag failed: %w", err)
 	}
 	if dryRun {
 		fmt.Printf("==> dry-run complete; tag %s NOT moved\n", tag)
-		return
+		return nil
 	}
 	fmt.Printf("==> re-tagged %s\n", tag)
+	return nil
 }
 
 // loadManifest resolves the working dir, detects the manifest, and

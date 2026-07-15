@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -18,38 +19,52 @@ import (
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Upgrade dependencies of every service in the workspace",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
 		defer services.ClearAgents()
 
-		workspace, err := resources.FindWorkspaceUp(ctx)
-		cli.ExitOnError(err, "cannot find workspace")
-		if workspace == nil {
-			cli.ExitWithMessage("no workspace found")
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return err
 		}
 
 		all, err := loadAllServices(ctx, workspace)
-		cli.ExitOnError(err, "cannot enumerate services")
+		if err != nil {
+			return fmt.Errorf("cannot enumerate services: %w", err)
+		}
 
+		var failures []error
 		for _, ms := range all {
+			if err := ctx.Err(); err != nil {
+				failures = append(failures, err)
+				break
+			}
 			resp, err := upgradeService(ctx, workspace, ms.module, ms.service)
 			if err != nil {
 				cli.Error("upgrade %s/%s: %v", ms.module.Name, ms.service.Name, err)
+				failures = append(failures, fmt.Errorf("upgrade %s/%s: %w", ms.module.Name, ms.service.Name, err))
 				continue
 			}
 			if jsonOut {
-				emitJSON(resp)
+				if err := emitJSON(resp); err != nil {
+					failures = append(failures, fmt.Errorf("encode %s/%s result: %w", ms.module.Name, ms.service.Name, err))
+				}
 				continue
 			}
 			identity, idErr := ms.service.Identity()
 			if idErr != nil {
 				cli.Error("identity %s/%s: %v", ms.module.Name, ms.service.Name, idErr)
+				failures = append(failures, fmt.Errorf("identity %s/%s: %w", ms.module.Name, ms.service.Name, idErr))
 				continue
 			}
 			emitTable(identity, resp)
 			fmt.Println()
 		}
+		return errors.Join(failures...)
 	},
 }
 

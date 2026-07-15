@@ -1,6 +1,7 @@
 package add
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -17,49 +18,38 @@ import (
 var ServiceDependencyCmd = &cobra.Command{
 	Use:   "dependency",
 	Short: "Add a service dependency",
-
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {
-			cli.GetLogger().Oops("Interactive mode not implemented yet")
+			return fmt.Errorf("interactive mode not implemented yet")
 		}
-		addServiceDependency(args)
+
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+		defer services.ClearAgents()
+
+		if err := addServiceDependency(ctx, args); err != nil {
+			return fmt.Errorf("cannot add service dependency: %w", err)
+		}
+		return ctx.Err()
 	},
 }
 
-func addServiceDependency(args []string) {
-	ctx, done := common.NewContext()
-	defer done()
-	defer services.ClearAgents()
-
-	workspace, module, service := common.LoadRequired(ctx, args)
-	if module == nil {
-		cli.Error("No module found")
-		return
-
-	}
-	if service == nil {
-		svcs, err := module.LoadServices(ctx)
-		cli.ExitOnError(err, "can't load services")
-		if len(svcs) == 0 {
-			cli.Error("No services found")
-			return
-		}
-		var entries []*models.Entry
-		for _, p := range svcs {
-			entries = append(entries, &models.Entry{
-				Identifier: p.Name,
-			})
-		}
-		selected, err := models.Select("Select the service to add the dependency", entries)
-		cli.ExitOnError(err, "cannot select service")
-		service, err = module.LoadServiceFromName(ctx, selected.Identifier)
-		cli.ExitOnError(err, "cannot load service")
+func addServiceDependency(ctx context.Context, args []string) error {
+	workspace, module, service, err := common.LoadRequiredE(ctx, args)
+	if err != nil {
+		return err
 	}
 
-	confirm := models.Confirm(ctx, fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
+	confirm, err := models.ConfirmE(ctx, fmt.Sprintf("Confirm adding a service dependency for <%s>?", service.Name), true)
+	if err != nil {
+		return fmt.Errorf("cannot confirm dependency creation: %w", err)
+	}
 	if !confirm {
 		cli.Header(2, "Received loud and clear!")
-		cli.Exit()
+		return nil
 	}
 
 	// First all services in the same module
@@ -82,7 +72,9 @@ func addServiceDependency(args []string) {
 			Identifier: otherModule,
 		})
 		selected, err := models.Select("Select the dependency or >> In another module", entries)
-		cli.ExitOnError(err, "cannot select service dependency")
+		if err != nil {
+			return fmt.Errorf("cannot select service dependency: %w", err)
+		}
 
 		if selected.Identifier != otherModule {
 			action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
@@ -91,17 +83,20 @@ func addServiceDependency(args []string) {
 				DependencyModule: module.Name,
 				DependencyName:   selected.Identifier,
 			})
-			cli.ExitOnError(err, "cannot create action")
+			if err != nil {
+				return fmt.Errorf("cannot create dependency action: %w", err)
+			}
 			_, err = actions.Run(ctx, action, &actions.Space{Module: module, Workspace: workspace})
-			cli.ExitOnError(err, "cannot add service dependency")
+			if err != nil {
+				return fmt.Errorf("cannot run dependency action: %w", err)
+			}
 			cli.Header(2, "Service dependency added")
-			return
+			return nil
 		}
 	}
 	allApps := workspace.Modules
 	if len(allApps) == 1 {
-		cli.Error("No other module found")
-		return
+		return fmt.Errorf("no other module found")
 	}
 	var entries []*models.Entry
 	for _, p := range allApps {
@@ -113,10 +108,14 @@ func addServiceDependency(args []string) {
 		})
 	}
 	selected, err := models.Select("Select the module for the dependent service", entries)
-	cli.ExitOnError(err, "cannot select module")
+	if err != nil {
+		return fmt.Errorf("cannot select dependency module: %w", err)
+	}
 
 	otherMod, err := workspace.LoadModuleFromName(ctx, selected.Identifier)
-	cli.ExitOnError(err, "cannot load module")
+	if err != nil {
+		return fmt.Errorf("cannot load dependency module: %w", err)
+	}
 	entries = []*models.Entry{}
 	for _, p := range otherMod.ServiceReferences {
 		if p.Name == service.Name {
@@ -127,7 +126,9 @@ func addServiceDependency(args []string) {
 		})
 	}
 	selected, err = models.Select("Select the dependent service", entries)
-	cli.ExitOnError(err, "cannot select service")
+	if err != nil {
+		return fmt.Errorf("cannot select dependent service: %w", err)
+	}
 
 	action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
 		Name:             service.Name,
@@ -135,9 +136,13 @@ func addServiceDependency(args []string) {
 		DependencyModule: otherMod.Name,
 		DependencyName:   selected.Identifier,
 	})
-	cli.ExitOnError(err, "cannot create action")
+	if err != nil {
+		return fmt.Errorf("cannot create dependency action: %w", err)
+	}
 	_, err = actions.Run(ctx, action, &actions.Space{Module: module, Workspace: workspace})
-	cli.ExitOnError(err, "cannot add service dependency")
+	if err != nil {
+		return fmt.Errorf("cannot run dependency action: %w", err)
+	}
 	cli.Header(2, "Service dependency added")
-
+	return nil
 }

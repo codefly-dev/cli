@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -42,7 +41,7 @@ Examples:
   codefly companion build --all
   codefly companion build go --push                    # build then push
   codefly companion build --all --core-dir ./core      # explicit anchor`,
-	Run: runBuild,
+	RunE: runBuild,
 }
 
 func init() {
@@ -68,11 +67,15 @@ type BuildOptions struct {
 // order (codefly base first). Reusable entry point so `update deps` can
 // rebuild the whole companion set with fresh base images.
 func BuildAll(coreDir string, opts BuildOptions) error {
-	targets := sortCompanionsForBuild(mustListCompanions(coreDir))
+	targets, err := listCompanionsRequired(coreDir)
+	if err != nil {
+		return err
+	}
+	targets = sortCompanionsForBuild(targets)
 	return buildTargets(coreDir, targets, opts)
 }
 
-func runBuild(cmd *cobra.Command, args []string) {
+func runBuild(cmd *cobra.Command, args []string) error {
 	all, _ := cmd.Flags().GetBool("all")
 	coreDirFlag, _ := cmd.Flags().GetString("core-dir")
 	push, _ := cmd.Flags().GetBool("push")
@@ -81,8 +84,7 @@ func runBuild(cmd *cobra.Command, args []string) {
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		cli.Error("cannot read working directory: %v", err)
-		cli.ExitError()
+		return fmt.Errorf("cannot read working directory: %w", err)
 	}
 	coreDir := coreDirFlag
 	if coreDir == "" {
@@ -90,35 +92,35 @@ func runBuild(cmd *cobra.Command, args []string) {
 	}
 	companionsDir := filepath.Join(coreDir, "companions")
 	if info, err := os.Stat(companionsDir); err != nil || !info.IsDir() {
-		cli.Error("companions directory not found at %s; pass --core-dir or run from within the codefly.dev tree", companionsDir)
-		cli.ExitError()
+		return fmt.Errorf("companions directory not found at %s; pass --core-dir or run from within the codefly.dev tree", companionsDir)
 	}
 
 	if !all && len(args) == 0 {
-		cli.Error("must specify a companion name or --all")
-		cli.ExitError()
+		return fmt.Errorf("must specify a companion name or --all")
 	}
 
 	var targets []*Companion
 	if all {
-		targets = mustListCompanions(coreDir)
+		targets, err = listCompanionsRequired(coreDir)
+		if err != nil {
+			return err
+		}
 		// Order: codefly base first; language companions next; rest
 		// last. This mirrors build_companions.sh's hard-coded order.
 		targets = sortCompanionsForBuild(targets)
 	} else {
 		c, err := LoadCompanion(filepath.Join(companionsDir, args[0]))
 		if err != nil {
-			cli.Error("cannot load companion %q: %v", args[0], err)
-			cli.ExitError()
+			return fmt.Errorf("cannot load companion %q: %w", args[0], err)
 		}
 		targets = []*Companion{c}
 	}
 
 	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull}
 	if err := buildTargets(coreDir, targets, opts); err != nil {
-		cli.Error("%v", err)
-		cli.ExitError()
+		return err
 	}
+	return nil
 }
 
 // buildTargets builds the given companions in the order provided. It
@@ -172,21 +174,19 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 	return nil
 }
 
-// mustListCompanions lists every companion under root or exits the
-// CLI on error. The bare ListCompanions returns (nil, nil) when no
+// listCompanionsRequired lists every companion under root. The bare
+// ListCompanions returns (nil, nil) when no
 // companions/ exists; that case can't happen here because we already
 // validated the directory.
-func mustListCompanions(root string) []*Companion {
+func listCompanionsRequired(root string) ([]*Companion, error) {
 	cs, err := ListCompanions(root)
 	if err != nil {
-		cli.Error("scan companions: %v", err)
-		cli.ExitError()
+		return nil, fmt.Errorf("scan companions: %w", err)
 	}
 	if len(cs) == 0 {
-		cli.Error("no companions found under %s/companions/", root)
-		cli.ExitError()
+		return nil, fmt.Errorf("no companions found under %s/companions/", root)
 	}
-	return cs
+	return cs, nil
 }
 
 // sortCompanionsForBuild orders companions for --all: codefly base

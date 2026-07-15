@@ -1,10 +1,12 @@
 package cmd
 
 import (
-	"context"
+	"fmt"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/mcp"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
@@ -38,8 +40,13 @@ var MCPServeCmd = &cobra.Command{
 
 The server communicates via JSON-RPC 2.0 over stdin/stdout, following the
 Model Context Protocol specification.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+		defer services.ClearAgents()
 		w := wool.Get(ctx).In("mcp.serve")
 
 		// Get version from CLI
@@ -51,17 +58,16 @@ Model Context Protocol specification.`,
 		server, err := mcp.NewServer(ctx, version)
 		if err != nil {
 			w.Error("failed to create MCP server", wool.ErrField(err))
-			cli.ExitOnError(err, "failed to create MCP server")
-			return
+			return fmt.Errorf("failed to create MCP server: %w", err)
 		}
 
 		w.Info("Starting codefly MCP server", wool.Field("version", version))
 
-		err = server.Serve(ctx)
-		if err != nil {
+		if err := server.Serve(ctx); err != nil {
 			w.Error("MCP server error", wool.ErrField(err))
-			cli.ExitOnError(err, "MCP server error")
+			return fmt.Errorf("MCP server error: %w", err)
 		}
+		return nil
 	},
 }
 
@@ -69,21 +75,24 @@ Model Context Protocol specification.`,
 var MCPToolsCmd = &cobra.Command{
 	Use:   "tools",
 	Short: "List available MCP tools",
-	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		defer services.ClearAgents()
 
 		version, _ := cli.GetCurrentVersion()
 
 		server, err := mcp.NewServer(ctx, version)
 		if err != nil {
-			cli.ExitOnError(err, "failed to create MCP server")
-			return
+			return fmt.Errorf("failed to create MCP server: %w", err)
 		}
 
 		tools := server.ListTools()
 		for _, tool := range tools {
 			cli.Info("%s - %s", tool.Name, tool.Description)
 		}
+		return nil
 	},
 }
 

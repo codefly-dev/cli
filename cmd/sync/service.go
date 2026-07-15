@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -16,7 +18,8 @@ import (
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Sync a service",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -25,46 +28,44 @@ var ServiceCmd = &cobra.Command{
 
 		cli.RegisterCleanup(services.ClearAgents)
 
-		errs := make(chan error, 1) // Buffered channel
-
-		workspace, module, service := common.LoadRequired(ctx, args)
+		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		if err != nil {
+			return err
+		}
 
 		flow, err := initSyncService(ctx, workspace, module, service, standAlone)
-		cli.ExitOnError(err, "Cannot initialize service")
-		go func() {
-			errs <- common.WithHeartbeat(ctx, "syncing "+service.Name, func() error {
-				return syncService(ctx, flow)
-			})
-		}()
-
-		// syncErr captures a non-nil sync failure so it can be reported AFTER
-		// cleanup runs. Exiting here (e.g. cli.ExitOnError) would skip
-		// cleanSyncService and orphan agents/containers holding ports.
-		var syncErr error
-	loop:
-		for {
-			select {
-			case err := <-errs:
-				syncErr = err
-				errs <- nil
-				break loop
-			case <-ctx.Done():
-				cli.Header(2, "Got context.Cancel: Exiting...")
-				break loop
+		if err != nil {
+			return fmt.Errorf("cannot initialize service: %w", err)
+		}
+		cleaned := false
+		cleanup := func() error {
+			if cleaned {
+				return nil
 			}
+			cleaned = true
+			return cleanSyncService(flow)
 		}
-		stopped := <-errs
-		err = cleanSyncService(flow)
+		defer func() { _ = cleanup() }()
+
+		syncErr := common.WithHeartbeat(ctx, "syncing "+service.Name, func() error {
+			return syncService(ctx, flow)
+		})
+		stopErr := cleanup()
+		var result []error
 		if syncErr != nil {
-			cli.ErrorChain(syncErr, "Got service sync error")
-			cli.ExitError()
+			result = append(result, fmt.Errorf("service sync failed: %w", syncErr))
 		}
-		cli.ExitOnError(err, "Cannot stop flow")
-		if stopped != nil {
-			cli.ErrorChain(stopped, "Got error while stopping service")
-			cli.ExitError()
+		if stopErr != nil {
+			result = append(result, fmt.Errorf("cannot stop flow: %w", stopErr))
+		}
+		if len(result) > 0 {
+			return errors.Join(result...)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		cli.Header(1, "Work done!")
+		return nil
 	},
 }
 

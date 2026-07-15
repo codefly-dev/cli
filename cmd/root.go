@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -19,6 +20,9 @@ import (
 var RootCmd = &cobra.Command{
 	Use:   "codefly",
 	Short: "🪄Codefly is magic",
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return applyRootOptions()
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		common.Logo()
 	},
@@ -58,7 +62,13 @@ func init() {
 // Execute adds codefly-sdk child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	_ = RootCmd.ParseFlags(os.Args)
+	cli.ExitOnError(RootCmd.Execute(), "cannot execute command")
+}
+
+// applyRootOptions runs after Cobra has parsed the selected command and all of
+// its local and persistent flags. This makes persistent options work regardless
+// of whether they appear before or after subcommand-specific flags.
+func applyRootOptions() error {
 	if debug {
 		wool.SetGlobalLogLevel(wool.DEBUG)
 	}
@@ -80,11 +90,12 @@ func Execute() {
 	}
 	if tracker != "" {
 		tr, err := actions.NewActionTracker(context.Background(), resources.CodeflyDir(), tracker)
-		cli.ExitOnError(err, "cannot create action tracker")
+		if err != nil {
+			return fmt.Errorf("cannot create action tracker: %w", err)
+		}
 		actions.SetActionTracker(tr)
 	}
-
-	cli.ExitOnError(RootCmd.Execute(), "cannot execute command")
+	return nil
 }
 
 // Origin of the World

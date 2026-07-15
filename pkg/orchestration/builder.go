@@ -153,8 +153,12 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot sync service instance")
 	}
+	if resp == nil || resp.State == nil {
+		return nil, w.NewError("cannot sync %s: agent returned no status", b.instance.Unique())
+	}
 	if resp.State.State != builderv0.SyncStatus_SUCCESS {
-		return nil, w.NewError("service instance is not started")
+		message := statusDiagnostic(resp.State.Message, "agent reported sync failure")
+		return nil, w.NewError("cannot sync %s: %s", b.instance.Unique(), message)
 	}
 
 	err = b.outputPropertyForSync.Set(ctx, &BuilderSyncOutput{})
@@ -203,9 +207,9 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	if push.Load() && resp.Result != nil {
-		if buildResult := resp.Result.Kind.(*builderv0.BuildResult_DockerBuildResult); buildResult != nil {
+		if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
-			for _, im := range buildResult.DockerBuildResult.Images {
+			for _, im := range buildResult.Images {
 				cmd := exec.Command("docker", "push", im)
 				err := cmd.Run()
 				if err != nil {
@@ -215,6 +219,17 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		}
 	}
 	return outputProperty, nil
+}
+
+func dockerBuildResult(result *builderv0.BuildResult) *builderv0.DockerBuildResult {
+	if result == nil {
+		return nil
+	}
+	kind, ok := result.Kind.(*builderv0.BuildResult_DockerBuildResult)
+	if !ok {
+		return nil
+	}
+	return kind.DockerBuildResult
 }
 
 var push atomic.Bool

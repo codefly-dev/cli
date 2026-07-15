@@ -1,7 +1,7 @@
 package open
 
 import (
-	"context"
+	"fmt"
 	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -15,8 +15,9 @@ import (
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Open a service in your editor",
-	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 
 		provider := wool.New(ctx, resources.CLI.AsResource())
 
@@ -24,10 +25,14 @@ var ServiceCmd = &cobra.Command{
 		defer provider.Done()
 
 		ctx = provider.Inject(ctx)
-		service := common.Service(ctx)
-		c := exec.Command(editor, service.Dir())
-		err := c.Run()
-		cli.ExitOnError(err, "cannot open service")
+		service, err := common.LoadService(ctx)
+		if err != nil {
+			return fmt.Errorf("cannot load service: %w", err)
+		}
+		if err := exec.CommandContext(ctx, editor, service.Dir()).Run(); err != nil {
+			return fmt.Errorf("cannot open service: %w", err)
+		}
+		return nil
 	},
 }
 

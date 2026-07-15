@@ -3,15 +3,17 @@
 package self
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/agents"
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/monorepo"
 	"github.com/spf13/cobra"
 )
 
@@ -57,21 +59,49 @@ Examples:
   codefly self build --with-agents --audit-agents
   codefly self build --dir ./cli
   codefly self build --output /usr/local/bin/codefly`,
-	Run: func(cmd *cobra.Command, args []string) {
-		dir, _ := cmd.Flags().GetString("dir")
-		output, _ := cmd.Flags().GetString("output")
-		withAgents, _ := cmd.Flags().GetBool("with-agents")
-		auditAgents, _ := cmd.Flags().GetBool("audit-agents")
-		nativeOnly, _ := cmd.Flags().GetBool("native-only")
-		jobs, _ := cmd.Flags().GetInt("jobs")
-		goos, _ := cmd.Flags().GetString("os")
-		goarch, _ := cmd.Flags().GetString("arch")
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
+
+		dir, err := cmd.Flags().GetString("dir")
+		if err != nil {
+			return fmt.Errorf("cannot read --dir: %w", err)
+		}
+		output, err := cmd.Flags().GetString("output")
+		if err != nil {
+			return fmt.Errorf("cannot read --output: %w", err)
+		}
+		withAgents, err := cmd.Flags().GetBool("with-agents")
+		if err != nil {
+			return fmt.Errorf("cannot read --with-agents: %w", err)
+		}
+		auditAgents, err := cmd.Flags().GetBool("audit-agents")
+		if err != nil {
+			return fmt.Errorf("cannot read --audit-agents: %w", err)
+		}
+		nativeOnly, err := cmd.Flags().GetBool("native-only")
+		if err != nil {
+			return fmt.Errorf("cannot read --native-only: %w", err)
+		}
+		jobs, err := cmd.Flags().GetInt("jobs")
+		if err != nil {
+			return fmt.Errorf("cannot read --jobs: %w", err)
+		}
+		goos, err := cmd.Flags().GetString("os")
+		if err != nil {
+			return fmt.Errorf("cannot read --os: %w", err)
+		}
+		goarch, err := cmd.Flags().GetString("arch")
+		if err != nil {
+			return fmt.Errorf("cannot read --arch: %w", err)
+		}
 
 		srcDir, err := resolveCLISource(dir)
 		if err != nil {
-			cli.Error("Cannot locate codefly CLI source: %v", err)
-			cli.ExitError()
-			return
+			return fmt.Errorf("cannot locate codefly CLI source: %w", err)
 		}
 
 		// Cross-compile mode (--os/--arch): produce a static binary for
@@ -91,21 +121,17 @@ Examples:
 				output = defaultCrossOutput(srcDir, goos)
 			}
 			cli.Info("Cross-compiling codefly from %s for %s/%s", srcDir, goos, goarch)
-			if err := buildCLICross(srcDir, output, goos, goarch); err != nil {
-				cli.Error("Build failed: %v", err)
-				cli.ExitError()
-				return
+			if err := buildCLICross(ctx, srcDir, output, goos, goarch); err != nil {
+				return fmt.Errorf("build failed: %w", err)
 			}
 			cli.Info("Built %s/%s codefly at %s", goos, goarch, output)
-			return
+			return nil
 		}
 
 		if output == "" {
 			output, err = os.Executable()
 			if err != nil {
-				cli.Error("Cannot resolve the running codefly binary (pass --output): %v", err)
-				cli.ExitError()
-				return
+				return fmt.Errorf("cannot resolve the running codefly binary (pass --output): %w", err)
 			}
 			// Resolve symlinks so we overwrite the real binary, not a link.
 			if resolved, lerr := filepath.EvalSymlinks(output); lerr == nil {
@@ -114,31 +140,26 @@ Examples:
 		}
 
 		cli.Info("Building codefly from %s", srcDir)
-		if err := buildCLI(srcDir, output); err != nil {
-			cli.Error("Build failed: %v", err)
-			cli.ExitError()
-			return
+		if err := buildCLI(ctx, srcDir, output); err != nil {
+			return fmt.Errorf("build failed: %w", err)
 		}
 		cli.Info("Installed codefly to %s", output)
 
 		if withAgents {
 			agentsDir, aerr := resolveAgentsServices(srcDir)
 			if aerr != nil {
-				cli.Error("Cannot locate agents to build (--with-agents): %v", aerr)
-				cli.ExitError()
-				return
+				return fmt.Errorf("cannot locate agents to build (--with-agents): %w", aerr)
 			}
 			cli.Info("Building all agents in %s", agentsDir)
 			// Skip the per-agent govulncheck audit by default: `self build
 			// --with-agents` is a fast "rebuild to pick up local changes" loop,
 			// and auditing every agent adds minutes (each runs govulncheck
 			// against the vuln DB). Opt in with --audit-agents when you want it.
-			if berr := agents.BuildAllAgents(agentsDir, agents.BuildOptions{SkipAudit: !auditAgents, NativeOnly: nativeOnly, Jobs: jobs}); berr != nil {
-				cli.Error("Agent build failed: %v", berr)
-				cli.ExitError()
-				return
+			if berr := agents.BuildAllAgents(ctx, agentsDir, agents.BuildOptions{SkipAudit: !auditAgents, NativeOnly: nativeOnly, Jobs: jobs}); berr != nil {
+				return fmt.Errorf("agent build failed: %w", berr)
 			}
 		}
+		return nil
 	},
 }
 
@@ -193,12 +214,12 @@ func defaultCrossOutput(cliSrcDir, goos string) string {
 // buildCLICross compiles a static CLI binary for goos/goarch. Static
 // (CGO_ENABLED=0 + -extldflags "-static") so alpine images can run it
 // without glibc; stripped (-s -w) for size. Replaces scripts/build/linux.sh.
-func buildCLICross(srcDir, output, goos, goarch string) error {
+func buildCLICross(ctx context.Context, srcDir, output, goos, goarch string) error {
 	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 	start := time.Now()
-	build := exec.Command("go", "build",
+	build := exec.CommandContext(ctx, "go", "build",
 		"-ldflags", `-s -w -extldflags "-static"`,
 		"-o", output,
 		".",
@@ -218,8 +239,11 @@ func buildCLICross(srcDir, output, goos, goarch string) error {
 // It builds to a temp file in the destination directory first, then renames
 // over the target so replacing the binary that is currently running does not
 // fail with "text file busy".
-func buildCLI(srcDir, output string) error {
+func buildCLI(ctx context.Context, srcDir, output string) error {
 	destDir := filepath.Dir(output)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
 	tmp, err := os.CreateTemp(destDir, ".codefly-build-*")
 	if err != nil {
 		return fmt.Errorf("create temp file in %s: %w", destDir, err)
@@ -233,7 +257,7 @@ func buildCLI(srcDir, output string) error {
 	start := time.Now()
 	// Build from srcDir so go.work (one level up in the monorepo) is honored
 	// and local core/wool replace directives are picked up.
-	build := exec.Command("go", "build", "-o", tmpPath, ".")
+	build := exec.CommandContext(ctx, "go", "build", "-o", tmpPath, ".")
 	build.Dir = srcDir
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
@@ -318,15 +342,5 @@ func isCLIModule(dir string) bool {
 	if _, err := os.Stat(filepath.Join(dir, "main.go")); err != nil {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
-	if err != nil {
-		return false
-	}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(line, "module "); ok {
-			return strings.TrimSpace(rest) == cliModulePath
-		}
-	}
-	return false
+	return monorepo.IsModule(dir, cliModulePath)
 }

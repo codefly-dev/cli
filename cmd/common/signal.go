@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 )
 
@@ -19,33 +20,53 @@ import (
 // was not listed at all — so `kill <pid>` fell through without cancelling the
 // context and orphaned every spawned agent/plugin (the fork-bomb/zombie class).
 func SignalContext(parent context.Context) (context.Context, func()) {
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := contextFromSignals(parent, signals, func(code int) {
+		fmt.Fprintln(os.Stderr, "\nForced quit — spawned containers/agents may be left running.")
+		os.Exit(code)
+	})
 
-	// Second-signal force-quit. We arm the handler only AFTER the first signal
-	// has cancelled ctx, so the first signal stays graceful (NotifyContext
-	// consumes it) and only the next one hard-exits while teardown runs.
-	forced := make(chan os.Signal, 1)
-	// Register for signals up front so a second Ctrl-C that arrives before the
-	// goroutine wakes on ctx.Done() is queued (buffered) rather than discarded
-	// by the runtime. NotifyContext independently consumes the first signal to
-	// cancel ctx, so the first signal still stays graceful.
-	signal.Notify(forced, os.Interrupt, syscall.SIGTERM)
+	return ctx, func() {
+		signal.Stop(signals)
+		stop()
+	}
+}
+
+// contextFromSignals owns the first-signal/second-signal state transition.
+// One channel is essential: signal.Notify broadcasts a signal to every
+// registered channel, so the old two-channel design queued the first Ctrl+C on
+// its supposed "second signal" channel and force-exited as soon as cancellation
+// was observed.
+func contextFromSignals(parent context.Context, signals <-chan os.Signal, forceExit func(int)) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+
 	go func() {
 		select {
-		case <-ctx.Done():
 		case <-parent.Done():
 			return
+		case <-stopped:
+			return
+		case <-signals:
+			cancel() // first signal: begin graceful teardown
 		}
+
 		select {
-		case <-forced:
-			fmt.Fprintln(os.Stderr, "\nForced quit — spawned containers/agents may be left running.")
-			os.Exit(130)
 		case <-parent.Done():
+			return
+		case <-stopped:
+			return
+		case <-signals:
+			forceExit(130) // second signal: caller explicitly requested force
 		}
 	}()
 
 	return ctx, func() {
-		signal.Stop(forced)
-		stop()
+		stopOnce.Do(func() {
+			close(stopped)
+			cancel()
+		})
 	}
 }

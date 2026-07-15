@@ -12,6 +12,7 @@ import (
 )
 
 type Client struct {
+	baseURL string
 }
 
 func LoadToken(ctx context.Context, workspace *resources.Workspace) (string, error) {
@@ -33,6 +34,9 @@ func GetClient() *Client {
 }
 
 func (c *Client) URL(unique string) string {
+	if c != nil && c.baseURL != "" {
+		return strings.TrimRight(c.baseURL, "/") + "/" + strings.TrimLeft(unique, "/")
+	}
 	if os.Getenv("GATEWAY") != "" {
 		base := "http://localhost:2532"
 		return fmt.Sprintf("%s/%s", base, unique)

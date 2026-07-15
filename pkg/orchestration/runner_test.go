@@ -7,6 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStatusDiagnosticPreservesAgentMessage(t *testing.T) {
+	require.Equal(t, "compile failed on line 12", statusDiagnostic("  compile failed on line 12  ", "fallback"))
+	require.Equal(t, "fallback", statusDiagnostic("  ", "fallback"))
+}
+
 func TestRestartActionType(t *testing.T) {
 	// A watch-triggered restart (START) must re-enter at configure (Init) so a
 	// fresh compiler error gets re-attempted rather than relaunching the stale

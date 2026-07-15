@@ -2,13 +2,16 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/audit"
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/cmd/companion"
 	"github.com/codefly-dev/cli/pkg/cli"
 	coreaudit "github.com/codefly-dev/core/agents/services/audit"
@@ -59,25 +62,36 @@ Examples:
   codefly update deps --dir .         # same, explicit
   codefly update deps --companions    # also rebuild companion images (--pull)
   codefly update deps --audit=false   # skip the post-update audit`,
-	Run: func(cmd *cobra.Command, args []string) {
-		ctx := context.Background()
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
 
 		dir := depsDir
 		if dir == "" {
 			wd, err := os.Getwd()
-			cli.ExitOnError(err, "cannot read working directory")
+			if err != nil {
+				return fmt.Errorf("cannot read working directory: %w", err)
+			}
 			dir = wd
 		}
 		root, err := filepath.Abs(dir)
-		cli.ExitOnError(err, "cannot resolve --dir")
+		if err != nil {
+			return fmt.Errorf("cannot resolve --dir: %w", err)
+		}
 
-		modDirs := findGoModDirs(root)
+		modDirs, err := findGoModDirs(root)
+		if err != nil {
+			return fmt.Errorf("cannot enumerate Go modules: %w", err)
+		}
 		if len(modDirs) == 0 {
-			cli.ExitWithMessage("no go.mod found under %s", root)
+			return fmt.Errorf("no go.mod found under %s", root)
 		}
 		cli.Header(1, "Updating dependencies across %d module(s)", len(modDirs))
 
-		failed := false
+		var failures []error
 
 		// Toolchain bump first: standalone/CI builds (GOWORK=off) read the
 		// go.mod toolchain directive, so a stdlib CVE (e.g. the Go 1.26.x
@@ -87,24 +101,36 @@ Examples:
 			tc := "go" + strings.TrimPrefix(depsGo, "go")
 			cli.Info("Pinning toolchain → %s", tc)
 			for _, md := range modDirs {
-				if err := runGo(md, "mod", "edit", "-toolchain="+tc); err != nil {
+				if err := runGo(ctx, md, "mod", "edit", "-toolchain="+tc); err != nil {
 					cli.Error("set toolchain %s in %s: %v", tc, rel(root, md), err)
-					failed = true
+					failures = append(failures, fmt.Errorf("set toolchain %s in %s: %w", tc, rel(root, md), err))
 				}
 			}
-			for _, wf := range findGoWorkFiles(root) {
-				if err := runGo(filepath.Dir(wf), "work", "edit", "-toolchain", tc, wf); err != nil {
+			workFiles, walkErr := findGoWorkFiles(root)
+			if walkErr != nil {
+				return fmt.Errorf("cannot enumerate Go workspaces: %w", walkErr)
+			}
+			for _, wf := range workFiles {
+				if err := runGo(ctx, filepath.Dir(wf), "work", "edit", "-toolchain", tc, wf); err != nil {
 					cli.Error("set toolchain %s in %s: %v", tc, rel(root, wf), err)
-					failed = true
+					failures = append(failures, fmt.Errorf("set toolchain %s in %s: %w", tc, rel(root, wf), err))
 				}
 			}
 		}
 
 		for _, md := range modDirs {
+			if err := ctx.Err(); err != nil {
+				failures = append(failures, err)
+				break
+			}
 			if err := updateModule(ctx, md); err != nil {
 				cli.Error("update %s: %v", rel(root, md), err)
-				failed = true
+				failures = append(failures, fmt.Errorf("update %s: %w", rel(root, md), err))
 			}
+		}
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			return errors.Join(failures...)
 		}
 
 		if depsCompanions {
@@ -112,27 +138,34 @@ Examples:
 			coreDir := companion.FindCompanionsRoot(root)
 			if err := companion.BuildAll(coreDir, companion.BuildOptions{Pull: true}); err != nil {
 				cli.Error("rebuild companions: %v", err)
-				failed = true
+				failures = append(failures, fmt.Errorf("rebuild companions: %w", err))
 			}
 		}
 
 		blocked := false
 		if depsAudit {
 			for _, md := range modDirs {
+				if err := ctx.Err(); err != nil {
+					failures = append(failures, err)
+					break
+				}
 				b, err := audit.RunGoAudit(ctx, md, depsStaleDays, true)
 				if err != nil {
 					cli.Error("audit %s: %v", rel(root, md), err)
-					failed = true
+					failures = append(failures, fmt.Errorf("audit %s: %w", rel(root, md), err))
 				}
 				blocked = blocked || b
 			}
 		}
 
-		if failed || blocked {
-			cli.ExitError()
+		if blocked {
+			failures = append(failures, fmt.Errorf("dependency audit remains blocked"))
+		}
+		if len(failures) > 0 {
+			return errors.Join(failures...)
 		}
 		cli.Header(1, "Dependencies up to date")
-		cli.Done()
+		return ctx.Err()
 	},
 }
 
@@ -152,7 +185,7 @@ func updateModule(ctx context.Context, dir string) error {
 		if o.LatestSafe == "" || o.LatestSafe == o.Current {
 			continue
 		}
-		if err := runGo(dir, "get", o.Package+"@"+o.LatestSafe); err != nil {
+		if err := runGo(ctx, dir, "get", o.Package+"@"+o.LatestSafe); err != nil {
 			return fmt.Errorf("go get %s@%s: %w", o.Package, o.LatestSafe, err)
 		}
 		cli.Info("  %s %s → %s", o.Package, o.Current, o.LatestSafe)
@@ -169,11 +202,11 @@ func updateModule(ctx context.Context, dir string) error {
 		// "finding module for package … does not contain package" lines for
 		// every unpublished workspace-local import even though it succeeds.
 		// Surface that detail only if tidy actually fails.
-		if out, err := runGoCapture(dir, "mod", "tidy", "-e"); err != nil {
+		if out, err := runGoCapture(ctx, dir, "mod", "tidy", "-e"); err != nil {
 			return fmt.Errorf("go mod tidy -e: %w\n%s", err, out)
 		}
 		cli.Warning("  %s: tidied with -e (workspace) — unpublished sibling packages aren't pruned; publish them to fully tidy", filepath.Base(dir))
-	} else if err := runGo(dir, "mod", "tidy"); err != nil {
+	} else if err := runGo(ctx, dir, "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
 	}
 	if bumped == 0 {
@@ -187,8 +220,8 @@ func updateModule(ctx context.Context, dir string) error {
 // runGo runs `go <args>` in dir, streaming output. Uses the ambient
 // environment (go.work stays on) so first-party modules keep resolving
 // against local source while external deps update.
-func runGo(dir string, args ...string) error {
-	cmd := exec.Command("go", args...)
+func runGo(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -198,8 +231,8 @@ func runGo(dir string, args ...string) error {
 // runGoCapture runs `go <args>` in dir capturing combined output instead of
 // streaming it. Used for `tidy -e`, whose stderr is noisy-but-harmless on
 // success; callers surface the output only on failure.
-func runGoCapture(dir string, args ...string) (string, error) {
-	cmd := exec.Command("go", args...)
+func runGoCapture(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	var buf strings.Builder
 	cmd.Stdout = &buf
@@ -210,11 +243,11 @@ func runGoCapture(dir string, args ...string) (string, error) {
 
 // findGoModDirs returns every directory under root with a go.mod, skipping
 // vendor, node_modules, .git and testdata trees.
-func findGoModDirs(root string) []string {
+func findGoModDirs(root string) ([]string, error) {
 	var dirs []string
-	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
@@ -228,7 +261,8 @@ func findGoModDirs(root string) []string {
 		}
 		return nil
 	})
-	return dirs
+	sort.Strings(dirs)
+	return dirs, err
 }
 
 // inWorkspace reports whether dir is covered by a go.work (walking up).
@@ -250,11 +284,11 @@ func inWorkspace(dir string) bool {
 // findGoWorkFiles returns every go.work under root, skipping vendor,
 // node_modules and .git. Used by --go to bump the toolchain for workspace
 // builds in addition to the per-module go.mod directive.
-func findGoWorkFiles(root string) []string {
+func findGoWorkFiles(root string) ([]string, error) {
 	var files []string
-	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			switch d.Name() {
@@ -268,7 +302,8 @@ func findGoWorkFiles(root string) []string {
 		}
 		return nil
 	})
-	return files
+	sort.Strings(files)
+	return files, err
 }
 
 func rel(root, p string) string {

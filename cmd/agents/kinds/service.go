@@ -17,32 +17,44 @@ import (
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Get service information",
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		ctx, stop := common.SignalContext(ctx)
+		defer stop()
 
-		serviceInfo(ctx, agentInput)
+		return serviceInfo(ctx, agentInput)
 	},
 }
 
-func serviceInfo(ctx context.Context, input string) {
+func serviceInfo(ctx context.Context, input string) error {
 	defer services.ClearAgents()
 	w := wool.Get(ctx).In("cmd.info.agentInput.service")
 	ctx = w.Inject(ctx)
+	if input == "" {
+		return fmt.Errorf("--agent is required")
+	}
 
 	conf, err := resources.ParseAgent(ctx, resources.ServiceAgent, input)
-	cli.ExitOnError(err, "Cannot parse agentInput")
+	if err != nil {
+		return fmt.Errorf("cannot parse agent: %w", err)
+	}
 
 	cli.Header(1, "Fetching information about Service Agent <%s> information", conf)
 
 	agent, err := services.LoadAgent(ctx, conf, "")
-	cli.ExitOnError(err, "Cannot load agentInput")
+	if err != nil {
+		return fmt.Errorf("cannot load agent: %w", err)
+	}
 	cli.Header(2, "Successfully loaded service agent <%s>", conf)
 
 	info, err := agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
-	cli.ExitOnError(err, "Cannot get agent information")
+	if err != nil {
+		return fmt.Errorf("cannot get agent information: %w", err)
+	}
 	fmt.Println(info)
-
+	return nil
 }
 
 func init() {

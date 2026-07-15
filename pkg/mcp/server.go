@@ -84,13 +84,47 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) ServeIO(ctx context.Context, in io.Reader, out io.Writer) error {
 	w := wool.Get(ctx).In("mcp.Serve")
 
-	scanner := bufio.NewScanner(in)
-	// Increase buffer size for large messages
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	type scanResult struct {
+		line []byte
+		err  error
+	}
+	results := make(chan scanResult)
+	go func() {
+		defer close(results)
+		scanner := bufio.NewScanner(in)
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			select {
+			case results <- scanResult{line: line}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			select {
+			case results <- scanResult{err: err}:
+			case <-ctx.Done():
+			}
+		}
+	}()
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	for {
+		var scanned scanResult
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case scanned, ok = <-results:
+			if !ok {
+				return nil
+			}
+		}
+		if scanned.err != nil {
+			return scanned.err
+		}
+		line := scanned.line
 		if len(line) == 0 {
 			continue
 		}
@@ -99,21 +133,30 @@ func (s *Server) ServeIO(ctx context.Context, in io.Reader, out io.Writer) error
 		if err := json.Unmarshal(line, &req); err != nil {
 			w.Debug("failed to parse request", wool.ErrField(err))
 			resp := s.errorResponse(nil, ParseError, "Parse error")
-			s.writeResponse(out, resp)
+			if err := s.writeResponse(out, resp); err != nil {
+				return err
+			}
 			continue
 		}
 
 		resp := s.handleRequest(ctx, &req)
+		// JSON-RPC notifications deliberately omit an id and MUST NOT receive a
+		// response, even when the method is unknown or the handler reports an
+		// error. The handler still runs so notification side effects are kept.
+		if req.ID == nil {
+			continue
+		}
 		if err := s.writeResponse(out, resp); err != nil {
 			w.Error("failed to write response", wool.ErrField(err))
 			return err
 		}
 	}
-
-	return scanner.Err()
 }
 
 func (s *Server) writeResponse(out io.Writer, resp *JSONRPCResponse) error {
+	if resp == nil {
+		return nil
+	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		return err
@@ -129,7 +172,7 @@ func (s *Server) handleRequest(ctx context.Context, req *JSONRPCRequest) *JSONRP
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(ctx, req)
-	case "initialized":
+	case "notifications/initialized", "initialized":
 		// Client acknowledgment, no response needed
 		return nil
 	case "tools/list":
