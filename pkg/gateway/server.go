@@ -365,6 +365,10 @@ func (s *Server) ensurePlugin(ctx context.Context) (codev0.CodeClient, error) {
 	agentConn, err := manager.Load(loadCtx, agent,
 		manager.WithLogWriter(agentLogWriter),
 		manager.WithWorkDir(s.cfg.WorkDir),
+		// The local gateway's service/code agents need the developer process's
+		// ambient filesystem/runtime access and do not act as a Toolbox principal.
+		manager.WithoutSandbox(),
+		manager.WithoutPrincipal(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load agent %s: %w", agentName, err)
