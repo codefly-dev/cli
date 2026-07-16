@@ -9,7 +9,9 @@ import (
 
 func main() {
 	if err := cmd.Execute(); err != nil {
-		cli.ErrorChain(err, "cannot execute command")
+		if !cmd.IsMachineReadableError(err) {
+			cli.ErrorChain(err, "cannot execute command")
+		}
 		cli.Done()
 		os.Exit(1)
 	}

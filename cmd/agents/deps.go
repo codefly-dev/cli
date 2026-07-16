@@ -18,7 +18,7 @@ import (
 )
 
 // DepsCmd manages an agent's build dependencies: the local↔published core
-// wiring and its CI. Three concerns, one command:
+// wiring. Two concerns, one command:
 //
 //   - link (default): set up a local go.work so the agent builds against the
 //     monorepo's core SOURCE — the "always allow local build" path. No network,
@@ -26,12 +26,11 @@ import (
 //     GOWORK=off, or `--unlink` to remove it entirely.
 //   - --pin: the ONLY mode that pulls — bump go.mod to a published core version,
 //     tidy, and verify the agent builds standalone (release / CI readiness).
-//   - --ci: scaffold/repair .github/workflows/ci.yml (build+vet vs published core).
 //
 // `--all` applies any of these across every agent in the directory tree.
 var DepsCmd = &cobra.Command{
 	Use:   "deps",
-	Short: "Manage an agent's core dependency (local go.work, published pin, CI)",
+	Short: "Manage an agent's core dependency (local go.work or published pin)",
 	Long: `Manage how an agent resolves its codefly-core dependency.
 
 By default (or with --link) it wires a local go.work so the agent builds against
@@ -43,14 +42,13 @@ published core in go.mod.
   --unlink          remove the local go.work (revert to published deps)
   --pin <version>   pin go.mod to a published core version + tidy + verify the
                     standalone build (the ONLY mode that pulls); "latest" allowed
-  --ci              scaffold/repair .github/workflows/ci.yml
   --all             apply to every agent under the directory tree
   --dir <path>      target agent directory (default: current directory)
 
 Examples:
   codefly agent deps                       # link this agent to local core
   codefly agent deps --all                 # link every agent in the tree
-  codefly agent deps --pin latest --ci     # pin to latest published core + add CI
+  codefly agent deps --pin latest          # pin to latest published core
   codefly agent deps --unlink --all        # drop local go.work everywhere`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
@@ -80,17 +78,12 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("cannot read --pin: %w", err)
 		}
-		o.ci, err = cmd.Flags().GetBool("ci")
-		if err != nil {
-			return fmt.Errorf("cannot read --ci: %w", err)
-		}
-
 		if o.unlink && o.link {
 			return fmt.Errorf("--link and --unlink are mutually exclusive")
 		}
 		// Default action when no mode flag is given: link locally (the internal
-		// sync). --pin / --ci / --unlink alone don't imply a link.
-		if !o.link && !o.unlink && o.pin == "" && !o.ci {
+		// sync). --pin / --unlink alone don't imply a link.
+		if !o.link && !o.unlink && o.pin == "" {
 			o.link = true
 		}
 
@@ -146,7 +139,6 @@ type depsOptions struct {
 	link   bool
 	unlink bool
 	pin    string
-	ci     bool
 }
 
 func applyDeps(ctx context.Context, dir string, o depsOptions) error {
@@ -167,11 +159,6 @@ func applyDeps(ctx context.Context, dir string, o depsOptions) error {
 	}
 	if o.link {
 		if err := linkLocal(ctx, dir); err != nil {
-			return err
-		}
-	}
-	if o.ci {
-		if err := scaffoldCI(ctx, dir); err != nil {
 			return err
 		}
 	}
@@ -362,44 +349,6 @@ func stripLocalReplaces(ctx context.Context, dir string, env []string) ([]string
 	return dropped, nil
 }
 
-// scaffoldCI writes .github/workflows/ci.yml (build+vet against published core,
-// Go version read from go.mod). Idempotent — overwrites the managed file.
-func scaffoldCI(ctx context.Context, dir string) error {
-	wf := filepath.Join(dir, ".github", "workflows")
-	if err := shared.WriteFileAtomic(ctx, filepath.Join(wf, "ci.yml"), []byte(ciWorkflow), 0o644); err != nil {
-		return fmt.Errorf("write ci.yml: %w", err)
-	}
-	cli.Info("  ci → wrote .github/workflows/ci.yml (build+vet)")
-	return nil
-}
-
-// ciWorkflow is the managed build+vet workflow. It builds against the published
-// core (no go.work in CI), with the Go toolchain pinned from go.mod. It runs
-// build + vet only — NOT `go test`, because agent tests need real infra
-// (NEVER mock) and would be falsely red in plain GitHub Actions.
-const ciWorkflow = `name: ci
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-      - name: Build
-        run: go build ./...
-      - name: Vet
-        run: go vet ./...
-`
-
 // discoverAgentDirs returns every directory under root that holds an
 // agent.codefly.yaml (including quarantined ones — they still need dep wiring).
 func discoverAgentDirs(root string) ([]string, error) {
@@ -524,5 +473,4 @@ func init() {
 	DepsCmd.Flags().Bool("link", false, "Wire go.work -> local core for dev builds (default action)")
 	DepsCmd.Flags().Bool("unlink", false, "Remove the local go.work (revert to published deps)")
 	DepsCmd.Flags().String("pin", "", "Pin go.mod to a published core version (e.g. latest, v0.1.164) + tidy + verify")
-	DepsCmd.Flags().Bool("ci", false, "Scaffold/repair .github/workflows/ci.yml")
 }

@@ -166,7 +166,6 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	}
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
-	flow.WithStandAlone(true)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTestRequest(request)
 

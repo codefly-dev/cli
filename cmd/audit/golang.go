@@ -171,9 +171,6 @@ func RunGoAudit(ctx context.Context, dir string, staleDays int, failOnVuln bool)
 	if err != nil {
 		return false, err
 	}
-	if res.Tool == "missing" {
-		return false, fmt.Errorf("govulncheck is not installed; install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
-	}
 	cli.Info("Tool: %s", res.Tool)
 
 	supps, suppPath, err := LoadSuppressions(dir)

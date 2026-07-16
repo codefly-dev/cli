@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -20,6 +21,7 @@ import (
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
@@ -29,10 +31,10 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 )
 
-var currentFlow *Flow
+var currentFlow atomic.Pointer[Flow]
 
 func CurrentFlow() *Flow {
-	return currentFlow
+	return currentFlow.Load()
 }
 
 type Flow struct {
@@ -102,6 +104,14 @@ type Flow struct {
 	// to the origin runner when the flow is in TestMode. Dependency
 	// runners ignore it — they only need to be Started, not tested.
 	testRequest *runtimev0.TestRequest
+	// testDependencyMode is resolved from the origin agent's authoritative
+	// suite advertisement before dependency managers are selected. Legacy
+	// agents retain the dependency-free behavior they had before the contract.
+	testDependencyMode agentv0.TestDependencyMode
+
+	// syncRequest carries CI dry-run intent to every builder participating in a
+	// SyncMode flow. Nil retains the conventional mutating sync behavior.
+	syncRequest *builderv0.SyncRequest
 
 	// Output running configurations
 	outputEnvPath string
@@ -159,6 +169,8 @@ type World struct {
 	ConfigurationManager *configurations.Manager
 
 	RemoteManager deployments.Manager
+
+	SyncRequest *builderv0.SyncRequest
 }
 
 // FlowFailure carries a runner-level death up to the top-level command.
@@ -265,7 +277,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 	flow.preferences = prefs
 
-	currentFlow = flow
+	currentFlow.Store(flow)
 	return flow, nil
 }
 
@@ -479,7 +491,13 @@ func (flow *Flow) Load(ctx context.Context) error {
 			})
 		}
 	case TestMode:
-		policy, err := NewRuntimeTestPolicy(ctx, flow.world.Dependencies, flow)
+		policy, err := NewRuntimeTestPolicy(
+			ctx,
+			flow.world.Dependencies,
+			flow,
+			resources.WithUnique(flow.originService).Unique(),
+			flow.testDependencyMode,
+		)
 		if err != nil {
 			return w.Wrapf(err, "cannot create policy")
 		}
@@ -504,6 +522,25 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
 			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == RuntimeTest
 		})
+	case LintMode, CompileMode:
+		terminal := RuntimeLint
+		if flow.world.Mode == CompileMode {
+			terminal = RuntimeBuild
+		}
+		origin := resources.WithUnique(flow.originService).Unique()
+		policy, err := NewRuntimeValidationPolicy(ctx, flow.world.Dependencies, flow, origin, terminal)
+		if err != nil {
+			return w.Wrapf(err, "cannot create validation policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+			return action.Service == origin && action.Type == terminal
+		})
 
 	case BuildMode:
 		policy, err := NewBuildPolicy(ctx, flow.hub, flow.world)
@@ -520,7 +557,14 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderBuild
 		})
 	case SyncMode:
-		policy, err := NewSyncPolicy(ctx, flow.world.Dependencies, flow)
+		var policy PlaybookPolicy
+		var err error
+		origin := resources.WithUnique(flow.originService).Unique()
+		if flow.syncRequest.GetDryRun() {
+			policy, err = NewSyncDriftPolicy(ctx, flow.world.Dependencies, flow, origin)
+		} else {
+			policy, err = NewSyncPolicy(ctx, flow.world.Dependencies, flow)
+		}
 		if err != nil {
 			return w.Wrapf(err, "cannot create policy")
 		}
@@ -531,7 +575,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		}
 		playbook.WithPolicy(policy)
 		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
-			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderSync
+			return action.Service == origin && action.Type == BuilderSync
 		})
 	case DeployMode:
 		policy, err := NewDeployPolicy(ctx, flow.world.Dependencies, flow)
@@ -559,7 +603,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		manager.DoSetFailureSink(flow.reportFailure)
 	}
 
-	currentFlow = flow
+	currentFlow.Store(flow)
 	return nil
 }
 
@@ -621,6 +665,27 @@ func (flow *Flow) OriginTestResponse() *runtimev0.TestResponse {
 		if manager.Unique() == origin {
 			return manager.RunnerTestResponse()
 		}
+	}
+	return nil
+}
+
+// OriginSyncResponse returns the structured SyncResponse from the origin
+// service's Builder.Sync RPC, or nil if it was never synchronized.
+func (flow *Flow) OriginSyncResponse() *builderv0.SyncResponse {
+	if flow == nil || flow.hub == nil {
+		return nil
+	}
+	origin := resources.WithUnique(flow.originService).Unique()
+	for _, manager := range flow.hub.managers {
+		if manager == nil || manager.Unique() != origin {
+			continue
+		}
+		if source, ok := manager.(interface {
+			BuilderSyncResponse() *builderv0.SyncResponse
+		}); ok {
+			return source.BuilderSyncResponse()
+		}
+		return nil
 	}
 	return nil
 }
@@ -859,6 +924,29 @@ func (flow *Flow) OrderedServiceUniques() []string {
 	return out
 }
 
+// AgentCacheKeys returns every service-scoped agent owned by this flow,
+// including managers created before a partial initialization failure. CI uses
+// it to evict only completed flow agents while unrelated tasks remain active.
+func (flow *Flow) AgentCacheKeys() []string {
+	if flow == nil || flow.hub == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	keys := make([]string, 0, len(flow.hub.managers))
+	for _, manager := range flow.hub.managers {
+		if manager == nil {
+			continue
+		}
+		key := manager.Unique()
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
 	if flow == nil {
 		return "", nil
@@ -877,6 +965,11 @@ func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
 
 func (flow *Flow) Stop() error {
 	if flow == nil || flow.hub == nil {
+		return nil
+	}
+	// Builder-only flows have no Runtime runner to stop. Their service-scoped
+	// agent connections are closed by the caller after this lifecycle hook.
+	if flow.world != nil && (flow.world.Mode == BuildMode || flow.world.Mode == SyncMode || flow.world.Mode == DeployMode) {
 		return nil
 	}
 	// Don't call on a possibly Done context
@@ -970,6 +1063,10 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 		return manager.RunnerDoInit, nil
 	case RuntimeStart:
 		return manager.RunnerDoStart, nil
+	case RuntimeBuild:
+		return manager.RunnerDoBuild, nil
+	case RuntimeLint:
+		return manager.RunnerDoLint, nil
 	case RuntimeTest:
 		return manager.RunnerDoTest, nil
 	case BuilderBegin:
@@ -1058,7 +1155,30 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		}
 	}
 
-	// Create manager for all service required by this service if not standalone
+	// Test dependency policy is advertised by the origin agent, so load that
+	// manager first as a preflight. It is retained and moved behind dependency
+	// managers once the run set is known, preserving target-first teardown.
+	flow.hub = &Hub{}
+	var preloadedOrigin *Manager
+	if flow.world.Mode == TestMode && !flow.excludeRoot {
+		manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
+		cli.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
+		if err != nil {
+			return w.Wrap(err)
+		}
+		preloadedOrigin = manager
+		flow.hub.managers = append(flow.hub.managers, manager)
+		flow.configureRunner(manager.Runner, flow.originService)
+		if remote, ok := remotes[resources.WithUnique(flow.originService).Unique()]; ok {
+			manager.Runner.WithRemote(remote.Environment)
+		}
+		if err := flow.configureTestExecution(manager.Runner); err != nil {
+			return w.Wrap(err)
+		}
+	}
+
+	// Create manager for every service required by this service when the
+	// selected operation needs a live dependency graph.
 	var required []string
 	if !flow.standAlone {
 		order, err := flow.world.Dependencies.OrderTo(ctx, resources.WithUnique(flow.originService).Unique())
@@ -1076,14 +1196,12 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		return w.Wrapf(err, "cannot describe service run plan")
 	}
 
-	// Register the hub up front and append each manager the moment it is
+	// Register each manager the moment it is
 	// created. New() spawns the service's agent process (and its pgid tracking
 	// file), so a failure partway through must still leave every
 	// already-spawned runner reachable by flow.Stop() — otherwise a partial
 	// init orphans those agents (and any process group they hold) until the
 	// next run's reaper sweeps them.
-	flow.hub = &Hub{}
-
 	for _, unique := range required {
 		cli.RegisterLoggingResource(unique)
 		// Register source to handle "pretty" logging
@@ -1111,10 +1229,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 			return w.Wrap(err)
 		}
 
-		manager.Runner.WithRuntimeContext(flow.runtimeContextFor(svc))
-		manager.Runner.WithFixture(flow.fixture)
-		manager.Runner.WithOverrides(flow.overrides[svc.Name])
-		manager.Runner.WithOutputEnv(flow.outputEnvPath)
+		flow.configureRunner(manager.Runner, svc)
 		if remote, ok := remotes[unique]; ok {
 			manager.Runner.WithRemote(remote.Environment)
 		}
@@ -1122,7 +1237,12 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	}
 
 	// Now add the current one
-	if !flow.excludeRoot {
+	if preloadedOrigin != nil {
+		flow.services = append(flow.services, flow.originService)
+		// Dependency managers were appended after the preloaded origin. Rotate
+		// the origin to the end so Stop() tears down the target before its stack.
+		flow.hub.managers = append(flow.hub.managers[1:], preloadedOrigin)
+	} else if !flow.excludeRoot {
 		w.Debug("creating run manager", wool.Field("for", resources.WithUnique(flow.originService).Unique()))
 		manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
 		cli.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
@@ -1130,10 +1250,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 			return w.Wrap(err)
 		}
 		flow.services = append(flow.services, flow.originService)
-		manager.Runner.WithRuntimeContext(flow.runtimeContextFor(flow.originService))
-		manager.Runner.WithFixture(flow.fixture)
-		manager.Runner.WithOverrides(flow.overrides[flow.originService.Name])
-		manager.Runner.WithOutputEnv(flow.outputEnvPath)
+		flow.configureRunner(manager.Runner, flow.originService)
 		if flow.testRequest != nil {
 			manager.Runner.WithTestRequest(flow.testRequest)
 		}
@@ -1153,6 +1270,27 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if err := flow.resolveDockerFallback(ctx); err != nil {
 		return w.Wrap(err)
 	}
+	return nil
+}
+
+func (flow *Flow) configureRunner(runner *Runner, service *resources.Service) {
+	runner.WithRuntimeContext(flow.runtimeContextFor(service))
+	runner.WithFixture(flow.fixture)
+	runner.WithOverrides(flow.overrides[service.Name])
+	runner.WithOutputEnv(flow.outputEnvPath)
+}
+
+func (flow *Flow) configureTestExecution(runner *Runner) error {
+	execution, err := resolveTestExecution(runner.instance.Info, flow.testRequest)
+	if err != nil {
+		return fmt.Errorf("cannot resolve test suite for %s: %w", runner.Unique(), err)
+	}
+	flow.testRequest = execution.Request
+	flow.testDependencyMode = execution.DependencyMode
+	flow.standAlone = execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
+	runner.WithTestRequest(execution.Request)
+	runner.WithServiceRunningForTest(execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
+	cli.Info("Test suite <%s> for <%s> uses dependency mode %s", execution.DisplaySuite(), runner.Unique(), execution.DependencyMode.String())
 	return nil
 }
 
@@ -1417,6 +1555,15 @@ func (flow *Flow) WithLoadOnly(only bool) {
 // Test RPC. Only relevant in TestMode; ignored otherwise.
 func (flow *Flow) WithTestRequest(req *runtimev0.TestRequest) {
 	flow.testRequest = req
+}
+
+// WithSyncRequest sets the request used by SyncMode builders. CI uses a
+// dry-run request so generated drift can be proven without mutating source.
+func (flow *Flow) WithSyncRequest(req *builderv0.SyncRequest) {
+	flow.syncRequest = req
+	if flow.world != nil {
+		flow.world.SyncRequest = req
+	}
 }
 
 func (flow *Flow) ActiveWorkspace() *resources.Workspace {

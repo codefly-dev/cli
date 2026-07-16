@@ -89,12 +89,20 @@ type Runner struct {
 	// Populated on both success and failure (whenever the RPC itself returns
 	// a response, even if tests failed).
 	testResponse *runtimev0.TestResponse
+
+	// serviceRunningForTest preserves an explicitly started target for suites
+	// whose advertised dependency mode is START_STACK.
+	serviceRunningForTest bool
 }
 
 // WithTestRequest stores the TestRequest to forward to the agent on Test().
 // Wired from CLI flags via Flow.WithTestRequest.
 func (runner *Runner) WithTestRequest(req *runtimev0.TestRequest) {
 	runner.testRequest = req
+}
+
+func (runner *Runner) WithServiceRunningForTest(running bool) {
+	runner.serviceRunningForTest = running
 }
 
 // TestResponse returns the structured response from the last Test RPC, or nil
@@ -462,17 +470,23 @@ func (runner *Runner) StartRemote(ctx context.Context) (*OutputProperty, error) 
 func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance))
 	w.Debug("test")
+	advertised, supported := validationSupport(runner.instance.Info, RuntimeTest)
+	if advertised && !supported {
+		return nil, w.NewError("test is not supported by the validation contract for %s", runner.Unique())
+	}
 
-	err := runner.StopIfNeeded(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot stopAfter service instance if needed")
+	if !runner.serviceRunningForTest {
+		err := runner.StopIfNeeded(ctx)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot stopAfter service instance if needed")
+		}
 	}
 
 	req := runner.testRequest
 	if req == nil {
 		req = &runtimev0.TestRequest{}
 	}
-	err = resources.Validate(req)
+	err := resources.Validate(req)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot validate start request")
 	}
@@ -488,6 +502,9 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		if ContextCancelled(err) {
 			return nil, nil
+		}
+		if status.Code(err) == codes.Unimplemented && advertised {
+			return nil, w.NewError("validation contract violation for %s: test is advertised but Runtime.Test is unimplemented", runner.Unique())
 		}
 		return nil, w.Wrapf(err, "got error from test request")
 	}
@@ -512,6 +529,80 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 
 	runner.isStarted.Store(true)
 	return outputProperty, nil
+}
+
+// Build asks the runtime agent for its native compile/typecheck phase. This is
+// intentionally distinct from Builder.Build, which creates the deployable
+// artifact (typically a container image).
+func (runner *Runner) Build(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("Runner.Build", wool.ThisField(runner.instance))
+	advertised, supported := validationSupport(runner.instance.Info, RuntimeBuild)
+	if advertised && !supported {
+		w.Info("native build is explicitly unsupported by this agent; skipping")
+		return OnInit(), nil
+	}
+	resp, err := runner.instance.Runtime.Runtime.Build(ctx, &runtimev0.BuildRequest{})
+	if status.Code(err) == codes.Unimplemented {
+		if advertised {
+			return nil, w.NewError("validation contract violation for %s: compile is advertised but Runtime.Build is unimplemented", runner.Unique())
+		}
+		w.Info("native build is not supported by this agent; skipping")
+		return OnInit(), nil
+	}
+	if err != nil {
+		return nil, w.Wrapf(err, "native build RPC failed")
+	}
+	if resp == nil {
+		return nil, w.NewError("native build failed for %s: agent returned no response", runner.Unique())
+	}
+	if strings.TrimSpace(resp.Output) != "" {
+		w.Forwardf("%s", resp.Output)
+	}
+	// A few existing agents return an empty response for an intentional no-op.
+	// Preserve that compatibility until validation capabilities make the skip
+	// explicit in AgentInformation.
+	if resp.Status == nil {
+		w.Info("native build completed with a legacy empty response")
+		return OnInit(), nil
+	}
+	if resp.Status.State != runtimev0.BuildStatus_SUCCESS {
+		message := statusDiagnostic(resp.Status.Message, resp.Output)
+		return nil, w.NewError("native build failed for %s: %s", runner.Unique(), statusDiagnostic(message, "agent reported build failure"))
+	}
+	return OnInit(), nil
+}
+
+// Lint asks the runtime agent to run the service-native static checks. The
+// agent—not the CI provider or CLI—owns the concrete language commands.
+func (runner *Runner) Lint(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("Runner.Lint", wool.ThisField(runner.instance))
+	advertised, supported := validationSupport(runner.instance.Info, RuntimeLint)
+	if advertised && !supported {
+		w.Info("lint is explicitly unsupported by this agent; skipping")
+		return OnInit(), nil
+	}
+	resp, err := runner.instance.Runtime.Runtime.Lint(ctx, &runtimev0.LintRequest{})
+	if status.Code(err) == codes.Unimplemented {
+		if advertised {
+			return nil, w.NewError("validation contract violation for %s: lint is advertised but Runtime.Lint is unimplemented", runner.Unique())
+		}
+		w.Info("lint is not supported by this agent; skipping")
+		return OnInit(), nil
+	}
+	if err != nil {
+		return nil, w.Wrapf(err, "lint RPC failed")
+	}
+	if resp == nil || resp.Status == nil {
+		return nil, w.NewError("lint failed for %s: agent returned no status", runner.Unique())
+	}
+	if strings.TrimSpace(resp.Output) != "" {
+		w.Forwardf("%s", resp.Output)
+	}
+	if resp.Status.State != runtimev0.LintStatus_SUCCESS {
+		message := statusDiagnostic(resp.Status.Message, resp.Output)
+		return nil, w.NewError("lint failed for %s: %s", runner.Unique(), statusDiagnostic(message, "agent reported lint failure"))
+	}
+	return OnInit(), nil
 }
 
 func (runner *Runner) StopIfNeeded(ctx context.Context) error {

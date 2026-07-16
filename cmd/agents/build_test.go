@@ -92,6 +92,15 @@ require (
 	}
 }
 
+func TestMonorepoModulesIncludeSDK(t *testing.T) {
+	for _, module := range monorepoModules {
+		if module.Module == "github.com/codefly-dev/sdk-go" && module.SubDir == "sdk-go" {
+			return
+		}
+	}
+	t.Fatal("monorepoModules does not include the local sdk-go module")
+}
+
 func TestGoModRequires_NoGoMod(t *testing.T) {
 	dir := t.TempDir()
 	// No go.mod file
@@ -373,7 +382,7 @@ func TestBuildAllAgentsReturnsMalformedManifestError(t *testing.T) {
 	}
 }
 
-func TestRunAuditFailsClosedWhenEnforced(t *testing.T) {
+func TestRunAuditUsesManagedGovulncheck(t *testing.T) {
 	bin := t.TempDir()
 	goPath := filepath.Join(bin, "go")
 	if err := os.WriteFile(goPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -381,10 +390,18 @@ func TestRunAuditFailsClosedWhenEnforced(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 	agent := agentYAML{Name: "test", Version: "0.0.1"}
-	if err := runAudit(context.Background(), t.TempDir(), agent, true); err == nil || !strings.Contains(err.Error(), "govulncheck") {
-		t.Fatalf("enforced audit error = %v", err)
+	if err := runAudit(context.Background(), t.TempDir(), agent, true); err != nil {
+		t.Fatalf("managed audit unexpectedly failed: %v", err)
 	}
 	if err := runAudit(context.Background(), t.TempDir(), agent, false); err != nil {
 		t.Fatalf("informational audit unexpectedly failed: %v", err)
+	}
+}
+
+func TestRunAuditFailsWhenNoScannerCanRun(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	agent := agentYAML{Name: "test", Version: "0.0.1"}
+	if err := runAudit(context.Background(), t.TempDir(), agent, false); err == nil || !strings.Contains(err.Error(), "govulncheck") {
+		t.Fatalf("incomplete audit error = %v", err)
 	}
 }

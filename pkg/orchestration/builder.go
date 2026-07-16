@@ -44,6 +44,8 @@ type Builder struct {
 	outputPropertyForSync  *BuilderSyncManager
 
 	push bool
+
+	syncResponse *builderv0.SyncResponse
 }
 
 func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
@@ -148,8 +150,21 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 
-	// Build the request
-	resp, err := b.instance.Builder.Sync(ctx, &builderv0.SyncRequest{}, communicate.NewPrompt())
+	request := b.world.SyncRequest
+	if request == nil {
+		request = &builderv0.SyncRequest{}
+	}
+	if request.GetDryRun() {
+		advertised, supported := ValidationOperationSupport(b.instance.Info, ValidationSync)
+		if !advertised {
+			return nil, w.NewError("cannot prove sync drift for %s: agent has no authoritative sync capability contract", b.instance.Unique())
+		}
+		if !supported {
+			return nil, w.NewError("cannot prove sync drift for %s: agent explicitly does not support non-mutating sync", b.instance.Unique())
+		}
+	}
+	resp, err := b.instance.Builder.Sync(ctx, request, communicate.NewPrompt())
+	b.syncResponse = resp
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot sync service instance")
 	}
@@ -174,9 +189,16 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
+func (b *Builder) SyncResponse() *builderv0.SyncResponse {
+	return b.syncResponse
+}
+
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 	w.Debug("Build")
+	if advertised, supported := ValidationOperationSupport(b.instance.Info, ValidationArtifactBuild); advertised && !supported {
+		return nil, w.NewError("cannot build deployable artifact for %s: agent explicitly advertises artifact build as unsupported", b.instance.Unique())
+	}
 
 	// Build the request
 	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)

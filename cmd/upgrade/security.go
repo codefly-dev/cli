@@ -143,10 +143,6 @@ func upgradeModuleSecurity(ctx context.Context, dir string, dryRun bool) error {
 	if err != nil {
 		return fmt.Errorf("audit failed: %w", err)
 	}
-	if res.Tool == "missing" {
-		return fmt.Errorf("govulncheck is not installed; install with: go install golang.org/x/vuln/cmd/govulncheck@latest")
-	}
-
 	modBumps, toolchain, unpatched := planFixes(res.Findings)
 
 	if len(modBumps) == 0 && toolchain == "" {

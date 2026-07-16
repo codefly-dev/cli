@@ -30,16 +30,18 @@ func (m *recordingManager) RunnerDoDestroy(context.Context) (*OutputProperty, er
 	return &OutputProperty{}, nil
 }
 
-func (m *recordingManager) BuilderDoInit(context.Context) (*OutputProperty, error)   { return nil, nil }
-func (m *recordingManager) BuilderDoLoad(context.Context) (*OutputProperty, error)   { return nil, nil }
-func (m *recordingManager) BuilderDoBuild(context.Context) (*OutputProperty, error)  { return nil, nil }
-func (m *recordingManager) BuilderDoSync(context.Context) (*OutputProperty, error)   { return nil, nil }
-func (m *recordingManager) BuilderDoDeploy(context.Context) (*OutputProperty, error) { return nil, nil }
-func (m *recordingManager) RunnerDoLoad(context.Context) (*OutputProperty, error)    { return nil, nil }
-func (m *recordingManager) RunnerDoInit(context.Context) (*OutputProperty, error)    { return nil, nil }
-func (m *recordingManager) RunnerDoStart(context.Context) (*OutputProperty, error)   { return nil, nil }
-func (m *recordingManager) RunnerDoTest(context.Context) (*OutputProperty, error)    { return nil, nil }
-func (m *recordingManager) RunnerTestResponse() *runtimev0.TestResponse              { return nil }
+func (m *recordingManager) BuilderDoInit(context.Context) (*OutputProperty, error)       { return nil, nil }
+func (m *recordingManager) BuilderDoLoad(context.Context) (*OutputProperty, error)       { return nil, nil }
+func (m *recordingManager) BuilderDoBuild(context.Context) (*OutputProperty, error)      { return nil, nil }
+func (m *recordingManager) BuilderDoSync(context.Context) (*OutputProperty, error)       { return nil, nil }
+func (m *recordingManager) BuilderDoDeploy(context.Context) (*OutputProperty, error)     { return nil, nil }
+func (m *recordingManager) RunnerDoLoad(context.Context) (*OutputProperty, error)        { return nil, nil }
+func (m *recordingManager) RunnerDoInit(context.Context) (*OutputProperty, error)        { return nil, nil }
+func (m *recordingManager) RunnerDoStart(context.Context) (*OutputProperty, error)       { return nil, nil }
+func (m *recordingManager) RunnerDoBuild(context.Context) (*OutputProperty, error)       { return nil, nil }
+func (m *recordingManager) RunnerDoLint(context.Context) (*OutputProperty, error)        { return nil, nil }
+func (m *recordingManager) RunnerDoTest(context.Context) (*OutputProperty, error)        { return nil, nil }
+func (m *recordingManager) RunnerTestResponse() *runtimev0.TestResponse                  { return nil }
 func (m *recordingManager) DoSetCallback(func(ctx context.Context, action Action) error) {}
 func (m *recordingManager) DoSetFailureSink(func(unique, msg string))                    {}
 
@@ -60,6 +62,17 @@ func TestFlowStopTearsDownEveryRunnerInHub(t *testing.T) {
 	require.Equal(t, 1, m1.stopCalls)
 	require.Equal(t, 1, m2.stopCalls)
 	require.Equal(t, 1, m3.stopCalls)
+}
+
+func TestFlowStopBuilderModeDoesNotCallMissingRuntime(t *testing.T) {
+	manager := &recordingManager{unique: "web/frontend"}
+	flow := &Flow{
+		world: &World{Mode: BuildMode},
+		hub:   &Hub{managers: []IManager{manager}},
+	}
+	require.NoError(t, flow.Stop())
+	require.Zero(t, manager.stopCalls)
+	require.Equal(t, []string{"web/frontend"}, flow.AgentCacheKeys())
 }
 
 // TestFlowShutdownDestroysEveryRunnerInHub mirrors the above for Destroy.

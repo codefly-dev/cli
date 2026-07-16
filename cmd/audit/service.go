@@ -35,8 +35,9 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service [name]",
 	Short: "Audit dependencies of a service",
 	Long: `Run the service agent's Builder.Audit RPC. Reports CVEs from the
-language's canonical scanner (govulncheck, npm audit, pip-audit, trivy)
-plus outdated patch+minor releases. Read-only — never modifies code.`,
+language's canonical scanner (govulncheck, npm audit, uv/pip-audit,
+OSV Scanner, or Trivy) plus available dependency releases. Read-only — never
+modifies code.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
@@ -134,9 +135,15 @@ func emitTable(identity *resources.ServiceIdentity, r *builderv0.AuditResponse) 
 	if len(r.Outdated) > 0 {
 		fmt.Printf("\n  Outdated (%d):\n", len(r.Outdated))
 		for _, o := range r.Outdated {
-			fmt.Printf("    %s  %s → %s", o.Package, o.Current, o.LatestSafe)
+			target := o.LatestSafe
+			if target == "" {
+				target = o.LatestMajor
+			}
+			fmt.Printf("    %s  %s → %s", o.Package, o.Current, target)
 			if o.LatestMajor != "" && o.LatestMajor != o.LatestSafe {
-				fmt.Printf("  (latest: %s)", o.LatestMajor)
+				if o.LatestSafe != "" {
+					fmt.Printf("  (latest: %s)", o.LatestMajor)
+				}
 			}
 			fmt.Println()
 		}
@@ -148,6 +155,6 @@ func emitTable(identity *resources.ServiceIdentity, r *builderv0.AuditResponse) 
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&jsonOut, "json", false, "Emit raw JSON instead of a table")
-	ServiceCmd.Flags().BoolVar(&includeOutdated, "outdated", true, "Also report outdated patch+minor releases")
+	ServiceCmd.Flags().BoolVar(&includeOutdated, "outdated", true, "Also report available dependency releases")
 	ServiceCmd.Flags().BoolVar(&failOnVuln, "fail-on-vuln", false, "Exit non-zero if any HIGH/CRITICAL finding is present")
 }

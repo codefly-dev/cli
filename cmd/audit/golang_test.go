@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -17,7 +16,7 @@ func TestGoCommandReturnsErrors(t *testing.T) {
 	}
 }
 
-func TestRunGoAuditFailsClosedWithoutGovulncheck(t *testing.T) {
+func TestRunGoAuditUsesManagedGovulncheck(t *testing.T) {
 	bin := t.TempDir()
 	goPath := filepath.Join(bin, "go")
 	if err := os.WriteFile(goPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -26,7 +25,7 @@ func TestRunGoAuditFailsClosedWithoutGovulncheck(t *testing.T) {
 	t.Setenv("PATH", bin)
 
 	_, err := RunGoAudit(context.Background(), t.TempDir(), defaultStaleAfterDays, true)
-	if err == nil || !strings.Contains(err.Error(), "govulncheck is not installed") {
+	if err != nil {
 		t.Fatalf("RunGoAudit error = %v", err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/codefly-dev/core/services"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -15,11 +16,13 @@ import (
 type Mode string
 
 const (
-	RunMode    Mode = "run"
-	TestMode   Mode = "test"
-	SyncMode   Mode = "sync"
-	BuildMode  Mode = "build"
-	DeployMode Mode = "deploy"
+	RunMode     Mode = "run"
+	TestMode    Mode = "test"
+	LintMode    Mode = "lint"
+	CompileMode Mode = "compile"
+	SyncMode    Mode = "sync"
+	BuildMode   Mode = "build"
+	DeployMode  Mode = "deploy"
 )
 
 type IManager interface {
@@ -38,6 +41,8 @@ type IManager interface {
 	RunnerDoLoad(ctx context.Context) (*OutputProperty, error)
 	RunnerDoInit(ctx context.Context) (*OutputProperty, error)
 	RunnerDoStart(ctx context.Context) (*OutputProperty, error)
+	RunnerDoBuild(ctx context.Context) (*OutputProperty, error)
+	RunnerDoLint(ctx context.Context) (*OutputProperty, error)
 	RunnerDoTest(ctx context.Context) (*OutputProperty, error)
 	RunnerDoStop(ctx context.Context) (*OutputProperty, error)
 	RunnerDoDestroy(ctx context.Context) (*OutputProperty, error)
@@ -97,6 +102,13 @@ func (manager *Manager) BuilderDoDeploy(ctx context.Context) (*OutputProperty, e
 	return manager.Builder.Deploy(ctx)
 }
 
+func (manager *Manager) BuilderSyncResponse() *builderv0.SyncResponse {
+	if manager.Builder == nil {
+		return nil
+	}
+	return manager.Builder.SyncResponse()
+}
+
 func (manager *Manager) RunnerDoLoad(ctx context.Context) (*OutputProperty, error) {
 	return manager.Runner.Load(ctx)
 }
@@ -107,6 +119,14 @@ func (manager *Manager) RunnerDoInit(ctx context.Context) (*OutputProperty, erro
 
 func (manager *Manager) RunnerDoStart(ctx context.Context) (*OutputProperty, error) {
 	return manager.Runner.Start(ctx)
+}
+
+func (manager *Manager) RunnerDoBuild(ctx context.Context) (*OutputProperty, error) {
+	return manager.Runner.Build(ctx)
+}
+
+func (manager *Manager) RunnerDoLint(ctx context.Context) (*OutputProperty, error) {
+	return manager.Runner.Lint(ctx)
 }
 
 func (manager *Manager) RunnerDoTest(ctx context.Context) (*OutputProperty, error) {
@@ -158,7 +178,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 	w.Debug("load agent", wool.Field("agent-pid", instance.ProcessInfo.AgentPID))
 
 	switch manager.world.Mode {
-	case RunMode, TestMode:
+	case RunMode, TestMode, LintMode, CompileMode:
 		w.Debug("load runtime")
 		err = instance.LoadRuntime(ctx, true)
 		if err != nil {
@@ -220,6 +240,14 @@ type NoOpManager struct {
 
 func (n NoOpManager) RunnerDoTest(ctx context.Context) (*OutputProperty, error) {
 	return nil, nil
+}
+
+func (n NoOpManager) RunnerDoBuild(ctx context.Context) (*OutputProperty, error) {
+	return OnInit(), nil
+}
+
+func (n NoOpManager) RunnerDoLint(ctx context.Context) (*OutputProperty, error) {
+	return OnInit(), nil
 }
 
 func (n NoOpManager) RunnerDoStop(ctx context.Context) (*OutputProperty, error) {

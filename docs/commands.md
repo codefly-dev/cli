@@ -82,10 +82,16 @@ codefly build service api --standalone  # Build without dependency resolution
 
 ### `codefly test service [name]`
 
-Test a service. Starts dependencies, runs the service, then executes the agent's test lifecycle.
+Run one service's tests through its agent Test RPC. This is the focused local
+runner and supports target, filter, suite, timeout, race, coverage, and native
+runner arguments. Unit/default execution initializes only the selected target;
+suite dependency modes will explicitly control live dependencies for
+integration and end-to-end tests.
 
 ```bash
 codefly test service api
+codefly test service api --filter TestAuth --coverage
+codefly test service frontend --suite e2e
 ```
 
 ### `codefly deploy service [name]`
@@ -286,11 +292,33 @@ codefly mcp tools   # List available MCP tools
 CI pipeline commands for automated environments.
 
 ```bash
-codefly ci test [service]    # Run tests in CI mode
-codefly ci build [service]   # Build in CI mode
-codefly ci deploy [service]  # Deploy in CI mode
-codefly ci push [service]    # Push container images
+codefly ci plan --base <revision> --format json  # Inspect changed/affected services
+codefly ci run --base <revision>                 # Run the complete Codefly-owned gate
+codefly ci run --base <revision> --phase sync-drift,audit,sbom
+codefly ci run --base <revision> --suite unit --suite integration
+codefly ci run --all --jobs 4 --fail-fast=false  # Bounded graph-aware scheduling
+codefly ci run --all --format json --output .artifacts/codefly
+codefly ci lint --changed-file <path>             # Run agent-owned lint for affected services
+codefly ci compile --changed-file <path>          # Run native compile/typecheck for affected services
+codefly ci test --base <revision>                 # Run tests for affected services
+codefly ci test --all --suite integration         # Use an advertised named suite
+codefly ci build --base <revision>                # Build deployable artifacts for affected services
 ```
+
+All selection flags are provider-neutral. Use `--all` for an explicit full
+workspace run. CI providers should invoke `codefly ci run`; language commands
+and service matrices belong to Codefly agents, not provider configuration.
+Affected-service phase commands accept `--jobs` (`0` selects an automatic value
+capped at four) and `--fail-fast`. Executable CI commands atomically write a
+schema-versioned `report.json` to `.codefly/ci` by default. `--output` selects a
+different workspace-relative report/artifact directory; `--format json`
+suppresses normal narration and emits the same report payload on stdout. Every
+task includes Codefly's content-addressed cache key and input digests. The
+default gate is `verify`, `sync-drift`, `lint`, `compile`, `test`, `audit`,
+`sbom`, and `build`; reports retain typed integrity, drift, audit, and artifact
+evidence. Cache
+status is currently `identity_only`; providers must not invent keys or infer a
+hit until Codefly adds restore/store outcomes.
 
 ---
 

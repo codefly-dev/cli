@@ -14,6 +14,8 @@ import (
 )
 
 // BuildCmd represents the run command
+var buildSelection SelectionFlags
+
 var BuildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Run CI Build",
@@ -37,14 +39,17 @@ var BuildCmd = &cobra.Command{
 			return fmt.Errorf("cannot configure silent services: %w", err)
 		}
 
-		if err := CI(ctx, workspace, runBuildService); err != nil {
-			return fmt.Errorf("cannot run CI build: %w", err)
+		plan, err := buildSelection.BuildPlan(ctx, workspace)
+		if err != nil {
+			return fmt.Errorf("cannot build affected-service plan: %w", err)
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		cli.Header(1, "Work done!")
-		return nil
+		return runWithCIReport(ctx, workspace, plan, "codefly ci build", func(reporter *CIReporter) error {
+			options := commandScheduleOptions(false, "build", "", reporter)
+			if err := CIWithPlanOptions(ctx, workspace, plan, runBuildService, options); err != nil {
+				return fmt.Errorf("cannot run CI build: %w", err)
+			}
+			return ctx.Err()
+		})
 	},
 }
 
@@ -101,9 +106,12 @@ func buildService(ctx context.Context, flow *orchestration.Flow) error {
 }
 
 func init() {
+	buildSelection.Bind(BuildCmd)
 	BuildCmd.Flags().StringSliceVar(&silent, "silent", []string{}, "Silent mode")
 	BuildCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
 	BuildCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")
 	BuildCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	BuildCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
+	bindSchedulingFlags(BuildCmd)
+	bindReportFlags(BuildCmd)
 }

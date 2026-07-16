@@ -18,6 +18,8 @@ const (
 	RuntimeLoad  ActionType = "runtime-load"
 	RuntimeInit  ActionType = "runtime-init"
 	RuntimeStart ActionType = "runtime-run"
+	RuntimeBuild ActionType = "runtime-build"
+	RuntimeLint  ActionType = "runtime-lint"
 	RuntimeTest  ActionType = "runtime-test"
 	RuntimeStop  ActionType = "runtime-stop"
 

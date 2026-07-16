@@ -38,8 +38,11 @@ codefly self pull        # pull latest main into every codefly repo (non-destruc
 ## Requirements
 
 - Go **1.25+** (see `go.mod`)
-- `govulncheck` (optional) for the post-build agent audit:
-  `go install golang.org/x/vuln/cmd/govulncheck@latest`
+
+Codefly resolves the pinned `govulncheck` revision through Go's module/build
+cache when an operator-managed binary is not on `PATH`. Agent builds fail if a
+required scan cannot run; `--skip-audit` is the explicit waiver. Every built
+agent binary also receives a sibling `.cdx.json` CycloneDX SBOM.
 
 ## Building the CLI
 

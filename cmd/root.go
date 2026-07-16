@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -62,6 +63,14 @@ func init() {
 // Execute runs the root command and returns any failure to the process boundary.
 func Execute() error {
 	return RootCmd.Execute()
+}
+
+// IsMachineReadableError reports that a command already emitted its complete
+// machine-readable failure payload. The process must still exit non-zero, but
+// main must not append human diagnostics to stdout/stderr.
+func IsMachineReadableError(err error) bool {
+	var marker interface{ MachineReadable() bool }
+	return errors.As(err, &marker) && marker.MachineReadable()
 }
 
 // applyRootOptions runs after Cobra has parsed the selected command and all of
@@ -182,6 +191,7 @@ func init() {
 
 	// Audit + upgrade dependencies
 	RootCmd.AddCommand(AuditCmd)
+	RootCmd.AddCommand(SBOMCmd)
 	RootCmd.AddCommand(UpgradeCmd)
 
 	// CI
