@@ -307,6 +307,12 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (AgentCIReport, err
 		}
 		return nil
 	}); err != nil {
+		// Snapshot comparison is complete, so persisting evidence cannot mask or
+		// create source drift. Keep the successful build/conformance artifacts
+		// available even when an external edit or a restoration bug trips this
+		// final safety gate.
+		persistErr := persistAgentCIArtifacts(options, state)
+		err = errors.Join(err, persistErr)
 		return finalizeAgentCI(state, err), err
 	}
 	if err := persistAgentCIArtifacts(options, state); err != nil {
@@ -466,16 +472,31 @@ func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome st
 		{label: "generate service", dir: workspaceDir, args: []string{"--timestamps=false", "--local-agents", "add", "service", "app/subject", "--agent", manifest.Publisher + "/" + manifest.Name + ":" + manifest.Version, "--default"}},
 		{label: "run generated workspace gate", dir: workspaceDir, args: []string{"--timestamps=false", "--local-agents", "ci", "run", "--all", "--format", "json", "--output", ".codefly/ci"}},
 	}
+	var commandReport []byte
 	for _, item := range commands {
 		command := exec.CommandContext(ctx, executable, item.args...)
 		command.Dir = item.dir
 		command.Env = environment
 		output, err := command.CombinedOutput()
+		if item.label == "run generated workspace gate" {
+			candidate := bytes.TrimSpace(output)
+			if json.Valid(candidate) {
+				commandReport = append([]byte(nil), candidate...)
+			}
+		}
 		if err != nil {
-			return readGeneratedWorkspaceReport(workspaceDir), filepath.Join(workspaceDir, ".codefly", "ci"), fmt.Errorf("%s: %w\n%s", item.label, err, boundedAgentCIOutput(output))
+			report := readGeneratedWorkspaceReport(workspaceDir)
+			if len(report) == 0 {
+				report = commandReport
+			}
+			return report, filepath.Join(workspaceDir, ".codefly", "ci"), fmt.Errorf("%s: %w\n%s", item.label, err, boundedAgentCIOutput(output))
 		}
 	}
-	return readGeneratedWorkspaceReport(workspaceDir), filepath.Join(workspaceDir, ".codefly", "ci"), nil
+	report := readGeneratedWorkspaceReport(workspaceDir)
+	if len(report) == 0 {
+		report = commandReport
+	}
+	return report, filepath.Join(workspaceDir, ".codefly", "ci"), nil
 }
 
 func readGeneratedWorkspaceReport(workspaceDir string) []byte {
@@ -486,6 +507,18 @@ func readGeneratedWorkspaceReport(workspaceDir string) []byte {
 func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error {
 	if err := os.MkdirAll(options.output, 0o755); err != nil {
 		return err
+	}
+	// The child writes its report atomically as it exits. Recover it from the
+	// persisted conformance directory if the immediate post-command read raced
+	// that final rename, so the outer report remains self-contained.
+	if len(state.workspaceRaw) == 0 && state.conformance != "" {
+		payload, err := os.ReadFile(filepath.Join(state.conformance, agentCIReportFilename))
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if json.Valid(payload) {
+			state.workspaceRaw = payload
+		}
 	}
 	if state.build != nil {
 		for _, source := range []string{state.build.nativePath, state.build.containerPath, state.build.nativePath + ".cdx.json", state.build.containerPath + ".cdx.json"} {

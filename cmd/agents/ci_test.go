@@ -106,7 +106,8 @@ func TestSnapshotAgentWorktreeTracksDirtyStateWithoutMutatingIt(t *testing.T) {
 func TestFinalizeAgentCIReport(t *testing.T) {
 	started := time.Now().UTC().Add(-time.Second)
 	state := &agentCIState{
-		started: started,
+		started:      started,
+		workspaceRaw: []byte(`{"schema_version":1,"status":"failed"}`),
 		report: AgentCIReport{
 			Status:    "running",
 			StartedAt: started.Format(time.RFC3339Nano),
@@ -123,6 +124,26 @@ func TestFinalizeAgentCIReport(t *testing.T) {
 	}
 	if report.Error != context.Canceled.Error() {
 		t.Fatalf("report error = %q, want %q", report.Error, context.Canceled.Error())
+	}
+	if string(report.Workspace) != string(state.workspaceRaw) {
+		t.Fatalf("workspace report = %s, want %s", report.Workspace, state.workspaceRaw)
+	}
+}
+
+func TestPersistAgentCIArtifactsRecoversWorkspaceReport(t *testing.T) {
+	conformance := t.TempDir()
+	payload := []byte(`{"schema_version":1,"status":"passed"}`)
+	writeFile(t, filepath.Join(conformance, agentCIReportFilename), string(payload))
+	state := &agentCIState{conformance: conformance}
+	output := t.TempDir()
+	if err := persistAgentCIArtifacts(agentCIOptions{output: output}, state); err != nil {
+		t.Fatalf("persistAgentCIArtifacts: %v", err)
+	}
+	if string(state.workspaceRaw) != string(payload) {
+		t.Fatalf("recovered workspace report = %s, want %s", state.workspaceRaw, payload)
+	}
+	if _, err := os.Stat(filepath.Join(output, "workspace", agentCIReportFilename)); err != nil {
+		t.Fatalf("persisted workspace report: %v", err)
 	}
 }
 

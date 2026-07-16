@@ -1,6 +1,7 @@
 # Codefly-native CI
 
-Status: workspace gate operational; agent-CI and cache execution in progress
+Status: workspace gate and first service-agent CI vertical slice operational;
+cache execution and wider agent adoption in progress
 
 ## Purpose
 
@@ -9,7 +10,7 @@ revision, and invoke Codefly, but it must not decide which language commands to
 run, which services are affected, how dependencies start, or how results are
 interpreted.
 
-The canonical provider-neutral entry points will be:
+The canonical provider-neutral entry points are:
 
 ```text
 codefly ci plan ...
@@ -86,13 +87,21 @@ The first provider-neutral vertical slice is operational:
   suite, and a true non-mutating generated-client drift check;
 - `codefly agent build` applies temporary local Core replacements with
   `GOWORK=off`, so building against local source cannot silently rewrite the
-  agent's declared published Core pin to an unpublished workspace version;
+  agent's declared published Core pin to an unpublished workspace version. Its
+  source SBOM is captured inside that exact temporary dependency session and
+  attached to each installed binary with the binary's SHA-256 digest;
+- `codefly agent ci` now implements the first service-agent vertical slice. It
+  validates the manifest and source, builds the agent in an isolated Codefly
+  home, produces CycloneDX release evidence, creates a fresh workspace/module/
+  service from the newly built local agent, executes the complete workspace
+  gate, proves repository restoration, and emits one schema-versioned report
+  with binary/SBOM hashes and the nested workspace report;
 - the hardcoded workflow generator was removed from `codefly agent deps`, and
   the Next.js agent's repository-local workflow was deleted.
 
 Still pending are capability and suite advertisement across the other
-language-family agents, cache restore/store, `codefly agent ci`, and the thin
-provider adapter. Agents without a validation contract retain explicit
+language-family agents, agent-CI runners for non-Go and non-service agent
+kinds, cache restore/store, and the thin provider adapter. Agents without a validation contract retain explicit
 compatibility probing and dependency-free tests. An agent that advertises an
 operation but returns `UNIMPLEMENTED` now fails as a contract violation.
 
@@ -508,25 +517,38 @@ available. The restore/store milestone will add `hit`, `miss`, `stored`, and
 
 ## Agent CI pipeline
 
-`codefly agent ci` is the only command a service-agent repository needs.
+`codefly agent ci` is the only CI command a service-agent repository needs.
 
-Default stages:
+The operational Go service-agent vertical slice runs these default stages:
 
 1. detect and validate `agent.codefly.yaml`;
-2. validate the agent source using Codefly's agent implementation runner;
-3. verify the published Core pin with `GOWORK=off` and the local Core contract
-   separately when running in the Codefly development workspace;
-4. build native and Linux agent binaries and run the Codefly audit gate;
-5. create a temporary workspace and service with `--default` using the newly
+2. run the agent source tests in its resolved development or standalone Go
+   module context;
+3. build native and Linux agent binaries using temporary, automatically
+   restored local Codefly module replacements when available;
+4. inventory that exact build graph, attach each binary digest to a CycloneDX
+   document, and run the Codefly vulnerability audit;
+5. create an isolated temporary Codefly home plus a fresh workspace, module,
+   and service with `--default` using the newly
    built local agent;
-6. run dependency installation/sync through the service agent;
-7. run every advertised default validation through `codefly ci run --all`;
-8. build the deployable artifact through Builder `Build`;
-9. optionally start the generated service and run the advertised smoke suite;
-10. verify that the agent repository and generated workspace have no unexpected
-    tracked drift;
-11. remove all processes, containers, temporary workspaces, and agents created
-    by the run.
+6. run the full `verify`, `sync-drift`, `lint`, `compile`, `test`, `audit`,
+   `sbom`, and deployable `build` gate through `codefly ci run --all`;
+7. compare the complete pre-existing Git worktree state after validation so
+   already-dirty development repositories are supported but new drift fails;
+8. persist the agent binaries, CycloneDX documents, copied workspace evidence,
+   and a self-contained outer `report.json`, then remove the isolated runtime.
+
+`--native-only`, `--skip-audit`, and `--skip-conformance` are explicit local
+development waivers. The default remains the complete release-oriented gate.
+`--format json` emits only the report payload and still exits non-zero on a
+failed stage. The current source runner supports Go service agents; other
+implementation languages and application/module agent kinds must register
+equivalent Codefly-owned runners rather than adding repository shell workflows.
+
+An advertised smoke suite is the next compatible conformance addition. The
+current vertical slice proves the deployable artifact through Builder `Build`
+but does not claim runtime smoke coverage unless the workspace report contains
+such a suite.
 
 An agent may add conformance fixtures or opt into suites in
 `agent.codefly.yaml`, but it may not provide shell command sequences. The agent
@@ -586,7 +608,9 @@ GitHub Actions, GitLab CI, Buildkite, a local machine, or a self-hosted worker.
    bounded dependency-aware scheduling, schema-versioned structured evidence,
    deterministic cache identities, and non-mutating sync drift. Cache
    restore/store remains.
-9. Add `codefly agent ci` and generated-service conformance.
+9. Completed for the first Go service-agent vertical slice: `codefly agent ci`
+   and fresh generated-service conformance. Add implementation runners for the
+   remaining agent languages/kinds and advertised smoke suites.
 10. Replace the legacy GitHub action with the provider-thin Codefly invocation.
 11. Make `codefly publish` require the Codefly-native gate.
 12. Delete remaining per-agent CI workflows after their repositories are on the

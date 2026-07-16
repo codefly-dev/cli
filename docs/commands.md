@@ -212,6 +212,20 @@ Manage service agents (the gRPC plugin processes that implement service operatio
 codefly agent info [agent-name]      # Show agent information
 codefly agent generate [agent-name]  # Generate agent scaffolding
 codefly agent build [agent-name]     # Build an agent binary
+codefly agent ci                     # Run source, release, generated-service, and drift gates
+```
+
+`codefly agent ci` is the provider-neutral agent-repository gate. It uses an
+isolated Codefly home, builds the local agent, records binary and CycloneDX
+hashes, creates a fresh service from that agent, runs the complete workspace CI
+gate, and verifies that validation did not change the agent repository. The
+default report/artifact directory is `.codefly/agent-ci`.
+
+```bash
+codefly agent ci
+codefly agent ci --format json --output .artifacts/codefly-agent
+codefly agent ci --native-only --skip-audit       # Explicit local audit waiver
+codefly agent ci --skip-conformance               # Source/build/drift debugging only
 ```
 
 ### `codefly generate`
