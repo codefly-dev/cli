@@ -23,6 +23,7 @@ import (
 	"github.com/codefly-dev/core/agents/services/audit"
 	"github.com/codefly-dev/core/agents/services/sbom"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
@@ -471,6 +472,7 @@ type agentBuildResult struct {
 	label         string // source dir base name, used before the manifest is parsed
 	dir           string
 	ag            agentYAML
+	sourceSBOM    *sbom.Result
 	native        time.Duration
 	linux         time.Duration
 	linuxFailed   bool
@@ -557,12 +559,6 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, tidyMu *syn
 		}
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		res.err = fmt.Errorf("get home dir: %w", err)
-		return res
-	}
-
 	subdir := "services"
 	if ag.Kind == "codefly:application" {
 		subdir = "applications"
@@ -570,7 +566,8 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, tidyMu *syn
 		subdir = "modules"
 	}
 
-	nativeDir := filepath.Join(home, ".codefly", "agents", subdir, ag.Publisher)
+	codeflyHome := resources.CodeflyHomeDir()
+	nativeDir := filepath.Join(codeflyHome, "agents", subdir, ag.Publisher)
 	binaryName := fmt.Sprintf("%s__%s", ag.Name, ag.Version)
 	nativePath := filepath.Join(nativeDir, binaryName)
 	res.nativePath = nativePath
@@ -678,13 +675,17 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, tidyMu *syn
 		if res.err != nil {
 			return res
 		}
+		if err := captureAgentSourceSBOM(ctx, res); err != nil {
+			res.err = err
+			return res
+		}
 		res.linuxSkipped = true
 		log.Info("Skipping Linux/amd64 container cross-build (--native-only)")
 		log.Header(1, "Agent %s:%s built successfully (native only)", ag.Name, ag.Version)
 		return res
 	}
 
-	containerDir := filepath.Join(home, ".codefly", "containers", "agents", subdir, ag.Publisher)
+	containerDir := filepath.Join(codeflyHome, "containers", "agents", subdir, ag.Publisher)
 	containerPath := filepath.Join(containerDir, binaryName)
 	res.containerPath = containerPath
 	if err := os.MkdirAll(containerDir, 0o755); err != nil {
@@ -743,9 +744,26 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, tidyMu *syn
 	if res.err != nil {
 		return res
 	}
+	if err := captureAgentSourceSBOM(ctx, res); err != nil {
+		res.err = err
+		return res
+	}
 
 	log.Header(1, "Agent %s:%s built successfully", ag.Name, ag.Version)
 	return res
+}
+
+// captureAgentSourceSBOM runs before compileAgent restores its temporary local
+// Codefly module replacements. The inventory therefore describes the exact
+// dependency selection used for the binary, including an unreleased local Core
+// contract, without leaving go.mod or go.sum modified.
+func captureAgentSourceSBOM(ctx context.Context, result *agentBuildResult) error {
+	source, err := sbom.Golang(ctx, result.dir)
+	if err != nil {
+		return fmt.Errorf("generate source SBOM for %s:%s: %w", result.ag.Name, result.ag.Version, err)
+	}
+	result.sourceSBOM = source
+	return nil
 }
 
 func buildTargetTemp(destination string) (string, func(), error) {
@@ -771,13 +789,17 @@ func installBuiltArtifact(source, destination string) error {
 	return nil
 }
 
-// writeReleaseSBOMs inventories the restored, published Go module graph and
-// wraps it once per installed binary. The artifact hash binds each CycloneDX
-// document to the exact bytes Codefly installed for that target.
+// writeReleaseSBOMs wraps the build-selected source graph once per installed
+// binary. The artifact hash binds each CycloneDX document to the exact bytes
+// Codefly installed for that target.
 func writeReleaseSBOMs(ctx context.Context, result *agentBuildResult) error {
-	source, err := sbom.Golang(ctx, result.dir)
-	if err != nil {
-		return fmt.Errorf("generate source SBOM for %s:%s: %w", result.ag.Name, result.ag.Version, err)
+	source := result.sourceSBOM
+	if source == nil {
+		var err error
+		source, err = sbom.Golang(ctx, result.dir)
+		if err != nil {
+			return fmt.Errorf("generate source SBOM for %s:%s: %w", result.ag.Name, result.ag.Version, err)
+		}
 	}
 	targets := []struct {
 		path   string
