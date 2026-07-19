@@ -180,6 +180,68 @@ func TestBuildAllAgentsReturnsMalformedManifestError(t *testing.T) {
 	}
 }
 
+func TestEnsureSourcePackagerBootstrapsExactGoAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEFLY_HOME", home)
+	agentDir := filepath.Join(t.TempDir(), "service-go")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(agentDir, "agent.codefly.yaml"), `publisher: codefly.dev
+kind: codefly:service
+name: go
+version: 0.0.15
+`)
+
+	previous := bootstrapSourcePackager
+	t.Cleanup(func() { bootstrapSourcePackager = previous })
+	var gotSource, gotDestination string
+	bootstrapSourcePackager = func(_ context.Context, source, destination string) error {
+		gotSource, gotDestination = source, destination
+		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(destination, []byte("agent"), 0o755)
+	}
+
+	if err := ensureSourcePackager(context.Background(), []string{agentDir}); err != nil {
+		t.Fatalf("ensureSourcePackager: %v", err)
+	}
+	if gotSource != agentDir {
+		t.Fatalf("bootstrap source = %q, want %q", gotSource, agentDir)
+	}
+	wantDestination := filepath.Join(home, "agents", "services", "codefly.dev", "go__0.0.15")
+	if gotDestination != wantDestination {
+		t.Fatalf("bootstrap destination = %q, want %q", gotDestination, wantDestination)
+	}
+
+	bootstrapSourcePackager = func(context.Context, string, string) error {
+		t.Fatal("installed source packager was bootstrapped again")
+		return nil
+	}
+	if err := ensureSourcePackager(context.Background(), []string{agentDir}); err != nil {
+		t.Fatalf("ensure installed source packager: %v", err)
+	}
+}
+
+func TestEnsureSourcePackagerRejectsMismatchedGoAgent(t *testing.T) {
+	t.Setenv("CODEFLY_HOME", t.TempDir())
+	agentDir := filepath.Join(t.TempDir(), "service-go")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(agentDir, "agent.codefly.yaml"), `publisher: codefly.dev
+kind: codefly:service
+name: go
+version: 9.9.9
+`)
+
+	err := ensureSourcePackager(context.Background(), []string{agentDir})
+	if err == nil || !strings.Contains(err.Error(), "9.9.9") || !strings.Contains(err.Error(), "0.0.15") {
+		t.Fatalf("mismatched source packager error = %v", err)
+	}
+}
+
 func TestApplyAgentAuditPolicyGatesOnlyActionableFindings(t *testing.T) {
 	agent := agentYAML{Name: "test", Version: "0.0.1"}
 	response := &builderv0.AuditResponse{

@@ -239,6 +239,15 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 		}
 		return errors.Join(append(discoveryFailures, fmt.Errorf("no agent directories found under %s", root))...)
 	}
+	// Builder.Package is intentionally owned by the Go source plugin, including
+	// when that plugin packages its own release. A clean machine cannot enter
+	// that cycle until it has one native Go packager, so seed the exact version
+	// from the discovered source before starting parallel plugin builds. Every
+	// release artifact (including the Go plugin itself) is still produced by the
+	// ordinary Builder.Package path below.
+	if err := ensureSourcePackager(ctx, agents); err != nil {
+		return errors.Join(append(discoveryFailures, err)...)
+	}
 
 	cli.Header(1, "Building %d agents", len(agents))
 
@@ -460,6 +469,10 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly 
 		return res
 	}
 	res.ag = ag
+	if err := ensureSourcePackager(ctx, sourcePackagerCandidates(dir)); err != nil {
+		res.err = err
+		return res
+	}
 	// A quarantined agent is excluded from bulk builds; an explicit single
 	// build still proceeds (that's how you fix it) but says so loudly.
 	if ag.Quarantine {
@@ -556,9 +569,121 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly 
 	return res
 }
 
+const genericGoPluginPublisher = "codefly.dev"
+
+var bootstrapSourcePackager = buildSourcePackager
+
+func sourcePackagerPath(home string) string {
+	return filepath.Join(
+		home,
+		"agents", "services", genericGoPluginPublisher,
+		"go__"+sourceworkspace.GenericGoPluginVersion,
+	)
+}
+
+func sourcePackagerCandidates(dir string) []string {
+	candidates := []string{dir}
+	if root := findMonorepoRoot(dir); root != "" {
+		goDir := filepath.Join(root, "service-go")
+		if goDir != dir {
+			candidates = append(candidates, goDir)
+		}
+	}
+	return candidates
+}
+
+// ensureSourcePackager breaks the sole bootstrap cycle in plugin-owned agent
+// packaging. It installs only a native seed binary and only when the exact Go
+// plugin version selected by sourceworkspace is absent. The caller then uses
+// that plugin's normal Builder.Package operation to create the real native,
+// Linux, and SBOM release artifacts.
+func ensureSourcePackager(ctx context.Context, agentDirs []string) error {
+	destination := sourcePackagerPath(resources.CodeflyHomeDir())
+	if info, err := os.Stat(destination); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+		return nil
+	}
+
+	var found []string
+	for _, dir := range agentDirs {
+		data, err := os.ReadFile(filepath.Join(dir, "agent.codefly.yaml"))
+		if err != nil {
+			continue
+		}
+		var ag agentYAML
+		if err := yaml.Unmarshal(data, &ag); err != nil {
+			continue
+		}
+		if ag.Publisher != genericGoPluginPublisher || ag.Name != "go" {
+			continue
+		}
+		found = append(found, ag.Publisher+"/"+ag.Name+":"+ag.Version)
+		if ag.Version != sourceworkspace.GenericGoPluginVersion {
+			continue
+		}
+		cli.Info("Bootstrapping native source packager %s/go:%s", genericGoPluginPublisher, sourceworkspace.GenericGoPluginVersion)
+		if err := bootstrapSourcePackager(ctx, dir, destination); err != nil {
+			return fmt.Errorf("bootstrap %s/go:%s from %s: %w", genericGoPluginPublisher, sourceworkspace.GenericGoPluginVersion, dir, err)
+		}
+		return nil
+	}
+
+	detail := "no Go agent source was found"
+	if len(found) > 0 {
+		detail = "available Go agent source is " + strings.Join(found, ", ")
+	}
+	return fmt.Errorf(
+		"source packager %s/go:%s is not installed at %s and cannot be bootstrapped: %s",
+		genericGoPluginPublisher,
+		sourceworkspace.GenericGoPluginVersion,
+		destination,
+		detail,
+	)
+}
+
+func buildSourcePackager(ctx context.Context, sourceDir, destination string) error {
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return fmt.Errorf("create agent directory: %w", err)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(destination), ".codefly-go-bootstrap-*")
+	if err != nil {
+		return fmt.Errorf("create temporary executable: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return fmt.Errorf("close temporary executable: %w", err)
+	}
+	defer os.Remove(temporaryPath)
+
+	command := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", temporaryPath, ".")
+	command.Dir = sourceDir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("native Go bootstrap build: %w\n%s", err, boundedAgentCIOutput(output))
+	}
+	if err := os.Chmod(temporaryPath, 0o755); err != nil {
+		return fmt.Errorf("mark bootstrap executable: %w", err)
+	}
+	file, err := os.Open(temporaryPath)
+	if err != nil {
+		return fmt.Errorf("open bootstrap executable: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync bootstrap executable: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close bootstrap executable: %w", err)
+	}
+	if err := os.Rename(temporaryPath, destination); err != nil {
+		return fmt.Errorf("install bootstrap executable: %w", err)
+	}
+	return nil
+}
+
 func resolveSourcePluginHome() string {
 	current := resources.CodeflyHomeDir()
-	plugin := filepath.Join(current, "agents", "services", "codefly.dev", "go__"+sourceworkspace.GenericGoPluginVersion)
+	plugin := sourcePackagerPath(current)
 	if _, err := os.Stat(plugin); err == nil {
 		return current
 	}
@@ -567,7 +692,7 @@ func resolveSourcePluginHome() string {
 		return current
 	}
 	defaultHome := filepath.Join(home, ".codefly")
-	if _, err := os.Stat(filepath.Join(defaultHome, "agents", "services", "codefly.dev", "go__"+sourceworkspace.GenericGoPluginVersion)); err == nil {
+	if _, err := os.Stat(sourcePackagerPath(defaultHome)); err == nil {
 		return defaultHome
 	}
 	return current
