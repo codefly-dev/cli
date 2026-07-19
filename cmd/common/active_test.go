@@ -2,6 +2,8 @@ package common
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -39,6 +41,18 @@ func TestLoadRequiredEReturnsMissingWorkspaceError(t *testing.T) {
 	}
 }
 
+func TestLoadRequiredNonInteractiveENeverPromptsForAmbiguousService(t *testing.T) {
+	root := filepath.Join("..", "..", "pkg", "orchestration", "testdata", "module-layout")
+	t.Chdir(root)
+	_, _, _, err := LoadRequiredNonInteractiveE(context.Background(), nil)
+	if err == nil {
+		t.Fatal("ambiguous headless service selection succeeded")
+	}
+	if !strings.Contains(err.Error(), "pass the service name explicitly") || !strings.Contains(err.Error(), "frontend") || !strings.Contains(err.Error(), "gateway") {
+		t.Fatalf("headless ambiguity error = %q", err)
+	}
+}
+
 func TestLoadActiveContextDoesNotReturnStaleWorkspace(t *testing.T) {
 	ctx := context.Background()
 	firstDir := t.TempDir()
@@ -68,6 +82,52 @@ func TestLoadActiveContextDoesNotReturnStaleWorkspace(t *testing.T) {
 	}
 	if gotSecond.Workspace.Name != "second" {
 		t.Fatalf("second workspace = %q, want second", gotSecond.Workspace.Name)
+	}
+}
+
+func TestLoadModuleUsesCurrentEmptyModuleWithoutResolvingAService(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workspace := &resources.Workspace{
+		Name:   "test-workspace",
+		Layout: resources.LayoutKindModules,
+		Modules: []*resources.ModuleReference{
+			{Name: "coordination"},
+		},
+	}
+	if err := workspace.SaveToDirUnsafe(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+
+	moduleDir := filepath.Join(root, "modules", "coordination")
+	module := &resources.Module{
+		Kind:              resources.ModuleKind,
+		Name:              "coordination",
+		ServiceReferences: []*resources.ServiceReference{},
+	}
+	module.WithDir(moduleDir)
+	if err := module.Save(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(moduleDir)
+
+	got, err := LoadModule(ctx)
+	if err != nil {
+		t.Fatalf("LoadModule from empty module: %v", err)
+	}
+	if got.Name != "coordination" {
+		t.Fatalf("module = %q, want coordination", got.Name)
+	}
+
+	gotWorkspace, gotRequired, err := LoadRequiredModuleE(ctx, nil)
+	if err != nil {
+		t.Fatalf("LoadRequiredModuleE from empty module: %v", err)
+	}
+	if gotWorkspace.Name != "test-workspace" {
+		t.Fatalf("workspace = %q, want test-workspace", gotWorkspace.Name)
+	}
+	if gotRequired.Name != "coordination" {
+		t.Fatalf("required module = %q, want coordination", gotRequired.Name)
 	}
 }
 

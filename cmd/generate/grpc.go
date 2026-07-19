@@ -11,7 +11,6 @@ import (
 	"github.com/codefly-dev/core/languages"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +37,7 @@ var GRPCCmd = &cobra.Command{
 			return fmt.Errorf("cannot find service from input: %w", err)
 		}
 
-		destination, err = shared.SolvePath(destination)
+		destination, err = solveOutputDirectory(ctx, destination)
 		if err != nil {
 			return fmt.Errorf("cannot solve destination path: %w", err)
 		}

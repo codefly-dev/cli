@@ -46,6 +46,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/yaml.v3"
 )
 
@@ -96,6 +97,10 @@ type Server struct {
 	plugins    map[string]*pluginConn // service name → plugin connection
 	stopHealth chan struct{}          // closed to stop all health-monitor goroutines
 	healthWg   sync.WaitGroup         // tracks running health-monitor goroutines
+
+	workspaceChangesMu     sync.Mutex
+	workspaceChanges       *codecore.WorkspaceChangeMonitor
+	workspaceChangesClosed bool
 }
 
 // pluginConn holds a running agent process and its gRPC clients.
@@ -263,6 +268,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		close(s.stopHealth)
 		s.healthWg.Wait()
 		s.shutdownPlugins()
+		_ = s.CloseWorkspaceChanges()
 		s.grpcSrv.GracefulStop()
 	}()
 
@@ -509,6 +515,13 @@ func (s *Server) proxyExecute(ctx context.Context, req *codev0.CodeRequest) (*co
 	return result, err
 }
 
+func codeFailureMessage(response *codev0.CodeResponse) string {
+	if response == nil || response.GetFailure() == nil {
+		return ""
+	}
+	return response.GetFailure().GetMessage()
+}
+
 // pluginToAgentName maps mind.yaml plugin names to agent identifiers
 // understood by the agent manager.
 // Accepts both formats: "go-generic" (canonical) and "generic-go" (legacy).
@@ -741,6 +754,111 @@ func (s *Server) ListFiles(ctx context.Context, req *gatewayv1.ListFilesRequest)
 	return &gatewayv1.ListFilesResponse{Files: files}, nil
 }
 
+// SubscribeWorkspaceChangeEvents is the in-process Codefly capability used by
+// local Gateway adapters. Observation, sequencing, replay, and overflow
+// handling remain owned by Codefly even when the transport hop is elided.
+func (s *Server) SubscribeWorkspaceChangeEvents(ctx context.Context, cursor codecore.WorkspaceChangeCursor) (*codecore.WorkspaceChangeSubscription, error) {
+	monitor, err := s.workspaceChangeMonitor()
+	if err != nil {
+		return nil, err
+	}
+	return monitor.Subscribe(ctx, cursor)
+}
+
+func (s *Server) workspaceChangeMonitor() (*codecore.WorkspaceChangeMonitor, error) {
+	s.workspaceChangesMu.Lock()
+	defer s.workspaceChangesMu.Unlock()
+	if s.workspaceChangesClosed {
+		return nil, codecore.ErrWorkspaceChangeMonitorClosed
+	}
+	if s.workspaceChanges != nil {
+		return s.workspaceChanges, nil
+	}
+	monitor, err := codecore.NewWorkspaceChangeMonitor(s.serviceRoot())
+	if err != nil {
+		return nil, err
+	}
+	s.workspaceChanges = monitor
+	return monitor, nil
+}
+
+// CloseWorkspaceChanges releases the lazily-created recursive watcher. It is
+// idempotent and is called by both the gRPC server lifecycle and local adapters.
+func (s *Server) CloseWorkspaceChanges() error {
+	s.workspaceChangesMu.Lock()
+	monitor := s.workspaceChanges
+	s.workspaceChanges = nil
+	s.workspaceChangesClosed = true
+	s.workspaceChangesMu.Unlock()
+	if monitor == nil {
+		return nil
+	}
+	return monitor.Close()
+}
+
+func (s *Server) SubscribeWorkspaceChanges(req *gatewayv1.SubscribeWorkspaceChangesRequest, stream grpc.ServerStreamingServer[gatewayv1.WorkspaceChangeEvent]) error {
+	if req == nil || stream == nil {
+		return status.Error(codes.InvalidArgument, "workspace change request and stream are required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return err
+	}
+	cursor := codecore.WorkspaceChangeCursor{}
+	if after := req.GetAfter(); after != nil {
+		cursor.SourceID = after.GetSourceId()
+		cursor.Sequence = after.GetSequence()
+	}
+	subscription, err := s.SubscribeWorkspaceChangeEvents(stream.Context(), cursor)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "subscribe workspace changes: %v", err)
+	}
+	defer subscription.Close()
+	for {
+		event, err := subscription.Recv()
+		if err != nil {
+			if stream.Context().Err() != nil {
+				return nil
+			}
+			return status.Errorf(codes.Unavailable, "workspace change stream: %v", err)
+		}
+		response := gatewayWorkspaceChangeEvent(event)
+		if err := stream.Send(response); err != nil {
+			return err
+		}
+	}
+}
+
+func gatewayWorkspaceChangeEvent(event codecore.WorkspaceChangeEvent) *gatewayv1.WorkspaceChangeEvent {
+	changes := make([]*gatewayv1.WorkspaceChange, 0, len(event.Changes))
+	for _, change := range event.Changes {
+		changes = append(changes, &gatewayv1.WorkspaceChange{
+			Operation: gatewayWorkspaceChangeOperation(change.Kind),
+			Path:      change.Path, PreviousPath: change.PreviousPath, Reason: change.Reason,
+		})
+	}
+	return &gatewayv1.WorkspaceChangeEvent{
+		SourceId: event.SourceID, Sequence: event.Sequence,
+		ObservedAt: timestamppb.New(event.ObservedAt), Changes: changes,
+	}
+}
+
+func gatewayWorkspaceChangeOperation(kind codecore.WorkspaceChangeKind) gatewayv1.WorkspaceChangeOperation {
+	switch kind {
+	case codecore.WorkspaceChangeCreate:
+		return gatewayv1.WorkspaceChangeOperation_WORKSPACE_CHANGE_OPERATION_CREATE
+	case codecore.WorkspaceChangeWrite:
+		return gatewayv1.WorkspaceChangeOperation_WORKSPACE_CHANGE_OPERATION_WRITE
+	case codecore.WorkspaceChangeRemove:
+		return gatewayv1.WorkspaceChangeOperation_WORKSPACE_CHANGE_OPERATION_REMOVE
+	case codecore.WorkspaceChangeMetadata:
+		return gatewayv1.WorkspaceChangeOperation_WORKSPACE_CHANGE_OPERATION_METADATA
+	case codecore.WorkspaceChangeRescan:
+		return gatewayv1.WorkspaceChangeOperation_WORKSPACE_CHANGE_OPERATION_RESCAN
+	default:
+		return gatewayv1.WorkspaceChangeOperation_WORKSPACE_CHANGE_OPERATION_UNSPECIFIED
+	}
+}
+
 func (s *Server) DeleteFile(ctx context.Context, req *gatewayv1.DeleteFileRequest) (*gatewayv1.DeleteFileResponse, error) {
 	if err := s.validateService(req.GetService()); err != nil {
 		return nil, err
@@ -806,15 +924,27 @@ func (s *Server) CreateFile(ctx context.Context, req *gatewayv1.CreateFileReques
 // ─── Code Editing (via plugin Execute) ───────────────────────
 
 func (s *Server) Fix(ctx context.Context, req *gatewayv1.FixRequest) (*gatewayv1.FixResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	rel, err := cleanGatewayPath(req.GetPath())
+	if err != nil {
+		return &gatewayv1.FixResponse{Success: false, Error: err.Error()}, nil
+	}
 	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_Fix{Fix: &codev0.FixRequest{File: req.Path}},
+		Operation: &codev0.CodeRequest_Fix{Fix: &codev0.FixRequest{File: rel, Mode: req.GetMode(), DryRun: req.GetDryRun()}},
 	})
 	if err != nil {
 		return &gatewayv1.FixResponse{Success: false, Error: err.Error()}, nil
 	}
 	r := resp.GetFix()
+	if r == nil {
+		return &gatewayv1.FixResponse{Success: false, Error: codeFailureMessage(resp)}, nil
+	}
 	return &gatewayv1.FixResponse{
-		Success: r.GetSuccess(), Content: r.GetContent(), Error: r.GetError(), Actions: r.GetActions(),
+		Success: r.GetSuccess(), Content: r.GetContent(), Error: codeFailureMessage(resp), Actions: r.GetActions(),
+		Changed: r.GetChanged(), BeforeSha256: r.GetBeforeSha256(), AfterSha256: r.GetAfterSha256(),
+		Wrote: r.GetWrote(), Output: r.GetOutput(),
 	}, nil
 }
 
@@ -826,50 +956,116 @@ func (s *Server) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest)
 	if err != nil {
 		return &gatewayv1.ApplyEditResponse{Success: false, Error: err.Error()}, nil
 	}
-	data, err := s.fileOps().ReadFile(ctx, rel)
+	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplyEdit{ApplyEdit: &codev0.ApplyEditRequest{
+		File: rel, Find: req.GetFind(), Replace: req.GetReplace(), FixMode: req.GetFixMode(), DryRun: req.GetDryRun(),
+	}}})
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &gatewayv1.ApplyEditResponse{Success: false, Error: fmt.Sprintf("file not found: %s", rel)}, nil
-		}
-		return nil, status.Errorf(codes.Internal, "read %s: %v", rel, err)
+		return &gatewayv1.ApplyEditResponse{Success: false, Error: err.Error()}, nil
 	}
-	result := codecore.SmartEdit(string(data), req.GetFind(), req.GetReplace())
-	if !result.OK {
-		return &gatewayv1.ApplyEditResponse{Success: false, Error: "FIND block does not match any content in the file"}, nil
-	}
-	if err := s.fileOps().WriteFile(ctx, rel, []byte(result.Content)); err != nil {
-		return &gatewayv1.ApplyEditResponse{Success: false, Error: fmt.Sprintf("write: %v", err)}, nil
+	result := resp.GetApplyEdit()
+	if result == nil {
+		return &gatewayv1.ApplyEditResponse{Success: false, Error: codeFailureMessage(resp)}, nil
 	}
 	return &gatewayv1.ApplyEditResponse{
-		Success:  true,
-		Content:  result.Content,
-		Strategy: result.Strategy,
+		Success: result.GetSuccess(), Content: result.GetContent(), Error: codeFailureMessage(resp),
+		Strategy: result.GetStrategy(), FixActions: result.GetFixActions(), Changed: result.GetChanged(),
+		BeforeSha256: result.GetBeforeSha256(), AfterSha256: result.GetAfterSha256(),
+		Wrote: result.GetWrote(), Output: result.GetOutput(),
 	}, nil
 }
 
 func (s *Server) BatchApplyEdits(ctx context.Context, req *gatewayv1.BatchApplyEditsRequest) (*gatewayv1.BatchApplyEditsResponse, error) {
-	var results []*gatewayv1.EditResult
-	var succeeded, failed int32
-
-	for _, edit := range req.Edits {
-		resp, err := s.ApplyEdit(ctx, edit)
-		r := &gatewayv1.EditResult{Service: edit.Service, File: edit.File}
-		if err != nil {
-			r.Success = false
-			r.Error = err.Error()
-			failed++
-		} else if !resp.Success {
-			r.Success = false
-			r.Error = resp.Error
-			failed++
-		} else {
-			r.Success = true
-			r.Strategy = resp.Strategy
-			succeeded++
-		}
-		results = append(results, r)
+	type stagedEdit struct {
+		path     string
+		original []byte
+		response *gatewayv1.ApplyEditResponse
 	}
-	return &gatewayv1.BatchApplyEditsResponse{Results: results, Succeeded: succeeded, Failed: failed}, nil
+	staged := make([]stagedEdit, 0, len(req.GetEdits()))
+	seen := make(map[string]struct{}, len(req.GetEdits()))
+	results := make([]*gatewayv1.EditResult, 0, len(req.GetEdits()))
+	var stageFailed bool
+
+	for _, edit := range req.GetEdits() {
+		item := &gatewayv1.EditResult{Service: edit.GetService(), File: edit.GetFile()}
+		if err := s.validateService(edit.GetService()); err != nil {
+			item.Error = err.Error()
+			stageFailed = true
+			results = append(results, item)
+			continue
+		}
+		rel, err := cleanGatewayPath(edit.GetFile())
+		if err != nil {
+			item.Error = err.Error()
+			stageFailed = true
+			results = append(results, item)
+			continue
+		}
+		key := edit.GetService() + "\x00" + rel
+		if _, duplicate := seen[key]; duplicate {
+			item.Error = "batch contains multiple edits for the same file"
+			stageFailed = true
+			results = append(results, item)
+			continue
+		}
+		seen[key] = struct{}{}
+		original, err := s.fileOps().ReadFile(ctx, rel)
+		if err != nil {
+			item.Error = err.Error()
+			stageFailed = true
+			results = append(results, item)
+			continue
+		}
+		preview, err := s.ApplyEdit(ctx, &gatewayv1.ApplyEditRequest{
+			Service: edit.GetService(), File: rel, Find: edit.GetFind(), Replace: edit.GetReplace(),
+			FixMode: edit.GetFixMode(), DryRun: true,
+		})
+		if err != nil || !preview.GetSuccess() {
+			if err != nil {
+				item.Error = err.Error()
+			} else {
+				item.Error = preview.GetError()
+			}
+			stageFailed = true
+			results = append(results, item)
+			continue
+		}
+		item.Strategy = preview.GetStrategy()
+		staged = append(staged, stagedEdit{path: rel, original: original, response: preview})
+		results = append(results, item)
+	}
+	if stageFailed {
+		for _, result := range results {
+			if result.GetError() == "" {
+				result.Error = "batch aborted because another edit failed validation"
+			}
+		}
+		return &gatewayv1.BatchApplyEditsResponse{Results: results, Failed: int32(len(results))}, nil
+	}
+
+	written := make([]stagedEdit, 0, len(staged))
+	for _, edit := range staged {
+		if !edit.response.GetChanged() {
+			continue
+		}
+		if err := s.fileOps().WriteFile(ctx, edit.path, []byte(edit.response.GetContent())); err != nil {
+			// A failed write can still leave a truncated or partially-written file.
+			// Restore it as well as every file committed earlier in the batch.
+			_ = s.fileOps().WriteFile(ctx, edit.path, edit.original)
+			for i := len(written) - 1; i >= 0; i-- {
+				_ = s.fileOps().WriteFile(ctx, written[i].path, written[i].original)
+			}
+			for _, result := range results {
+				result.Success = false
+				result.Error = fmt.Sprintf("batch commit failed and was rolled back: %v", err)
+			}
+			return &gatewayv1.BatchApplyEditsResponse{Results: results, Failed: int32(len(results))}, nil
+		}
+		written = append(written, edit)
+	}
+	for _, result := range results {
+		result.Success = true
+	}
+	return &gatewayv1.BatchApplyEditsResponse{Results: results, Succeeded: int32(len(results))}, nil
 }
 
 func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gatewayv1.SearchResponse, error) {
@@ -922,7 +1118,7 @@ func (s *Server) ListDependencies(ctx context.Context, _ *gatewayv1.ListDependen
 	for _, d := range r.GetDependencies() {
 		deps = append(deps, &gatewayv1.Dependency{Name: d.Name, Version: d.Version, Direct: d.Direct})
 	}
-	return &gatewayv1.ListDependenciesResponse{Dependencies: deps, Error: r.GetError()}, nil
+	return &gatewayv1.ListDependenciesResponse{Dependencies: deps, Error: codeFailureMessage(resp)}, nil
 }
 
 func (s *Server) AddDependency(ctx context.Context, req *gatewayv1.AddDependencyRequest) (*gatewayv1.AddDependencyResponse, error) {
@@ -935,7 +1131,7 @@ func (s *Server) AddDependency(ctx context.Context, req *gatewayv1.AddDependency
 		return &gatewayv1.AddDependencyResponse{Success: false, Error: err.Error()}, nil
 	}
 	r := resp.GetAddDependency()
-	return &gatewayv1.AddDependencyResponse{Success: r.GetSuccess(), InstalledVersion: r.GetInstalledVersion(), Error: r.GetError()}, nil
+	return &gatewayv1.AddDependencyResponse{Success: r.GetSuccess(), InstalledVersion: r.GetInstalledVersion(), Error: codeFailureMessage(resp)}, nil
 }
 
 func (s *Server) RemoveDependency(ctx context.Context, req *gatewayv1.RemoveDependencyRequest) (*gatewayv1.RemoveDependencyResponse, error) {
@@ -948,7 +1144,7 @@ func (s *Server) RemoveDependency(ctx context.Context, req *gatewayv1.RemoveDepe
 		return &gatewayv1.RemoveDependencyResponse{Success: false, Error: err.Error()}, nil
 	}
 	r := resp.GetRemoveDependency()
-	return &gatewayv1.RemoveDependencyResponse{Success: r.GetSuccess(), Error: r.GetError()}, nil
+	return &gatewayv1.RemoveDependencyResponse{Success: r.GetSuccess(), Error: codeFailureMessage(resp)}, nil
 }
 
 // ─── Project Analysis ────────────────────────────────────────
@@ -973,7 +1169,7 @@ func (s *Server) GetProjectInfo(ctx context.Context, _ *gatewayv1.GetProjectInfo
 	}
 	return &gatewayv1.GetProjectInfoResponse{
 		Module: pi.GetModule(), Language: pi.GetLanguage(), LanguageVersion: pi.GetLanguageVersion(),
-		Packages: pkgs, Dependencies: deps, FileHashes: pi.GetFileHashes(), Error: pi.GetError(),
+		Packages: pkgs, Dependencies: deps, FileHashes: pi.GetFileHashes(), Error: codeFailureMessage(resp),
 	}, nil
 }
 

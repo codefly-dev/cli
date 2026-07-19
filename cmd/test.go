@@ -13,4 +13,5 @@ var TestCmd = &cobra.Command{
 
 func init() {
 	TestCmd.AddCommand(test.ServiceCmd)
+	TestCmd.AddCommand(test.SourceCmd)
 }

@@ -1,14 +1,23 @@
-# Codefly-native CI
+# Codefly validation and CI orchestration
 
-Status: workspace gate and first service-agent CI vertical slice operational;
-cache execution and wider agent adoption in progress
+Status: workspace validation dispatches plugin RPCs; agent-source validation and
+agent packaging still contain transitional host-side execution and are not yet
+architecturally complete
 
 ## Purpose
 
-Codefly must own CI semantics. A CI provider may allocate a machine, check out a
-revision, and invoke Codefly, but it must not decide which language commands to
-run, which services are affected, how dependencies start, or how results are
-interpreted.
+Codefly plugins own development-operation semantics. Linting, compilation,
+testing, generation/synchronization, compatibility checking, auditing, SBOM
+creation, and packaging are ordinary typed plugin operations. They are not CI
+operations.
+
+Local commands, editor/Mind integrations, and CI must call the same RPCs. CI
+adds change selection, dependency expansion, scheduling, caching, policy, and a
+durable report; it does not introduce another execution API.
+
+A CI provider may allocate a machine, check out a revision, and invoke Codefly,
+but it must not decide which language commands to run, which resources are
+affected, how dependencies start, or how results are interpreted.
 
 The canonical provider-neutral entry points are:
 
@@ -17,6 +26,10 @@ codefly ci plan ...
 codefly ci run ...
 codefly agent ci ...
 ```
+
+Those entry points compose the ordinary plugin operations also exposed by
+local Codefly commands. A stage being included in `codefly ci run` must never be
+the only way to invoke that operation.
 
 There must be no Codefly command that generates a workflow containing `go
 test`, `go vet`, `npm test`, `npm run lint`, Docker build steps, or equivalent
@@ -33,6 +46,10 @@ The first provider-neutral vertical slice is operational:
   versioned JSON;
 - `codefly ci lint`, `compile`, `test`, and deployable `build` consume the same
   affected plan; `--all` is an explicit override;
+- `codefly lint service` and `codefly compile service` expose lint and native
+  compilation as ordinary local operations. Their implementation and the CI
+  phases share one Runtime-plugin dispatcher; CI owns only target selection and
+  scheduling;
 - `codefly test service` remains the canonical focused test runner. `codefly ci
   test` and the test phase of `codefly ci run` add selection and scheduling,
   then dispatch the same agent Test RPC and honor the same structured result;
@@ -85,27 +102,102 @@ The first provider-neutral vertical slice is operational:
   delegation. It advertises workspace lint/compile/test/audit/SBOM/artifact
   support, package/file lint scopes, lint fixes, a dependency-free default unit
   suite, and a true non-mutating generated-client drift check;
-- `codefly agent build` applies temporary local Core replacements with
-  `GOWORK=off`, so building against local source cannot silently rewrite the
-  agent's declared published Core pin to an unpublished workspace version. Its
-  source SBOM is captured inside that exact temporary dependency session and
-  attached to each installed binary with the binary's SHA-256 digest;
-- `codefly agent ci` now implements the first service-agent vertical slice. It
-  validates the manifest and source, builds the agent in an isolated Codefly
-  home, produces CycloneDX release evidence, creates a fresh workspace/module/
-  service from the newly built local agent, executes the complete workspace
-  gate, proves repository restoration, and emits one schema-versioned report
-  with binary/SBOM hashes and the nested workspace report;
+- `codefly agent build` adapts a checkout into a generic source resource and
+  dispatches ordinary Builder `Package`. The selected language plugin owns the
+  build graph, target compilation, and CycloneDX generation; the CLI only
+  installs the typed executable and SBOM artifacts returned by the plugin;
+- `codefly agent ci` implements the generated-service conformance portion of
+  the first service-agent slice: it creates a fresh workspace/module/service
+  from the candidate agent, executes the complete workspace gate, proves
+  repository restoration, and emits one schema-versioned report with
+  binary/SBOM hashes and the nested workspace report. Source validation,
+  security audit, packaging, and SBOM generation are ordinary Runtime `Test`,
+  Builder `Audit`, and Builder `Package` operations on the generic source
+  resource; the host contains no Go test/build/scanner command selection;
+- Core exposes one generated `codefly.base.v0.Failure` taxonomy for plugin,
+  host, report, editor, and automation boundaries. Lifecycle statuses and CI
+  stages retain the stable reason, transport class, retryability, field/source
+  diagnostics, process evidence, resource identity, details, and cause chain;
+- the public agent-CI report contract is
+  `core/proto/codefly/ci/v0/report.proto`; the CLI constructs generated
+  `codefly.ci.v0` messages and serializes protobuf JSON. Handwritten report
+  DTOs are not an alternate schema;
 - the hardcoded workflow generator was removed from `codefly agent deps`, and
   the Next.js agent's repository-local workflow was deleted.
 
 Still pending are capability and suite advertisement across the other
-language-family agents, agent-CI runners for non-Go and non-service agent
-kinds, cache restore/store, and the thin provider adapter. Agents without a validation contract retain explicit
-compatibility probing and dependency-free tests. An agent that advertises an
-operation but returns `UNIMPLEMENTED` now fails as a contract violation.
+language-family agents, source-resource selection for non-Go checkouts, a
+protobuf/schema plugin for lint/generate/compatibility, local command exposure
+for every operation, agent orchestration for non-service agent kinds, cache
+restore/store, and the thin provider adapter.
+Agents without a validation contract retain explicit compatibility probing and
+dependency-free tests. An agent that advertises an operation but returns
+`UNIMPLEMENTED` now fails as a contract violation.
 
-## Two CI products
+## Canonical schema plugin
+
+Protobuf generation is one independent Codefly resource capability. It is not
+a Go, Python, Rust, Next.js, gRPC-service, or CI implementation detail. Codefly
+ships one schema plugin and every schema producer or consumer uses its typed
+contract.
+
+The schema contract is defined in Core protobuf before implementation and
+exposes ordinary local-first operations:
+
+- `lint` validates schema style and import correctness;
+- `generate` resolves locked dependencies and emits declared generated output;
+- `breaking` compares against an explicit baseline revision or descriptor;
+- `drift` generates into an isolated destination and reports changed, missing,
+  and unexpected owned files without mutating the checkout.
+
+`codefly schema lint|generate|breaking|drift` and the corresponding workspace
+gate tasks dispatch those same plugin RPCs. CI only selects affected schema
+resources, expands their consumers, schedules tasks, applies policy, and saves
+the typed result. It never invokes Buf or a language generator itself.
+
+Each schema resource has a protobuf-backed configuration, rendered as a
+Codefly manifest when a human-editable file is needed. The configuration owns:
+
+- schema roots, import roots, module/lock files, and explicitly included files;
+- a pinned execution bundle or OCI image digest and backend preference;
+- ordered generator plugins identified by immutable artifact identity, with
+  typed options rather than shell fragments;
+- output roots and exclusive ownership globs for every generator;
+- the compatibility baseline and policy for dependency updates;
+- deterministic post-processing declared as plugin capabilities, never an
+  arbitrary repository command.
+
+The implementation reuses the existing proto companion as an execution
+backend, but moves all Buf/protoc lifecycle details behind the schema plugin.
+Docker, Nix, and local execution are backend choices of that plugin; their
+observable operation contract and result schema are identical. Language and
+service agents declare schema consumption and generated-output dependencies;
+they do not carry Buf commands, generator installation, Docker mounting, or
+compatibility logic.
+
+The affected graph treats a schema resource as a producer. A schema or lock
+change selects its lint/generate/breaking/drift tasks and every transitive
+consumer whose generated contract may change. A generated-only consumer change
+does not regenerate an unrelated schema. Cache identity includes normalized
+schema/config/lock bytes, import closure, baseline descriptor, Codefly protocol
+version, backend/tool bundle digest, generator artifact digests and options,
+and output-ownership policy. Cache restoration is safe only when every declared
+output is content-addressed and no undeclared file was written.
+
+Clean migration removes, rather than preserves, the current direct paths:
+
+- the CLI-local plugin installer and direct `buf generate` implementation;
+- service-agent commands that spawn `buf` themselves;
+- per-agent calls that each assemble proto companion mounts and generation;
+- documentation or provider workflows containing raw `buf`, `protoc`, or
+  language generator commands.
+
+The first vertical slice is Core's own schema: prove lint, generation,
+compatibility, non-mutating drift, unavailable-backend failure, and cache-key
+stability through the plugin. Only after that proof should the gRPC service
+agents and generated dependency clients move to the shared schema resource.
+
+## Two orchestration contexts
 
 ### Workspace CI
 
@@ -116,22 +208,26 @@ supports, and executes the resulting task DAG.
 
 ### Agent CI
 
-`codefly agent ci` validates a Codefly agent repository. An agent repository is
-not itself an application workspace, so `codefly ci` cannot validate the agent
-binary or prove its generated service by itself.
+`codefly agent ci` validates a Codefly agent repository and proves a generated
+service. It is an orchestration context, not the owner of Go, TypeScript,
+protobuf, or packaging commands. Agent source trees and schemas must be modeled
+as Codefly resources and dispatched to the applicable language/schema plugins.
 
-Agent CI must:
+Agent orchestration must:
 
-1. validate the agent source and its SDK/Core compatibility;
-2. build and install the agent through the canonical Codefly builder;
+1. ask language/schema plugins to validate the agent source and its SDK/Core
+   compatibility;
+2. ask the language plugin to package the agent, then install the returned
+   artifact through Codefly;
 3. create an ephemeral workspace using the agent with non-interactive defaults;
 4. run workspace CI against the generated service through the agent's own RPCs;
 5. build the deployable artifact and, where supported, run a minimal runtime
    smoke test;
 6. fail if generation or validation changes tracked template output.
 
-This replaces per-agent GitHub workflows. The implementation language of the
-agent binary is an internal concern of `codefly agent ci`, not provider YAML.
+This replaces per-agent GitHub workflows. The implementation language belongs
+to the selected plugin; neither `codefly agent ci` nor provider YAML may contain
+language-specific execution.
 
 ## Audit findings that motivated the implementation
 
@@ -522,20 +618,22 @@ available. The restore/store milestone will add `hit`, `miss`, `stored`, and
 The operational Go service-agent vertical slice runs these default stages:
 
 1. detect and validate `agent.codefly.yaml`;
-2. run the agent source tests in its resolved development or standalone Go
-   module context;
-3. build native and Linux agent binaries using temporary, automatically
-   restored local Codefly module replacements when available;
-4. inventory that exact build graph, attach each binary digest to a CycloneDX
-   document, and run the Codefly vulnerability audit;
-5. create an isolated temporary Codefly home plus a fresh workspace, module,
+2. adapt the checkout into a generic source resource and dispatch its selected
+   plugin's Runtime `Test` operation;
+3. dispatch Builder `Package` for native and Linux targets and install only its
+   returned executable artifacts;
+4. retain the plugin-generated CycloneDX artifact associated with each binary
+   digest;
+5. dispatch Builder `Audit` as a distinct reported stage and apply the
+   release policy to its typed findings;
+6. create an isolated temporary Codefly home plus a fresh workspace, module,
    and service with `--default` using the newly
    built local agent;
-6. run the full `verify`, `sync-drift`, `lint`, `compile`, `test`, `audit`,
+7. run the full `verify`, `sync-drift`, `lint`, `compile`, `test`, `audit`,
    `sbom`, and deployable `build` gate through `codefly ci run --all`;
-7. compare the complete pre-existing Git worktree state after validation so
+8. compare the complete pre-existing Git worktree state after validation so
    already-dirty development repositories are supported but new drift fails;
-8. persist the agent binaries, CycloneDX documents, copied workspace evidence,
+9. persist the agent binaries, CycloneDX documents, copied workspace evidence,
    and a self-contained outer `report.json`, then remove the isolated runtime.
 
 `--native-only`, `--skip-audit`, and `--skip-conformance` are explicit local

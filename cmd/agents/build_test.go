@@ -3,14 +3,13 @@ package agents
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,72 +62,6 @@ func TestFindMonorepoRoot_NoMonorepo(t *testing.T) {
 	}
 }
 
-func TestGoModRequires(t *testing.T) {
-	dir := t.TempDir()
-	goMod := `module example.com/foo
-
-go 1.21
-
-require (
-	github.com/codefly-dev/core/wool v0.1.0
-	github.com/codefly-dev/core v0.1.0
-)
-`
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-
-	if !goModRequires(dir, "github.com/codefly-dev/core/wool") {
-		t.Error("goModRequires(wool) = false, want true")
-	}
-	if !goModRequires(dir, "github.com/codefly-dev/core") {
-		t.Error("goModRequires(core) = false, want true")
-	}
-	if goModRequires(dir, "github.com/other/module") {
-		t.Error("goModRequires(other) = true, want false")
-	}
-	if goModRequires(dir, "nonexistent") {
-		t.Error("goModRequires(nonexistent) = true, want false")
-	}
-}
-
-func TestMonorepoModulesIncludeSDK(t *testing.T) {
-	for _, module := range monorepoModules {
-		if module.Module == "github.com/codefly-dev/sdk-go" && module.SubDir == "sdk-go" {
-			return
-		}
-	}
-	t.Fatal("monorepoModules does not include the local sdk-go module")
-}
-
-func TestGoModRequires_NoGoMod(t *testing.T) {
-	dir := t.TempDir()
-	// No go.mod file
-	if goModRequires(dir, "github.com/codefly-dev/core/wool") {
-		t.Error("goModRequires with no go.mod = true, want false")
-	}
-}
-
-func TestIsDir(t *testing.T) {
-	dir := t.TempDir()
-	if !isDir(dir) {
-		t.Errorf("isDir(%q) = false, want true", dir)
-	}
-
-	filePath := filepath.Join(dir, "file.txt")
-	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if isDir(filePath) {
-		t.Errorf("isDir(%q) = true, want false (file)", filePath)
-	}
-
-	nonexistent := filepath.Join(dir, "nonexistent")
-	if isDir(nonexistent) {
-		t.Errorf("isDir(%q) = true, want false (nonexistent)", nonexistent)
-	}
-}
-
 func TestAgentBuildResultSummary(t *testing.T) {
 	r := &agentBuildResult{
 		ag:     agentYAML{Name: "go", Version: "0.0.7"},
@@ -155,90 +88,10 @@ func TestAgentBuildResultSummary(t *testing.T) {
 	}
 }
 
-func TestCompileAgentNativeOnly(t *testing.T) {
-	// A real build (no mocks): a self-contained agent module with no external
-	// deps compiles offline. With nativeOnly the host binary is produced and
-	// the Linux/amd64 container binary is never written.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "agent.codefly.yaml"),
-		"publisher: codefly\nkind: codefly:service\nname: nativeonly\nversion: 0.0.1\n")
-	writeFile(t, filepath.Join(dir, "go.mod"),
-		"module example.com/nativeonly\n\ngo 1.25\n")
-	writeFile(t, filepath.Join(dir, "main.go"),
-		"package main\n\nfunc main() {}\n")
-
-	res := compileAgent(context.Background(), dir, &agentLogger{}, &sync.Mutex{}, true)
-	if res.err != nil {
-		t.Fatalf("compileAgent native-only: %v", res.err)
-	}
-	if !res.linuxSkipped {
-		t.Error("res.linuxSkipped = false, want true")
-	}
-
-	nativePath := filepath.Join(home, ".codefly", "agents", "services", "codefly", "nativeonly__0.0.1")
-	if _, err := os.Stat(nativePath); err != nil {
-		t.Errorf("native binary not produced at %s: %v", nativePath, err)
-	}
-	containerPath := filepath.Join(home, ".codefly", "containers", "agents", "services", "codefly", "nativeonly__0.0.1")
-	if _, err := os.Stat(containerPath); err == nil {
-		t.Errorf("container binary should not exist with --native-only, but found %s", containerPath)
-	}
-}
-
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
-	}
-}
-
-func TestAgentLoggerBufferedAndFlush(t *testing.T) {
-	// Buffered mode holds lines and command output instead of streaming them,
-	// so parallel builds can flush each agent's block without interleaving.
-	log := &agentLogger{}
-	log.Info("hello %s", "world")
-	log.Header(1, "building %s", "go")
-	if err := log.run(exec.Command("printf", "compiler error\n")); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-
-	if len(log.lines) != 3 {
-		t.Fatalf("buffered lines = %d, want 3: %v", len(log.lines), log.lines)
-	}
-	if log.lines[0] != "hello world" {
-		t.Errorf("line 0 = %q, want %q", log.lines[0], "hello world")
-	}
-	if log.lines[2] != "compiler error" {
-		t.Errorf("line 2 = %q, want %q (trailing newline trimmed)", log.lines[2], "compiler error")
-	}
-}
-
-func TestAgentLoggerRunReturnsCommandError(t *testing.T) {
-	log := &agentLogger{}
-	if err := log.run(exec.Command("false")); err == nil {
-		t.Error("run(false): expected error, got nil")
-	}
-}
-
-func TestCompileAgentSerializesTidy(t *testing.T) {
-	// compileAgent must hold tidyMu while it shells out to `go mod tidy`. A
-	// missing manifest fails before that point, so use a real manifest whose
-	// build will fail later — the tidy step still runs under the lock. We can't
-	// observe the lock directly, but a nil tidyMu would panic, which guards the
-	// contract that callers always pass one.
-	dir := t.TempDir()
-	manifest := "publisher: codefly\nkind: codefly:service\nname: x\nversion: 0.0.1\n"
-	if err := os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), []byte(manifest), 0o644); err != nil {
-		t.Fatalf("write manifest: %v", err)
-	}
-	// No go.mod, so `go mod tidy` fails; we only assert it doesn't panic and
-	// surfaces the failure as res.err rather than crashing.
-	res := compileAgent(context.Background(), dir, &agentLogger{}, &sync.Mutex{}, false)
-	if res.err == nil {
-		t.Fatal("compileAgent: expected error (no go.mod), got nil")
 	}
 }
 
@@ -315,61 +168,6 @@ func TestBuildCommandReturnsErrors(t *testing.T) {
 	}
 }
 
-func TestCompileAgentLinuxFailureFailsAndPreservesArtifact(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	bin := t.TempDir()
-	fakeGo := filepath.Join(bin, "go")
-	script := `#!/bin/sh
-if [ "$1" = "mod" ]; then
-  exit 0
-fi
-out=""
-next_is_out=""
-for arg in "$@"; do
-  if [ -n "$next_is_out" ]; then
-    out="$arg"
-    next_is_out=""
-  elif [ "$arg" = "-o" ]; then
-    next_is_out=1
-  fi
-done
-if [ "${GOOS:-}" = "linux" ]; then
-  exit 1
-fi
-printf built > "$out"
-`
-	if err := os.WriteFile(fakeGo, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
-
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "agent.codefly.yaml"),
-		"publisher: codefly\nkind: codefly:service\nname: atomic\nversion: 0.0.1\n")
-	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/atomic\n\ngo 1.25\n")
-
-	containerPath := filepath.Join(home, ".codefly", "containers", "agents", "services", "codefly", "atomic__0.0.1")
-	if err := os.MkdirAll(filepath.Dir(containerPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(containerPath, []byte("previous"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	res := compileAgent(context.Background(), dir, &agentLogger{}, &sync.Mutex{}, false)
-	if res.err == nil || !res.linuxFailed {
-		t.Fatalf("Linux failure was reported as success: %+v", res)
-	}
-	contents, err := os.ReadFile(containerPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(contents) != "previous" {
-		t.Fatalf("failed Linux build replaced working artifact: %q", contents)
-	}
-}
-
 func TestBuildAllAgentsReturnsMalformedManifestError(t *testing.T) {
 	root := t.TempDir()
 	agentDir := filepath.Join(root, "broken")
@@ -382,26 +180,23 @@ func TestBuildAllAgentsReturnsMalformedManifestError(t *testing.T) {
 	}
 }
 
-func TestRunAuditUsesManagedGovulncheck(t *testing.T) {
-	bin := t.TempDir()
-	goPath := filepath.Join(bin, "go")
-	if err := os.WriteFile(goPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
+func TestApplyAgentAuditPolicyGatesOnlyActionableFindings(t *testing.T) {
 	agent := agentYAML{Name: "test", Version: "0.0.1"}
-	if err := runAudit(context.Background(), t.TempDir(), agent, true); err != nil {
-		t.Fatalf("managed audit unexpectedly failed: %v", err)
+	response := &builderv0.AuditResponse{
+		Tool: "plugin-scanner",
+		Findings: []*builderv0.AuditFinding{
+			{Id: "FIXED", Severity: builderv0.AuditFinding_HIGH, FixedVersion: "v1.2.3"},
+			{Id: "UNPATCHED", Severity: builderv0.AuditFinding_CRITICAL},
+		},
 	}
-	if err := runAudit(context.Background(), t.TempDir(), agent, false); err != nil {
+	if err := applyAgentAuditPolicy(t.TempDir(), agent, response, false); err != nil {
 		t.Fatalf("informational audit unexpectedly failed: %v", err)
 	}
-}
-
-func TestRunAuditFailsWhenNoScannerCanRun(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	agent := agentYAML{Name: "test", Version: "0.0.1"}
-	if err := runAudit(context.Background(), t.TempDir(), agent, false); err == nil || !strings.Contains(err.Error(), "govulncheck") {
-		t.Fatalf("incomplete audit error = %v", err)
+	if err := applyAgentAuditPolicy(t.TempDir(), agent, response, true); err == nil || !strings.Contains(err.Error(), "1 high/critical") {
+		t.Fatalf("actionable audit gate error = %v", err)
+	}
+	response.Findings = response.Findings[1:]
+	if err := applyAgentAuditPolicy(t.TempDir(), agent, response, true); err != nil {
+		t.Fatalf("unpatched finding should not fail release policy: %v", err)
 	}
 }

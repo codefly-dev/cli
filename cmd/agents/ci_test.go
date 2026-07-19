@@ -2,13 +2,19 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/core/failures"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
 )
 
 func TestLoadAgentCIManifest(t *testing.T) {
@@ -108,10 +114,11 @@ func TestFinalizeAgentCIReport(t *testing.T) {
 	state := &agentCIState{
 		started:      started,
 		workspaceRaw: []byte(`{"schema_version":1,"status":"failed"}`),
-		report: AgentCIReport{
+		report: &civ0.AgentCIReport{
 			Status:    "running",
 			StartedAt: started.Format(time.RFC3339Nano),
-			Stages: []AgentCIStage{
+			Summary:   &civ0.AgentCISummary{},
+			Stages: []*civ0.AgentCIStage{
 				{Name: "manifest", Status: "passed"},
 				{Name: "source", Status: "failed"},
 				{Name: "build", Status: "pending"},
@@ -119,14 +126,66 @@ func TestFinalizeAgentCIReport(t *testing.T) {
 		},
 	}
 	report := finalizeAgentCI(state, context.Canceled)
-	if report.Status != "failed" || report.Summary.Passed != 1 || report.Summary.Failed != 1 || report.Summary.Skipped != 1 {
+	if report.GetStatus() != "failed" || report.GetSummary().GetPassed() != 1 || report.GetSummary().GetFailed() != 1 || report.GetSummary().GetSkipped() != 1 {
 		t.Fatalf("unexpected finalized report: %+v", report)
 	}
-	if report.Error != context.Canceled.Error() {
-		t.Fatalf("report error = %q, want %q", report.Error, context.Canceled.Error())
+	if report.GetError() != context.Canceled.Error() {
+		t.Fatalf("report error = %q, want %q", report.GetError(), context.Canceled.Error())
 	}
-	if string(report.Workspace) != string(state.workspaceRaw) {
-		t.Fatalf("workspace report = %s, want %s", report.Workspace, state.workspaceRaw)
+	if report.GetFailure().GetCode() != basev0.FailureCode_FAILURE_CODE_CANCELLED || report.GetFailure().GetOperation() != "agent-ci" {
+		t.Fatalf("report failure = %+v, want cancelled agent-ci failure", report.GetFailure())
+	}
+	if report.GetWorkspaceReport().AsMap()["status"] != "failed" {
+		t.Fatalf("workspace report = %v, want failed status", report.GetWorkspaceReport())
+	}
+}
+
+func TestAgentCIStagePreservesTypedFailure(t *testing.T) {
+	state := &agentCIState{report: &civ0.AgentCIReport{
+		Stages: []*civ0.AgentCIStage{{Name: "source", Status: "pending"}},
+	}}
+	want := basev0.FailureCode_FAILURE_CODE_VALIDATION_FAILED
+	err := state.runStage("source", func() error {
+		return failures.Wrap(want, "runtime.test", "source contract failed", nil)
+	})
+	if err == nil {
+		t.Fatal("runStage returned nil, want failure")
+	}
+	stage := state.stage("source")
+	if stage.GetStatus() != "failed" || stage.GetFailure().GetCode() != want {
+		t.Fatalf("stage = %+v, want typed validation failure", stage)
+	}
+	if stage.GetFailure().GetOperation() != "runtime.test" {
+		t.Fatalf("stage failure operation = %q, want runtime.test", stage.GetFailure().GetOperation())
+	}
+}
+
+func TestMarshalAgentCIReportUsesGeneratedProtoFieldNamesAndDefaults(t *testing.T) {
+	report := &civ0.AgentCIReport{
+		SchemaVersion: 1,
+		Command:       "codefly agent ci",
+		Agent:         &civ0.AgentCIIdentity{},
+		Options:       &civ0.AgentCIOptions{},
+		Summary:       &civ0.AgentCISummary{},
+		Stages:        []*civ0.AgentCIStage{{Name: "audit", Status: "skipped"}},
+	}
+	payload, err := marshalAgentCIReport(report)
+	if err != nil {
+		t.Fatalf("marshalAgentCIReport: %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatalf("decode generated report JSON: %v", err)
+	}
+	if document["schema_version"] != float64(1) || document["duration_ms"] != float64(0) {
+		t.Fatalf("generated report numeric fields = %v", document)
+	}
+	options := document["options"].(map[string]any)
+	if options["audit_enabled"] != false {
+		t.Fatalf("generated report options = %v", options)
+	}
+	if artifacts := document["artifacts"].([]any); len(artifacts) != 0 {
+		t.Fatalf("generated report artifacts = %v, want empty", artifacts)
 	}
 }
 
@@ -144,6 +203,38 @@ func TestPersistAgentCIArtifactsRecoversWorkspaceReport(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(output, "workspace", agentCIReportFilename)); err != nil {
 		t.Fatalf("persisted workspace report: %v", err)
+	}
+}
+
+func TestPersistAgentCIArtifactsSeparatesReleaseTargets(t *testing.T) {
+	nativeDir := t.TempDir()
+	containerDir := t.TempDir()
+	native := filepath.Join(nativeDir, "nextjs__1.0.0")
+	container := filepath.Join(containerDir, "nextjs__1.0.0")
+	writeFile(t, native, "native")
+	writeFile(t, container, "linux")
+	state := &agentCIState{
+		report: &civ0.AgentCIReport{},
+		build:  &agentBuildResult{nativePath: native, containerPath: container},
+	}
+	output := t.TempDir()
+	if err := persistAgentCIArtifacts(agentCIOptions{output: output}, state); err != nil {
+		t.Fatalf("persistAgentCIArtifacts: %v", err)
+	}
+	if len(state.report.Artifacts) != 2 {
+		t.Fatalf("persisted artifacts = %v, want two binaries", state.report.Artifacts)
+	}
+	first, second := state.report.Artifacts[0], state.report.Artifacts[1]
+	if first.GetPath() == second.GetPath() || first.GetSha256() == second.GetSha256() {
+		t.Fatalf("release artifacts collided: first=%v second=%v", first, second)
+	}
+	if first.GetTarget() != runtime.GOOS+"/"+runtime.GOARCH || second.GetTarget() != "linux/amd64" {
+		t.Fatalf("release artifact targets: first=%q second=%q", first.GetTarget(), second.GetTarget())
+	}
+	for _, artifact := range state.report.Artifacts {
+		if _, err := os.Stat(filepath.Join(output, filepath.FromSlash(artifact.GetPath()))); err != nil {
+			t.Fatalf("persisted %s: %v", artifact.GetPath(), err)
+		}
 	}
 }
 

@@ -59,12 +59,16 @@ Examples:
 			args = args[:dashAt]
 		}
 
-		workspace, module, service, err := common.LoadRequiredE(ctx, args)
+		isHeadless := headless || !term.IsTerminal(int(os.Stdout.Fd()))
+		loadRequired := common.LoadRequiredE
+		if isHeadless {
+			loadRequired = common.LoadRequiredNonInteractiveE
+		}
+		workspace, module, service, err := loadRequired(ctx, args)
 		if err != nil {
 			return fmt.Errorf("cannot load required service: %w", err)
 		}
 		serviceName := resources.WithUnique(service).Unique()
-		isHeadless := headless || !term.IsTerminal(int(os.Stdout.Fd()))
 
 		var flow *orchestration.Flow
 		// testErr is the run/RPC error (init failure, crash, non-success exit).

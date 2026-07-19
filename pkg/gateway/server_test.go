@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,14 +18,18 @@ import (
 	"testing"
 	"time"
 
+	codecore "github.com/codefly-dev/core/code"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 // mockCodeClient implements codev0.CodeClient via the unified Execute RPC.
@@ -103,16 +108,6 @@ func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, op
 	}
 }
 
-// Per-RPC stubs satisfy the CodeClient interface for the RPCs that still
-// exist post-cleanup. Tests only exercise the Execute path.
-// These stubs return errors because tests only exercise the Execute path.
-func (m *mockCodeClient) ApplyEdit(_ context.Context, _ *codev0.ApplyEditRequest, _ ...grpc.CallOption) (*codev0.ApplyEditResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock; use Execute")
-}
-func (m *mockCodeClient) ShellExec(_ context.Context, _ *codev0.ShellExecRequest, _ ...grpc.CallOption) (*codev0.ShellExecResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock")
-}
-
 func (m *mockRuntimeClient) Load(context.Context, *runtimev0.LoadRequest, ...grpc.CallOption) (*runtimev0.LoadResponse, error) {
 	return nil, fmt.Errorf("not exercised in mock")
 }
@@ -182,9 +177,169 @@ func newTestServerWithRuntime(runtime runtimev0.RuntimeClient) *Server {
 	return s
 }
 
+func editingMock(t *testing.T, dir string) *mockCodeClient {
+	t.Helper()
+	return &mockCodeClient{applyEditFn: func(_ context.Context, in *codev0.ApplyEditRequest, _ ...grpc.CallOption) (*codev0.ApplyEditResponse, error) {
+		path := filepath.Join(dir, filepath.Clean(in.GetFile()))
+		original, err := os.ReadFile(path)
+		if err != nil {
+			return &codev0.ApplyEditResponse{Success: false}, nil
+		}
+		if strings.Count(string(original), in.GetFind()) != 1 {
+			return &codev0.ApplyEditResponse{Success: false}, nil
+		}
+		content := strings.Replace(string(original), in.GetFind(), in.GetReplace(), 1)
+		if !in.GetDryRun() {
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				return nil, err
+			}
+		}
+		return &codev0.ApplyEditResponse{
+			Success: true, Content: content, Strategy: "exact", Changed: content != string(original), Wrote: !in.GetDryRun(),
+		}, nil
+	}}
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+func TestSubscribeWorkspaceChangesStreamsExternalEditsAndReplaysReconnect(t *testing.T) {
+	root := t.TempDir()
+	srv, err := NewServer(Config{WorkDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.CloseWorkspaceChanges() })
+
+	listener := bufconn.Listen(1 << 20)
+	grpcServer := grpc.NewServer()
+	gatewayv1.RegisterGatewayServer(grpcServer, srv)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	connection, err := grpc.NewClient("passthrough:///workspace-watch", grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+		return listener.DialContext(ctx)
+	}), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	client := gatewayv1.NewGatewayClient(connection)
+
+	firstContext, cancelFirst := context.WithTimeout(t.Context(), 5*time.Second)
+	first, err := client.SubscribeWorkspaceChanges(firstContext, &gatewayv1.SubscribeWorkspaceChangesRequest{})
+	if err != nil {
+		cancelFirst()
+		t.Fatal(err)
+	}
+	firstResult := make(chan gatewayWorkspaceReceiveResult, 1)
+	go func() {
+		event, receiveErr := receiveGatewayWorkspacePath(first, "a.go")
+		firstResult <- gatewayWorkspaceReceiveResult{event: event, err: receiveErr}
+	}()
+	waitForWorkspaceMonitor(t, srv)
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		cancelFirst()
+		t.Fatal(err)
+	}
+	firstReceived := <-firstResult
+	if firstReceived.err != nil {
+		cancelFirst()
+		t.Fatalf("receive workspace change %q: %v", "a.go", firstReceived.err)
+	}
+	firstEvent := firstReceived.event
+	cancelFirst()
+
+	if err := os.WriteFile(filepath.Join(root, "b.go"), []byte("package b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Let the shared Codefly monitor retain the disconnected event before the
+	// client presents its durable cursor.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		srv.workspaceChangesMu.Lock()
+		var cursor codecore.WorkspaceChangeCursor
+		if srv.workspaceChanges != nil {
+			cursor = srv.workspaceChanges.Cursor()
+		}
+		srv.workspaceChangesMu.Unlock()
+		if cursor.Sequence > firstEvent.GetSequence() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("workspace monitor did not retain disconnected edit")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	secondContext, cancelSecond := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancelSecond()
+	second, err := client.SubscribeWorkspaceChanges(secondContext, &gatewayv1.SubscribeWorkspaceChangesRequest{After: &gatewayv1.WorkspaceChangeCursor{
+		SourceId: firstEvent.GetSourceId(), Sequence: firstEvent.GetSequence(),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEvent, err := receiveGatewayWorkspacePath(second, "b.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondEvent.GetSourceId() != firstEvent.GetSourceId() || secondEvent.GetSequence() <= firstEvent.GetSequence() {
+		t.Fatalf("replayed event=%+v after=%+v", secondEvent, firstEvent)
+	}
+
+	foreignContext, cancelForeign := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancelForeign()
+	foreign, err := client.SubscribeWorkspaceChanges(foreignContext, &gatewayv1.SubscribeWorkspaceChangesRequest{After: &gatewayv1.WorkspaceChangeCursor{
+		SourceId: "previous-gateway-process", Sequence: 10,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignEvent, err := foreign.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(foreignEvent.GetChanges()) != 1 || foreignEvent.GetChanges()[0].GetOperation() != gatewayv1.WorkspaceChangeOperation_WORKSPACE_CHANGE_OPERATION_RESCAN || foreignEvent.GetChanges()[0].GetReason() != "source_changed" {
+		t.Fatalf("foreign cursor event=%+v", foreignEvent)
+	}
+}
+
+type gatewayWorkspaceReceiveResult struct {
+	event *gatewayv1.WorkspaceChangeEvent
+	err   error
+}
+
+func receiveGatewayWorkspacePath(stream gatewayv1.Gateway_SubscribeWorkspaceChangesClient, path string) (*gatewayv1.WorkspaceChangeEvent, error) {
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			return nil, err
+		}
+		for _, change := range event.GetChanges() {
+			if change.GetPath() == path {
+				return event, nil
+			}
+		}
+	}
+}
+
+func waitForWorkspaceMonitor(t *testing.T, server *Server) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		server.workspaceChangesMu.Lock()
+		ready := server.workspaceChanges != nil
+		server.workspaceChangesMu.Unlock()
+		if ready {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("workspace monitor was not initialized")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func TestTestPreservesStructuredRuntimeFields(t *testing.T) {
 	rt := &mockRuntimeClient{
@@ -244,15 +399,21 @@ func TestFix(t *testing.T) {
 			if in.File != "main.go" {
 				t.Errorf("expected file main.go, got %s", in.File)
 			}
+			if in.GetMode() != basev0.FixMode_FIX_MODE_AGGRESSIVE || !in.GetDryRun() {
+				t.Errorf("gateway did not preserve fix mode/dry-run: %+v", in)
+			}
 			return &codev0.FixResponse{
-				Success: true,
-				Content: "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"hello\") }",
-				Actions: []string{"goimports", "gofmt"},
+				Success: true, Changed: true, Wrote: false,
+				Content:      "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"hello\") }",
+				Actions:      []string{"goimports", "gofmt"},
+				BeforeSha256: "before", AfterSha256: "after",
 			}, nil
 		},
 	}
 	s := newTestServer(mock)
-	resp, err := s.Fix(context.Background(), &gatewayv1.FixRequest{Path: "main.go"})
+	resp, err := s.Fix(context.Background(), &gatewayv1.FixRequest{
+		Path: "main.go", Mode: basev0.FixMode_FIX_MODE_AGGRESSIVE, DryRun: true,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -265,6 +426,9 @@ func TestFix(t *testing.T) {
 	if resp.Actions[0] != "goimports" {
 		t.Errorf("expected first action 'goimports', got %s", resp.Actions[0])
 	}
+	if !resp.GetChanged() || resp.GetWrote() || resp.GetBeforeSha256() != "before" || resp.GetAfterSha256() != "after" {
+		t.Fatalf("gateway dropped fix evidence: %+v", resp)
+	}
 }
 
 func TestApplyEdit(t *testing.T) {
@@ -272,9 +436,9 @@ func TestApplyEdit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nold code\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
+	s := newTestServerWithWorkDir(editingMock(t, dir), dir)
 	resp, err := s.ApplyEdit(context.Background(), &gatewayv1.ApplyEditRequest{
-		File: "main.go", Find: "old code", Replace: "new code", AutoFix: true,
+		File: "main.go", Find: "old code", Replace: "new code", FixMode: basev0.FixMode_FIX_MODE_SAFE,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -306,7 +470,7 @@ func TestDirectWorkspaceFileOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
+	s := newTestServerWithWorkDir(editingMock(t, dir), dir)
 
 	writeResp, err := s.WriteFile(context.Background(), &gatewayv1.WriteFileRequest{
 		Service: "test-svc",
@@ -553,7 +717,7 @@ func TestGitStatus(t *testing.T) {
 
 func TestRunCommand(t *testing.T) {
 	dir := t.TempDir()
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
+	s := newTestServerWithWorkDir(editingMock(t, dir), dir)
 
 	resp, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{
 		Command: "echo",
@@ -658,7 +822,7 @@ func TestBatchApplyEdits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("old2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
+	s := newTestServerWithWorkDir(editingMock(t, dir), dir)
 	resp, err := s.BatchApplyEdits(context.Background(), &gatewayv1.BatchApplyEditsRequest{
 		Edits: []*gatewayv1.ApplyEditRequest{
 			{File: "a.go", Find: "old1", Replace: "new1"},
@@ -684,6 +848,32 @@ func TestBatchApplyEdits(t *testing.T) {
 	}
 	if string(a) != "new1\n" || string(b) != "new2\n" {
 		t.Fatalf("batch content = a:%q b:%q", a, b)
+	}
+}
+
+func TestBatchApplyEditsAbortsWithoutPartialWrites(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("old1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("old2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServerWithWorkDir(editingMock(t, dir), dir)
+	resp, err := s.BatchApplyEdits(context.Background(), &gatewayv1.BatchApplyEditsRequest{Edits: []*gatewayv1.ApplyEditRequest{
+		{File: "a.go", Find: "old1", Replace: "new1"},
+		{File: "b.go", Find: "missing", Replace: "new2"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetSucceeded() != 0 || resp.GetFailed() != 2 {
+		t.Fatalf("batch counts = succeeded:%d failed:%d", resp.GetSucceeded(), resp.GetFailed())
+	}
+	a, _ := os.ReadFile(filepath.Join(dir, "a.go"))
+	b, _ := os.ReadFile(filepath.Join(dir, "b.go"))
+	if string(a) != "old1\n" || string(b) != "old2\n" {
+		t.Fatalf("failed atomic batch changed files: a=%q b=%q", a, b)
 	}
 }
 

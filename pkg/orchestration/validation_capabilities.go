@@ -12,6 +12,7 @@ const (
 	ValidationArtifactBuild ValidationOperation = "artifact_build"
 	ValidationSBOM          ValidationOperation = "sbom"
 	ValidationSync          ValidationOperation = "sync"
+	ValidationSourcePackage ValidationOperation = "source_package"
 )
 
 // ValidationOperationSupport returns whether an agent has an authoritative
@@ -37,6 +38,8 @@ func ValidationOperationSupport(info *agentv0.AgentInformation, operation Valida
 		return true, validation.GetSbom().GetSupported()
 	case ValidationSync:
 		return true, validation.GetSync().GetSupported()
+	case ValidationSourcePackage:
+		return true, validation.GetSourcePackage().GetSupported()
 	default:
 		return true, false
 	}

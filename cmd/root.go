@@ -185,6 +185,10 @@ func init() {
 
 	// Test things
 	RootCmd.AddCommand(TestCmd)
+	RootCmd.AddCommand(LintCmd)
+	RootCmd.AddCommand(FixCmd)
+	RootCmd.AddCommand(CompileCmd)
+	RootCmd.AddCommand(PackageCmd)
 
 	// Verify base-file integrity of composed modules
 	RootCmd.AddCommand(VerifyCmd)

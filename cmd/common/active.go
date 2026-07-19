@@ -3,6 +3,8 @@ package common
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
@@ -15,6 +17,17 @@ type ActiveContext struct {
 }
 
 func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
+	return loadActiveContext(ctx, true)
+}
+
+// LoadActiveContextNonInteractive resolves only context encoded by the
+// current path or by a single-service workspace. It never opens a selector;
+// headless callers receive an actionable ambiguity error instead of /dev/tty.
+func LoadActiveContextNonInteractive(ctx context.Context) (*ActiveContext, error) {
+	return loadActiveContext(ctx, false)
+}
+
+func loadActiveContext(ctx context.Context, interactive bool) (*ActiveContext, error) {
 	active := &ActiveContext{}
 
 	workspace, err := resources.FindWorkspaceUp(ctx)
@@ -49,7 +62,7 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 	}
 
 	if active.Service == nil {
-		active.Service, active.Module, err = autoResolveService(ctx, workspace)
+		active.Service, active.Module, err = autoResolveService(ctx, workspace, interactive)
 		if err != nil {
 			return nil, err
 		}
@@ -61,7 +74,7 @@ func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
 // autoResolveService picks a service when the user isn't inside a service
 // folder. If exactly one service exists, it's selected automatically.
 // If multiple exist, an interactive prompt lets the user choose.
-func autoResolveService(ctx context.Context, workspace *resources.Workspace) (*resources.Service, *resources.Module, error) {
+func autoResolveService(ctx context.Context, workspace *resources.Workspace, interactive bool) (*resources.Service, *resources.Module, error) {
 	services, err := workspace.LoadServices(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -74,6 +87,14 @@ func autoResolveService(ctx context.Context, workspace *resources.Workspace) (*r
 	if len(services) == 1 {
 		picked = services[0]
 	} else {
+		if !interactive {
+			names := make([]string, 0, len(services))
+			for _, service := range services {
+				names = append(names, service.Name)
+			}
+			slices.Sort(names)
+			return nil, nil, fmt.Errorf("multiple services found (%s); pass the service name explicitly", strings.Join(names, ", "))
+		}
 		entries := make([]*tui.Entry, len(services))
 		for i, svc := range services {
 			entries[i] = &tui.Entry{Identifier: svc.Name}
@@ -127,7 +148,32 @@ func LoadService(ctx context.Context) (*resources.Service, error) {
 }
 
 // LoadModule returns the active module without terminating the process.
+//
+// ARCHITECTURE: Module-only commands must resolve the module from the current
+// path before asking for an active service. In particular, codefly add service
+// is commonly run from a newly-created module that has no services yet. Going
+// through LoadActiveContext in that case invokes the workspace-wide service
+// picker, which both selects the wrong abstraction and requires a TTY in
+// otherwise non-interactive commands.
 func LoadModule(ctx context.Context) (*resources.Module, error) {
+	workspace, err := LoadWorkspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if workspace.Layout == resources.LayoutKindFlat {
+		return workspace.LoadModuleFromName(ctx, workspace.Name)
+	}
+
+	module, _, err := resources.LoadModuleAndServiceFromCurrentPath(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if module != nil {
+		return module, nil
+	}
+
+	// Outside a module directory, retain the existing active-service fallback:
+	// selecting a service also identifies its owning module.
 	active, err := LoadActiveContext(ctx)
 	if err != nil {
 		return nil, err

@@ -49,7 +49,9 @@ var WorkspaceCmd = &cobra.Command{
 				continue
 			}
 			if jsonOut {
-				emitJSON(resp)
+				if err := emitJSON(resp); err != nil {
+					return err
+				}
 			} else {
 				identity, idErr := ms.service.Identity()
 				if idErr != nil {

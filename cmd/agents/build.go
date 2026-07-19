@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -20,12 +19,12 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/monorepo"
-	"github.com/codefly-dev/core/agents/services/audit"
-	"github.com/codefly-dev/core/agents/services/sbom"
+	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -260,11 +259,8 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 		cli.Info("Building up to %d agents in parallel", jobs)
 	}
 
-	// The compile phase runs concurrently. go build against a shared cache is
-	// safe, but `go mod tidy`/`go mod edit` mutate go.mod and resolve against
-	// the shared go.work, so compileAgent serializes only that critical section
-	// on tidyMu while the actual builds stay parallel.
-	var tidyMu sync.Mutex
+	// Each build is dispatched to the source plugin. The plugin owns its
+	// language toolchain and Codefly schedules independent resources in parallel.
 	results := make([]*agentBuildResult, len(agents))
 	var completed atomic.Int64
 
@@ -278,7 +274,7 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 		}
 		g.Go(func() error {
 			log := &agentLogger{}
-			res := compileAgent(groupCtx, agents[i], log, &tidyMu, opts.nativeOnly)
+			res := compileAgent(groupCtx, agents[i], log, opts.nativeOnly)
 			results[i] = res
 			n := completed.Add(1)
 			if res.err != nil {
@@ -293,15 +289,11 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 	_ = g.Wait()
 	elapsed := time.Since(started)
 
-	// Release evidence and audits stay serialized after compilation. Every
-	// installed binary gets a CycloneDX SBOM; --skip-audit only waives the
-	// vulnerability gate, never artifact inventory/provenance.
+	// Audits stay serialized after plugin-owned packaging. Builder.Package has
+	// already emitted and installed release-bound CycloneDX evidence;
+	// --skip-audit waives only the vulnerability gate.
 	for _, res := range results {
 		if res.err != nil {
-			continue
-		}
-		if err := writeReleaseSBOMs(ctx, res); err != nil {
-			res.err = err
 			continue
 		}
 		if !opts.skipAudit {
@@ -353,18 +345,6 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 	return nil
 }
 
-// monorepoModules lists modules that may need local replace directives
-// when building inside the codefly.dev monorepo.
-var monorepoModules = []struct {
-	Module string
-	SubDir string
-}{
-	{"github.com/codefly-dev/core/wool/otel", "wool/otel"},
-	{"github.com/codefly-dev/core/wool", "wool"},
-	{"github.com/codefly-dev/core", "core"},
-	{"github.com/codefly-dev/sdk-go", "sdk-go"},
-}
-
 // findMonorepoRoot walks up from dir looking for the codefly.dev monorepo
 // root, identified by a core/ subdir that is the codefly core module. (The
 // standalone top-level wool/ module was removed — core/wool is now a package
@@ -372,39 +352,6 @@ var monorepoModules = []struct {
 // ALWAYS return "" and silently disabled local-core replace detection.)
 func findMonorepoRoot(dir string) string {
 	return monorepo.FindRoot(dir)
-}
-
-func isDir(p string) bool {
-	info, err := os.Stat(p)
-	return err == nil && info.IsDir()
-}
-
-func goModRequires(dir, module string) bool {
-	f, err := os.Open(filepath.Join(dir, "go.mod"))
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		if strings.Contains(scanner.Text(), module) {
-			return true
-		}
-	}
-	return false
-}
-
-func addReplace(ctx context.Context, dir, module, localPath string, log *agentLogger) error {
-	cmd := exec.CommandContext(ctx, "go", "mod", "edit",
-		"-replace", fmt.Sprintf("%s=%s", module, localPath))
-	cmd.Dir = dir
-	return log.run(cmd)
-}
-
-func dropReplace(ctx context.Context, dir, module string, log *agentLogger) error {
-	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-dropreplace", module)
-	cmd.Dir = dir
-	return log.run(cmd)
 }
 
 // agentLogger collects one agent's build narration. In direct mode (a single
@@ -439,26 +386,6 @@ func (l *agentLogger) Header(level int, format string, args ...any) {
 	l.mu.Unlock()
 }
 
-// run executes cmd, streaming its output to the terminal in direct mode or
-// capturing it into the buffer otherwise.
-func (l *agentLogger) run(cmd *exec.Cmd) error {
-	if l.direct {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	}
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	if buf.Len() > 0 {
-		l.mu.Lock()
-		l.lines = append(l.lines, strings.TrimRight(buf.String(), "\n"))
-		l.mu.Unlock()
-	}
-	return err
-}
-
 func (l *agentLogger) flush() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -472,7 +399,6 @@ type agentBuildResult struct {
 	label         string // source dir base name, used before the manifest is parsed
 	dir           string
 	ag            agentYAML
-	sourceSBOM    *sbom.Result
 	native        time.Duration
 	linux         time.Duration
 	linuxFailed   bool
@@ -495,12 +421,9 @@ func (r *agentBuildResult) summary() string {
 }
 
 func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
-	res := compileAgent(ctx, dir, &agentLogger{direct: true}, &sync.Mutex{}, opts.nativeOnly)
+	res := compileAgent(ctx, dir, &agentLogger{direct: true}, opts.nativeOnly)
 	if res.err != nil {
 		return res.err
-	}
-	if err := writeReleaseSBOMs(ctx, res); err != nil {
-		return err
 	}
 	if !opts.skipAudit {
 		return runAudit(ctx, dir, res.ag, opts.failOnVuln)
@@ -508,14 +431,12 @@ func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
 	return nil
 }
 
-// compileAgent builds an agent's native and Linux binaries, writing all
-// narration to log. It never runs the audit (callers run it serially after the
-// parallel compile phase). tidyMu serializes the go.mod mutation + `go mod
-// tidy` critical section across concurrent builds; the actual `go build` runs
-// without the lock. The returned result always carries the outcome — a non-nil
-// res.err means the build failed. When nativeOnly is set the Linux/amd64
-// container cross-build is skipped, producing only the host-platform binary.
-func compileAgent(ctx context.Context, dir string, log *agentLogger, tidyMu *sync.Mutex, nativeOnly bool) *agentBuildResult {
+// compileAgent asks the selected source plugin to package native and Linux
+// artifacts. It never selects a language command and never runs audit; callers
+// apply release policy to the separate Builder.Audit response. The returned
+// result always carries the outcome. When nativeOnly is set the container
+// target is omitted.
+func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly bool) *agentBuildResult {
 	res := &agentBuildResult{label: filepath.Base(dir), dir: dir}
 	if err := ctx.Err(); err != nil {
 		res.err = err
@@ -539,16 +460,6 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, tidyMu *syn
 		return res
 	}
 	res.ag = ag
-	moduleSnapshots, err := snapshotFiles(filepath.Join(dir, "go.mod"), filepath.Join(dir, "go.sum"))
-	if err != nil {
-		res.err = err
-		return res
-	}
-	defer func() {
-		if err := restoreFiles(context.WithoutCancel(ctx), moduleSnapshots); err != nil {
-			res.err = errors.Join(res.err, fmt.Errorf("restore module files: %w", err))
-		}
-	}()
 	// A quarantined agent is excluded from bulk builds; an explicit single
 	// build still proceeds (that's how you fix it) but says so loudly.
 	if ag.Quarantine {
@@ -571,270 +482,130 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, tidyMu *syn
 	binaryName := fmt.Sprintf("%s__%s", ag.Name, ag.Version)
 	nativePath := filepath.Join(nativeDir, binaryName)
 	res.nativePath = nativePath
-
-	if err := os.MkdirAll(nativeDir, 0o755); err != nil {
-		res.err = fmt.Errorf("mkdir %s: %w", nativeDir, err)
-		return res
-	}
-
-	// Auto-detect monorepo and add local replace directives.
-	// When core is required (directly or transitively), wool and wool/otel
-	// must also be replaced because they are not published to a public registry.
-	monoRoot := findMonorepoRoot(dir)
-	var addedReplaces []string
-
-	// Clean up replace directives when done (even on error). go mod edit mutates
-	// go.mod and resolves against the shared go.work, so it shares tidyMu.
-	defer func() {
-		if len(addedReplaces) == 0 {
-			return
-		}
-		tidyMu.Lock()
-		defer tidyMu.Unlock()
-		cleanupCtx := context.WithoutCancel(ctx)
-		for _, mod := range addedReplaces {
-			_ = dropReplace(cleanupCtx, dir, mod, log)
-		}
-	}()
-
-	// Serialize only the go.mod mutation + tidy: parallel `go mod tidy` against
-	// the shared workspace can race or resolve inconsistently.
-	func() {
-		tidyMu.Lock()
-		defer tidyMu.Unlock()
-
-		if monoRoot != "" {
-			log.Info("Monorepo detected at %s", monoRoot)
-			requiresCore := goModRequires(dir, "github.com/codefly-dev/core")
-			for _, m := range monorepoModules {
-				requiredDirectly := goModRequires(dir, m.Module)
-				isCoreModule := strings.HasPrefix(m.Module, "github.com/codefly-dev/core")
-				if !requiredDirectly && !(requiresCore && isCoreModule) {
-					continue
-				}
-				localPath := filepath.Join(monoRoot, m.SubDir)
-				if !isDir(localPath) {
-					continue
-				}
-				log.Info("  Adding replace: %s => %s", m.Module, localPath)
-				if err := addReplace(ctx, dir, m.Module, localPath, log); err != nil {
-					res.err = fmt.Errorf("add replace for %s: %w", m.Module, err)
-					return
-				}
-				addedReplaces = append(addedReplaces, m.Module)
-			}
-		}
-
-		log.Info("Tidying modules...")
-		tidy := exec.CommandContext(ctx, "go", "mod", "tidy")
-		tidy.Dir = dir
-		// The temporary go.mod replaces above already point every required
-		// Codefly module at local source. Do not let the root go.work's maximum
-		// selected versions rewrite the agent's declared published pins during a
-		// local build (for example v0.2.18 -> an unpublished v0.2.19). The local
-		// replaces still provide the development source with GOWORK disabled.
-		tidy.Env = append(os.Environ(), "GOWORK=off")
-		if err := log.run(tidy); err != nil {
-			res.err = fmt.Errorf("go mod tidy: %w", err)
-		}
-	}()
-	if res.err != nil {
-		return res
-	}
-
-	log.Header(1, "Building %s:%s (%s/%s)", ag.Name, ag.Version, runtime.GOOS, runtime.GOARCH)
-
-	// buildNative compiles the host-platform binary. It runs on its own on the
-	// --native-only path and as one of two concurrent builds on the default
-	// (both-binaries) path, so it lives in a closure to avoid duplicating it.
-	buildNative := func() {
-		nativeStarted := time.Now()
-		tmpPath, cleanup, err := buildTargetTemp(nativePath)
-		if err != nil {
-			res.err = fmt.Errorf("prepare native build output: %w", err)
-			return
-		}
-		defer cleanup()
-		build := exec.CommandContext(ctx, "go", "build", "-o", tmpPath, ".")
-		build.Dir = dir
-		if err := log.run(build); err != nil {
-			res.err = fmt.Errorf("go build (native): %w", err)
-			return
-		}
-		if err := installBuiltArtifact(tmpPath, nativePath); err != nil {
-			res.err = fmt.Errorf("install native build: %w", err)
-			return
-		}
-		res.native = time.Since(nativeStarted).Round(100 * time.Millisecond)
-		log.Info("Binary build done (%s/%s) elapsed=%s", runtime.GOOS, runtime.GOARCH, res.native)
-		log.Info("Installed: %s", nativePath)
-	}
-
-	if nativeOnly {
-		buildNative()
-		if res.err != nil {
-			return res
-		}
-		if err := captureAgentSourceSBOM(ctx, res); err != nil {
-			res.err = err
-			return res
-		}
+	if !nativeOnly {
+		res.containerPath = filepath.Join(codeflyHome, "containers", "agents", subdir, ag.Publisher, binaryName)
+	} else {
 		res.linuxSkipped = true
-		log.Info("Skipping Linux/amd64 container cross-build (--native-only)")
-		log.Header(1, "Agent %s:%s built successfully (native only)", ag.Name, ag.Version)
-		return res
 	}
 
-	containerDir := filepath.Join(codeflyHome, "containers", "agents", subdir, ag.Publisher)
-	containerPath := filepath.Join(containerDir, binaryName)
-	res.containerPath = containerPath
-	if err := os.MkdirAll(containerDir, 0o755); err != nil {
-		res.err = fmt.Errorf("mkdir %s: %w", containerDir, err)
-		return res
-	}
-
-	// The native and Linux binaries are independent `go build`s writing to
-	// distinct outputs, so run them concurrently: per-agent wall time becomes
-	// max(native, linux) instead of native+linux. They share Go's build cache,
-	// which is concurrency-safe, and touch separate result fields (no race).
-	var wg sync.WaitGroup
-	var linuxErr error
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		buildNative()
-	}()
-	go func() {
-		defer wg.Done()
-		containerStarted := time.Now()
-		tmpPath, cleanup, err := buildTargetTemp(containerPath)
-		if err != nil {
-			res.linuxFailed = true
-			linuxErr = fmt.Errorf("prepare Linux build output: %w", err)
-			return
-		}
-		defer cleanup()
-		ldflags := `-extldflags "-static"`
-		crossBuild := exec.CommandContext(ctx, "go", "build", "-ldflags", ldflags, "-o", tmpPath, ".")
-		crossBuild.Dir = dir
-		crossBuild.Env = append(os.Environ(),
-			"CGO_ENABLED=0",
-			"GOOS=linux",
-			"GOARCH=amd64",
-		)
-		if err := log.run(crossBuild); err != nil {
-			res.linuxFailed = true
-			linuxErr = fmt.Errorf("go build (linux/amd64): %w", err)
-			log.Info("Linux cross-build failed: %v", err)
-			return
-		}
-		if err := installBuiltArtifact(tmpPath, containerPath); err != nil {
-			res.linuxFailed = true
-			linuxErr = fmt.Errorf("install Linux build: %w", err)
-			return
-		}
-		res.linux = time.Since(containerStarted).Round(100 * time.Millisecond)
-		log.Info("Binary build done (linux/amd64) elapsed=%s", res.linux)
-		log.Info("Installed (container): %s", containerPath)
-	}()
-	wg.Wait()
-	if res.err == nil && linuxErr != nil {
-		res.err = linuxErr
-	}
-	if res.err != nil {
-		return res
-	}
-	if err := captureAgentSourceSBOM(ctx, res); err != nil {
+	temporary, err := os.MkdirTemp("", "codefly-agent-package-*")
+	if err != nil {
 		res.err = err
 		return res
 	}
-
-	log.Header(1, "Agent %s:%s built successfully", ag.Name, ag.Version)
+	defer os.RemoveAll(temporary)
+	prepared, err := sourceworkspace.Prepare(ctx, dir)
+	if err != nil {
+		res.err = err
+		return res
+	}
+	defer prepared.Close()
+	executable, err := os.Executable()
+	if err != nil {
+		res.err = fmt.Errorf("resolve Codefly executable: %w", err)
+		return res
+	}
+	packageOutput := filepath.Join(temporary, "artifacts")
+	arguments := []string{
+		"--timestamps=false",
+		"package", "service", "source",
+		"--format", "json",
+		"--output-dir", packageOutput,
+		"--name", binaryName,
+		"--publisher", ag.Publisher,
+		"--subject-name", ag.Name,
+		"--subject-version", ag.Version,
+		"--target", runtime.GOOS + "/" + runtime.GOARCH,
+	}
+	if !nativeOnly {
+		arguments = append(arguments, "--target", "linux/amd64")
+	}
+	started := time.Now()
+	command := exec.CommandContext(ctx, executable, arguments...)
+	command.Dir = prepared.Dir
+	command.Env = agentCIChildEnvironment(resolveSourcePluginHome(), "CI=1", "CODEFLY_COLOR=never")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		res.err = fmt.Errorf("plugin-owned agent packaging: %w\n%s", err, boundedAgentCIOutput(output))
+		return res
+	}
+	response := &builderv0.PackageResponse{}
+	if err := protojson.Unmarshal(bytes.TrimSpace(output), response); err != nil {
+		res.err = fmt.Errorf("decode Builder.Package response: %w\n%s", err, boundedAgentCIOutput(output))
+		return res
+	}
+	if response.GetState().GetState() != builderv0.PackageStatus_SUCCESS {
+		res.err = fmt.Errorf("Builder.Package failed: %s", response.GetState().GetMessage())
+		return res
+	}
+	if err := installAgentPackageArtifacts(response.GetArtifacts(), res); err != nil {
+		res.err = err
+		return res
+	}
+	elapsed := time.Since(started).Round(100 * time.Millisecond)
+	res.native = elapsed
+	if !nativeOnly {
+		res.linux = elapsed
+	}
+	log.Info("Builder.Package emitted %d artifacts in %s", len(response.GetArtifacts()), elapsed)
+	log.Info("Installed: %s", res.nativePath)
+	if res.containerPath != "" {
+		log.Info("Installed (container): %s", res.containerPath)
+	}
+	log.Header(1, "Agent %s:%s packaged successfully through codefly.dev/go", ag.Name, ag.Version)
 	return res
 }
 
-// captureAgentSourceSBOM runs before compileAgent restores its temporary local
-// Codefly module replacements. The inventory therefore describes the exact
-// dependency selection used for the binary, including an unreleased local Core
-// contract, without leaving go.mod or go.sum modified.
-func captureAgentSourceSBOM(ctx context.Context, result *agentBuildResult) error {
-	source, err := sbom.Golang(ctx, result.dir)
+func resolveSourcePluginHome() string {
+	current := resources.CodeflyHomeDir()
+	plugin := filepath.Join(current, "agents", "services", "codefly.dev", "go__"+sourceworkspace.GenericGoPluginVersion)
+	if _, err := os.Stat(plugin); err == nil {
+		return current
+	}
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("generate source SBOM for %s:%s: %w", result.ag.Name, result.ag.Version, err)
+		return current
 	}
-	result.sourceSBOM = source
-	return nil
+	defaultHome := filepath.Join(home, ".codefly")
+	if _, err := os.Stat(filepath.Join(defaultHome, "agents", "services", "codefly.dev", "go__"+sourceworkspace.GenericGoPluginVersion)); err == nil {
+		return defaultHome
+	}
+	return current
 }
 
-func buildTargetTemp(destination string) (string, func(), error) {
-	tmp, err := os.CreateTemp(filepath.Dir(destination), ".codefly-agent-build-*")
-	if err != nil {
-		return "", nil, err
-	}
-	path := tmp.Name()
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", nil, err
-	}
-	return path, func() { _ = os.Remove(path) }, nil
-}
-
-func installBuiltArtifact(source, destination string) error {
-	if err := os.Chmod(source, 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(source, destination); err != nil {
-		return err
-	}
-	return nil
-}
-
-// writeReleaseSBOMs wraps the build-selected source graph once per installed
-// binary. The artifact hash binds each CycloneDX document to the exact bytes
-// Codefly installed for that target.
-func writeReleaseSBOMs(ctx context.Context, result *agentBuildResult) error {
-	source := result.sourceSBOM
-	if source == nil {
-		var err error
-		source, err = sbom.Golang(ctx, result.dir)
-		if err != nil {
-			return fmt.Errorf("generate source SBOM for %s:%s: %w", result.ag.Name, result.ag.Version, err)
+func installAgentPackageArtifacts(artifacts []*builderv0.PackageArtifact, result *agentBuildResult) error {
+	installedNative := false
+	installedLinux := result.containerPath == ""
+	for _, artifact := range artifacts {
+		target := artifact.GetTarget().GetOs() + "/" + artifact.GetTarget().GetArchitecture()
+		destinations := []string{}
+		if target == runtime.GOOS+"/"+runtime.GOARCH {
+			if artifact.GetKind() == builderv0.PackageArtifact_EXECUTABLE {
+				destinations = append(destinations, result.nativePath)
+				installedNative = true
+			} else if artifact.GetKind() == builderv0.PackageArtifact_SBOM {
+				destinations = append(destinations, result.nativePath+".cdx.json")
+			}
+		}
+		if result.containerPath != "" && target == "linux/amd64" {
+			if artifact.GetKind() == builderv0.PackageArtifact_EXECUTABLE {
+				destinations = append(destinations, result.containerPath)
+				installedLinux = true
+			} else if artifact.GetKind() == builderv0.PackageArtifact_SBOM {
+				destinations = append(destinations, result.containerPath+".cdx.json")
+			}
+		}
+		for _, destination := range destinations {
+			if err := copyAgentCIFile(artifact.GetPath(), destination); err != nil {
+				return fmt.Errorf("install package artifact %s: %w", destination, err)
+			}
 		}
 	}
-	targets := []struct {
-		path   string
-		target string
-	}{
-		{path: result.nativePath, target: runtime.GOOS + "/" + runtime.GOARCH},
-		{path: result.containerPath, target: "linux/amd64"},
+	if !installedNative {
+		return fmt.Errorf("Builder.Package returned no executable for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	for _, target := range targets {
-		if target.path == "" {
-			continue
-		}
-		digest, err := fileSHA256(target.path)
-		if err != nil {
-			return fmt.Errorf("digest built artifact %s: %w", target.path, err)
-		}
-		release, err := sbom.AttachArtifact(source, sbom.Artifact{
-			Publisher: result.ag.Publisher,
-			Name:      result.ag.Name,
-			Version:   result.ag.Version,
-			Target:    target.target,
-			SHA256:    digest,
-		})
-		if err != nil {
-			return fmt.Errorf("attach artifact to SBOM: %w", err)
-		}
-		payload, err := sbom.MarshalCycloneDXJSON(release.Bom)
-		if err != nil {
-			return fmt.Errorf("encode CycloneDX SBOM: %w", err)
-		}
-		destination := target.path + ".cdx.json"
-		if err := atomicWrite(destination, append(payload, '\n'), 0o644); err != nil {
-			return fmt.Errorf("write release SBOM %s: %w", destination, err)
-		}
-		cli.Info("SBOM: %s (sha256:%s)", destination, release.SHA256)
+	if !installedLinux {
+		return fmt.Errorf("Builder.Package returned no executable for linux/amd64")
 	}
 	return nil
 }
@@ -877,17 +648,24 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmpPath, path)
 }
 
-// runAudit runs a govulncheck-based security scan on the agent's Go module.
-// Scanner execution is required. --fail-on-vuln additionally gates on
-// actionable HIGH/CRITICAL findings.
+// runAudit invokes the source resource's ordinary Builder.Audit operation.
+// The plugin owns scanner/toolchain execution; this caller only applies the
+// agent-release suppression and gating policy to the typed response.
 //
 // Findings matching IDs in a workspace-root .govulncheck.yaml are filtered
 // out and reported separately as "suppressed (reviewed)".
 func runAudit(ctx context.Context, dir string, ag agentYAML, failOnVuln bool) error {
 	cli.Header(1, "Auditing %s:%s for vulnerabilities", ag.Name, ag.Version)
-	res, err := audit.Golang(ctx, dir, true)
+	res, err := runAgentSourceAudit(ctx, dir)
 	if err != nil {
 		return fmt.Errorf("audit could not complete (use --skip-audit for an explicit waiver): %w", err)
+	}
+	return applyAgentAuditPolicy(dir, ag, res, failOnVuln)
+}
+
+func applyAgentAuditPolicy(dir string, ag agentYAML, res *builderv0.AuditResponse, failOnVuln bool) error {
+	if res == nil {
+		return fmt.Errorf("Builder.Audit returned no response")
 	}
 	cli.Info("Tool: %s", res.Tool)
 
@@ -958,6 +736,47 @@ func runAudit(ctx context.Context, dir string, ag agentYAML, failOnVuln bool) er
 		}
 	}
 	return nil
+}
+
+// runAgentSourceAudit adapts an agent repository into a normal Codefly source
+// resource and asks its selected plugin to perform Builder.Audit. No language
+// command or scanner is selected by the CLI.
+func runAgentSourceAudit(ctx context.Context, dir string) (*builderv0.AuditResponse, error) {
+	prepared, err := sourceworkspace.Prepare(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	defer prepared.Close()
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve Codefly executable: %w", err)
+	}
+	command := exec.CommandContext(ctx, executable,
+		"--timestamps=false",
+		"audit", "service", "source",
+		"--json",
+		"--outdated=true",
+		"--fail-on-vuln=false",
+	)
+	command.Dir = prepared.Dir
+	command.Env = agentCIChildEnvironment(resolveSourcePluginHome(), "CI=1", "CODEFLY_COLOR=never")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("plugin-owned Builder.Audit: %w\n%s", err, boundedAgentCIOutput(output))
+	}
+	response := &builderv0.AuditResponse{}
+	if err := protojson.Unmarshal(bytes.TrimSpace(output), response); err != nil {
+		return nil, fmt.Errorf("decode Builder.Audit response: %w\n%s", err, boundedAgentCIOutput(output))
+	}
+	if response.GetState() == nil {
+		return nil, fmt.Errorf("Builder.Audit returned no status")
+	}
+	switch response.GetState().GetState() {
+	case builderv0.AuditStatus_CLEAN, builderv0.AuditStatus_FINDINGS:
+		return response, nil
+	default:
+		return nil, fmt.Errorf("Builder.Audit failed: %s", response.GetState().GetMessage())
+	}
 }
 
 // loadSuppressions walks up from dir looking for a .govulncheck.yaml and

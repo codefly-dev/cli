@@ -73,8 +73,9 @@ func TestValidationOperationSupportCoversBuilderCapabilities(t *testing.T) {
 		ArtifactBuild: &agentv0.ValidationOperationCapability{Supported: true},
 		Sbom:          &agentv0.ValidationOperationCapability{Supported: true},
 		Sync:          &agentv0.ValidationOperationCapability{Supported: true},
+		SourcePackage: &agentv0.ValidationOperationCapability{Supported: true},
 	}}
-	for _, operation := range []ValidationOperation{ValidationAudit, ValidationArtifactBuild, ValidationSBOM, ValidationSync} {
+	for _, operation := range []ValidationOperation{ValidationAudit, ValidationArtifactBuild, ValidationSBOM, ValidationSync, ValidationSourcePackage} {
 		advertised, supported := ValidationOperationSupport(info, operation)
 		if !advertised || !supported {
 			t.Fatalf("operation %q support = (%v, %v)", operation, advertised, supported)

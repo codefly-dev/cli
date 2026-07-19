@@ -11,6 +11,17 @@ import (
 // the process. RunE commands should use this form so Cobra can propagate the
 // failure and deferred cleanup still runs.
 func LoadRequiredE(ctx context.Context, args []string) (*resources.Workspace, *resources.Module, *resources.Service, error) {
+	return loadRequiredE(ctx, args, LoadActiveContext)
+}
+
+// LoadRequiredNonInteractiveE is the headless service resolver. An explicit
+// positional service always wins; otherwise the current path or a unique
+// workspace service is used without ever consulting a terminal.
+func LoadRequiredNonInteractiveE(ctx context.Context, args []string) (*resources.Workspace, *resources.Module, *resources.Service, error) {
+	return loadRequiredE(ctx, args, LoadActiveContextNonInteractive)
+}
+
+func loadRequiredE(ctx context.Context, args []string, loadActive func(context.Context) (*ActiveContext, error)) (*resources.Workspace, *resources.Module, *resources.Service, error) {
 	if len(args) > 0 {
 		// Service name provided — just load the workspace and look it up directly.
 		// Don't trigger auto-resolve/picker.
@@ -28,7 +39,7 @@ func LoadRequiredE(ctx context.Context, args []string) (*resources.Workspace, *r
 		return workspace, module, service, nil
 	}
 	// No args — use active context (may prompt for selection).
-	active, err := LoadActiveContext(ctx)
+	active, err := loadActive(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("cannot load active context: %w", err)
 	}
@@ -54,14 +65,15 @@ func LoadRequiredModuleE(ctx context.Context, args []string) (*resources.Workspa
 		}
 		return workspace, module, nil
 	}
-	active, err := LoadActiveContext(ctx)
+	workspace, err := LoadWorkspace(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot load active context: %w", err)
+		return nil, nil, fmt.Errorf("cannot load workspace: %w", err)
 	}
-	if active.Workspace == nil || active.Module == nil {
-		return nil, nil, fmt.Errorf("active context does not contain a workspace and module")
+	module, err := LoadModule(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot load active module: %w", err)
 	}
-	return active.Workspace, active.Module, nil
+	return workspace, module, nil
 }
 
 // LoadWithServicePathOverrideE resolves a service path without terminating the

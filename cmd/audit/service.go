@@ -10,7 +10,6 @@ package audit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -20,6 +19,7 @@ import (
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 )
@@ -43,6 +43,14 @@ modifies code.`,
 		ctx, done := common.NewContext()
 		defer done()
 		defer services.ClearAgents()
+		if jsonOut {
+			cli.SuppressOutput()
+			cli.SetOutputSink(func(wool.Loglevel, string) {})
+			defer func() {
+				cli.SetOutputSink(nil)
+				cli.RestoreOutput()
+			}()
+		}
 
 		workspace, module, service, err := common.LoadRequiredE(ctx, args)
 		if err != nil {
@@ -59,7 +67,9 @@ modifies code.`,
 		}
 
 		if jsonOut {
-			emitJSON(resp)
+			if err := emitJSON(resp); err != nil {
+				return err
+			}
 		} else {
 			emitTable(identity, resp)
 		}
@@ -106,10 +116,19 @@ func hasHighSeverity(r *builderv0.AuditResponse) bool {
 	return false
 }
 
-func emitJSON(r *builderv0.AuditResponse) {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(r)
+func emitJSON(r *builderv0.AuditResponse) error {
+	payload, err := (protojson.MarshalOptions{
+		Indent:            "  ",
+		UseProtoNames:     true,
+		EmitDefaultValues: true,
+	}).Marshal(r)
+	if err != nil {
+		return fmt.Errorf("encode audit response: %w", err)
+	}
+	if _, err := os.Stdout.Write(append(payload, '\n')); err != nil {
+		return fmt.Errorf("write audit response: %w", err)
+	}
+	return nil
 }
 
 func emitTable(identity *resources.ServiceIdentity, r *builderv0.AuditResponse) {

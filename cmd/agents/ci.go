@@ -11,17 +11,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"github.com/codefly-dev/core/failures"
+	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 	"gopkg.in/yaml.v3"
 )
 
@@ -108,9 +113,8 @@ var AgentCICmd = &cobra.Command{
 			failOnVuln:      failOnVuln,
 			skipConformance: skipConformance,
 		})
-		payload, marshalErr := json.MarshalIndent(report, "", "  ")
+		payload, marshalErr := marshalAgentCIReport(report)
 		if marshalErr == nil {
-			payload = append(payload, '\n')
 			marshalErr = atomicWrite(filepath.Join(output, agentCIReportFilename), payload, 0o644)
 		}
 		runErr = errors.Join(runErr, marshalErr)
@@ -122,7 +126,8 @@ var AgentCICmd = &cobra.Command{
 			return nil
 		}
 		if marshalErr == nil {
-			cli.Header(1, "Codefly agent CI %s: %d passed, %d failed, %d skipped", report.Status, report.Summary.Passed, report.Summary.Failed, report.Summary.Skipped)
+			summary := report.GetSummary()
+			cli.Header(1, "Codefly agent CI %s: %d passed, %d failed, %d skipped", report.GetStatus(), summary.GetPassed(), summary.GetFailed(), summary.GetSkipped())
 			cli.Info("Report: %s", filepath.Join(output, agentCIReportFilename))
 		}
 		return runErr
@@ -152,75 +157,40 @@ type agentCIOptions struct {
 	skipConformance bool
 }
 
-type AgentCIReport struct {
-	SchemaVersion int                  `json:"schema_version"`
-	Command       string               `json:"command"`
-	Agent         AgentCIIdentity      `json:"agent"`
-	Status        string               `json:"status"`
-	StartedAt     string               `json:"started_at"`
-	FinishedAt    string               `json:"finished_at"`
-	DurationMS    int64                `json:"duration_ms"`
-	Summary       AgentCIReportSummary `json:"summary"`
-	Stages        []AgentCIStage       `json:"stages"`
-	Artifacts     []AgentCIArtifact    `json:"artifacts,omitempty"`
-	Workspace     json.RawMessage      `json:"workspace_report,omitempty"`
-	Error         string               `json:"error,omitempty"`
-}
-
-type AgentCIIdentity struct {
-	Publisher string `json:"publisher"`
-	Kind      string `json:"kind"`
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-}
-
-type AgentCIStage struct {
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	StartedAt  string `json:"started_at,omitempty"`
-	FinishedAt string `json:"finished_at,omitempty"`
-	DurationMS int64  `json:"duration_ms"`
-	Error      string `json:"error,omitempty"`
-}
-
-type AgentCIReportSummary struct {
-	Total   int `json:"total"`
-	Passed  int `json:"passed"`
-	Failed  int `json:"failed"`
-	Skipped int `json:"skipped"`
-}
-
-type AgentCIArtifact struct {
-	Kind   string `json:"kind"`
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-}
-
 type agentCIState struct {
-	report       AgentCIReport
+	report       *civ0.AgentCIReport
 	started      time.Time
 	manifest     agentYAML
 	build        *agentBuildResult
 	before       agentWorktreeSnapshot
 	temporary    string
 	agentHome    string
+	sourceHome   string
 	conformance  string
 	workspaceRaw []byte
 }
 
-func runAgentCI(ctx context.Context, options agentCIOptions) (AgentCIReport, error) {
+func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIReport, error) {
 	started := time.Now().UTC()
 	state := &agentCIState{
 		started: started,
-		report: AgentCIReport{
-			SchemaVersion: agentCIReportSchemaVersion,
+		report: &civ0.AgentCIReport{
+			SchemaVersion: uint32(agentCIReportSchemaVersion),
 			Command:       "codefly agent ci",
-			Status:        "running",
-			StartedAt:     started.Format(time.RFC3339Nano),
-			Stages: []AgentCIStage{
+			Options: &civ0.AgentCIOptions{
+				NativeOnly:         options.nativeOnly,
+				AuditEnabled:       !options.skipAudit,
+				FailOnVuln:         options.failOnVuln,
+				ConformanceEnabled: !options.skipConformance,
+			},
+			Status:    "running",
+			StartedAt: started.Format(time.RFC3339Nano),
+			Summary:   &civ0.AgentCISummary{},
+			Stages: []*civ0.AgentCIStage{
 				{Name: "manifest", Status: "pending"},
 				{Name: "source", Status: "pending"},
 				{Name: "build", Status: "pending"},
+				{Name: "audit", Status: "pending"},
 				{Name: "conformance", Status: "pending"},
 				{Name: "drift", Status: "pending"},
 			},
@@ -232,6 +202,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (AgentCIReport, err
 	}
 	state.temporary = temporary
 	state.agentHome = filepath.Join(temporary, "home")
+	state.sourceHome = resources.CodeflyHomeDir()
 	defer os.RemoveAll(temporary)
 
 	previousHome, hadHome := os.LookupEnv(resources.CodeflyHomeEnv)
@@ -257,18 +228,20 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (AgentCIReport, err
 			return err
 		}
 		state.manifest = manifest
-		state.report.Agent = AgentCIIdentity{Publisher: manifest.Publisher, Kind: manifest.Kind, Name: manifest.Name, Version: manifest.Version}
+		state.report.Agent = &civ0.AgentCIIdentity{Publisher: manifest.Publisher, Kind: manifest.Kind, Name: manifest.Name, Version: manifest.Version}
 		state.before, err = snapshotAgentWorktree(ctx, options.dir)
 		return err
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
-	if err := runStage("source", func() error { return validateAgentSource(ctx, options.dir) }); err != nil {
+	if err := runStage("source", func() error {
+		return validateAgentSource(ctx, options.dir, state.sourceHome)
+	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
 	if err := runStage("build", func() error {
 		log := &agentLogger{}
-		result := compileAgent(ctx, options.dir, log, &sync.Mutex{}, options.nativeOnly)
+		result := compileAgent(ctx, options.dir, log, options.nativeOnly)
 		state.build = result
 		if result.err != nil {
 			diagnostics := strings.TrimSpace(strings.Join(log.lines, "\n"))
@@ -277,13 +250,14 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (AgentCIReport, err
 			}
 			return result.err
 		}
-		if err := writeReleaseSBOMs(ctx, result); err != nil {
-			return err
-		}
-		if !options.skipAudit {
-			return runAudit(ctx, options.dir, result.ag, options.failOnVuln)
-		}
 		return nil
+	}); err != nil {
+		return finalizeAgentCI(state, err), err
+	}
+	if options.skipAudit {
+		state.skipStage("audit")
+	} else if err := runStage("audit", func() error {
+		return runAudit(ctx, options.dir, state.build.ag, options.failOnVuln)
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
@@ -328,14 +302,18 @@ func (state *agentCIState) runStage(name string, action func() error) error {
 	}
 	started := time.Now().UTC()
 	stage.Status = "running"
-	stage.StartedAt = started.Format(time.RFC3339Nano)
+	startedAt := started.Format(time.RFC3339Nano)
+	stage.StartedAt = &startedAt
 	err := action()
 	finished := time.Now().UTC()
-	stage.FinishedAt = finished.Format(time.RFC3339Nano)
-	stage.DurationMS = finished.Sub(started).Milliseconds()
+	finishedAt := finished.Format(time.RFC3339Nano)
+	stage.FinishedAt = &finishedAt
+	stage.DurationMs = agentCIDurationMS(finished.Sub(started))
 	if err != nil {
 		stage.Status = "failed"
-		stage.Error = err.Error()
+		stageError := err.Error()
+		stage.Error = &stageError
+		stage.Failure = failures.FromError("agent-ci."+name, err)
 		return fmt.Errorf("agent CI stage %s failed: %w", name, err)
 	}
 	stage.Status = "passed"
@@ -348,28 +326,28 @@ func (state *agentCIState) skipStage(name string) {
 	}
 }
 
-func (state *agentCIState) stage(name string) *AgentCIStage {
-	for index := range state.report.Stages {
-		if state.report.Stages[index].Name == name {
-			return &state.report.Stages[index]
+func (state *agentCIState) stage(name string) *civ0.AgentCIStage {
+	for _, stage := range state.report.Stages {
+		if stage.GetName() == name {
+			return stage
 		}
 	}
 	return nil
 }
 
-func finalizeAgentCI(state *agentCIState, runErr error) AgentCIReport {
-	for index := range state.report.Stages {
-		if state.report.Stages[index].Status == "pending" || state.report.Stages[index].Status == "running" {
-			state.report.Stages[index].Status = "skipped"
+func finalizeAgentCI(state *agentCIState, runErr error) *civ0.AgentCIReport {
+	for _, stage := range state.report.Stages {
+		if stage.GetStatus() == "pending" || stage.GetStatus() == "running" {
+			stage.Status = "skipped"
 		}
 	}
 	finished := time.Now().UTC()
 	state.report.FinishedAt = finished.Format(time.RFC3339Nano)
-	state.report.DurationMS = finished.Sub(state.started).Milliseconds()
+	state.report.DurationMs = agentCIDurationMS(finished.Sub(state.started))
 	state.report.Status = "passed"
-	state.report.Summary.Total = len(state.report.Stages)
+	state.report.Summary.Total = uint32(len(state.report.Stages))
 	for _, stage := range state.report.Stages {
-		switch stage.Status {
+		switch stage.GetStatus() {
 		case "passed":
 			state.report.Summary.Passed++
 		case "failed":
@@ -380,12 +358,41 @@ func finalizeAgentCI(state *agentCIState, runErr error) AgentCIReport {
 	}
 	if runErr != nil {
 		state.report.Status = "failed"
-		state.report.Error = runErr.Error()
+		reportError := runErr.Error()
+		state.report.Error = &reportError
+		state.report.Failure = failures.FromError("agent-ci", runErr)
 	}
 	if len(state.workspaceRaw) > 0 && json.Valid(state.workspaceRaw) {
-		state.report.Workspace = append(json.RawMessage(nil), state.workspaceRaw...)
+		workspaceReport := &structpb.Struct{}
+		if err := protojson.Unmarshal(state.workspaceRaw, workspaceReport); err == nil {
+			state.report.WorkspaceReport = workspaceReport
+		}
 	}
 	return state.report
+}
+
+func marshalAgentCIReport(report *civ0.AgentCIReport) ([]byte, error) {
+	payload, err := (protojson.MarshalOptions{
+		Indent:            "  ",
+		UseProtoNames:     true,
+		EmitDefaultValues: true,
+	}).Marshal(report)
+	if err != nil {
+		return nil, fmt.Errorf("encode agent CI report: %w", err)
+	}
+	return append(payload, '\n'), nil
+}
+
+func agentCIDurationMS(duration time.Duration) int32 {
+	milliseconds := duration.Milliseconds()
+	if milliseconds <= 0 {
+		return 0
+	}
+	const maximum = int64(1<<31 - 1)
+	if milliseconds > maximum {
+		return int32(maximum)
+	}
+	return int32(milliseconds)
 }
 
 func loadAgentCIManifest(dir string) (agentYAML, error) {
@@ -406,20 +413,43 @@ func loadAgentCIManifest(dir string) (agentYAML, error) {
 	return manifest, nil
 }
 
-func validateAgentSource(ctx context.Context, dir string) error {
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("no Codefly source-validation runner is registered for this agent repository")
-		}
+func validateAgentSource(ctx context.Context, dir, sourceHome string) error {
+	if _, err := sourceworkspace.SelectPlugin(dir); err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, "go", "test", "./...")
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve Codefly executable: %w", err)
+	}
+	command := exec.CommandContext(ctx, executable,
+		"--timestamps=false",
+		"test", "source",
+		"--dir", dir,
+		"--runtime-context", "free",
+	)
 	command.Dir = dir
+	command.Env = agentCIChildEnvironment(sourceHome,
+		"CI=1",
+		"CODEFLY_COLOR=never",
+	)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("Go agent source validation: %w\n%s", err, boundedAgentCIOutput(output))
+		return fmt.Errorf("plugin-owned agent source validation: %w\n%s", err, boundedAgentCIOutput(output))
 	}
 	return nil
+}
+
+func agentCIChildEnvironment(codeflyHome string, additional ...string) []string {
+	prefix := resources.CodeflyHomeEnv + "="
+	environment := make([]string, 0, len(os.Environ())+len(additional)+1)
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, prefix) {
+			environment = append(environment, value)
+		}
+	}
+	environment = append(environment, prefix+codeflyHome)
+	environment = append(environment, additional...)
+	return environment
 }
 
 type agentWorktreeSnapshot struct {
@@ -521,30 +551,42 @@ func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error 
 		}
 	}
 	if state.build != nil {
-		for _, source := range []string{state.build.nativePath, state.build.containerPath, state.build.nativePath + ".cdx.json", state.build.containerPath + ".cdx.json"} {
-			if source == "" {
+		releaseArtifacts := []struct {
+			source string
+			target string
+			kind   string
+		}{
+			{source: state.build.nativePath, target: runtime.GOOS + "/" + runtime.GOARCH, kind: "agent-binary"},
+			{source: state.build.containerPath, target: "linux/amd64", kind: "agent-binary"},
+			{source: state.build.nativePath + ".cdx.json", target: runtime.GOOS + "/" + runtime.GOARCH, kind: "cyclonedx-sbom"},
+			{source: state.build.containerPath + ".cdx.json", target: "linux/amd64", kind: "cyclonedx-sbom"},
+		}
+		for _, artifact := range releaseArtifacts {
+			if artifact.source == "" || artifact.source == ".cdx.json" {
 				continue
 			}
-			if _, err := os.Stat(source); err != nil {
+			if _, err := os.Stat(artifact.source); err != nil {
 				if os.IsNotExist(err) {
 					continue
 				}
 				return err
 			}
-			relative := filepath.Join("artifacts", filepath.Base(source))
+			platformDirectory := strings.ReplaceAll(artifact.target, "/", "-")
+			relative := filepath.Join("artifacts", platformDirectory, filepath.Base(artifact.source))
 			destination := filepath.Join(options.output, relative)
-			if err := copyAgentCIFile(source, destination); err != nil {
+			if err := copyAgentCIFile(artifact.source, destination); err != nil {
 				return err
 			}
 			digest, err := fileSHA256(destination)
 			if err != nil {
 				return err
 			}
-			kind := "agent-binary"
-			if strings.HasSuffix(source, ".cdx.json") {
-				kind = "cyclonedx-sbom"
-			}
-			state.report.Artifacts = append(state.report.Artifacts, AgentCIArtifact{Kind: kind, Path: filepath.ToSlash(relative), SHA256: "sha256:" + digest})
+			state.report.Artifacts = append(state.report.Artifacts, &civ0.AgentCIArtifact{
+				Kind:   artifact.kind,
+				Path:   filepath.ToSlash(relative),
+				Sha256: "sha256:" + digest,
+				Target: artifact.target,
+			})
 		}
 	}
 	if state.conformance != "" {

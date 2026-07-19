@@ -5,11 +5,11 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/cmd/validation"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -66,39 +66,11 @@ func runValidationCommand(selection *SelectionFlags, action Action, phase string
 }
 
 func runLintService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
-	return runRuntimeValidationService(ctx, workspace, module, service, orchestration.LintMode, "lint")
+	return validation.RunService(ctx, workspace, module, service, orchestration.LintMode, "lint", runtimeContext)
 }
 
 func runCompileService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
-	return runRuntimeValidationService(ctx, workspace, module, service, orchestration.CompileMode, "compile")
-}
-
-func runRuntimeValidationService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, mode orchestration.Mode, phase string) error {
-	w := wool.Get(ctx).In("validateService", wool.ThisField(resources.WithUnique(service)))
-	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
-		return w.NewError("invalid runtime context: %s", runtimeContext)
-	}
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), mode)
-	if err != nil {
-		return w.Wrap(err)
-	}
-	// Static validation needs the target's toolchain and source tree, not live
-	// database/cache/service prerequisites. The affected planner has already
-	// expanded dependency changes into validation targets where appropriate.
-	flow.WithStandAlone(true)
-	flow.WithRuntimeContext(runtimeContext)
-	if err := flow.InitManagers(ctx); err != nil {
-		return stopFlowAfterError(flow, w.Wrap(err))
-	}
-	if err := flow.Load(ctx); err != nil {
-		return stopFlowAfterError(flow, w.Wrap(err))
-	}
-	return runAndStopFlow(flow, func() error {
-		if err := flow.Start(ctx); err != nil {
-			return w.Wrapf(err, "cannot %s service", phase)
-		}
-		return nil
-	})
+	return validation.RunService(ctx, workspace, module, service, orchestration.CompileMode, "compile", runtimeContext)
 }
 
 func init() {
