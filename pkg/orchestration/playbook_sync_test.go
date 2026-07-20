@@ -44,4 +44,12 @@ func TestSyncPolicyOneDependency(t *testing.T) {
 	actions, err := data.policy.Execute(ctx, orchestration.Action{Type: orchestration.BuilderBegin, Service: start})
 	require.NoError(t, err)
 	require.Equal(t, createCombinedActions([]string{org, start}, orchestration.BuilderLoad), actions, "Expected no action to be triggered")
+
+	actions, err = data.policy.Execute(ctx, orchestration.Action{Type: orchestration.BuilderInit, Service: org})
+	require.NoError(t, err)
+	require.Empty(t, actions, "dependency initialization must not schedule dependency Sync")
+
+	actions, err = data.policy.Execute(ctx, orchestration.Action{Type: orchestration.BuilderInit, Service: start})
+	require.NoError(t, err)
+	require.Equal(t, createActions(start, orchestration.BuilderSync), actions)
 }
