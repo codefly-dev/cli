@@ -10,7 +10,6 @@ import (
 type SyncPolicy struct {
 	ExecutorManager
 	dependencies *architecture.ServiceDependencies
-	origin       string
 }
 
 func NewSyncPolicy(ctx context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager) (*SyncPolicy, error) {
@@ -42,10 +41,7 @@ func (policy *SyncPolicy) Execute(ctx context.Context, action Action) ([]Action,
 	case BuilderLoad:
 		return policy.BasicNext(ctx, outputProperty, action, BuilderInit)
 	case BuilderInit:
-		if action.Service != policy.origin {
-			return nil, nil
-		}
-		return []Action{action.Next(BuilderSync)}, nil
+		return policy.BasicNext(ctx, outputProperty, action, BuilderSync)
 	case BuilderSync:
 		// We are good
 		return nil, nil
@@ -65,7 +61,6 @@ func (policy *SyncPolicy) Restrict(ctx context.Context, unique string) error {
 		return w.Wrapf(err, "cannot get Dependencies")
 	}
 	policy.dependencies = dependencies
-	policy.origin = unique
 	w.Trace("restricted", wool.Field("graph", policy.dependencies.Print()))
 	return nil
 }
