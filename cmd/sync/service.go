@@ -71,7 +71,11 @@ var ServiceCmd = &cobra.Command{
 
 func initSyncService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("syncService", wool.ThisField(resources.WithUnique(service)))
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), orchestration.SyncMode)
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SyncMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

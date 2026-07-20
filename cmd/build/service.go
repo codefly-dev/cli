@@ -74,11 +74,10 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 	w := wool.Get(ctx).In("buildService", wool.ThisField(resources.WithUnique(service)))
 
 	// Resolve the target environment so we can pick up its registry,
-	// namespace, etc. Falls back to LocalEnvironment when the workspace
-	// hasn't migrated to declared environments yet.
-	env := workspace.FindEnvironment(envInput)
-	if env == nil {
-		env = &resources.Environment{Name: envInput}
+	// namespace, etc.
+	env, err := orchestration.SelectEnvironment(workspace, envInput)
+	if err != nil {
+		return nil, w.Wrap(err)
 	}
 
 	// Image-registry resolution order:

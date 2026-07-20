@@ -84,7 +84,12 @@ func RunService(
 		return w.NewError("invalid runtime context: %s", runtimeContext)
 	}
 
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), mode)
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return w.Wrap(err)
+	}
+
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, mode)
 	if err != nil {
 		return w.Wrap(err)
 	}

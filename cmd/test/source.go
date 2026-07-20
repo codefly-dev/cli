@@ -101,7 +101,11 @@ func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, req
 	if err := resources.ValidateRuntimeContext(sourceRuntimeContext); err != nil {
 		return nil, fmt.Errorf("invalid runtime context: %w", err)
 	}
-	flow, err := orchestration.NewFlow(ctx, prepared.Workspace, prepared.Module, prepared.Service, resources.LocalEnvironment(), orchestration.TestMode)
+	env, err := orchestration.SelectEnvironment(prepared.Workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return nil, err
+	}
+	flow, err := orchestration.NewFlow(ctx, prepared.Workspace, prepared.Module, prepared.Service, env, orchestration.TestMode)
 	if err != nil {
 		return nil, err
 	}

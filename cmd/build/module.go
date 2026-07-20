@@ -33,9 +33,9 @@ var ModuleCmd = &cobra.Command{
 			return err
 		}
 
-		env := workspace.FindEnvironment(envInput)
-		if env == nil {
-			env = &resources.Environment{Name: envInput}
+		env, err := orchestration.SelectEnvironment(workspace, envInput)
+		if err != nil {
+			return err
 		}
 
 		// Same registry resolution as service.go: --org wins, env

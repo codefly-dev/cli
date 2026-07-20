@@ -564,6 +564,21 @@ func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 	return name, strings.TrimSpace(string(out))
 }
 
+// runEnvironment resolves the local environment this run executes in. The
+// workspace's declared "local" environment (secret backends, cluster, naming
+// policy, …) wins over the synthetic default, and the --naming-scope override
+// applies to this invocation's copy only — never to the shared declaration.
+func runEnvironment(workspace *resources.Workspace) (*resources.Environment, error) {
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return nil, err
+	}
+	if namingScope != "" {
+		env.NamingScope = namingScope
+	}
+	return env, nil
+}
+
 func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("runService", wool.ThisField(resources.WithUnique(service)))
 	// Catch panic
@@ -573,9 +588,10 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	env := resources.LocalEnvironment()
-	// Setup optional naming namingScope
-	env.NamingScope = namingScope
+	env, err := runEnvironment(workspace)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
 
 	// Parse remote services
 	remoteServices, err := parseRemote(workspace, remotes)

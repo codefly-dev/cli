@@ -187,22 +187,6 @@ func (f FlowFailure) Error() string {
 	return fmt.Sprintf("%s: %s", f.Service, f.Message)
 }
 
-// NewEmptyFlow will run a single agent
-func NewEmptyFlow(ctx context.Context, mode Mode) (*Flow, error) {
-	world := &World{
-		Mode: mode,
-		Env:  resources.LocalEnvironment(),
-	}
-	return &Flow{
-		world: world,
-		// Buffer sized to accommodate the largest plausible dependency graph.
-		// With 8 we silently dropped failures under concurrent crash cascades
-		// (the review caught this); 256 covers realistic sizes while still
-		// bounded.
-		failures: make(chan FlowFailure, 256),
-	}, nil
-}
-
 func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, mode Mode) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
 

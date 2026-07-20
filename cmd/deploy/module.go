@@ -49,12 +49,12 @@ var ModuleCmd = &cobra.Command{
 			return err
 		}
 
-		// Resolve env up-front: same workspace.FindEnvironment fallback
-		// as deploy service. Reused for every per-service flow + the
-		// final module-level kustomize.
-		env := workspace.FindEnvironment(envInput)
-		if env == nil {
-			env = &resources.Environment{Name: envInput}
+		// Resolve env up-front: same canonical selection as deploy
+		// service. Reused for every per-service flow + the final
+		// module-level kustomize.
+		env, err := orchestration.SelectEnvironment(workspace, envInput)
+		if err != nil {
+			return err
 		}
 
 		cli.Header(1, "Deploying module %s to env %s", module.Name, env.Name)

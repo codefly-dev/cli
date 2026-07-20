@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	"github.com/codefly-dev/core/resources"
@@ -63,7 +64,11 @@ func Run(ctx context.Context, workspace *resources.Workspace, module *resources.
 	if err := instance.LoadRuntime(ctx, true); err != nil {
 		return nil, fmt.Errorf("load runtime contract: %w", err)
 	}
-	environment, err := resources.LocalEnvironment().Proto()
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return nil, fmt.Errorf("select local environment: %w", err)
+	}
+	environment, err := env.Proto()
 	if err != nil {
 		return nil, fmt.Errorf("encode local environment: %w", err)
 	}

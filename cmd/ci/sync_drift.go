@@ -13,7 +13,11 @@ import (
 
 func runSyncDriftService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
 	w := wool.Get(ctx).In("ciSyncDrift", wool.ThisField(resources.WithUnique(service)))
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), orchestration.SyncMode)
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return w.Wrapf(err, "select sync drift environment")
+	}
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SyncMode)
 	if err != nil {
 		return w.Wrapf(err, "create sync drift flow")
 	}
