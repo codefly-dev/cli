@@ -136,6 +136,7 @@ codefly init workspace                    # create a workspace
 codefly add service my-svc --agent go     # add a service backed by the `go` agent
 codefly run service -d                     # run a service (with debug)
 codefly doctor                             # check your environment for common problems
+codefly doctor workspace                   # read-only readiness check for this workspace (great after a fresh worktree)
 ```
 
 > Tip: while developing in the `cli` directory you can replace `codefly` with
