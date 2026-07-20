@@ -73,7 +73,12 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, resources.LocalEnvironment(), orchestration.BuildMode)
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.BuildMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

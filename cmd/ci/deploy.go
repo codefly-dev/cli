@@ -66,11 +66,9 @@ func runDeployService(ctx context.Context, workspace *resources.Workspace, modul
 func initDeployService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, *platform.DeploymentManager, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(resources.WithUnique(service)))
 	orchestration.SetDryRun(dryRun)
-	var env *resources.Environment
-	if envInput == "local" {
-		env = resources.LocalEnvironment()
-	} else {
-		env = &resources.Environment{Name: envInput}
+	env, err := orchestration.SelectEnvironment(workspace, envInput)
+	if err != nil {
+		return nil, nil, w.Wrap(err)
 	}
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)

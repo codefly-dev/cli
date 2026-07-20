@@ -57,6 +57,8 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	cli.Init()
 	defer services.ClearAgents()
 
+	namingScopeExplicit = cmd.Flags().Changed("naming-scope")
+
 	// Auto-detect headless: no TTY or explicit --headless flag.
 	isHeadless := headless || withCLIServer || !isTerminal()
 
@@ -129,7 +131,10 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		// the workspace name when deriving CLIServerPort, so the spawned
 		// CLI MUST use the same derivation or the client connects to a
 		// port nobody's listening on — the documented cli-server ready
-		// flake.
+		// flake. Deliberately the raw flag, NOT the resolved environment's
+		// naming scope: the SDK client only knows the scope it passed, so
+		// a workspace-declared scope must affect service naming only,
+		// never this port contract.
 		server, err := web.NewServer(web.ServerData{Workspace: workspace, NamingScope: namingScope})
 		if err != nil {
 			return fmt.Errorf("cannot create web server: %w", err)
@@ -564,18 +569,37 @@ func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 	return name, strings.TrimSpace(string(out))
 }
 
-func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
+// runEnvironment resolves the local environment this run executes in. The
+// workspace's declared "local" environment (secret backends, cluster, naming
+// policy, …) wins over the synthetic default, and the --naming-scope override
+// applies to this invocation's copy only — never to the shared declaration.
+// An explicitly passed empty --naming-scope clears a declared scope; an
+// absent flag keeps it.
+func runEnvironment(workspace *resources.Workspace) (*resources.Environment, error) {
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return nil, err
+	}
+	if namingScope != "" || namingScopeExplicit {
+		env.NamingScope = namingScope
+	}
+	return env, nil
+}
+
+// newRunFlow selects the environment and wires the run flow up to — but
+// excluding — agent creation, so this call site stays testable without
+// spawning agent processes.
+func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("runService", wool.ThisField(resources.WithUnique(service)))
-	// Catch panic
-	defer w.Catch()
 
 	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	env := resources.LocalEnvironment()
-	// Setup optional naming namingScope
-	env.NamingScope = namingScope
+	env, err := runEnvironment(workspace)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
 
 	// Parse remote services
 	remoteServices, err := parseRemote(workspace, remotes)
@@ -614,6 +638,18 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, w.Wrap(err)
 	}
 	flow.WithExcludedDependencies(excludedDependencies)
+	return flow, nil
+}
+
+func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, error) {
+	w := wool.Get(ctx).In("runService", wool.ThisField(resources.WithUnique(service)))
+	// Catch panic
+	defer w.Catch()
+
+	flow, err := newRunFlow(ctx, workspace, module, service)
+	if err != nil {
+		return nil, err
+	}
 
 	// Return the flow even when init fails: InitManagers spawns agents
 	// incrementally (and Load can fail after they're live), so a partial failure

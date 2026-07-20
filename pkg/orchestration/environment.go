@@ -1,0 +1,48 @@
+package orchestration
+
+import (
+	"fmt"
+
+	"github.com/codefly-dev/core/resources"
+)
+
+// LocalEnvironmentName is the environment every workspace-bound lifecycle
+// command runs against unless the user selects another one with --env.
+const LocalEnvironmentName = "local"
+
+// SelectEnvironment is the canonical environment-selection path for
+// workspace-bound flows. It honors the workspace's declared environment when
+// present (FindEnvironment keeps the legacy synthetic "local" default for
+// workspaces that never declared one) and fails — before any agent is
+// spawned — when a non-local environment is requested but not declared.
+//
+// The returned Environment is a deep copy: invocation-scoped overrides such
+// as --naming-scope must not leak into the declaration shared by concurrent
+// flows over the same Workspace.
+func SelectEnvironment(workspace *resources.Workspace, name string) (*resources.Environment, error) {
+	env := workspace.FindEnvironment(name)
+	if env == nil {
+		return nil, fmt.Errorf("workspace %q does not declare environment %q in %s", workspace.Name, name, resources.WorkspaceConfigurationName)
+	}
+	return cloneEnvironment(env), nil
+}
+
+func cloneEnvironment(env *resources.Environment) *resources.Environment {
+	clone := *env
+	if env.Cluster != nil {
+		cluster := *env.Cluster
+		clone.Cluster = &cluster
+	}
+	if env.Registry != nil {
+		registry := *env.Registry
+		clone.Registry = &registry
+	}
+	if len(env.Secrets) > 0 {
+		clone.Secrets = make([]*resources.EnvironmentSecretProvider, len(env.Secrets))
+		for i, provider := range env.Secrets {
+			p := *provider
+			clone.Secrets[i] = &p
+		}
+	}
+	return &clone
+}

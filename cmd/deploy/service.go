@@ -78,12 +78,9 @@ var ServiceCmd = &cobra.Command{
 func initDeployService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(resources.WithUnique(service)))
 	orchestration.SetDryRun(dryRun)
-	// Look up the declared env from workspace.codefly.yaml; fall back to
-	// a bare-name env if the workspace hasn't migrated yet (FindEnvironment
-	// already special-cases "local" → LocalEnvironment).
-	env := workspace.FindEnvironment(envInput)
-	if env == nil {
-		env = &resources.Environment{Name: envInput}
+	env, err := orchestration.SelectEnvironment(workspace, envInput)
+	if err != nil {
+		return nil, w.Wrap(err)
 	}
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
