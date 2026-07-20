@@ -338,6 +338,65 @@ hit until Codefly adds restore/store outcomes.
 
 ## Utilities
 
+### `codefly doctor`
+
+Run host-level health checks (Docker, codefly home, installed agents, disk,
+process limits, daemon state, stray agents, stale sockets) and print actionable
+fixes. Exits non-zero if any hard check fails.
+
+### `codefly doctor workspace`
+
+Read-only workspace readiness check, designed to run right after creating a
+fresh git worktree — before `codefly run`/`codefly test`. It validates that the
+selected environment and its required configuration can be discovered and
+resolved, without starting agents, containers, or services, and without ever
+printing or writing secret values.
+
+```bash
+codefly doctor workspace                       # validate the local environment
+codefly doctor workspace --env staging         # validate a declared environment
+codefly doctor workspace --service api         # restrict to one service's declared dependencies
+codefly doctor workspace --json                # machine-readable report (for worktree managers)
+codefly doctor workspace --timeout 10s         # bound secret-provider resolution
+```
+
+What it checks, in order:
+
+1. Workspace discovery and manifest validity (never migrates or rewrites files).
+2. The requested environment resolves through the workspace declaration
+   (`local` is implicit when undeclared).
+3. Declared secret backends are supported and their executables are on PATH
+   (`op` for 1Password).
+4. `configurations/<env>` exists when services declare
+   `workspace-configuration-dependencies`, and required configurations exist
+   and define values. The directory is never created.
+5. Per-service `configurations/<env>` files parse; duplicates are flagged.
+6. Secret provider references (`op://…`) resolve in memory through the
+   configured backend; resolved values are discarded immediately. Plaintext
+   values shaped like unsupported reference schemes are flagged.
+
+With `--service`, only that service's declared workspace/service configuration
+requirements are validated and resolved; unrelated configurations are not
+touched.
+
+**Exit codes:** `0` — ready (warnings allowed); `1` — at least one check
+failed (or the command itself failed).
+
+**JSON contract** (`--json`, stdout): `{schema_version: 1, workspace,
+workspace_dir, environment, environment_declared, service?, status:
+"ready"|"not_ready", checks: [{code, name, status: "ok"|"warn"|"fail",
+message, remediation?}]}`. Output never contains configuration values, raw
+`op://` references, provider output, or environment dumps.
+
+**Stable diagnostic codes:** `workspace_not_found`, `workspace_invalid`,
+`environment_not_found`, `service_not_found`,
+`configuration_directory_missing`, `configuration_missing`,
+`configuration_invalid`, `configuration_duplicate`, `provider_not_configured`,
+`provider_executable_missing`, `provider_authentication_required`,
+`provider_resolution_failed`, `plaintext_not_allowed`,
+`reference_scheme_unknown`, `timeout`. Automation should match on codes, never
+on message prose; renaming or removing a code bumps `schema_version`.
+
 ### `codefly version`
 
 Print the CLI version.

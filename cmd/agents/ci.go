@@ -561,6 +561,10 @@ func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error 
 			{source: state.build.nativePath + ".cdx.json", target: runtime.GOOS + "/" + runtime.GOARCH, kind: "cyclonedx-sbom"},
 			{source: state.build.containerPath + ".cdx.json", target: "linux/amd64", kind: "cyclonedx-sbom"},
 		}
+		// On a linux/amd64 host the native and container builds share a
+		// target, so both would map to the same release path; publish the
+		// first and skip the duplicate instead of silently overwriting it.
+		persisted := make(map[string]bool)
 		for _, artifact := range releaseArtifacts {
 			if artifact.source == "" || artifact.source == ".cdx.json" {
 				continue
@@ -573,6 +577,10 @@ func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error 
 			}
 			platformDirectory := strings.ReplaceAll(artifact.target, "/", "-")
 			relative := filepath.Join("artifacts", platformDirectory, filepath.Base(artifact.source))
+			if persisted[relative] {
+				continue
+			}
+			persisted[relative] = true
 			destination := filepath.Join(options.output, relative)
 			if err := copyAgentCIFile(artifact.source, destination); err != nil {
 				return err

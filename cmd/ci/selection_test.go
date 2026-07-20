@@ -122,7 +122,7 @@ func TestBuildPlanGlobalSelectionSupersedesDirectPathDetails(t *testing.T) {
 }
 
 func TestBuildPlanLibraryChangeSelectsConsumers(t *testing.T) {
-	root, workspace := loadPlanFixture(t, "../../../core/resources/testdata/workspaces/with-library")
+	root, workspace := loadPlanFixture(t, "testdata/with-library")
 	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{
 		RepoRoot:     root,
 		ChangedFiles: []string{"libraries/shared-models/go/model.go"},

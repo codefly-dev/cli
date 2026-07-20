@@ -221,15 +221,26 @@ func TestPersistAgentCIArtifactsSeparatesReleaseTargets(t *testing.T) {
 	if err := persistAgentCIArtifacts(agentCIOptions{output: output}, state); err != nil {
 		t.Fatalf("persistAgentCIArtifacts: %v", err)
 	}
-	if len(state.report.Artifacts) != 2 {
-		t.Fatalf("persisted artifacts = %v, want two binaries", state.report.Artifacts)
-	}
-	first, second := state.report.Artifacts[0], state.report.Artifacts[1]
-	if first.GetPath() == second.GetPath() || first.GetSha256() == second.GetSha256() {
-		t.Fatalf("release artifacts collided: first=%v second=%v", first, second)
-	}
-	if first.GetTarget() != runtime.GOOS+"/"+runtime.GOARCH || second.GetTarget() != "linux/amd64" {
-		t.Fatalf("release artifact targets: first=%q second=%q", first.GetTarget(), second.GetTarget())
+	hostTarget := runtime.GOOS + "/" + runtime.GOARCH
+	if hostTarget == "linux/amd64" {
+		// Native and container targets coincide: exactly one binary published.
+		if len(state.report.Artifacts) != 1 {
+			t.Fatalf("persisted artifacts = %v, want one binary on a linux/amd64 host", state.report.Artifacts)
+		}
+		if state.report.Artifacts[0].GetTarget() != "linux/amd64" {
+			t.Fatalf("release artifact target = %q, want linux/amd64", state.report.Artifacts[0].GetTarget())
+		}
+	} else {
+		if len(state.report.Artifacts) != 2 {
+			t.Fatalf("persisted artifacts = %v, want two binaries", state.report.Artifacts)
+		}
+		first, second := state.report.Artifacts[0], state.report.Artifacts[1]
+		if first.GetPath() == second.GetPath() || first.GetSha256() == second.GetSha256() {
+			t.Fatalf("release artifacts collided: first=%v second=%v", first, second)
+		}
+		if first.GetTarget() != hostTarget || second.GetTarget() != "linux/amd64" {
+			t.Fatalf("release artifact targets: first=%q second=%q", first.GetTarget(), second.GetTarget())
+		}
 	}
 	for _, artifact := range state.report.Artifacts {
 		if _, err := os.Stat(filepath.Join(output, filepath.FromSlash(artifact.GetPath()))); err != nil {

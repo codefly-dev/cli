@@ -1,0 +1,10 @@
+kind: library
+name: shared-models
+description: Shared domain models
+version: 1.2.0
+languages:
+  - name: go
+    agent: ""
+    path: go/
+    exports:
+      - github.com/myorg/shared-models
