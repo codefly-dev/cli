@@ -51,6 +51,88 @@ func TestRunEnvironmentUndeclaredLocalKeepsLegacyDefault(t *testing.T) {
 	require.Equal(t, resources.LocalEnvironment(), env)
 }
 
+func TestRunEnvironmentExplicitEmptyNamingScopeClearsDeclaredScope(t *testing.T) {
+	workspace := loadWorkspaceFixture(t, declaredLocalWorkspace)
+
+	prevScope, prevExplicit := namingScope, namingScopeExplicit
+	t.Cleanup(func() { namingScope, namingScopeExplicit = prevScope, prevExplicit })
+	namingScope, namingScopeExplicit = "", true
+
+	env, err := runEnvironment(workspace)
+	require.NoError(t, err)
+	require.Empty(t, env.NamingScope)
+	require.Equal(t, "from-yaml", workspace.FindEnvironment("local").NamingScope)
+}
+
+// Pins the NewFlow call site, not just the selection helper: the flow built
+// by `codefly run service` must carry the workspace-declared local
+// environment all the way into orchestration.
+func TestNewRunFlowCarriesDeclaredLocalEnvironment(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	files := map[string]string{
+		"workspace.codefly.yaml": `name: run-env
+layout: modules
+modules:
+    - name: web
+environments:
+    - name: local
+      naming-scope: from-yaml
+      secrets:
+          - kind: 1password
+            account: acme-dev
+`,
+		"modules/web/module.codefly.yaml": `kind: module
+name: web
+project: run-env
+services:
+    - name: gateway
+`,
+		"modules/web/services/gateway/service.codefly.yaml": `kind: service
+name: gateway
+version: 0.0.0
+module: web
+agent:
+    kind: runtime::service
+    name: krakend
+    version: 0.0.6
+    publisher: codefly.ai
+endpoints:
+    - name: rest
+      visibility: public
+      api: rest
+`,
+	}
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, dir)
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(ctx, "web")
+	require.NoError(t, err)
+	service, err := module.LoadServiceFromName(ctx, "gateway")
+	require.NoError(t, err)
+
+	// An explicit runtime context skips the Docker probe so the flow builds
+	// hermetically; no agent is spawned before InitManagers.
+	prevContext := runtimeContext
+	t.Cleanup(func() { runtimeContext = prevContext })
+	runtimeContext = resources.RuntimeContextNative
+
+	flow, err := newRunFlow(ctx, workspace, module, service)
+	require.NoError(t, err)
+
+	env := flow.Environment()
+	require.NotNil(t, env)
+	require.Equal(t, "local", env.Name)
+	require.Equal(t, "from-yaml", env.NamingScope)
+	require.Len(t, env.Secrets, 1)
+	require.Equal(t, "1password", env.Secrets[0].Kind)
+	require.Equal(t, "acme-dev", env.Secrets[0].Account)
+}
+
 func TestRunEnvironmentNamingScopeOverrideStaysInvocationLocal(t *testing.T) {
 	workspace := loadWorkspaceFixture(t, declaredLocalWorkspace)
 

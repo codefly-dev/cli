@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -163,6 +164,30 @@ func TestSelectEnvironmentConcurrentOverridesDoNotContaminate(t *testing.T) {
 	declared := workspace.FindEnvironment(LocalEnvironmentName)
 	require.Equal(t, "from-yaml", declared.NamingScope)
 	require.Equal(t, "acme-dev", declared.Secrets[0].Account)
+}
+
+// cloneEnvironment is correct by enumeration, not by construction: it must
+// name every non-value field of resources.Environment. This canary fails the
+// moment core grows the struct with a field the clone would silently share,
+// which would quietly reintroduce cross-flow contamination.
+func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
+	deepCopied := map[string]bool{"Cluster": true, "Registry": true, "Secrets": true}
+	typ := reflect.TypeOf(resources.Environment{})
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if deepCopied[field.Name] {
+			continue
+		}
+		switch field.Type.Kind() {
+		case reflect.Bool, reflect.String,
+			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Float32, reflect.Float64:
+			// Value kinds are copied by the struct assignment.
+		default:
+			t.Errorf("resources.Environment.%s (%s) is shared, not copied, by cloneEnvironment — extend the clone before concurrent flows can contaminate each other", field.Name, field.Type)
+		}
+	}
 }
 
 func TestSelectEnvironmentIsEquivalentAcrossFlows(t *testing.T) {

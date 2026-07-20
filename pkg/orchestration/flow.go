@@ -1554,6 +1554,15 @@ func (flow *Flow) ActiveWorkspace() *resources.Workspace {
 	return flow.workspace
 }
 
+// Environment returns the environment this flow runs against — the same
+// object handed to the configuration manager and serialized to every agent.
+func (flow *Flow) Environment() *resources.Environment {
+	if flow == nil || flow.world == nil {
+		return nil
+	}
+	return flow.world.Env
+}
+
 func (flow *Flow) Origin() *resources.Service {
 	return flow.originService
 }

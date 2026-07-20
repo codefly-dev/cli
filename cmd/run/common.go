@@ -31,6 +31,11 @@ var setOverrides []string
 // Useful for testing/CI
 var namingScope string
 
+// namingScopeExplicit records whether --naming-scope was passed at all, so an
+// explicit empty value can clear a workspace-declared scope while an absent
+// flag keeps it.
+var namingScopeExplicit bool
+
 // Runtime context
 var runtimeContext string
 
