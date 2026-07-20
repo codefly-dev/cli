@@ -1,0 +1,13 @@
+kind: service
+name: api
+version: 0.0.1
+agent:
+  kind: runtime::service
+  name: go-grpc
+  version: 0.0.1
+  publisher: codefly.ai
+library-dependencies:
+  - name: shared-models
+    version: "^1.0.0"
+    languages:
+      - go
