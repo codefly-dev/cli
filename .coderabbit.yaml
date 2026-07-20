@@ -1,0 +1,5 @@
+# CodeRabbit stays out of the way: no automatic reviews on any PR.
+# Summon it explicitly with `@coderabbitai review` when wanted.
+reviews:
+  auto_review:
+    enabled: false
