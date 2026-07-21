@@ -53,3 +53,27 @@ func TestSyncPolicyOneDependency(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, createCombinedActions([]string{org, start}, orchestration.BuilderSync), actions)
 }
+
+func TestSyncPolicyTransitiveDependencies(t *testing.T) {
+	ctx := context.Background()
+	data := setup(t, orchestration.BuilderSync, execOnInit())
+
+	start := "web/gateway"
+	accounts := "billing/accounts"
+	org := "management/organization"
+
+	err := data.policy.Restrict(ctx, start)
+	require.NoError(t, err)
+
+	actions, err := data.policy.Execute(ctx, orchestration.Action{Type: orchestration.BuilderInit, Service: org})
+	require.NoError(t, err)
+	require.Equal(t, createActions(org, orchestration.BuilderSync), actions)
+
+	actions, err = data.policy.Execute(ctx, orchestration.Action{Type: orchestration.BuilderInit, Service: accounts})
+	require.NoError(t, err)
+	require.Equal(t, createCombinedActions([]string{org, accounts}, orchestration.BuilderSync), actions)
+
+	actions, err = data.policy.Execute(ctx, orchestration.Action{Type: orchestration.BuilderInit, Service: start})
+	require.NoError(t, err)
+	require.Equal(t, createCombinedActions([]string{org, accounts, start}, orchestration.BuilderSync), actions)
+}
