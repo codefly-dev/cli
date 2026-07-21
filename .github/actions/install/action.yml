@@ -7,19 +7,19 @@ runs:
     - name: Set up the Codefly toolchain
       uses: actions/setup-go@v5
       with:
-        go-version-file: ${{ github.action_path }}/go.mod
+        go-version-file: ${{ github.action_path }}/../../../go.mod
         cache: false
 
     - name: Build the pinned Codefly CLI
       shell: bash
       env:
-        CODEFLY_ACTION_PATH: ${{ github.action_path }}
+        CODEFLY_REPOSITORY_ROOT: ${{ github.action_path }}/../../..
       run: |
         set -euo pipefail
         install_root="${RUNNER_TEMP}/codefly-action/bin"
         mkdir -p "${install_root}"
         (
-          cd "${CODEFLY_ACTION_PATH}"
+          cd "${CODEFLY_REPOSITORY_ROOT}"
           GOWORK=off GOBIN="${install_root}" go install ./cmd/codefly
         )
         test -x "${install_root}/codefly"
