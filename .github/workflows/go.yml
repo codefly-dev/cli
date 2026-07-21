@@ -11,16 +11,17 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - name: set up
-        uses: actions/setup-go@v4 # Updated to latest major version, verify for minor version updates
-        with:
-          go-version: '1.26.5' # matches the toolchain directive; clears Go stdlib CVEs in the audit
-
       - name: checkout
-        uses: actions/checkout@v3 # Already latest major version
+        uses: actions/checkout@v4
+
+      # This is both the canonical bootstrap and the cross-repository action
+      # contract consumed by Codefly products. Dogfood the local action so a
+      # release cannot publish an installer that CI never exercised.
+      - name: install Codefly
+        uses: ./.github/actions/install
 
       - name: Cache Go Modules
-        uses: actions/cache@v3 # Already latest major version
+        uses: actions/cache@v4
         continue-on-error: true
         with:
           path: ~/go/pkg/mod
@@ -29,15 +30,10 @@ jobs:
             ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
 
       - name: Install Dependencies
-        run: go mod tidy && go mod download
+        run: go mod download
 
-      # Bootstrap the codefly binary (replaces scripts/build/local.sh) so the
-      # rest of the pipeline can drive the CLI's own commands. This is also the
-      # build verification — a compile failure stops the job here.
-      - name: build codefly
-        run: |
-          go build -o codefly .
-          echo "$PWD" >> "$GITHUB_PATH"
+      - name: Verify the composed-module command is packaged
+        run: codefly sync module --help
 
       # govulncheck gate via the CLI (replaces scripts/govulncheck.sh):
       # suppressions + staleness from .govulncheck.yaml, fails only on

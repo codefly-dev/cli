@@ -1,0 +1,26 @@
+name: Install Codefly
+description: Install the Codefly CLI version pinned by this action reference
+
+runs:
+  using: composite
+  steps:
+    - name: Set up the Codefly toolchain
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: false
+
+    - name: Build the pinned Codefly CLI
+      shell: bash
+      env:
+        CODEFLY_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        install_root="${RUNNER_TEMP}/codefly-action/bin"
+        mkdir -p "${install_root}"
+        (
+          cd "${CODEFLY_ACTION_PATH}"
+          GOWORK=off GOBIN="${install_root}" go install ./cmd/codefly
+        )
+        test -x "${install_root}/codefly"
+        echo "${install_root}" >> "${GITHUB_PATH}"
