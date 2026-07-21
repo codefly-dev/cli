@@ -18,7 +18,7 @@ import (
 // ModuleCmd represents the run command
 var ModuleCmd = &cobra.Command{
 	Use:   "module",
-	Short: "Add a module",
+	Short: "Create a module to group related services and jobs",
 	Args:  cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {

@@ -11,7 +11,7 @@ import (
 // LoginCmd represents the login command
 var LoginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Login to codefly platform",
+	Short: "Authenticate this workspace with the Codefly platform",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

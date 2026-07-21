@@ -25,6 +25,80 @@ codefly deploy service api              # 7. Deploy to environment
 
 ---
 
+## Help and contextual explanations
+
+Every command provides complete static help without network access:
+
+```bash
+codefly build --help
+codefly help build service
+```
+
+`codefly explain [command...]` prints that same static help and optionally asks
+an installed help provider for a workspace-aware explanation:
+
+```bash
+codefly explain build service
+codefly explain deploy module
+CODEFLY_HELP_PROVIDER=/path/to/provider codefly explain run service
+```
+
+The provider is a separate executable rather than an LLM client embedded in
+the CLI or the Mind Gateway. This keeps the Homebrew CLI independent of a
+running Mind process, model SDK, network connection, or API key. When no
+provider is installed, or when it fails, `codefly explain` still prints the
+static help and exits successfully.
+
+By default Codefly looks for `codefly-help` on `PATH`.
+`CODEFLY_HELP_PROVIDER` can select another executable.
+
+```bash
+go install github.com/codefly-dev/cli/cmd/codefly-help@latest
+export OPENAI_API_KEY=...
+codefly explain build service
+```
+
+The reference `codefly-help` provider is built and installed separately from
+the main CLI. It calls the OpenAI Responses API without an SDK, defaults to
+`gpt-5.6-luna`, and accepts `CLI_HELP_MODEL` and `CLI_HELP_API_URL` overrides.
+Its protocol and implementation are CLI-agnostic so they can move into a
+standalone repository without changing the Codefly integration.
+
+Codefly writes one JSON request to the provider's standard input:
+
+```json
+{
+  "protocol_version": 1,
+  "application": "codefly",
+  "command": "codefly build service",
+  "static_help": "Usage: ...",
+  "context": {
+    "workspace": "storefront",
+    "layout": "modules",
+    "modules": ["backend"],
+    "services": ["backend/api"],
+    "jobs": ["backend/migrate"],
+    "environments": ["staging"]
+  }
+}
+```
+
+The provider returns JSON on standard output:
+
+```json
+{
+  "protocol_version": 1,
+  "explanation": "Use this command when ..."
+}
+```
+
+The protocol is intentionally CLI-agnostic: another application can provide
+its own name, command help, and contextual JSON. Codefly reads only resource
+names from `workspace.codefly.yaml` and `module.codefly.yaml`, caps each name
+list at 50 entries, and never sends source files or unrelated configuration.
+
+---
+
 ## Execution
 
 ### `codefly run service [name]`

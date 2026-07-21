@@ -18,7 +18,7 @@ import (
 // ServiceCmd represents the deploy command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Handle a service",
+	Short: "Deploy a service to the selected workspace environment",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

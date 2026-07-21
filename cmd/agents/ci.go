@@ -37,7 +37,7 @@ const (
 
 var AgentCICmd = &cobra.Command{
 	Use:   "ci",
-	Short: "Run the Codefly-owned CI and generated-service conformance gate for an agent",
+	Short: "Validate an agent against source, release, and generated-service CI gates",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()

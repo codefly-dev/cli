@@ -20,7 +20,7 @@ var (
 
 var RunCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Run the Codefly-native CI gate for affected services",
+	Short: "Run the complete Codefly-native CI gate for affected services",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if strings.EqualFold(strings.TrimSpace(ciReportFormat), "json") {

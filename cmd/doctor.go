@@ -26,7 +26,7 @@ import (
 // becomes a checklist. Exits non-zero if any hard check FAILs.
 var DoctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Check your environment for common codefly problems",
+	Short: "Diagnose local prerequisites and workspace configuration problems",
 	Long: `Run environment health checks and print actionable fixes.
 
 Verifies the things that quietly break a run — Docker reachability, the codefly

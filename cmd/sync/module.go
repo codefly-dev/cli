@@ -45,7 +45,7 @@ type moduleSyncOptions struct {
 // Dry-run is the default; --apply is explicit and re-plans before mutation.
 var ModuleCmd = &cobra.Command{
 	Use:   "module <name>",
-	Short: "Preview or apply a manifest-safe composed module update",
+	Short: "Preview or apply a composed module update without overwriting product code",
 	Long: `Update a composed module without overwriting product code.
 
 The canonical base owns only paths in tools/base-manifest.json. Consumer-only

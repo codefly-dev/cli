@@ -30,7 +30,7 @@ import (
 // `--all` applies any of these across every agent in the directory tree.
 var DepsCmd = &cobra.Command{
 	Use:   "deps",
-	Short: "Manage an agent's core dependency (local go.work or published pin)",
+	Short: "Switch an agent between a local core checkout and a published version",
 	Long: `Manage how an agent resolves its codefly-core dependency.
 
 By default (or with --link) it wires a local go.work so the agent builds against

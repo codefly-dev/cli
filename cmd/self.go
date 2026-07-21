@@ -8,7 +8,7 @@ import (
 // SelfCmd groups commands that operate on the codefly CLI itself.
 var SelfCmd = &cobra.Command{
 	Use:   "self",
-	Short: "Manage the codefly CLI itself",
+	Short: "Maintain a local Codefly CLI checkout and installation",
 }
 
 func init() {

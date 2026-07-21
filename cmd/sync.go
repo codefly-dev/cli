@@ -8,7 +8,7 @@ import (
 // SyncCmd represents the Sync command
 var SyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sync service with dependencies",
+	Short: "Reconcile services, libraries, or composed modules with their dependencies",
 }
 
 func init() {

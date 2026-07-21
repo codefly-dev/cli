@@ -14,7 +14,7 @@ import (
 // ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Update a service",
+	Short: "Update the active service to its latest compatible agent",
 
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {

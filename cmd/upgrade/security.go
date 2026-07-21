@@ -34,7 +34,7 @@ import (
 // clear them.
 var SecurityCmd = &cobra.Command{
 	Use:   "security",
-	Short: "Upgrade dependencies to clear actionable vulnerabilities (govulncheck-driven)",
+	Short: "Upgrade dependencies needed to remediate actionable Go vulnerabilities",
 	Long: `Security runs the same govulncheck audit as ` + "`codefly agent build`" + ` and then
 APPLIES the fixes it finds actionable:
 

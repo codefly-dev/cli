@@ -26,7 +26,7 @@ const cliModulePath = "github.com/codefly-dev/cli"
 // wool/) take effect without remembering the build script path.
 var BuildCmd = &cobra.Command{
 	Use:   "build",
-	Short: "Rebuild the codefly CLI from source and install it",
+	Short: "Build the CLI from source and install the resulting binary",
 	Long: `Build compiles the codefly CLI from source and installs it over the
 binary currently on your PATH (the one you just invoked).
 

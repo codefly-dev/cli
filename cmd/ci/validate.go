@@ -20,7 +20,7 @@ var (
 
 var LintCmd = &cobra.Command{
 	Use:   "lint",
-	Short: "Run agent-owned lint for affected services",
+	Short: "Lint affected services through their agents",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runValidationCommand(&lintSelection, runLintService, "lint")
@@ -29,7 +29,7 @@ var LintCmd = &cobra.Command{
 
 var CompileCmd = &cobra.Command{
 	Use:   "compile",
-	Short: "Run agent-owned native build/typecheck for affected services",
+	Short: "Compile or type-check affected services through their agents",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runValidationCommand(&compileSelection, runCompileService, "compile")

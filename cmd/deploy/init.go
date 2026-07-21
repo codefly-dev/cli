@@ -11,7 +11,7 @@ import (
 // InitCmd represents the run command
 var InitCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Init deployment",
+	Short: "Initialize version-controlled deployment manifests for the workspace",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return setup()

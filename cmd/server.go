@@ -12,7 +12,7 @@ import (
 // ServerCmd represents the build command
 var ServerCmd = &cobra.Command{
 	Use:   "server",
-	Short: "Server for codefly",
+	Short: "Serve the current workspace in the Codefly web interface",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

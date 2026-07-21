@@ -8,7 +8,7 @@ import (
 // CompileCmd exposes plugin-owned native compilation/typechecking outside CI.
 var CompileCmd = &cobra.Command{
 	Use:   "compile",
-	Short: "Run plugin-owned native compilation or typechecking",
+	Short: "Run plugin-owned compilation or type checking for a service",
 }
 
 func init() {

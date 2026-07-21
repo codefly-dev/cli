@@ -34,7 +34,7 @@ var (
 // file or remembering --debug.
 var LogsCmd = &cobra.Command{
 	Use:   "logs",
-	Short: "Show the codefly session logs",
+	Short: "Read or follow logs from the current Codefly session",
 	Long: `Show codefly's detailed session logs (~/.codefly/logs/<date>.log).
 
 By default prints the last 100 lines of today's log, pretty-printed. This is the

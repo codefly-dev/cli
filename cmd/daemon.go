@@ -19,14 +19,14 @@ import (
 // DaemonCmd is the top-level "daemon" command group.
 var DaemonCmd = &cobra.Command{
 	Use:   "daemon",
-	Short: "Manage the codefly background service",
+	Short: "Run and inspect Codefly services in the background",
 }
 
 // --- daemon start ---
 
 var daemonStartCmd = &cobra.Command{
 	Use:   "start [-- flags passed to 'run service']",
-	Short: "Start services in the background",
+	Short: "Run workspace services in a detached background daemon",
 	Long: `Starts a detached codefly daemon that runs your services.
 
 Any flags after "--" are forwarded to the underlying "run service" command.
@@ -78,7 +78,7 @@ Examples:
 
 var daemonStopCmd = &cobra.Command{
 	Use:   "stop",
-	Short: "Stop the running daemon",
+	Short: "Stop the active background daemon and its services",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		status, err := daemon.GetStatus()
@@ -103,7 +103,7 @@ var daemonStopCmd = &cobra.Command{
 
 var daemonStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Check if the daemon is running",
+	Short: "Report whether the Codefly daemon is running",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		status, err := daemon.GetStatus()
@@ -129,7 +129,7 @@ var (
 
 var daemonLogsCmd = &cobra.Command{
 	Use:   "logs",
-	Short: "Show daemon log output",
+	Short: "Read or follow output from the background daemon",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logPath, err := daemon.LogFile()
@@ -210,7 +210,7 @@ var (
 
 var daemonGatewayCmd = &cobra.Command{
 	Use:    "gateway",
-	Short:  "Run the Mind Gateway gRPC server (foreground)",
+	Short:  "Serve Codefly workspace operations to Mind over gRPC",
 	Long:   "Starts the Mind Gateway gRPC server in the foreground. Typically invoked by 'daemon start --gateway' or by Mind automatically.",
 	Hidden: false,
 	Args:   cobra.NoArgs,
@@ -259,7 +259,7 @@ var daemonGatewayCmd = &cobra.Command{
 
 var daemonRestartCmd = &cobra.Command{
 	Use:   "restart",
-	Short: "Restart the running daemon (stop then start)",
+	Short: "Restart the background daemon with its previous arguments",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Stop if running.
 		status, err := daemon.GetStatus()
@@ -306,7 +306,7 @@ var (
 
 var daemonMonitorCmd = &cobra.Command{
 	Use:   "monitor",
-	Short: "Monitor codefly processes for CPU/memory issues",
+	Short: "Watch Codefly processes for CPU and memory pressure",
 	Long: `Checks all codefly-related processes (agents, server, Neo4j) for:
 - High CPU usage (>200% for 2 consecutive checks → auto-kill agents)
 - High memory usage (>512MB → warning)

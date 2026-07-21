@@ -8,7 +8,7 @@ import (
 // InstallCmd represents the install command
 var InstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install",
+	Short: "Install reusable components into the current workspace",
 }
 
 func init() {

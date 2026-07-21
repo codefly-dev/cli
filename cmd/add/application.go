@@ -21,7 +21,7 @@ import (
 // ApplicationCmd represents the add application command
 var ApplicationCmd = &cobra.Command{
 	Use:   "application",
-	Short: "Add an application",
+	Short: "Create an agent-backed application in a module",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {

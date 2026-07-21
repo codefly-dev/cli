@@ -18,7 +18,7 @@ import (
 // Subcommand `codefly publish re-tag` runs the re-tag flow.
 var Cmd = &cobra.Command{
 	Use:   "publish [patch|minor|major]",
-	Short: "Cut a release for the current codefly repo",
+	Short: "Version, tag, and push a release for the current Codefly repository",
 	Long: `publish bumps the manifest version, commits, tags, and pushes
 the new tag to origin. One command for every codefly-dev repo —
 modules (core, cli, sdk-go) and agents (every services/* and
@@ -98,7 +98,7 @@ func run(c *cobra.Command, args []string) error {
 // are meaningfully different (the only valid force-push path).
 var reTagCmd = &cobra.Command{
 	Use:   "re-tag",
-	Short: "Re-cut the manifest's current tag at HEAD (force-pushes the TAG only, never main)",
+	Short: "Move the current manifest tag to HEAD without rewriting main",
 	Long: `re-tag deletes the manifest's current tag locally + on origin and
 recreates it at HEAD. Used when CI needs a fresh tag-push trigger
 without bumping the version.

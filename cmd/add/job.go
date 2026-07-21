@@ -21,7 +21,7 @@ var (
 // JobCmd represents the add job command
 var JobCmd = &cobra.Command{
 	Use:   "job [name]",
-	Short: "Add a job to a module",
+	Short: "Create a scheduled or one-shot job in a module",
 	Long: `Add a job (scheduled or one-shot task) to a module.
 
 Jobs are ephemeral execution units for tasks like:

@@ -8,7 +8,7 @@ import (
 // ListCmd represents the list command
 var ListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List",
+	Short: "List jobs and other resources in the current workspace",
 }
 
 func init() {

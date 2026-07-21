@@ -8,7 +8,7 @@ import (
 // BuildCmd represents the build command
 var BuildCmd = &cobra.Command{
 	Use:   "build",
-	Short: "Build your containers",
+	Short: "Build container images for a service or an entire module",
 }
 
 func init() {

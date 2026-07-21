@@ -17,7 +17,7 @@ import (
 // DeployCmd represents the run command
 var DeployCmd = &cobra.Command{
 	Use:   "deploy",
-	Short: "Run CI Handle",
+	Short: "Deploy workspace services as a CI stage",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

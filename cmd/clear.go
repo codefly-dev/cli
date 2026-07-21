@@ -81,7 +81,7 @@ func clearCommandOptions() clearOptions {
 // you want to recycle one piece of infra without nuking the rest.
 var ClearCmd = &cobra.Command{
 	Use:   "clear [name-filter...]",
-	Short: "Clear codefly processes + docker containers",
+	Short: "Remove Codefly processes, containers, and stale local runtime state",
 	Long: `Clear codefly state.
 
 Without arguments, removes ALL codefly processes and ALL codefly-owned

@@ -12,7 +12,7 @@ import (
 // ModuleCmd represents the run command
 var ModuleCmd = &cobra.Command{
 	Use:   "module",
-	Short: "Delete an module",
+	Short: "Remove a module and its reference from the workspace",
 	Args:  cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {

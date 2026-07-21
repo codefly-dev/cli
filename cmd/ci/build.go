@@ -18,7 +18,7 @@ var buildSelection SelectionFlags
 
 var BuildCmd = &cobra.Command{
 	Use:   "build",
-	Short: "Run CI Build",
+	Short: "Build affected services as a CI stage",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

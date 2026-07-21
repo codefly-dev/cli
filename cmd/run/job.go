@@ -16,7 +16,7 @@ var (
 // JobCmd represents the run job command
 var JobCmd = &cobra.Command{
 	Use:   "job [name]",
-	Short: "Run a job",
+	Short: "Run a one-shot or scheduled job from its module configuration",
 	Long: `Run a job (scheduled or one-shot task).
 
 Jobs execute to completion and then exit. They can depend on services

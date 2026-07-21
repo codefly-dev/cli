@@ -22,7 +22,7 @@ import (
 // command for core + cli + sdk + every agent.
 var allCmd = &cobra.Command{
 	Use:   "all [patch|minor|major]",
-	Short: "Publish every codefly-dev repo in the workspace (core, cli, sdk, all agents)",
+	Short: "Release every Codefly repository in dependency order",
 	Long: `all discovers every git repo under the workspace carrying a codefly
 manifest (agent.codefly.yaml | version/info.codefly.yaml | pkg/cli/info.yaml
 | info.codefly.yaml) and runs the same flow as plain ` + "`codefly publish`" + `

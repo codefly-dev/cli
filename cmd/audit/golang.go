@@ -36,7 +36,7 @@ var (
 // can clear them.
 var GoCmd = &cobra.Command{
 	Use:   "go",
-	Short: "Audit a Go module with govulncheck (suppressions + staleness gate)",
+	Short: "Scan a Go module for vulnerabilities and stale dependencies",
 	Long: `Audit the Go module at --dir (default: current directory) with govulncheck.
 
 Findings are partitioned against the nearest .govulncheck.yaml (walking up

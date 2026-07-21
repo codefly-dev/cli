@@ -15,7 +15,7 @@ import (
 // ApplicationDependencyCmd represents the add application dependency command
 var ApplicationDependencyCmd = &cobra.Command{
 	Use:   "application-dependency",
-	Short: "Add an application dependency",
+	Short: "Link an application to another application or service",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {

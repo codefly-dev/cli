@@ -23,7 +23,7 @@ var (
 
 // LintServiceCmd runs the loaded service plugin's Runtime.Lint RPC.
 var LintServiceCmd = newServiceCommand(
-	"Lint a service through its plugin",
+	"Run the service plugin's configured lint checks",
 	"lint",
 	orchestration.LintMode,
 	&lintRuntimeContext,
@@ -32,7 +32,7 @@ var LintServiceCmd = newServiceCommand(
 // CompileServiceCmd runs the loaded service plugin's Runtime.Build RPC. This
 // native compile/typecheck operation is distinct from deployable Builder.Build.
 var CompileServiceCmd = newServiceCommand(
-	"Compile or typecheck a service through its plugin",
+	"Compile or type-check a service through its plugin",
 	"compile",
 	orchestration.CompileMode,
 	&compileRuntimeContext,

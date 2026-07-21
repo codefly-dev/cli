@@ -8,7 +8,7 @@ import (
 // LintCmd exposes plugin-owned lint outside CI.
 var LintCmd = &cobra.Command{
 	Use:   "lint",
-	Short: "Run plugin-owned lint",
+	Short: "Run plugin-owned lint checks for a service",
 }
 
 func init() {

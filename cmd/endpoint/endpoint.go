@@ -27,7 +27,7 @@ import (
 
 var Cmd = &cobra.Command{
 	Use:   "endpoint [service]",
-	Short: "Resolve a single endpoint to host:port (script-friendly)",
+	Short: "Resolve one service endpoint to a script-friendly host and port",
 	Long: `Endpoint resolves ONE endpoint of a service to its concrete host:port and
 prints just that address to stdout (nothing else). Exits non-zero if no
 single endpoint matches.

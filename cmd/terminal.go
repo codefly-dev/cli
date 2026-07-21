@@ -32,7 +32,7 @@ var (
 // TerminalCmd opens an interactive terminal session via the codefly daemon.
 var TerminalCmd = &cobra.Command{
 	Use:   "terminal",
-	Short: "Open an interactive terminal session",
+	Short: "Open an interactive shell scoped to a workspace resource",
 	Long: `Opens a terminal session scoped to a module/service directory.
 The session runs inside the codefly daemon and persists across disconnections.
 
