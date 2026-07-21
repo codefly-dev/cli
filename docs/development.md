@@ -97,15 +97,20 @@ This means changes to `core` or `wool` are immediately reflected in the CLI with
 
 ```bash
 cd cli
-go build ./...
+codefly self build
 ```
 
 ### 4. Install locally
 
 ```bash
-go install .
-# or
-go build -o $(go env GOPATH)/bin/codefly .
+codefly self build
+```
+
+For a versioned installation without a checkout, use the executable entry
+point whose final path component preserves the `codefly` binary name:
+
+```bash
+go install github.com/codefly-dev/cli/cmd/codefly@<version>
 ```
 
 ### 5. Run tests
