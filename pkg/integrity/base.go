@@ -82,7 +82,12 @@ func VerifyBase(ctx context.Context, workspace *resources.Workspace) (BaseReport
 			continue
 		}
 		moduleReport.Files = len(manifest.Files)
-		allow := loadBaseIntegrityAllow(filepath.Join(dir, "tools", "base-integrity-allow.json"))
+		allow, err := loadBaseIntegrityAllow(filepath.Join(dir, "tools", "base-integrity-allow.json"))
+		if err != nil {
+			moduleReport.Error = fmt.Sprintf("invalid base-integrity-allow.json: %v", err)
+			report.Modules = append(report.Modules, moduleReport)
+			continue
+		}
 		composed := map[string]bool{}
 		for _, reference := range module.ServiceReferences {
 			composed[reference.Name] = true
@@ -93,6 +98,10 @@ func VerifyBase(ctx context.Context, workspace *resources.Workspace) (BaseReport
 		}
 		sort.Strings(paths)
 		for _, relative := range paths {
+			if !safeModulePath(dir, relative, false) {
+				moduleReport.Error = fmt.Sprintf("base manifest contains unsafe path %q", relative)
+				continue
+			}
 			if service := serviceOf(relative); service != "" && len(composed) > 0 && !composed[service] {
 				moduleReport.Omitted[service]++
 				continue
@@ -113,22 +122,7 @@ func VerifyBase(ctx context.Context, workspace *resources.Workspace) (BaseReport
 				moduleReport.Modified = append(moduleReport.Modified, relative)
 			}
 		}
-		for relative, reason := range allow.RequiredAdditions {
-			clean := filepath.Clean(relative)
-			if relative == "" || filepath.IsAbs(relative) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-				moduleReport.InvalidRequiredAdditions = append(moduleReport.InvalidRequiredAdditions, relative)
-				continue
-			}
-			if strings.TrimSpace(reason) == "" {
-				moduleReport.InvalidRequiredAdditions = append(moduleReport.InvalidRequiredAdditions, relative)
-				continue
-			}
-			if _, err := os.Stat(filepath.Join(dir, clean)); err != nil {
-				moduleReport.MissingRequiredAdditions = append(moduleReport.MissingRequiredAdditions, relative)
-			}
-		}
-		sort.Strings(moduleReport.MissingRequiredAdditions)
-		sort.Strings(moduleReport.InvalidRequiredAdditions)
+		moduleReport.MissingRequiredAdditions, moduleReport.InvalidRequiredAdditions = validateRequiredAdditions(dir, allow.RequiredAdditions)
 		report.Modules = append(report.Modules, moduleReport)
 	}
 	if failed := report.Failed(); failed > 0 {
@@ -167,28 +161,43 @@ type baseIntegrityAllow struct {
 	RequiredAdditions map[string]string
 }
 
-func loadBaseIntegrityAllow(path string) baseIntegrityAllow {
+func loadBaseIntegrityAllow(path string) (baseIntegrityAllow, error) {
 	result := baseIntegrityAllow{
 		Divergences:       map[string]string{},
 		RequiredAdditions: map[string]string{},
 	}
 	payload, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return result, nil
+	}
 	if err != nil {
-		return result
+		return result, err
 	}
 	var entries map[string]json.RawMessage
-	if json.Unmarshal(payload, &entries) != nil {
-		return result
+	if err := json.Unmarshal(payload, &entries); err != nil {
+		return result, err
+	}
+	if entries == nil {
+		return result, fmt.Errorf("policy must be a JSON object")
 	}
 	for key, raw := range entries {
 		if key == "requiredAdditions" {
-			_ = json.Unmarshal(raw, &result.RequiredAdditions)
+			if err := json.Unmarshal(raw, &result.RequiredAdditions); err != nil {
+				return result, fmt.Errorf("requiredAdditions must be a path-to-reason object: %w", err)
+			}
 			continue
 		}
-		var reason string
-		if json.Unmarshal(raw, &reason) == nil {
-			result.Divergences[key] = reason
+		if _, ok := canonicalModulePath(key); !ok {
+			return result, fmt.Errorf("divergence path %q is not canonical", key)
 		}
+		var reason string
+		if err := json.Unmarshal(raw, &reason); err != nil {
+			return result, fmt.Errorf("divergence %q reason must be a string: %w", key, err)
+		}
+		if strings.TrimSpace(reason) == "" {
+			return result, fmt.Errorf("divergence %q reason must not be empty", key)
+		}
+		result.Divergences[key] = reason
 	}
-	return result
+	return result, nil
 }

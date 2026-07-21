@@ -421,7 +421,7 @@ func loadConfigurationDir(ctx context.Context, dir, label, relDir string, report
 	infos, err := configurations.LoadConfigurationInformationsFromFiles(ctx, dir)
 	if err != nil {
 		code := codeConfigurationInvalid
-		if strings.Contains(err.Error(), "duplicate configuration") {
+		if errors.Is(err, configurations.ErrConfigurationConflict) {
 			code = codeConfigurationDuplicate
 		}
 		report.add(code, label+" configurations", "fail",
@@ -552,12 +552,8 @@ func accountHint(env *resources.Environment) string {
 	return ""
 }
 
-// authenticationError classifies a provider failure as "needs sign-in" from
-// its error text, without ever surfacing that text to the user.
-var authenticationPattern = regexp.MustCompile(`(?i)(sign ?in|signed in|authenticat|authoriz|session|biometric|locked|no account|account is not)`)
-
 func authenticationError(err error) bool {
-	return authenticationPattern.MatchString(err.Error())
+	return errors.Is(err, configurations.ErrSecretProviderAuthenticationRequired)
 }
 
 // unknownReferenceScheme reports a value shaped like a provider reference

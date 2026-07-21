@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -92,6 +93,18 @@ func TestVerifyBaseReportsMalformedManifest(t *testing.T) {
 	report, err := VerifyBase(context.Background(), workspace)
 	if err == nil || report.Failed() != 1 || report.Modules[0].Error == "" {
 		t.Fatalf("malformed manifest result: report=%#v err=%v", report, err)
+	}
+}
+
+func TestVerifyBaseRejectsMalformedIntegrityPolicy(t *testing.T) {
+	root, workspace := baseFixture(t)
+	moduleDir := filepath.Join(root, "modules", "app")
+	writeTestJSON(t, filepath.Join(moduleDir, "tools", "base-manifest.json"), baseManifest{Files: map[string]string{}})
+	writeTestFile(t, filepath.Join(moduleDir, "tools", "base-integrity-allow.json"), `{"requiredAdditions":[]}`)
+
+	report, err := VerifyBase(context.Background(), workspace)
+	if err == nil || report.Failed() != 1 || !strings.Contains(report.Modules[0].Error, "requiredAdditions") {
+		t.Fatalf("malformed policy passed: report=%#v err=%v", report, err)
 	}
 }
 
