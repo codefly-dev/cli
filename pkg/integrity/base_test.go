@@ -31,8 +31,11 @@ func TestVerifyBaseReportsOnlyUnallowedComposedDrift(t *testing.T) {
 	// canonical file may be absent without becoming local drift.
 	manifest.Files["services/omitted/generated.txt"] = "unused digest"
 	writeTestJSON(t, filepath.Join(moduleDir, "tools", "base-manifest.json"), manifest)
-	writeTestJSON(t, filepath.Join(moduleDir, "tools", "base-integrity-allow.json"), map[string]string{
+	writeTestJSON(t, filepath.Join(moduleDir, "tools", "base-integrity-allow.json"), map[string]any{
 		"allowed.txt": "starter-owned customization",
+		"requiredAdditions": map[string]string{
+			"product/plugin.json": "product plugin installation",
+		},
 	})
 
 	writeTestFile(t, filepath.Join(moduleDir, "root.txt"), "locally modified")
@@ -40,6 +43,7 @@ func TestVerifyBaseReportsOnlyUnallowedComposedDrift(t *testing.T) {
 	if err := os.Remove(filepath.Join(moduleDir, "missing.txt")); err != nil {
 		t.Fatal(err)
 	}
+	writeTestFile(t, filepath.Join(moduleDir, "product", "plugin.json"), "{}")
 
 	report, err := VerifyBase(context.Background(), workspace)
 	if err == nil {
@@ -60,6 +64,25 @@ func TestVerifyBaseReportsOnlyUnallowedComposedDrift(t *testing.T) {
 	}
 	if !reflect.DeepEqual(module.Omitted, map[string]int{"omitted": 1}) {
 		t.Fatalf("omitted = %#v", module.Omitted)
+	}
+}
+
+func TestVerifyBaseFailsWhenRequiredConsumerAdditionIsMissing(t *testing.T) {
+	root, workspace := baseFixture(t)
+	moduleDir := filepath.Join(root, "modules", "app")
+	writeTestJSON(t, filepath.Join(moduleDir, "tools", "base-manifest.json"), baseManifest{Files: map[string]string{}})
+	writeTestJSON(t, filepath.Join(moduleDir, "tools", "base-integrity-allow.json"), map[string]any{
+		"requiredAdditions": map[string]string{
+			"product/plugin.json": "product plugin installation",
+		},
+	})
+
+	report, err := VerifyBase(context.Background(), workspace)
+	if err == nil || report.Failed() != 1 {
+		t.Fatalf("missing required addition passed: report=%#v err=%v", report, err)
+	}
+	if !reflect.DeepEqual(report.Modules[0].MissingRequiredAdditions, []string{"product/plugin.json"}) {
+		t.Fatalf("missing required additions = %v", report.Modules[0].MissingRequiredAdditions)
 	}
 }
 

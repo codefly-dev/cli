@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -302,6 +303,15 @@ func TestSubscribeWorkspaceChangesStreamsExternalEditsAndReplaysReconnect(t *tes
 	}
 	if len(foreignEvent.GetChanges()) != 1 || foreignEvent.GetChanges()[0].GetOperation() != gatewayv1.WorkspaceChangeOperation_WORKSPACE_CHANGE_OPERATION_RESCAN || foreignEvent.GetChanges()[0].GetReason() != "source_changed" {
 		t.Fatalf("foreign cursor event=%+v", foreignEvent)
+	}
+	if err := srv.CloseWorkspaceChanges(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.CloseWorkspaceChanges(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	if _, err := srv.SubscribeWorkspaceChangeEvents(t.Context(), codecore.WorkspaceChangeCursor{}); !errors.Is(err, codecore.ErrWorkspaceChangeMonitorClosed) {
+		t.Fatalf("subscribe after close error=%v", err)
 	}
 }
 

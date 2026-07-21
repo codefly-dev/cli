@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -16,6 +18,7 @@ import (
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var protoDir string
@@ -130,12 +133,106 @@ func generateProtoLocal(ctx context.Context, protoDir, outputDir, template strin
 		return w.Wrapf(err, "buf generate")
 	}
 
-	cli.Info("goimports")
-	if err := runDir(ctx, env, outputDir, "goimports", "-w", "go"); err != nil {
+	goOutputDirs, err := generatedGoOutputDirs(outputDir, template)
+	if err != nil {
 		// Non-fatal: import grouping is cosmetic, the bindings are valid.
-		cli.Warning("goimports failed (non-fatal): %v", err)
+		cli.Warning("cannot discover generated Go outputs (non-fatal): %v", err)
+		return nil
+	}
+	goimports := filepath.Join(binDir, "goimports")
+	if _, err := os.Stat(goimports); err != nil {
+		goimports, err = exec.LookPath("goimports")
+		if err != nil {
+			cli.Warning("cannot locate goimports after installation (non-fatal): %v", err)
+			return nil
+		}
+	}
+	for _, dir := range goOutputDirs {
+		cli.Info("goimports %s", dir)
+		// goimports resolves module-local import paths from its working directory,
+		// not from an absolute target passed by a caller in another repository.
+		// Run inside each generated root so nested service modules retain valid
+		// cross-package imports (for example accounts/pkg/gen/saas/jobs/v1).
+		workingDir, args := generatedGoImportsInvocation(dir)
+		if err := runDir(ctx, env, workingDir, goimports, args...); err != nil {
+			// Non-fatal: import grouping is cosmetic, the bindings are valid.
+			cli.Warning("goimports failed for %s (non-fatal): %v", dir, err)
+		}
 	}
 	return nil
+}
+
+// generatedGoImportsInvocation keeps import resolution inside the generated
+// service's module instead of inheriting whichever repository invoked Codefly.
+func generatedGoImportsInvocation(generatedRoot string) (string, []string) {
+	return generatedRoot, []string{"-w", "."}
+}
+
+// generatedGoOutputDirs returns the unique plugin output roots from the Buf
+// template that actually contain Go files after generation. Templates are the
+// authority for output topology: generated Go may live at "go", "code/pkg/gen",
+// or even outside outputDir (for example a sibling frontend target). Inspecting
+// only declared roots prevents goimports from rewriting handwritten service
+// code while keeping local generation independent of any starter layout.
+func generatedGoOutputDirs(outputDir, template string) ([]string, error) {
+	contents, err := os.ReadFile(filepath.Join(outputDir, template))
+	if err != nil {
+		return nil, fmt.Errorf("read generation template: %w", err)
+	}
+	var document struct {
+		Plugins []struct {
+			Out string `yaml:"out"`
+		} `yaml:"plugins"`
+	}
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return nil, fmt.Errorf("parse generation template: %w", err)
+	}
+
+	seen := make(map[string]struct{}, len(document.Plugins))
+	for _, plugin := range document.Plugins {
+		out := strings.TrimSpace(plugin.Out)
+		if out == "" {
+			continue
+		}
+		root := filepath.Clean(out)
+		if !filepath.IsAbs(root) {
+			root = filepath.Join(outputDir, root)
+		}
+		containsGo, err := containsGoFile(root)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect output %s: %w", root, err)
+		}
+		if containsGo {
+			seen[root] = struct{}{}
+		}
+	}
+
+	result := make([]string, 0, len(seen))
+	for root := range seen {
+		result = append(result, root)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func containsGoFile(root string) (bool, error) {
+	found := errors.New("generated Go file found")
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
+			return found
+		}
+		return nil
+	})
+	if errors.Is(err, found) {
+		return true, nil
+	}
+	return false, err
 }
 
 // runDir runs name+args in dir (cwd when empty) with env, streaming output.

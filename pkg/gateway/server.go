@@ -101,6 +101,16 @@ type Server struct {
 	workspaceChangesMu     sync.Mutex
 	workspaceChanges       *codecore.WorkspaceChangeMonitor
 	workspaceChangesClosed bool
+
+	// ARCHITECTURE: prepared writes are the SaaS mutation boundary. Mind can
+	// configure one coordinator trust anchor for one workspace, but cannot swap
+	// it after work begins. The apply mutex makes target-hash verification and
+	// the resulting write one local critical section.
+	mutationAuthorityMu sync.RWMutex
+	mutationAuthority   *mutationAuthorityBinding
+	preparedMutationMu  sync.Mutex
+	preparedMutations   map[string]*storedPreparedMutation
+	preparedApplyMu     sync.Mutex
 }
 
 // pluginConn holds a running agent process and its gRPC clients.
@@ -152,11 +162,12 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	cfg.WorkDir = filepath.Clean(absWorkDir)
 	s := &Server{
-		cfg:        cfg,
-		tlsConfig:  tlsConfig,
-		plugins:    make(map[string]*pluginConn),
-		stopHealth: make(chan struct{}),
-		terminals:  newTerminalManager(),
+		cfg:               cfg,
+		tlsConfig:         tlsConfig,
+		plugins:           make(map[string]*pluginConn),
+		preparedMutations: make(map[string]*storedPreparedMutation),
+		stopHealth:        make(chan struct{}),
+		terminals:         newTerminalManager(),
 	}
 
 	path := filepath.Join(cfg.WorkDir, "mind.yaml")
@@ -1221,12 +1232,19 @@ func (s *Server) Lint(ctx context.Context, _ *gatewayv1.LintRequest) (*gatewayv1
 	return &gatewayv1.LintResponse{Success: success, Errors: lintErrors, Output: output}, nil
 }
 
-func (s *Server) Test(ctx context.Context, _ *gatewayv1.TestRequest) (*gatewayv1.TestResponse, error) {
+func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gatewayv1.TestResponse, error) {
 	rt, err := s.ensureRuntime(ctx)
 	if err != nil {
 		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 	}
-	resp, err := rt.Test(ctx, &runtimev0.TestRequest{})
+	runtimeReq := &runtimev0.TestRequest{}
+	if req != nil && req.GetRuntimeRequest() != nil {
+		runtimeReq = req.GetRuntimeRequest()
+	}
+	// ARCHITECTURE: The gateway is a typed transport boundary, not a test
+	// planner. Forward the runtime request exactly so structured selections and
+	// their acknowledgement identity reach the language plugin unchanged.
+	resp, err := rt.Test(ctx, runtimeReq)
 	if err != nil {
 		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin test RPC failed: %v", err)}, nil
 	}
@@ -1234,14 +1252,15 @@ func (s *Server) Test(ctx context.Context, _ *gatewayv1.TestRequest) (*gatewayv1
 	output := runtimeTestOutput(resp, success)
 	run, passed, failed, skipped := runtimeTestCounts(resp)
 	return &gatewayv1.TestResponse{
-		Success:      success,
-		Output:       output,
-		TestsRun:     run,
-		TestsPassed:  passed,
-		TestsFailed:  failed,
-		TestsSkipped: skipped,
-		CoveragePct:  runtimeTestCoverage(resp),
-		Failures:     runtimeTestFailures(resp),
+		Success:         success,
+		Output:          output,
+		TestsRun:        run,
+		TestsPassed:     passed,
+		TestsFailed:     failed,
+		TestsSkipped:    skipped,
+		CoveragePct:     runtimeTestCoverage(resp),
+		Failures:        runtimeTestFailures(resp),
+		RuntimeResponse: resp,
 	}, nil
 }
 

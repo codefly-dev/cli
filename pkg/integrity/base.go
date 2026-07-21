@@ -23,13 +23,15 @@ type BaseReport struct {
 }
 
 type BaseModuleReport struct {
-	Module   string
-	Files    int
-	Omitted  map[string]int
-	Allowed  []AllowedDivergence
-	Missing  []string
-	Modified []string
-	Error    string
+	Module                   string
+	Files                    int
+	Omitted                  map[string]int
+	Allowed                  []AllowedDivergence
+	Missing                  []string
+	Modified                 []string
+	MissingRequiredAdditions []string
+	InvalidRequiredAdditions []string
+	Error                    string
 }
 
 type AllowedDivergence struct {
@@ -40,7 +42,8 @@ type AllowedDivergence struct {
 func (report BaseReport) Failed() int {
 	failed := 0
 	for _, module := range report.Modules {
-		if module.Error != "" || len(module.Missing) > 0 || len(module.Modified) > 0 {
+		if module.Error != "" || len(module.Missing) > 0 || len(module.Modified) > 0 ||
+			len(module.MissingRequiredAdditions) > 0 || len(module.InvalidRequiredAdditions) > 0 {
 			failed++
 		}
 	}
@@ -96,7 +99,7 @@ func VerifyBase(ctx context.Context, workspace *resources.Workspace) (BaseReport
 			}
 			digest, err := sha256File(filepath.Join(dir, relative))
 			if err != nil {
-				if _, allowed := allow[relative]; !allowed {
+				if _, allowed := allow.Divergences[relative]; !allowed {
 					moduleReport.Missing = append(moduleReport.Missing, relative)
 				}
 				continue
@@ -104,12 +107,28 @@ func VerifyBase(ctx context.Context, workspace *resources.Workspace) (BaseReport
 			if digest == manifest.Files[relative] {
 				continue
 			}
-			if reason, allowed := allow[relative]; allowed {
+			if reason, allowed := allow.Divergences[relative]; allowed {
 				moduleReport.Allowed = append(moduleReport.Allowed, AllowedDivergence{Path: relative, Reason: reason})
 			} else {
 				moduleReport.Modified = append(moduleReport.Modified, relative)
 			}
 		}
+		for relative, reason := range allow.RequiredAdditions {
+			clean := filepath.Clean(relative)
+			if relative == "" || filepath.IsAbs(relative) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+				moduleReport.InvalidRequiredAdditions = append(moduleReport.InvalidRequiredAdditions, relative)
+				continue
+			}
+			if strings.TrimSpace(reason) == "" {
+				moduleReport.InvalidRequiredAdditions = append(moduleReport.InvalidRequiredAdditions, relative)
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(dir, clean)); err != nil {
+				moduleReport.MissingRequiredAdditions = append(moduleReport.MissingRequiredAdditions, relative)
+			}
+		}
+		sort.Strings(moduleReport.MissingRequiredAdditions)
+		sort.Strings(moduleReport.InvalidRequiredAdditions)
 		report.Modules = append(report.Modules, moduleReport)
 	}
 	if failed := report.Failed(); failed > 0 {
@@ -143,10 +162,33 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func loadBaseIntegrityAllow(path string) map[string]string {
-	result := map[string]string{}
-	if payload, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(payload, &result)
+type baseIntegrityAllow struct {
+	Divergences       map[string]string
+	RequiredAdditions map[string]string
+}
+
+func loadBaseIntegrityAllow(path string) baseIntegrityAllow {
+	result := baseIntegrityAllow{
+		Divergences:       map[string]string{},
+		RequiredAdditions: map[string]string{},
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return result
+	}
+	var entries map[string]json.RawMessage
+	if json.Unmarshal(payload, &entries) != nil {
+		return result
+	}
+	for key, raw := range entries {
+		if key == "requiredAdditions" {
+			_ = json.Unmarshal(raw, &result.RequiredAdditions)
+			continue
+		}
+		var reason string
+		if json.Unmarshal(raw, &reason) == nil {
+			result.Divergences[key] = reason
+		}
 	}
 	return result
 }

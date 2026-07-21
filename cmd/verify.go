@@ -49,19 +49,33 @@ func verifyCommand() error {
 			sort.Strings(services)
 			cli.Info("  module <%s>: composed subset — skipped %d base files for non-composed service(s): %s", module.Module, total, strings.Join(services, ", "))
 		}
-		if module.Error == "" && len(module.Missing) == 0 && len(module.Modified) == 0 {
+		if module.Error == "" && len(module.Missing) == 0 && len(module.Modified) == 0 &&
+			len(module.MissingRequiredAdditions) == 0 && len(module.InvalidRequiredAdditions) == 0 {
 			cli.Info("✓ module <%s>: base intact (%d base files)", module.Module, module.Files)
 			continue
 		}
 		if module.Error != "" {
 			cli.Warning("✗ module <%s>: %s", module.Module, module.Error)
 		}
-		cli.Warning("✗ module <%s>: %d modified, %d missing base file(s)", module.Module, len(module.Modified), len(module.Missing))
+		cli.Warning(
+			"✗ module <%s>: %d modified, %d missing base, %d missing required addition, %d invalid required addition file(s)",
+			module.Module,
+			len(module.Modified),
+			len(module.Missing),
+			len(module.MissingRequiredAdditions),
+			len(module.InvalidRequiredAdditions),
+		)
 		for _, relative := range module.Missing {
 			cli.Warning("    MISSING  %s", relative)
 		}
 		for _, relative := range module.Modified {
 			cli.Warning("    MODIFIED %s", relative)
+		}
+		for _, relative := range module.MissingRequiredAdditions {
+			cli.Warning("    MISSING REQUIRED ADDITION %s", relative)
+		}
+		for _, relative := range module.InvalidRequiredAdditions {
+			cli.Warning("    INVALID REQUIRED ADDITION %s", relative)
 		}
 	}
 	if len(report.Modules) == 0 {
