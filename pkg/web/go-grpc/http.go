@@ -27,39 +27,12 @@ func NewHttpServer(c *Configuration, impl *Server) (*HttpServer, error) {
 func (s *HttpServer) Run(ctx context.Context) error {
 	golor.Template(s.config).Println(`#(blue,bold)[🚀 Starting codefly REST server at]: #(italic,white)[{{ .EndpointRest }}]`)
 
-	mux := http.NewServeMux()
-
-	// Connect endpoint for the browser dashboard (Connect-ES) — the CLI service
-	// over the Connect / gRPC-Web protocols at /codefly.cli.v0.CLI/. This is the
-	// ONLY API the dashboard uses; it fully replaces the old grpc-gateway REST
-	// endpoint (/api/), which has been removed.
-	if s.impl != nil {
-		path, connectHandler := cliconnect.NewCLIHandler(&cliConnect{s: s.impl})
-		mux.Handle(path, connectHandler)
-	}
-
-	// Static dashboard assets (embedded Next.js export). "/" is the least
-	// specific pattern, so the Connect handler above wins for RPC calls.
-	outFs, err := fs.Sub(content, "out")
+	handler, err := s.handler()
 	if err != nil {
 		return err
 	}
-	mux.Handle("/", http.StripPrefix("/", http.FileServer(http.FS(outFs))))
 
 	golor.Println(`Serving #(bold,blue)[codefly] webserver at http://localhost:10001`)
-	// Begin HTTP server (and proxy calls to gRPC server endpoint)
-
-	// Connect-aware CORS so the dashboard works cross-origin in dev
-	// (`next dev` on :3000 hitting the CLI on its web port). The CLI binds
-	// localhost only, so allowing any origin is safe — and required for the
-	// browser to send Connect's custom headers (Connect-Protocol-Version, …)
-	// and read the streamed response headers. Production is same-origin.
-	handler := cors.New(cors.Options{
-		AllowedOrigins: []string{"*"},
-		AllowedMethods: connectcors.AllowedMethods(),
-		AllowedHeaders: connectcors.AllowedHeaders(),
-		ExposedHeaders: connectcors.ExposedHeaders(),
-	}).Handler(mux)
 
 	srv := &http.Server{Addr: s.config.EndpointRest, Handler: handler}
 	lis, err := net.Listen("tcp", s.config.EndpointRest)
@@ -84,6 +57,42 @@ func (s *HttpServer) Run(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+// handler builds the dashboard HTTP handler: the Connect CLI service mounted at
+// its service path, the embedded static dashboard served at "/", and the whole
+// thing wrapped in Connect-aware CORS.
+func (s *HttpServer) handler() (http.Handler, error) {
+	mux := http.NewServeMux()
+
+	// Connect endpoint for the browser dashboard (Connect-ES) — the CLI service
+	// over the Connect / gRPC-Web protocols at /codefly.cli.v0.CLI/. This is the
+	// ONLY API the dashboard uses; it fully replaces the old grpc-gateway REST
+	// endpoint (/api/), which has been removed.
+	if s.impl != nil {
+		path, connectHandler := cliconnect.NewCLIHandler(&cliConnect{s: s.impl})
+		mux.Handle(path, connectHandler)
+	}
+
+	// Static dashboard assets (embedded Vite build). "/" is the least specific
+	// pattern, so the Connect handler above wins for RPC calls.
+	outFs, err := fs.Sub(content, "out")
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle("/", http.StripPrefix("/", http.FileServer(http.FS(outFs))))
+
+	// Connect-aware CORS so the dashboard works cross-origin in dev (`vite dev`
+	// hitting the CLI on its web port). The CLI binds localhost only, so allowing
+	// any origin is safe — and required for the browser to send Connect's custom
+	// headers (Connect-Protocol-Version, …) and read the streamed response
+	// headers. Production is same-origin.
+	return cors.New(cors.Options{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: connectcors.AllowedMethods(),
+		AllowedHeaders: connectcors.AllowedHeaders(),
+		ExposedHeaders: connectcors.ExposedHeaders(),
+	}).Handler(mux), nil
 }
 
 //go:embed out/*
