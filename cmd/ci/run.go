@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -74,37 +75,67 @@ var RunCmd = &cobra.Command{
 				}
 			}
 
-			for _, phase := range phases {
+			return runCIPhases(ctx, phases, ciFailFast, func(phaseContext context.Context, phase string) error {
 				cli.Header(2, "CI phase: %s", phase)
-				if phase == "verify" {
-					if err := runReportedWorkspacePhase(ctx, reporter, workspace, phase, func(taskContext context.Context) error {
-						return runVerifyWorkspace(taskContext, workspace)
-					}); err != nil {
-						return fmt.Errorf("CI phase %s failed: %w", phase, err)
-					}
-					continue
-				}
-				if phase == "test" {
-					for _, suite := range suites {
-						if suite != "" {
-							cli.Header(2, "CI test suite: %s", suite)
-						}
-						options := commandScheduleOptions(true, phase, suite, reporter)
-						if err := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite), options); err != nil {
-							return fmt.Errorf("CI phase %s failed: %w", phase, err)
-						}
-					}
-					continue
-				}
-				action := runPhaseAction(phase)
-				options := commandScheduleOptions(phaseLocksDependencyClosure(phase), phase, "", reporter)
-				if err := CIWithPlanOptions(ctx, workspace, plan, action, options); err != nil {
-					return fmt.Errorf("CI phase %s failed: %w", phase, err)
-				}
-			}
-			return ctx.Err()
+				return executeCIPhase(phaseContext, reporter, workspace, plan, phase, suites, ciFailFast)
+			})
 		})
 	},
+}
+
+// runCIPhases executes every requested phase in order. When failFast is
+// disabled a phase failure is recorded but does not abort the gate, so every
+// phase that is independent of the failure still runs and contributes its own
+// diagnostic evidence to the report. Context cancellation always stops the
+// gate, regardless of failFast.
+func runCIPhases(ctx context.Context, phases []string, failFast bool, execute func(context.Context, string) error) error {
+	var runErr error
+	for _, phase := range phases {
+		if err := execute(ctx, phase); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("CI phase %s failed: %w", phase, err))
+			if failFast {
+				return runErr
+			}
+		}
+		if ctx.Err() != nil {
+			return errors.Join(runErr, ctx.Err())
+		}
+	}
+	return runErr
+}
+
+// executeCIPhase runs a single phase. The test phase fans out over its named
+// suites, applying the same fail-fast continuation across suites that
+// runCIPhases applies across phases.
+func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resources.Workspace, plan *Plan, phase string, suites []string, failFast bool) error {
+	switch phase {
+	case "verify":
+		return runReportedWorkspacePhase(ctx, reporter, workspace, phase, func(taskContext context.Context) error {
+			return runVerifyWorkspace(taskContext, workspace)
+		})
+	case "test":
+		var errs error
+		for _, suite := range suites {
+			if suite != "" {
+				cli.Header(2, "CI test suite: %s", suite)
+			}
+			options := commandScheduleOptions(true, phase, suite, reporter)
+			if err := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite), options); err != nil {
+				errs = errors.Join(errs, err)
+				if failFast {
+					return errs
+				}
+			}
+			if ctx.Err() != nil {
+				return errors.Join(errs, ctx.Err())
+			}
+		}
+		return errs
+	default:
+		action := runPhaseAction(phase)
+		options := commandScheduleOptions(phaseLocksDependencyClosure(phase), phase, "", reporter)
+		return CIWithPlanOptions(ctx, workspace, plan, action, options)
+	}
 }
 
 func normalizeTestSuites(suites []string) []string {
