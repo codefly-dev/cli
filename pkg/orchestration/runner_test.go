@@ -41,6 +41,15 @@ func TestBoundNativePortsDetectsHeldPort(t *testing.T) {
 	require.Equal(t, []string{fmt.Sprintf("%d (grpc)", held)}, runner.boundNativePorts(context.Background()))
 }
 
+func TestBoundNativePortsToleratesNilMappings(t *testing.T) {
+	runner := &Runner{networkMappings: []*basev0.NetworkMapping{
+		nil,
+		{Endpoint: nil},
+		{Endpoint: &basev0.Endpoint{Name: "grpc"}, Instances: nil},
+	}}
+	require.Empty(t, runner.boundNativePorts(context.Background()))
+}
+
 func TestStatusDiagnosticPreservesAgentMessage(t *testing.T) {
 	require.Equal(t, "compile failed on line 12", statusDiagnostic("  compile failed on line 12  ", "fallback"))
 	require.Equal(t, "fallback", statusDiagnostic("  ", "fallback"))

@@ -398,10 +398,14 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	// reaping keeps its endpoint port bound. The agent would then report
 	// Start success while the freshly launched binary immediately dies with
 	// "bind: address already in use" — a confusing "started and running"
-	// followed by an exit. Detect the collision here (only on a first start,
-	// never on a hot reload where the current binary legitimately holds the
-	// port) and fail fast with an actionable message instead.
-	firstStart := !runner.isStarted.Load() && !runner.instance.Runtime.IsHotReloading
+	// followed by an exit. Detect the collision here and fail fast with an
+	// actionable message instead.
+	//
+	// Gate on isStarted only: a running service being hot-reloaded keeps its
+	// port and is still marked started (StopIfNeeded leaves it running), so it
+	// skips the probe; a Follow-driven restart calls Stop first, which blocks
+	// until the child is reaped and the port freed, so the probe sees it free.
+	firstStart := !runner.isStarted.Load()
 
 	err := runner.StopIfNeeded(ctx)
 	if err != nil {
@@ -469,6 +473,11 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 	var held []string
 	for _, mapping := range runner.networkMappings {
+		// networkMappings arrive over the agent's Init gRPC response, so a nil
+		// mapping or endpoint is possible at this boundary — skip rather than panic.
+		if mapping == nil || mapping.Endpoint == nil {
+			continue
+		}
 		instance := resources.FilterNetworkInstance(ctx, mapping.Instances, resources.NewNativeNetworkAccess())
 		if instance == nil {
 			continue
