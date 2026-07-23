@@ -219,60 +219,45 @@ func (s *Server) registerTools() {
 }
 
 // workspaceInfo returns information about the current workspace
+// workspaceInfo summarizes the workspace. Delegates enumeration to the control
+// plane (Phase-3 adapter); this handler only shapes the JSON.
 func (s *Server) workspaceInfo(ctx context.Context, args map[string]string) ([]Content, error) {
-	if s.workspace == nil {
+	inv, err := s.plane.Inventory(ctx)
+	if err != nil {
 		return []Content{TextContent("No workspace loaded. Run this command from a codefly workspace directory.")}, nil
 	}
-
+	services, err := s.plane.Services(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	svcList := make([]map[string]string, 0, len(services))
+	for _, svc := range services {
+		svcList = append(svcList, map[string]string{
+			"module":  svc.Module,
+			"service": svc.Name,
+			"agent":   svc.Agent,
+		})
+	}
+	modules := inv.Modules
+	if modules == nil {
+		modules = []string{}
+	}
 	info := map[string]any{
-		"name":        s.workspace.Name,
-		"description": s.workspace.Description,
-		"modules":     []string{},
-		"services":    []map[string]string{},
+		"name":        inv.Workspace,
+		"description": inv.Description,
+		"modules":     modules,
+		"services":    svcList,
 	}
-
-	// Get modules
-	modules, err := s.workspace.LoadModules(ctx)
-	if err == nil {
-		moduleNames := make([]string, 0, len(modules))
-		for _, m := range modules {
-			moduleNames = append(moduleNames, m.Name)
-		}
-		info["modules"] = moduleNames
-
-		// Get services
-		services := make([]map[string]string, 0)
-		for _, m := range modules {
-			svcs, err := m.LoadServices(ctx)
-			if err != nil {
-				continue
-			}
-			for _, svc := range svcs {
-				services = append(services, map[string]string{
-					"module":  m.Name,
-					"service": svc.Name,
-					"agent":   svc.Agent.Name,
-				})
-			}
-		}
-		info["services"] = services
-	}
-
 	data, _ := json.MarshalIndent(info, "", "  ")
 	return []Content{TextContent(string(data))}, nil
 }
 
-// listModules returns all modules in the workspace
+// listModules returns all modules in the workspace (via the control plane).
 func (s *Server) listModules(ctx context.Context, args map[string]string) ([]Content, error) {
-	if s.workspace == nil {
+	modules, err := s.plane.Modules(ctx)
+	if err != nil {
 		return []Content{TextContent("No workspace loaded.")}, nil
 	}
-
-	modules, err := s.workspace.LoadModules(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	result := make([]map[string]any, 0, len(modules))
 	for _, m := range modules {
 		result = append(result, map[string]any{
@@ -280,62 +265,36 @@ func (s *Server) listModules(ctx context.Context, args map[string]string) ([]Con
 			"description": m.Description,
 		})
 	}
-
 	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
 }
 
-// listServices returns services, optionally filtered by module
+// listServices returns services (via the control plane), optionally filtered by
+// module.
 func (s *Server) listServices(ctx context.Context, args map[string]string) ([]Content, error) {
-	w := wool.Get(ctx).In("mcp.listServices")
-
-	if s.workspace == nil {
+	services, err := s.plane.Services(ctx, args["module"])
+	if err != nil {
 		return []Content{TextContent("No workspace loaded.")}, nil
 	}
-
-	modules, err := s.workspace.LoadModules(ctx)
-	if err != nil {
-		return nil, err
+	result := make([]map[string]any, 0, len(services))
+	for _, svc := range services {
+		endpoints := make([]map[string]string, 0, len(svc.Endpoints))
+		for _, ep := range svc.Endpoints {
+			endpoints = append(endpoints, map[string]string{
+				"name":       ep.Name,
+				"api":        ep.API,
+				"visibility": ep.Visibility,
+			})
+		}
+		result = append(result, map[string]any{
+			"name":        svc.Name,
+			"module":      svc.Module,
+			"description": svc.Description,
+			"agent":       svc.Agent,
+			"version":     svc.Version,
+			"endpoints":   endpoints,
+		})
 	}
-
-	moduleFilter := args["module"]
-	result := make([]map[string]any, 0)
-
-	for _, m := range modules {
-		if moduleFilter != "" && m.Name != moduleFilter {
-			continue
-		}
-
-		svcs, err := m.LoadServices(ctx)
-		if err != nil {
-			w.Warn("failed to load services", wool.Field("module", m.Name), wool.ErrField(err))
-			continue
-		}
-
-		for _, svc := range svcs {
-			svcInfo := map[string]any{
-				"name":        svc.Name,
-				"module":      m.Name,
-				"description": svc.Description,
-				"agent":       svc.Agent.Name,
-				"version":     svc.Version,
-			}
-
-			// Add endpoints
-			endpoints := make([]map[string]string, 0)
-			for _, ep := range svc.Endpoints {
-				endpoints = append(endpoints, map[string]string{
-					"name":       ep.Name,
-					"api":        ep.API,
-					"visibility": ep.Visibility,
-				})
-			}
-			svcInfo["endpoints"] = endpoints
-
-			result = append(result, svcInfo)
-		}
-	}
-
 	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
 }

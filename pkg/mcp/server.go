@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/codefly-dev/cli/pkg/control"
 	corecode "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -22,6 +23,9 @@ type ResourceHandler func(ctx context.Context) ([]ResourceContents, error)
 // Server implements the MCP server
 type Server struct {
 	workspace *resources.Workspace
+	// plane is the consolidated control plane. Read-only introspection tools
+	// delegate to it (the first Phase-3 adapter); other tools are migrating.
+	plane     control.Plane
 	vfs       corecode.VFS
 	tools     map[string]ToolHandler
 	toolDefs  []Tool
@@ -46,6 +50,7 @@ func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Ser
 
 	s := &Server{
 		workspace: ws,
+		plane:     control.New(),
 		tools:     make(map[string]ToolHandler),
 		toolDefs:  []Tool{},
 		resources: make(map[string]ResourceHandler),
