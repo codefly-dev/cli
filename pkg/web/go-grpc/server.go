@@ -61,7 +61,10 @@ func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.S
 }
 
 func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (*cli.DestroyFlowResponse, error) {
-	err := orchestration.CurrentFlow().Stop()
+	// Destroy is the state-removing lifecycle operation. SDK dependency stacks
+	// rely on it to remove ephemeral containers, while Stop intentionally
+	// preserves stopped resources for ordinary local development.
+	err := orchestration.CurrentFlow().Shutdown()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
