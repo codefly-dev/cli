@@ -18,4 +18,6 @@ func init() {
 	AgentCmd.AddCommand(agents.AgentCICmd)
 	AgentCmd.AddCommand(agents.DepsCmd)
 	AgentCmd.AddCommand(agents.InstallCmd)
+	AgentCmd.AddCommand(agents.VersionsCmd)
+	AgentCmd.AddCommand(agents.ListCmd)
 }
