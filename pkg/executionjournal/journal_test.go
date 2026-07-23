@@ -29,6 +29,14 @@ func TestJournalAppendReplayAckRestartAndPrune(t *testing.T) {
 	if startedResult.Sequence != 1 || startedResult.Duplicate {
 		t.Fatalf("started result = %+v", startedResult)
 	}
+	lookedUp, found, err := journal.Lookup(t.Context(), started.GetReceipt().GetReceiptId())
+	if err != nil || !found || lookedUp.Sequence != startedResult.Sequence ||
+		lookedUp.Attestation.GetReceipt().GetPayloadSha256() != started.GetReceipt().GetPayloadSha256() {
+		t.Fatalf("lookup = %+v found=%t err=%v", lookedUp, found, err)
+	}
+	if _, found, err := journal.Lookup(t.Context(), "missing-receipt"); err != nil || found {
+		t.Fatalf("missing lookup found=%t err=%v", found, err)
+	}
 	duplicate, err := journal.Append(t.Context(), started)
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +175,70 @@ func TestJournalPendingCursorCannotSkipUnacknowledgedGap(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].Sequence != 2 {
 		t.Fatalf("cursor did not resume after acknowledged prefix: %+v", pending)
+	}
+}
+
+func TestJournalIsolatesAcknowledgementsPerExporterPlugin(t *testing.T) {
+	journal, _, privateKey := newTestJournal(t)
+	t.Cleanup(func() { _ = journal.Close() })
+
+	started := attest(t, privateKey, receiptForStage(executionv1.ExecutionStage_EXECUTION_STAGE_STARTED))
+	succeeded := attest(t, privateKey, receiptForStage(executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED))
+	if _, err := journal.Append(t.Context(), started); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(t.Context(), succeeded); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, exporterID := range []string{"warden.execution", "audit.archive"} {
+		pending, err := journal.PendingFor(t.Context(), exporterID, 0, 10)
+		if err != nil || len(pending) != 2 {
+			t.Fatalf("%s initial pending=%d err=%v", exporterID, len(pending), err)
+		}
+	}
+	if _, err := journal.AcknowledgeFor(
+		t.Context(),
+		"warden.execution",
+		started.GetReceipt().GetReceiptId(),
+		started.GetReceipt().GetPayloadSha256(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	wardenPending, err := journal.PendingFor(t.Context(), "warden.execution", 0, 10)
+	if err != nil || len(wardenPending) != 1 || wardenPending[0].Sequence != 2 {
+		t.Fatalf("warden pending=%+v err=%v", wardenPending, err)
+	}
+	auditPending, err := journal.PendingFor(t.Context(), "audit.archive", 0, 10)
+	if err != nil || len(auditPending) != 2 {
+		t.Fatalf("audit pending=%+v err=%v", auditPending, err)
+	}
+	if pruned, err := journal.PruneAcknowledgedThroughFor(
+		t.Context(),
+		2,
+		[]string{"warden.execution", "audit.archive"},
+	); err != nil || pruned != 0 {
+		t.Fatalf("pruned before every exporter ack=%d err=%v", pruned, err)
+	}
+
+	for _, exporterID := range []string{"warden.execution", "audit.archive"} {
+		for _, attestation := range []*executionv1.ExecutionAttestationV1{started, succeeded} {
+			if _, err := journal.AcknowledgeFor(
+				t.Context(),
+				exporterID,
+				attestation.GetReceipt().GetReceiptId(),
+				attestation.GetReceipt().GetPayloadSha256(),
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if pruned, err := journal.PruneAcknowledgedThroughFor(
+		t.Context(),
+		2,
+		[]string{"warden.execution", "audit.archive"},
+	); err != nil || pruned != 2 {
+		t.Fatalf("pruned after all exporter acks=%d err=%v", pruned, err)
 	}
 }
 

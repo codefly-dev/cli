@@ -52,7 +52,15 @@ Examples:
 				"--dir", gatewayDir,
 				"--port", fmt.Sprintf("%d", gatewayPort),
 			)
+			executionArgs, err := gatewayExecution.childArgs()
+			if err != nil {
+				return err
+			}
+			childArgs = append(childArgs, executionArgs...)
 		} else {
+			if gatewayExecution.enabled || gatewayExecution.hasConfiguration() {
+				return fmt.Errorf("governed execution flags require daemon start --gateway")
+			}
 			// Default: "run service" + whatever the user passed after "--"
 			childArgs = append(childArgs, "run", "service")
 			childArgs = append(childArgs, args...)
@@ -204,8 +212,9 @@ func printTail(f *os.File, n int) error {
 // --- daemon gateway (internal: runs the gateway gRPC server in foreground) ---
 
 var (
-	gatewayDir  string
-	gatewayPort int
+	gatewayDir       string
+	gatewayPort      int
+	gatewayExecution gatewayExecutionOptions
 )
 
 var daemonGatewayCmd = &cobra.Command{
@@ -227,19 +236,39 @@ var daemonGatewayCmd = &cobra.Command{
 			absDir = "."
 		}
 
+		execution, err := gatewayExecution.open(ctx, absDir)
+		if err != nil {
+			return fmt.Errorf("cannot configure governed execution: %w", err)
+		}
+		if execution != nil {
+			defer func() {
+				if closeErr := execution.Close(); closeErr != nil {
+					fmt.Fprintf(os.Stderr, "[gateway] close governed execution: %v\n", closeErr)
+				}
+			}()
+		}
+
 		// CODEFLY_GATEWAY_HOST lets a container expose the gateway over the
 		// network (set it to 0.0.0.0). Non-loopback binds require a bearer
 		// token plus a TLS certificate/key. Supplying a client CA additionally
 		// requires verified client certificates (mTLS). Empty host keeps the
 		// local-only 127.0.0.1 default.
+		var executionRecorder gateway.ExecutionRecorder
+		var executionDispatcher gateway.ExecutionDispatcher
+		if execution != nil {
+			executionRecorder = execution.Recorder
+			executionDispatcher = execution.Dispatcher
+		}
 		srv, err := gateway.NewServer(gateway.Config{
-			WorkDir:         absDir,
-			Port:            gatewayPort,
-			Host:            os.Getenv("CODEFLY_GATEWAY_HOST"),
-			Token:           os.Getenv("CODEFLY_GATEWAY_TOKEN"),
-			TLSCertFile:     os.Getenv("CODEFLY_GATEWAY_TLS_CERT"),
-			TLSKeyFile:      os.Getenv("CODEFLY_GATEWAY_TLS_KEY"),
-			TLSClientCAFile: os.Getenv("CODEFLY_GATEWAY_TLS_CLIENT_CA"),
+			WorkDir:             absDir,
+			Port:                gatewayPort,
+			Host:                os.Getenv("CODEFLY_GATEWAY_HOST"),
+			Token:               os.Getenv("CODEFLY_GATEWAY_TOKEN"),
+			TLSCertFile:         os.Getenv("CODEFLY_GATEWAY_TLS_CERT"),
+			TLSKeyFile:          os.Getenv("CODEFLY_GATEWAY_TLS_KEY"),
+			TLSClientCAFile:     os.Getenv("CODEFLY_GATEWAY_TLS_CLIENT_CA"),
+			ExecutionRecorder:   executionRecorder,
+			ExecutionDispatcher: executionDispatcher,
 		})
 		if err != nil {
 			return fmt.Errorf("cannot create gateway server: %w", err)
@@ -361,10 +390,12 @@ func init() {
 
 	daemonGatewayCmd.Flags().StringVar(&gatewayDir, "dir", ".", "Working directory containing mind.yaml")
 	daemonGatewayCmd.Flags().IntVar(&gatewayPort, "port", 50051, "gRPC listen port")
+	addGatewayExecutionFlags(daemonGatewayCmd)
 
 	daemonStartCmd.Flags().BoolVar(&startGateway, "gateway", false, "Start the Mind Gateway gRPC server instead of running services")
 	daemonStartCmd.Flags().StringVar(&gatewayDir, "dir", ".", "Working directory for gateway (requires --gateway)")
 	daemonStartCmd.Flags().IntVar(&gatewayPort, "port", 50051, "gRPC port for gateway (requires --gateway)")
+	addGatewayExecutionFlags(daemonStartCmd)
 
 	daemonMonitorCmd.Flags().BoolVarP(&monitorWatch, "watch", "w", false, "Run continuously (every 30s)")
 	daemonMonitorCmd.Flags().BoolVar(&monitorKill, "kill-orphans", false, "Kill orphaned agent processes")

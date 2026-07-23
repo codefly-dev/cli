@@ -14,10 +14,13 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,8 +33,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/executionrecorder"
 	"github.com/codefly-dev/core/agents/manager"
 	codecore "github.com/codefly-dev/core/code"
+	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -47,6 +52,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/yaml.v3"
 )
@@ -71,6 +77,27 @@ type Config struct {
 	// TLSClientCAFile optionally enables mutual TLS. When set, clients must
 	// present a certificate signed by this CA in addition to the bearer token.
 	TLSClientCAFile string
+	// ExecutionRecorder is an optional product-neutral governed-execution
+	// boundary. When absent, legacy requests without an SDK execution carrier
+	// continue to work; a request that supplies authority fails closed rather
+	// than silently discarding it.
+	ExecutionRecorder ExecutionRecorder
+	// ExecutionDispatcher delivers the recorder's durable outbox to installed
+	// product-neutral exporter plugins. Exporter failure never changes the
+	// underlying effect or receipt production.
+	ExecutionDispatcher ExecutionDispatcher
+}
+
+// ExecutionRecorder is the narrow neutral lifecycle capability used by the
+// Gateway. Warden and every other exporter stay behind Codefly's plugin API.
+type ExecutionRecorder interface {
+	Begin(context.Context, codefly.ExecutionContext, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
+	RecoverIncomplete(context.Context, int) (int, error)
+}
+
+// ExecutionDispatcher is the lifecycle surface for additive exporter plugins.
+type ExecutionDispatcher interface {
+	Run(context.Context) error
 }
 
 // bindHost returns the interface to listen on, defaulting to local-only.
@@ -112,6 +139,9 @@ type Server struct {
 	preparedMutationMu  sync.Mutex
 	preparedMutations   map[string]*storedPreparedMutation
 	preparedApplyMu     sync.Mutex
+
+	executionRecorder   ExecutionRecorder
+	executionDispatcher ExecutionDispatcher
 }
 
 // pluginConn holds a running agent process and its gRPC clients.
@@ -163,12 +193,14 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	cfg.WorkDir = filepath.Clean(absWorkDir)
 	s := &Server{
-		cfg:               cfg,
-		tlsConfig:         tlsConfig,
-		plugins:           make(map[string]*pluginConn),
-		preparedMutations: make(map[string]*storedPreparedMutation),
-		stopHealth:        make(chan struct{}),
-		terminals:         newTerminalManager(),
+		cfg:                 cfg,
+		tlsConfig:           tlsConfig,
+		plugins:             make(map[string]*pluginConn),
+		preparedMutations:   make(map[string]*storedPreparedMutation),
+		stopHealth:          make(chan struct{}),
+		terminals:           newTerminalManager(),
+		executionRecorder:   cfg.ExecutionRecorder,
+		executionDispatcher: cfg.ExecutionDispatcher,
 	}
 
 	path := filepath.Join(cfg.WorkDir, "mind.yaml")
@@ -238,11 +270,33 @@ func (s *Server) requireConfig() error {
 // Serve starts the gRPC server and blocks until stopped.
 func (s *Server) Serve(ctx context.Context) error {
 	w := wool.Get(ctx).In("gateway.Serve")
+	lifecycleContext, cancelLifecycle := context.WithCancel(ctx)
+	var dispatcherWG sync.WaitGroup
+	defer dispatcherWG.Wait()
+	defer cancelLifecycle()
 
 	if _, err := wotel.Enable(
 		wotel.WithServiceName("codefly-gateway"),
 	); err != nil {
 		w.Warn("OTEL init failed (tracing disabled)", wool.ErrField(err))
+	}
+	if s.executionRecorder != nil {
+		recovered, err := s.executionRecorder.RecoverIncomplete(ctx, 1000)
+		if err != nil {
+			return fmt.Errorf("recover incomplete execution receipts before serving: %w", err)
+		}
+		if recovered > 0 {
+			w.Warn("recovered incomplete execution attempts as uncertain", wool.Field("count", recovered))
+		}
+	}
+	if s.executionDispatcher != nil {
+		dispatcherWG.Add(1)
+		go func() {
+			defer dispatcherWG.Done()
+			if err := s.executionDispatcher.Run(lifecycleContext); err != nil && lifecycleContext.Err() == nil {
+				w.Error("execution receipt dispatcher stopped", wool.ErrField(err))
+			}
+		}()
 	}
 
 	addr := net.JoinHostPort(s.cfg.bindHost(), fmt.Sprintf("%d", s.cfg.Port))
@@ -971,6 +1025,46 @@ func (s *Server) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest)
 	if err != nil {
 		return &gatewayv1.ApplyEditResponse{Success: false, Error: err.Error()}, nil
 	}
+	if req.GetDryRun() {
+		if err := validateOptionalExecutionContext(ctx); err != nil {
+			return nil, err
+		}
+	} else {
+		operationInputSHA256, digestErr := deterministicProtoSHA256(&codev0.ApplyEditRequest{
+			File: rel, Find: req.GetFind(), Replace: req.GetReplace(), FixMode: req.GetFixMode(), DryRun: false,
+		})
+		if digestErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "encode apply-edit input: %v", digestErr)
+		}
+		var beforeSHA256 string
+		if content, readErr := s.fileOps().ReadFile(ctx, rel); readErr == nil {
+			digest := sha256.Sum256(content)
+			beforeSHA256 = hex.EncodeToString(digest[:])
+		}
+		attempt, _, beginErr := s.beginGovernedExecution(ctx, executionrecorder.BeginInput{
+			OperationKind:        "code.apply-edit",
+			OperationInputSHA256: operationInputSHA256,
+			Assurance:            executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
+			Target:               executionTarget(s.executionService(req.GetService())),
+			Resources: []*executionv1.ExecutionResourceV1{
+				pathExecutionResource(rel, beforeSHA256, "", false),
+			},
+		})
+		if beginErr != nil {
+			return nil, beginErr
+		}
+		if attempt != nil {
+			return s.applyEditWithReceipt(ctx, req, rel, beforeSHA256, attempt)
+		}
+	}
+	return s.applyEdit(ctx, req, rel)
+}
+
+func (s *Server) applyEdit(
+	ctx context.Context,
+	req *gatewayv1.ApplyEditRequest,
+	rel string,
+) (*gatewayv1.ApplyEditResponse, error) {
 	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplyEdit{ApplyEdit: &codev0.ApplyEditRequest{
 		File: rel, Find: req.GetFind(), Replace: req.GetReplace(), FixMode: req.GetFixMode(), DryRun: req.GetDryRun(),
 	}}})
@@ -987,6 +1081,75 @@ func (s *Server) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest)
 		BeforeSha256: result.GetBeforeSha256(), AfterSha256: result.GetAfterSha256(),
 		Wrote: result.GetWrote(), Output: result.GetOutput(),
 	}, nil
+}
+
+func (s *Server) applyEditWithReceipt(
+	ctx context.Context,
+	req *gatewayv1.ApplyEditRequest,
+	rel string,
+	beforeSHA256 string,
+	attempt *executionrecorder.Attempt,
+) (*gatewayv1.ApplyEditResponse, error) {
+	effectStarted := time.Now()
+	raw, err := s.proxyExecute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplyEdit{ApplyEdit: &codev0.ApplyEditRequest{
+		File: rel, Find: req.GetFind(), Replace: req.GetReplace(), FixMode: req.GetFixMode(), DryRun: false,
+	}}})
+	if err != nil {
+		finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
+			Stage: executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
+			Resources: []*executionv1.ExecutionResourceV1{
+				pathExecutionResource(rel, beforeSHA256, "", false),
+			},
+			Result: &executionv1.ExecutionResultV1{
+				Status: "uncertain", ErrorCode: errorCode("gateway-rpc-outcome-unknown"),
+				DurationMs: durationMilliseconds(effectStarted),
+			},
+		})
+		return &gatewayv1.ApplyEditResponse{Success: false, Error: err.Error()}, nil
+	}
+	rawResult := raw.GetApplyEdit()
+	if rawResult == nil {
+		finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
+			Stage: executionv1.ExecutionStage_EXECUTION_STAGE_FAILED,
+			Resources: []*executionv1.ExecutionResourceV1{
+				pathExecutionResource(rel, beforeSHA256, "", false),
+			},
+			Result: &executionv1.ExecutionResultV1{
+				Status: "failed", ErrorCode: errorCode("invalid-plugin-response"),
+				DurationMs: durationMilliseconds(effectStarted),
+			},
+		})
+		return &gatewayv1.ApplyEditResponse{Success: false, Error: codeFailureMessage(raw)}, nil
+	}
+	response := &gatewayv1.ApplyEditResponse{
+		Success: rawResult.GetSuccess(), Content: rawResult.GetContent(), Error: codeFailureMessage(raw),
+		Strategy: rawResult.GetStrategy(), FixActions: rawResult.GetFixActions(), Changed: rawResult.GetChanged(),
+		BeforeSha256: rawResult.GetBeforeSha256(), AfterSha256: rawResult.GetAfterSha256(),
+		Wrote: rawResult.GetWrote(), Output: rawResult.GetOutput(),
+	}
+	stage := executionv1.ExecutionStage_EXECUTION_STAGE_FAILED
+	statusValue := "failed"
+	errorCodeValue := (*string)(nil)
+	if response.GetSuccess() {
+		stage = executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED
+		statusValue = "succeeded"
+	} else if response.GetError() != "" {
+		errorCodeValue = errorCode("apply-edit-failed")
+	}
+	resultBefore := response.GetBeforeSha256()
+	if !canonicalSHA256(resultBefore) {
+		resultBefore = beforeSHA256
+	}
+	finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
+		Stage: stage,
+		Resources: []*executionv1.ExecutionResourceV1{
+			pathExecutionResource(rel, resultBefore, response.GetAfterSha256(), response.GetChanged()),
+		},
+		Result: &executionv1.ExecutionResultV1{
+			Status: statusValue, ErrorCode: errorCodeValue, DurationMs: durationMilliseconds(effectStarted),
+		},
+	})
+	return response, nil
 }
 
 func (s *Server) BatchApplyEdits(ctx context.Context, req *gatewayv1.BatchApplyEditsRequest) (*gatewayv1.BatchApplyEditsResponse, error) {
@@ -1237,7 +1400,11 @@ func (s *Server) Lint(ctx context.Context, _ *gatewayv1.LintRequest) (*gatewayv1
 }
 
 func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gatewayv1.TestResponse, error) {
-	if err := validateOptionalExecutionContext(ctx); err != nil {
+	requestedService := ""
+	if req != nil {
+		requestedService = req.GetService()
+	}
+	if err := s.validateService(requestedService); err != nil {
 		return nil, err
 	}
 	rt, err := s.ensureRuntime(ctx)
@@ -1248,17 +1415,45 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	if req != nil && req.GetRuntimeRequest() != nil {
 		runtimeReq = req.GetRuntimeRequest()
 	}
+	selectionSHA256, err := deterministicProtoSHA256(runtimeReq)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "encode test selection: %v", err)
+	}
+	selectionReference := "sha256:" + selectionSHA256
+	attempt, _, err := s.beginGovernedExecution(ctx, executionrecorder.BeginInput{
+		OperationKind:        "test.run",
+		OperationInputSHA256: selectionSHA256,
+		Assurance:            executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
+		Target:               executionTarget(s.executionService(requestedService)),
+		Resources: []*executionv1.ExecutionResourceV1{{
+			Kind: "test.selection", Reference: selectionReference,
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
 	// ARCHITECTURE: The gateway is a typed transport boundary, not a test
 	// planner. Forward the runtime request exactly so structured selections and
 	// their acknowledgement identity reach the language plugin unchanged.
+	effectStarted := time.Now()
 	resp, err := rt.Test(ctx, runtimeReq)
 	if err != nil {
+		finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
+			Stage: executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
+			Resources: []*executionv1.ExecutionResourceV1{{
+				Kind: "test.selection", Reference: selectionReference,
+			}},
+			Result: &executionv1.ExecutionResultV1{
+				Status: "uncertain", ErrorCode: errorCode("plugin-rpc-outcome-unknown"),
+				DurationMs: durationMilliseconds(effectStarted),
+			},
+		})
 		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin test RPC failed: %v", err)}, nil
 	}
 	success := runtimeTestSuccess(resp)
 	output := runtimeTestOutput(resp, success)
 	run, passed, failed, skipped := runtimeTestCounts(resp)
-	return &gatewayv1.TestResponse{
+	response := &gatewayv1.TestResponse{
 		Success:         success,
 		Output:          output,
 		TestsRun:        run,
@@ -1268,7 +1463,26 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 		CoveragePct:     runtimeTestCoverage(resp),
 		Failures:        runtimeTestFailures(resp),
 		RuntimeResponse: resp,
-	}, nil
+	}
+	stage := executionv1.ExecutionStage_EXECUTION_STAGE_FAILED
+	statusValue := "failed"
+	errorCodeValue := errorCode("test-failed")
+	if success {
+		stage = executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED
+		statusValue = "passed"
+		errorCodeValue = nil
+	}
+	finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
+		Stage: stage,
+		Resources: []*executionv1.ExecutionResourceV1{{
+			Kind: "test.selection", Reference: selectionReference,
+		}},
+		Result: &executionv1.ExecutionResultV1{
+			Status: statusValue, ErrorCode: errorCodeValue, DurationMs: durationMilliseconds(effectStarted),
+			PassedCount: boundedCount(passed), FailedCount: boundedCount(failed), SkippedCount: boundedCount(skipped),
+		},
+	})
+	return response, nil
 }
 
 func validateOptionalExecutionContext(ctx context.Context) error {
@@ -1277,6 +1491,137 @@ func validateOptionalExecutionContext(ctx context.Context) error {
 		return status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}
 	return nil
+}
+
+func (s *Server) beginGovernedExecution(
+	ctx context.Context,
+	input executionrecorder.BeginInput,
+) (*executionrecorder.Attempt, bool, error) {
+	execution, present, err := codefly.GRPCExecutionContextFromIncomingIfPresent(ctx)
+	if err != nil {
+		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
+	}
+	if !present {
+		return nil, false, nil
+	}
+	if s.executionRecorder == nil {
+		return nil, true, status.Error(
+			codes.FailedPrecondition,
+			"Codefly execution authority was supplied but governed execution is not configured",
+		)
+	}
+	result, err := s.executionRecorder.Begin(ctx, execution, input)
+	if err != nil {
+		if errors.Is(err, executionrecorder.ErrConflict) {
+			return nil, true, status.Errorf(
+				codes.AlreadyExists,
+				"governed operation identity conflict: %v",
+				err,
+			)
+		}
+		return nil, true, status.Errorf(codes.PermissionDenied, "governed execution admission failed: %v", err)
+	}
+	if result.Existing != nil {
+		receipt := result.Existing.Attestation.GetReceipt()
+		return nil, true, status.Errorf(
+			codes.AlreadyExists,
+			"operation %q already has durable stage %s; effect was not re-executed",
+			receipt.GetOperationId(),
+			receipt.GetStage(),
+		)
+	}
+	if result.Attempt == nil {
+		return nil, true, status.Error(codes.Internal, "governed execution admission returned no attempt")
+	}
+	return result.Attempt, true, nil
+}
+
+func finishGovernedExecution(
+	requestContext context.Context,
+	attempt *executionrecorder.Attempt,
+	input executionrecorder.FinishInput,
+) {
+	if attempt == nil {
+		return
+	}
+	// The effect may have completed after the client cancelled. Persist the
+	// terminal fact independently, with a short bound, so cancellation cannot
+	// erase execution evidence.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(requestContext), 2*time.Second)
+	defer cancel()
+	if _, err := attempt.Finish(ctx, input); err != nil {
+		wool.Get(requestContext).In("gateway.execution").Error(
+			"effect completed but terminal execution receipt is pending reconciliation",
+			wool.ErrField(err),
+		)
+	}
+}
+
+func executionTarget(service string) *executionv1.ExecutionTargetV1 {
+	return &executionv1.ExecutionTargetV1{Service: service}
+}
+
+func (s *Server) executionService(requested string) string {
+	if requested != "" {
+		return requested
+	}
+	if s.mindYAML == nil {
+		return ""
+	}
+	return s.mindYAML.Service
+}
+
+func deterministicProtoSHA256(message proto.Message) (string, error) {
+	payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func pathExecutionResource(path, beforeSHA256, afterSHA256 string, changed bool) *executionv1.ExecutionResourceV1 {
+	resource := &executionv1.ExecutionResourceV1{
+		Kind:      "workspace.path",
+		Reference: filepath.ToSlash(path),
+		Changed:   changed,
+	}
+	if canonicalSHA256(beforeSHA256) {
+		value := beforeSHA256
+		resource.BeforeSha256 = &value
+	}
+	if canonicalSHA256(afterSHA256) {
+		value := afterSHA256
+		resource.AfterSha256 = &value
+	}
+	return resource
+}
+
+func canonicalSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(decoded) == value
+}
+
+func boundedCount(value int32) uint64 {
+	if value <= 0 {
+		return 0
+	}
+	return uint64(value)
+}
+
+func durationMilliseconds(started time.Time) uint64 {
+	elapsed := time.Since(started)
+	if elapsed <= 0 {
+		return 0
+	}
+	return uint64(elapsed / time.Millisecond)
+}
+
+func errorCode(value string) *string {
+	return &value
 }
 
 func runtimeTestSuccess(resp *runtimev0.TestResponse) bool {

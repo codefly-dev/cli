@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ const (
 	maxPendingLimit  = 1000
 	maxRecordBytes   = 256 * 1024
 	defaultOpenDelay = 500 * time.Millisecond
+	defaultExporter  = ""
 )
 
 var (
@@ -257,6 +259,18 @@ func (j *Journal) Append(ctx context.Context, attestation *executionv1.Execution
 // unacknowledged receipt is returned first. Exporters persist a cursor only
 // after acknowledging every preceding receipt.
 func (j *Journal) Pending(ctx context.Context, afterSequence uint64, limit int) ([]Entry, error) {
+	return j.PendingFor(ctx, defaultExporter, afterSequence, limit)
+}
+
+// PendingFor returns the receipts not yet acknowledged by one exporter
+// plugin. Exporter identities have independent delivery state: one plugin can
+// never suppress another plugin's receipt stream.
+func (j *Journal) PendingFor(
+	ctx context.Context,
+	exporterID string,
+	afterSequence uint64,
+	limit int,
+) ([]Entry, error) {
 	if j == nil {
 		return nil, ErrClosed
 	}
@@ -267,6 +281,9 @@ func (j *Journal) Pending(ctx context.Context, afterSequence uint64, limit int) 
 	}
 	if limit < 1 || limit > maxPendingLimit {
 		return nil, fmt.Errorf("%w: pending limit must be between 1 and %d", ErrInvalid, maxPendingLimit)
+	}
+	if err := validateExporterID(exporterID, true); err != nil {
+		return nil, err
 	}
 	var entries []Entry
 	err := j.db.View(func(tx *bolt.Tx) error {
@@ -288,7 +305,7 @@ func (j *Journal) Pending(ctx context.Context, afterSequence uint64, limit int) 
 				if err := proto.Unmarshal(value, attestation); err != nil {
 					return fmt.Errorf("decode sequence %d: %w", sequence, err)
 				}
-				if acks.Get([]byte(attestation.GetReceipt().GetReceiptId())) == nil {
+				if acks.Get(exporterAckKey(attestation.GetReceipt().GetReceiptId(), exporterID)) == nil {
 					// The exporter cursor moved past a durable gap. Resume at
 					// the oldest unacknowledged receipt, never after it.
 					startKey = key
@@ -305,7 +322,7 @@ func (j *Journal) Pending(ctx context.Context, afterSequence uint64, limit int) 
 			if err := proto.Unmarshal(value, attestation); err != nil {
 				return fmt.Errorf("decode sequence %d: %w", sequence, err)
 			}
-			if acks.Get([]byte(attestation.GetReceipt().GetReceiptId())) != nil {
+			if acks.Get(exporterAckKey(attestation.GetReceipt().GetReceiptId(), exporterID)) != nil {
 				continue
 			}
 			entries = append(entries, Entry{Sequence: sequence, Attestation: attestation})
@@ -318,8 +335,50 @@ func (j *Journal) Pending(ctx context.Context, afterSequence uint64, limit int) 
 	return entries, nil
 }
 
+// Lookup returns one immutable receipt by ID. The returned attestation is
+// decoded into a fresh message and is safe for the caller to inspect.
+func (j *Journal) Lookup(ctx context.Context, receiptID string) (Entry, bool, error) {
+	if j == nil {
+		return Entry{}, false, ErrClosed
+	}
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if err := j.usable(ctx); err != nil {
+		return Entry{}, false, err
+	}
+	if receiptID == "" {
+		return Entry{}, false, fmt.Errorf("%w: receipt ID is required", ErrInvalid)
+	}
+	var entry Entry
+	found := false
+	err := j.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket(receiptIndexBucket).Get([]byte(receiptID)) == nil {
+			return nil
+		}
+		var err error
+		entry, err = entryByReceiptID(tx, receiptID)
+		found = err == nil
+		return err
+	})
+	if err != nil {
+		return Entry{}, false, fmt.Errorf("lookup execution attestation: %w", err)
+	}
+	return entry, found, nil
+}
+
 // Acknowledge durably marks the exact receipt digest accepted by an exporter.
 func (j *Journal) Acknowledge(ctx context.Context, receiptID, payloadSHA256 string) (AckResult, error) {
+	return j.AcknowledgeFor(ctx, defaultExporter, receiptID, payloadSHA256)
+}
+
+// AcknowledgeFor durably records one exporter's exact acceptance. The
+// acknowledgement is digest-bound and isolated from every other exporter.
+func (j *Journal) AcknowledgeFor(
+	ctx context.Context,
+	exporterID string,
+	receiptID string,
+	payloadSHA256 string,
+) (AckResult, error) {
 	if j == nil {
 		return AckResult{}, ErrClosed
 	}
@@ -330,6 +389,9 @@ func (j *Journal) Acknowledge(ctx context.Context, receiptID, payloadSHA256 stri
 	}
 	if receiptID == "" || payloadSHA256 == "" {
 		return AckResult{}, fmt.Errorf("%w: receipt ID and payload digest are required", ErrInvalid)
+	}
+	if err := validateExporterID(exporterID, true); err != nil {
+		return AckResult{}, err
 	}
 	var result AckResult
 	err := j.db.Update(func(tx *bolt.Tx) error {
@@ -353,11 +415,12 @@ func (j *Journal) Acknowledge(ctx context.Context, receiptID, payloadSHA256 stri
 			return fmt.Errorf("%w: acknowledgement digest does not match receipt", ErrConflict)
 		}
 		acks := tx.Bucket(ackBucket)
-		if existing := acks.Get([]byte(receiptID)); existing != nil {
+		key := exporterAckKey(receiptID, exporterID)
+		if existing := acks.Get(key); existing != nil {
 			result.Duplicate = true
 			return nil
 		}
-		return acks.Put([]byte(receiptID), encodeSequence(sequence))
+		return acks.Put(key, encodeSequence(sequence))
 	})
 	if err != nil {
 		return AckResult{}, fmt.Errorf("acknowledge execution attestation: %w", err)
@@ -410,6 +473,18 @@ func (j *Journal) IncompleteAttempts(ctx context.Context, limit int) ([]Entry, e
 // receipt is acknowledged and whose last sequence is at or below through.
 // Unacknowledged or incomplete attempts are never eligible.
 func (j *Journal) PruneAcknowledgedThrough(ctx context.Context, through uint64) (int, error) {
+	return j.PruneAcknowledgedThroughFor(ctx, through, []string{defaultExporter})
+}
+
+// PruneAcknowledgedThroughFor removes a complete attempt only when every
+// listed exporter has acknowledged every receipt in that attempt. Callers
+// must pass the complete active exporter set; a new exporter can receive only
+// retained history.
+func (j *Journal) PruneAcknowledgedThroughFor(
+	ctx context.Context,
+	through uint64,
+	exporterIDs []string,
+) (int, error) {
 	if j == nil {
 		return 0, ErrClosed
 	}
@@ -417,6 +492,21 @@ func (j *Journal) PruneAcknowledgedThrough(ctx context.Context, through uint64) 
 	defer j.mu.RUnlock()
 	if err := j.usable(ctx); err != nil {
 		return 0, err
+	}
+	if len(exporterIDs) == 0 {
+		return 0, fmt.Errorf("%w: at least one exporter is required for pruning", ErrInvalid)
+	}
+	exporters := make([]string, 0, len(exporterIDs))
+	seenExporters := make(map[string]struct{}, len(exporterIDs))
+	for _, exporterID := range exporterIDs {
+		if err := validateExporterID(exporterID, true); err != nil {
+			return 0, err
+		}
+		if _, duplicate := seenExporters[exporterID]; duplicate {
+			return 0, fmt.Errorf("%w: duplicate exporter ID %q", ErrInvalid, exporterID)
+		}
+		seenExporters[exporterID] = struct{}{}
+		exporters = append(exporters, exporterID)
 	}
 	pruned := 0
 	err := j.db.Update(func(tx *bolt.Tx) error {
@@ -448,7 +538,12 @@ func (j *Journal) PruneAcknowledgedThrough(ctx context.Context, through uint64) 
 			}
 			group.entries = append(group.entries, Entry{Sequence: sequence, Attestation: attestation})
 			group.terminal = group.terminal || terminal(attestation.GetReceipt().GetStage())
-			if sequence > through || tx.Bucket(ackBucket).Get([]byte(attestation.GetReceipt().GetReceiptId())) == nil {
+			if sequence > through ||
+				!acknowledgedByEvery(
+					tx.Bucket(ackBucket),
+					attestation.GetReceipt().GetReceiptId(),
+					exporters,
+				) {
 				group.eligible = false
 			}
 		}
@@ -465,7 +560,7 @@ func (j *Journal) PruneAcknowledgedThrough(ctx context.Context, through uint64) 
 				if err := tx.Bucket(receiptIndexBucket).Delete([]byte(receipt.GetReceiptId())); err != nil {
 					return err
 				}
-				if err := tx.Bucket(ackBucket).Delete([]byte(receipt.GetReceiptId())); err != nil {
+				if err := deleteReceiptAcknowledgements(tx.Bucket(ackBucket), receipt.GetReceiptId()); err != nil {
 					return err
 				}
 				if err := tx.Bucket(stageIndexBucket).Delete(appendStage(attemptKey, receipt.GetStage())); err != nil {
@@ -483,6 +578,52 @@ func (j *Journal) PruneAcknowledgedThrough(ctx context.Context, through uint64) 
 		return 0, fmt.Errorf("prune execution journal: %w", err)
 	}
 	return pruned, nil
+}
+
+func validateExporterID(exporterID string, allowDefault bool) error {
+	if exporterID == "" && allowDefault {
+		return nil
+	}
+	if exporterID == "" || strings.TrimSpace(exporterID) != exporterID || len(exporterID) > 512 {
+		return fmt.Errorf("%w: exporter ID must be canonical and at most 512 bytes", ErrInvalid)
+	}
+	for _, character := range exporterID {
+		if character == '\x00' || character < 0x20 || character == 0x7f {
+			return fmt.Errorf("%w: exporter ID contains a control character", ErrInvalid)
+		}
+	}
+	return nil
+}
+
+func exporterAckKey(receiptID, exporterID string) []byte {
+	if exporterID == defaultExporter {
+		// Preserve the v0.1.24 on-disk key for the legacy single-exporter API.
+		return []byte(receiptID)
+	}
+	return []byte(receiptID + "\x00" + exporterID)
+}
+
+func acknowledgedByEvery(acks *bolt.Bucket, receiptID string, exporterIDs []string) bool {
+	for _, exporterID := range exporterIDs {
+		if acks.Get(exporterAckKey(receiptID, exporterID)) == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func deleteReceiptAcknowledgements(acks *bolt.Bucket, receiptID string) error {
+	if err := acks.Delete([]byte(receiptID)); err != nil {
+		return err
+	}
+	prefix := []byte(receiptID + "\x00")
+	cursor := acks.Cursor()
+	for key, _ := cursor.Seek(prefix); key != nil && bytes.HasPrefix(key, prefix); key, _ = cursor.Next() {
+		if err := cursor.Delete(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close flushes and releases the journal's process lock.

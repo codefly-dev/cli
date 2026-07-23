@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -19,8 +22,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/executionattestor"
+	"github.com/codefly-dev/cli/pkg/executionjournal"
+	"github.com/codefly-dev/cli/pkg/executionrecorder"
 	codecore "github.com/codefly-dev/core/code"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -32,6 +39,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 )
 
 // mockCodeClient implements codev0.CodeClient via the unified Execute RPC.
@@ -191,6 +199,8 @@ func editingMock(t *testing.T, dir string) *mockCodeClient {
 			return &codev0.ApplyEditResponse{Success: false}, nil
 		}
 		content := strings.Replace(string(original), in.GetFind(), in.GetReplace(), 1)
+		beforeDigest := sha256.Sum256(original)
+		afterDigest := sha256.Sum256([]byte(content))
 		if !in.GetDryRun() {
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 				return nil, err
@@ -198,8 +208,102 @@ func editingMock(t *testing.T, dir string) *mockCodeClient {
 		}
 		return &codev0.ApplyEditResponse{
 			Success: true, Content: content, Strategy: "exact", Changed: content != string(original), Wrote: !in.GetDryRun(),
+			BeforeSha256: hex.EncodeToString(beforeDigest[:]), AfterSha256: hex.EncodeToString(afterDigest[:]),
 		}, nil
 	}}
+}
+
+type governedGatewayFixture struct {
+	journal *executionjournal.Journal
+	ctx     context.Context
+}
+
+func enableGovernedGateway(
+	t *testing.T,
+	server *Server,
+	operationID string,
+) governedGatewayFixture {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "execution")
+	attestor, err := executionattestor.OpenFile(
+		t.Context(),
+		filepath.Join(root, "key", "gateway.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := executionjournal.Open(
+		t.Context(),
+		filepath.Join(root, "journal", "receipts.db"),
+		attestor.Verify,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+
+	now := time.Now().UTC()
+	workspaceID := "workspace-codefly"
+	projectID := "project-warden"
+	claims := &basev0.WorkContextV1{
+		Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
+		KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
+		NotBeforeUnix: now.Add(-time.Minute).Unix(), IssuedAtUnix: now.Add(-time.Minute).Unix(),
+		ExpiresAtUnix: now.Add(4 * time.Minute).Unix(), Nonce: "gateway-test-nonce",
+		AuthorizationRevision: 7, ReplayPolicy: "idempotent",
+		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
+		TaskId: "task-1", SessionId: "session-1",
+		WorkspaceId: &workspaceID, ProjectId: &projectID,
+	}
+	recorder, err := executionrecorder.New(executionrecorder.Config{
+		Journal:  journal,
+		Attestor: attestor,
+		Authority: executionrecorder.AuthorityFunc(func(
+			_ context.Context,
+			_ codefly.WorkContextToken,
+			admission executionrecorder.Admission,
+		) (*basev0.WorkContextV1, error) {
+			if admission.OperationID != operationID {
+				return nil, fmt.Errorf("unexpected operation %q", admission.OperationID)
+			}
+			return claims, nil
+		}),
+		Producer: &executionv1.ExecutionProducerV1{
+			Id: "codefly.execution", Component: "gateway", Release: "test",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.executionRecorder = recorder
+	return governedGatewayFixture{
+		journal: journal,
+		ctx:     incomingExecutionContext(t, operationID),
+	}
+}
+
+func incomingExecutionContext(t *testing.T, operationID string) context.Context {
+	t.Helper()
+	signature := make([]byte, 64)
+	token, err := codefly.ParseWorkContextToken(
+		"e30." + base64.RawURLEncoding.EncodeToString(signature),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := codefly.NewExecutionContext(token, operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outgoing, err := codefly.WithGRPCExecutionContext(t.Context(), execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carrier, ok := metadata.FromOutgoingContext(outgoing)
+	if !ok {
+		t.Fatal("SDK did not attach outgoing execution metadata")
+	}
+	return metadata.NewIncomingContext(t.Context(), carrier.Copy())
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +628,183 @@ func TestApplyEdit(t *testing.T) {
 	}
 	if got := string(content); got != "package main\n\nnew code\n" {
 		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestApplyEditGovernedReceiptBracketsEffectAndSuppressesReplay(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nold code\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	editor := editingMock(t, dir)
+	mock := &mockCodeClient{applyEditFn: func(
+		ctx context.Context,
+		request *codev0.ApplyEditRequest,
+		options ...grpc.CallOption,
+	) (*codev0.ApplyEditResponse, error) {
+		calls++
+		return editor.applyEditFn(ctx, request, options...)
+	}}
+	server := newTestServerWithWorkDir(mock, dir)
+	fixture := enableGovernedGateway(t, server, "operation-apply-edit-1")
+	request := &gatewayv1.ApplyEditRequest{
+		Service: "test-svc", File: "main.go", Find: "old code", Replace: "new code",
+		FixMode: basev0.FixMode_FIX_MODE_SAFE,
+	}
+
+	response, err := server.ApplyEdit(fixture.ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.GetSuccess() || calls != 1 {
+		t.Fatalf("first apply-edit response=%+v calls=%d", response, calls)
+	}
+	pending, err := fixture.journal.Pending(t.Context(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("pending receipt count=%d, want 2", len(pending))
+	}
+	started := pending[0].Attestation.GetReceipt()
+	terminal := pending[1].Attestation.GetReceipt()
+	if started.GetStage() != executionv1.ExecutionStage_EXECUTION_STAGE_STARTED ||
+		terminal.GetStage() != executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED {
+		t.Fatalf("receipt stages=%s,%s", started.GetStage(), terminal.GetStage())
+	}
+	if started.GetOperationKind() != "code.apply-edit" ||
+		started.GetAssurance() != executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED ||
+		started.GetTarget().GetWorkspaceId() != "workspace-codefly" ||
+		started.GetTarget().GetService() != "test-svc" {
+		t.Fatalf("started receipt identity=%+v", started)
+	}
+	if len(started.GetResources()) != 2 ||
+		started.GetResources()[0].GetKind() != "operation.input" ||
+		started.GetResources()[1].GetBeforeSha256() == "" {
+		t.Fatalf("started resources=%+v", started.GetResources())
+	}
+	if len(terminal.GetResources()) != 2 ||
+		terminal.GetResources()[1].GetAfterSha256() == "" ||
+		!terminal.GetResources()[1].GetChanged() {
+		t.Fatalf("terminal resources=%+v", terminal.GetResources())
+	}
+
+	// The file hash has changed, but an exact transport retry is still the
+	// same immutable input and must never execute the edit twice.
+	if _, err := server.ApplyEdit(fixture.ctx, request); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("exact retry error=%v, want AlreadyExists", err)
+	}
+	if calls != 1 {
+		t.Fatalf("exact retry executed effect; calls=%d", calls)
+	}
+	pending, err = fixture.journal.Pending(t.Context(), 0, 10)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("pending after retry=%d err=%v", len(pending), err)
+	}
+
+	substituted := proto.Clone(request).(*gatewayv1.ApplyEditRequest)
+	substituted.Replace = "different code"
+	if _, err := server.ApplyEdit(fixture.ctx, substituted); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("input substitution error=%v, want AlreadyExists", err)
+	}
+	if calls != 1 {
+		t.Fatalf("input substitution executed effect; calls=%d", calls)
+	}
+}
+
+func TestApplyEditExecutionCarrierFailsClosedWithoutRecorder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("old code\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	editor := editingMock(t, dir)
+	server := newTestServerWithWorkDir(&mockCodeClient{applyEditFn: func(
+		ctx context.Context,
+		request *codev0.ApplyEditRequest,
+		options ...grpc.CallOption,
+	) (*codev0.ApplyEditResponse, error) {
+		calls++
+		return editor.applyEditFn(ctx, request, options...)
+	}}, dir)
+	_, err := server.ApplyEdit(
+		incomingExecutionContext(t, "operation-no-recorder-1"),
+		&gatewayv1.ApplyEditRequest{File: "main.go", Find: "old code", Replace: "new code"},
+	)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("error=%v, want FailedPrecondition", err)
+	}
+	if calls != 0 {
+		t.Fatalf("effect calls=%d, want 0", calls)
+	}
+	content, readErr := os.ReadFile(path)
+	if readErr != nil || string(content) != "old code\n" {
+		t.Fatalf("file content=%q err=%v", content, readErr)
+	}
+}
+
+func TestRunGovernedReceiptRecordsCountsAndSuppressesReplay(t *testing.T) {
+	var calls int
+	runtime := &mockRuntimeClient{testFn: func(
+		_ context.Context,
+		_ *runtimev0.TestRequest,
+		_ ...grpc.CallOption,
+	) (*runtimev0.TestResponse, error) {
+		calls++
+		return &runtimev0.TestResponse{
+			Result: &runtimev0.TestRunResult{State: runtimev0.TestRunResult_PASSED},
+			Counts: &runtimev0.TestCounts{Total: 4, Passed: 3, Skipped: 1},
+		}, nil
+	}}
+	server := newTestServerWithRuntime(runtime)
+	fixture := enableGovernedGateway(t, server, "operation-test-1")
+	request := &gatewayv1.TestRequest{
+		Service: "test-svc",
+		RuntimeRequest: &runtimev0.TestRequest{
+			Target: "./pkg/...", Race: true, Filters: []string{"TestReceipt"},
+		},
+	}
+
+	response, err := server.Test(fixture.ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.GetSuccess() || calls != 1 {
+		t.Fatalf("first test response=%+v calls=%d", response, calls)
+	}
+	pending, err := fixture.journal.Pending(t.Context(), 0, 10)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("pending=%d err=%v", len(pending), err)
+	}
+	terminal := pending[1].Attestation.GetReceipt()
+	if terminal.GetStage() != executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED ||
+		terminal.GetResult().GetPassedCount() != 3 ||
+		terminal.GetResult().GetSkippedCount() != 1 {
+		t.Fatalf("terminal test receipt=%+v", terminal)
+	}
+	if len(terminal.GetResources()) != 2 ||
+		terminal.GetResources()[0].GetKind() != "operation.input" ||
+		terminal.GetResources()[1].GetKind() != "test.selection" {
+		t.Fatalf("test resources=%+v", terminal.GetResources())
+	}
+
+	if _, err := server.Test(fixture.ctx, request); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("exact retry error=%v, want AlreadyExists", err)
+	}
+	if calls != 1 {
+		t.Fatalf("exact retry executed tests; calls=%d", calls)
+	}
+
+	substituted := proto.Clone(request).(*gatewayv1.TestRequest)
+	substituted.RuntimeRequest = &runtimev0.TestRequest{Target: "./other"}
+	if _, err := server.Test(fixture.ctx, substituted); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("selection substitution error=%v, want AlreadyExists", err)
+	}
+	if calls != 1 {
+		t.Fatalf("selection substitution executed tests; calls=%d", calls)
 	}
 }
 
