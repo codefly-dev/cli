@@ -424,6 +424,35 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
+	if runner.outputEnv != "" {
+		runtimeContext, runtimeErr := resources.NewRuntimeContext(runner.runtimeContext)
+		if runtimeErr != nil {
+			return nil, w.Wrapf(runtimeErr, "cannot create output environment runtime context")
+		}
+		// Environment export needs the same identity fields the agent receives,
+		// but it must also work for infrastructure agents whose optional path
+		// fields are empty. ServiceIdentity.Proto validates those deployment
+		// fields and is therefore intentionally not the conversion boundary.
+		identity := &basev0.ServiceIdentity{
+			Workspace:           runner.instance.Identity.Workspace,
+			Module:              runner.instance.Identity.Module,
+			Name:                runner.instance.Identity.Name,
+			Version:             runner.instance.Identity.Version,
+			WorkspacePath:       runner.instance.Identity.WorkspacePath,
+			RelativeToWorkspace: runner.instance.Identity.RelativeToWorkspace,
+		}
+		if err := AppendRuntimeEnvironmentToFile(
+			ctx,
+			runner.outputEnv,
+			identity,
+			runtimeContext,
+			runner.fixture,
+			runner.overrides,
+			dependenciesNetworkMappings,
+		); err != nil {
+			return nil, w.Wrapf(err, "cannot write runtime environment variables to file")
+		}
+	}
 
 	req := &runtimev0.StartRequest{
 		DependenciesNetworkMappings: dependenciesNetworkMappings,
@@ -927,19 +956,79 @@ func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, conf
 	if err != nil {
 		return w.Wrapf(err, "cannot add configurations")
 	}
-	// Open the file in append mode, create it if it doesn't exist
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return w.Wrapf(err, "cannot open file")
-	}
-	defer file.Close()
-
-	// Write each environment variable to the file
 	allEnvs, err := m.All()
 	if err != nil {
 		return w.Wrapf(err, "cannot get environment variables")
 	}
-	for _, env := range allEnvs {
+	return appendEnvironmentVariablesToFile(ctx, filePath, allEnvs)
+}
+
+// AppendRuntimeEnvironmentToFile exports the identity and endpoint
+// capabilities that agents add during Start. --output-env previously wrote
+// configuration values only, so an SDK process could see dependency secrets
+// but could not discover a dependency endpoint.
+func AppendRuntimeEnvironmentToFile(
+	ctx context.Context,
+	filePath string,
+	identity *basev0.ServiceIdentity,
+	runtimeContext *basev0.RuntimeContext,
+	fixture string,
+	overrides map[string]string,
+	dependencyMappings []*basev0.NetworkMapping,
+) error {
+	w := wool.Get(ctx).In("resources.AppendRuntimeEnvironmentToFile", wool.Field("filePath", filePath))
+	if identity == nil {
+		return w.NewError("service identity is required")
+	}
+	manager := resources.NewEnvironmentVariableManager()
+	manager.SetIdentity(identity)
+	manager.SetRuntimeContext(runtimeContext)
+	manager.SetFixture(fixture)
+	manager.AddOverrides(overrides)
+	if err := manager.AddEndpoints(
+		ctx,
+		dependencyMappings,
+		resources.NetworkAccessFromRuntimeContext(runtimeContext),
+	); err != nil {
+		return w.Wrapf(err, "cannot add dependency endpoints")
+	}
+	environments, err := manager.All()
+	if err != nil {
+		return w.Wrapf(err, "cannot get runtime environment variables")
+	}
+	return appendEnvironmentVariablesToFile(ctx, filePath, environments)
+}
+
+func appendEnvironmentVariablesToFile(
+	ctx context.Context,
+	filePath string,
+	environments []*resources.EnvironmentVariable,
+) error {
+	w := wool.Get(ctx).In("resources.AppendToFile", wool.Field("filePath", filePath))
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return w.NewError("output environment file path is required")
+	}
+	// The output may contain secret service configuration. Refuse symlinks and
+	// force owner-only permissions even when appending to a pre-existing file.
+	if info, statErr := os.Lstat(filePath); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return w.NewError("output environment file must not be a symbolic link")
+		}
+	} else if !os.IsNotExist(statErr) {
+		return w.Wrapf(statErr, "cannot inspect environment variables file")
+	}
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return w.Wrapf(err, "cannot open file")
+	}
+	defer file.Close()
+	if err := file.Chmod(0600); err != nil {
+		return w.Wrapf(err, "cannot secure environment variables file")
+	}
+
+	// Write each environment variable to the file
+	for _, env := range environments {
 		_, err := file.WriteString(fmt.Sprintf("%s=%v\n", env.Key, env.Value))
 		if err != nil {
 			return w.Wrapf(err, "cannot write to file")
