@@ -11,7 +11,7 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.2.30
+	github.com/codefly-dev/core v0.2.31
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/sdk-go v0.1.53
 	github.com/compose-spec/compose-go v1.20.2
@@ -25,6 +25,7 @@ require (
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
+	go.etcd.io/bbolt v1.5.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/mod v0.37.0

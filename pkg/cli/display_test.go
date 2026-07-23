@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/wool"
+	"github.com/fatih/color"
 )
 
 // stripANSI removes SGR escape sequences so a test can assert on the plain
@@ -63,7 +64,15 @@ func TestViewStillInterpolatesArgs(t *testing.T) {
 
 func TestViewAppliesStyle(t *testing.T) {
 	// The theme must still colorize — the styled output carries an SGR escape and,
-	// once stripped, equals the plain message.
+	// once stripped, equals the plain message. The Codefly test runner captures
+	// output through a pipe, so force color for this rendering-unit assertion
+	// instead of depending on the ambient terminal.
+	previousNoColor := color.NoColor
+	color.NoColor = false
+	t.Setenv("NO_COLOR", "")
+	t.Cleanup(func() {
+		color.NoColor = previousNoColor
+	})
 	wrapper := &Wrapper{}
 	styled := wrapper.View("#(magenta)", "%s", "hello")
 	if !strings.Contains(styled, "\x1b[") {
