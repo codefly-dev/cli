@@ -75,6 +75,9 @@ func TestRunCIPhasesStopsOnContextCancellationEvenWhenFailFastDisabled(t *testin
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
+	if got := strings.Count(err.Error(), context.Canceled.Error()); got != 1 {
+		t.Fatalf("cancellation appears %d times in %q, want it recorded once", got, err.Error())
+	}
 }
 
 func TestNormalizeRunPhasesDefaultsAndDeduplicates(t *testing.T) {

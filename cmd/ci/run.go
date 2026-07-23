@@ -85,20 +85,26 @@ var RunCmd = &cobra.Command{
 
 // runCIPhases executes every requested phase in order. When failFast is
 // disabled a phase failure is recorded but does not abort the gate, so every
-// phase that is independent of the failure still runs and contributes its own
-// diagnostic evidence to the report. Context cancellation always stops the
-// gate, regardless of failFast.
+// remaining phase still runs and contributes its own diagnostic evidence to the
+// report. Context cancellation always stops the gate, regardless of failFast.
 func runCIPhases(ctx context.Context, phases []string, failFast bool, execute func(context.Context, string) error) error {
 	var runErr error
 	for _, phase := range phases {
-		if err := execute(ctx, phase); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("CI phase %s failed: %w", phase, err))
+		phaseErr := execute(ctx, phase)
+		if phaseErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("CI phase %s failed: %w", phase, phaseErr))
 			if failFast {
 				return runErr
 			}
 		}
+		// Stop the gate when the run was cancelled, even if the phase itself
+		// returned nil. Avoid re-joining ctx.Err() when the phase already
+		// surfaced the cancellation so the report error is not duplicated.
 		if ctx.Err() != nil {
-			return errors.Join(runErr, ctx.Err())
+			if !errors.Is(phaseErr, ctx.Err()) {
+				runErr = errors.Join(runErr, ctx.Err())
+			}
+			return runErr
 		}
 	}
 	return runErr
@@ -120,14 +126,18 @@ func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resour
 				cli.Header(2, "CI test suite: %s", suite)
 			}
 			options := commandScheduleOptions(true, phase, suite, reporter)
-			if err := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite), options); err != nil {
-				errs = errors.Join(errs, err)
+			suiteErr := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite), options)
+			if suiteErr != nil {
+				errs = errors.Join(errs, suiteErr)
 				if failFast {
 					return errs
 				}
 			}
 			if ctx.Err() != nil {
-				return errors.Join(errs, ctx.Err())
+				if !errors.Is(suiteErr, ctx.Err()) {
+					errs = errors.Join(errs, ctx.Err())
+				}
+				return errs
 			}
 		}
 		return errs
