@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/core/agents/manager"
 	runnersbase "github.com/codefly-dev/core/runners/base"
+	"github.com/codefly-dev/core/wool"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
@@ -117,17 +118,19 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	}
 	var failures []error
 
+	w := wool.Get(ctx).In(options.verb)
+
 	// Always announce what we're doing — `clear` was silent on the common path
 	// (no docker containers + a quiet process kill), so it looked like a no-op.
 	switch {
 	case options.dryRun:
-		fmt.Printf("codefly %s (dry-run): nothing will be removed\n", options.verb)
+		w.Info("dry-run: nothing will be removed")
 	case len(args) > 0:
-		fmt.Printf("codefly %s: scope=%v\n", options.verb, args)
+		w.Info("clearing scoped containers", wool.Field("filter", args))
 	case options.keepContainers:
-		fmt.Printf("codefly %s: reap processes + orphaned groups (containers kept for reuse)\n", options.verb)
+		w.Info("reaping processes and orphaned groups (containers kept for reuse)")
 	default:
-		fmt.Printf("codefly %s: full reset\n", options.verb)
+		w.Info("full reset")
 	}
 
 	if !options.keepProcesses {
@@ -140,13 +143,13 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		self := os.Getpid()
 		pids, err := codeflyOwnedPIDs(ctx, self)
 		if err != nil {
-			fmt.Printf("processes: cannot enumerate: %v\n", err)
+			w.Warn("cannot enumerate codefly processes", wool.ErrField(err))
 			failures = append(failures, err)
 		}
 		if options.dryRun {
-			fmt.Printf("processes: would kill %d codefly process(es): %v\n", len(pids), pids)
+			w.Info("would kill codefly processes", wool.Field("count", len(pids)), wool.Field("pids", pids))
 		} else if len(pids) == 0 {
-			fmt.Println("processes: none running")
+			w.Info("no codefly processes running")
 		} else {
 			killed := 0
 			for _, pid := range pids {
@@ -161,10 +164,10 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 				}
 				killed++
 			}
-			fmt.Printf("processes: killed %d of %d codefly process(es)\n", killed, len(pids))
+			w.Info("killed codefly processes", wool.Field("killed", killed), wool.Field("total", len(pids)))
 		}
 	} else {
-		fmt.Println("processes: kept (--keep-processes)")
+		w.Info("keeping processes (--keep-processes)")
 	}
 
 	// Stale state left by crashed/exited CLIs: per-spawn UDS sockets under
@@ -172,21 +175,21 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	// These accumulate over time and were never cleaned by `clear`.
 	if options.dryRun {
 		if n := manager.CountStaleAgentSockets(); n > 0 {
-			fmt.Printf("sockets: would remove %d stale agent socket(s) (dry-run)\n", n)
+			w.Info("would remove stale agent sockets", wool.Field("count", n))
 		} else {
-			fmt.Println("sockets: none stale")
+			w.Info("no stale agent sockets")
 		}
 	} else {
 		if n := manager.SweepStaleAgentSockets(); n > 0 {
-			fmt.Printf("sockets: removed %d stale agent socket(s)\n", n)
+			w.Info("removed stale agent sockets", wool.Field("count", n))
 		} else {
-			fmt.Println("sockets: none stale")
+			w.Info("no stale agent sockets")
 		}
 		if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
-			fmt.Printf("process-groups: reap error: %v\n", err)
+			w.Warn("cannot reap stale process groups", wool.ErrField(err))
 			failures = append(failures, fmt.Errorf("reap stale process groups: %w", err))
 		} else {
-			fmt.Println("process-groups: reaped orphaned groups")
+			w.Info("reaped orphaned process groups")
 		}
 	}
 
@@ -196,8 +199,8 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 
 	dockerCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		fmt.Printf("containers: docker unavailable (%v) — skipping (nix-run services are not docker containers)\n", err)
-		clearNixDataNote()
+		w.Info("docker unavailable, skipping container removal (nix-run services are not docker containers)", wool.ErrField(err))
+		clearNixDataNote(w)
 		return errors.Join(failures...)
 	}
 	defer func() {
@@ -207,8 +210,8 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	}()
 	cos, err := dockerCLI.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
-		fmt.Printf("containers: cannot list (%v) — docker may be down; skipping\n", err)
-		clearNixDataNote()
+		w.Info("cannot list containers, docker may be down; skipping", wool.ErrField(err))
+		clearNixDataNote(w)
 		if ctx.Err() != nil {
 			failures = append(failures, ctx.Err())
 		}
@@ -240,11 +243,11 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 			}
 		}
 		if options.dryRun {
-			fmt.Printf("would remove container: %s (%s)\n", strings.TrimPrefix(name, "/"), c.State)
+			w.Info("would remove container", wool.Field("container", strings.TrimPrefix(name, "/")), wool.Field("state", c.State))
 			removed++
 			continue
 		}
-		fmt.Printf("removing container: %s\n", strings.TrimPrefix(name, "/"))
+		w.Info("removing container", wool.Field("container", strings.TrimPrefix(name, "/")))
 		// ContainerKill can error when container is already stopped;
 		// the Remove --force below handles cleanup either way, so
 		// a kill error here is noise, not fatal.
@@ -252,7 +255,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		if err := dockerCLI.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
 			// Don't abort the whole sweep on one stubborn container — warn and
 			// keep going so the rest still get cleaned (was log.Fatalf).
-			fmt.Printf("warning: can't remove container %s: %v\n", strings.TrimPrefix(name, "/"), err)
+			w.Warn("cannot remove container", wool.Field("container", strings.TrimPrefix(name, "/")), wool.ErrField(err))
 			failures = append(failures, fmt.Errorf("remove container %s: %w", strings.TrimPrefix(name, "/"), err))
 			continue
 		}
@@ -260,16 +263,16 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	}
 	if removed == 0 {
 		if len(args) > 0 {
-			fmt.Printf("containers: none matched filter %v\n", args)
+			w.Info("no containers matched filter", wool.Field("filter", args))
 		} else {
-			fmt.Println("containers: none found")
+			w.Info("no codefly containers found")
 		}
 	} else if options.dryRun {
-		fmt.Printf("containers: %d would be removed (dry-run)\n", removed)
+		w.Info("containers would be removed", wool.Field("count", removed))
 	} else {
-		fmt.Printf("containers: %d removed\n", removed)
+		w.Info("removed containers", wool.Field("count", removed))
 	}
-	clearNixDataNote()
+	clearNixDataNote(w)
 	return errors.Join(failures...)
 }
 
@@ -278,9 +281,9 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 // docker containers, but nix services keep their data under ~/.codefly/data, so a
 // wedged DB (e.g. a dirty golang-migrate state) survives `clear`. This note makes
 // that explicit + gives the reset command.
-func clearNixDataNote() {
-	fmt.Println("note: nix-run service DATA is NOT removed by clear (only processes + docker containers).")
-	fmt.Println("      to reset a service's data — e.g. a dirty/wedged DB migration — stop codefly and run:")
-	fmt.Println("        rm -rf ~/.codefly/data/<workspace>    # e.g. ~/.codefly/data/mind-server")
-	fmt.Println("      then `codefly run service <svc>` re-applies migrations from scratch.")
+func clearNixDataNote(w *wool.Wool) {
+	w.Info("nix-run service DATA is NOT removed by clear (only processes + docker containers).\n" +
+		"      to reset a service's data — e.g. a dirty/wedged DB migration — stop codefly and run:\n" +
+		"        rm -rf ~/.codefly/data/<workspace>    (e.g. ~/.codefly/data/mind-server)\n" +
+		"      then `codefly run service <svc>` re-applies migrations from scratch.")
 }

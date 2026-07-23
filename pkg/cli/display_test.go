@@ -11,10 +11,68 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/wool"
 )
+
+// stripANSI removes SGR escape sequences so a test can assert on the plain
+// text golor/lipgloss wrapped around it.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			if j := strings.IndexByte(s[i:], 'm'); j >= 0 {
+				i += j + 1
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func TestViewPreservesGolorControlRunesInMessage(t *testing.T) {
+	// A message's own '#', '[' and ']' are literal text — a rendered slice, a
+	// progress tag, a shell comment — and must survive verbatim. Feeding them to
+	// golor's scanner eats brackets and truncates the line at the first '#'.
+	wrapper := &Wrapper{}
+	cases := []string{
+		"pids=[1 2 3]",
+		"rm -rf ~/.codefly/data/<ws>    # e.g. mind-server",
+		"[1/5] building",
+		"error=Cannot connect [daemon]: is docker running? # hint",
+	}
+	for _, msg := range cases {
+		got := stripANSI(wrapper.View("#(magenta)", "%s", msg))
+		if got != msg {
+			t.Errorf("View mangled message\n got:  %q\n want: %q", got, msg)
+		}
+	}
+}
+
+func TestViewStillInterpolatesArgs(t *testing.T) {
+	wrapper := &Wrapper{}
+	got := stripANSI(wrapper.View("#(white)", "[%d/%d] %s", 1, 5, "go"))
+	if want := "[1/5] go"; got != want {
+		t.Errorf("View args: got %q, want %q", got, want)
+	}
+}
+
+func TestViewAppliesStyle(t *testing.T) {
+	// The theme must still colorize — the styled output carries an SGR escape and,
+	// once stripped, equals the plain message.
+	wrapper := &Wrapper{}
+	styled := wrapper.View("#(magenta)", "%s", "hello")
+	if !strings.Contains(styled, "\x1b[") {
+		t.Fatalf("expected ANSI styling in %q", styled)
+	}
+	if got := stripANSI(styled); got != "hello" {
+		t.Errorf("stripped style: got %q, want %q", got, "hello")
+	}
+}
 
 func TestUnwrapErrorLayers_Nil(t *testing.T) {
 	if got := unwrapErrorLayers(nil); got != nil {
