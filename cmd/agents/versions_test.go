@@ -34,8 +34,8 @@ func findVersion(inv inventory, version string) (versionEntry, bool) {
 
 func TestBuildInventoryUnionsSourcesAndFlags(t *testing.T) {
 	releases := []releaseInfo{
-		{version: "0.0.74", hasCIAsset: true},
-		{version: "0.0.73", hasCIAsset: false}, // release exists but no CI asset
+		{version: "0.0.74", platforms: []string{ciPlatform, "darwin_arm64"}},
+		{version: "0.0.73", platforms: []string{"darwin_arm64"}}, // release exists, but no CI asset
 	}
 	tags := []string{"0.0.74", "0.0.73", "0.0.56"} // 0.0.56 is tag-only
 	local := []string{"0.0.74", "0.0.10"}          // 0.0.10 only in cache
@@ -61,12 +61,18 @@ func TestBuildInventoryUnionsSourcesAndFlags(t *testing.T) {
 			t.Fatalf("version %s sources = %+v, want %+v", version, entry.Sources, want)
 		}
 	}
+
+	// The host-only release (0.0.73) keeps its platform for display even though
+	// it isn't CI-resolvable.
+	if entry, _ := findVersion(inv, "0.0.73"); len(entry.ReleasePlatforms) != 1 || entry.ReleasePlatforms[0] != "darwin_arm64" {
+		t.Fatalf("0.0.73 release platforms = %v, want [darwin_arm64]", entry.ReleasePlatforms)
+	}
 }
 
 func TestBuildInventoryLatestTagBeatsLatestResolvable(t *testing.T) {
 	// The module-saas-starter#3 failure mode: the newest tag has no
 	// downloadable artifact, so latest-resolvable lags latest-tag.
-	releases := []releaseInfo{{version: "0.0.74", hasCIAsset: true}}
+	releases := []releaseInfo{{version: "0.0.74", platforms: []string{ciPlatform}}}
 	tags := []string{"0.0.90", "0.0.74"}
 
 	inv := buildInventory(redisAgent(), releases, tags, nil, nil, nil, false)
@@ -126,6 +132,25 @@ func TestBuildInventorySurfacesOCIOnlyVersion(t *testing.T) {
 	}
 	if inv.LatestTag != "" {
 		t.Fatalf("latest tag = %q, want empty (no tags)", inv.LatestTag)
+	}
+}
+
+func TestReleaseCellReflectsPlatforms(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry versionEntry
+		want  string
+	}{
+		{"ci asset present", versionEntry{Sources: sourceFlags{GithubRelease: true}, ReleasePlatforms: []string{"darwin_arm64", ciPlatform}}, "✓ darwin_arm64," + ciPlatform},
+		{"host only, no ci asset", versionEntry{ReleasePlatforms: []string{"darwin_arm64"}}, "✗ (darwin_arm64)"},
+		{"no assets at all", versionEntry{}, "✗"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := releaseCell(tc.entry); got != tc.want {
+				t.Fatalf("releaseCell = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -198,7 +223,7 @@ func TestSummarizeWorkspaceAgentsCachesAndFlagsResolvability(t *testing.T) {
 	fetchReleases = func(_ context.Context, agent *resources.Agent) ([]releaseInfo, error) {
 		releaseCalls++
 		if agent.Name == "redis" {
-			return []releaseInfo{{version: "0.0.74", hasCIAsset: true}}, nil
+			return []releaseInfo{{version: "0.0.74", platforms: []string{ciPlatform}}}, nil
 		}
 		return nil, nil // vault: tag-only, unpublished
 	}

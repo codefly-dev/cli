@@ -34,14 +34,16 @@ var (
 	fetchOCITags  = fetchOCITagsFromRegistry
 )
 
-// releaseInfo is one published GitHub release, reduced to what resolvability
-// needs: the version it tags and whether it carries the CI-platform asset.
+// releaseInfo is one published GitHub release: the version it tags and the
+// os_arch suffixes it ships a downloadable asset for.
 type releaseInfo struct {
-	version    string
-	hasCIAsset bool
+	version   string
+	platforms []string
 }
 
-// sourceFlags records, per version, which sources can supply it.
+// sourceFlags records, per version, which sources can supply it. GithubRelease
+// specifically means the CI-platform asset is present — the resolvability
+// signal — regardless of which other platforms the release also ships.
 type sourceFlags struct {
 	Tag           bool `json:"tag"`
 	GithubRelease bool `json:"github_release"`
@@ -57,7 +59,11 @@ func (f sourceFlags) resolvable() bool {
 type versionEntry struct {
 	Version string      `json:"version"`
 	Sources sourceFlags `json:"sources"`
-	sem     semver.Version
+	// ReleasePlatforms lists every os_arch the GitHub release ships an asset
+	// for, so a version downloadable only for the host (not the CI platform)
+	// isn't misread as having no artifact at all.
+	ReleasePlatforms []string `json:"release_platforms,omitempty"`
+	sem              semver.Version
 }
 
 type inventory struct {
@@ -196,8 +202,11 @@ func buildInventory(agent *resources.Agent, releases []releaseInfo, tags, local,
 	for _, release := range releases {
 		if entry, ok := ensure(release.version); ok {
 			entry.Sources.Tag = true
-			if release.hasCIAsset {
-				entry.Sources.GithubRelease = true
+			for _, platform := range release.platforms {
+				entry.ReleasePlatforms = appendUnique(entry.ReleasePlatforms, platform)
+				if platform == ciPlatform {
+					entry.Sources.GithubRelease = true
+				}
 			}
 		}
 	}
@@ -231,6 +240,7 @@ func buildInventory(agent *resources.Agent, releases []releaseInfo, tags, local,
 	}
 	var latestTag, latestResolvable *semver.Version
 	for _, entry := range entries {
+		slices.Sort(entry.ReleasePlatforms)
 		inv.Versions = append(inv.Versions, *entry)
 		if entry.Sources.Tag && (latestTag == nil || entry.sem.GT(*latestTag)) {
 			v := entry.sem
@@ -376,15 +386,18 @@ func fetchReleasesFromGitHub(ctx context.Context, agent *resources.Agent) ([]rel
 		}
 		for _, release := range releases {
 			version := strings.TrimPrefix(release.GetTagName(), "v")
-			wantAsset := fmt.Sprintf("service-%s_%s_%s.tar.gz", agent.Name, version, ciPlatform)
-			hasAsset := false
+			assetPrefix := fmt.Sprintf("service-%s_%s_", agent.Name, version)
+			var platforms []string
 			for _, asset := range release.Assets {
-				if asset.GetName() == wantAsset {
-					hasAsset = true
-					break
+				platform, ok := strings.CutPrefix(asset.GetName(), assetPrefix)
+				if !ok {
+					continue
+				}
+				if platform, ok := strings.CutSuffix(platform, ".tar.gz"); ok {
+					platforms = append(platforms, platform)
 				}
 			}
-			out = append(out, releaseInfo{version: version, hasCIAsset: hasAsset})
+			out = append(out, releaseInfo{version: version, platforms: platforms})
 		}
 		if resp.NextPage == 0 {
 			break
@@ -534,7 +547,7 @@ func renderInventory(inv inventory) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			entry.Version,
 			presence(entry.Sources.Tag),
-			mark(entry.Sources.GithubRelease),
+			releaseCell(entry),
 			ociMark(entry.Sources.OCI, inv.OCIConfigured),
 			presence(entry.Sources.PinnedHere),
 			presence(entry.Sources.LocalCache),
@@ -542,7 +555,7 @@ func renderInventory(inv inventory) {
 	}
 	_ = tw.Flush()
 
-	fmt.Printf("\nCI platform: %s | GitHub-release column = downloadable %s asset\n", inv.CIPlatform, inv.CIPlatform)
+	fmt.Printf("\nGitHub-release: ✓/✗ = %s asset present (CI-downloadable); any other platforms shipped are listed in parentheses\n", inv.CIPlatform)
 	if !inv.OCIConfigured {
 		fmt.Println("OCI column: not checked (set AGENT_REGISTRY)")
 	}
@@ -583,6 +596,20 @@ func writeJSON(payload any) error {
 	}
 	fmt.Println(string(encoded))
 	return nil
+}
+
+// releaseCell renders the GitHub-release column. ✓/✗ reflects whether the
+// CI-platform asset (the resolvability signal) is present; any platforms the
+// release actually ships are listed so a host-only asset isn't misread as
+// "no artifact at all".
+func releaseCell(entry versionEntry) string {
+	if entry.Sources.GithubRelease {
+		return "✓ " + strings.Join(entry.ReleasePlatforms, ",")
+	}
+	if len(entry.ReleasePlatforms) > 0 {
+		return "✗ (" + strings.Join(entry.ReleasePlatforms, ",") + ")"
+	}
+	return "✗"
 }
 
 // mark is for columns where absence is a meaningful "no" (a release asset that
