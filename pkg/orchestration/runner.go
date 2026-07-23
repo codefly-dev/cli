@@ -235,6 +235,18 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 	}
 
+	// Reject stale native listeners before calling the agent's Init hook.
+	// Infrastructure agents are allowed to bind their assigned endpoint during
+	// Init (for example Vault starts its Docker/Nix runtime there), so probing in
+	// Start is already too late and mistakes the service we just initialized for
+	// a stale process.
+	//
+	// A running service being hot-reloaded keeps its port and is marked started,
+	// so it must skip this first-start guard.
+	if err := runner.checkInitialPortAvailability(ctx); err != nil {
+		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
+	}
+
 	// Configuration reads can block on a stalled provider (e.g. a dependency
 	// service that failed to export its config). Bound each read with a
 	// timeout so a single bad provider doesn't stall the entire Init.
@@ -394,29 +406,9 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return runner.StartRemote(ctx)
 	}
 
-	// A stale user binary from a previous run that outlived process-group
-	// reaping keeps its endpoint port bound. The agent would then report
-	// Start success while the freshly launched binary immediately dies with
-	// "bind: address already in use" — a confusing "started and running"
-	// followed by an exit. Detect the collision here and fail fast with an
-	// actionable message instead.
-	//
-	// Gate on isStarted only: a running service being hot-reloaded keeps its
-	// port and is still marked started (StopIfNeeded leaves it running), so it
-	// skips the probe; a Follow-driven restart calls Stop first, which blocks
-	// until the child is reaped and the port freed, so the probe sees it free.
-	firstStart := !runner.isStarted.Load()
-
 	err := runner.StopIfNeeded(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot stopAfter service instance if needed")
-	}
-
-	if firstStart {
-		if held := runner.boundNativePorts(ctx); len(held) > 0 {
-			return nil, w.NewError("cannot start %s: port %s already in use — a process from a previous run may still be holding it; run 'codefly clear' to reclaim it, then retry",
-				runner.instance.Unique(), strings.Join(held, ", "))
-		}
 	}
 
 	// Build the request
@@ -519,6 +511,17 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 		held = append(held, fmt.Sprintf("%d (%s)", instance.Port, mapping.Endpoint.Name))
 	}
 	return held
+}
+
+func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
+	if runner.isStarted.Load() {
+		return nil
+	}
+	if held := runner.boundNativePorts(ctx); len(held) > 0 {
+		return fmt.Errorf("port %s already in use — a process from a previous run may still be holding it; run 'codefly clear' to reclaim it, then retry",
+			strings.Join(held, ", "))
+	}
+	return nil
 }
 
 func statusDiagnostic(message, fallback string) string {

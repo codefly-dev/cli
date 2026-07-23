@@ -50,6 +50,26 @@ func TestBoundNativePortsToleratesNilMappings(t *testing.T) {
 	require.Empty(t, runner.boundNativePorts(context.Background()))
 }
 
+func TestInitialPortGuardRejectsFirstInitAndSkipsRunningService(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	held := ln.Addr().(*net.TCPAddr).Port
+
+	runner := &Runner{networkMappings: []*basev0.NetworkMapping{
+		nativeMapping("http", uint16(held)),
+	}}
+
+	err = runner.checkInitialPortAvailability(context.Background())
+	require.ErrorContains(t, err, fmt.Sprintf("port %d (http) already in use", held))
+
+	// An initialized infrastructure runtime may already own this listener by
+	// the time Start is called. Once the service is marked running, reloads
+	// must not classify its own port as stale.
+	runner.isStarted.Store(true)
+	require.NoError(t, runner.checkInitialPortAvailability(context.Background()))
+}
+
 func TestStatusDiagnosticPreservesAgentMessage(t *testing.T) {
 	require.Equal(t, "compile failed on line 12", statusDiagnostic("  compile failed on line 12  ", "fallback"))
 	require.Equal(t, "fallback", statusDiagnostic("  ", "fallback"))

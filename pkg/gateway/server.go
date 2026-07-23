@@ -39,6 +39,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
+	codefly "github.com/codefly-dev/sdk-go"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -692,6 +693,9 @@ func (s *Server) ReadFile(ctx context.Context, req *gatewayv1.ReadFileRequest) (
 }
 
 func (s *Server) WriteFile(ctx context.Context, req *gatewayv1.WriteFileRequest) (*gatewayv1.WriteFileResponse, error) {
+	if err := validateOptionalExecutionContext(ctx); err != nil {
+		return nil, err
+	}
 	if err := s.validateService(req.GetService()); err != nil {
 		return nil, err
 	}
@@ -1233,6 +1237,9 @@ func (s *Server) Lint(ctx context.Context, _ *gatewayv1.LintRequest) (*gatewayv1
 }
 
 func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gatewayv1.TestResponse, error) {
+	if err := validateOptionalExecutionContext(ctx); err != nil {
+		return nil, err
+	}
 	rt, err := s.ensureRuntime(ctx)
 	if err != nil {
 		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
@@ -1262,6 +1269,14 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 		Failures:        runtimeTestFailures(resp),
 		RuntimeResponse: resp,
 	}, nil
+}
+
+func validateOptionalExecutionContext(ctx context.Context) error {
+	_, _, err := codefly.GRPCExecutionContextFromIncomingIfPresent(ctx)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
+	}
+	return nil
 }
 
 func runtimeTestSuccess(resp *runtimev0.TestResponse) bool {

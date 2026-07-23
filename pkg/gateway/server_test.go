@@ -25,6 +25,7 @@ import (
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
+	codefly "github.com/codefly-dev/sdk-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -312,6 +313,64 @@ func TestSubscribeWorkspaceChangesStreamsExternalEditsAndReplaysReconnect(t *tes
 	}
 	if _, err := srv.SubscribeWorkspaceChangeEvents(t.Context(), codecore.WorkspaceChangeCursor{}); !errors.Is(err, codecore.ErrWorkspaceChangeMonitorClosed) {
 		t.Fatalf("subscribe after close error=%v", err)
+	}
+}
+
+func TestWriteFileAcceptsSDKExecutionContextOverRealGRPC(t *testing.T) {
+	root := t.TempDir()
+	srv, err := NewServer(Config{WorkDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listener := bufconn.Listen(1 << 20)
+	grpcServer := grpc.NewServer()
+	gatewayv1.RegisterGatewayServer(grpcServer, srv)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	connection, err := grpc.NewClient(
+		"passthrough:///execution-context",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+
+	workContext, err := codefly.ParseWorkContextToken(
+		"e30.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := codefly.NewExecutionContext(workContext, "operation-write-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := codefly.WithGRPCExecutionContext(t.Context(), execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := gatewayv1.NewGatewayClient(connection).WriteFile(
+		ctx,
+		&gatewayv1.WriteFileRequest{Path: "receipt.txt", Content: "executed\n"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.GetSuccess() {
+		t.Fatalf("WriteFile failed: %s", response.GetError())
+	}
+	content, err := os.ReadFile(filepath.Join(root, "receipt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "executed\n" {
+		t.Fatalf("unexpected written content %q", content)
 	}
 }
 
