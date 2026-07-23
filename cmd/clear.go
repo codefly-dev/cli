@@ -143,7 +143,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		self := os.Getpid()
 		pids, err := codeflyOwnedPIDs(ctx, self)
 		if err != nil {
-			w.Error("cannot enumerate codefly processes", wool.ErrField(err))
+			w.Warn("cannot enumerate codefly processes", wool.ErrField(err))
 			failures = append(failures, err)
 		}
 		if options.dryRun {
@@ -186,7 +186,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 			w.Info("no stale agent sockets")
 		}
 		if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
-			w.Error("cannot reap stale process groups", wool.ErrField(err))
+			w.Warn("cannot reap stale process groups", wool.ErrField(err))
 			failures = append(failures, fmt.Errorf("reap stale process groups: %w", err))
 		} else {
 			w.Info("reaped orphaned process groups")
@@ -199,7 +199,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 
 	dockerCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		w.Warn("docker unavailable, skipping container removal (nix-run services are not docker containers)", wool.ErrField(err))
+		w.Info("docker unavailable, skipping container removal (nix-run services are not docker containers)", wool.ErrField(err))
 		clearNixDataNote(w)
 		return errors.Join(failures...)
 	}
@@ -210,7 +210,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	}()
 	cos, err := dockerCLI.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
-		w.Warn("cannot list containers, docker may be down; skipping", wool.ErrField(err))
+		w.Info("cannot list containers, docker may be down; skipping", wool.ErrField(err))
 		clearNixDataNote(w)
 		if ctx.Err() != nil {
 			failures = append(failures, ctx.Err())
