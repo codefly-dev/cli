@@ -8,7 +8,7 @@ import (
 // AgentCmd represents the build command
 var AgentCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "agent commands",
+	Short: "Develop, inspect, install, and validate Codefly service agents",
 }
 
 func init() {

@@ -17,7 +17,7 @@ import (
 // GRPCCmd represents the deploy command
 var GRPCCmd = &cobra.Command{
 	Use:   "gRPC",
-	Short: "generate gRPC client code",
+	Short: "Generate a typed gRPC client for a service endpoint",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

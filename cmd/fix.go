@@ -7,7 +7,7 @@ import (
 
 var FixCmd = &cobra.Command{
 	Use:   "fix",
-	Short: "Safely repair source through language plugins",
+	Short: "Apply safe, plugin-owned repairs to service source code",
 }
 
 func init() {

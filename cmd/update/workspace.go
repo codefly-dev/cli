@@ -14,7 +14,7 @@ import (
 // WorkspaceCmd represents the run command
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
-	Short: "Update a workspace",
+	Short: "Update every workspace service to its latest compatible agent",
 
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {

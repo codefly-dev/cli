@@ -15,7 +15,7 @@ import (
 // see here is exactly what `codefly run` sequences on.
 var DependenciesCmd = &cobra.Command{
 	Use:   "dependencies [service]",
-	Short: "Show the service dependency graph and the start order to a service",
+	Short: "Show a service's dependency graph and startup order",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

@@ -8,7 +8,7 @@ import (
 // AddCmd represents the add command
 var AddCmd = &cobra.Command{
 	Use:   "add",
-	Short: "Add",
+	Short: "Create modules, services, dependencies, and other workspace resources",
 }
 
 func init() {

@@ -16,7 +16,7 @@ var completionInstall bool
 
 var CompletionCmd = &cobra.Command{
 	Use:   "completion [bash|zsh|fish|powershell]",
-	Short: "Generate (or --install) the shell completion script",
+	Short: "Generate or install shell completion scripts for Codefly",
 	Long: `Generate the completion script for the given shell to stdout, or
 write it to that shell's conventional location with --install.
 

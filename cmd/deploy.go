@@ -8,7 +8,7 @@ import (
 // DeployCmd represents the Handle command
 var DeployCmd = &cobra.Command{
 	Use:   "deploy",
-	Short: "Handle",
+	Short: "Deploy a service or module to a configured environment",
 }
 
 func init() {

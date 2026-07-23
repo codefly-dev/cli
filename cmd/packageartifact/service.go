@@ -34,7 +34,7 @@ var (
 // ServiceCmd packages one source resource through its Builder plugin.
 var ServiceCmd = &cobra.Command{
 	Use:   "service [module/]service",
-	Short: "Package a service source resource through its plugin",
+	Short: "Package one service's source resource with its plugin",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

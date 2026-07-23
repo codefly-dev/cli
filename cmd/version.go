@@ -10,7 +10,7 @@ import (
 // VersionCmd represents the build command
 var VersionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Version of codefly",
+	Short: "Print the installed Codefly CLI version",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		version, err := cli.GetCurrentVersion()

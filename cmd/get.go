@@ -9,7 +9,7 @@ import (
 // resource model.
 var GetCmd = &cobra.Command{
 	Use:   "get",
-	Short: "Query services and endpoints",
+	Short: "Inspect configured service endpoints and their live reachability",
 }
 
 func init() {

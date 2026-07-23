@@ -18,7 +18,7 @@ import (
 // docker invocations.
 var CompanionCmd = &cobra.Command{
 	Use:   "companion",
-	Short: "Build, push, and list codefly companion images",
+	Short: "Build and publish companion images used by Codefly toolchains",
 }
 
 func init() {

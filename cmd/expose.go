@@ -8,7 +8,7 @@ import (
 // ExposeCmd represents the expose command
 var ExposeCmd = &cobra.Command{
 	Use:   "expose",
-	Short: "Expose a service",
+	Short: "Expose workspace services for local Kubernetes development",
 }
 
 func init() {

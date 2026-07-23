@@ -11,7 +11,7 @@ import (
 // the network port hash) — so it reports exactly what a run will do, without starting it.
 var ShowCmd = &cobra.Command{
 	Use:   "show",
-	Short: "Show workspace configuration (dependencies, networking, …)",
+	Short: "Inspect workspace dependency and network configuration",
 }
 
 func init() {

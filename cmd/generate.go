@@ -8,7 +8,7 @@ import (
 // GenerateCmd represents the generate command
 var GenerateCmd = &cobra.Command{
 	Use:   "generate",
-	Short: "Generate code to access service",
+	Short: "Generate API clients or protobuf bindings from service contracts",
 }
 
 func init() {

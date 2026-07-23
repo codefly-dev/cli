@@ -14,7 +14,7 @@ import (
 // MCPCmd represents the mcp command group
 var MCPCmd = &cobra.Command{
 	Use:   "mcp",
-	Short: "MCP server for AI integration",
+	Short: "Expose Codefly workspace tools to AI clients over MCP",
 	Long: `Model Context Protocol (MCP) server for codefly.
 
 This allows AI assistants like Claude to interact with your codefly workspace,
@@ -35,7 +35,7 @@ Usage with Claude Desktop:
 // MCPServeCmd starts the MCP server
 var MCPServeCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start MCP server in stdio mode",
+	Short: "Run the Codefly MCP server over standard input and output",
 	Long: `Start the MCP server in stdio mode for integration with AI assistants.
 
 The server communicates via JSON-RPC 2.0 over stdin/stdout, following the
@@ -74,7 +74,7 @@ Model Context Protocol specification.`,
 // MCPToolsCmd lists available MCP tools
 var MCPToolsCmd = &cobra.Command{
 	Use:   "tools",
-	Short: "List available MCP tools",
+	Short: "List the tools exposed by the Codefly MCP server",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

@@ -43,7 +43,7 @@ var (
 // Replaces the ad-hoc "go get -u / rebuild images" bash flow.
 var DepsCmd = &cobra.Command{
 	Use:   "deps",
-	Short: "Update outdated dependencies across all Go modules (and optionally companion images)",
+	Short: "Update Go dependencies and optionally refresh companion images",
 	Long: `Update dependencies across the monorepo.
 
 For each Go module under --dir (default: current directory), update deps:

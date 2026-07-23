@@ -18,7 +18,7 @@ var namingScope string
 // visible WITHOUT starting anything, plus the dependency endpoints each service consumes.
 var NetworkCmd = &cobra.Command{
 	Use:   "network",
-	Short: "Show each service's endpoints, the address it binds to, and its dependency endpoints",
+	Short: "Show service bindings and dependency endpoint addresses",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

@@ -8,7 +8,7 @@ import (
 // RunCmd represents the run command
 var RunCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Local run of your modules",
+	Short: "Start a service or job in its local workspace context",
 }
 
 func init() {

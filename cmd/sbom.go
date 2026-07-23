@@ -9,7 +9,7 @@ import (
 // agent's typed Builder.SBOM RPC.
 var SBOMCmd = &cobra.Command{
 	Use:   "sbom",
-	Short: "Generate authoritative CycloneDX software bills of materials",
+	Short: "Generate CycloneDX software bills of materials for services",
 }
 
 func init() {

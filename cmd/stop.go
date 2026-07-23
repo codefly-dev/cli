@@ -21,7 +21,7 @@ func stopClearOptions() clearOptions {
 // containers, use `codefly clear`.
 var StopCmd = &cobra.Command{
 	Use:     "stop [name-filter...]",
-	Short:   "Stop codefly processes + reap orphaned groups (keeps stateful containers; use `clear` for a full reset)",
+	Short:   "Stop Codefly processes while preserving stateful containers for reuse",
 	Aliases: []string{"down", "kill"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

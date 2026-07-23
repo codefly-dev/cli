@@ -20,7 +20,7 @@ var installVersion string
 // keeping download progress away from the MCP protocol stream.
 var InstallCmd = &cobra.Command{
 	Use:   "install <publisher/name[:version]>",
-	Short: "Install a released service agent binary",
+	Short: "Download a released service agent into the local Codefly cache",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

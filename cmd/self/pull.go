@@ -31,7 +31,7 @@ import (
 // monorepo root) is reused so it works from anywhere in the tree.
 var PullCmd = &cobra.Command{
 	Use:   "pull",
-	Short: "Pull the latest main into every codefly repo (non-destructive)",
+	Short: "Fast-forward all Codefly repositories to their latest main branches",
 	Long: `Pull pulls the latest code from the default branch into every git
 repository under the codefly.dev monorepo root — cli/, core/, proto/,
 sdk-go/, and any other sibling repo — in a single step.

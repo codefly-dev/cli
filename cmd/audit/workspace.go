@@ -19,7 +19,7 @@ import (
 // when any service surfaces HIGH/CRITICAL findings.
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
-	Short: "Audit every service in the workspace",
+	Short: "Scan every workspace service for vulnerable and outdated dependencies",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

@@ -47,7 +47,7 @@ type agentYAML struct {
 // BuildCmd builds an agent binary from source and installs it locally.
 var BuildCmd = &cobra.Command{
 	Use:   "build",
-	Short: "Build an agent binary from source and install it locally",
+	Short: "Compile an agent from source and install it for local use",
 	Long: `Build compiles the agent in the current (or specified) directory and
 installs the binary to ~/.codefly/agents/ so it can be loaded by the
 Gateway daemon.

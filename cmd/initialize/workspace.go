@@ -16,7 +16,7 @@ import (
 // WorkspaceCmd represents the run command
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
-	Short: "Create a new workspace",
+	Short: "Create a Codefly workspace in a new directory",
 	Args:  cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {

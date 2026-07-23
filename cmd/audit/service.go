@@ -33,7 +33,7 @@ var (
 // ServiceCmd implements `codefly audit service [name]`.
 var ServiceCmd = &cobra.Command{
 	Use:   "service [name]",
-	Short: "Audit dependencies of a service",
+	Short: "Scan one service for vulnerable and outdated dependencies",
 	Long: `Run the service agent's Builder.Audit RPC. Reports CVEs from the
 language's canonical scanner (govulncheck, npm audit, uv/pip-audit,
 OSV Scanner, or Trivy) plus available dependency releases. Read-only — never

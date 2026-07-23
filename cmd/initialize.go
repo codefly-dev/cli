@@ -8,7 +8,7 @@ import (
 // InitCmd represents the add command
 var InitCmd = &cobra.Command{
 	Use:   "init",
-	Short: "init",
+	Short: "Create and configure a new Codefly workspace",
 }
 
 func init() {

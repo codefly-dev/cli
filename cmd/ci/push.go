@@ -16,7 +16,7 @@ import (
 // PushCmd represents the run command
 var PushCmd = &cobra.Command{
 	Use:   "push",
-	Short: "Run CI Push",
+	Short: "Publish workspace state to the Codefly platform in CI",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

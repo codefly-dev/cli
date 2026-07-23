@@ -8,7 +8,7 @@ import (
 // UpdateCmd represents the update command
 var UpdateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update",
+	Short: "Refresh service agents or repository dependencies",
 }
 
 func init() {

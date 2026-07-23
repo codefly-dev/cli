@@ -8,7 +8,7 @@ import (
 // CiCmd represents the add command
 var CiCmd = &cobra.Command{
 	Use:   "ci",
-	Short: "ci",
+	Short: "Plan and run CI stages for services affected by a change",
 }
 
 func init() {

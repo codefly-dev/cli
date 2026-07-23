@@ -8,7 +8,7 @@ import (
 // TestCmd represents the test command
 var TestCmd = &cobra.Command{
 	Use:   "test",
-	Short: "Test",
+	Short: "Run plugin-owned tests for a service or source checkout",
 }
 
 func init() {

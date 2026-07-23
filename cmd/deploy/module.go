@@ -35,7 +35,7 @@ import (
 //	            the rendered tree from git.
 var ModuleCmd = &cobra.Command{
 	Use:   "module [name]",
-	Short: "Deploy every service in a module + apply the module-level kustomize",
+	Short: "Deploy every module service and apply its Kustomize configuration",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
