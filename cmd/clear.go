@@ -126,7 +126,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	case options.dryRun:
 		w.Info("dry-run: nothing will be removed")
 	case len(args) > 0:
-		w.Info("clearing scoped containers", wool.Field("scope", args))
+		w.Info("clearing scoped containers", wool.Field("filter", args))
 	case options.keepContainers:
 		w.Info("reaping processes and orphaned groups (containers kept for reuse)")
 	default:
