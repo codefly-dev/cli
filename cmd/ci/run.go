@@ -52,6 +52,9 @@ var RunCmd = &cobra.Command{
 			return err
 		}
 		return runWithCIReport(ctx, workspace, plan, "codefly ci run", func(reporter *CIReporter) error {
+			if err := validateAgentVersions(ctx, workspace, plan); err != nil {
+				return err
+			}
 			suites := normalizeTestSuites(testSuites)
 			for _, phase := range phases {
 				if phase == "verify" {
