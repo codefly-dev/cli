@@ -96,8 +96,23 @@ type Wrapper struct {
 }
 
 func (wrapper *Wrapper) View(style string, s string, args ...any) string {
-	view := fmt.Sprintf("%s[%s]", style, s)
-	return golor.Template(wrapper.template).Sprintf(view, args...)
+	if wrapper.template != nil {
+		// Template mode (cli.Template(obj)): the message may carry Go-template
+		// actions to interpolate against obj — keep the original render path.
+		view := fmt.Sprintf("%s[%s]", style, s)
+		return golor.Template(wrapper.template).Sprintf(view, args...)
+	}
+	// Styling-only mode — every logger/display line. The message is literal text
+	// that can legitimately contain golor's own control runes: a rendered slice
+	// ("pids=[1 2 3]"), a progress tag ("[1/5]"), or a shell "# comment". Feeding
+	// it straight into golor's `style[...]` template lets those runes be parsed as
+	// markup — brackets get eaten and a `#` swallows the rest of the line. So style
+	// a sentinel golor DOES parse, then splice the raw message into the result; its
+	// control runes never reach the scanner and survive verbatim.
+	content := fmt.Sprintf(s, args...)
+	const sentinel = "\x00codefly-content\x00"
+	styled := golor.Template(nil).Sprintf("%s[%s]", style, sentinel)
+	return strings.Replace(styled, sentinel, content, 1)
 }
 
 func Template(t any) *Wrapper {
