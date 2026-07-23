@@ -32,6 +32,10 @@ func runSyncDriftService(ctx context.Context, workspace *resources.Workspace, mo
 		if err := flow.Sync(ctx); err != nil {
 			return w.Wrapf(err, "run non-mutating sync")
 		}
+		if flow.OriginSyncSkipped() {
+			recordCIReportSkip(ctx, reportReasonAgentNoSyncCapability)
+			return nil
+		}
 		response := flow.OriginSyncResponse()
 		if response == nil || response.GetState() == nil {
 			return w.NewError("sync drift agent returned no status")

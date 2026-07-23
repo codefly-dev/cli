@@ -674,6 +674,29 @@ func (flow *Flow) OriginSyncResponse() *builderv0.SyncResponse {
 	return nil
 }
 
+// OriginSyncSkipped reports whether the origin service's dry-run sync was
+// skipped because its agent advertises no authoritative sync capability. A
+// skipped drift check is neither a pass nor a failure: the agent owns no
+// generated source that could drift.
+func (flow *Flow) OriginSyncSkipped() bool {
+	if flow == nil || flow.hub == nil {
+		return false
+	}
+	origin := resources.WithUnique(flow.originService).Unique()
+	for _, manager := range flow.hub.managers {
+		if manager == nil || manager.Unique() != origin {
+			continue
+		}
+		if source, ok := manager.(interface {
+			BuilderSyncSkipped() bool
+		}); ok {
+			return source.BuilderSyncSkipped()
+		}
+		return false
+	}
+	return false
+}
+
 func (flow *Flow) Build(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Build")
 	// In stand-alone Mode, we set an ignore policy

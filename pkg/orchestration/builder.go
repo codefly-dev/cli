@@ -46,6 +46,7 @@ type Builder struct {
 	push bool
 
 	syncResponse *builderv0.SyncResponse
+	syncSkipped  bool
 }
 
 func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
@@ -156,11 +157,13 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 	}
 	if request.GetDryRun() {
 		advertised, supported := ValidationOperationSupport(b.instance.Info, ValidationSync)
-		if !advertised {
-			return nil, w.NewError("cannot prove sync drift for %s: agent has no authoritative sync capability contract", b.instance.Unique())
-		}
-		if !supported {
+		if advertised && !supported {
 			return nil, w.NewError("cannot prove sync drift for %s: agent explicitly does not support non-mutating sync", b.instance.Unique())
+		}
+		if !advertised {
+			b.syncSkipped = true
+			w.Debug("agent does not advertise a sync capability; skipping sync-drift")
+			return nil, nil
 		}
 	}
 	resp, err := b.instance.Builder.Sync(ctx, request, communicate.NewPrompt())
@@ -191,6 +194,12 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 
 func (b *Builder) SyncResponse() *builderv0.SyncResponse {
 	return b.syncResponse
+}
+
+// SyncSkipped reports whether the last dry-run Sync was skipped because the
+// agent advertises no authoritative sync capability contract.
+func (b *Builder) SyncSkipped() bool {
+	return b.syncSkipped
 }
 
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
