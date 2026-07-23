@@ -11,10 +11,10 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.2.32
+	github.com/codefly-dev/core v0.2.33
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.0
-	github.com/codefly-dev/sdk-go v0.1.56
+	github.com/codefly-dev/sdk-go v0.1.58
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/creack/pty v1.1.24
 	github.com/docker/docker v28.5.2+incompatible

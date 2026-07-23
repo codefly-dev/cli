@@ -32,6 +32,7 @@ import (
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
+	"github.com/codefly-dev/core/resources"
 	codefly "github.com/codefly-dev/sdk-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -955,6 +956,45 @@ func TestDirectWorkspaceFileOperationsRejectUnknownService(t *testing.T) {
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("ReadFile unknown service code = %s, want %s (err=%v)", status.Code(err), codes.NotFound, err)
+	}
+}
+
+func TestParentResourceDirFindsNearestTypedBoundary(t *testing.T) {
+	root := t.TempDir()
+	moduleDir := filepath.Join(root, "modules", "platform")
+	serviceDir := filepath.Join(moduleDir, "services", "warden")
+	codeDir := filepath.Join(serviceDir, "code", "crates")
+	if err := os.MkdirAll(codeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		filepath.Join(root, resources.WorkspaceConfigurationName):     "name: workspace\nlayout: modules\n",
+		filepath.Join(moduleDir, resources.ModuleConfigurationName):   "name: platform\n",
+		filepath.Join(serviceDir, resources.ServiceConfigurationName): "name: warden\nversion: 0.0.0\n",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := map[string]struct {
+		name string
+		want string
+	}{
+		"workspace": {name: resources.WorkspaceConfigurationName, want: root},
+		"module":    {name: resources.ModuleConfigurationName, want: moduleDir},
+		"service":   {name: resources.ServiceConfigurationName, want: serviceDir},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := parentResourceDir(codeDir, test.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("resource dir=%q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

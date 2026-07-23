@@ -36,11 +36,13 @@ import (
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
 	"github.com/codefly-dev/core/agents/manager"
 	codecore "github.com/codefly-dev/core/code"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
+	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
@@ -450,6 +452,10 @@ func (s *Server) ensurePlugin(ctx context.Context) (codev0.CodeClient, error) {
 	codeClient := codev0.NewCodeClient(grpcConn)
 	agentClient := agentv0.NewAgentClient(grpcConn)
 	runtimeClient := runtimev0.NewRuntimeClient(grpcConn)
+	if err := s.initializePluginRuntime(loadCtx, runtimeClient); err != nil {
+		agentConn.Close()
+		return nil, fmt.Errorf("initialize agent %s runtime: %w", agentName, err)
+	}
 
 	s.plugins[svcName] = &pluginConn{
 		agent:     agent,
@@ -465,6 +471,132 @@ func (s *Server) ensurePlugin(ctx context.Context) (codev0.CodeClient, error) {
 
 	fmt.Printf("[gateway] Plugin %s loaded (PID %d)\n", agent.Name, agentConn.ProcessInfo().PID)
 	return codeClient, nil
+}
+
+// initializePluginRuntime performs the same mandatory Load/Init lifecycle used
+// by `codefly run`, without starting a second copy of the target service.
+// Gateway Build/Test/Lint calls execute inside the language plugin and require
+// its source location, environment, and native runner to exist first.
+func (s *Server) initializePluginRuntime(
+	ctx context.Context,
+	runtimeClient runtimev0.RuntimeClient,
+) error {
+	workspaceDir, err := parentResourceDir(s.cfg.WorkDir, resources.WorkspaceConfigurationName)
+	if err != nil {
+		return err
+	}
+	serviceDir, err := parentResourceDir(s.cfg.WorkDir, resources.ServiceConfigurationName)
+	if err != nil {
+		return err
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		return fmt.Errorf("load workspace: %w", err)
+	}
+	var module *resources.Module
+	if workspace.Layout == resources.LayoutKindFlat {
+		module, err = workspace.LoadModuleFromName(ctx, workspace.Name)
+	} else {
+		var moduleDir string
+		moduleDir, err = parentResourceDir(s.cfg.WorkDir, resources.ModuleConfigurationName)
+		if err == nil {
+			module, err = resources.LoadModuleFromDir(ctx, moduleDir)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("load enclosing module: %w", err)
+	}
+	if module == nil {
+		return fmt.Errorf("load enclosing module: no module resolved")
+	}
+	service, err := resources.LoadServiceFromDir(ctx, serviceDir)
+	if err != nil {
+		return fmt.Errorf("load service: %w", err)
+	}
+	service.WithModule(module.Name)
+	relative, err := workspace.RelativeDir(service)
+	if err != nil {
+		return fmt.Errorf("resolve service path relative to workspace: %w", err)
+	}
+	environment := resources.LocalEnvironment()
+	environmentProto, err := environment.Proto()
+	if err != nil {
+		return fmt.Errorf("build local environment: %w", err)
+	}
+	identity := &basev0.ServiceIdentity{
+		Name:                service.Name,
+		Version:             service.Version,
+		Module:              module.Name,
+		Workspace:           workspace.Name,
+		WorkspacePath:       workspace.Dir(),
+		RelativeToWorkspace: relative,
+	}
+	loadResponse, err := runtimeClient.Load(ctx, &runtimev0.LoadRequest{
+		Identity:    identity,
+		Environment: environmentProto,
+	})
+	if err != nil {
+		return fmt.Errorf("runtime Load: %w", err)
+	}
+	if loadResponse == nil || loadResponse.GetStatus().GetState() != runtimev0.LoadStatus_READY {
+		return fmt.Errorf("runtime Load did not become ready: %s", loadResponse.GetStatus().GetMessage())
+	}
+
+	networkManager, err := network.NewRuntimeManager(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create local network manager: %w", err)
+	}
+	networkManager.WithTemporaryPorts()
+	resourceIdentity := &resources.ServiceIdentity{
+		Name:                service.Name,
+		Version:             service.Version,
+		Module:              module.Name,
+		Workspace:           workspace.Name,
+		WorkspacePath:       workspace.Dir(),
+		RelativeToWorkspace: relative,
+	}
+	mappings, err := networkManager.GenerateNetworkMappings(
+		ctx,
+		environment,
+		workspace,
+		resourceIdentity,
+		loadResponse.GetEndpoints(),
+	)
+	if err != nil {
+		return fmt.Errorf("generate local runtime mappings: %w", err)
+	}
+	initResponse, err := runtimeClient.Init(ctx, &runtimev0.InitRequest{
+		RuntimeContext:          resources.NewRuntimeContextNative(),
+		ProposedNetworkMappings: mappings,
+	})
+	if err != nil {
+		return fmt.Errorf("runtime Init: %w", err)
+	}
+	if initResponse == nil || initResponse.GetStatus().GetState() != runtimev0.InitStatus_READY {
+		return fmt.Errorf("runtime Init did not become ready: %s", initResponse.GetStatus().GetMessage())
+	}
+	return nil
+}
+
+func parentResourceDir(start, configurationName string) (string, error) {
+	current, err := filepath.Abs(start)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s search root: %w", configurationName, err)
+	}
+	for {
+		info, statErr := os.Stat(filepath.Join(current, configurationName))
+		if statErr == nil && !info.IsDir() {
+			return current, nil
+		}
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect %s: %w", configurationName, statErr)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("%s not found above %s", configurationName, start)
+		}
+		current = parent
+	}
 }
 
 // ensureRuntime returns the Runtime gRPC client, loading the plugin if needed.
