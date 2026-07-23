@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	"github.com/codefly-dev/cli/pkg/control"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
@@ -245,18 +245,13 @@ func runCommandInDir(ctx context.Context, dir, command string) (string, error) {
 	return string(out), err
 }
 
-// listServiceCommands returns commands registered by the service agent.
+// listServiceCommands returns commands registered by the service agent (via the
+// control plane).
 func (s *Server) listServiceCommands(ctx context.Context, args map[string]string) ([]Content, error) {
-	_, instance, err := s.getServiceAndInstance(ctx, args["module"], args["service"])
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := instance.Agent.ListCommands(ctx, &agentv0.ListCommandsRequest{})
+	commands, err := s.plane.ListCommands(ctx, serviceRef(args))
 	if err != nil {
 		return nil, fmt.Errorf("cannot list commands: %w", err)
 	}
-
 	type cmdInfo struct {
 		Name        string   `json:"name"`
 		Description string   `json:"description"`
@@ -264,9 +259,9 @@ func (s *Server) listServiceCommands(ctx context.Context, args map[string]string
 		Tags        []string `json:"tags,omitempty"`
 		Destructive bool     `json:"destructive,omitempty"`
 	}
-	var commands []cmdInfo
-	for _, cmd := range resp.Commands {
-		commands = append(commands, cmdInfo{
+	out := make([]cmdInfo, 0, len(commands))
+	for _, cmd := range commands {
+		out = append(out, cmdInfo{
 			Name:        cmd.Name,
 			Description: cmd.Description,
 			Usage:       cmd.Usage,
@@ -274,40 +269,44 @@ func (s *Server) listServiceCommands(ctx context.Context, args map[string]string
 			Destructive: cmd.Destructive,
 		})
 	}
-	data, _ := json.MarshalIndent(commands, "", "  ")
+	data, _ := json.MarshalIndent(out, "", "  ")
 	return []Content{TextContent(string(data))}, nil
 }
 
-// runServiceCommand executes a command on the service agent.
+// runServiceCommand executes a command on the service agent (via the control
+// plane).
 func (s *Server) runServiceCommand(ctx context.Context, args map[string]string) ([]Content, error) {
-	_, instance, err := s.getServiceAndInstance(ctx, args["module"], args["service"])
-	if err != nil {
-		return nil, err
-	}
-
 	command := args["command"]
 	if command == "" {
 		return nil, fmt.Errorf("command is required")
 	}
-
 	var cmdArgs []string
 	if argsStr := args["args"]; argsStr != "" {
-		// Try JSON array first, fall back to space-separated
+		// Try JSON array first, fall back to space-separated.
 		if err := json.Unmarshal([]byte(argsStr), &cmdArgs); err != nil {
 			cmdArgs = strings.Split(argsStr, " ")
 		}
 	}
-
-	resp, err := instance.Agent.RunPluginCommand(ctx, &agentv0.RunPluginCommandRequest{
+	result, err := s.plane.RunCommand(ctx, control.RunCommandRequest{
+		Service: serviceRef(args),
 		Command: command,
 		Args:    cmdArgs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("command failed: %w", err)
 	}
-
-	if !resp.Success {
-		return []Content{TextContent(fmt.Sprintf("FAILED: %s", resp.Error))}, nil
+	if result.ExitCode != 0 {
+		return []Content{TextContent(fmt.Sprintf("FAILED: %s", result.Output))}, nil
 	}
-	return []Content{TextContent(resp.Output)}, nil
+	return []Content{TextContent(result.Output)}, nil
+}
+
+// serviceRef joins the module/service args into the "module/service" reference
+// the control plane resolves.
+func serviceRef(args map[string]string) string {
+	module, service := args["module"], args["service"]
+	if module == "" {
+		return service
+	}
+	return module + "/" + service
 }

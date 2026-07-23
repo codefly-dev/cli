@@ -81,3 +81,6 @@ Thumbs.db
 
 # Compiled binary
 /codefly
+
+# Local secret env files (e.g. symlink to ~/development/deus/llm.secret.env for cassette recording)
+*.secret.env

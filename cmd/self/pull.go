@@ -19,7 +19,7 @@ import (
 )
 
 // PullCmd pulls the latest code from the default branch into every git repo
-// under the codefly.dev monorepo root (cli/, core/, proto/, sdk-go/, ...) in
+// under the codefly.dev monorepo root (cli/, core/, sdk-go/, ...) in
 // one step. It is intentionally NON-DESTRUCTIVE: local commits are preserved
 // (it merges, never resets), and uncommitted changes are stashed around the
 // merge and restored afterward. Nothing local is overwritten — if a merge or
@@ -33,10 +33,10 @@ var PullCmd = &cobra.Command{
 	Use:   "pull",
 	Short: "Fast-forward all Codefly repositories to their latest main branches",
 	Long: `Pull pulls the latest code from the default branch into every git
-repository under the codefly.dev monorepo root — cli/, core/, proto/,
-sdk-go/, and any other sibling repo — in a single step.
+repository under the codefly.dev monorepo root — cli/, core/, sdk-go/,
+and any other sibling repo — in a single step.
 
-By default it pulls the codefly module repos — cli/, core/, proto/, sdk-go/.
+By default it pulls the codefly module repos — cli/, core/, sdk-go/.
 Use --all to pull every git repository under the monorepo root instead (the
 whole workspace). Use --with-agents to ALSO iterate every agent repo under
 agents/ (services/*, modules/*, toolboxes/*) — agents/ is not a git repo
@@ -106,7 +106,7 @@ Examples:
 		}
 		cli.Info("Pulling %s/%s into %s under %s", remote, branch, scope, root)
 
-		names, err := pullTargets(root, all)
+		names, err := pullTargets(ctx, root, all)
 		if err != nil {
 			return fmt.Errorf("cannot read %s: %w", root, err)
 		}
@@ -155,6 +155,14 @@ Examples:
 			}
 			res, perr := pullRepo(ctx, t.path, remote, branch)
 			if perr != nil {
+				// A vanished upstream (the GitHub repo was deleted/renamed while
+				// the local checkout lingers, e.g. proto/) is not a real
+				// failure — skip it quietly rather than failing the whole run.
+				if errors.Is(perr, errRemoteMissing) {
+					cli.Warning("%-*s skipped (remote no longer exists)", width, t.label)
+					skipped++
+					continue
+				}
 				cli.Error("%-*s %v", width, t.label, perr)
 				failed++
 				failures = append(failures, fmt.Errorf("%s: %w", t.label, perr))
@@ -221,20 +229,29 @@ func discoverAgentRepos(root string) ([]repoTarget, error) {
 	return targets, nil
 }
 
-// codeflyRepos is the default set pulled by `self pull` — the codefly module
-// repos, in dependency-ish order. agents/ is included so it gets a clear
-// "not a git repo" notice (it is not version-controlled locally) rather than
-// being silently absent. --all ignores this and pulls every repo under root.
-var codeflyRepos = []string{"core", "cli", "proto", "sdk-go", "agents"}
+// codeflyOrgMarker identifies a repository as a codefly module by its origin
+// remote. Both SSH (git@github.com:codefly-dev/…) and HTTPS
+// (https://github.com/codefly-dev/…) URLs contain this substring.
+const codeflyOrgMarker = "codefly-dev/"
 
-// pullTargets returns the directory names to consider, sorted for --all or in
-// the curated codeflyRepos order otherwise (skipping ones that don't exist).
-func pullTargets(root string, all bool) ([]string, error) {
+// alwaysConsider are directory names always included in the default target
+// list even when they aren't codefly git repos, so they still get a clear
+// notice. agents/ is not version-controlled locally (it holds nested repos)
+// and is expanded by --with-agents.
+var alwaysConsider = []string{"agents"}
+
+// pullTargets returns the directory names to consider, sorted. With --all it
+// is every subdirectory. Otherwise it is discovered DYNAMICALLY: every
+// immediate subdir that is a git repo whose origin remote points at the
+// codefly org (plus alwaysConsider entries). Nothing is hardcoded, so a
+// removed repo (e.g. proto) simply stops appearing and a new codefly repo is
+// picked up without a code change.
+func pullTargets(ctx context.Context, root string, all bool) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
 	if all {
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			return nil, err
-		}
 		var names []string
 		for _, e := range entries {
 			if e.IsDir() {
@@ -245,12 +262,56 @@ func pullTargets(root string, all bool) ([]string, error) {
 		return names, nil
 	}
 	var names []string
-	for _, name := range codeflyRepos {
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if isCodeflyRepo(ctx, filepath.Join(root, e.Name())) {
+			names = append(names, e.Name())
+		}
+	}
+	for _, name := range alwaysConsider {
 		if info, err := os.Stat(filepath.Join(root, name)); err == nil && info.IsDir() {
 			names = append(names, name)
 		}
 	}
+	sort.Strings(names)
 	return names, nil
+}
+
+// isCodeflyRepo reports whether dir is a git repo whose origin remote is a
+// codefly-dev repository.
+func isCodeflyRepo(ctx context.Context, dir string) bool {
+	if !isGitRepo(dir) {
+		return false
+	}
+	out, err := git(ctx, dir, "remote", "get-url", "origin")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, codeflyOrgMarker)
+}
+
+// errRemoteMissing marks a fetch that failed because the upstream repository
+// no longer exists (deleted/renamed/made private) — as opposed to a network
+// or auth error. These are reported as skips, not failures.
+var errRemoteMissing = errors.New("remote repository no longer exists")
+
+// isRemoteMissing reports whether git fetch output indicates the remote
+// repository is simply gone. Covers GitHub's 404 message plus the generic
+// "could not read from remote repository" that follows a dead SSH remote.
+func isRemoteMissing(out string) bool {
+	lower := strings.ToLower(out)
+	for _, marker := range []string{
+		"repository not found",
+		"could not read from remote repository",
+		"does not appear to be a git repository",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // pullRepo merges remote/branch into the repo's current branch without ever
@@ -261,6 +322,9 @@ func pullRepo(ctx context.Context, repo, remote, branch string) (string, error) 
 	if out, err := git(ctx, repo, "fetch", "--", remote, branch); err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
+		}
+		if isRemoteMissing(out) {
+			return "", fmt.Errorf("%w: %s", errRemoteMissing, firstLine(out))
 		}
 		return "", fmt.Errorf("fetch failed: %s", firstLine(out))
 	}

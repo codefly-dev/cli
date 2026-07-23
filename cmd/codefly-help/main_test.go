@@ -2,42 +2,32 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/helpprovider"
+	"github.com/codefly-dev/llm"
 )
 
-func TestRunProviderUsesResponsesAPI(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if got, want := request.Header.Get("Authorization"), "Bearer secret"; got != want {
-			t.Errorf("authorization = %q, want %q", got, want)
-		}
-		var body struct {
-			Model string `json:"model"`
-			Input string `json:"input"`
-			Store bool   `json:"store"`
-		}
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		if body.Model != "test-model" || body.Store {
-			t.Errorf("request = %+v", body)
-		}
-		for _, expected := range []string{"codefly build service", "--push", `"workspace":"demo"`} {
-			if !strings.Contains(body.Input, expected) {
-				t.Errorf("input does not contain %q: %s", expected, body.Input)
-			}
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(writer, `{"output":[{"type":"message","content":[{"type":"output_text","text":"Use this to build demo/api."}]}]}`)
-	}))
-	defer server.Close()
+// fakeExplainer records the request it receives and returns a canned result, so
+// runProvider's protocol handling is tested without a live model or network.
+type fakeExplainer struct {
+	got    helpprovider.Request
+	result string
+	err    error
+}
 
+func (f *fakeExplainer) explain(_ context.Context, req helpprovider.Request) (string, error) {
+	f.got = req
+	return f.result, f.err
+}
+
+func TestRunProviderPassesRequestToExplainer(t *testing.T) {
+	fake := &fakeExplainer{result: "Use this to build demo/api."}
 	request, err := json.Marshal(helpprovider.Request{
 		ProtocolVersion: helpprovider.ProtocolVersion,
 		Application:     "codefly",
@@ -49,13 +39,12 @@ func TestRunProviderUsesResponsesAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	err = runProvider(t.Context(), bytes.NewReader(request), &output, server.Client(), providerConfig{
-		apiURL: server.URL,
-		apiKey: "secret",
-		model:  "test-model",
-	})
-	if err != nil {
+	if err := runProvider(t.Context(), bytes.NewReader(request), &output, fake); err != nil {
 		t.Fatal(err)
+	}
+	// The explainer receives the parsed request verbatim (command + context).
+	if fake.got.Command != "codefly build service" || !strings.Contains(string(fake.got.Context), `"workspace":"demo"`) {
+		t.Errorf("explainer got = %+v", fake.got)
 	}
 	var response helpprovider.Response
 	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
@@ -68,15 +57,62 @@ func TestRunProviderUsesResponsesAPI(t *testing.T) {
 
 func TestRunProviderRejectsUnsupportedProtocol(t *testing.T) {
 	request := `{"protocol_version":2,"application":"demo","command":"demo run","static_help":"help","context":{}}`
-	err := runProvider(t.Context(), strings.NewReader(request), &bytes.Buffer{}, nil, providerConfig{})
+	err := runProvider(t.Context(), strings.NewReader(request), &bytes.Buffer{}, &fakeExplainer{})
 	if err == nil || !strings.Contains(err.Error(), "protocol version 2") {
 		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestProviderConfigRequiresAPIKey(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
-	if _, err := providerConfigFromEnvironment(); err == nil {
-		t.Fatal("provider configuration succeeded without an API key")
+func TestRunProviderRequiresCoreFields(t *testing.T) {
+	request := `{"protocol_version":1,"application":"demo","command":"","static_help":"help","context":{}}`
+	err := runProvider(t.Context(), strings.NewReader(request), &bytes.Buffer{}, &fakeExplainer{})
+	if err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+// TestLLMExplainerReplaysCassette exercises the real codefly-dev/llm client in
+// replay-only mode against a recorded cassette — no API key, no network. It
+// skips until a cassette is recorded. To (re)record it, from cli/ load the
+// secrets (the gitignored ./llm.secret.env symlink → ~/development/deus/llm.secret.env)
+// and run with record mode:
+//
+//	set -a; . ./llm.secret.env; set +a
+//	CLI_HELP_CASSETTE_DIR=$PWD/cmd/codefly-help/testdata/cassette \
+//	CLI_HELP_CASSETTE_MODE=record go test ./cmd/codefly-help -run Cassette
+func TestLLMExplainerReplaysCassette(t *testing.T) {
+	// Recording path: CLI_HELP_CASSETTE_DIR + CLI_HELP_CASSETTE_MODE=record (with a
+	// real ANTHROPIC key) records a live call. Default path: replay the committed
+	// testdata/cassette offline, skipping until one exists.
+	dir := strings.TrimSpace(os.Getenv("CLI_HELP_CASSETTE_DIR"))
+	mode := llm.RecordReplayOnly
+	if dir != "" && strings.EqualFold(strings.TrimSpace(os.Getenv("CLI_HELP_CASSETTE_MODE")), "record") {
+		mode = llm.RecordAlways
+	}
+	if dir == "" {
+		dir = filepath.Join("testdata", "cassette")
+	}
+	if mode == llm.RecordReplayOnly {
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) == 0 {
+			t.Skip("no cassette recorded; record with CLI_HELP_CASSETTE_DIR=... CLI_HELP_CASSETTE_MODE=record ANTHROPIC_API_KEY=...")
+		}
+	}
+	client, err := newLLMClient(defaultModel, llm.WithRecorder(dir, mode))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex := &llmExplainer{client: client}
+	got, err := ex.explain(t.Context(), helpprovider.Request{
+		ProtocolVersion: helpprovider.ProtocolVersion,
+		Application:     "codefly",
+		Command:         "codefly build service",
+		StaticHelp:      "Flags:\n  --push",
+		Context:         json.RawMessage(`{"workspace":"demo"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("empty explanation replayed from cassette")
 	}
 }
