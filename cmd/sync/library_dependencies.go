@@ -18,7 +18,7 @@ var (
 // LibraryDependenciesCmd represents the sync library-dependencies command
 var LibraryDependenciesCmd = &cobra.Command{
 	Use:   "library-dependencies",
-	Short: "Setup local development for library dependencies",
+	Short: "Prepare local development links for a service's internal libraries",
 	Long: `Configure local development for library dependencies of a service.
 
 This will:

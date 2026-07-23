@@ -32,7 +32,7 @@ var (
 // ServiceCmd implements `codefly upgrade service [name]`.
 var ServiceCmd = &cobra.Command{
 	Use:   "service [name]",
-	Short: "Upgrade dependencies of a service",
+	Short: "Apply semver-safe dependency upgrades to one service",
 	Long: `Run the service agent's Builder.Upgrade RPC. Defaults to
 patch+minor (semver-safe) bumps. Pass --major to allow breaking
 upgrades. Pass --dry-run to preview without writing the lockfile.`,

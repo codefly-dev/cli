@@ -14,7 +14,7 @@ import (
 // VerifyCmd checks base-file integrity across the workspace's composed modules.
 var VerifyCmd = &cobra.Command{
 	Use:   "verify",
-	Short: "Verify base-file integrity of composed modules (consumers ADD, never modify the base)",
+	Short: "Detect local changes to immutable files in composed modules",
 	Long: `Verify that every composed module still matches the base it synced from canonical.
 
 For each module with a tools/base-manifest.json, re-hash the recorded base files

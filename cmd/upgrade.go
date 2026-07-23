@@ -9,7 +9,7 @@ import (
 // `codefly upgrade workspace`, and `codefly upgrade security`.
 var UpgradeCmd = &cobra.Command{
 	Use:   "upgrade",
-	Short: "Apply semver-safe dependency bumps",
+	Short: "Apply semver-safe dependency upgrades to services or workspaces",
 }
 
 func init() {

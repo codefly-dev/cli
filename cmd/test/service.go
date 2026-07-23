@@ -21,7 +21,7 @@ import (
 
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Test a service",
+	Short: "Run a service's configured tests through its agent",
 	Long: `Test a service via the agent's Test RPC.
 
 All flags are forwarded to the agent, which maps them to its native test runner:

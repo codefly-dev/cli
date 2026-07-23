@@ -672,7 +672,7 @@ var DoctorWorkspaceCmd = &cobra.Command{
 	Use: "workspace",
 	// A not-ready workspace is an expected outcome, not a usage mistake.
 	SilenceUsage: true,
-	Short:        "Check that this workspace can resolve its environment and configuration (read-only)",
+	Short:        "Validate workspace paths, configuration, and agent readiness without changes",
 	Long: `Validate, from the current directory, that the workspace is ready for
 ` + "`codefly run` / `codefly test`" + ` — without starting anything.
 

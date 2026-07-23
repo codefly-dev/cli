@@ -14,7 +14,7 @@ import (
 // ModuleCmd represents the run command
 var ModuleCmd = &cobra.Command{
 	Use:   "module",
-	Short: "Open a module in your editor",
+	Short: "Open the active module in your configured editor",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()

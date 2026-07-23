@@ -17,7 +17,7 @@ import (
 // ServiceDependencyCmd represents the run command
 var ServiceDependencyCmd = &cobra.Command{
 	Use:   "dependency",
-	Short: "Add a service dependency",
+	Short: "Link a service to another service it requires",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if interactive {

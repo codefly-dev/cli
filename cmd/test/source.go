@@ -34,7 +34,7 @@ var (
 // the selected plugin owns discovery, dependency context, and native execution.
 var SourceCmd = &cobra.Command{
 	Use:   "source",
-	Short: "Test a source checkout through its Codefly plugin",
+	Short: "Run plugin-owned tests against an arbitrary source checkout",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()

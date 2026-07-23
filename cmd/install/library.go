@@ -9,7 +9,7 @@ import (
 // LibraryCmd represents the run command
 var LibraryCmd = &cobra.Command{
 	Use:    "library",
-	Short:  "Install a library",
+	Short:  "Install an external library into the current workspace",
 	Hidden: true, // not implemented yet
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return errors.New("`codefly install library` is not implemented yet")

@@ -9,7 +9,7 @@ import (
 // `codefly audit workspace`.
 var AuditCmd = &cobra.Command{
 	Use:   "audit",
-	Short: "Audit dependencies for CVEs and outdated releases",
+	Short: "Find vulnerable and outdated dependencies in services or workspaces",
 }
 
 func init() {

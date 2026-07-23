@@ -17,7 +17,7 @@ import (
 // `companion build --push` if you want one-shot build+push.
 var PushCmd = &cobra.Command{
 	Use:   "push <name>",
-	Short: "Push a built companion image to its registry",
+	Short: "Push a previously built companion image to its registry",
 	Long: `Push uses the version in <core>/companions/<name>/info.codefly.yaml
 to compute the tag, then runs "docker push codeflydev/<name>:<version>".
 

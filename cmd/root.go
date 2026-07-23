@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/cmd/endpoint"
@@ -20,7 +22,15 @@ import (
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
 	Use:   "codefly",
-	Short: "🪄Codefly is magic",
+	Short: "Build, run, test, and deploy services in a Codefly workspace",
+	Long: `Codefly turns service development operations into consistent, agent-backed workflows.
+
+Use it to create workspace resources, run and test services locally, build
+container images, and deploy services to configured environments.`,
+	Example: `  codefly init workspace my-project
+  codefly add service api --agent=go-grpc
+  codefly run service api
+  codefly deploy service api --env=staging`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return applyRootOptions()
 	},
@@ -32,16 +42,16 @@ var RootCmd = &cobra.Command{
 func init() {
 	// Define a custom help template with color
 	customHelpTemplate := color.New(color.FgCyan).Sprint("Usage:") + `
-{{.UseLine}}
+  {{.UseLine}}
 
-{{if .Long}}{{.Long | trimTrailingWhitespaces}}
+{{if .Long}}{{.Long | trimTrailingWhitespaces}}{{else}}{{.Short | trimTrailingWhitespaces}}{{end}}
 
-{{end}}{{if .HasExample}}` + color.New(color.FgCyan).Sprint("Examples:") + `
+{{if .HasExample}}` + color.New(color.FgCyan).Sprint("Examples:") + `
 {{.Example}}
 
 {{end}}{{if .HasAvailableSubCommands}}` + color.New(color.FgCyan).Sprint("Available Commands:") + `
-{{range .Commands}}{{if (and .IsAvailableCommand (not .IsAdditionalHelpTopicCommand))}}
-  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}
+{{range .Commands}}{{if (and .IsAvailableCommand (not .IsAdditionalHelpTopicCommand))}}  {{rpad .Name .NamePadding }} {{.Short}}
+{{end}}{{end}}
 
 {{end}}{{if .HasAvailableLocalFlags}}` + color.New(color.FgCyan).Sprint("Flags:") + `
 {{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}
@@ -62,7 +72,39 @@ func init() {
 
 // Execute runs the root command and returns any failure to the process boundary.
 func Execute() error {
+	configureSubcommandValidation(RootCmd)
 	return RootCmd.Execute()
+}
+
+func configureSubcommandValidation(command *cobra.Command) {
+	for _, child := range command.Commands() {
+		configureSubcommandValidation(child)
+	}
+	if command == RootCmd || !command.HasSubCommands() || command.Runnable() {
+		return
+	}
+	command.Args = rejectUnknownSubcommand
+	command.RunE = func(command *cobra.Command, _ []string) error {
+		return command.Help()
+	}
+}
+
+func rejectUnknownSubcommand(command *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	var available []string
+	for _, child := range command.Commands() {
+		if child.IsAvailableCommand() {
+			available = append(available, child.Name())
+		}
+	}
+	sort.Strings(available)
+	if len(available) == 0 {
+		return fmt.Errorf("unknown command %q for %q", args[0], command.CommandPath())
+	}
+	return fmt.Errorf("unknown command %q for %q\n\nAvailable subcommands:\n  %s",
+		args[0], command.CommandPath(), strings.Join(available, "\n  "))
 }
 
 // IsMachineReadableError reports that a command already emitted its complete
@@ -224,6 +266,9 @@ func init() {
 
 	// Resolve a single endpoint to bare host:port (script-friendly).
 	RootCmd.AddCommand(endpoint.Cmd)
+
+	// Static help plus optional workspace-aware AI guidance.
+	RootCmd.AddCommand(ExplainCmd)
 
 	RootCmd.PersistentFlags().BoolVar(&focus, "focus", false, "Enable focus log mode")
 	RootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug mode")

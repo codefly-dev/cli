@@ -22,7 +22,7 @@ import (
 // it here in code rather than relying on script ordering.
 var BuildCmd = &cobra.Command{
 	Use:   "build [name]",
-	Short: "Build a companion Docker image",
+	Short: "Build one or all companion images from the core repository",
 	Long: `Build builds a companion image from its directory.
 
 With a name argument, builds just that companion. With --all, builds

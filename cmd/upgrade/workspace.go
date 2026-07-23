@@ -18,7 +18,7 @@ import (
 // sequentially so a failure in one doesn't block the rest.
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
-	Short: "Upgrade dependencies of every service in the workspace",
+	Short: "Apply semver-safe dependency upgrades to every workspace service",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()

@@ -8,7 +8,7 @@ import (
 // PackageCmd exposes portable, plugin-owned source packaging.
 var PackageCmd = &cobra.Command{
 	Use:   "package",
-	Short: "Create portable release artifacts through a Codefly plugin",
+	Short: "Create portable service artifacts with a Codefly plugin",
 }
 
 func init() {

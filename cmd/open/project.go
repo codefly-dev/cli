@@ -14,7 +14,7 @@ import (
 // WorkspaceCmd represents the run command
 var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
-	Short: "Open a workspace in your editor",
+	Short: "Open the current workspace in your configured editor",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()

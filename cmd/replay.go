@@ -12,7 +12,7 @@ import (
 // ReplayCmd represents the replay command
 var ReplayCmd = &cobra.Command{
 	Use:   "replay",
-	Short: "Replay",
+	Short: "Re-run operations recorded in a Codefly action track",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if track == "" {
 			return fmt.Errorf("you must provide a track to replay")
@@ -55,5 +55,4 @@ var dir string
 func init() {
 	ReplayCmd.Flags().StringVar(&track, "track", "", "Replay codefly tracks")
 	ReplayCmd.Flags().StringVar(&dir, "dir", "", "Replay codefly tracks")
-	RootCmd.AddCommand(ReplayCmd)
 }

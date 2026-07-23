@@ -13,7 +13,7 @@ var listJobsModule string
 // JobsCmd represents the list jobs command
 var JobsCmd = &cobra.Command{
 	Use:   "jobs",
-	Short: "List all jobs in the workspace",
+	Short: "List jobs across the workspace or within one module",
 	Long: `List all jobs in the workspace or a specific module.
 
 Examples:

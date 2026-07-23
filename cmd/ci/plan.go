@@ -24,7 +24,7 @@ var (
 // can inspect exactly what a subsequent Codefly-native run would select.
 var PlanCmd = &cobra.Command{
 	Use:   "plan",
-	Short: "Show directly changed and transitively affected services",
+	Short: "List directly changed services and their transitive dependents",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()

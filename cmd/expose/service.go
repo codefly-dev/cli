@@ -9,7 +9,7 @@ import (
 // ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
 	Use:    "service",
-	Short:  "Expose a service",
+	Short:  "Expose a service for local Kubernetes development",
 	Hidden: true, // not implemented yet
 	Args:   cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {

@@ -28,7 +28,7 @@ import (
 // ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Run a service",
+	Short: "Start a service locally with its dependency graph",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runServiceCommand,
 }

@@ -8,7 +8,7 @@ import (
 // DeleteCmd represents the delete command
 var DeleteCmd = &cobra.Command{
 	Use:   "delete",
-	Short: "Delete",
+	Short: "Remove modules or services from the current workspace",
 }
 
 func init() {

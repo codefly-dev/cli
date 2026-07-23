@@ -19,7 +19,7 @@ var (
 // LibraryCmd represents the add library command
 var LibraryCmd = &cobra.Command{
 	Use:   "library [name]",
-	Short: "Add an internal shared library",
+	Short: "Create an internal library for sharing code across services",
 	Long: `Add an internal shared library to the workspace.
 
 Libraries are internal shared code that can be used by multiple services.

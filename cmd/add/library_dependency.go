@@ -21,7 +21,7 @@ var (
 // LibraryDependencyCmd represents the add library-dependency command
 var LibraryDependencyCmd = &cobra.Command{
 	Use:   "library-dependency [library-name]",
-	Short: "Add a library dependency to a service",
+	Short: "Link an internal library to a service with optional local setup",
 	Long: `Add an internal library as a dependency to a service.
 
 This will:

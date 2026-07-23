@@ -41,7 +41,7 @@ var pinnedProtocPlugins = []struct{ bin, mod string }{
 // ProtoCmd generates code from local proto files.
 var ProtoCmd = &cobra.Command{
 	Use:   "proto",
-	Short: "generate Go/Python code from local proto files",
+	Short: "Generate Go and Python bindings from local protobuf files",
 	Long: `Generate code from local proto files without pushing to buf.build first.
 
 Two modes:

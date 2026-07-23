@@ -1,11 +1,102 @@
 package cmd
 
 import (
+	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
+
+func TestCommandDescriptionsAreUseful(t *testing.T) {
+	placeholder := map[string]bool{
+		"add": true, "agent commands": true, "ci": true, "delete": true,
+		"handle": true, "import": true, "init": true, "install": true,
+		"list": true, "replay": true, "test": true, "update": true,
+	}
+	var visit func(*cobra.Command)
+	visit = func(command *cobra.Command) {
+		short := strings.TrimSpace(command.Short)
+		name := strings.ToLower(command.Name())
+		normalized := strings.ToLower(short)
+		switch {
+		case short == "":
+			t.Errorf("%s has an empty Short description", command.CommandPath())
+		case len(strings.Fields(short)) == 1:
+			t.Errorf("%s has a single-word Short description %q", command.CommandPath(), short)
+		case normalized == name || normalized == name+" commands":
+			t.Errorf("%s has a name-echoing Short description %q", command.CommandPath(), short)
+		case placeholder[normalized]:
+			t.Errorf("%s has placeholder Short description %q", command.CommandPath(), short)
+		}
+		children := make(map[string]bool)
+		for _, child := range command.Commands() {
+			if children[child.Name()] {
+				t.Errorf("%s registers subcommand %q more than once", command.CommandPath(), child.Name())
+			}
+			children[child.Name()] = true
+			visit(child)
+		}
+	}
+	visit(RootCmd)
+}
+
+func TestUnknownNestedSubcommandListsAvailableCommands(t *testing.T) {
+	configureSubcommandValidation(RootCmd)
+	var output bytes.Buffer
+	previousOut := RootCmd.OutOrStdout()
+	previousErr := RootCmd.ErrOrStderr()
+	previousSilenceErrors := RootCmd.SilenceErrors
+	defer func() {
+		RootCmd.SetArgs(nil)
+		RootCmd.SetOut(previousOut)
+		RootCmd.SetErr(previousErr)
+		RootCmd.SilenceErrors = previousSilenceErrors
+	}()
+	RootCmd.SetArgs([]string{"build", "agent"})
+	RootCmd.SetOut(&output)
+	RootCmd.SetErr(&output)
+	RootCmd.SilenceErrors = true
+
+	err := RootCmd.Execute()
+	if err == nil {
+		t.Fatal("unknown nested subcommand succeeded")
+	}
+	for _, expected := range []string{
+		`unknown command "agent" for "codefly build"`,
+		"Available subcommands:",
+		"module",
+		"service",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("error %q does not contain %q", err, expected)
+		}
+	}
+}
+
+func TestRejectUnknownSubcommandWithoutAvailableChildren(t *testing.T) {
+	command := &cobra.Command{Use: "empty"}
+	err := rejectUnknownSubcommand(command, []string{"child"})
+	if got, want := fmt.Sprint(err), `unknown command "child" for "empty"`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestLeafHelpIncludesShortDescription(t *testing.T) {
+	target, err := findExplainTarget(RootCmd, []string{"build", "service"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	help, err := renderCommandHelp(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(help, "Build a service container image for a target environment") {
+		t.Fatalf("help omitted the command description:\n%s", help)
+	}
+}
 
 func TestPersistentFlagAfterSubcommandFlagIsApplied(t *testing.T) {
 	oldLevel := wool.GlobalLogLevel()

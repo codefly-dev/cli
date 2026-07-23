@@ -19,7 +19,7 @@ import (
 // whether it is currently live.
 var EndpointsCmd = &cobra.Command{
 	Use:   "endpoints [service]",
-	Short: "List a service's endpoints, their addresses, and whether they're up",
+	Short: "Report addresses and health for a service's declared endpoints",
 	Long: `Endpoints lists the endpoints declared by a service — name, API type,
 visibility — together with the localhost address each binds to and whether
 it is currently reachable.

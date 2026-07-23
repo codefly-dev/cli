@@ -12,7 +12,7 @@ import (
 // `companion build --all` against the wrong tree.
 var ListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List companion images discovered under <core>/companions/",
+	Short: "List companion image definitions in the core repository",
 	RunE:  runList,
 }
 

@@ -34,7 +34,7 @@ func newServiceCommand() *cobra.Command {
 	flags := &commandFlags{}
 	command := &cobra.Command{
 		Use:   "service [module/]service",
-		Short: "Safely repair service source through its language plugin",
+		Short: "Repair a service's source with its language plugin",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			ctx, done := common.NewContext()
@@ -58,7 +58,7 @@ func newSourceCommand() *cobra.Command {
 	flags := &commandFlags{}
 	command := &cobra.Command{
 		Use:   "source",
-		Short: "Safely repair an arbitrary source checkout through its detected plugin",
+		Short: "Repair an arbitrary source checkout with its detected plugin",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			ctx, done := common.NewContext()
