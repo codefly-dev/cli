@@ -4,11 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -39,7 +41,7 @@ func TestBuildInventoryUnionsSourcesAndFlags(t *testing.T) {
 	local := []string{"0.0.74", "0.0.10"}          // 0.0.10 only in cache
 	pinned := []string{"0.0.74"}
 
-	inv := buildInventory(redisAgent(), releases, tags, local, pinned, false, func(string) bool { return false })
+	inv := buildInventory(redisAgent(), releases, tags, local, pinned, nil, false)
 
 	cases := map[string]sourceFlags{
 		"0.0.74": {Tag: true, GithubRelease: true, PinnedHere: true, LocalCache: true},
@@ -67,7 +69,7 @@ func TestBuildInventoryLatestTagBeatsLatestResolvable(t *testing.T) {
 	releases := []releaseInfo{{version: "0.0.74", hasCIAsset: true}}
 	tags := []string{"0.0.90", "0.0.74"}
 
-	inv := buildInventory(redisAgent(), releases, tags, nil, nil, false, func(string) bool { return false })
+	inv := buildInventory(redisAgent(), releases, tags, nil, nil, nil, false)
 
 	if inv.LatestTag != "0.0.90" {
 		t.Fatalf("latest tag = %q, want 0.0.90", inv.LatestTag)
@@ -79,7 +81,7 @@ func TestBuildInventoryLatestTagBeatsLatestResolvable(t *testing.T) {
 
 func TestBuildInventorySortsDescending(t *testing.T) {
 	tags := []string{"0.0.56", "0.0.74", "0.0.73"}
-	inv := buildInventory(redisAgent(), nil, tags, nil, nil, false, func(string) bool { return false })
+	inv := buildInventory(redisAgent(), nil, tags, nil, nil, nil, false)
 	want := []string{"0.0.74", "0.0.73", "0.0.56"}
 	for i, entry := range inv.Versions {
 		if entry.Version != want[i] {
@@ -89,10 +91,11 @@ func TestBuildInventorySortsDescending(t *testing.T) {
 }
 
 func TestBuildInventoryOCIMakesVersionResolvable(t *testing.T) {
-	tags := []string{"0.0.74"} // tag-only, no release asset
-	oci := func(version string) bool { return version == "0.0.74" }
+	tags := []string{"0.0.74"}        // tag-only, no release asset
+	ociVersions := []string{"0.0.74"} // but published to the OCI registry
+	pinned := []string{"0.0.74"}
 
-	inv := buildInventory(redisAgent(), nil, tags, nil, []string{"0.0.74"}, true, oci)
+	inv := buildInventory(redisAgent(), nil, tags, nil, pinned, ociVersions, true)
 
 	entry, ok := findVersion(inv, "0.0.74")
 	if !ok || !entry.Sources.OCI {
@@ -103,6 +106,26 @@ func TestBuildInventoryOCIMakesVersionResolvable(t *testing.T) {
 	}
 	if !inv.versionResolvable("0.0.74") {
 		t.Fatal("pinned version reported unresolvable despite OCI availability")
+	}
+}
+
+func TestBuildInventorySurfacesOCIOnlyVersion(t *testing.T) {
+	// A version present only in the OCI registry — no git tag, no release,
+	// not cached, not pinned — must still appear as a resolvable row.
+	inv := buildInventory(redisAgent(), nil, nil, nil, nil, []string{"0.0.99"}, true)
+
+	entry, ok := findVersion(inv, "0.0.99")
+	if !ok {
+		t.Fatal("OCI-only version 0.0.99 missing from inventory")
+	}
+	if entry.Sources.Tag || entry.Sources.GithubRelease {
+		t.Fatalf("OCI-only version wrongly flagged as tagged/released: %+v", entry.Sources)
+	}
+	if !entry.Sources.OCI || inv.LatestResolvable != "0.0.99" {
+		t.Fatalf("OCI-only version not resolvable: sources=%+v latest=%q", entry.Sources, inv.LatestResolvable)
+	}
+	if inv.LatestTag != "" {
+		t.Fatalf("latest tag = %q, want empty (no tags)", inv.LatestTag)
 	}
 }
 
@@ -118,7 +141,7 @@ func TestVersionResolvableHandlesLatest(t *testing.T) {
 }
 
 func TestBuildInventorySkipsNonSemverTags(t *testing.T) {
-	inv := buildInventory(redisAgent(), nil, []string{"main", "0.0.74", "v-broken"}, nil, nil, false, func(string) bool { return false })
+	inv := buildInventory(redisAgent(), nil, []string{"main", "0.0.74", "v-broken"}, nil, nil, nil, false)
 	if len(inv.Versions) != 1 || inv.Versions[0].Version != "0.0.74" {
 		t.Fatalf("versions = %+v, want only 0.0.74", inv.Versions)
 	}
@@ -168,8 +191,8 @@ func TestTokenTransportAddsAuthorization(t *testing.T) {
 }
 
 func TestSummarizeWorkspaceAgentsCachesAndFlagsResolvability(t *testing.T) {
-	restoreReleases, restoreTags := fetchReleases, fetchTags
-	defer func() { fetchReleases, fetchTags = restoreReleases, restoreTags }()
+	restoreReleases, restoreTags, restoreOCI := fetchReleases, fetchTags, fetchOCITags
+	defer func() { fetchReleases, fetchTags, fetchOCITags = restoreReleases, restoreTags, restoreOCI }()
 
 	var releaseCalls int
 	fetchReleases = func(_ context.Context, agent *resources.Agent) ([]releaseInfo, error) {
@@ -185,7 +208,9 @@ func TestSummarizeWorkspaceAgentsCachesAndFlagsResolvability(t *testing.T) {
 		}
 		return []string{"0.0.15"}, nil
 	}
-	t.Setenv("AGENT_REGISTRY", "")
+	fetchOCITags = func(_ context.Context, _ *resources.Agent) (bool, []string, error) {
+		return false, nil, nil
+	}
 
 	pins := []agentPin{
 		{module: "cache", agent: &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "redis", Version: "0.0.74"}},
@@ -222,5 +247,61 @@ func TestSummarizeWorkspaceAgentsCachesAndFlagsResolvability(t *testing.T) {
 	}
 	if vault.LatestTag != "0.0.15" {
 		t.Fatalf("vault latest tag = %q, want 0.0.15", vault.LatestTag)
+	}
+}
+
+// TestGithubSourceMatchesManagerDownloadURL guards against drift: githubSource
+// reimplements core's unexported owner/repo mapping, so pin it to the one
+// exported source of truth (manager.DownloadURL) the actual download uses.
+func TestGithubSourceMatchesManagerDownloadURL(t *testing.T) {
+	for _, agent := range []*resources.Agent{
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "redis", Version: "0.0.74"},
+		{Kind: resources.ServiceAgent, Publisher: "acme.co.uk", Name: "multi.part", Version: "1.2.3"},
+	} {
+		owner, repo := githubSource(agent)
+		u, err := url.Parse(manager.DownloadURL(agent))
+		if err != nil {
+			t.Fatalf("parse download URL: %v", err)
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 2 {
+			t.Fatalf("unexpected download URL path %q", u.Path)
+		}
+		if parts[0] != owner || parts[1] != repo {
+			t.Fatalf("githubSource = %s/%s, download URL uses %s/%s", owner, repo, parts[0], parts[1])
+		}
+	}
+}
+
+func TestFetchOCITagsListsRegistryVersions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/agents/codefly.dev/redis/tags/list" {
+			w.Write([]byte(`{"name":"agents/codefly.dev/redis","tags":["0.0.74","v0.0.73"]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	t.Setenv("AGENT_REGISTRY", strings.TrimPrefix(server.URL, "http://"))
+	t.Setenv("AGENT_REGISTRY_SCHEME", "http")
+
+	configured, versions, err := fetchOCITagsFromRegistry(context.Background(), redisAgent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !configured {
+		t.Fatal("registry configured but reported otherwise")
+	}
+	if strings.Join(versions, ",") != "0.0.74,0.0.73" {
+		t.Fatalf("versions = %v, want [0.0.74 0.0.73] with the v-prefix stripped", versions)
+	}
+}
+
+func TestFetchOCITagsUnconfigured(t *testing.T) {
+	t.Setenv("AGENT_REGISTRY", "")
+	configured, versions, err := fetchOCITagsFromRegistry(context.Background(), redisAgent())
+	if err != nil || configured || versions != nil {
+		t.Fatalf("unconfigured registry: configured=%v versions=%v err=%v", configured, versions, err)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,7 +15,6 @@ import (
 	"github.com/blang/semver"
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	"github.com/google/go-github/v37/github"
 	"github.com/spf13/cobra"
@@ -33,6 +31,7 @@ const ciPlatform = "linux_amd64"
 var (
 	fetchReleases = fetchReleasesFromGitHub
 	fetchTags     = fetchTagsFromGitHub
+	fetchOCITags  = fetchOCITagsFromRegistry
 )
 
 // releaseInfo is one published GitHub release, reduced to what resolvability
@@ -96,7 +95,14 @@ var VersionsCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, args[0])
+		// This command lists every version, so the specific version in the
+		// argument is irrelevant. Pin it to a placeholder so ParseAgent doesn't
+		// warn "no version specified, using latest" on the common bare form.
+		spec := args[0]
+		if !strings.Contains(spec, ":") {
+			spec += ":latest"
+		}
+		agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, spec)
 		if err != nil {
 			return fmt.Errorf("invalid agent: %w", err)
 		}
@@ -160,14 +166,18 @@ func collectInventory(ctx context.Context, agent *resources.Agent, pinned []stri
 		cli.Warning("cannot list GitHub tags for %s/%s: %v", agent.Publisher, agent.Name, err)
 	}
 	local := localCacheVersions(ctx, agent)
-	ociConfigured, ociAvailable := ociVersionChecker(ctx, agent)
-	return buildInventory(agent, releases, tags, local, pinned, ociConfigured, ociAvailable)
+	ociConfigured, ociVersions, err := fetchOCITags(ctx, agent)
+	if err != nil {
+		cli.Warning("cannot list OCI tags for %s/%s: %v", agent.Publisher, agent.Name, err)
+	}
+	return buildInventory(agent, releases, tags, local, pinned, ociVersions, ociConfigured)
 }
 
 // buildInventory is the pure assembly step: given the versions each source
 // knows about, it unions them, flags every source per version, and derives the
-// latest tag and latest resolvable version.
-func buildInventory(agent *resources.Agent, releases []releaseInfo, tags, local, pinned []string, ociConfigured bool, ociAvailable func(version string) bool) inventory {
+// latest tag and latest resolvable version. ociVersions are the tags an OCI
+// registry lists as available; a version present only there still surfaces.
+func buildInventory(agent *resources.Agent, releases []releaseInfo, tags, local, pinned, ociVersions []string, ociConfigured bool) inventory {
 	entries := map[string]*versionEntry{}
 	ensure := func(version string) (*versionEntry, bool) {
 		parsed, err := semver.Parse(strings.TrimPrefix(version, "v"))
@@ -206,11 +216,9 @@ func buildInventory(agent *resources.Agent, releases []releaseInfo, tags, local,
 			entry.Sources.PinnedHere = true
 		}
 	}
-	if ociConfigured {
-		for _, entry := range entries {
-			if ociAvailable(entry.Version) {
-				entry.Sources.OCI = true
-			}
+	for _, version := range ociVersions {
+		if entry, ok := ensure(version); ok {
+			entry.Sources.OCI = true
 		}
 	}
 
@@ -219,6 +227,7 @@ func buildInventory(agent *resources.Agent, releases []releaseInfo, tags, local,
 		CIPlatform:    ciPlatform,
 		OCIConfigured: ociConfigured,
 		Pinned:        pinned,
+		Versions:      make([]versionEntry, 0, len(entries)),
 	}
 	var latestTag, latestResolvable *semver.Version
 	for _, entry := range entries {
@@ -271,7 +280,10 @@ func workspacePins(ctx context.Context, workspace *resources.Workspace) ([]agent
 	for _, ref := range refs {
 		service, err := workspace.LoadService(ctx, ref)
 		if err != nil {
-			return nil, fmt.Errorf("load service %q: %w", ref.Name, err)
+			// A single broken service shouldn't blind the whole "are all my
+			// pins publishable?" overview — skip it with a warning.
+			cli.Warning("cannot load service %q: %v", ref.Name, err)
+			continue
 		}
 		if service.Agent == nil {
 			continue
@@ -469,19 +481,48 @@ func agentSubdir(agent *resources.Agent) string {
 	}
 }
 
-// ociVersionChecker reports whether an OCI registry is configured and, if so,
-// returns a probe for whether a given version's manifest exists there.
-func ociVersionChecker(ctx context.Context, agent *resources.Agent) (bool, func(version string) bool) {
-	store := manager.NewOCIStoreFromEnv(slog.Default())
-	if store == nil {
-		return false, func(string) bool { return false }
+// fetchOCITagsFromRegistry lists the versions an OCI registry publishes for the
+// agent via the distribution-spec tags/list endpoint. Listing (rather than
+// probing known versions one at a time) is what lets a version published only
+// to OCI still appear in the inventory. The first return reports whether a
+// registry is configured at all, so the OCI column can distinguish "absent"
+// from "not checked".
+func fetchOCITagsFromRegistry(ctx context.Context, agent *resources.Agent) (bool, []string, error) {
+	registry := strings.TrimSpace(os.Getenv("AGENT_REGISTRY"))
+	if registry == "" {
+		return false, nil, nil
 	}
-	return true, func(version string) bool {
-		probe := *agent
-		probe.Version = version
-		ok, err := store.Available(ctx, &probe)
-		return err == nil && ok
+	scheme := strings.TrimSpace(os.Getenv("AGENT_REGISTRY_SCHEME"))
+	if scheme == "" {
+		if strings.HasPrefix(registry, "localhost") || strings.HasPrefix(registry, "127.0.0.1") {
+			scheme = "http"
+		} else {
+			scheme = "https"
+		}
 	}
+	url := fmt.Sprintf("%s://%s/v2/agents/%s/%s/tags/list", scheme, registry, agent.Publisher, agent.Name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return true, nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return true, nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return true, nil, fmt.Errorf("registry returned %d", resp.StatusCode)
+	}
+	var payload struct {
+		Tags []string `json:"tags"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return true, nil, err
+	}
+	for i := range payload.Tags {
+		payload.Tags[i] = strings.TrimPrefix(payload.Tags[i], "v")
+	}
+	return true, payload.Tags, nil
 }
 
 func renderInventory(inv inventory) {
@@ -492,11 +533,11 @@ func renderInventory(inv inventory) {
 	for _, entry := range inv.Versions {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			entry.Version,
-			mark(entry.Sources.Tag),
+			presence(entry.Sources.Tag),
 			mark(entry.Sources.GithubRelease),
 			ociMark(entry.Sources.OCI, inv.OCIConfigured),
-			mark(entry.Sources.PinnedHere),
-			mark(entry.Sources.LocalCache),
+			presence(entry.Sources.PinnedHere),
+			presence(entry.Sources.LocalCache),
 		)
 	}
 	_ = tw.Flush()
@@ -507,7 +548,7 @@ func renderInventory(inv inventory) {
 	}
 	fmt.Printf("latest tag        -> %s\n", dashIfEmpty(inv.LatestTag))
 	fmt.Printf("latest resolvable -> %s\n", dashIfEmpty(inv.LatestResolvable))
-	if inv.LatestTag != "" && inv.LatestTag != inv.LatestResolvable {
+	if inv.LatestTag != "" && !inv.versionResolvable(inv.LatestTag) {
 		fmt.Printf("  warning: latest tag %s has no downloadable artifact\n", inv.LatestTag)
 	}
 	for _, pin := range inv.Pinned {
@@ -544,11 +585,22 @@ func writeJSON(payload any) error {
 	return nil
 }
 
+// mark is for columns where absence is a meaningful "no" (a release asset that
+// isn't there): present ✓, absent ✗.
 func mark(ok bool) string {
 	if ok {
 		return "✓"
 	}
 	return "✗"
+}
+
+// presence is for columns where absence is just "not applicable" (this version
+// isn't tagged / pinned / cached) rather than a failure: present ✓, absent "-".
+func presence(ok bool) string {
+	if ok {
+		return "✓"
+	}
+	return "-"
 }
 
 func ociMark(ok, configured bool) string {
