@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -393,9 +394,25 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return runner.StartRemote(ctx)
 	}
 
+	// A stale user binary from a previous run that outlived process-group
+	// reaping keeps its endpoint port bound. The agent would then report
+	// Start success while the freshly launched binary immediately dies with
+	// "bind: address already in use" — a confusing "started and running"
+	// followed by an exit. Detect the collision here (only on a first start,
+	// never on a hot reload where the current binary legitimately holds the
+	// port) and fail fast with an actionable message instead.
+	firstStart := !runner.isStarted.Load() && !runner.instance.Runtime.IsHotReloading
+
 	err := runner.StopIfNeeded(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot stopAfter service instance if needed")
+	}
+
+	if firstStart {
+		if held := runner.boundNativePorts(ctx); len(held) > 0 {
+			return nil, w.NewError("cannot start %s: port %s already in use — a process from a previous run may still be holding it; run 'codefly clear' to reclaim it, then retry",
+				runner.instance.Unique(), strings.Join(held, ", "))
+		}
 	}
 
 	// Build the request
@@ -443,6 +460,27 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 	runner.isStarted.Store(true)
 	return outputProperty, nil
+}
+
+// boundNativePorts returns "<port> (<endpoint>)" descriptions for each of the
+// runner's own native endpoint ports that another process is already listening
+// on. A successful TCP dial is the honest signal that the port is held: unlike
+// a listen probe it doesn't trip on TIME_WAIT sockets that have no listener.
+func (runner *Runner) boundNativePorts(ctx context.Context) []string {
+	var held []string
+	for _, mapping := range runner.networkMappings {
+		instance := resources.FilterNetworkInstance(ctx, mapping.Instances, resources.NewNativeNetworkAccess())
+		if instance == nil {
+			continue
+		}
+		conn, err := net.DialTimeout("tcp", instance.Host, 200*time.Millisecond)
+		if err != nil {
+			continue
+		}
+		_ = conn.Close()
+		held = append(held, fmt.Sprintf("%d (%s)", instance.Port, mapping.Endpoint.Name))
+	}
+	return held
 }
 
 func statusDiagnostic(message, fallback string) string {
