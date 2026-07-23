@@ -27,10 +27,11 @@ const (
 	reportStatusSkipped   = "skipped"
 	reportStatusCancelled = "cancelled"
 
-	reportReasonFailedPrerequisite = "failed_prerequisite"
-	reportReasonFailFast           = "fail_fast"
-	reportReasonRunCancelled       = "run_cancelled"
-	reportReasonNotScheduled       = "not_scheduled"
+	reportReasonFailedPrerequisite    = "failed_prerequisite"
+	reportReasonFailFast              = "fail_fast"
+	reportReasonRunCancelled          = "run_cancelled"
+	reportReasonNotScheduled          = "not_scheduled"
+	reportReasonAgentNoSyncCapability = "agent_no_sync_capability"
 )
 
 // CIReport is Codefly's provider-neutral record of one CI command. Task order
@@ -174,6 +175,18 @@ func recordCIReportDrift(ctx context.Context, changed []string) {
 	if reportTask, found := task.reporter.task(task.id); found {
 		reportTask.Drift = &CIReportDrift{ChangedFiles: cloneStrings(changed)}
 	}
+}
+
+// recordCIReportSkip transitions the running task bound to ctx to skipped. A
+// phase action calls it when the work is legitimately not applicable (an agent
+// that advertises no sync capability owns no generated source to drift), so the
+// nil error it returns must read as skipped rather than passed.
+func recordCIReportSkip(ctx context.Context, reason string) {
+	task, ok := ctx.Value(ciReportTaskContextKey{}).(ciReportTaskContext)
+	if !ok || task.reporter == nil {
+		return
+	}
+	task.reporter.markSkipped(task.id, reason)
 }
 
 func recordCIReportIntegrity(ctx context.Context, integrity CIReportIntegrity) {
@@ -445,6 +458,23 @@ func reportDurationMS(startedAt string, finishedAt time.Time) int64 {
 		return 0
 	}
 	return duration.Milliseconds()
+}
+
+// markSkipped downgrades a running task to skipped, stamping completion so the
+// subsequent finishTask call (which only acts on running tasks) leaves it
+// untouched.
+func (reporter *CIReporter) markSkipped(id, reason string) {
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	task, ok := reporter.task(id)
+	if !ok || task.Status != reportStatusRunning {
+		return
+	}
+	now := reporter.now().UTC()
+	task.FinishedAt = formatReportTime(now)
+	task.DurationMS = reportDurationMS(task.StartedAt, now)
+	task.Status = reportStatusSkipped
+	task.StatusReason = reason
 }
 
 func (reporter *CIReporter) skipTask(id, reason string, blockedBy []string) {

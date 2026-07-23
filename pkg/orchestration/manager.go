@@ -109,6 +109,13 @@ func (manager *Manager) BuilderSyncResponse() *builderv0.SyncResponse {
 	return manager.Builder.SyncResponse()
 }
 
+func (manager *Manager) BuilderSyncSkipped() bool {
+	if manager.Builder == nil {
+		return false
+	}
+	return manager.Builder.SyncSkipped()
+}
+
 func (manager *Manager) RunnerDoLoad(ctx context.Context) (*OutputProperty, error) {
 	return manager.Runner.Load(ctx)
 }

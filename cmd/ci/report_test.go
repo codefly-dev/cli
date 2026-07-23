@@ -268,6 +268,33 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	}
 }
 
+func TestCIReportSkipMarksRunningTaskSkipped(t *testing.T) {
+	_, workspace := loadSchedulerFixture(t)
+	plan := &Plan{SchemaVersion: planSchemaVersion, Workspace: workspace.Name, ChangedFiles: []string{}, Services: []PlannedService{
+		{Service: "management/worker"},
+	}}
+	reporter := fixedCIReporter(t, plan)
+	options := ScheduleOptions{Jobs: 1, FailFast: true, Phase: "sync-drift", Reporter: reporter}
+	if err := prepareCIReportTasks(context.Background(), workspace, plan, options); err != nil {
+		t.Fatal(err)
+	}
+	id := reportTaskID("sync-drift", "", "management/worker")
+	reporter.startTask(id)
+	ctx := withCIReportTask(context.Background(), reporter, id)
+	recordCIReportSkip(ctx, reportReasonAgentNoSyncCapability)
+	// A nil error from the action must not overwrite the skip verdict.
+	reporter.finishTask(id, nil)
+
+	report := reporter.Finalize(nil)
+	assertReportTask(t, report.Tasks[0], reportStatusSkipped, reportReasonAgentNoSyncCapability)
+	if got, want := report.Summary, (CIReportSummary{Total: 1, Skipped: 1}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("summary = %#v, want %#v", got, want)
+	}
+	if report.Status != reportStatusPassed {
+		t.Fatalf("status = %s, want %s", report.Status, reportStatusPassed)
+	}
+}
+
 func fixedCIReporter(t *testing.T, plan *Plan) *CIReporter {
 	t.Helper()
 	fixed := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
