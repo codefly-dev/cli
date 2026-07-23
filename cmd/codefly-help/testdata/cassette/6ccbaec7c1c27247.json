@@ -1,0 +1,8 @@
+{
+  "model": "anthropic/claude-sonnet-5",
+  "run_id": "0",
+  "prompt_hash": "6ccbaec7c1c27247",
+  "prompt_preview": "Explain the supplied CLI command. State what it does, when to use it, highlight\nthe most useful flags, and provide two copy-pasteable examples. Use exact resource names from\nthe context when relevant....",
+  "response": "# `codefly build service`\n\n## What it does\nBuilds a service within the **demo** workspace using codefly. This command compiles/packages the specified service (likely producing a build artifact, such as a container image) so it can be run, tested, or deployed.\n\n## When to use it\n- After making code changes to a service and you need to produce a fresh build.\n- Before deploying or running a service, to ensure the latest code is packaged.\n- As part of a CI/CD pipeline step where the built artifact needs to be pushed to a registry.\n\n## Most useful flag\n- **`--push`** — After building, pushes the resulting artifact (e.g., image) to a configured registry. Use this when you want the build to be immediately available for deployment elsewhere, rather than just built locally.\n\n## Examples\n\n```bash\ncodefly build service\n```\nBuilds the service locally within the **demo** workspace without pushing it anywhere.\n\n```bash\ncodefly build service --push\n```\nBuilds the service within the **demo** workspace and pushes the resulting artifact to the configured registry.",
+  "recorded_at": "2026-07-23T15:24:12.221172Z"
+}
