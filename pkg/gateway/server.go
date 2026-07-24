@@ -33,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
 	"github.com/codefly-dev/core/agents/manager"
 	codecore "github.com/codefly-dev/core/code"
@@ -741,6 +742,19 @@ func pluginToAgentName(plugin string) string {
 // serviceRoot returns the absolute path to the service source tree.
 func (s *Server) serviceRoot() string {
 	return s.cfg.WorkDir
+}
+
+// controlScope returns a control-plane handle scoped to this gateway's service,
+// rooted at the service source tree. The Gateway is a thin adapter: generic
+// operations (git today) delegate to the one control plane rather than
+// re-implementing them. It uses the dir-based constructor because the Gateway
+// may run without a surrounding workspace (the codefly-in-Docker model).
+func (s *Server) controlScope() control.ServiceScope {
+	name := ""
+	if s.mindYAML != nil {
+		name = s.mindYAML.Service
+	}
+	return control.ServiceScopeAt(name, s.serviceRoot())
 }
 
 func (s *Server) fileOps() codecore.FileOperation {
@@ -2024,60 +2038,36 @@ func (s *Server) RunChecks(ctx context.Context, req *gatewayv1.RunChecksRequest)
 // ─── Version Control ─────────────────────────────────────────
 
 func (s *Server) GitStatus(ctx context.Context, _ *gatewayv1.GitStatusRequest) (*gatewayv1.GitStatusResponse, error) {
-	dir := s.serviceRoot()
-
-	branchCmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
-	branchCmd.Dir = dir
-	branchOut, _ := branchCmd.Output()
-	branch := strings.TrimSpace(string(branchOut))
-
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain=v1")
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	st, err := s.controlScope().GitStatus(ctx)
 	if err != nil {
-		return &gatewayv1.GitStatusResponse{Error: fmt.Sprintf("git status: %v", err)}, nil
+		return &gatewayv1.GitStatusResponse{Error: err.Error()}, nil
 	}
-
 	var files []*gatewayv1.GitFileStatus
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if len(line) < 4 {
-			continue
-		}
-		xy := line[:2]
-		path := strings.TrimSpace(line[3:])
-		staged := xy[0] != ' ' && xy[0] != '?'
-		status := gitStatusString(xy)
+	for _, f := range st.Files {
 		files = append(files, &gatewayv1.GitFileStatus{
-			Path: path, Status: status, Staged: staged,
+			Path: f.Path, Status: gitStatusString(f.Code), Staged: f.Staged,
 		})
 	}
-	return &gatewayv1.GitStatusResponse{Files: files, Branch: branch}, nil
+	return &gatewayv1.GitStatusResponse{Files: files, Branch: st.Branch}, nil
 }
 
 func (s *Server) GitDiff(ctx context.Context, req *gatewayv1.GitDiffRequest) (*gatewayv1.GitDiffResponse, error) {
-	dir := s.serviceRoot()
-	args := []string{"diff"}
-	if req.Staged {
-		args = append(args, "--cached")
-	}
+	dr := control.GitDiffRequest{Staged: req.Staged}
 	if req.Path != "" {
 		path, err := cleanGatewayPath(req.Path)
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
-		args = append(args, "--", path)
+		dr.Paths = []string{path}
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	diff, err := s.controlScope().GitDiff(ctx, dr)
 	if err != nil {
-		return &gatewayv1.GitDiffResponse{Error: fmt.Sprintf("git diff: %v", err)}, nil
+		return &gatewayv1.GitDiffResponse{Error: err.Error()}, nil
 	}
-	return &gatewayv1.GitDiffResponse{Diff: string(out)}, nil
+	return &gatewayv1.GitDiffResponse{Diff: diff}, nil
 }
 
 func (s *Server) GitLog(ctx context.Context, req *gatewayv1.GitLogRequest) (*gatewayv1.GitLogResponse, error) {
-	dir := s.serviceRoot()
 	count := int(req.Count)
 	if count <= 0 {
 		count = 10
@@ -2085,67 +2075,37 @@ func (s *Server) GitLog(ctx context.Context, req *gatewayv1.GitLogRequest) (*gat
 	if count > 1000 {
 		return nil, status.Error(codes.InvalidArgument, "git log count must be at most 1000")
 	}
-	cmd := exec.CommandContext(ctx, "git", "log",
-		fmt.Sprintf("--max-count=%d", count),
-		"--format=%H|%h|%an|%s|%ai",
-	)
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	commits, err := s.controlScope().GitLog(ctx, control.GitLogRequest{Limit: count})
 	if err != nil {
-		return &gatewayv1.GitLogResponse{Error: fmt.Sprintf("git log: %v", err)}, nil
+		return &gatewayv1.GitLogResponse{Error: err.Error()}, nil
 	}
-
-	var commits []*gatewayv1.GitCommitInfo
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(line, "|", 5)
-		if len(parts) < 5 {
-			continue
-		}
-		commits = append(commits, &gatewayv1.GitCommitInfo{
-			Hash: parts[0], ShortHash: parts[1], Author: parts[2],
-			Message: parts[3], Date: parts[4],
+	var out []*gatewayv1.GitCommitInfo
+	for _, c := range commits {
+		out = append(out, &gatewayv1.GitCommitInfo{
+			Hash: c.SHA, ShortHash: c.ShortHash, Author: c.Author,
+			Message: c.Message, Date: c.Date,
 		})
 	}
-	return &gatewayv1.GitLogResponse{Commits: commits}, nil
+	return &gatewayv1.GitLogResponse{Commits: out}, nil
 }
 
 func (s *Server) GitCommit(ctx context.Context, req *gatewayv1.GitCommitRequest) (*gatewayv1.GitCommitResponse, error) {
-	dir := s.serviceRoot()
-
-	if len(req.Paths) > 0 {
-		paths := make([]string, 0, len(req.Paths))
-		for _, requested := range req.Paths {
-			path, err := cleanGatewayPath(requested)
-			if err != nil || path == "" {
-				if err == nil {
-					err = fmt.Errorf("git path cannot be empty")
-				}
-				return nil, status.Error(codes.InvalidArgument, err.Error())
+	paths := make([]string, 0, len(req.Paths))
+	for _, requested := range req.Paths {
+		path, err := cleanGatewayPath(requested)
+		if err != nil || path == "" {
+			if err == nil {
+				err = fmt.Errorf("git path cannot be empty")
 			}
-			paths = append(paths, path)
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
-		args := append([]string{"add", "--"}, paths...)
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return &gatewayv1.GitCommitResponse{Success: false, Error: fmt.Sprintf("git add: %s", string(out))}, nil
-		}
+		paths = append(paths, path)
 	}
-
-	cmd := exec.CommandContext(ctx, "git", "commit", "-m", req.Message)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	commit, err := s.controlScope().GitCommit(ctx, control.GitCommitRequest{Message: req.Message, Paths: paths})
 	if err != nil {
-		return &gatewayv1.GitCommitResponse{Success: false, Error: fmt.Sprintf("git commit: %s", string(out))}, nil
+		return &gatewayv1.GitCommitResponse{Success: false, Error: err.Error()}, nil
 	}
-
-	hashCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	hashCmd.Dir = dir
-	hashOut, _ := hashCmd.Output()
-	return &gatewayv1.GitCommitResponse{
-		Success: true,
-		Hash:    strings.TrimSpace(string(hashOut)),
-	}, nil
+	return &gatewayv1.GitCommitResponse{Success: true, Hash: commit.SHA}, nil
 }
 
 // ═══════════════════════════════════════════════════════════════
