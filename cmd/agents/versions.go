@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -439,14 +440,30 @@ func githubSource(agent *resources.Agent) (owner, repo string) {
 // requests fast, and the unauthenticated 60/hour limit turns this diagnostic
 // flaky exactly when a workspace has many pins to check.
 func newGitHubClient() *github.Client {
-	token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
-	if token == "" {
-		token = strings.TrimSpace(os.Getenv("GH_TOKEN"))
-	}
+	token := githubToken()
 	if token == "" {
 		return github.NewClient(nil)
 	}
 	return github.NewClient(&http.Client{Transport: &tokenTransport{token: token}})
+}
+
+// githubToken resolves a GitHub token from GITHUB_TOKEN/GH_TOKEN, falling back
+// to the `gh` CLI's stored credential. Without the `gh` fallback, `agent list`/
+// `versions` runs unauthenticated (60 req/hour) and reports resolvable versions
+// as "-" the moment a workspace has several pins to check — a confusing false
+// negative on a machine that is in fact fully authenticated via `gh`.
+func githubToken() string {
+	if t := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(os.Getenv("GH_TOKEN")); t != "" {
+		return t
+	}
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 type tokenTransport struct {
