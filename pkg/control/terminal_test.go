@@ -16,6 +16,9 @@ func TestTerminalOpenAttachWriteClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Ensure the shell + reader goroutine are torn down even if an assertion
+	// below fails mid-test.
+	t.Cleanup(func() { _ = p.CloseTerminal(context.Background(), id) })
 	if ids, _ := p.ListTerminals(ctx); len(ids) != 1 {
 		t.Fatalf("ListTerminals = %v, want 1 session", ids)
 	}

@@ -12,19 +12,25 @@ import (
 )
 
 // This file implements the TerminalController group with a plane-owned local PTY
-// manager. Terminals are a generic, local operation (no plugin) — the plane runs
-// a shell in the target directory via creack/pty, exactly like the web/gateway
-// terminal servers, minus the gRPC coupling. Sessions live for the lifetime of
-// the plane instance.
+// manager using creack/pty. Terminals are a generic, local operation (no plugin)
+// — the plane runs a shell in the target directory, like the web/gateway
+// terminal servers, minus the gRPC coupling.
+//
+// Lifecycle mirrors those siblings: each session has a reaper goroutine that
+// cmd.Wait()s the shell (so a self-exited shell is reaped, not left a zombie)
+// and removes the session from the map. Attach honors its context so an
+// abandoned reader unwinds instead of leaking.
 
 type terminalManager struct {
-	mu       sync.RWMutex
+	mu       sync.Mutex
 	sessions map[string]*termSession
 }
 
 type termSession struct {
-	ptyFile *os.File
-	cmd     *exec.Cmd
+	ptyFile  *os.File
+	cmd      *exec.Cmd
+	done     chan struct{} // closed by the reaper when the shell exits
+	attached bool          // guards against a second competing reader
 }
 
 func newTerminalManager() *terminalManager {
@@ -32,10 +38,16 @@ func newTerminalManager() *terminalManager {
 }
 
 func (m *terminalManager) get(id TerminalID) (*termSession, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s, ok := m.sessions[string(id)]
 	return s, ok
+}
+
+func (m *terminalManager) remove(id string) {
+	m.mu.Lock()
+	delete(m.sessions, id)
+	m.mu.Unlock()
 }
 
 // terminalDir resolves where a session's shell starts: the service directory
@@ -59,7 +71,9 @@ func (p *planeImpl) terminalDir(ctx context.Context, req OpenTerminalRequest) (s
 	return ws.Dir(), nil
 }
 
-// OpenTerminal starts a shell PTY scoped to the target and returns its id.
+// OpenTerminal starts a shell PTY scoped to the target and returns its id. A
+// reaper goroutine waits on the shell and self-removes the session when it
+// exits, so sessions do not accumulate and the child is never left a zombie.
 func (p *planeImpl) OpenTerminal(ctx context.Context, req OpenTerminalRequest) (TerminalID, error) {
 	shell := req.Shell
 	if shell == "" {
@@ -78,20 +92,55 @@ func (p *planeImpl) OpenTerminal(ctx context.Context, req OpenTerminalRequest) (
 		return "", fmt.Errorf("start terminal: %w", err)
 	}
 	id := TerminalID(uuid.New().String())
+	sess := &termSession{ptyFile: f, cmd: cmd, done: make(chan struct{})}
 	p.terminals.mu.Lock()
-	p.terminals.sessions[string(id)] = &termSession{ptyFile: f, cmd: cmd}
+	p.terminals.sessions[string(id)] = sess
 	p.terminals.mu.Unlock()
+
+	// Reaper: wait the shell, close its PTY, drop the session.
+	go func() {
+		_ = cmd.Wait()
+		_ = f.Close()
+		close(sess.done)
+		p.terminals.remove(string(id))
+	}()
 	return id, nil
 }
 
-// AttachTerminal streams the session's output to onOutput (in a goroutine that
-// ends when the PTY closes or onOutput errors) and returns a writer for input.
+// AttachTerminal streams the session's output to onOutput until ctx is done, the
+// session exits, or onOutput errors. Only one reader may attach at a time.
 func (p *planeImpl) AttachTerminal(ctx context.Context, id TerminalID, onOutput func([]byte) error) (TerminalInput, error) {
-	sess, ok := p.terminals.get(id)
+	p.terminals.mu.Lock()
+	sess, ok := p.terminals.sessions[string(id)]
+	if ok && sess.attached {
+		p.terminals.mu.Unlock()
+		return nil, fmt.Errorf("terminal %s already has a reader attached", id)
+	}
+	if ok {
+		sess.attached = true
+	}
+	p.terminals.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown terminal %s", id)
 	}
+
+	// A watcher closes the PTY when ctx is cancelled, which unblocks the read
+	// loop below (pty.Read returns an error) — so an abandoned attach unwinds
+	// instead of leaking. It also exits when the session's reaper fires.
 	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sess.ptyFile.Close()
+		case <-sess.done:
+		}
+	}()
+
+	go func() {
+		defer func() {
+			p.terminals.mu.Lock()
+			sess.attached = false
+			p.terminals.mu.Unlock()
+		}()
 		buf := make([]byte, 4096)
 		for {
 			n, err := sess.ptyFile.Read(buf)
@@ -113,29 +162,46 @@ func (p *planeImpl) ResizeTerminal(ctx context.Context, id TerminalID, cols, row
 	if !ok {
 		return fmt.Errorf("unknown terminal %s", id)
 	}
-	return pty.Setsize(sess.ptyFile, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	return pty.Setsize(sess.ptyFile, &pty.Winsize{Rows: clampWindow(rows), Cols: clampWindow(cols)})
+}
+
+// clampWindow keeps a terminal dimension in the uint16 range pty.Winsize uses,
+// so a negative or oversized value can't silently wrap.
+func clampWindow(v int) uint16 {
+	if v < 1 {
+		return 1
+	}
+	if v > 65535 {
+		return 65535
+	}
+	return uint16(v)
 }
 
 func (p *planeImpl) CloseTerminal(ctx context.Context, id TerminalID) error {
-	p.terminals.mu.Lock()
-	sess, ok := p.terminals.sessions[string(id)]
-	if ok {
-		delete(p.terminals.sessions, string(id))
-	}
-	p.terminals.mu.Unlock()
+	sess, ok := p.terminals.get(id)
 	if !ok {
 		return fmt.Errorf("unknown terminal %s", id)
 	}
-	_ = sess.ptyFile.Close()
+	// Killing the shell makes the reaper (from OpenTerminal) fire, which closes
+	// the PTY and removes the session — so cleanup happens in exactly one place.
 	if sess.cmd.Process != nil {
 		_ = sess.cmd.Process.Kill()
+	} else {
+		_ = sess.ptyFile.Close()
 	}
-	return nil
+	// Block until the reaper has finished teardown so the session is gone (and
+	// its child reaped) by the time Close returns.
+	select {
+	case <-sess.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (p *planeImpl) ListTerminals(ctx context.Context) ([]TerminalID, error) {
-	p.terminals.mu.RLock()
-	defer p.terminals.mu.RUnlock()
+	p.terminals.mu.Lock()
+	defer p.terminals.mu.Unlock()
 	ids := make([]TerminalID, 0, len(p.terminals.sessions))
 	for id := range p.terminals.sessions {
 		ids = append(ids, TerminalID(id))

@@ -36,11 +36,34 @@ func (p *planeImpl) Logs(ctx context.Context, opts LogOptions, emit func(LogLine
 
 // --- SourceEditor (remaining) ---
 // File CRUD, ListFiles, Search, ApplyEdit, BatchApplyEdits are in source.go.
-// Fix (language-aware plugin repair) is in plugin.go.
+
+// Fix is language-aware plugin repair via the Code plugin's Execute RPC. Doing
+// it correctly requires spinning up the plugin through the runtime Load/Init
+// lifecycle so the plugin resolves the SERVICE source tree (SourceLocation) —
+// merely dialing a Code client with WithWorkDir(workspace) makes it operate on
+// the wrong directory. That lifecycle is not lifted yet, so this stays stubbed.
+func (p *planeImpl) Fix(ctx context.Context, req FixRequest) (FixResult, error) {
+	return FixResult{}, errNotImplemented
+}
 
 // --- VCS is implemented in vcs.go ---
 
-// --- DependencyManager is implemented in plugin.go ---
+// --- DependencyManager ---
+// Same as Fix: these run through the Code plugin and need the runtime Load/Init
+// lifecycle to resolve the service source dir before add/remove/list operate on
+// the right go.mod. Not lifted yet.
+
+func (p *planeImpl) ListDependencies(ctx context.Context, service string) ([]Dependency, error) {
+	return nil, errNotImplemented
+}
+
+func (p *planeImpl) AddDependency(ctx context.Context, service string, dep Dependency) error {
+	return errNotImplemented
+}
+
+func (p *planeImpl) RemoveDependency(ctx context.Context, service string, dep Dependency) error {
+	return errNotImplemented
+}
 
 // --- CommandRunner is implemented in commands.go ---
 

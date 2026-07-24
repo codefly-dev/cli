@@ -21,6 +21,11 @@ import (
 // runCheckFlow drives a static-validation flow (Lint/Compile). Pass/fail is the
 // Start error — the playbook stops after the origin's terminal action and there
 // is no per-run report getter, so success == Start returned nil.
+//
+// Caveat: because Start is the only signal, an infrastructure failure at the
+// Start phase (no runtime backend, agent crash, Docker down) is reported as
+// Passed:false with the error text in Output — indistinguishable from a genuine
+// lint/compile failure. Callers that need to tell them apart cannot today.
 func (p *planeImpl) runCheckFlow(ctx context.Context, mode orchestration.Mode, req CheckRequest) (CheckResult, error) {
 	flow, err := p.buildFlow(ctx, mode, req.Service, orchestration.LocalEnvironmentName, func(f *orchestration.Flow) {
 		// Static validation wants source + toolchain, not live dependencies.
@@ -48,9 +53,11 @@ func (p *planeImpl) Compile(ctx context.Context, req CheckRequest) (CheckResult,
 	return p.runCheckFlow(ctx, orchestration.CompileMode, req)
 }
 
-// RunChecks runs a shell command in the service directory (default
-// `go test ./...`, matching the MCP tool). A non-zero exit is a failing check,
-// not a call error.
+// RunChecks runs a command in the service directory (default `go test ./...`,
+// matching the MCP tool). The command is argv split on whitespace and executed
+// directly — NOT interpreted by a shell, so pipes, &&, quoting, and globs do not
+// work. req.RuntimeContext is ignored (only Lint/Compile use it). A non-zero
+// exit is a failing check, not a call error.
 func (p *planeImpl) RunChecks(ctx context.Context, req CheckRequest) (CheckResult, error) {
 	_, _, service, err := p.loadTarget(ctx, req.Service)
 	if err != nil {
@@ -67,7 +74,13 @@ func (p *planeImpl) RunChecks(ctx context.Context, req CheckRequest) (CheckResul
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Dir = service.Dir()
 	out, err := cmd.CombinedOutput()
-	return CheckResult{Passed: err == nil, Output: string(out)}, nil
+	output := string(out)
+	// A start failure (binary not found, ctx cancelled) yields no output — keep
+	// the error text so a failing check is never blank.
+	if err != nil && output == "" {
+		output = err.Error()
+	}
+	return CheckResult{Passed: err == nil, Output: output}, nil
 }
 
 // Addresses resolves a running service's reachable endpoints. Addresses only
@@ -85,8 +98,9 @@ func (p *planeImpl) Addresses(ctx context.Context, serviceName string) ([]Endpoi
 	var endpoints []Endpoint
 	for _, ep := range service.Endpoints {
 		addr, err := flow.GetAddressForEndpoint(ctx, module.Name, service.Name, ep.Name)
-		if err != nil || addr == "" {
-			continue // not reachable / not public
+		if err != nil {
+			// No public mapping yet (or not resolvable) — skip this endpoint.
+			continue
 		}
 		endpoint := Endpoint{Service: service.Name, Name: ep.Name, Type: ep.API}
 		if host, portStr, splitErr := net.SplitHostPort(addr); splitErr == nil {
