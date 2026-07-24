@@ -5,16 +5,21 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/executionattestor"
+	"github.com/codefly-dev/cli/pkg/executiondispatcher"
 	"github.com/codefly-dev/cli/pkg/executionjournal"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	codefly "github.com/codefly-dev/sdk-go"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -139,6 +144,179 @@ func TestRecorderRecoversIncompleteStartAsUncertain(t *testing.T) {
 	}
 }
 
+func TestRecorderProcessLossRecoversAndExportsStartedThenUncertain(t *testing.T) {
+	const crashStateVariable = "CODEFLY_TEST_EXECUTION_CRASH_STATE"
+	if stateDir := os.Getenv(crashStateVariable); stateDir != "" {
+		if err := appendStartedBeforeProcessLoss(stateDir); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "prepare process-loss receipt: %v\n", err)
+			os.Exit(85)
+		}
+		// Deliberately bypass every defer and Close. This is the process-loss
+		// boundary the parent must recover from.
+		os.Exit(86)
+	}
+
+	stateDir := filepath.Join(t.TempDir(), "execution")
+	command := exec.Command(os.Args[0], "-test.run=^TestRecorderProcessLossRecoversAndExportsStartedThenUncertain$")
+	command.Env = append(os.Environ(), crashStateVariable+"="+stateDir)
+	output, err := command.CombinedOutput()
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 86 {
+		t.Fatalf("crash child error=%v output=%s", err, output)
+	}
+
+	attestor, err := executionattestor.OpenFile(
+		t.Context(),
+		filepath.Join(stateDir, "gateway-ed25519-v1.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := executionjournal.Open(
+		t.Context(),
+		filepath.Join(stateDir, "receipts-v1.db"),
+		attestor.Verify,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	recorder, err := New(Config{
+		Journal:  journal,
+		Attestor: attestor,
+		Authority: AuthorityFunc(func(
+			context.Context,
+			codefly.WorkContextToken,
+			Admission,
+		) (*basev0.WorkContextV1, error) {
+			return nil, errors.New("recovery must not re-authorize an already admitted start")
+		}),
+		Producer: &executionv1.ExecutionProducerV1{
+			Id: "codefly.execution", Component: "gateway", Release: "v0.1.27",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := recorder.RecoverIncomplete(t.Context(), 10)
+	if err != nil || recovered != 1 {
+		t.Fatalf("recovered=%d err=%v", recovered, err)
+	}
+
+	var stages []executionv1.ExecutionStage
+	exporter := processLossExporterFunc(func(
+		_ context.Context,
+		request *executionv1.ExportExecutionRequest,
+		_ ...grpc.CallOption,
+	) (*executionv1.ExportExecutionResponse, error) {
+		receipt := request.GetAttestation().GetReceipt()
+		stages = append(stages, receipt.GetStage())
+		if receipt.GetStage() == executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN {
+			if receipt.GetResult().GetStatus() != "uncertain" ||
+				receipt.GetResult().GetErrorCode() != "gateway-restarted-before-terminal" {
+				return nil, fmt.Errorf("invalid UNCERTAIN result: %+v", receipt.GetResult())
+			}
+		}
+		return &executionv1.ExportExecutionResponse{ReceiptId: receipt.GetReceiptId()}, nil
+	})
+	dispatcher, err := executiondispatcher.New(executiondispatcher.Config{
+		Journal: journal,
+		Exporters: []executiondispatcher.Exporter{{
+			ID: "process-loss-proof", Client: exporter,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := dispatcher.DispatchOnce(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Exporters) != 1 || report.Exporters[0].Accepted != 2 {
+		t.Fatalf("dispatch report=%+v", report)
+	}
+	want := []executionv1.ExecutionStage{
+		executionv1.ExecutionStage_EXECUTION_STAGE_STARTED,
+		executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
+	}
+	if len(stages) != len(want) || stages[0] != want[0] || stages[1] != want[1] {
+		t.Fatalf("exported stages=%v want=%v", stages, want)
+	}
+	pending, err := journal.PendingFor(t.Context(), "process-loss-proof", 0, 10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending after exact acknowledgements=%+v err=%v", pending, err)
+	}
+}
+
+type processLossExporterFunc func(
+	context.Context,
+	*executionv1.ExportExecutionRequest,
+	...grpc.CallOption,
+) (*executionv1.ExportExecutionResponse, error)
+
+func (function processLossExporterFunc) Export(
+	ctx context.Context,
+	request *executionv1.ExportExecutionRequest,
+	options ...grpc.CallOption,
+) (*executionv1.ExportExecutionResponse, error) {
+	return function(ctx, request, options...)
+}
+
+func appendStartedBeforeProcessLoss(stateDir string) error {
+	ctx := context.Background()
+	attestor, err := executionattestor.OpenFile(
+		ctx,
+		filepath.Join(stateDir, "gateway-ed25519-v1.json"),
+	)
+	if err != nil {
+		return err
+	}
+	journal, err := executionjournal.Open(
+		ctx,
+		filepath.Join(stateDir, "receipts-v1.db"),
+		attestor.Verify,
+	)
+	if err != nil {
+		return err
+	}
+	signature := make([]byte, 64)
+	token, err := codefly.ParseWorkContextToken(
+		"e30." + base64.RawURLEncoding.EncodeToString(signature),
+	)
+	if err != nil {
+		return err
+	}
+	execution, err := codefly.NewExecutionContext(token, "operation-process-loss")
+	if err != nil {
+		return err
+	}
+	recorder, err := New(Config{
+		Journal:  journal,
+		Attestor: attestor,
+		Authority: AuthorityFunc(func(
+			context.Context,
+			codefly.WorkContextToken,
+			Admission,
+		) (*basev0.WorkContextV1, error) {
+			return testClaims(), nil
+		}),
+		Producer: &executionv1.ExecutionProducerV1{
+			Id: "codefly.execution", Component: "gateway", Release: "v0.1.27",
+		},
+	})
+	if err != nil {
+		return err
+	}
+	result, err := recorder.Begin(ctx, execution, testBeginInput())
+	if err != nil {
+		return err
+	}
+	if result.Attempt == nil || result.Existing != nil {
+		return fmt.Errorf("unexpected begin result: %+v", result)
+	}
+	return nil
+}
+
 func TestRecorderRejectsAuthorityFailureBeforeJournal(t *testing.T) {
 	fixture := newRecorderFixture(t)
 	recorder, err := New(Config{
@@ -250,6 +428,10 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 }
 
 func (f *recorderFixture) beginInput() BeginInput {
+	return testBeginInput()
+}
+
+func testBeginInput() BeginInput {
 	before := sha256.Sum256([]byte("before"))
 	projectID := "project-warden"
 	return BeginInput{
