@@ -68,13 +68,18 @@ func gitStatusAt(ctx context.Context, repo string) (GitStatus, error) {
 	}
 	status := GitStatus{Branch: branch}
 	for _, line := range strings.Split(porcelain, "\n") {
-		if strings.TrimSpace(line) == "" {
+		if len(line) < 4 {
 			continue
 		}
-		// Porcelain v1: "XY <path>"; the path starts at column 3.
-		if len(line) > 3 {
-			status.Changed = append(status.Changed, strings.TrimSpace(line[3:]))
-		}
+		// Porcelain v1: "XY <path>"; XY is the two status columns, path at 3.
+		xy := line[:2]
+		path := strings.TrimSpace(line[3:])
+		status.Changed = append(status.Changed, path)
+		status.Files = append(status.Files, GitFileStatus{
+			Path:   path,
+			Code:   xy,
+			Staged: xy[0] != ' ' && xy[0] != '?',
+		})
 	}
 	status.Dirty = len(status.Changed) > 0
 	// Ahead/behind vs upstream — absent upstream is not an error, just zero.
@@ -127,7 +132,7 @@ func gitLogAt(ctx context.Context, repo string, req GitLogRequest) ([]GitCommit,
 		limit = 1000
 	}
 	// Unit-separator delimited fields avoid collisions with commit-message text.
-	out, err := git(ctx, repo, "log", "--max-count="+strconv.Itoa(limit), "--format=%H%x1f%an%x1f%s")
+	out, err := git(ctx, repo, "log", "--max-count="+strconv.Itoa(limit), "--format=%H%x1f%h%x1f%an%x1f%s%x1f%ai")
 	if err != nil {
 		return nil, err
 	}
@@ -137,10 +142,12 @@ func gitLogAt(ctx context.Context, repo string, req GitLogRequest) ([]GitCommit,
 			continue
 		}
 		fields := strings.Split(line, "\x1f")
-		if len(fields) != 3 {
+		if len(fields) != 5 {
 			continue
 		}
-		commits = append(commits, GitCommit{SHA: fields[0], Author: fields[1], Message: fields[2]})
+		commits = append(commits, GitCommit{
+			SHA: fields[0], ShortHash: fields[1], Author: fields[2], Message: fields[3], Date: fields[4],
+		})
 	}
 	return commits, nil
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +65,19 @@ func TestGitStatusCleanThenDirty(t *testing.T) {
 	if !found {
 		t.Errorf("Changed = %v, want it to include new.txt", status.Changed)
 	}
+	// Per-file detail: new.txt is untracked ("??"), not staged.
+	var fileOK bool
+	for _, f := range status.Files {
+		if f.Path == "new.txt" {
+			fileOK = true
+			if f.Code != "??" || f.Staged {
+				t.Errorf("new.txt file status = %+v, want code ?? and not staged", f)
+			}
+		}
+	}
+	if !fileOK {
+		t.Errorf("Files = %+v, want an entry for new.txt", status.Files)
+	}
 }
 
 func TestGitCommitAndLog(t *testing.T) {
@@ -93,5 +107,11 @@ func TestGitCommitAndLog(t *testing.T) {
 	}
 	if log[0].Author != "Test" {
 		t.Errorf("author = %q, want Test", log[0].Author)
+	}
+	if log[0].ShortHash == "" || !strings.HasPrefix(log[0].SHA, log[0].ShortHash) {
+		t.Errorf("short hash %q is not a prefix of %q", log[0].ShortHash, log[0].SHA)
+	}
+	if log[0].Date == "" {
+		t.Error("commit date is empty")
 	}
 }
