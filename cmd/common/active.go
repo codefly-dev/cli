@@ -62,6 +62,15 @@ func loadActiveContext(ctx context.Context, interactive bool) (*ActiveContext, e
 	}
 
 	if active.Service == nil {
+		if active.Module != nil && active.Module.ServiceEntry != "" {
+			active.Service, err = active.Module.LoadServiceFromName(ctx, active.Module.ServiceEntry)
+			if err != nil {
+				return nil, fmt.Errorf("cannot load module service entry %q: %w", active.Module.ServiceEntry, err)
+			}
+		}
+	}
+
+	if active.Service == nil {
 		active.Service, active.Module, err = autoResolveService(ctx, workspace, interactive)
 		if err != nil {
 			return nil, err
@@ -75,6 +84,23 @@ func loadActiveContext(ctx context.Context, interactive bool) (*ActiveContext, e
 // folder. If exactly one service exists, it's selected automatically.
 // If multiple exist, an interactive prompt lets the user choose.
 func autoResolveService(ctx context.Context, workspace *resources.Workspace, interactive bool) (*resources.Service, *resources.Module, error) {
+	// A single-module workspace can declare its default runnable service in the
+	// module manifest. Resolve it before considering the workspace-wide service
+	// list so headless runs remain deterministic.
+	if workspace.Layout != resources.LayoutKindFlat && len(workspace.Modules) == 1 {
+		module, err := workspace.LoadModuleFromReference(ctx, workspace.Modules[0])
+		if err != nil {
+			return nil, nil, err
+		}
+		if module.ServiceEntry != "" {
+			service, err := module.LoadServiceFromName(ctx, module.ServiceEntry)
+			if err != nil {
+				return nil, nil, fmt.Errorf("cannot load module service entry %q: %w", module.ServiceEntry, err)
+			}
+			return service, module, nil
+		}
+	}
+
 	services, err := workspace.LoadServices(ctx)
 	if err != nil {
 		return nil, nil, err
