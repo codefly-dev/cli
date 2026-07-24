@@ -68,14 +68,18 @@ func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name
 	return flow, nil
 }
 
-// stopFlow tears a flow down and clears agent processes, matching the deferred
-// cleanup every lifecycle command runs.
+// stopFlow tears a flow down and clears ONLY that flow's agents. It must not
+// call the global services.ClearAgents(): a synchronous driver (Build/Test/
+// Lint/Compile/Deploy) can run while a background Run stack is up, and clearing
+// every agent would SIGTERM the running stack's plugins out from under it.
 func stopFlow(flow *orchestration.Flow) {
 	if flow == nil {
 		return
 	}
-	defer services.ClearAgents()
 	_ = flow.Stop()
+	for _, key := range flow.AgentCacheKeys() {
+		services.ClearAgent(key)
+	}
 }
 
 // Build compiles a service's container image (BuildMode). It runs to completion
@@ -193,9 +197,11 @@ func (p *planeImpl) Stop(ctx context.Context, req StopRequest) error {
 	if flow == nil {
 		return nil // nothing running
 	}
-	defer services.ClearAgents()
 	if err := flow.Stop(); err != nil {
 		return fmt.Errorf("stop flow: %w", err)
+	}
+	for _, key := range flow.AgentCacheKeys() {
+		services.ClearAgent(key)
 	}
 	return nil
 }
