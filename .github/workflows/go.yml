@@ -10,6 +10,11 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    # Hoisted to job level so the Slack steps' `if` conditions can gate on it.
+    # Secrets are empty on Dependabot-triggered runs, so guarding here lets the
+    # notify steps skip cleanly instead of failing the build.
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -61,23 +66,19 @@ jobs:
         run: go test -race ./... -v
 
       - name: Notify Slack on Failure
-        if: failure()
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v1.25.0 # Updated to latest known version, verify for newer versions
         with:
           payload: |
             {
               "text": "Build Failed in ${{ github.repository }} on ${{ github.ref }}. See GitHub Actions for more details."
             }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Notify Slack on Success
-        if: success()
+        if: success() && env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v1.25.0 # Updated to latest known version, verify for newer versions
         with:
           payload: |
             {
               "text": "Build Succeeded in ${{ github.repository }} on ${{ github.ref }}. Great job!"
             }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
