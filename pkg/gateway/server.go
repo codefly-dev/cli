@@ -882,7 +882,7 @@ func (s *Server) ReadFile(ctx context.Context, req *gatewayv1.ReadFileRequest) (
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	data, err := s.fileOps().ReadFile(ctx, rel)
+	data, err := s.controlScope().ReadFile(ctx, rel)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &gatewayv1.ReadFileResponse{Exists: false}, nil
@@ -903,7 +903,7 @@ func (s *Server) WriteFile(ctx context.Context, req *gatewayv1.WriteFileRequest)
 	if err != nil {
 		return &gatewayv1.WriteFileResponse{Success: false, Error: err.Error()}, nil
 	}
-	if err := s.fileOps().WriteFile(ctx, rel, []byte(req.GetContent())); err != nil {
+	if err := s.controlScope().WriteFile(ctx, rel, []byte(req.GetContent())); err != nil {
 		return &gatewayv1.WriteFileResponse{Success: false, Error: err.Error()}, nil
 	}
 	return &gatewayv1.WriteFileResponse{Success: true}, nil
@@ -1082,7 +1082,7 @@ func (s *Server) DeleteFile(ctx context.Context, req *gatewayv1.DeleteFileReques
 	if err != nil {
 		return &gatewayv1.DeleteFileResponse{Success: false, Error: err.Error()}, nil
 	}
-	if err := s.fileOps().DeleteFile(ctx, rel); err != nil {
+	if err := s.controlScope().DeleteFile(ctx, rel); err != nil {
 		if os.IsNotExist(err) {
 			return &gatewayv1.DeleteFileResponse{Success: false, Error: "file not found"}, nil
 		}
@@ -1103,7 +1103,7 @@ func (s *Server) MoveFile(ctx context.Context, req *gatewayv1.MoveFileRequest) (
 	if err != nil {
 		return &gatewayv1.MoveFileResponse{Success: false, Error: err.Error()}, nil
 	}
-	if err := s.fileOps().MoveFile(ctx, oldRel, newRel); err != nil {
+	if err := s.controlScope().MoveFile(ctx, oldRel, newRel); err != nil {
 		return &gatewayv1.MoveFileResponse{Success: false, Error: err.Error()}, nil
 	}
 	return &gatewayv1.MoveFileResponse{Success: true}, nil
@@ -1117,14 +1117,15 @@ func (s *Server) CreateFile(ctx context.Context, req *gatewayv1.CreateFileReques
 	if err != nil {
 		return &gatewayv1.CreateFileResponse{Success: false, Error: err.Error()}, nil
 	}
+	sc := s.controlScope()
 	if !req.GetOverwrite() {
-		if _, err := s.fileOps().ReadFile(ctx, rel); err == nil {
+		if _, err := sc.ReadFile(ctx, rel); err == nil {
 			return &gatewayv1.CreateFileResponse{Success: false, Error: "file already exists"}, nil
 		} else if !os.IsNotExist(err) {
 			return &gatewayv1.CreateFileResponse{Success: false, Error: err.Error()}, nil
 		}
 	}
-	if err := s.fileOps().WriteFile(ctx, rel, []byte(req.GetContent())); err != nil {
+	if err := sc.WriteFile(ctx, rel, []byte(req.GetContent())); err != nil {
 		return &gatewayv1.CreateFileResponse{Success: false, Error: err.Error()}, nil
 	}
 	return &gatewayv1.CreateFileResponse{Success: true}, nil
