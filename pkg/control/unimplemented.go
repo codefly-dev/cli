@@ -17,36 +17,31 @@ var errNotImplemented = errors.New("control: capability not yet lifted into the 
 
 // --- Introspector (remaining) ---
 
-func (p *planeImpl) Addresses(ctx context.Context, service string) ([]Endpoint, error) {
-	return nil, errNotImplemented
-}
+// Addresses, Lint, Compile, RunChecks are implemented in checks.go.
 
+// Logs remains stubbed intentionally. Logs are produced by a PROCESS-GLOBAL
+// agents processor feeding an in-memory channel (see pkg/web's server). Owning
+// that processor requires the plane to be a singleton for the process, which
+// conflicts with New() being a lightweight per-caller constructor. Wiring it is
+// a decision for the server-adapter phase (one long-lived plane owns the log
+// channel); until then this reports not-implemented rather than silently
+// returning no logs.
 func (p *planeImpl) Logs(ctx context.Context, opts LogOptions, emit func(LogLine) error) error {
 	return errNotImplemented
 }
 
 // --- Lifecycle (remaining) ---
 // Build, Test, Run, Stop are implemented in lifecycle.go.
-
-func (p *planeImpl) Lint(ctx context.Context, req CheckRequest) (CheckResult, error) {
-	return CheckResult{}, errNotImplemented
-}
-
-func (p *planeImpl) Compile(ctx context.Context, req CheckRequest) (CheckResult, error) {
-	return CheckResult{}, errNotImplemented
-}
-
-func (p *planeImpl) RunChecks(ctx context.Context, req CheckRequest) (CheckResult, error) {
-	return CheckResult{}, errNotImplemented
-}
-
 // Deploy is implemented in deploy.go (gated by MutationAuthority).
 
 // --- SourceEditor (remaining) ---
 // File CRUD, ListFiles, Search, ApplyEdit, BatchApplyEdits are in source.go.
 
-// Fix is language-aware repair — plugin behavior (Code plugin over gRPC), lifted
-// with the Code-plugin group, not with the direct-filesystem source ops.
+// Fix is language-aware plugin repair via the Code plugin's Execute RPC. Doing
+// it correctly requires spinning up the plugin through the runtime Load/Init
+// lifecycle so the plugin resolves the SERVICE source tree (SourceLocation) —
+// merely dialing a Code client with WithWorkDir(workspace) makes it operate on
+// the wrong directory. That lifecycle is not lifted yet, so this stays stubbed.
 func (p *planeImpl) Fix(ctx context.Context, req FixRequest) (FixResult, error) {
 	return FixResult{}, errNotImplemented
 }
@@ -54,6 +49,9 @@ func (p *planeImpl) Fix(ctx context.Context, req FixRequest) (FixResult, error) 
 // --- VCS is implemented in vcs.go ---
 
 // --- DependencyManager ---
+// Same as Fix: these run through the Code plugin and need the runtime Load/Init
+// lifecycle to resolve the service source dir before add/remove/list operate on
+// the right go.mod. Not lifted yet.
 
 func (p *planeImpl) ListDependencies(ctx context.Context, service string) ([]Dependency, error) {
 	return nil, errNotImplemented
@@ -69,26 +67,6 @@ func (p *planeImpl) RemoveDependency(ctx context.Context, service string, dep De
 
 // --- CommandRunner is implemented in commands.go ---
 
-// --- TerminalController ---
-
-func (p *planeImpl) OpenTerminal(ctx context.Context, req OpenTerminalRequest) (TerminalID, error) {
-	return "", errNotImplemented
-}
-
-func (p *planeImpl) AttachTerminal(ctx context.Context, id TerminalID, onOutput func([]byte) error) (TerminalInput, error) {
-	return nil, errNotImplemented
-}
-
-func (p *planeImpl) ResizeTerminal(ctx context.Context, id TerminalID, cols, rows int) error {
-	return errNotImplemented
-}
-
-func (p *planeImpl) CloseTerminal(ctx context.Context, id TerminalID) error {
-	return errNotImplemented
-}
-
-func (p *planeImpl) ListTerminals(ctx context.Context) ([]TerminalID, error) {
-	return nil, errNotImplemented
-}
+// --- TerminalController is implemented in terminal.go ---
 
 // --- MutationAuthority is implemented in mutation.go ---

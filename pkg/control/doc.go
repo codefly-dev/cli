@@ -36,6 +36,15 @@
 // pkg/orchestration and the plugin gRPC clients. It must NOT be imported by
 // plugins/agents — they are the things being controlled, so they sit below it.
 //
+// # Failure convention
+//
+// Two failure styles coexist, by design. A "check" that ran but did not pass
+// (RunChecks, Lint, Compile, a plugin RunCommand) reports failure in its result
+// (CheckResult.Passed=false / CommandResult.ExitCode!=0) with a nil error — the
+// call succeeded, the checked thing failed. An operation that could not be
+// carried out (bad input, workspace not found, transport failure) returns a Go
+// error. Adapters should surface both.
+//
 // # Authority
 //
 // Destructive or outward actions (notably Deploy, and any file/git mutation)

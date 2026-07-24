@@ -20,13 +20,15 @@ type planeImpl struct {
 	// gate enforces the mutation-authority policy for destructive/outward
 	// actions (Deploy and, under prepared authority, edits). See mutation.go.
 	gate *mutationGate
+	// terminals holds this plane's live PTY sessions. See terminal.go.
+	terminals *terminalManager
 }
 
 // New returns the control plane. Most operations resolve the workspace/flow at
-// call time; the only construction-time state is the mutation-authority gate,
-// which defaults to open (trusted local caller).
+// call time; construction-time state is the mutation-authority gate (defaults to
+// open, trusted local caller) and the terminal session manager.
 func New() Plane {
-	return &planeImpl{gate: newMutationGate()}
+	return &planeImpl{gate: newMutationGate(), terminals: newTerminalManager()}
 }
 
 // Compile-time proof that planeImpl satisfies the full control surface.

@@ -115,9 +115,12 @@ type BuildResult struct {
 }
 
 // CheckRequest is the common shape for lint/compile/checks over a target.
+// Command applies only to RunChecks (the shell command to run in the service
+// dir); Lint/Compile ignore it.
 type CheckRequest struct {
 	Service        string
 	RuntimeContext string
+	Command        string
 }
 
 // TestRequest runs a service's tests.
@@ -265,10 +268,13 @@ type GitCommitRequest struct {
 
 // --- Dependencies ---
 
-// Dependency links a service to another service or library it requires.
+// Dependency is a language package a service depends on (a Go module, npm
+// package, …) — resolved through the service's Code plugin, not a codefly
+// service reference.
 type Dependency struct {
 	Name    string
 	Version string
+	Direct  bool // directly imported (vs transitive); set on list results
 }
 
 // --- Commands ---
