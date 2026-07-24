@@ -51,6 +51,13 @@ func (p *planeImpl) GitStatus(ctx context.Context, dir string) (GitStatus, error
 	if err != nil {
 		return GitStatus{}, err
 	}
+	return gitStatusAt(ctx, repo)
+}
+
+// gitStatusAt / gitDiffAt / gitLogAt / gitCommitAt run against an explicit repo
+// dir, shared by the workspace-scoped planeImpl methods and service-scoped
+// callers (see scope.go).
+func gitStatusAt(ctx context.Context, repo string) (GitStatus, error) {
 	branch, err := git(ctx, repo, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return GitStatus{}, err
@@ -87,6 +94,10 @@ func (p *planeImpl) GitDiff(ctx context.Context, req GitDiffRequest) (string, er
 	if err != nil {
 		return "", err
 	}
+	return gitDiffAt(ctx, repo, req)
+}
+
+func gitDiffAt(ctx context.Context, repo string, req GitDiffRequest) (string, error) {
 	args := []string{"diff"}
 	if req.Staged {
 		args = append(args, "--cached")
@@ -104,6 +115,10 @@ func (p *planeImpl) GitLog(ctx context.Context, req GitLogRequest) ([]GitCommit,
 	if err != nil {
 		return nil, err
 	}
+	return gitLogAt(ctx, repo, req)
+}
+
+func gitLogAt(ctx context.Context, repo string, req GitLogRequest) ([]GitCommit, error) {
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 20
@@ -137,6 +152,10 @@ func (p *planeImpl) GitCommit(ctx context.Context, req GitCommitRequest) (GitCom
 	if err != nil {
 		return GitCommit{}, err
 	}
+	return gitCommitAt(ctx, repo, req)
+}
+
+func gitCommitAt(ctx context.Context, repo string, req GitCommitRequest) (GitCommit, error) {
 	if strings.TrimSpace(req.Message) == "" {
 		return GitCommit{}, fmt.Errorf("commit message is required")
 	}
