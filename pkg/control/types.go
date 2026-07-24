@@ -236,7 +236,15 @@ type GitStatus struct {
 	Dirty   bool
 	Ahead   int
 	Behind  int
-	Changed []string
+	Changed []string        // paths with any change (convenience)
+	Files   []GitFileStatus // per-file detail
+}
+
+// GitFileStatus is one changed file's porcelain status.
+type GitFileStatus struct {
+	Path   string
+	Code   string // raw porcelain v1 XY code, e.g. " M", "??", "A "
+	Staged bool
 }
 
 // GitDiffRequest selects a diff.
@@ -254,9 +262,11 @@ type GitLogRequest struct {
 
 // GitCommit is one commit.
 type GitCommit struct {
-	SHA     string
-	Author  string
-	Message string
+	SHA       string
+	ShortHash string
+	Author    string
+	Message   string
+	Date      string
 }
 
 // GitCommitRequest creates a commit.

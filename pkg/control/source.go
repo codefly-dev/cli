@@ -53,6 +53,10 @@ func (p *planeImpl) CreateFile(ctx context.Context, path string, content []byte)
 	if err != nil {
 		return err
 	}
+	return createFileWith(ctx, ops, path, content)
+}
+
+func createFileWith(ctx context.Context, ops codecore.FileOperation, path string, content []byte) error {
 	if _, err := ops.ReadFile(ctx, path); err == nil {
 		return fmt.Errorf("file already exists: %s", path)
 	} else if !os.IsNotExist(err) {
@@ -84,6 +88,10 @@ func (p *planeImpl) ListFiles(ctx context.Context, dir string) ([]FileInfo, erro
 	if err != nil {
 		return nil, err
 	}
+	return listFilesWith(ctx, ops, root, dir)
+}
+
+func listFilesWith(ctx context.Context, ops codecore.FileOperation, root, dir string) ([]FileInfo, error) {
 	names, err := ops.ListFiles(ctx, dir, false, nil)
 	if err != nil {
 		return nil, err
@@ -107,6 +115,10 @@ func (p *planeImpl) Search(ctx context.Context, req SearchRequest) ([]SearchHit,
 	if err != nil {
 		return nil, err
 	}
+	return searchWith(ctx, ops, req)
+}
+
+func searchWith(ctx context.Context, ops codecore.FileOperation, req SearchRequest) ([]SearchHit, error) {
 	result, err := ops.Search(ctx, codecore.SearchOpts{
 		Pattern: req.Query,
 		Literal: !req.Regex,
@@ -156,6 +168,10 @@ func (p *planeImpl) BatchApplyEdits(ctx context.Context, edits []Edit) error {
 	if err != nil {
 		return err
 	}
+	return batchApplyEditsWith(ctx, ops, edits)
+}
+
+func batchApplyEditsWith(ctx context.Context, ops codecore.FileOperation, edits []Edit) error {
 	originals := make(map[string][]byte, len(edits))
 	rollback := func() {
 		for path, data := range originals {

@@ -20,6 +20,12 @@ type Plane interface {
 	CommandRunner
 	TerminalController
 	MutationAuthority
+
+	// Service returns a handle scoped to one service — file/git operations root
+	// at the service directory rather than the workspace, and lifecycle/command
+	// operations target that service. This is what service-scoped adapters (the
+	// Gateway, mind.yaml) delegate to. See scope.go.
+	Service(ctx context.Context, name string) (ServiceScope, error)
 }
 
 // Introspector answers read-only questions about the workspace and any live
