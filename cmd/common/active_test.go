@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,6 +51,56 @@ func TestLoadRequiredNonInteractiveENeverPromptsForAmbiguousService(t *testing.T
 	}
 	if !strings.Contains(err.Error(), "pass the service name explicitly") || !strings.Contains(err.Error(), "frontend") || !strings.Contains(err.Error(), "gateway") {
 		t.Fatalf("headless ambiguity error = %q", err)
+	}
+}
+
+func TestLoadRequiredNonInteractiveEUsesSingleModuleServiceEntry(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeActiveFixture(t, filepath.Join(root, resources.WorkspaceConfigurationName), `name: starter-dev
+layout: modules
+modules:
+  - name: starter
+`)
+	moduleDir := filepath.Join(root, "modules", "starter")
+	writeActiveFixture(t, filepath.Join(moduleDir, resources.ModuleConfigurationName), `kind: module
+name: starter
+service-entry: frontend
+services:
+  - name: accounts
+  - name: frontend
+`)
+	serviceManifest := func(name, endpoint string) string {
+		return "name: " + name + `
+version: 0.0.0
+agent:
+  kind: codefly:service
+  name: go
+  version: 0.0.0
+  publisher: codefly.dev
+endpoints:
+  - name: ` + endpoint + "\n"
+	}
+	writeActiveFixture(t, filepath.Join(moduleDir, "services", "accounts", resources.ServiceConfigurationName), serviceManifest("accounts", "grpc"))
+	writeActiveFixture(t, filepath.Join(moduleDir, "services", "frontend", resources.ServiceConfigurationName), serviceManifest("frontend", "http"))
+
+	t.Chdir(root)
+	workspace, module, service, err := LoadRequiredNonInteractiveE(ctx, nil)
+	if err != nil {
+		t.Fatalf("load service entry: %v", err)
+	}
+	if workspace.Name != "starter-dev" || module.Name != "starter" || service.Name != "frontend" {
+		t.Fatalf("resolved %q/%q/%q, want starter-dev/starter/frontend", workspace.Name, module.Name, service.Name)
+	}
+}
+
+func writeActiveFixture(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
