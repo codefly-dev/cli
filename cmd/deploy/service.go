@@ -88,6 +88,7 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 		return nil, w.Wrap(err)
 	}
 
+	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)
 	if err != nil {

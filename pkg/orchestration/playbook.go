@@ -91,7 +91,7 @@ func (playbook *Playbook) WithSignallerFunc(signaller CreateSignalFunc) *Playboo
 func NewPlaybook(ctx context.Context, world *World) (*Playbook, error) {
 	return &Playbook{
 		world:     world,
-		pause:     NewPauseManager(),
+		pause:     NewPauseManager(world),
 		actions:   NewActionManager(),
 		signaller: NewSignaller(),
 	}, nil

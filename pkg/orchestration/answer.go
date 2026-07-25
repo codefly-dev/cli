@@ -17,9 +17,14 @@ type AnswerProvider = agentscommunicate.AnswerProvider
 // pkg/cli/communicate's headless behavior without depending on pkg/cli. It is
 // the Flow default; the cobra command injects an interactive terminal
 // implementation at its call site to keep `codefly sync`'s existing behavior.
-type headlessAnswerProvider struct{}
+// world is a live reference (not a copied OutputSink) so a later
+// Flow.WithOutputSink still reaches Display narration answered before the
+// override was installed.
+type headlessAnswerProvider struct {
+	world *World
+}
 
-func (headlessAnswerProvider) Answer(_ context.Context, q *agentv0.Question) (*agentv0.Answer, error) {
+func (h headlessAnswerProvider) Answer(_ context.Context, q *agentv0.Question) (*agentv0.Answer, error) {
 	if q == nil {
 		return nil, fmt.Errorf("cannot answer nil question")
 	}
@@ -29,6 +34,9 @@ func (headlessAnswerProvider) Answer(_ context.Context, q *agentv0.Question) (*a
 	}
 	switch v := q.Value.(type) {
 	case *agentv0.Question_Display:
+		if h.world != nil && h.world.OutputSink != nil && q.Message != nil {
+			h.world.OutputSink.Info("%s", q.Message.GetMessage())
+		}
 		return &agentv0.Answer{}, nil
 	case *agentv0.Question_Confirm:
 		return &agentv0.Answer{Value: &agentv0.Answer_Confirm{Confirm: &agentv0.ConfirmAnswer{Confirmed: v.Confirm.GetDefault()}}}, nil

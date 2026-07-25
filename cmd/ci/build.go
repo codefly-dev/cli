@@ -83,6 +83,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 		return nil, w.Wrap(err)
 	}
 
+	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithStandAlone(true)

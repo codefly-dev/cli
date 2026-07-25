@@ -211,6 +211,11 @@ func NewServer(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("create workspace host: %w", err)
 		}
 		ownsHost = true
+	} else if !withinRoot(host.Root(), cfg.WorkDir) {
+		// Service()/normalizeTarget would otherwise fail this late and
+		// opaquely the first time an RPC actually binds a service, deep
+		// inside engine — catch a caller's root/WorkDir mismatch here instead.
+		return nil, fmt.Errorf("gateway work directory %s is not within the supplied workspace host root %s", cfg.WorkDir, host.Root())
 	}
 	s := &Server{
 		cfg:                 cfg,
@@ -473,6 +478,16 @@ func (s *Server) validateService(service string) error {
 		return status.Errorf(codes.NotFound, "service %q not found in gateway workspace", service)
 	}
 	return nil
+}
+
+// withinRoot reports whether abs (an absolute, cleaned path) is root itself
+// or a descendant of it.
+func withinRoot(root, abs string) bool {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
 func cleanGatewayPath(p string) (string, error) {

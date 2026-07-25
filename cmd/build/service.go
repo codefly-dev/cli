@@ -112,6 +112,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)
 	if err != nil {

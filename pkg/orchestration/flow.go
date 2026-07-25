@@ -197,13 +197,13 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 
 	world := &World{
-		Env:            env,
-		Mode:           mode,
-		Workspace:      workspace,
-		Dependencies:   dependencies,
-		OutputSink:     noopOutputSink{},
-		AnswerProvider: headlessAnswerProvider{},
+		Env:          env,
+		Mode:         mode,
+		Workspace:    workspace,
+		Dependencies: dependencies,
+		OutputSink:   noopOutputSink{},
 	}
+	world.AnswerProvider = headlessAnswerProvider{world: world}
 
 	configurationManager, err := configurations.NewManager(ctx, workspace)
 	if err != nil {
@@ -989,17 +989,25 @@ func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
 	return origin, dependencies
 }
 
+// output returns the flow's OutputSink, defaulting to a no-op if the flow
+// isn't fully constructed. NewFlow always sets a non-nil OutputSink on
+// world, but centralizing the guard here — rather than repeating (or
+// omitting) it at every call site — keeps every narration call safe even
+// against a Flow built by hand (as some tests do) instead of via NewFlow.
+func (flow *Flow) output() OutputSink {
+	if flow == nil || flow.world == nil || flow.world.OutputSink == nil {
+		return noopOutputSink{}
+	}
+	return flow.world.OutputSink
+}
+
 // newTeardownContext builds a fresh, wool-instrumented background context for
 // Stop/Shutdown, independent of the caller's (possibly already Done) context,
 // logging through the flow's OutputSink.
 func (flow *Flow) newTeardownContext() (context.Context, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	provider := wool.New(ctx, resources.CLI.AsResource())
-	sink := OutputSink(noopOutputSink{})
-	if flow.world != nil && flow.world.OutputSink != nil {
-		sink = flow.world.OutputSink
-	}
-	provider.WithLogger(sink)
+	provider.WithLogger(flow.output())
 	ctx = provider.Inject(ctx)
 	return ctx, func() {
 		cancel()
@@ -1206,7 +1214,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	var preloadedOrigin *Manager
 	if flow.world.Mode == TestMode && !flow.excludeRoot {
 		manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
-		flow.world.OutputSink.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
+		flow.output().RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
 		if err != nil {
 			return w.Wrap(err)
 		}
@@ -1247,7 +1255,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// init orphans those agents (and any process group they hold) until the
 	// next run's reaper sweeps them.
 	for _, unique := range required {
-		flow.world.OutputSink.RegisterLoggingResource(unique)
+		flow.output().RegisterLoggingResource(unique)
 		// Register source to handle "pretty" logging
 
 		info, err := resources.ParseServiceWithOptionalModule(unique)
@@ -1289,7 +1297,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	} else if !flow.excludeRoot {
 		w.Debug("creating run manager", wool.Field("for", resources.WithUnique(flow.originService).Unique()))
 		manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
-		flow.world.OutputSink.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
+		flow.output().RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
 		if err != nil {
 			return w.Wrap(err)
 		}
@@ -1334,7 +1342,7 @@ func (flow *Flow) configureTestExecution(runner *Runner) error {
 	flow.standAlone = execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
 	runner.WithTestRequest(execution.Request)
 	runner.WithServiceRunningForTest(execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
-	flow.world.OutputSink.Info("Test suite <%s> for <%s> uses dependency mode %s", execution.DisplaySuite(), runner.Unique(), execution.DependencyMode.String())
+	flow.output().Info("Test suite <%s> for <%s> uses dependency mode %s", execution.DisplaySuite(), runner.Unique(), execution.DependencyMode.String())
 	return nil
 }
 
@@ -1348,7 +1356,7 @@ func (flow *Flow) logRunPlan(ctx context.Context, dependencyUniques []string, re
 		runSet = append(runSet, origin)
 	}
 	if len(runSet) == 0 {
-		flow.world.OutputSink.Info("Will run no local services for <%s>", origin)
+		flow.output().Info("Will run no local services for <%s>", origin)
 		return nil
 	}
 
@@ -1364,7 +1372,7 @@ func (flow *Flow) logRunPlan(ctx context.Context, dependencyUniques []string, re
 		}
 		entries = append(entries, formatServiceRunPlanEntry(unique, svc, remotes[unique]))
 	}
-	flow.world.OutputSink.Info("Will run %d service(s): %s", len(entries), strings.Join(entries, "; "))
+	flow.output().Info("Will run %d service(s): %s", len(entries), strings.Join(entries, "; "))
 	return nil
 }
 
@@ -1390,7 +1398,7 @@ func (flow *Flow) CreateManager(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
 	w.Debug("creating run manager", wool.Field("for", resources.WithUnique(flow.originService).Unique()))
 	manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
-	flow.world.OutputSink.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
+	flow.output().RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
 	if err != nil {
 		return w.Wrap(err)
 	}
@@ -1632,7 +1640,7 @@ func (flow *Flow) WithOutputEnv(envPath string) {
 	if exists, err := shared.FileExists(context.Background(), envPath); err == nil && exists {
 		err := shared.DeleteFile(context.Background(), envPath)
 		if err != nil {
-			flow.world.OutputSink.Error("cannot delete file %s: %s", envPath, err)
+			flow.output().Error("cannot delete file %s: %s", envPath, err)
 		}
 	}
 	flow.outputEnvPath = envPath

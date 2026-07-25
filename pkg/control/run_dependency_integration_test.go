@@ -14,6 +14,7 @@ import (
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/dockerrun"
 )
 
 // A workspace with an origin service ("api") that declares a real redis
@@ -119,6 +120,37 @@ func hostPortFromConnectionString(dsn string) (host, port string, err error) {
 	return "", "", fmt.Errorf("no host:port found in %q", dsn)
 }
 
+func TestHostPortFromConnectionString(t *testing.T) {
+	cases := []struct {
+		name     string
+		dsn      string
+		wantHost string
+		wantPort string
+	}{
+		{"redis URL", "redis://host.docker.internal:36780", "host.docker.internal", "36780"},
+		{"postgres URL with credentials", "postgres://user:pass@127.0.0.1:5432/db", "127.0.0.1", "5432"},
+		{"libpq host-then-port", "host=127.0.0.1 port=5432 user=postgres dbname=postgres", "127.0.0.1", "5432"},
+		{"libpq port-then-host", "port=5432 host=127.0.0.1 user=postgres", "127.0.0.1", "5432"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			host, port, err := hostPortFromConnectionString(c.dsn)
+			if err != nil {
+				t.Fatalf("hostPortFromConnectionString(%q): %v", c.dsn, err)
+			}
+			if host != c.wantHost || port != c.wantPort {
+				t.Fatalf("hostPortFromConnectionString(%q) = (%q, %q), want (%q, %q)", c.dsn, host, port, c.wantHost, c.wantPort)
+			}
+		})
+	}
+}
+
+func TestHostPortFromConnectionStringRejectsUnparseable(t *testing.T) {
+	if _, _, err := hostPortFromConnectionString("not-a-connection-string"); err == nil {
+		t.Fatal("expected an error for an unparseable connection string")
+	}
+}
+
 // TestRunExcludeRootStartsRealDependencyInProcess is the acceptance proof for
 // #126: an embedder starts a real dependency flow in-process — no `codefly`
 // subprocess, no gRPC control channel, no os.Setenv round-trip — reads the
@@ -127,6 +159,9 @@ func hostPortFromConnectionString(dsn string) (host, port string, err error) {
 func TestRunExcludeRootStartsRealDependencyInProcess(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker not available")
+	}
+	if !dockerrun.DockerEngineRunning(context.Background()) {
+		t.Skip("docker engine not reachable")
 	}
 	root := writeRunDependencyWorkspace(t)
 

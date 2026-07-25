@@ -93,6 +93,7 @@ func RunService(
 	if err != nil {
 		return w.Wrap(err)
 	}
+	flow.WithOutputSink(cli.NewOutputSink())
 	defer func() {
 		if stopErr := flow.Stop(); stopErr != nil {
 			result = errors.Join(result, fmt.Errorf("cannot stop validation flow: %w", stopErr))
