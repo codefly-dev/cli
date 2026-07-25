@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,11 +37,13 @@ import (
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
 	codecore "github.com/codefly-dev/core/code"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
+	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
 	codefly "github.com/codefly-dev/sdk-go"
@@ -74,6 +77,9 @@ type Config struct {
 	// Token is required for every RPC when set, and is mandatory for any
 	// non-loopback bind. Clients send it as "authorization: Bearer <token>".
 	Token string
+	// GitHubToken is passed only to the GitHub forge toolbox. Empty uses the
+	// execution box's GITHUB_TOKEN, matching the standalone toolbox.
+	GitHubToken string
 	// TLSCertFile and TLSKeyFile configure server TLS. Both are mandatory for
 	// non-loopback binds so bearer credentials and privileged RPC payloads are
 	// never sent in clear text.
@@ -1382,6 +1388,62 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	return response, nil
 }
 
+func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gatewayv1.FormatResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "format request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	paths := append([]string(nil), req.GetPaths()...)
+	if len(paths) == 0 {
+		gitStatus, err := s.controlScope().GitStatus(ctx)
+		if err != nil {
+			return &gatewayv1.FormatResponse{Success: false, Output: fmt.Sprintf("discover changed files: %v", err)}, nil
+		}
+		paths = append(paths, gitStatus.Changed...)
+	}
+	changed := make([]string, 0, len(paths))
+	var diagnostics []*gatewayv1.BuildError
+	var output strings.Builder
+	for _, requested := range paths {
+		path, err := cleanGatewayPath(requested)
+		if err != nil || path == "" {
+			if err == nil {
+				err = fmt.Errorf("format path cannot be empty")
+			}
+			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: requested, Message: err.Error(), Severity: "error"})
+			continue
+		}
+		result, err := s.Fix(ctx, &gatewayv1.FixRequest{
+			Service: req.GetService(),
+			Path:    path,
+			Mode:    basev0.FixMode_FIX_MODE_SAFE,
+		})
+		if err != nil {
+			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: path, Message: err.Error(), Severity: "error"})
+			continue
+		}
+		if !result.GetSuccess() {
+			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: path, Message: result.GetError(), Severity: "error"})
+			continue
+		}
+		if result.GetChanged() {
+			changed = append(changed, path)
+		}
+		if text := strings.TrimSpace(result.GetOutput()); text != "" {
+			fmt.Fprintf(&output, "%s: %s\n", path, text)
+		}
+	}
+	sort.Strings(changed)
+	return &gatewayv1.FormatResponse{
+		Success:      len(diagnostics) == 0,
+		ChangedFiles: changed,
+		Errors:       diagnostics,
+		Output:       strings.TrimSpace(output.String()),
+	}, nil
+}
+
 func validateOptionalExecutionContext(ctx context.Context) error {
 	_, _, err := codefly.GRPCExecutionContextFromIncomingIfPresent(ctx)
 	if err != nil {
@@ -1635,6 +1697,9 @@ func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandReques
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "run command request is required")
 	}
+	if err := validateUnstructuredUse(req.GetUnstructuredUse()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	if err := s.validateService(req.GetService()); err != nil {
 		return nil, err
 	}
@@ -1688,6 +1753,24 @@ func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandReques
 		Stdout:   stdout.Output(),
 		Stderr:   stderr.Output(),
 	}, nil
+}
+
+func validateUnstructuredUse(use *gatewayv1.UnstructuredUse) error {
+	if use == nil {
+		return fmt.Errorf("unstructured_use attribution is required")
+	}
+	for name, value := range map[string]string{
+		"intent": use.GetIntent(), "why_no_tool": use.GetWhyNoTool(),
+		"code_unit_id": use.GetCodeUnitId(), "objective_id": use.GetObjectiveId(),
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("unstructured_use.%s is required", name)
+		}
+	}
+	if use.GetCommandClass() == gatewayv1.CommandClass_COMMAND_CLASS_UNSPECIFIED {
+		return fmt.Errorf("unstructured_use.command_class is required")
+	}
+	return nil
 }
 
 // ─── Plugin Commands ─────────────────────────────────────────
@@ -1878,6 +1961,190 @@ func (s *Server) GitCommit(ctx context.Context, req *gatewayv1.GitCommitRequest)
 		return &gatewayv1.GitCommitResponse{Success: false, Error: err.Error()}, nil
 	}
 	return &gatewayv1.GitCommitResponse{Success: true, Hash: commit.SHA}, nil
+}
+
+func (s *Server) GitBranch(ctx context.Context, req *gatewayv1.GitBranchRequest) (*gatewayv1.GitBranchResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "git branch request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.controlScope().GitBranch(ctx, control.GitBranchRequest{Name: req.GetName(), StartPoint: req.GetStartPoint()})
+	if err != nil {
+		return &gatewayv1.GitBranchResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.GitBranchResponse{
+		Success:  true,
+		Branch:   result.Target,
+		Revision: result.Revision,
+		Act:      gitActReceipt("git.branch.created", result.Target, result.Revision),
+	}, nil
+}
+
+func (s *Server) GitCheckout(ctx context.Context, req *gatewayv1.GitCheckoutRequest) (*gatewayv1.GitCheckoutResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "git checkout request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.controlScope().GitCheckout(ctx, control.GitCheckoutRequest{Ref: req.GetRef()})
+	if err != nil {
+		return &gatewayv1.GitCheckoutResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.GitCheckoutResponse{
+		Success:  true,
+		Branch:   result.Branch,
+		Revision: result.Revision,
+		Act:      gitActReceipt("git.checkout.applied", result.Target, result.Revision),
+	}, nil
+}
+
+func (s *Server) GitPush(ctx context.Context, req *gatewayv1.GitPushRequest) (*gatewayv1.GitPushResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "git push request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	mode := control.GitPushMode("")
+	switch req.GetMode() {
+	case gatewayv1.GitPushMode_GIT_PUSH_MODE_FAST_FORWARD_ONLY:
+		mode = control.GitPushFastForwardOnly
+	case gatewayv1.GitPushMode_GIT_PUSH_MODE_FORCE_WITH_LEASE:
+		mode = control.GitPushForceWithLease
+	default:
+		return nil, status.Error(codes.InvalidArgument, "git push mode is required")
+	}
+	result, err := s.controlScope().GitPush(ctx, control.GitPushRequest{
+		Remote: req.GetRemote(), Branch: req.GetBranch(), SetUpstream: req.GetSetUpstream(), Mode: mode,
+	})
+	if err != nil {
+		return &gatewayv1.GitPushResponse{Success: false, Error: err.Error()}, nil
+	}
+	target := result.Remote + "/" + result.Branch
+	return &gatewayv1.GitPushResponse{
+		Success: true, Remote: result.Remote, Branch: result.Branch, Revision: result.Revision,
+		Act: gitActReceipt("git.branch.pushed", target, result.Revision),
+	}, nil
+}
+
+func (s *Server) GitTag(ctx context.Context, req *gatewayv1.GitTagRequest) (*gatewayv1.GitTagResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "git tag request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.controlScope().GitTag(ctx, control.GitTagRequest{
+		Name: req.GetName(), Revision: req.GetRevision(), Message: req.GetMessage(), Sign: req.GetSign(),
+	})
+	if err != nil {
+		return &gatewayv1.GitTagResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.GitTagResponse{
+		Success: true, Tag: result.Target, Revision: result.Revision,
+		Act: gitActReceipt("git.tag.created", result.Target, result.Revision),
+	}, nil
+}
+
+func (s *Server) GitMerge(ctx context.Context, req *gatewayv1.GitMergeRequest) (*gatewayv1.GitMergeResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "git merge request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.controlScope().GitMerge(ctx, control.GitMergeRequest{
+		Ref: req.GetRef(), Message: req.GetMessage(), NoFastForward: req.GetNoFastForward(),
+	})
+	if err != nil {
+		return &gatewayv1.GitMergeResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.GitMergeResponse{
+		Success: true, Branch: result.Branch, Revision: result.Revision,
+		Act: gitActReceipt("git.merge.applied", result.Branch+"<-"+result.Target, result.Revision),
+	}, nil
+}
+
+func (s *Server) GitRevert(ctx context.Context, req *gatewayv1.GitRevertRequest) (*gatewayv1.GitRevertResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "git revert request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.controlScope().GitRevert(ctx, control.GitRevertRequest{Revision: req.GetRevision()})
+	if err != nil {
+		return &gatewayv1.GitRevertResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.GitRevertResponse{
+		Success: true, RevertedRevision: result.Target, Revision: result.Revision,
+		Act: gitActReceipt("git.revert.applied", result.Target, result.Revision),
+	}, nil
+}
+
+func (s *Server) ForgePullRequestStatus(ctx context.Context, req *gatewayv1.ForgePullRequestStatusRequest) (*gatewayv1.ForgePullRequestStatusResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "forge status request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.forgeToolbox().PullRequestStatus(ctx, req.GetRepository(), req.GetNumber())
+	if err != nil {
+		return &gatewayv1.ForgePullRequestStatusResponse{Error: err.Error()}, nil
+	}
+	return &gatewayv1.ForgePullRequestStatusResponse{Status: result}, nil
+}
+
+func (s *Server) ForgeMergePullRequest(ctx context.Context, req *gatewayv1.ForgeMergePullRequestRequest) (*gatewayv1.ForgeMergePullRequestResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "forge merge request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.forgeToolbox().MergePullRequest(ctx, req)
+	if err != nil {
+		return &gatewayv1.ForgeMergePullRequestResponse{Success: false, Error: err.Error()}, nil
+	}
+	return result, nil
+}
+
+func (s *Server) ForgeRequestReview(ctx context.Context, req *gatewayv1.ForgeRequestReviewRequest) (*gatewayv1.ForgeRequestReviewResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "forge review request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.forgeToolbox().RequestReview(ctx, req)
+	if err != nil {
+		return &gatewayv1.ForgeRequestReviewResponse{Success: false, Error: err.Error()}, nil
+	}
+	return result, nil
+}
+
+func gitActReceipt(kind, target, revision string) *gatewayv1.ActReceipt {
+	return &gatewayv1.ActReceipt{
+		EventId:             fmt.Sprintf("%s:%s:%s", kind, target, revision),
+		Kind:                kind,
+		Target:              target,
+		State:               "applied",
+		Revision:            revision,
+		AuthoritativeSource: "git",
+		ObservedAt:          timestamppb.Now(),
+	}
+}
+
+func (s *Server) forgeToolbox() *githubtoolbox.Server {
+	token := strings.TrimSpace(s.cfg.GitHubToken)
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+	}
+	return githubtoolbox.New(s.serviceRoot(), token, "gateway")
 }
 
 // ═══════════════════════════════════════════════════════════════

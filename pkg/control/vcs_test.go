@@ -116,3 +116,84 @@ func TestGitCommitAndLog(t *testing.T) {
 		t.Error("commit date is empty")
 	}
 }
+
+func TestTypedGitPublicationLifecycle(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := t.Context()
+	plane := New()
+
+	branch, err := plane.GitBranch(ctx, GitBranchRequest{Dir: dir, Name: "feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch.Target != "feature" || branch.Revision == "" {
+		t.Fatalf("branch result = %+v", branch)
+	}
+	checkedOut, err := plane.GitCheckout(ctx, GitCheckoutRequest{Dir: dir, Ref: "feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkedOut.Branch != "feature" {
+		t.Fatalf("checkout result = %+v", checkedOut)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plane.GitCommit(ctx, GitCommitRequest{Dir: dir, Message: "add feature", Paths: []string{"feature.txt"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plane.GitCheckout(ctx, GitCheckoutRequest{Dir: dir, Ref: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := plane.GitMerge(ctx, GitMergeRequest{Dir: dir, Ref: "feature", NoFastForward: true, Message: "merge feature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Branch != "main" || merged.Revision == "" {
+		t.Fatalf("merge result = %+v", merged)
+	}
+	tagged, err := plane.GitTag(ctx, GitTagRequest{Dir: dir, Name: "v1.0.0", Message: "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tagged.Target != "v1.0.0" || tagged.Revision != merged.Revision {
+		t.Fatalf("tag result = %+v, merge = %+v", tagged, merged)
+	}
+
+	remote := t.TempDir()
+	runGit(t, remote, "init", "--bare")
+	runGit(t, dir, "remote", "add", "origin", remote)
+	pushed, err := plane.GitPush(ctx, GitPushRequest{
+		Dir: dir, Remote: "origin", Branch: "main", SetUpstream: true, Mode: GitPushFastForwardOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushed.Remote != "origin" || pushed.Branch != "main" || pushed.Revision != merged.Revision {
+		t.Fatalf("push result = %+v, merge = %+v", pushed, merged)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "temporary.txt"), []byte("temporary\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	temporary, err := plane.GitCommit(ctx, GitCommitRequest{Dir: dir, Message: "temporary", Paths: []string{"temporary.txt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverted, err := plane.GitRevert(ctx, GitRevertRequest{Dir: dir, Revision: temporary.SHA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reverted.Target != temporary.SHA || reverted.Revision == temporary.SHA {
+		t.Fatalf("revert result = %+v, temporary = %+v", reverted, temporary)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}

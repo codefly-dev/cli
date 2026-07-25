@@ -1094,8 +1094,9 @@ func TestRunCommand(t *testing.T) {
 	s := newTestServerWithWorkDir(editingMock(t, dir), dir)
 
 	resp, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{
-		Command: "echo",
-		Args:    []string{"hello", "world"},
+		Command:         "echo",
+		Args:            []string{"hello", "world"},
+		UnstructuredUse: testUnstructuredUse(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1114,14 +1115,23 @@ func TestRunCommand_Failure(t *testing.T) {
 	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
 
 	resp, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{
-		Command: "sh",
-		Args:    []string{"-c", "exit 42"},
+		Command:         "sh",
+		Args:            []string{"-c", "exit 42"},
+		UnstructuredUse: testUnstructuredUse(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp.ExitCode != 42 {
 		t.Errorf("expected exit code 42, got %d", resp.ExitCode)
+	}
+}
+
+func TestRunCommandRequiresEscapeHatchAttribution(t *testing.T) {
+	s := newTestServerWithWorkDir(&mockCodeClient{}, t.TempDir())
+	_, err := s.RunCommand(t.Context(), &gatewayv1.RunCommandRequest{Command: "true"})
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "unstructured_use") {
+		t.Fatalf("missing attribution returned %v", err)
 	}
 }
 
@@ -1263,8 +1273,9 @@ func TestRunCommand_WorkingDir(t *testing.T) {
 
 	s := newTestServerWithWorkDir(&mockCodeClient{}, dir)
 	resp, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{
-		Command:    "ls",
-		WorkingDir: "sub",
+		Command:         "ls",
+		WorkingDir:      "sub",
+		UnstructuredUse: testUnstructuredUse(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1281,7 +1292,7 @@ func TestRunCommandRejectsEscapingWorkingDir(t *testing.T) {
 	root := t.TempDir()
 	s := newTestServerWithWorkDir(&mockCodeClient{}, root)
 	for _, workDir := range []string{"../outside", "/tmp"} {
-		_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "pwd", WorkingDir: workDir})
+		_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "pwd", WorkingDir: workDir, UnstructuredUse: testUnstructuredUse()})
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("working_dir %q returned %v", workDir, err)
 		}
@@ -1292,7 +1303,7 @@ func TestRunCommandRejectsEscapingWorkingDir(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "pwd", WorkingDir: "escape-link"})
+	_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "pwd", WorkingDir: "escape-link", UnstructuredUse: testUnstructuredUse()})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("symlink escape returned %v", err)
 	}
@@ -1300,7 +1311,7 @@ func TestRunCommandRejectsEscapingWorkingDir(t *testing.T) {
 
 func TestRunCommandRejectsExcessiveTimeout(t *testing.T) {
 	s := newTestServerWithWorkDir(&mockCodeClient{}, t.TempDir())
-	_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "true", TimeoutSeconds: 601})
+	_, err := s.RunCommand(context.Background(), &gatewayv1.RunCommandRequest{Command: "true", TimeoutSeconds: 601, UnstructuredUse: testUnstructuredUse()})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("timeout returned %v", err)
 	}
@@ -1541,11 +1552,11 @@ func TestGatewayCloseReapsTerminalsAndRejectsPathEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.OpenTerminal(context.Background(), &gatewayv1.OpenTerminalRequest{
-		Shell: "/bin/sh", WorkingDir: "../outside",
+		Shell: "/bin/sh", WorkingDir: "../outside", UnstructuredUse: testUnstructuredUse(),
 	}); err == nil {
 		t.Fatal("terminal accepted a working directory outside the gateway root")
 	}
-	opened, err := s.OpenTerminal(context.Background(), &gatewayv1.OpenTerminalRequest{Shell: "/bin/sh"})
+	opened, err := s.OpenTerminal(context.Background(), &gatewayv1.OpenTerminalRequest{Shell: "/bin/sh", UnstructuredUse: testUnstructuredUse()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1561,8 +1572,18 @@ func TestGatewayCloseReapsTerminalsAndRejectsPathEscape(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("gateway close did not reap terminal")
 	}
-	if _, err := s.OpenTerminal(context.Background(), &gatewayv1.OpenTerminalRequest{Shell: "/bin/sh"}); err == nil {
+	if _, err := s.OpenTerminal(context.Background(), &gatewayv1.OpenTerminalRequest{Shell: "/bin/sh", UnstructuredUse: testUnstructuredUse()}); err == nil {
 		t.Fatal("terminal opened after gateway close")
+	}
+}
+
+func testUnstructuredUse() *gatewayv1.UnstructuredUse {
+	return &gatewayv1.UnstructuredUse{
+		Intent:       "exercise gateway boundary",
+		CommandClass: gatewayv1.CommandClass_COMMAND_CLASS_DIAGNOSTIC,
+		WhyNoTool:    "the test verifies the raw execution contract",
+		CodeUnitId:   "test-unit",
+		ObjectiveId:  "test-objective",
 	}
 }
 
