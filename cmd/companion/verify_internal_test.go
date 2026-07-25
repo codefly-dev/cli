@@ -38,13 +38,18 @@ func TestIsManifestNotFound(t *testing.T) {
 	for _, s := range []string{
 		"no such manifest: codeflydev/proto:0.0.11",
 		"manifest unknown",
-		"ERROR: codeflydev/proto:0.0.11 NOT FOUND",
+		"MANIFEST UNKNOWN: manifest unknown", // case-insensitive
 	} {
 		require.True(t, isManifestNotFound(s), "%q should be classified as missing", s)
 	}
+	// Anything that isn't an explicit manifest-not-found must be surfaced as
+	// a real error, not silently treated as a missing tag — including
+	// repository/auth failures that merely contain "not found".
 	for _, s := range []string{
 		"error during connect: dial tcp: i/o timeout",
 		"unauthorized: authentication required",
+		"denied: requested access to the resource is denied",
+		"repository codeflydev/proto not found",
 		"",
 	} {
 		require.False(t, isManifestNotFound(s), "%q must not be classified as missing", s)
@@ -72,6 +77,14 @@ func TestSelectTargets_SingleByName(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.Equal(t, "codeflydev/proto:0.0.11", got[0].Tag())
+}
+
+func TestSelectTargets_AllRejectsNameArgument(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "proto", "0.0.11", true, false)
+	_, err := selectTargets(root, true, []string{"proto"})
+	require.Error(t, err, "--all combined with a name must be rejected, not silently ignore the name")
+	require.Contains(t, err.Error(), "cannot combine --all")
 }
 
 func TestSelectTargets_AllIsBuildOrdered(t *testing.T) {

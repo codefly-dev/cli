@@ -124,6 +124,9 @@ func resolveCoreDir(coreDirFlag string) (string, error) {
 // build/publish run over the whole set can't fail on an unbuilt base image.
 func selectTargets(coreDir string, all bool, args []string) ([]*Companion, error) {
 	if all {
+		if len(args) > 0 {
+			return nil, fmt.Errorf("cannot combine --all with a companion name (%q)", args[0])
+		}
 		targets, err := listCompanionsRequired(coreDir)
 		if err != nil {
 			return nil, err

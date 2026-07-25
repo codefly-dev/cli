@@ -62,6 +62,13 @@ func runPublish(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// A single named target that builds no image can't be published; fail
+	// loudly instead of buildTargets silently skipping it and reporting
+	// success. Under --all the skip is correct (don't fail the whole set on
+	// a non-image companion like golang).
+	if !all && !targets[0].ProducesImage() {
+		return fmt.Errorf("companion %q produces no image (no Dockerfile or flake.nix), nothing to publish", targets[0].Name)
+	}
 
 	opts := BuildOptions{Push: true, ForceDocker: forceDocker, Pull: pull}
 	return buildTargets(coreDir, targets, opts)

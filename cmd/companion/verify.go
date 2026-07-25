@@ -8,23 +8,37 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// VerifyCmd asserts that every companion image tag core embeds actually
-// exists in the registry. core pins tags via info.codefly.yaml and agents
-// pull them at runtime, but nothing otherwise guarantees a pinned tag was
-// ever pushed — a version bump that references an unpublished tag passes
-// review and only fails later, at the companion pull. Wiring `companion
-// verify` into CI turns that late failure into a fast one.
+// VerifyCmd asserts that every companion image core/companions/ defines is
+// actually present in the registry. Each image companion pins its tag
+// (codeflydev/<name>:<version>) via info.codefly.yaml and agents pull it at
+// runtime, but nothing otherwise guarantees a pinned tag was ever pushed —
+// a version bump that references an unpublished tag passes review and only
+// fails later, at the companion pull. Wiring `companion verify` into CI
+// turns that late failure into a fast one. verify is the exact inverse of
+// `publish`: the set it checks is the set `publish` produces.
+//
+// Scope: verify resolves tags from info.codefly.yaml, the source of truth
+// the issue and `publish` both use. It does NOT chase image references core
+// hardcodes in Go code outside that convention (e.g. a DAP language image
+// pinned to a literal tag) — keeping those in sync with info.codefly.yaml
+// is core's responsibility, not something the CLI can derive from a
+// checkout.
 var VerifyCmd = &cobra.Command{
 	Use:   "verify [name]",
-	Short: "Verify companion image tags core embeds exist in the registry",
-	Long: `Verify resolves the tag each companion pins in its info.codefly.yaml
+	Short: "Verify companion images defined under core/companions exist in the registry",
+	Long: `Verify resolves the tag each image companion pins in its info.codefly.yaml
 (codeflydev/<name>:<version>) and checks the manifest exists in the
-registry via "docker manifest inspect".
+registry via "docker manifest inspect". It verifies exactly the set
+"companion publish" produces.
 
 With no argument it verifies every image companion under
 <core>/companions/; pass a name to verify just one. It exits non-zero when
 any tag is missing, listing the missing tags — wire it into CI so a bump
 that references an unpublished tag fails fast instead of at runtime.
+
+Detecting a missing tag on a namespaced repo needs registry auth, so run
+"docker login" first (CI does); anonymously Docker Hub reports a missing
+tag as an auth error, which verify surfaces rather than guessing.
 
 Examples:
   codefly companion verify
@@ -96,9 +110,9 @@ func imageCompanions(in []*Companion) []*Companion {
 }
 
 // manifestExists reports whether tag resolves to a manifest in the
-// registry. It shells out to `docker manifest inspect` and treats a "not
-// found"-class failure as absent, propagating any other failure as a real
-// error so a flaky or unauthenticated registry can't be mistaken for a
+// registry. It shells out to `docker manifest inspect` and treats a
+// manifest-not-found failure as absent, propagating any other failure as a
+// real error so a flaky or unauthenticated registry can't be mistaken for a
 // missing tag.
 //
 // Authentication matters: for a namespaced repo, Docker Hub answers a
@@ -119,11 +133,12 @@ func manifestExists(tag string) (bool, error) {
 }
 
 // isManifestNotFound classifies `docker manifest inspect` failure output as
-// "the tag isn't in the registry" versus some other failure. The registry
-// and docker phrase absence a few different ways depending on version.
+// "the tag isn't in the registry" versus some other failure. It matches
+// only the two ways docker and the registry v2 API phrase an absent
+// manifest — a broader match (e.g. bare "not found") would swallow
+// repository/auth errors and let verify pass when it shouldn't.
 func isManifestNotFound(output string) bool {
 	lower := strings.ToLower(output)
 	return strings.Contains(lower, "no such manifest") ||
-		strings.Contains(lower, "manifest unknown") ||
-		strings.Contains(lower, "not found")
+		strings.Contains(lower, "manifest unknown")
 }

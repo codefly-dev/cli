@@ -3,23 +3,35 @@ name: Companions
 # Keeps the companion images core embeds present in the registry. core pins
 # each companion tag (codeflydev/<name>:<version>) via info.codefly.yaml and
 # agents pull those exact tags at runtime, so a pinned-but-unpushed tag
-# breaks every Codefly-native build at the companion pull. This workflow
-# publishes the whole set on release and lets an operator (re)publish from a
-# chosen core ref on demand, then verifies every embedded tag resolves.
+# breaks every Codefly-native build at the companion pull.
+#
+# Two jobs:
+#   publish - on release / on demand, build+push the whole set, then verify.
+#   verify  - a standing gate (daily + on demand) that fails fast when an
+#             embedded tag is missing from the registry, without publishing.
+#
+# The fail-fast-on-bump gate ideally also lives in core's CI (that is where
+# companion versions change); this repo runs it against core@main on a
+# schedule so a regression surfaces here too.
 
 on:
   release:
     types: [published]
+  schedule:
+    # Daily, so an embedded tag that goes missing is caught within a day.
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       core_ref:
-        description: 'core ref (tag/branch/sha) to publish companions from'
+        description: 'core ref (tag/branch/sha) to publish/verify companions from'
         required: false
         default: 'main'
 
 jobs:
   publish:
     name: Publish and verify companion images
+    # Publishing mutates the registry; only do it on release or a manual run.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Check out cli
@@ -55,6 +67,46 @@ jobs:
 
       - name: Publish every companion at its pinned version
         run: ${{ github.workspace }}/bin/codefly companion publish --all --core-dir "${{ github.workspace }}/core"
+
+      - name: Verify every embedded tag is in the registry
+        run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"
+
+  verify:
+    name: Verify embedded companion tags
+    # Standing gate: never publishes. Runs on the schedule and on demand.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out cli
+        uses: actions/checkout@v4
+        with:
+          path: cli
+
+      - name: Check out core
+        uses: actions/checkout@v4
+        with:
+          repository: codefly-dev/core
+          ref: ${{ github.event.inputs.core_ref || 'main' }}
+          token: ${{ secrets.GH_PAT }}
+          path: core
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache: false
+
+      - name: Build the codefly CLI
+        working-directory: cli
+        run: GOWORK=off GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
+
+      # Authenticated so a missing tag on a namespaced repo reports as
+      # "manifest unknown" rather than an anonymous "unauthorized".
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Verify every embedded tag is in the registry
         run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"
