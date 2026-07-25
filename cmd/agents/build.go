@@ -42,6 +42,18 @@ type agentYAML struct {
 	// iterate on the fix. QuarantineReason is shown in the skip/warn line.
 	Quarantine       bool   `yaml:"quarantine"`
 	QuarantineReason string `yaml:"quarantine_reason"`
+
+	// Conformance selects how `codefly agent ci` exercises the agent's
+	// Code/Runtime/Tooling lifecycle. Absent means generated-service (the
+	// default): CI scaffolds a fresh service through Builder.Create. Attach-only
+	// generic agents whose Builder.Create declines to invent a project template
+	// declare attach-existing-source and point at a fixture workspace instead.
+	Conformance *agentConformance `yaml:"conformance,omitempty"`
+}
+
+type agentConformance struct {
+	Mode    string `yaml:"mode"`
+	Fixture string `yaml:"fixture"`
 }
 
 // BuildCmd builds an agent binary from source and installs it locally.

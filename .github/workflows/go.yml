@@ -6,10 +6,15 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       # Empty on forks and Dependabot runs, which do not receive repo secrets.
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -27,10 +32,14 @@ jobs:
         uses: actions/cache@v4
         continue-on-error: true
         with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          # The v2 namespace deliberately replaces the old module-only cache
+          # with the compiler cache needed by coverage and race passes.
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: v2-${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+            v2-${{ runner.os }}-go-
 
       - name: Install Dependencies
         run: go mod download
@@ -52,7 +61,7 @@ jobs:
 #          version: latest
 
       - name: generate test generate coverage
-        run: go test ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
+        run: go test -failfast ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
 
       - name: check test coverage
         id: coverage
@@ -61,7 +70,7 @@ jobs:
           config: ./.testcoverage.yaml
 
       - name: test with race detection
-        run: go test -race ./... -v
+        run: go test -failfast -race ./... -v
 
       - name: Notify Slack on Failure
         if: failure() && env.SLACK_WEBHOOK_URL != ''

@@ -33,10 +33,15 @@ released before the consumers that pin it.
 
 Safety — the whole run is atomic at the pre-flight boundary:
   1. EVERY repo is validated first (clean tree, on main, in sync with
-     origin, target tag free). If ANY repo fails, the run aborts before
-     a single tag is pushed.
+     origin, target tag free; agents also: host can build every loader
+     platform and gh is available). If ANY repo fails, the run aborts
+     before a single tag is pushed.
   2. Only once all repos pass does it publish, sequentially, stopping at
      the first real failure (and reporting what already shipped).
+
+Release-grade agent CI is the publish gate itself, so it runs per-agent
+during step 2 — a CI failure there aborts the run with earlier repos
+already shipped, exactly like any other execute-phase failure.
 
 As with plain publish, the tag/main push is NEVER --force.
 
@@ -110,6 +115,16 @@ func runAll(c *cobra.Command, args []string) error {
 	fmt.Println("==> validating all repos (pre-flight, no changes)...")
 	var failures []string
 	for _, t := range targets {
+		// Gate agent releases on host/gh readiness before any real push, so
+		// an incapable host aborts the whole run rather than shipping some
+		// repos then failing at an agent. Skipped for --dry-run, which is a
+		// pure plan preview and never pushes (matching single publish).
+		if t.Manifest.Mode == ModeAgent && !dryRun {
+			if perr := checkAgentReleasePreconditions(); perr != nil {
+				failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), perr))
+				continue
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		tag, verr := t.engine(bumpType, true).Release(ctx)
 		cancel()
@@ -137,9 +152,28 @@ func runAll(c *cobra.Command, args []string) error {
 	fmt.Println("==> all repos validated; publishing...")
 	var done []string
 	for _, t := range targets {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		tag, rerr := t.engine(bumpType, false).Release(ctx)
+		engine := t.engine(bumpType, false)
+
+		// Agent repos additionally run release-grade CI and upload
+		// loader-compatible release assets — both far slower than a bare
+		// tag push, so they get a generous timeout.
+		timeout := 120 * time.Second
+		var releaser *agentReleaser
+		if t.Manifest.Mode == ModeAgent {
+			releaser, err = newAgentReleaser(filepath.Dir(t.Manifest.Path), t.Dir)
+			if err != nil {
+				return fmt.Errorf("prepare agent release for %s: %w", relOrBase(root, t.Dir), err)
+			}
+			releaser.attach(engine)
+			timeout = 30 * time.Minute
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		tag, rerr := engine.Release(ctx)
 		cancel()
+		if releaser != nil {
+			releaser.cleanup()
+		}
 		if rerr != nil {
 			return fmt.Errorf("publish failed at %s: %w\n  already released: %s",
 				relOrBase(root, t.Dir), rerr, strings.Join(done, ", "))
