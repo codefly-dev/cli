@@ -33,13 +33,8 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # This is both the canonical bootstrap and the cross-repository action
-      # contract consumed by Codefly products. Dogfood the local action so a
-      # release cannot publish an installer that CI never exercised.
-      - name: install Codefly
-        if: matrix.gate == 'bootstrap-audit'
-        uses: ./.github/actions/install
-
+      # Restore before the bootstrap action: that action compiles the CLI, so
+      # restoring afterward would make its cache permanently ineffective.
       # Cache only compiled artifacts. Caching GOMODCACHE alongside a Go
       # toolchain directive can race setup-go's toolchain install and produce
       # tar restore conflicts.
@@ -50,6 +45,13 @@ jobs:
           key: cli-go-build-v3-${{ matrix.gate }}-${{ runner.os }}-${{ hashFiles('go.sum') }}
           restore-keys: |
             cli-go-build-v3-${{ matrix.gate }}-${{ runner.os }}-
+
+      # This is both the canonical bootstrap and the cross-repository action
+      # contract consumed by Codefly products. Dogfood the local action so a
+      # release cannot publish an installer that CI never exercised.
+      - name: install Codefly
+        if: matrix.gate == 'bootstrap-audit'
+        uses: ./.github/actions/install
 
       - name: Install Dependencies
         run: go mod download
