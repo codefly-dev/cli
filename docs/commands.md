@@ -291,9 +291,25 @@ codefly agent ci                     # Run source, release, generated-service, a
 
 `codefly agent ci` is the provider-neutral agent-repository gate. It uses an
 isolated Codefly home, builds the local agent, records binary and CycloneDX
-hashes, creates a fresh service from that agent, runs the complete workspace CI
-gate, and verifies that validation did not change the agent repository. The
-default report/artifact directory is `.codefly/agent-ci`.
+hashes, runs the complete workspace CI gate against a conformance workspace, and
+verifies that validation did not change the agent repository. The default
+report/artifact directory is `.codefly/agent-ci`.
+
+Conformance defaults to scaffolding a fresh service through `Builder.Create`.
+Attach-only generic agents whose `Builder.Create` intentionally declines to
+generate a project template (for example `codefly.dev/python`) declare an
+attach-existing-source conformance mode in `agent.codefly.yaml` and ship a
+fixture workspace instead:
+
+```yaml
+conformance:
+  mode: attach-existing-source
+  fixture: ./conformance/fixture   # a Codefly workspace whose service pins the agent at version: latest
+```
+
+CI copies that fixture out of the repository and runs the Code/Runtime/Tooling
+gate against it. A malformed declaration or a fixture missing
+`workspace.codefly.yaml` fails the conformance stage rather than skipping it.
 
 ```bash
 codefly agent ci

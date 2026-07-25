@@ -33,6 +33,14 @@ import (
 const (
 	agentCIReportSchemaVersion = 1
 	agentCIReportFilename      = "report.json"
+
+	// conformanceModeGeneratedService scaffolds a brand-new service through
+	// Builder.Create before running the workspace gate. It is the default.
+	conformanceModeGeneratedService = "generated-service"
+	// conformanceModeAttachSource runs the workspace gate against a fixture
+	// workspace the agent ships, for attach-only agents whose Builder.Create
+	// intentionally declines to generate a project template.
+	conformanceModeAttachSource = "attach-existing-source"
 )
 
 var AgentCICmd = &cobra.Command{
@@ -264,7 +272,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	if options.skipConformance {
 		state.skipStage("conformance")
 	} else if err := runStage("conformance", func() error {
-		workspaceReport, conformanceDir, err := runGeneratedServiceConformance(ctx, state.temporary, state.agentHome, state.manifest)
+		workspaceReport, conformanceDir, err := runAgentConformance(ctx, state.temporary, state.agentHome, options.dir, state.manifest)
 		state.workspaceRaw = workspaceReport
 		state.conformance = conformanceDir
 		return err
@@ -408,9 +416,25 @@ func loadAgentCIManifest(dir string) (agentYAML, error) {
 		return agentYAML{}, fmt.Errorf("agent.codefly.yaml must have publisher, kind, name, and version")
 	}
 	if manifest.Kind != "codefly:service" {
-		return agentYAML{}, fmt.Errorf("generated-service conformance currently requires kind codefly:service, got %s", manifest.Kind)
+		return agentYAML{}, fmt.Errorf("agent conformance currently requires kind codefly:service, got %s", manifest.Kind)
+	}
+	switch conformanceMode(manifest) {
+	case conformanceModeGeneratedService:
+	case conformanceModeAttachSource:
+		if manifest.Conformance == nil || strings.TrimSpace(manifest.Conformance.Fixture) == "" {
+			return agentYAML{}, fmt.Errorf("attach-existing-source conformance requires conformance.fixture pointing to a fixture workspace")
+		}
+	default:
+		return agentYAML{}, fmt.Errorf("unsupported conformance mode %q (use %s or %s)", manifest.Conformance.Mode, conformanceModeGeneratedService, conformanceModeAttachSource)
 	}
 	return manifest, nil
+}
+
+func conformanceMode(manifest agentYAML) string {
+	if manifest.Conformance == nil || strings.TrimSpace(manifest.Conformance.Mode) == "" {
+		return conformanceModeGeneratedService
+	}
+	return strings.TrimSpace(manifest.Conformance.Mode)
 }
 
 func validateAgentSource(ctx context.Context, dir, sourceHome string) error {
@@ -479,6 +503,22 @@ func snapshotAgentWorktree(ctx context.Context, dir string) (agentWorktreeSnapsh
 	return agentWorktreeSnapshot{root: root, entries: entries}, nil
 }
 
+func runAgentConformance(ctx context.Context, temporary, agentHome, agentDir string, manifest agentYAML) ([]byte, string, error) {
+	if conformanceMode(manifest) == conformanceModeAttachSource {
+		return runAttachSourceConformance(ctx, temporary, agentHome, agentDir, manifest)
+	}
+	return runGeneratedServiceConformance(ctx, temporary, agentHome, manifest)
+}
+
+func agentConformanceEnvironment(agentHome string) []string {
+	return append(os.Environ(),
+		resources.CodeflyHomeEnv+"="+agentHome,
+		"CODEFLY_AGENT_SOURCE=local",
+		"CODEFLY_COLOR=never",
+		"CI=1",
+	)
+}
+
 func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome string, manifest agentYAML) ([]byte, string, error) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -486,13 +526,8 @@ func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome st
 	}
 	workspaceName := "agent-conformance"
 	workspaceDir := filepath.Join(temporary, workspaceName)
-	environment := append(os.Environ(),
-		resources.CodeflyHomeEnv+"="+agentHome,
-		"CODEFLY_AGENT_SOURCE=local",
-		"CODEFLY_COLOR=never",
-		"CI=1",
-	)
-	commands := []struct {
+	environment := agentConformanceEnvironment(agentHome)
+	setup := []struct {
 		label string
 		dir   string
 		args  []string
@@ -500,33 +535,58 @@ func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome st
 		{label: "create workspace", dir: temporary, args: []string{"--timestamps=false", "init", "workspace", workspaceName, "--layout", "modules", "--default"}},
 		{label: "create module", dir: workspaceDir, args: []string{"--timestamps=false", "add", "module", "app", "--yes"}},
 		{label: "generate service", dir: workspaceDir, args: []string{"--timestamps=false", "--local-agents", "add", "service", "app/subject", "--agent", manifest.Publisher + "/" + manifest.Name + ":" + manifest.Version, "--default"}},
-		{label: "run generated workspace gate", dir: workspaceDir, args: []string{"--timestamps=false", "--local-agents", "ci", "run", "--all", "--format", "json", "--output", ".codefly/ci"}},
 	}
-	var commandReport []byte
-	for _, item := range commands {
+	for _, item := range setup {
 		command := exec.CommandContext(ctx, executable, item.args...)
 		command.Dir = item.dir
 		command.Env = environment
-		output, err := command.CombinedOutput()
-		if item.label == "run generated workspace gate" {
-			candidate := bytes.TrimSpace(output)
-			if json.Valid(candidate) {
-				commandReport = append([]byte(nil), candidate...)
-			}
-		}
-		if err != nil {
-			report := readGeneratedWorkspaceReport(workspaceDir)
-			if len(report) == 0 {
-				report = commandReport
-			}
-			return report, filepath.Join(workspaceDir, ".codefly", "ci"), fmt.Errorf("%s: %w\n%s", item.label, err, boundedAgentCIOutput(output))
+		if output, err := command.CombinedOutput(); err != nil {
+			return nil, filepath.Join(workspaceDir, ".codefly", "ci"), fmt.Errorf("%s: %w\n%s", item.label, err, boundedAgentCIOutput(output))
 		}
 	}
+	return runWorkspaceGate(ctx, executable, workspaceDir, environment)
+}
+
+// runAttachSourceConformance exercises the agent against a fixture workspace it
+// ships, so attach-only agents whose Builder.Create declines to scaffold a
+// project template are still covered end to end. The fixture is copied out of
+// the agent repository so the gate never mutates the agent worktree.
+func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agentDir string, manifest agentYAML) ([]byte, string, error) {
+	fixture := manifest.Conformance.Fixture
+	fixtureDir := fixture
+	if !filepath.IsAbs(fixtureDir) {
+		fixtureDir = filepath.Join(agentDir, fixture)
+	}
+	if _, err := os.Stat(filepath.Join(fixtureDir, resources.WorkspaceConfigurationName)); err != nil {
+		return nil, "", fmt.Errorf("attach-existing-source conformance fixture %q must contain %s: %w", fixture, resources.WorkspaceConfigurationName, err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve Codefly executable: %w", err)
+	}
+	workspaceDir := filepath.Join(temporary, "agent-conformance")
+	if err := copyAgentCIDirectory(fixtureDir, workspaceDir); err != nil {
+		return nil, "", fmt.Errorf("provision attach-existing-source fixture: %w", err)
+	}
+	return runWorkspaceGate(ctx, executable, workspaceDir, agentConformanceEnvironment(agentHome))
+}
+
+func runWorkspaceGate(ctx context.Context, executable, workspaceDir string, environment []string) ([]byte, string, error) {
+	command := exec.CommandContext(ctx, executable, "--timestamps=false", "--local-agents", "ci", "run", "--all", "--format", "json", "--output", ".codefly/ci")
+	command.Dir = workspaceDir
+	command.Env = environment
+	output, err := command.CombinedOutput()
+	conformanceDir := filepath.Join(workspaceDir, ".codefly", "ci")
 	report := readGeneratedWorkspaceReport(workspaceDir)
 	if len(report) == 0 {
-		report = commandReport
+		if candidate := bytes.TrimSpace(output); json.Valid(candidate) {
+			report = append([]byte(nil), candidate...)
+		}
 	}
-	return report, filepath.Join(workspaceDir, ".codefly", "ci"), nil
+	if err != nil {
+		return report, conformanceDir, fmt.Errorf("run workspace gate: %w\n%s", err, boundedAgentCIOutput(output))
+	}
+	return report, conformanceDir, nil
 }
 
 func readGeneratedWorkspaceReport(workspaceDir string) []byte {

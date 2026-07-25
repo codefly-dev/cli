@@ -63,6 +63,69 @@ func TestLoadAgentCIManifestRejectsIncompleteAndUnsupported(t *testing.T) {
 	}
 }
 
+func TestLoadAgentCIManifestConformanceModes(t *testing.T) {
+	base := "publisher: codefly\nkind: codefly:service\nname: python\nversion: 1.2.3\n"
+	tests := []struct {
+		name     string
+		content  string
+		wantErr  string
+		wantMode string
+	}{
+		{
+			name:     "default is generated-service",
+			content:  base,
+			wantMode: conformanceModeGeneratedService,
+		},
+		{
+			name:     "explicit attach-existing-source with fixture",
+			content:  base + "conformance:\n  mode: attach-existing-source\n  fixture: ./conformance/fixture\n",
+			wantMode: conformanceModeAttachSource,
+		},
+		{
+			name:    "attach-existing-source without fixture is rejected",
+			content: base + "conformance:\n  mode: attach-existing-source\n",
+			wantErr: "requires conformance.fixture",
+		},
+		{
+			name:    "unknown mode is rejected",
+			content: base + "conformance:\n  mode: bring-your-own\n",
+			wantErr: "unsupported conformance mode",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), test.content)
+			manifest, err := loadAgentCIManifest(dir)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("loadAgentCIManifest error = %v, want containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadAgentCIManifest: %v", err)
+			}
+			if got := conformanceMode(manifest); got != test.wantMode {
+				t.Fatalf("conformanceMode = %q, want %q", got, test.wantMode)
+			}
+		})
+	}
+}
+
+func TestRunAttachSourceConformanceFailsClosedWithoutFixtureWorkspace(t *testing.T) {
+	agentDir := t.TempDir()
+	fixture := "conformance/fixture"
+	if err := os.MkdirAll(filepath.Join(agentDir, fixture), 0o755); err != nil {
+		t.Fatalf("create fixture dir: %v", err)
+	}
+	manifest := agentYAML{Conformance: &agentConformance{Mode: conformanceModeAttachSource, Fixture: fixture}}
+	_, _, err := runAttachSourceConformance(context.Background(), t.TempDir(), t.TempDir(), agentDir, manifest)
+	if err == nil || !strings.Contains(err.Error(), "workspace.codefly.yaml") {
+		t.Fatalf("runAttachSourceConformance error = %v, want fixture missing workspace.codefly.yaml", err)
+	}
+}
+
 func TestBoundedAgentCIOutputPreservesBothEnds(t *testing.T) {
 	input := "START-" + strings.Repeat("x", 10_000) + "-END"
 	got := boundedAgentCIOutput([]byte(input))
