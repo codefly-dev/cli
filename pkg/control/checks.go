@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 )
 
 // This file finishes the remaining Introspector/Lifecycle checks:
@@ -116,4 +117,41 @@ func (p *planeImpl) Addresses(ctx context.Context, serviceName string) ([]Endpoi
 		endpoints = append(endpoints, endpoint)
 	}
 	return endpoints, nil
+}
+
+// Configurations returns a running service's own configuration plus the
+// configurations of its dependencies, resolved by the active flow's
+// ConfigurationManager and SharedState — the same data
+// pkg/web/go-grpc/server.go proxies over gRPC, reachable here as plain Go
+// calls. Like Addresses, this only has data while a flow is running.
+func (p *planeImpl) Configurations(ctx context.Context, serviceName string) ([]*basev0.Configuration, error) {
+	if p.host == nil || p.host.Flows() == nil {
+		return nil, fmt.Errorf("no running flow; configurations are only available while a service is running")
+	}
+	_, managed := p.host.Flows().Active()
+	flow, _ := managed.(*orchestration.Flow)
+	if flow == nil {
+		return nil, fmt.Errorf("no running flow; configurations are only available while a service is running")
+	}
+	_, _, service, err := p.loadTarget(ctx, serviceName)
+	if err != nil {
+		return nil, err
+	}
+	id, err := service.Identity()
+	if err != nil {
+		return nil, err
+	}
+	own, err := flow.ConfigurationManager.GetServiceConfiguration(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get service configuration: %w", err)
+	}
+	deps, err := flow.SharedState.GetDependentConfigurationsFor(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get dependency configurations: %w", err)
+	}
+	configs := deps
+	if own != nil {
+		configs = append([]*basev0.Configuration{own}, deps...)
+	}
+	return configs, nil
 }

@@ -109,6 +109,7 @@ func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, req
 	if err != nil {
 		return nil, err
 	}
+	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithRuntimeContext(sourceRuntimeContext)
 	flow.WithTestRequest(request)
 	if err := flow.InitManagers(ctx); err != nil {

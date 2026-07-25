@@ -94,6 +94,7 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)

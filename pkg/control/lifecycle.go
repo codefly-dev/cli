@@ -151,6 +151,7 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		if len(req.Exclude) > 0 {
 			f.WithExcludedDependencies(req.Exclude)
 		}
+		f.WithExcludeRoot(req.ExcludeRoot)
 	})
 	if err != nil {
 		return RunHandle{}, err

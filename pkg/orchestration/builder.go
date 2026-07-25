@@ -13,7 +13,6 @@ import (
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/builder"
-	"github.com/codefly-dev/cli/pkg/cli/communicate"
 	"github.com/codefly-dev/core/services"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -166,7 +165,7 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 			return nil, nil
 		}
 	}
-	resp, err := b.instance.Builder.Sync(ctx, request, communicate.NewPrompt())
+	resp, err := b.instance.Builder.Sync(ctx, request, b.world.AnswerProvider)
 	b.syncResponse = resp
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot sync service instance")

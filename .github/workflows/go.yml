@@ -20,6 +20,7 @@ jobs:
       matrix:
         gate:
           - bootstrap-audit
+          - control-integration
           - coverage
           - race
     steps:
@@ -27,7 +28,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Set up Go
-        if: matrix.gate != 'bootstrap-audit'
+        if: matrix.gate == 'coverage' || matrix.gate == 'race'
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -50,7 +51,7 @@ jobs:
       # contract consumed by Codefly products. Dogfood the local action so a
       # release cannot publish an installer that CI never exercised.
       - name: install Codefly
-        if: matrix.gate == 'bootstrap-audit'
+        if: matrix.gate == 'bootstrap-audit' || matrix.gate == 'control-integration'
         uses: ./.github/actions/install
 
       - name: Install Dependencies
@@ -88,3 +89,11 @@ jobs:
       - name: Test with race detection
         if: matrix.gate == 'race'
         run: go test -failfast -race ./... -v
+
+      - name: Install the pinned Redis agent
+        if: matrix.gate == 'control-integration'
+        run: codefly agent install codefly.dev/redis:0.0.74
+
+      - name: Run the in-process dependency proof
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestRunExcludeRootStartsRealDependencyInProcess$' ./pkg/control -v

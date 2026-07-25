@@ -65,7 +65,7 @@ func NewWorkspaceHost(cfg Config) (*WorkspaceHost, error) {
 		root:       absolute,
 		supervisor: supervisor,
 		source:     newSource(absolute),
-		flows:      newFlowManager(),
+		flows:      NewFlowManager(),
 		tools:      toolbox.NewRegistry(),
 	}, nil
 }

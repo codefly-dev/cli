@@ -59,6 +59,13 @@ import (
 type Config struct {
 	WorkDir string // directory containing mind.yaml
 	Port    int    // gRPC listen port
+	// WorkspaceHost, when set, is an externally owned runtime owner this
+	// gateway binds to instead of creating its own via
+	// engine.NewWorkspaceHost. The caller keeps ownership: Close() will not
+	// tear it down. Used when one process constructs a Gateway per repository
+	// (control.NewWithHost's pattern) and must not spawn N duplicate agent
+	// process pools for N repos.
+	WorkspaceHost *engine.WorkspaceHost
 	// Host is the bind interface. Empty defaults to "127.0.0.1" (local-only,
 	// the safe default). Set to "0.0.0.0" to expose the gateway over the
 	// network — required when the gateway runs inside a container that a
@@ -114,6 +121,9 @@ type Server struct {
 	grpcSrv   *grpc.Server
 	tlsConfig *tls.Config
 	host      *engine.WorkspaceHost
+	// ownsHost is false when cfg.WorkspaceHost was supplied externally: Close
+	// must leave that host running for its owner.
+	ownsHost bool
 
 	serviceMu       sync.Mutex
 	serviceBehavior serviceExecution
@@ -189,17 +199,29 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("resolve gateway work directory: %w", err)
 	}
 	cfg.WorkDir = filepath.Clean(absWorkDir)
-	host, err := engine.NewWorkspaceHost(engine.Config{
-		Root:      cfg.WorkDir,
-		LogWriter: os.Stderr,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create workspace host: %w", err)
+	host := cfg.WorkspaceHost
+	ownsHost := false
+	if host == nil {
+		var err error
+		host, err = engine.NewWorkspaceHost(engine.Config{
+			Root:      cfg.WorkDir,
+			LogWriter: os.Stderr,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create workspace host: %w", err)
+		}
+		ownsHost = true
+	} else if !withinRoot(host.Root(), cfg.WorkDir) {
+		// Service()/normalizeTarget would otherwise fail this late and
+		// opaquely the first time an RPC actually binds a service, deep
+		// inside engine — catch a caller's root/WorkDir mismatch here instead.
+		return nil, fmt.Errorf("gateway work directory %s is not within the supplied workspace host root %s", cfg.WorkDir, host.Root())
 	}
 	s := &Server{
 		cfg:                 cfg,
 		tlsConfig:           tlsConfig,
 		host:                host,
+		ownsHost:            ownsHost,
 		preparedMutations:   make(map[string]*storedPreparedMutation),
 		terminals:           newTerminalManager(),
 		executionRecorder:   cfg.ExecutionRecorder,
@@ -211,7 +233,9 @@ func NewServer(cfg Config) (*Server, error) {
 	if err == nil {
 		var my MindYAML
 		if parseErr := yaml.Unmarshal(data, &my); parseErr != nil {
-			_ = host.Close()
+			if ownsHost {
+				_ = host.Close()
+			}
 			return nil, fmt.Errorf("parse mind.yaml: %w", parseErr)
 		}
 		s.mindYAML = &my
@@ -454,6 +478,16 @@ func (s *Server) validateService(service string) error {
 		return status.Errorf(codes.NotFound, "service %q not found in gateway workspace", service)
 	}
 	return nil
+}
+
+// withinRoot reports whether abs (an absolute, cleaned path) is root itself
+// or a descendant of it.
+func withinRoot(root, abs string) bool {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
 func cleanGatewayPath(p string) (string, error) {
@@ -710,7 +744,7 @@ func (s *Server) Close() error {
 		s.terminals.close()
 	}
 	var hostErr error
-	if s.host != nil {
+	if s.host != nil && s.ownsHost {
 		hostErr = s.host.Close()
 	}
 	return errors.Join(workspaceErr, hostErr)

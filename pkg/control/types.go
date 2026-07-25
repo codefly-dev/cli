@@ -150,7 +150,11 @@ type RunRequest struct {
 	RuntimeContext string
 	Wait           bool     // block until the flow is healthy
 	Exclude        []string // dependencies to skip
-	Headless       bool
+	// ExcludeRoot starts the dependency graph without the origin service —
+	// for an embedder that IS the origin, so it doesn't spawn a second copy
+	// of itself.
+	ExcludeRoot bool
+	Headless    bool
 }
 
 // RunHandle identifies a started flow so it can be observed/stopped.

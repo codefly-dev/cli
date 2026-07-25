@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/architecture"
@@ -46,6 +47,20 @@ type Server struct {
 	workspace  *resources.Workspace
 	Wool       *wool.Wool
 	Terminal   *TerminalServer
+	// flows owns the orchestration flow(s) this server observes/controls —
+	// registered by the caller, resolved via activeFlow() — so two flows in
+	// one process can never alias each other through a shared global.
+	flows *engine.FlowManager
+}
+
+// activeFlow resolves the host-owned active flow, or nil if none is running.
+func (s *Server) activeFlow() *orchestration.Flow {
+	if s == nil || s.flows == nil {
+		return nil
+	}
+	_, managed := s.flows.Active()
+	flow, _ := managed.(*orchestration.Flow)
+	return flow
 }
 
 func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty, error) {
@@ -53,7 +68,7 @@ func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty
 }
 
 func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.StopFlowResponse, error) {
-	err := orchestration.CurrentFlow().Stop()
+	err := s.activeFlow().Stop()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -64,7 +79,7 @@ func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (
 	// Destroy is the state-removing lifecycle operation. SDK dependency stacks
 	// rely on it to remove ephemeral containers, while Stop intentionally
 	// preserves stopped resources for ordinary local development.
-	err := orchestration.CurrentFlow().Shutdown()
+	err := s.activeFlow().Shutdown()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -72,14 +87,14 @@ func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (
 }
 
 func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.FlowStatus, error) {
-	ready := orchestration.CurrentFlow().Ready(ctx)
+	ready := s.activeFlow().Ready(ctx)
 	return &cli.FlowStatus{
 		Ready: ready,
 	}, nil
 }
 
 func (s *Server) GetDependenciesNetworkMappings(ctx context.Context, req *cli.GetNetworkMappingsRequest) (*cli.GetNetworkMappingsResponse, error) {
-	flow := orchestration.CurrentFlow()
+	flow := s.activeFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -96,7 +111,7 @@ func (s *Server) GetDependenciesNetworkMappings(ctx context.Context, req *cli.Ge
 }
 
 func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationResponse, error) {
-	flow := orchestration.CurrentFlow()
+	flow := s.activeFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -119,7 +134,7 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 }
 
 func (s *Server) GetDependenciesConfigurations(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationsResponse, error) {
-	flow := orchestration.CurrentFlow()
+	flow := s.activeFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -142,7 +157,7 @@ func (s *Server) GetDependenciesConfigurations(ctx context.Context, req *cli.Get
 }
 
 func (s *Server) GetRuntimeConfigurations(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationsResponse, error) {
-	flow := orchestration.CurrentFlow()
+	flow := s.activeFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -157,7 +172,7 @@ func (s *Server) GetRuntimeConfigurations(ctx context.Context, req *cli.GetConfi
 }
 
 func (s *Server) GetAddresses(ctx context.Context, req *cli.GetAddressRequest) (*cli.GetAddressResponse, error) {
-	flow := orchestration.CurrentFlow()
+	flow := s.activeFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -173,7 +188,7 @@ func (s *Server) GetAddresses(ctx context.Context, req *cli.GetAddressRequest) (
 /* Active information */
 
 func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*cli.ActiveResponse, error) {
-	flow := orchestration.CurrentFlow()
+	flow := s.activeFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
@@ -290,7 +305,7 @@ func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {
 	return nil
 }
 
-func NewServer(c *Configuration, w *resources.Workspace) (*Server, error) {
+func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManager) (*Server, error) {
 	grpcServer := grpc.NewServer()
 	bufferSize := 10000
 
@@ -306,6 +321,7 @@ func NewServer(c *Configuration, w *resources.Workspace) (*Server, error) {
 		gRPC:       grpcServer,
 		logChannel: make(chan *observabilityv0.Log, bufferSize),
 		Terminal:   NewTerminalServer(workspaceDir),
+		flows:      flows,
 	}
 	cli.RegisterCLIServer(grpcServer, &s)
 	cli.RegisterTerminalServiceServer(grpcServer, s.Terminal)

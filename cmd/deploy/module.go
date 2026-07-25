@@ -106,6 +106,7 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 	if err != nil {
 		return w.Wrap(err)
 	}
+	flow.WithOutputSink(cli.NewOutputSink())
 	stopped := false
 	defer func() {
 		if !stopped {
