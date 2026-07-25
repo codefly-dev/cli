@@ -334,7 +334,8 @@ func gitTagAt(ctx context.Context, repo string, req GitTagRequest) (GitAct, erro
 	if req.Sign {
 		mode = "-s"
 	}
-	if _, err := git(ctx, repo, "tag", mode, "-m", message, name, revision); err != nil {
+	// `--` guards a leading-dash name from being parsed as a git tag option.
+	if _, err := git(ctx, repo, "tag", mode, "-m", message, "--", name, revision); err != nil {
 		return GitAct{}, err
 	}
 	resolved, err := git(ctx, repo, "rev-parse", name+"^{commit}")
@@ -367,6 +368,9 @@ func gitMergeAt(ctx context.Context, repo string, req GitMergeRequest) (GitAct, 
 	}
 	args = append(args, "--", ref)
 	if _, err := git(ctx, repo, args...); err != nil {
+		// Keep the act atomic: a conflicted merge leaves the tree mid-merge, so
+		// abort (best-effort) before surfacing the failure to the caller.
+		_, _ = git(ctx, repo, "merge", "--abort")
 		return GitAct{}, err
 	}
 	branch, err := currentBranch(ctx, repo)
@@ -399,6 +403,9 @@ func gitRevertAt(ctx context.Context, repo string, req GitRevertRequest) (GitAct
 		return GitAct{}, err
 	}
 	if _, err := git(ctx, repo, "revert", "--no-edit", "--", revision); err != nil {
+		// Keep the act atomic: abort a conflicted/partial revert instead of
+		// leaving the sequencer mid-operation for the next act to trip over.
+		_, _ = git(ctx, repo, "revert", "--abort")
 		return GitAct{}, err
 	}
 	branch, err := currentBranch(ctx, repo)

@@ -198,3 +198,85 @@ func runGit(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
+func TestGitMergeAbortsOnConflict(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := t.Context()
+	plane := New()
+
+	if _, err := plane.GitBranch(ctx, GitBranchRequest{Dir: dir, Name: "feature"}); err != nil {
+		t.Fatal(err)
+	}
+	writeCommit(t, plane, ctx, dir, "README.md", "main side\n", "main edit")
+	if _, err := plane.GitCheckout(ctx, GitCheckoutRequest{Dir: dir, Ref: "feature"}); err != nil {
+		t.Fatal(err)
+	}
+	writeCommit(t, plane, ctx, dir, "README.md", "feature side\n", "feature edit")
+	if _, err := plane.GitCheckout(ctx, GitCheckoutRequest{Dir: dir, Ref: "main"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := plane.GitMerge(ctx, GitMergeRequest{Dir: dir, Ref: "feature"}); err == nil {
+		t.Fatal("expected a merge conflict error")
+	}
+	// The failed merge must be aborted, not left mid-merge.
+	if _, err := os.Stat(filepath.Join(dir, ".git", "MERGE_HEAD")); !os.IsNotExist(err) {
+		t.Fatalf("merge left MERGE_HEAD in place (stat err = %v)", err)
+	}
+	status, err := gitStatusAt(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Dirty {
+		t.Fatalf("aborted merge left a dirty tree: %+v", status.Files)
+	}
+}
+
+func TestGitRevertAbortsOnConflict(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := t.Context()
+	plane := New()
+
+	first := writeCommit(t, plane, ctx, dir, "README.md", "v1\n", "to v1")
+	writeCommit(t, plane, ctx, dir, "README.md", "v2\n", "to v2")
+
+	// Reverting the first edit conflicts because the second edit touched the
+	// same line.
+	if _, err := plane.GitRevert(ctx, GitRevertRequest{Dir: dir, Revision: first.SHA}); err == nil {
+		t.Fatal("expected a revert conflict error")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "REVERT_HEAD")); !os.IsNotExist(err) {
+		t.Fatalf("revert left REVERT_HEAD in place (stat err = %v)", err)
+	}
+	status, err := gitStatusAt(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Dirty {
+		t.Fatalf("aborted revert left a dirty tree: %+v", status.Files)
+	}
+}
+
+func TestGitTagRejectsOptionLikeName(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := t.Context()
+	plane := New()
+
+	// A leading-dash name must never be parsed as a git tag option: git rejects
+	// it as an invalid tag name behind the `--` guard rather than acting on it.
+	if _, err := plane.GitTag(ctx, GitTagRequest{Dir: dir, Name: "-d", Message: "boom"}); err == nil {
+		t.Fatal("expected an option-like tag name to be rejected")
+	}
+}
+
+func writeCommit(t *testing.T, plane Plane, ctx context.Context, dir, name, content, message string) GitCommit {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := plane.GitCommit(ctx, GitCommitRequest{Dir: dir, Message: message, Paths: []string{name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return commit
+}
