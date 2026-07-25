@@ -1401,7 +1401,7 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 		if err != nil {
 			return &gatewayv1.FormatResponse{Success: false, Output: fmt.Sprintf("discover changed files: %v", err)}, nil
 		}
-		paths = append(paths, gitStatus.Changed...)
+		paths = append(paths, formattableChangedPaths(gitStatus)...)
 	}
 	changed := make([]string, 0, len(paths))
 	var diagnostics []*gatewayv1.BuildError
@@ -1448,8 +1448,37 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 		ChangedFiles: changed,
 		Errors:       diagnostics,
 		Output:       strings.TrimSpace(output.String()),
-		Act:          actReceipt("code.format.applied", req.GetService(), state, strings.Join(changed, ","), "codefly-plugin"),
+		Act:          actReceipt("code.format.applied", req.GetService(), state, s.headRevision(ctx), "codefly-plugin"),
 	}, nil
+}
+
+// formattableChangedPaths selects the working-tree paths a formatter can act on
+// from a git status: deletions have nothing on disk to format, and renames are
+// reported as "old -> new", so the destination is the file that now exists.
+func formattableChangedPaths(st control.GitStatus) []string {
+	paths := make([]string, 0, len(st.Files))
+	for _, f := range st.Files {
+		if strings.ContainsRune(f.Code, 'D') {
+			continue
+		}
+		path := f.Path
+		if idx := strings.Index(path, " -> "); idx >= 0 {
+			path = path[idx+len(" -> "):]
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+// headRevision resolves the current commit for act attribution. It is empty when
+// the repository has no commits yet — a format act mutates the working tree and
+// is not itself a commit, so this is best-effort context, never fatal.
+func (s *Server) headRevision(ctx context.Context) string {
+	commits, err := s.controlScope().GitLog(ctx, control.GitLogRequest{Limit: 1})
+	if err != nil || len(commits) == 0 {
+		return ""
+	}
+	return commits[0].SHA
 }
 
 func validateOptionalExecutionContext(ctx context.Context) error {

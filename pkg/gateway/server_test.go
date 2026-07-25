@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/executionattestor"
 	"github.com/codefly-dev/cli/pkg/executionjournal"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
@@ -1605,5 +1606,24 @@ func TestAuthenticateGatewayRequest(t *testing.T) {
 	bad := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer wrong"))
 	if err := authenticateGatewayRequest(bad, "secret"); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("invalid token returned %v", err)
+	}
+}
+
+func TestFormattableChangedPaths(t *testing.T) {
+	st := control.GitStatus{Files: []control.GitFileStatus{
+		{Path: "a.go", Code: " M"},
+		{Path: "gone.go", Code: " D"},          // deleted: nothing on disk to format
+		{Path: "old.go -> new.go", Code: "R "}, // renamed: format the destination
+		{Path: "new.txt", Code: "??"},          // untracked new file: still format it
+	}}
+	got := formattableChangedPaths(st)
+	want := []string{"a.go", "new.go", "new.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
 	}
 }
