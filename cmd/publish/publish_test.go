@@ -282,6 +282,47 @@ func TestEngine_Release_FullFlow(t *testing.T) {
 	require.Contains(t, string(out), tag, "tag must have been pushed to origin")
 }
 
+func TestReleaseCodeUnitsPublishesOneSignedRelease(t *testing.T) {
+	dir := t.TempDir()
+	origin := initBareGitRepo(t, dir)
+	first := writeManifest(t, dir, "modules/first/service.codefly.yaml", "1.2.3")
+	second := writeManifest(t, dir, "modules/second/service.codefly.yaml", "1.2.3")
+	require.NoError(t, runGit(dir, "add", first, second))
+	require.NoError(t, runGit(dir, "commit", "-m", "add release manifests"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+
+	signingKey := filepath.Join(t.TempDir(), "release-signing-key")
+	keygen := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", signingKey)
+	require.NoError(t, keygen.Run())
+	require.NoError(t, runGit(dir, "config", "gpg.format", "ssh"))
+	require.NoError(t, runGit(dir, "config", "gpg.ssh.program", "ssh-keygen"))
+	require.NoError(t, runGit(dir, "config", "user.signingkey", signingKey))
+
+	result, err := publish.ReleaseCodeUnits(t.Context(), dir, "minor", []publish.CodeUnitRelease{
+		{CodeUnitID: "second", VersionFile: "modules/second/service.codefly.yaml"},
+		{CodeUnitID: "first", VersionFile: "modules/first/service.codefly.yaml"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "v1.3.0", result.Tag)
+	require.NotEmpty(t, result.Revision)
+	require.Equal(t, []publish.CodeUnitRelease{
+		{CodeUnitID: "first", VersionFile: "modules/first/service.codefly.yaml"},
+		{CodeUnitID: "second", VersionFile: "modules/second/service.codefly.yaml"},
+	}, result.Units)
+
+	for _, path := range []string{first, second} {
+		contents, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		require.Equal(t, "version: 1.3.0\n", string(contents))
+	}
+	tagObject, err := exec.Command("git", "-C", origin, "cat-file", "-p", result.Tag).Output()
+	require.NoError(t, err)
+	require.Contains(t, string(tagObject), "BEGIN SSH SIGNATURE")
+	remoteRevision, err := exec.Command("git", "-C", origin, "rev-parse", "main").Output()
+	require.NoError(t, err)
+	require.Equal(t, result.Revision, strings.TrimSpace(string(remoteRevision)))
+}
+
 // --- Engine: pre-flight gates --------------------------------------
 
 func TestEngine_Release_AbortsOnDirtyTree(t *testing.T) {

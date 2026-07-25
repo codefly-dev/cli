@@ -25,6 +25,7 @@ var protoDir string
 var outputDir string
 var protoLocal bool
 var protoTemplate string
+var protoPaths []string
 
 // pinnedProtocPlugins are the locally-installed code generators the
 // --local path uses, pinned so regeneration is byte-reproducible. Bump
@@ -129,7 +130,9 @@ func generateProtoLocal(ctx context.Context, protoDir, outputDir, template strin
 	}
 
 	cli.Info("buf generate (local plugins) from %s", protoDir)
-	if err := runDir(ctx, env, outputDir, "buf", "generate", protoDir, "--template", template); err != nil {
+	args := []string{"generate", protoDir, "--template", template}
+	args = append(args, protoGenerationPathArgs(protoDir, true)...)
+	if err := runDir(ctx, env, outputDir, "buf", args...); err != nil {
 		return w.Wrapf(err, "buf generate")
 	}
 
@@ -349,7 +352,9 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	// Generate code from the proto dir — buf.gen.yaml is here, so relative
 	// output paths like "../code/pkg/gen" resolve correctly within /workspace.
-	proc, err = runner.NewProcess("buf", "generate")
+	args := []string{"generate"}
+	args = append(args, protoGenerationPathArgs(protoDir, false)...)
+	proc, err = runner.NewProcess("buf", args...)
 	if err != nil {
 		return w.Wrapf(err, "cannot create process")
 	}
@@ -400,9 +405,21 @@ func splitPath(p string) []string {
 	return parts
 }
 
+func protoGenerationPathArgs(protoDir string, absolute bool) []string {
+	args := make([]string, 0, len(protoPaths)*2)
+	for _, path := range protoPaths {
+		if absolute {
+			path = filepath.Join(protoDir, path)
+		}
+		args = append(args, "--path", path)
+	}
+	return args
+}
+
 func init() {
 	ProtoCmd.Flags().StringVar(&protoDir, "proto", "", "path to proto source directory (required)")
 	ProtoCmd.Flags().StringVar(&outputDir, "output", "", "path to output directory with buf.gen.yaml (required)")
+	ProtoCmd.Flags().StringSliceVar(&protoPaths, "path", nil, "limit generation to a proto-relative path (repeatable)")
 	ProtoCmd.Flags().BoolVar(&protoLocal, "local", false, "Generate Go bindings with locally-installed, version-pinned plugins (offline, reproducible) instead of the Docker companion")
 	ProtoCmd.Flags().StringVar(&protoTemplate, "template", "", "buf template filename inside --output for --local mode (default: buf.gen.local.yaml)")
 	_ = ProtoCmd.MarkFlagRequired("proto")

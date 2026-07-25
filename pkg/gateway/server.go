@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	publishcmd "github.com/codefly-dev/cli/cmd/publish"
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
@@ -2119,6 +2120,49 @@ func (s *Server) GitRevert(ctx context.Context, req *gatewayv1.GitRevertRequest)
 	return &gatewayv1.GitRevertResponse{
 		Success: true, RevertedRevision: result.Target, Revision: result.Revision,
 		Act: gitActReceipt("git.revert.applied", result.Target, result.Revision),
+	}, nil
+}
+
+func (s *Server) Release(ctx context.Context, req *gatewayv1.ReleaseRequest) (*gatewayv1.ReleaseResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "release request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	bump := ""
+	switch req.GetBump() {
+	case gatewayv1.ReleaseBump_RELEASE_BUMP_PATCH:
+		bump = "patch"
+	case gatewayv1.ReleaseBump_RELEASE_BUMP_MINOR:
+		bump = "minor"
+	case gatewayv1.ReleaseBump_RELEASE_BUMP_MAJOR:
+		bump = "major"
+	default:
+		return nil, status.Error(codes.InvalidArgument, "release bump is required")
+	}
+	units := make([]publishcmd.CodeUnitRelease, 0, len(req.GetUnits()))
+	for _, unit := range req.GetUnits() {
+		if unit == nil {
+			return nil, status.Error(codes.InvalidArgument, "release units cannot be nil")
+		}
+		units = append(units, publishcmd.CodeUnitRelease{
+			CodeUnitID: unit.GetCodeUnitId(), VersionFile: unit.GetVersionFile(),
+		})
+	}
+	result, err := publishcmd.ReleaseCodeUnits(ctx, s.serviceRoot(), bump, units)
+	if err != nil {
+		return &gatewayv1.ReleaseResponse{Success: false, Error: err.Error()}, nil
+	}
+	released := make([]*gatewayv1.ReleasedUnit, 0, len(result.Units))
+	for _, unit := range result.Units {
+		released = append(released, &gatewayv1.ReleasedUnit{
+			CodeUnitId: unit.CodeUnitID, VersionFile: unit.VersionFile, Version: result.Version,
+		})
+	}
+	return &gatewayv1.ReleaseResponse{
+		Success: true, Tag: result.Tag, Revision: result.Revision, Units: released,
+		Act: actReceipt("release.published", result.Tag, "applied", result.Revision, "git"),
 	}, nil
 }
 
