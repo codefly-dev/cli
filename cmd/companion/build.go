@@ -82,45 +82,59 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	forceDocker, _ := cmd.Flags().GetBool("force-docker")
 	pull, _ := cmd.Flags().GetBool("pull")
 
-	cwd, err := os.Getwd()
+	coreDir, err := resolveCoreDir(coreDirFlag)
 	if err != nil {
-		return fmt.Errorf("cannot read working directory: %w", err)
+		return err
 	}
+	if !all && len(args) == 0 {
+		return fmt.Errorf("must specify a companion name or --all")
+	}
+	targets, err := selectTargets(coreDir, all, args)
+	if err != nil {
+		return err
+	}
+
+	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull}
+	return buildTargets(coreDir, targets, opts)
+}
+
+// resolveCoreDir turns the --core-dir flag (or, when empty, an upward walk
+// from cwd) into an absolute core directory, and validates that its
+// companions/ subdirectory exists. Shared by build, publish, and verify so
+// they agree on how the tree is located.
+func resolveCoreDir(coreDirFlag string) (string, error) {
 	coreDir := coreDirFlag
 	if coreDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot read working directory: %w", err)
+		}
 		coreDir = FindCompanionsRoot(cwd)
 	}
 	companionsDir := filepath.Join(coreDir, "companions")
 	if info, err := os.Stat(companionsDir); err != nil || !info.IsDir() {
-		return fmt.Errorf("companions directory not found at %s; pass --core-dir or run from within the codefly.dev tree", companionsDir)
+		return "", fmt.Errorf("companions directory not found at %s; pass --core-dir or run from within the codefly.dev tree", companionsDir)
 	}
+	return coreDir, nil
+}
 
-	if !all && len(args) == 0 {
-		return fmt.Errorf("must specify a companion name or --all")
-	}
-
-	var targets []*Companion
+// selectTargets resolves the companions to act on: a single named companion
+// (args[0]), or every companion under coreDir when all is true. The --all
+// set is returned in dependency-build order (codefly base first) so a
+// build/publish run over the whole set can't fail on an unbuilt base image.
+func selectTargets(coreDir string, all bool, args []string) ([]*Companion, error) {
 	if all {
-		targets, err = listCompanionsRequired(coreDir)
+		targets, err := listCompanionsRequired(coreDir)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		// Order: codefly base first; language companions next; rest
-		// last. This mirrors build_companions.sh's hard-coded order.
-		targets = sortCompanionsForBuild(targets)
-	} else {
-		c, err := LoadCompanion(filepath.Join(companionsDir, args[0]))
-		if err != nil {
-			return fmt.Errorf("cannot load companion %q: %w", args[0], err)
-		}
-		targets = []*Companion{c}
+		return sortCompanionsForBuild(targets), nil
 	}
-
-	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull}
-	if err := buildTargets(coreDir, targets, opts); err != nil {
-		return err
+	c, err := LoadCompanion(filepath.Join(coreDir, "companions", args[0]))
+	if err != nil {
+		return nil, fmt.Errorf("cannot load companion %q: %w", args[0], err)
 	}
-	return nil
+	return []*Companion{c}, nil
 }
 
 // buildTargets builds the given companions in the order provided. It
