@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"gopkg.in/yaml.v3"
 )
@@ -187,11 +189,11 @@ func TestEnsureSourcePackagerBootstrapsExactGoAgent(t *testing.T) {
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(agentDir, "agent.codefly.yaml"), `publisher: codefly.dev
+	writeFile(t, filepath.Join(agentDir, "agent.codefly.yaml"), fmt.Sprintf(`publisher: codefly.dev
 kind: codefly:service
 name: go
-version: 0.0.15
-`)
+version: %s
+`, sourceworkspace.GenericGoPluginVersion))
 
 	previous := bootstrapSourcePackager
 	t.Cleanup(func() { bootstrapSourcePackager = previous })
@@ -210,7 +212,7 @@ version: 0.0.15
 	if gotSource != agentDir {
 		t.Fatalf("bootstrap source = %q, want %q", gotSource, agentDir)
 	}
-	wantDestination := filepath.Join(home, "agents", "services", "codefly.dev", "go__0.0.15")
+	wantDestination := filepath.Join(home, "agents", "services", "codefly.dev", "go__"+sourceworkspace.GenericGoPluginVersion)
 	if gotDestination != wantDestination {
 		t.Fatalf("bootstrap destination = %q, want %q", gotDestination, wantDestination)
 	}
@@ -237,7 +239,7 @@ version: 9.9.9
 `)
 
 	err := ensureSourcePackager(context.Background(), []string{agentDir})
-	if err == nil || !strings.Contains(err.Error(), "9.9.9") || !strings.Contains(err.Error(), "0.0.15") {
+	if err == nil || !strings.Contains(err.Error(), "9.9.9") || !strings.Contains(err.Error(), sourceworkspace.GenericGoPluginVersion) {
 		t.Fatalf("mismatched source packager error = %v", err)
 	}
 }
