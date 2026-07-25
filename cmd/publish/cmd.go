@@ -158,7 +158,21 @@ func runReTag(c *cobra.Command, _ []string) error {
 		WorkDir:  workDir,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// For agents, re-tag re-runs release-grade CI and re-uploads the
+	// loader assets — the recovery path when the original publish tagged
+	// but failed to upload. Same generous timeout as publish.
+	timeout := 60 * time.Second
+	if manifest.Mode == ModeAgent && !dryRun {
+		releaser, err := newAgentReleaser(filepath.Dir(manifest.Path), workDir)
+		if err != nil {
+			return err
+		}
+		defer releaser.cleanup()
+		releaser.attach(engine)
+		timeout = 30 * time.Minute
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	tag, err := engine.ReTag(ctx)

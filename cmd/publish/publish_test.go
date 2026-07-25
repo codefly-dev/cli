@@ -445,6 +445,52 @@ func TestEngine_Release_AfterPushFailure_ReturnsLiveTag(t *testing.T) {
 	require.Contains(t, string(out), tag)
 }
 
+// TestEngine_ReTag_RunsReleaseHooks pins the recovery path: re-tag rebuilds
+// and re-uploads agent release assets (BeforeCommit + AfterPush) around the
+// tag move, without writing the manifest.
+func TestEngine_ReTag_RunsReleaseHooks(t *testing.T) {
+	dir := t.TempDir()
+	origin := initBareGitRepo(t, dir)
+	target := writeManifest(t, dir, "agent.codefly.yaml", "0.1.0")
+	require.NoError(t, addAndCommit(dir, target, "add manifest"))
+	// The tag must already exist for re-tag to proceed.
+	require.NoError(t, runGit(dir, "tag", "v0.1.0"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+	require.NoError(t, runGit(dir, "push", "origin", "v0.1.0"))
+
+	m, err := publish.Detect(dir)
+	require.NoError(t, err)
+
+	var before, after string
+	engine := &publish.Engine{
+		Manifest: m,
+		WorkDir:  dir,
+		BeforeCommit: func(_ context.Context, tag string) error {
+			before = tag
+			return nil
+		},
+		AfterPush: func(_ context.Context, tag string) error {
+			after = tag
+			return nil
+		},
+	}
+
+	tag, err := engine.ReTag(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "v0.1.0", tag)
+	require.Equal(t, "v0.1.0", before, "BeforeCommit must rebuild assets before the tag moves")
+	require.Equal(t, "v0.1.0", after, "AfterPush must re-upload after the tag is force-pushed")
+
+	// Manifest is never written by re-tag.
+	got, _ := os.ReadFile(target)
+	require.Equal(t, "version: 0.1.0\n", string(got))
+
+	// The tag still exists on origin.
+	out, err := exec.Command("git", "-C", origin, "tag", "-l", tag).Output()
+	require.NoError(t, err)
+	require.Contains(t, string(out), tag)
+}
+
 var (
 	errCIFailed     = errSentinel("release CI failed")
 	errUploadFailed = errSentinel("upload failed")

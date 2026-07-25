@@ -33,10 +33,15 @@ released before the consumers that pin it.
 
 Safety — the whole run is atomic at the pre-flight boundary:
   1. EVERY repo is validated first (clean tree, on main, in sync with
-     origin, target tag free). If ANY repo fails, the run aborts before
-     a single tag is pushed.
+     origin, target tag free; agents also: host can build every loader
+     platform and gh is available). If ANY repo fails, the run aborts
+     before a single tag is pushed.
   2. Only once all repos pass does it publish, sequentially, stopping at
      the first real failure (and reporting what already shipped).
+
+Release-grade agent CI is the publish gate itself, so it runs per-agent
+during step 2 — a CI failure there aborts the run with earlier repos
+already shipped, exactly like any other execute-phase failure.
 
 As with plain publish, the tag/main push is NEVER --force.
 
@@ -110,6 +115,12 @@ func runAll(c *cobra.Command, args []string) error {
 	fmt.Println("==> validating all repos (pre-flight, no changes)...")
 	var failures []string
 	for _, t := range targets {
+		if t.Manifest.Mode == ModeAgent {
+			if perr := checkAgentReleasePreconditions(); perr != nil {
+				failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), perr))
+				continue
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		tag, verr := t.engine(bumpType, true).Release(ctx)
 		cancel()

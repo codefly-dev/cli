@@ -39,6 +39,54 @@ var loaderPlatforms = []platform{
 	{os: "linux", arch: "amd64"},
 }
 
+// checkAgentReleasePreconditions fails fast on the two things that would
+// otherwise only surface AFTER the expensive CI run (or, in `publish
+// all`, after earlier repos already shipped): a host that can't build
+// every loader platform, and a missing gh CLI. Both are deterministic and
+// side-effect free, so they are safe to run during the validate phase.
+func checkAgentReleasePreconditions() error {
+	if err := hostBuildsLoaderPlatforms(); err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("the gh CLI is required to upload agent release assets but is not on PATH: %w", err)
+	}
+	return nil
+}
+
+// hostBuildsLoaderPlatforms rejects a host that cannot produce every
+// required platform. `codefly agent ci` emits exactly the native
+// (host os/arch) build plus the linux/amd64 container build, so the set of
+// producible targets is fully determined by the host — no need to run CI
+// to discover an incapable host.
+func hostBuildsLoaderPlatforms() error {
+	missing := missingLoaderPlatforms(runtime.GOOS, runtime.GOARCH)
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"this host (%s/%s) cannot build required loader platform(s) %s; publish agents from a host that can — e.g. darwin/arm64 covers darwin/arm64 plus the linux/amd64 container build",
+			runtime.GOOS, runtime.GOARCH, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// missingLoaderPlatforms returns the required loader platforms a host with
+// the given os/arch cannot produce. CI emits the native (host) build plus
+// the linux/amd64 container build, so those two targets are all a host can
+// cover.
+func missingLoaderPlatforms(hostOS, hostArch string) []string {
+	producible := map[string]bool{
+		hostOS + "/" + hostArch: true,
+		"linux/amd64":           true,
+	}
+	var missing []string
+	for _, p := range loaderPlatforms {
+		if !producible[p.target()] {
+			missing = append(missing, p.target())
+		}
+	}
+	return missing
+}
+
 // loaderArchiveName is the release asset name core's downloader requests.
 // It MUST stay byte-for-byte identical to manager.DownloadURL's asset
 // segment; verifyReleaseAssets asserts that for the host platform.
@@ -218,9 +266,14 @@ func runReleaseAgentCI(ctx context.Context, self, agentDir, output string) error
 	return nil
 }
 
-// createAndUploadRelease creates the GitHub release for tag and uploads
-// every staged loader archive and SBOM in one shot. gh runs from workDir
-// so it resolves the repository from the origin remote.
+// createAndUploadRelease publishes every staged loader archive and SBOM to
+// the GitHub release for tag. gh runs from workDir so it resolves the
+// repository from the origin remote.
+//
+// Idempotent by design: it creates the release on the first publish, or
+// uploads into an existing one (clobbering same-named assets) on a retry
+// or `re-tag`. Without this a re-run after a partial upload would error on
+// the already-existing release, stranding a half-uploaded release.
 func createAndUploadRelease(ctx context.Context, workDir, tag string, assets []loaderAsset) error {
 	files := make([]string, 0, len(assets)*2)
 	for _, asset := range assets {
@@ -229,20 +282,32 @@ func createAndUploadRelease(ctx context.Context, workDir, tag string, assets []l
 			files = append(files, asset.sbomPath)
 		}
 	}
-	args := append([]string{
-		"release", "create", tag,
-		"--title", tag,
-		"--notes", "Release " + tag,
-	}, files...)
+	var args []string
+	if releaseExists(ctx, workDir, tag) {
+		args = append([]string{"release", "upload", tag}, files...)
+		args = append(args, "--clobber")
+	} else {
+		args = append([]string{"release", "create", tag, "--title", tag, "--notes", "Release " + tag}, files...)
+	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Dir = workDir
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("create GitHub release %s: %w", tag, err)
+		return fmt.Errorf("publish GitHub release %s: %w", tag, err)
 	}
 	return nil
+}
+
+// releaseExists reports whether a GitHub release already exists for tag.
+func releaseExists(ctx context.Context, workDir, tag string) bool {
+	cmd := exec.CommandContext(ctx, "gh", "release", "view", tag)
+	cmd.Dir = workDir
+	cmd.Env = os.Environ()
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
 }
 
 // verifyReleaseAssets confirms every uploaded loader archive resolves
@@ -269,8 +334,9 @@ func verifyReleaseAssets(ctx context.Context, publisher, name, version string, a
 // to make a freshly uploaded asset downloadable, so it retries a few times
 // with backoff before giving up.
 func assertAssetReachable(ctx context.Context, url string) error {
+	const attempts = 5
 	var lastErr error
-	for attempt := range 5 {
+	for attempt := range attempts {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return err
@@ -284,6 +350,9 @@ func assertAssetReachable(ctx context.Context, url string) error {
 				return nil
 			}
 			lastErr = fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
+		}
+		if attempt == attempts-1 {
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -309,6 +378,9 @@ type agentReleaser struct {
 }
 
 func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
+	if err := checkAgentReleasePreconditions(); err != nil {
+		return nil, err
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve codefly executable: %w", err)

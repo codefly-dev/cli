@@ -309,6 +309,16 @@ func (e *Engine) ReTag(ctx context.Context) (string, error) {
 		return tag, nil
 	}
 
+	// Re-tag is the recovery path for an agent whose release assets never
+	// uploaded (that is its documented purpose). Rebuild them from the
+	// current version before moving the tag; no manifest is written, so a
+	// failure here needs no revert.
+	if e.BeforeCommit != nil {
+		if err := e.BeforeCommit(ctx, tag); err != nil {
+			return "", err
+		}
+	}
+
 	// Delete locally first (idempotent).
 	if localExists {
 		if _, err := e.git(ctx, "tag", "-d", tag); err != nil {
@@ -322,6 +332,12 @@ func (e *Engine) ReTag(ctx context.Context) (string, error) {
 	// Force-push the tag specifically. NOT main.
 	if _, err := e.git(ctx, "push", "origin", tag, "--force"); err != nil {
 		return "", fmt.Errorf("force-push tag: %w", err)
+	}
+
+	if e.AfterPush != nil {
+		if err := e.AfterPush(ctx, tag); err != nil {
+			return tag, err
+		}
 	}
 	return tag, nil
 }

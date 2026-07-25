@@ -98,6 +98,22 @@ func TestCollectLoaderAssets_MissingSBOMStillPackages(t *testing.T) {
 	}
 }
 
+func TestMissingLoaderPlatforms(t *testing.T) {
+	for _, tc := range []struct {
+		os, arch string
+		want     []string
+	}{
+		{"darwin", "arm64", nil},                     // native darwin/arm64 + container linux/amd64
+		{"linux", "amd64", []string{"darwin/arm64"}}, // container covers linux/amd64 only
+		{"linux", "arm64", []string{"darwin/arm64"}}, // native arm64 unused; still no darwin
+		{"windows", "amd64", []string{"darwin/arm64"}},
+		{"darwin", "amd64", []string{"darwin/arm64"}}, // native is darwin/amd64, not arm64
+	} {
+		got := missingLoaderPlatforms(tc.os, tc.arch)
+		require.Equal(t, tc.want, got, "host %s/%s", tc.os, tc.arch)
+	}
+}
+
 // --- helpers -------------------------------------------------------
 
 // stageCIArtifacts writes a fake `codefly agent ci` output tree (report
