@@ -66,7 +66,10 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Publish every companion at its pinned version
-        run: ${{ github.workspace }}/bin/codefly companion publish --all --core-dir "${{ github.workspace }}/core"
+        # Pin linux/amd64: companion images in the registry are amd64, and
+        # agents/CI pull them on amd64. Explicit so the arch never depends on
+        # the runner.
+        run: ${{ github.workspace }}/bin/codefly companion publish --all --platform linux/amd64 --core-dir "${{ github.workspace }}/core"
 
       - name: Verify every embedded tag is in the registry
         run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"

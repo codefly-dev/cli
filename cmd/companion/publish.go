@@ -43,6 +43,7 @@ func init() {
 	PublishCmd.Flags().String("core-dir", "", "Path to the core directory (default: walk up from cwd looking for companions/)")
 	PublishCmd.Flags().Bool("force-docker", false, "Skip the flake.nix path even when present + nix is installed")
 	PublishCmd.Flags().Bool("pull", false, "Always pull a newer base image (docker build --pull) before building")
+	PublishCmd.Flags().String("platform", "", "Target platform for docker builds (e.g. linux/amd64). Default: host arch. Companion images are linux/amd64, so publishing from an arm64 host must set this.")
 }
 
 func runPublish(cmd *cobra.Command, args []string) error {
@@ -50,6 +51,7 @@ func runPublish(cmd *cobra.Command, args []string) error {
 	coreDirFlag, _ := cmd.Flags().GetString("core-dir")
 	forceDocker, _ := cmd.Flags().GetBool("force-docker")
 	pull, _ := cmd.Flags().GetBool("pull")
+	platform, _ := cmd.Flags().GetString("platform")
 
 	coreDir, err := resolveCoreDir(coreDirFlag)
 	if err != nil {
@@ -70,6 +72,6 @@ func runPublish(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("companion %q produces no image (no Dockerfile or flake.nix), nothing to publish", targets[0].Name)
 	}
 
-	opts := BuildOptions{Push: true, ForceDocker: forceDocker, Pull: pull}
+	opts := BuildOptions{Push: true, ForceDocker: forceDocker, Pull: pull, Platform: platform}
 	return buildTargets(coreDir, targets, opts)
 }

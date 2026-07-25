@@ -50,6 +50,7 @@ func init() {
 	BuildCmd.Flags().Bool("push", false, "Push each image to the registry after a successful build")
 	BuildCmd.Flags().Bool("force-docker", false, "Skip the flake.nix path even when present + nix is installed")
 	BuildCmd.Flags().Bool("pull", false, "Always pull a newer base image (docker build --pull) — picks up upstream patch releases (e.g. golang:1.26-alpine → latest 1.26.x)")
+	BuildCmd.Flags().String("platform", "", "Target platform for docker builds (e.g. linux/amd64). Default: host arch. Set this to publish arch-correct images from a different host (companion images are linux/amd64).")
 }
 
 // BuildOptions controls a companion build run. Shared by the `companion
@@ -61,6 +62,11 @@ type BuildOptions struct {
 	// (golang:1.26-alpine, …) is refreshed to its latest patch. This is
 	// how `update deps` clears base-image CVEs like the Go stdlib bumps.
 	Pull bool
+	// Platform overrides the docker build target (e.g. "linux/amd64").
+	// Empty means host arch. Companion images in the registry are
+	// linux/amd64, so publishing from an arm64 host must set this to avoid
+	// pushing an arch-mismatched image. Ignored by the nix build path.
+	Platform string
 }
 
 // BuildAll builds every companion under coreDir/companions in dependency
@@ -81,6 +87,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	push, _ := cmd.Flags().GetBool("push")
 	forceDocker, _ := cmd.Flags().GetBool("force-docker")
 	pull, _ := cmd.Flags().GetBool("pull")
+	platform, _ := cmd.Flags().GetString("platform")
 
 	coreDir, err := resolveCoreDir(coreDirFlag)
 	if err != nil {
@@ -94,7 +101,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull}
+	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull, Platform: platform}
 	return buildTargets(coreDir, targets, opts)
 }
 
@@ -174,7 +181,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		case "nix":
 			buildErr = buildWithNix(c)
 		default:
-			buildErr = buildWithDocker(c, coreDir, opts.Pull)
+			buildErr = buildWithDocker(c, coreDir, opts.Pull, opts.Platform)
 		}
 		if buildErr != nil {
 			return fmt.Errorf("build %s failed: %w", c.Name, buildErr)
@@ -293,11 +300,13 @@ func buildLinuxCLI(coreDir string) error {
 // are fast; CI matrices that need cross-arch must opt in via
 // `docker buildx`. We deliberately don't try to be clever about that
 // here — the sh path was already explicit about it.
-func buildWithDocker(c *Companion, coreDir string, pull bool) error {
+func buildWithDocker(c *Companion, coreDir string, pull bool, platform string) error {
 	if !c.HasDockerfile {
 		return fmt.Errorf("no Dockerfile in %s", c.Dir)
 	}
-	platform := "linux/" + dockerArch()
+	if platform == "" {
+		platform = "linux/" + dockerArch()
+	}
 	dockerfile := filepath.Join("companions", c.Name, "Dockerfile")
 
 	dockerArgs := []string{"build", "--platform", platform}
