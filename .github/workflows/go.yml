@@ -11,43 +11,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build
+  quality:
+    name: ${{ matrix.gate }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    strategy:
+      fail-fast: true
+      matrix:
+        gate:
+          - bootstrap-audit
+          - coverage
+          - race
     steps:
       - name: checkout
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        if: matrix.gate != 'bootstrap-audit'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
 
       # This is both the canonical bootstrap and the cross-repository action
       # contract consumed by Codefly products. Dogfood the local action so a
       # release cannot publish an installer that CI never exercised.
       - name: install Codefly
+        if: matrix.gate == 'bootstrap-audit'
         uses: ./.github/actions/install
 
-      - name: Cache Go Modules
+      # Cache only compiled artifacts. Caching GOMODCACHE alongside a Go
+      # toolchain directive can race setup-go's toolchain install and produce
+      # tar restore conflicts.
+      - name: Restore Go build cache
         uses: actions/cache@v4
-        continue-on-error: true
         with:
-          # The v2 namespace deliberately replaces the old module-only cache
-          # with the compiler cache needed by coverage and race passes.
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: v2-${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          path: ~/.cache/go-build
+          key: cli-go-build-v3-${{ matrix.gate }}-${{ runner.os }}-${{ hashFiles('go.sum') }}
           restore-keys: |
-            v2-${{ runner.os }}-go-
+            cli-go-build-v3-${{ matrix.gate }}-${{ runner.os }}-
 
       - name: Install Dependencies
         run: go mod download
 
       - name: Verify the composed-module command is packaged
+        if: matrix.gate == 'bootstrap-audit'
         run: codefly sync module --help
 
       # govulncheck gate via the CLI (replaces scripts/govulncheck.sh):
       # suppressions + staleness from .govulncheck.yaml, fails only on
       # actionable (upstream-fixed) findings.
       - name: govulncheck audit
+        if: matrix.gate == 'bootstrap-audit'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           codefly audit go --dir .
@@ -57,36 +72,17 @@ jobs:
 #        with:
 #          version: latest
 
-      - name: generate test generate coverage
+      - name: Test with coverage
+        if: matrix.gate == 'coverage'
         run: go test -failfast ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
 
-      - name: check test coverage
+      - name: Check test coverage
+        if: matrix.gate == 'coverage'
         id: coverage
         uses: vladopajic/go-test-coverage@v2 # Check if a newer version exists
         with:
           config: ./.testcoverage.yaml
 
-      - name: test with race detection
+      - name: Test with race detection
+        if: matrix.gate == 'race'
         run: go test -failfast -race ./... -v
-
-      - name: Notify Slack on Failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1.25.0 # Updated to latest known version, verify for newer versions
-        with:
-          payload: |
-            {
-              "text": "Build Failed in ${{ github.repository }} on ${{ github.ref }}. See GitHub Actions for more details."
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-      - name: Notify Slack on Success
-        if: success()
-        uses: slackapi/slack-github-action@v1.25.0 # Updated to latest known version, verify for newer versions
-        with:
-          payload: |
-            {
-              "text": "Build Succeeded in ${{ github.repository }} on ${{ github.ref }}. Great job!"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
