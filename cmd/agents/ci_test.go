@@ -126,6 +126,51 @@ func TestRunAttachSourceConformanceFailsClosedWithoutFixtureWorkspace(t *testing
 	}
 }
 
+func TestAssertFixtureTargetsAgent(t *testing.T) {
+	manifest := agentYAML{Publisher: "codefly.dev", Name: "python", Version: "1.2.3"}
+	service := func(publisher, name, version string) string {
+		return "name: subject\nversion: 0.0.1\nagent:\n  kind: codefly:service\n  name: " + name + "\n  version: " + version + "\n  publisher: " + publisher + "\n"
+	}
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "latest resolves to the build under test", content: service("codefly.dev", "python", "latest")},
+		{name: "exact version under test is accepted", content: service("codefly.dev", "python", "1.2.3")},
+		{
+			name:    "mismatched pin is rejected",
+			content: service("codefly.dev", "python", "0.9.0"),
+			wantErr: `use "latest"`,
+		},
+		{
+			name:    "unrelated agent does not satisfy the contract",
+			content: service("codefly.dev", "go", "latest"),
+			wantErr: "must declare a service using agent codefly.dev/python",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixtureDir := t.TempDir()
+			serviceDir := filepath.Join(fixtureDir, "app", "subject")
+			if err := os.MkdirAll(serviceDir, 0o755); err != nil {
+				t.Fatalf("create service dir: %v", err)
+			}
+			writeFile(t, filepath.Join(serviceDir, "service.codefly.yaml"), test.content)
+			err := assertFixtureTargetsAgent(fixtureDir, "conformance/fixture", manifest)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("assertFixtureTargetsAgent error = %v, want containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("assertFixtureTargetsAgent: %v", err)
+			}
+		})
+	}
+}
+
 func TestBoundedAgentCIOutputPreservesBothEnds(t *testing.T) {
 	input := "START-" + strings.Repeat("x", 10_000) + "-END"
 	got := boundedAgentCIOutput([]byte(input))

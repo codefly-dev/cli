@@ -418,14 +418,15 @@ func loadAgentCIManifest(dir string) (agentYAML, error) {
 	if manifest.Kind != "codefly:service" {
 		return agentYAML{}, fmt.Errorf("agent conformance currently requires kind codefly:service, got %s", manifest.Kind)
 	}
-	switch conformanceMode(manifest) {
+	mode := conformanceMode(manifest)
+	switch mode {
 	case conformanceModeGeneratedService:
 	case conformanceModeAttachSource:
 		if manifest.Conformance == nil || strings.TrimSpace(manifest.Conformance.Fixture) == "" {
 			return agentYAML{}, fmt.Errorf("attach-existing-source conformance requires conformance.fixture pointing to a fixture workspace")
 		}
 	default:
-		return agentYAML{}, fmt.Errorf("unsupported conformance mode %q (use %s or %s)", manifest.Conformance.Mode, conformanceModeGeneratedService, conformanceModeAttachSource)
+		return agentYAML{}, fmt.Errorf("unsupported conformance mode %q (use %s or %s)", mode, conformanceModeGeneratedService, conformanceModeAttachSource)
 	}
 	return manifest, nil
 }
@@ -541,7 +542,7 @@ func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome st
 		command.Dir = item.dir
 		command.Env = environment
 		if output, err := command.CombinedOutput(); err != nil {
-			return nil, filepath.Join(workspaceDir, ".codefly", "ci"), fmt.Errorf("%s: %w\n%s", item.label, err, boundedAgentCIOutput(output))
+			return readGeneratedWorkspaceReport(workspaceDir), filepath.Join(workspaceDir, ".codefly", "ci"), fmt.Errorf("%s: %w\n%s", item.label, err, boundedAgentCIOutput(output))
 		}
 	}
 	return runWorkspaceGate(ctx, executable, workspaceDir, environment)
@@ -560,6 +561,9 @@ func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agent
 	if _, err := os.Stat(filepath.Join(fixtureDir, resources.WorkspaceConfigurationName)); err != nil {
 		return nil, "", fmt.Errorf("attach-existing-source conformance fixture %q must contain %s: %w", fixture, resources.WorkspaceConfigurationName, err)
 	}
+	if err := assertFixtureTargetsAgent(fixtureDir, fixture, manifest); err != nil {
+		return nil, "", err
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve Codefly executable: %w", err)
@@ -568,7 +572,60 @@ func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agent
 	if err := copyAgentCIDirectory(fixtureDir, workspaceDir); err != nil {
 		return nil, "", fmt.Errorf("provision attach-existing-source fixture: %w", err)
 	}
+	// The gate owns .codefly/ci; discard any copy the fixture happened to ship so
+	// the run starts from a clean report directory.
+	if err := os.RemoveAll(filepath.Join(workspaceDir, ".codefly")); err != nil {
+		return nil, "", fmt.Errorf("reset attach-existing-source fixture state: %w", err)
+	}
 	return runWorkspaceGate(ctx, executable, workspaceDir, agentConformanceEnvironment(agentHome))
+}
+
+// assertFixtureTargetsAgent fails closed when no fixture service exercises the
+// agent under test at a version the local build can resolve. Conformance runs
+// under CODEFLY_AGENT_SOURCE=local, where "latest" resolves to the just-built
+// binary and a pin only resolves when it equals the version under test; any
+// other pin would silently exercise nothing, so we reject it up front with a
+// targeted message instead of a generic downstream "agent not found".
+func assertFixtureTargetsAgent(fixtureDir, fixture string, manifest agentYAML) error {
+	referenced := false
+	err := filepath.WalkDir(fixtureDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Name() != resources.ServiceConfigurationName {
+			return nil
+		}
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var declaration struct {
+			Agent struct {
+				Name      string `yaml:"name"`
+				Version   string `yaml:"version"`
+				Publisher string `yaml:"publisher"`
+			} `yaml:"agent"`
+		}
+		if err := yaml.Unmarshal(payload, &declaration); err != nil {
+			return fmt.Errorf("parse fixture service %s: %w", path, err)
+		}
+		agent := declaration.Agent
+		if agent.Publisher != manifest.Publisher || agent.Name != manifest.Name {
+			return nil
+		}
+		referenced = true
+		if agent.Version != "latest" && agent.Version != manifest.Version {
+			return fmt.Errorf("attach-existing-source fixture %q pins agent %s/%s at version %q; use \"latest\" or %q so the locally built agent under test is exercised", fixture, manifest.Publisher, manifest.Name, agent.Version, manifest.Version)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if !referenced {
+		return fmt.Errorf("attach-existing-source fixture %q must declare a service using agent %s/%s", fixture, manifest.Publisher, manifest.Name)
+	}
+	return nil
 }
 
 func runWorkspaceGate(ctx context.Context, executable, workspaceDir string, environment []string) ([]byte, string, error) {
