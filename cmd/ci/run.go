@@ -129,7 +129,7 @@ func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resour
 				cli.Header(2, "CI test suite: %s", suite)
 			}
 			options := commandScheduleOptions(true, phase, suite, reporter)
-			suiteErr := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite), options)
+			suiteErr := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite, failFast), options)
 			if suiteErr != nil {
 				errs = errors.Join(errs, suiteErr)
 				if failFast {

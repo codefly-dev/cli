@@ -50,7 +50,7 @@ var TestCmd = &cobra.Command{
 					cli.Header(2, "CI test suite: %s", suite)
 				}
 				options := commandScheduleOptions(true, "test", suite, reporter)
-				if err := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite), options); err != nil {
+				if err := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite, ciFailFast), options); err != nil {
 					return fmt.Errorf("cannot run CI tests: %w", err)
 				}
 			}
@@ -60,13 +60,13 @@ var TestCmd = &cobra.Command{
 }
 
 func runTestService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
-	return runTestServiceForSuite("")(ctx, workspace, module, service)
+	return runTestServiceForSuite("", false)(ctx, workspace, module, service)
 }
 
-func runTestServiceForSuite(suite string) Action {
+func runTestServiceForSuite(suite string, failFast bool) Action {
 	return func(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
 		w := wool.Get(ctx).In("deployService")
-		flow, err := initTestService(ctx, workspace, module, service, suite)
+		flow, err := initTestService(ctx, workspace, module, service, suite, failFast)
 		if err != nil {
 			return w.Wrapf(err, "Cannot init flow")
 		}
@@ -79,7 +79,7 @@ func runTestServiceForSuite(suite string) Action {
 	}
 }
 
-func initTestService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, suite string) (*orchestration.Flow, error) {
+func initTestService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, suite string, failFast bool) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("TestService", wool.ThisField(resources.WithUnique(service)))
 	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
@@ -97,7 +97,7 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
-	flow.WithTestRequest(&runtimev0.TestRequest{Suite: suite})
+	flow.WithTestRequest(testRequestForSuite(suite, failFast))
 
 	err = flow.InitManagers(ctx)
 	if err != nil {
@@ -108,6 +108,10 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 		return nil, stopFlowAfterError(flow, w.Wrap(err))
 	}
 	return flow, nil
+}
+
+func testRequestForSuite(suite string, failFast bool) *runtimev0.TestRequest {
+	return &runtimev0.TestRequest{Suite: suite, FailFast: failFast}
 }
 
 func testService(ctx context.Context, flow *orchestration.Flow) error {
