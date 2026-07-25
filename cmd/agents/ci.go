@@ -495,7 +495,7 @@ func snapshotAgentWorktree(ctx context.Context, dir string) (agentWorktreeSnapsh
 		return agentWorktreeSnapshot{}, fmt.Errorf("snapshot agent Git state: %w", err)
 	}
 	entries := []string{}
-	for _, entry := range bytes.Split(statusOutput, []byte{0}) {
+	for entry := range bytes.SplitSeq(statusOutput, []byte{0}) {
 		if len(entry) > 0 {
 			entries = append(entries, string(entry))
 		}
