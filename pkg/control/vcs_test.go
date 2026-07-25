@@ -118,6 +118,32 @@ func TestGitCommitAndLog(t *testing.T) {
 	}
 }
 
+func TestGitCommitAllWorkspaceChanges(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := context.Background()
+
+	if err := os.WriteFile(filepath.Join(dir, "added.txt"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := New().GitCommit(ctx, GitCommitRequest{Dir: dir, Message: "replace files", All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit.SHA == "" {
+		t.Fatal("commit SHA is empty")
+	}
+	status, err := New().GitStatus(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Dirty {
+		t.Fatalf("status after complete commit = %+v, want clean", status)
+	}
+}
+
 func TestTypedGitPublicationLifecycle(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := t.Context()

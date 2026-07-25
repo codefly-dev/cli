@@ -152,8 +152,8 @@ func gitLogAt(ctx context.Context, repo string, req GitLogRequest) ([]GitCommit,
 	return commits, nil
 }
 
-// GitCommit stages req.Paths (all currently-staged changes when empty), commits
-// with req.Message, and returns the new commit.
+// GitCommit stages the requested workspace changes, commits with req.Message,
+// and returns the new commit.
 func (p *planeImpl) GitCommit(ctx context.Context, req GitCommitRequest) (GitCommit, error) {
 	repo, err := p.gitDir(ctx, req.Dir)
 	if err != nil {
@@ -166,7 +166,14 @@ func gitCommitAt(ctx context.Context, repo string, req GitCommitRequest) (GitCom
 	if strings.TrimSpace(req.Message) == "" {
 		return GitCommit{}, fmt.Errorf("commit message is required")
 	}
-	if len(req.Paths) > 0 {
+	if req.All && len(req.Paths) > 0 {
+		return GitCommit{}, fmt.Errorf("commit all and paths are mutually exclusive")
+	}
+	if req.All {
+		if _, err := git(ctx, repo, "add", "--all"); err != nil {
+			return GitCommit{}, err
+		}
+	} else if len(req.Paths) > 0 {
 		args := append([]string{"add", "--"}, req.Paths...)
 		if _, err := git(ctx, repo, args...); err != nil {
 			return GitCommit{}, err

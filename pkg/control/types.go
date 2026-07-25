@@ -276,6 +276,7 @@ type GitCommitRequest struct {
 	Dir     string
 	Message string
 	Paths   []string // empty = all staged
+	All     bool
 }
 
 // GitAct is the repository state observed after one typed git mutation.

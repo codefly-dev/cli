@@ -1374,6 +1374,9 @@ func TestGitRPCInputBoundsAndOptionBoundary(t *testing.T) {
 	if statusOut := run("status", "--porcelain=v1"); !strings.Contains(statusOut, "?? untracked.txt") {
 		t.Fatalf("untracked file was unexpectedly staged: %q", statusOut)
 	}
+	if _, err := s.GitCommit(context.Background(), &gatewayv1.GitCommitRequest{All: true, Paths: []string{"untracked.txt"}, Message: "ambiguous"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("GitCommit all with paths returned %v", err)
+	}
 }
 
 func TestPluginToAgentName(t *testing.T) {

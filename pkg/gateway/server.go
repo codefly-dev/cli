@@ -1983,6 +1983,12 @@ func (s *Server) GitLog(ctx context.Context, req *gatewayv1.GitLogRequest) (*gat
 }
 
 func (s *Server) GitCommit(ctx context.Context, req *gatewayv1.GitCommitRequest) (*gatewayv1.GitCommitResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "git commit request is required")
+	}
+	if req.GetAll() && len(req.GetPaths()) > 0 {
+		return nil, status.Error(codes.InvalidArgument, "git commit all and paths are mutually exclusive")
+	}
 	paths := make([]string, 0, len(req.Paths))
 	for _, requested := range req.Paths {
 		path, err := cleanGatewayPath(requested)
@@ -1994,7 +2000,7 @@ func (s *Server) GitCommit(ctx context.Context, req *gatewayv1.GitCommitRequest)
 		}
 		paths = append(paths, path)
 	}
-	commit, err := s.controlScope().GitCommit(ctx, control.GitCommitRequest{Message: req.Message, Paths: paths})
+	commit, err := s.controlScope().GitCommit(ctx, control.GitCommitRequest{Message: req.Message, Paths: paths, All: req.GetAll()})
 	if err != nil {
 		return &gatewayv1.GitCommitResponse{Success: false, Error: err.Error()}, nil
 	}
