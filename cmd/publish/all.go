@@ -115,7 +115,11 @@ func runAll(c *cobra.Command, args []string) error {
 	fmt.Println("==> validating all repos (pre-flight, no changes)...")
 	var failures []string
 	for _, t := range targets {
-		if t.Manifest.Mode == ModeAgent {
+		// Gate agent releases on host/gh readiness before any real push, so
+		// an incapable host aborts the whole run rather than shipping some
+		// repos then failing at an agent. Skipped for --dry-run, which is a
+		// pure plan preview and never pushes (matching single publish).
+		if t.Manifest.Mode == ModeAgent && !dryRun {
 			if perr := checkAgentReleasePreconditions(); perr != nil {
 				failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), perr))
 				continue
