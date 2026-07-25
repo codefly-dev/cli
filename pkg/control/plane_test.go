@@ -57,7 +57,9 @@ func writeWorkspace(t *testing.T) string {
 func TestInventoryListsWorkspaceResources(t *testing.T) {
 	t.Chdir(writeWorkspace(t))
 
-	inv, err := New().Inventory(context.Background())
+	plane := New()
+	t.Cleanup(func() { _ = plane.Close() })
+	inv, err := plane.Inventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +77,29 @@ func TestInventoryListsWorkspaceResources(t *testing.T) {
 	}
 }
 
+func TestNewAtKeepsExplicitRootAfterWorkingDirectoryChanges(t *testing.T) {
+	root := writeWorkspace(t)
+	serviceDir := filepath.Join(root, "modules", "backend", "services", "api")
+	plane, err := NewAt(serviceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = plane.Close() })
+
+	t.Chdir(t.TempDir())
+	inv, err := plane.Inventory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.Workspace != "demo" {
+		t.Fatalf("workspace = %q, want demo", inv.Workspace)
+	}
+}
+
 func TestFlowStatusIdleWhenNothingRunning(t *testing.T) {
-	status, err := New().FlowStatus(context.Background())
+	plane := New()
+	t.Cleanup(func() { _ = plane.Close() })
+	status, err := plane.FlowStatus(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

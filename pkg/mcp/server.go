@@ -4,18 +4,21 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/codefly-dev/cli/pkg/control"
+	"github.com/codefly-dev/cli/pkg/engine"
+	"github.com/codefly-dev/cli/pkg/toolbox"
 	corecode "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
 // ToolHandler is the signature for tool implementations
-type ToolHandler func(ctx context.Context, args map[string]string) ([]Content, error)
+type ToolHandler = toolbox.Handler
 
 // ResourceHandler is the signature for resource implementations
 type ResourceHandler func(ctx context.Context) ([]ResourceContents, error)
@@ -23,12 +26,12 @@ type ResourceHandler func(ctx context.Context) ([]ResourceContents, error)
 // Server implements the MCP server
 type Server struct {
 	workspace *resources.Workspace
-	// plane is the consolidated control plane. Read-only introspection tools
-	// delegate to it (the first Phase-3 adapter); other tools are migrating.
+	host      *engine.WorkspaceHost
+	// plane is the workspace facade over the same host used by the tool registry
+	// and service-agent behavior.
 	plane     control.Plane
 	vfs       corecode.VFS
-	tools     map[string]ToolHandler
-	toolDefs  []Tool
+	toolbox   *toolbox.Registry
 	resources map[string]ResourceHandler
 	resDefs   []Resource
 	version   string
@@ -43,16 +46,23 @@ func WithVFS(vfs corecode.VFS) func(*Server) {
 func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Server, error) {
 	w := wool.Get(ctx).In("mcp.NewServer")
 
-	ws, err := resources.LoadWorkspaceFromDir(ctx, ".")
+	root, rootErr := os.Getwd()
+	if rootErr != nil {
+		return nil, fmt.Errorf("resolve MCP workspace root: %w", rootErr)
+	}
+	ws, err := resources.LoadWorkspaceFromDir(ctx, root)
 	if err != nil {
 		w.Debug("no workspace loaded, running in limited mode", wool.ErrField(err))
 	}
-
+	host, hostErr := engine.NewWorkspaceHost(engine.Config{Root: root})
+	if hostErr != nil {
+		return nil, fmt.Errorf("create MCP workspace host: %w", hostErr)
+	}
 	s := &Server{
 		workspace: ws,
-		plane:     control.New(),
-		tools:     make(map[string]ToolHandler),
-		toolDefs:  []Tool{},
+		host:      host,
+		plane:     control.NewWithHost(host),
+		toolbox:   host.Toolbox(),
 		resources: make(map[string]ResourceHandler),
 		resDefs:   []Resource{},
 		version:   version,
@@ -68,10 +78,9 @@ func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Ser
 	return s, nil
 }
 
-// RegisterTool adds a tool to the server
-func (s *Server) RegisterTool(tool Tool, handler ToolHandler) {
-	s.tools[tool.Name] = handler
-	s.toolDefs = append(s.toolDefs, tool)
+// RegisterTool adds a tool to the shared registry.
+func (s *Server) RegisterTool(tool Tool, handler ToolHandler) error {
+	return s.toolbox.Register(tool, handler)
 }
 
 // RegisterResource adds a resource to the server
@@ -82,7 +91,33 @@ func (s *Server) RegisterResource(res Resource, handler ResourceHandler) {
 
 // Serve runs the MCP server in stdio mode
 func (s *Server) Serve(ctx context.Context) error {
+	defer s.Close()
 	return s.ServeIO(ctx, os.Stdin, os.Stdout)
+}
+
+// Toolbox exposes the same in-process tool registry used by the MCP adapter.
+func (s *Server) Toolbox() *toolbox.Registry {
+	if s == nil {
+		return nil
+	}
+	return s.toolbox
+}
+
+// Close releases the host, its flows, tools, and agent processes.
+func (s *Server) Close() error {
+	if s == nil {
+		return nil
+	}
+	var planeErr, hostErr error
+	if s.plane != nil {
+		planeErr = s.plane.Close()
+	}
+	if s.host != nil {
+		hostErr = s.host.Close()
+	}
+	s.plane = nil
+	s.host = nil
+	return errors.Join(planeErr, hostErr)
 }
 
 // ServeIO runs the MCP server with custom IO (for testing)
@@ -212,7 +247,7 @@ func (s *Server) handleInitialize(ctx context.Context, req *JSONRPCRequest) *JSO
 
 func (s *Server) handleListTools(ctx context.Context, req *JSONRPCRequest) *JSONRPCResponse {
 	result := ListToolsResult{
-		Tools: s.toolDefs,
+		Tools: s.toolbox.Definitions(),
 	}
 	return s.successResponse(req.ID, result)
 }
@@ -227,12 +262,10 @@ func (s *Server) handleCallTool(ctx context.Context, req *JSONRPCRequest) *JSONR
 
 	w.Debug("calling tool", wool.Field("name", params.Name), wool.Field("args", params.Arguments))
 
-	handler, ok := s.tools[params.Name]
-	if !ok {
+	content, err := s.toolbox.Call(ctx, params.Name, params.Arguments)
+	if errors.Is(err, toolbox.ErrUnknownTool) {
 		return s.errorResponse(req.ID, InvalidParams, fmt.Sprintf("Unknown tool: %s", params.Name))
 	}
-
-	content, err := handler(ctx, params.Arguments)
 	if err != nil {
 		w.Error("tool error", wool.ErrField(err))
 		return s.successResponse(req.ID, CallToolResult{
@@ -276,7 +309,7 @@ func (s *Server) handleReadResource(ctx context.Context, req *JSONRPCRequest) *J
 
 // ListTools returns all registered tools (for CLI inspection)
 func (s *Server) ListTools() []Tool {
-	return s.toolDefs
+	return s.toolbox.Definitions()
 }
 
 func (s *Server) successResponse(id any, result any) *JSONRPCResponse {

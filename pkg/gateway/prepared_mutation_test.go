@@ -208,7 +208,7 @@ func newPreparedMutationGateway(t *testing.T) (*Server, ed25519.PrivateKey, stri
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = connection.Close() })
-	server.plugins["app"] = &pluginConn{code: codev0.NewCodeClient(connection)}
+	server.serviceBehavior = &mockServiceExecution{code: codev0.NewCodeClient(connection)}
 
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

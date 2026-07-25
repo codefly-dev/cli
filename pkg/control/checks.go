@@ -87,7 +87,11 @@ func (p *planeImpl) RunChecks(ctx context.Context, req CheckRequest) (CheckResul
 // exist while a flow is running (they come from its network mappings), so this
 // errors when nothing is running and skips endpoints that aren't reachable.
 func (p *planeImpl) Addresses(ctx context.Context, serviceName string) ([]Endpoint, error) {
-	flow := orchestration.CurrentFlow()
+	if p.host == nil || p.host.Flows() == nil {
+		return nil, fmt.Errorf("no running flow; addresses are only available while a service is running")
+	}
+	_, managed := p.host.Flows().Active()
+	flow, _ := managed.(*orchestration.Flow)
 	if flow == nil {
 		return nil, fmt.Errorf("no running flow; addresses are only available while a service is running")
 	}

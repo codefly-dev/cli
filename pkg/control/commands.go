@@ -4,43 +4,29 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/codefly-dev/cli/pkg/engine"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	"github.com/codefly-dev/core/services"
 )
 
-// This file lifts the CommandRunner group. Listing and running plugin-owned
-// commands IS special (per-service, plugin-defined) behavior, so it goes through
-// the plugin agent over gRPC. It acquires the plugin the same way the CLI/MCP do
-// — services.Load + LoadBuilder — not the Gateway's manager.Load path.
-
-// loadInstance resolves a service and loads its plugin instance so the agent
-// client is usable (builder loaded, plugin context established), mirroring the
-// MCP getServiceAndInstance sequence.
-func (p *planeImpl) loadInstance(ctx context.Context, name string) (*services.Instance, error) {
-	ws, module, service, err := p.loadTarget(ctx, name)
+// serviceBehavior resolves a service and binds it to the plane's shared host.
+func (p *planeImpl) serviceBehavior(ctx context.Context, name string) (*engine.Service, error) {
+	if p.host == nil {
+		return nil, fmt.Errorf("control plane has no workspace host")
+	}
+	_, _, service, err := p.loadTarget(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	instance, err := services.Load(ctx, ws, module, service)
-	if err != nil {
-		return nil, fmt.Errorf("load service instance: %w", err)
-	}
-	if err := instance.LoadBuilder(ctx); err != nil {
-		return nil, fmt.Errorf("load builder: %w", err)
-	}
-	if _, err := instance.Builder.Load(ctx); err != nil {
-		return nil, fmt.Errorf("load plugin context: %w", err)
-	}
-	return instance, nil
+	return p.host.Service(engine.ServiceTarget{Name: service.Name, Root: service.Dir()})
 }
 
 // ListCommands returns the plugin-owned commands a service exposes.
 func (p *planeImpl) ListCommands(ctx context.Context, service string) ([]Command, error) {
-	instance, err := p.loadInstance(ctx, service)
+	behavior, err := p.serviceBehavior(ctx, service)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := instance.Agent.ListCommands(ctx, &agentv0.ListCommandsRequest{})
+	resp, err := behavior.ListCommands(ctx, &agentv0.ListCommandsRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("list commands: %w", err)
 	}
@@ -64,11 +50,11 @@ func (p *planeImpl) RunCommand(ctx context.Context, req RunCommandRequest) (Comm
 	if req.Command == "" {
 		return CommandResult{}, fmt.Errorf("command is required")
 	}
-	instance, err := p.loadInstance(ctx, req.Service)
+	behavior, err := p.serviceBehavior(ctx, req.Service)
 	if err != nil {
 		return CommandResult{}, err
 	}
-	resp, err := instance.Agent.RunPluginCommand(ctx, &agentv0.RunPluginCommandRequest{
+	resp, err := behavior.RunCommand(ctx, &agentv0.RunPluginCommandRequest{
 		Command: req.Command,
 		Args:    req.Args,
 	})

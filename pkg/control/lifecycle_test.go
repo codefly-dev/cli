@@ -25,8 +25,7 @@ func TestBuildRejectsPush(t *testing.T) {
 }
 
 func TestStopIsNoopWhenNothingRunning(t *testing.T) {
-	// No flow is registered in orchestration.CurrentFlow() in a fresh test
-	// process, so Stop must succeed as a no-op.
+	// A fresh plane owns an empty flow registry, so Stop is a no-op.
 	if err := New().Stop(context.Background(), StopRequest{}); err != nil {
 		t.Fatalf("Stop with nothing running = %v, want nil", err)
 	}

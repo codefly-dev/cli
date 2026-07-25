@@ -30,28 +30,23 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/control"
+	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
-	"github.com/codefly-dev/core/agents/manager"
 	codecore "github.com/codefly-dev/core/code"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
-	"github.com/codefly-dev/core/network"
-	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
 	codefly "github.com/codefly-dev/sdk-go"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -118,16 +113,14 @@ type Server struct {
 	mindYAML  *MindYAML
 	grpcSrv   *grpc.Server
 	tlsConfig *tls.Config
+	host      *engine.WorkspaceHost
+
+	serviceMu       sync.Mutex
+	serviceBehavior serviceExecution
 
 	// terminals holds the PTY-backed interactive shells running in this gateway
 	// (the gateway IS inside the execution box, so the PTY lives here).
 	terminals *terminalManager
-
-	// Plugin management: one Code agent per service.
-	pluginMu   sync.Mutex
-	plugins    map[string]*pluginConn // service name → plugin connection
-	stopHealth chan struct{}          // closed to stop all health-monitor goroutines
-	healthWg   sync.WaitGroup         // tracks running health-monitor goroutines
 
 	workspaceChangesMu     sync.Mutex
 	workspaceChanges       *codecore.WorkspaceChangeMonitor
@@ -147,13 +140,14 @@ type Server struct {
 	executionDispatcher ExecutionDispatcher
 }
 
-// pluginConn holds a running agent process and its gRPC clients.
-type pluginConn struct {
-	agent     *resources.Agent
-	agentConn *manager.AgentConn
-	code      codev0.CodeClient
-	agentSvc  agentv0.AgentClient
-	runtime   runtimev0.RuntimeClient
+// serviceExecution is the transport-independent behavior consumed by the
+// Gateway adapter. engine.Service is the production implementation.
+type serviceExecution interface {
+	ExecuteCode(context.Context, *codev0.CodeRequest) (*codev0.CodeResponse, error)
+	Build(context.Context, *runtimev0.BuildRequest) (*runtimev0.BuildResponse, error)
+	Test(context.Context, *runtimev0.TestRequest) (*runtimev0.TestResponse, error)
+	Lint(context.Context, *runtimev0.LintRequest) (*runtimev0.LintResponse, error)
+	ListCommands(context.Context, *agentv0.ListCommandsRequest) (*agentv0.ListCommandsResponse, error)
 }
 
 // MindYAML mirrors the mind.yaml config structure.
@@ -195,12 +189,18 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("resolve gateway work directory: %w", err)
 	}
 	cfg.WorkDir = filepath.Clean(absWorkDir)
+	host, err := engine.NewWorkspaceHost(engine.Config{
+		Root:      cfg.WorkDir,
+		LogWriter: os.Stderr,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create workspace host: %w", err)
+	}
 	s := &Server{
 		cfg:                 cfg,
 		tlsConfig:           tlsConfig,
-		plugins:             make(map[string]*pluginConn),
+		host:                host,
 		preparedMutations:   make(map[string]*storedPreparedMutation),
-		stopHealth:          make(chan struct{}),
 		terminals:           newTerminalManager(),
 		executionRecorder:   cfg.ExecutionRecorder,
 		executionDispatcher: cfg.ExecutionDispatcher,
@@ -211,6 +211,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if err == nil {
 		var my MindYAML
 		if parseErr := yaml.Unmarshal(data, &my); parseErr != nil {
+			_ = host.Close()
 			return nil, fmt.Errorf("parse mind.yaml: %w", parseErr)
 		}
 		s.mindYAML = &my
@@ -334,384 +335,67 @@ func (s *Server) Serve(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		fmt.Println("[gateway] Shutting down...")
-		close(s.stopHealth)
-		s.healthWg.Wait()
-		s.shutdownPlugins()
-		_ = s.CloseWorkspaceChanges()
+		_ = s.Close()
 		s.grpcSrv.GracefulStop()
 	}()
 
 	return s.grpcSrv.Serve(lis)
 }
 
-// shutdownPlugins gracefully terminates all plugin agent processes.
-// Each agent gets 5 seconds to shut down after SIGTERM before being killed.
-func (s *Server) shutdownPlugins() {
-	s.pluginMu.Lock()
-	defer s.pluginMu.Unlock()
-
-	var wg sync.WaitGroup
-	for name, pc := range s.plugins {
-		wg.Add(1)
-		go func(name string, pc *pluginConn) {
-			defer wg.Done()
-			pid := pc.agentConn.ProcessInfo().PID
-			fmt.Printf("[gateway] Stopping plugin %q (PID %d) gracefully...\n", name, pid)
-
-			// Send SIGTERM for graceful shutdown.
-			_ = syscall.Kill(pid, syscall.SIGTERM)
-
-			// Poll every 100ms to see if the process exited. The poll
-			// goroutine is cancellable so it stops immediately on the
-			// timeout path instead of spinning until the next interval.
-			pollCtx, cancelPoll := context.WithCancel(context.Background())
-			exited := make(chan struct{})
-			go func() {
-				defer close(exited)
-				for {
-					select {
-					case <-pollCtx.Done():
-						return
-					default:
-					}
-					if err := syscall.Kill(pid, 0); err != nil {
-						return
-					}
-					time.Sleep(100 * time.Millisecond)
-				}
-			}()
-
-			select {
-			case <-exited:
-				// Process exited gracefully.
-			case <-time.After(5 * time.Second):
-				fmt.Printf("[gateway] Plugin %q (PID %d) did not exit in 5s, sending SIGKILL\n", name, pid)
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-			cancelPoll()
-
-			pc.agentConn.Close()
-			fmt.Printf("[gateway] Plugin %q stopped\n", name)
-		}(name, pc)
-	}
-	wg.Wait()
-	s.plugins = make(map[string]*pluginConn)
+func (s *Server) executionServiceBehavior() (serviceExecution, error) {
+	return s.executionServiceBehaviorWithAgent("")
 }
 
-// ─── Plugin Management ───────────────────────────────────────
-
-// ensurePlugin lazily loads the agent binary for the service and returns
-// the Code gRPC client.
-//
-// Resolution order:
-//  1. Check cache (already running plugin for this service).
-//  2. Try locally-installed binaries first (from `codefly agent build`).
-//  3. Fall back to GitHub release pinning + download.
-func (s *Server) ensurePlugin(ctx context.Context) (codev0.CodeClient, error) {
-	svcName := s.mindYAML.Service
-
-	s.pluginMu.Lock()
-	defer s.pluginMu.Unlock()
-
-	if pc, ok := s.plugins[svcName]; ok {
-		return pc.code, nil
+func (s *Server) executionServiceBehaviorWithAgent(agentOverride string) (serviceExecution, error) {
+	s.serviceMu.Lock()
+	defer s.serviceMu.Unlock()
+	if s.serviceBehavior != nil {
+		return s.serviceBehavior, nil
 	}
-
-	agentName := pluginToAgentName(s.mindYAML.Plugin)
-	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, agentName)
-	if err != nil {
-		return nil, fmt.Errorf("parse agent %q: %w", agentName, err)
+	if s.host == nil {
+		return nil, fmt.Errorf("workspace host is unavailable")
 	}
-
-	// Resolve version: prefer local binaries, fall back to GitHub releases.
-	if _, err := manager.ResolveLatest(ctx, agent); err != nil {
-		return nil, fmt.Errorf("resolve agent %s version: %w", agentName, err)
-	}
-
-	fmt.Printf("[gateway] Loading plugin %s (v%s)...\n", agent.Name, agent.Version)
-
-	// Wrap the load in a 60s timeout so the gateway doesn't hang forever.
-	loadCtx, loadCancel := context.WithTimeout(ctx, 60*time.Second)
-	defer loadCancel()
-
-	// Tee agent stderr to gateway stdout so debug mode surfaces agent logs.
-	agentLogWriter := newPrefixWriter(os.Stderr, fmt.Sprintf("[agent:%s] ", agent.Name))
-
-	agentConn, err := manager.Load(loadCtx, agent,
-		manager.WithLogWriter(agentLogWriter),
-		manager.WithWorkDir(s.cfg.WorkDir),
-		// The local gateway's service/code agents need the developer process's
-		// ambient filesystem/runtime access and do not act as a Toolbox principal.
-		manager.WithoutSandbox(),
-		manager.WithoutPrincipal(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("load agent %s: %w", agentName, err)
-	}
-
-	grpcConn := agentConn.GRPCConn()
-	codeClient := codev0.NewCodeClient(grpcConn)
-	agentClient := agentv0.NewAgentClient(grpcConn)
-	runtimeClient := runtimev0.NewRuntimeClient(grpcConn)
-	if err := s.initializePluginRuntime(loadCtx, runtimeClient); err != nil {
-		agentConn.Close()
-		return nil, fmt.Errorf("initialize agent %s runtime: %w", agentName, err)
-	}
-
-	s.plugins[svcName] = &pluginConn{
-		agent:     agent,
-		agentConn: agentConn,
-		code:      codeClient,
-		agentSvc:  agentClient,
-		runtime:   runtimeClient,
-	}
-
-	// Start health monitor: evict dead plugins so they auto-reload on next call.
-	s.healthWg.Add(1)
-	go s.monitorPlugin(svcName, agentConn)
-
-	fmt.Printf("[gateway] Plugin %s loaded (PID %d)\n", agent.Name, agentConn.ProcessInfo().PID)
-	return codeClient, nil
-}
-
-// initializePluginRuntime performs the same mandatory Load/Init lifecycle used
-// by `codefly run`, without starting a second copy of the target service.
-// Gateway Build/Test/Lint calls execute inside the language plugin and require
-// its source location, environment, and native runner to exist first.
-func (s *Server) initializePluginRuntime(
-	ctx context.Context,
-	runtimeClient runtimev0.RuntimeClient,
-) error {
-	workspaceDir, err := parentResourceDir(s.cfg.WorkDir, resources.WorkspaceConfigurationName)
-	if err != nil {
-		return err
-	}
-	serviceDir, err := parentResourceDir(s.cfg.WorkDir, resources.ServiceConfigurationName)
-	if err != nil {
-		return err
-	}
-	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
-	if err != nil {
-		return fmt.Errorf("load workspace: %w", err)
-	}
-	var module *resources.Module
-	if workspace.Layout == resources.LayoutKindFlat {
-		module, err = workspace.LoadModuleFromName(ctx, workspace.Name)
+	name := filepath.Base(s.cfg.WorkDir)
+	agentName := ""
+	if s.mindYAML != nil {
+		name = s.mindYAML.Service
+		agentName = pluginToAgentName(s.mindYAML.Plugin)
+	} else if agentOverride != "" {
+		agentName = agentOverride
 	} else {
-		var moduleDir string
-		moduleDir, err = parentResourceDir(s.cfg.WorkDir, resources.ModuleConfigurationName)
-		if err == nil {
-			module, err = resources.LoadModuleFromDir(ctx, moduleDir)
+		var err error
+		agentName, err = engine.DetectSourceAgent(s.cfg.WorkDir)
+		if err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 	}
-	if err != nil {
-		return fmt.Errorf("load enclosing module: %w", err)
-	}
-	if module == nil {
-		return fmt.Errorf("load enclosing module: no module resolved")
-	}
-	service, err := resources.LoadServiceFromDir(ctx, serviceDir)
-	if err != nil {
-		return fmt.Errorf("load service: %w", err)
-	}
-	service.WithModule(module.Name)
-	relative, err := workspace.RelativeDir(service)
-	if err != nil {
-		return fmt.Errorf("resolve service path relative to workspace: %w", err)
-	}
-	environment := resources.LocalEnvironment()
-	environmentProto, err := environment.Proto()
-	if err != nil {
-		return fmt.Errorf("build local environment: %w", err)
-	}
-	identity := &basev0.ServiceIdentity{
-		Name:                service.Name,
-		Version:             service.Version,
-		Module:              module.Name,
-		Workspace:           workspace.Name,
-		WorkspacePath:       workspace.Dir(),
-		RelativeToWorkspace: relative,
-	}
-	loadResponse, err := runtimeClient.Load(ctx, &runtimev0.LoadRequest{
-		Identity:    identity,
-		Environment: environmentProto,
+	service, err := s.host.Service(engine.ServiceTarget{
+		Name:  name,
+		Root:  s.cfg.WorkDir,
+		Agent: agentName,
 	})
 	if err != nil {
-		return fmt.Errorf("runtime Load: %w", err)
+		return nil, fmt.Errorf("bind gateway service: %w", err)
 	}
-	if loadResponse == nil || loadResponse.GetStatus().GetState() != runtimev0.LoadStatus_READY {
-		return fmt.Errorf("runtime Load did not become ready: %s", loadResponse.GetStatus().GetMessage())
-	}
-
-	networkManager, err := network.NewRuntimeManager(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("create local network manager: %w", err)
-	}
-	networkManager.WithTemporaryPorts()
-	resourceIdentity := &resources.ServiceIdentity{
-		Name:                service.Name,
-		Version:             service.Version,
-		Module:              module.Name,
-		Workspace:           workspace.Name,
-		WorkspacePath:       workspace.Dir(),
-		RelativeToWorkspace: relative,
-	}
-	mappings, err := networkManager.GenerateNetworkMappings(
-		ctx,
-		environment,
-		workspace,
-		resourceIdentity,
-		loadResponse.GetEndpoints(),
-	)
-	if err != nil {
-		return fmt.Errorf("generate local runtime mappings: %w", err)
-	}
-	initResponse, err := runtimeClient.Init(ctx, &runtimev0.InitRequest{
-		RuntimeContext:          resources.NewRuntimeContextNative(),
-		ProposedNetworkMappings: mappings,
-	})
-	if err != nil {
-		return fmt.Errorf("runtime Init: %w", err)
-	}
-	if initResponse == nil || initResponse.GetStatus().GetState() != runtimev0.InitStatus_READY {
-		return fmt.Errorf("runtime Init did not become ready: %s", initResponse.GetStatus().GetMessage())
-	}
-	return nil
+	s.serviceBehavior = service
+	return service, nil
 }
 
-func parentResourceDir(start, configurationName string) (string, error) {
-	current, err := filepath.Abs(start)
-	if err != nil {
-		return "", fmt.Errorf("resolve %s search root: %w", configurationName, err)
+func (s *Server) sourceExecute(ctx context.Context, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
+	if s.host == nil || s.host.Source() == nil {
+		return nil, fmt.Errorf("workspace source behavior is unavailable")
 	}
-	for {
-		info, statErr := os.Stat(filepath.Join(current, configurationName))
-		if statErr == nil && !info.IsDir() {
-			return current, nil
-		}
-		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			return "", fmt.Errorf("inspect %s: %w", configurationName, statErr)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("%s not found above %s", configurationName, start)
-		}
-		current = parent
-	}
+	return s.host.Source().ExecuteCode(ctx, request)
 }
 
-// ensureRuntime returns the Runtime gRPC client, loading the plugin if needed.
-func (s *Server) ensureRuntime(ctx context.Context) (runtimev0.RuntimeClient, error) {
-	_, err := s.ensurePlugin(ctx)
+// proxyExecute sends a unified CodeRequest to the shared service behavior.
+// Read-only requests may reconnect once; ambiguous mutations are never replayed.
+func (s *Server) proxyExecute(ctx context.Context, req *codev0.CodeRequest) (*codev0.CodeResponse, error) {
+	service, err := s.executionServiceBehavior()
 	if err != nil {
 		return nil, err
 	}
-	svcName := s.mindYAML.Service
-	s.pluginMu.Lock()
-	defer s.pluginMu.Unlock()
-	pc := s.plugins[svcName]
-	return pc.runtime, nil
-}
-
-// monitorPlugin checks every 5s if the agent process is still alive.
-// If it dies, the plugin is evicted from cache so ensurePlugin reloads it.
-func (s *Server) monitorPlugin(svcName string, ac *manager.AgentConn) {
-	defer s.healthWg.Done()
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-s.stopHealth:
-			return
-		case <-ticker.C:
-			conn := ac.GRPCConn()
-			if conn == nil {
-				s.evictPlugin(svcName)
-				return
-			}
-			// Primary check: is the agent PROCESS still alive? A crashed plugin
-			// leaves its gRPC conn in TransientFailure (endlessly reconnecting),
-			// NOT Shutdown — so the state check alone parked dead plugins in
-			// cache forever. Probe the PID directly (this is what the doc
-			// comment promised).
-			if pi := ac.ProcessInfo(); pi != nil && pi.PID > 0 && !processAlive(pi.PID) {
-				fmt.Printf("[gateway] Plugin %q process (PID %d) is dead, evicting from cache\n", svcName, pi.PID)
-				s.evictPlugin(svcName)
-				return
-			}
-			// Secondary: the gRPC connection was explicitly shut down.
-			if conn.GetState() == connectivity.Shutdown {
-				fmt.Printf("[gateway] Plugin %q connection shut down, evicting from cache\n", svcName)
-				s.evictPlugin(svcName)
-				return
-			}
-		}
-	}
-}
-
-// processAlive reports whether the process with the given pid is still running
-// (signal 0 probes existence without affecting the process).
-func processAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
-
-// evictPlugin removes a plugin from the cache so ensurePlugin will reload it.
-func (s *Server) evictPlugin(svcName string) {
-	s.pluginMu.Lock()
-	defer s.pluginMu.Unlock()
-	if pc, ok := s.plugins[svcName]; ok {
-		pc.agentConn.Close()
-		delete(s.plugins, svcName)
-		fmt.Printf("[gateway] Evicted dead plugin %q\n", svcName)
-	}
-}
-
-// withRetry wraps an RPC call with automatic retry on connection failure.
-// If the call returns codes.Unavailable or codes.Internal, the plugin is
-// evicted and reloaded, then the call is retried once.
-func (s *Server) withRetry(ctx context.Context, rpcName string, fn func(codev0.CodeClient) error) error {
-	code, err := s.ensurePlugin(ctx)
-	if err != nil {
-		return err
-	}
-	err = fn(code)
-	if err == nil {
-		return nil
-	}
-	// Check if this is a transient connection error worth retrying.
-	st, ok := status.FromError(err)
-	if !ok || (st.Code() != codes.Unavailable && st.Code() != codes.Internal) {
-		return err
-	}
-
-	fmt.Printf("[gateway] %s failed with %s, reconnecting plugin...\n", rpcName, st.Code())
-	s.evictPlugin(s.mindYAML.Service)
-
-	code, err = s.ensurePlugin(ctx)
-	if err != nil {
-		return fmt.Errorf("retry %s: reconnect failed: %w", rpcName, err)
-	}
-	return fn(code)
-}
-
-// proxyExecute sends a unified CodeRequest to the plugin via Execute RPC,
-// with automatic retry on transient connection failures.
-func (s *Server) proxyExecute(ctx context.Context, req *codev0.CodeRequest) (*codev0.CodeResponse, error) {
-	var result *codev0.CodeResponse
-	err := s.withRetry(ctx, "Execute", func(code codev0.CodeClient) error {
-		resp, err := code.Execute(ctx, req)
-		if err != nil {
-			return err
-		}
-		result = resp
-		return nil
-	})
-	return result, err
+	return service.ExecuteCode(ctx, req)
 }
 
 func codeFailureMessage(response *codev0.CodeResponse) string {
@@ -727,13 +411,13 @@ func codeFailureMessage(response *codev0.CodeResponse) string {
 func pluginToAgentName(plugin string) string {
 	switch plugin {
 	case "go-generic", "generic-go":
-		return "go-generic:latest"
+		return "go:latest"
 	case "rust-generic", "generic-rust":
-		return "rust-generic:latest"
+		return "rust:latest"
 	case "node-generic", "generic-node":
-		return "node-generic:latest"
+		return "nextjs:latest"
 	case "python-generic", "generic-python":
-		return "python-generic:latest"
+		return "python:latest"
 	default:
 		return plugin + ":latest"
 	}
@@ -887,7 +571,11 @@ func (s *Server) ReadFile(ctx context.Context, req *gatewayv1.ReadFileRequest) (
 		if os.IsNotExist(err) {
 			return &gatewayv1.ReadFileResponse{Exists: false}, nil
 		}
-		return nil, status.Errorf(codes.Internal, "read %s: %v", rel, err)
+		displayPath := rel
+		if displayPath == "" {
+			displayPath = "."
+		}
+		return nil, status.Errorf(codes.Internal, "read %s: %s", displayPath, gatewayErrorMessage(s.serviceRoot(), err))
 	}
 	return &gatewayv1.ReadFileResponse{Content: string(data), Exists: true}, nil
 }
@@ -1009,6 +697,23 @@ func (s *Server) CloseWorkspaceChanges() error {
 		return nil
 	}
 	return monitor.Close()
+}
+
+// Close releases every lifecycle-owned resource used by an in-process or gRPC
+// Gateway. It is safe to call more than once.
+func (s *Server) Close() error {
+	if s == nil {
+		return nil
+	}
+	workspaceErr := s.CloseWorkspaceChanges()
+	if s.terminals != nil {
+		s.terminals.close()
+	}
+	var hostErr error
+	if s.host != nil {
+		hostErr = s.host.Close()
+	}
+	return errors.Join(workspaceErr, hostErr)
 }
 
 func (s *Server) SubscribeWorkspaceChanges(req *gatewayv1.SubscribeWorkspaceChangesRequest, stream grpc.ServerStreamingServer[gatewayv1.WorkspaceChangeEvent]) error {
@@ -1212,7 +917,11 @@ func (s *Server) applyEdit(
 	req *gatewayv1.ApplyEditRequest,
 	rel string,
 ) (*gatewayv1.ApplyEditResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplyEdit{ApplyEdit: &codev0.ApplyEditRequest{
+	execute := s.proxyExecute
+	if s.mindYAML == nil {
+		execute = s.sourceExecute
+	}
+	resp, err := execute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplyEdit{ApplyEdit: &codev0.ApplyEditRequest{
 		File: rel, Find: req.GetFind(), Replace: req.GetReplace(), FixMode: req.GetFixMode(), DryRun: req.GetDryRun(),
 	}}})
 	if err != nil {
@@ -1505,11 +1214,11 @@ func (s *Server) GetProjectInfo(ctx context.Context, _ *gatewayv1.GetProjectInfo
 // ─── Build / Lint / Test ─────────────────────────────────────
 
 func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gatewayv1.BuildResponse, error) {
-	rt, err := s.ensureRuntime(ctx)
+	service, err := s.executionServiceBehavior()
 	if err != nil {
 		return &gatewayv1.BuildResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 	}
-	resp, err := rt.Build(ctx, &runtimev0.BuildRequest{})
+	resp, err := service.Build(ctx, &runtimev0.BuildRequest{})
 	if err != nil {
 		return &gatewayv1.BuildResponse{Success: false, Output: fmt.Sprintf("plugin build RPC failed: %v", err)}, nil
 	}
@@ -1526,11 +1235,11 @@ func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gateway
 }
 
 func (s *Server) Lint(ctx context.Context, _ *gatewayv1.LintRequest) (*gatewayv1.LintResponse, error) {
-	rt, err := s.ensureRuntime(ctx)
+	service, err := s.executionServiceBehavior()
 	if err != nil {
 		return &gatewayv1.LintResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 	}
-	resp, err := rt.Lint(ctx, &runtimev0.LintRequest{})
+	resp, err := service.Lint(ctx, &runtimev0.LintRequest{})
 	if err != nil {
 		return &gatewayv1.LintResponse{Success: false, Output: fmt.Sprintf("plugin lint RPC failed: %v", err)}, nil
 	}
@@ -1554,13 +1263,20 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	if err := s.validateService(requestedService); err != nil {
 		return nil, err
 	}
-	rt, err := s.ensureRuntime(ctx)
-	if err != nil {
-		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
-	}
 	runtimeReq := &runtimev0.TestRequest{}
 	if req != nil && req.GetRuntimeRequest() != nil {
 		runtimeReq = req.GetRuntimeRequest()
+	}
+	service, err := s.executionServiceBehavior()
+	if err != nil && s.mindYAML == nil {
+		if formula := runtimeReq.GetFormula(); formula != nil {
+			if agentName := engine.DetectFormulaAgent(formula.GetCommand()); agentName != "" {
+				service, err = s.executionServiceBehaviorWithAgent(agentName)
+			}
+		}
+	}
+	if err != nil {
+		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 	}
 	selectionSHA256, err := deterministicProtoSHA256(runtimeReq)
 	if err != nil {
@@ -1583,7 +1299,7 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	// planner. Forward the runtime request exactly so structured selections and
 	// their acknowledgement identity reach the language plugin unchanged.
 	effectStarted := time.Now()
-	resp, err := rt.Test(ctx, runtimeReq)
+	resp, err := service.Test(ctx, runtimeReq)
 	if err != nil {
 		finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
 			Stage: executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
@@ -1958,30 +1674,21 @@ func (s *Server) ListAllCommands(ctx context.Context, _ *gatewayv1.ListAllComman
 	}
 	commands = append(commands, builtins...)
 
-	// Aggregate commands from loaded plugin agents.
-	s.pluginMu.Lock()
-	plugins := make(map[string]*pluginConn, len(s.plugins))
-	for k, v := range s.plugins {
-		plugins[k] = v
-	}
-	s.pluginMu.Unlock()
-
-	for svcName, pc := range plugins {
-		if pc.agentSvc == nil {
-			continue
-		}
-		resp, err := pc.agentSvc.ListCommands(ctx, &agentv0.ListCommandsRequest{})
-		if err != nil {
-			continue
-		}
-		for _, cmd := range resp.GetCommands() {
-			commands = append(commands, &gatewayv1.AvailableCommand{
-				Name:        cmd.GetName(),
-				Description: cmd.GetDescription(),
-				Aliases:     cmd.GetAliases(),
-				Tags:        cmd.GetTags(),
-				Plugin:      svcName,
-			})
+	// Ask the configured service behavior. Agent startup remains lazy and is
+	// owned by engine.WorkspaceHost rather than this transport adapter.
+	service, err := s.executionServiceBehavior()
+	if err == nil {
+		resp, listErr := service.ListCommands(ctx, &agentv0.ListCommandsRequest{})
+		if listErr == nil {
+			for _, cmd := range resp.GetCommands() {
+				commands = append(commands, &gatewayv1.AvailableCommand{
+					Name:        cmd.GetName(),
+					Description: cmd.GetDescription(),
+					Aliases:     cmd.GetAliases(),
+					Tags:        cmd.GetTags(),
+					Plugin:      s.mindYAML.Service,
+				})
+			}
 		}
 	}
 
@@ -2053,6 +1760,23 @@ func (s *Server) GitStatus(ctx context.Context, _ *gatewayv1.GitStatusRequest) (
 }
 
 func (s *Server) GitDiff(ctx context.Context, req *gatewayv1.GitDiffRequest) (*gatewayv1.GitDiffResponse, error) {
+	if !req.GetStaged() {
+		path, err := cleanGatewayPath(req.GetPath())
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		response, err := s.sourceExecute(ctx, &codev0.CodeRequest{
+			Operation: &codev0.CodeRequest_GitDiff{GitDiff: &codev0.GitDiffRequest{Path: path}},
+		})
+		if err != nil {
+			return &gatewayv1.GitDiffResponse{Error: gatewayErrorMessage(s.serviceRoot(), err)}, nil
+		}
+		result := response.GetGitDiff()
+		if result == nil {
+			return &gatewayv1.GitDiffResponse{Error: codeFailureMessage(response)}, nil
+		}
+		return &gatewayv1.GitDiffResponse{Diff: result.GetDiff(), Error: codeFailureMessage(response)}, nil
+	}
 	dr := control.GitDiffRequest{Staged: req.Staged}
 	if req.Path != "" {
 		path, err := cleanGatewayPath(req.Path)
@@ -2066,6 +1790,19 @@ func (s *Server) GitDiff(ctx context.Context, req *gatewayv1.GitDiffRequest) (*g
 		return &gatewayv1.GitDiffResponse{Error: err.Error()}, nil
 	}
 	return &gatewayv1.GitDiffResponse{Diff: diff}, nil
+}
+
+func gatewayErrorMessage(root string, err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	cleanRoot := filepath.Clean(root)
+	if cleanRoot != "" && cleanRoot != "." {
+		message = strings.ReplaceAll(message, cleanRoot+string(filepath.Separator), "")
+		message = strings.ReplaceAll(message, cleanRoot, ".")
+	}
+	return message
 }
 
 func (s *Server) GitLog(ctx context.Context, req *gatewayv1.GitLogRequest) (*gatewayv1.GitLogResponse, error) {
@@ -2216,37 +1953,6 @@ func (s *Server) runHTTPCheck(ctx context.Context, name string, ch *gatewayv1.Ht
 		return &gatewayv1.CheckResult{Name: name, Passed: false, Output: bodyStr, Error: fmt.Sprintf("body does not contain %q", ch.BodyContains)}
 	}
 	return &gatewayv1.CheckResult{Name: name, Passed: true, Output: bodyStr}
-}
-
-// prefixWriter wraps an io.Writer, prepending a fixed prefix to each
-// line of output. It buffers partial lines until a newline arrives.
-type prefixWriter struct {
-	w      io.Writer
-	prefix string
-	buf    []byte
-	mu     sync.Mutex
-}
-
-func newPrefixWriter(w io.Writer, prefix string) *prefixWriter {
-	return &prefixWriter{w: w, prefix: prefix}
-}
-
-func (pw *prefixWriter) Write(p []byte) (int, error) {
-	pw.mu.Lock()
-	defer pw.mu.Unlock()
-
-	n := len(p)
-	pw.buf = append(pw.buf, p...)
-	for {
-		idx := bytes.IndexByte(pw.buf, '\n')
-		if idx < 0 {
-			break
-		}
-		line := pw.buf[:idx]
-		pw.buf = pw.buf[idx+1:]
-		fmt.Fprintf(pw.w, "%s%s\n", pw.prefix, line)
-	}
-	return n, nil
 }
 
 // rpcLogInterceptor returns a gRPC unary server interceptor that logs

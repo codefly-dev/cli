@@ -1,11 +1,9 @@
 package control
 
-// This file defines the control plane's own request/response types — the DTO
-// boundary described in doc.go. They are intentionally transport-agnostic:
-// adapters translate gateway protobufs / MCP JSON / cobra flags to and from
-// these. They start deliberately small; fields are added as each capability
-// group is lifted from a legacy surface (Phase 1) rather than speculated up
-// front.
+// This file defines transport-neutral workspace-orchestration types. Typed
+// per-service leaf behavior uses the existing Codefly agent protobufs in
+// pkg/engine; these Go types cover the higher-level operations that do not
+// already have an authoritative plugin contract.
 
 // --- Introspection ---
 

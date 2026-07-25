@@ -132,6 +132,25 @@ func TestMCPServer_ListTools(t *testing.T) {
 	}
 }
 
+func TestMCPToolsAreCallableThroughInProcessToolbox(t *testing.T) {
+	server, err := NewServer(context.Background(), "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	server.RegisterTool(Tool{Name: "in_process_echo"}, func(_ context.Context, arguments map[string]string) ([]Content, error) {
+		return []Content{TextContent(arguments["text"])}, nil
+	})
+	content, err := server.Toolbox().Call(context.Background(), "in_process_echo", map[string]string{"text": "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != 1 || content[0].Text != "shared" {
+		t.Fatalf("toolbox content = %+v", content)
+	}
+}
+
 func TestMCPServer_HandleRequest(t *testing.T) {
 	ctx := context.Background()
 	server, err := NewServer(ctx, "test-version")

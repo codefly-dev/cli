@@ -135,11 +135,15 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 
 // Run starts a service and its dependency graph (RunMode). Flow.Start blocks for
 // the stack's lifetime, so it runs in the background and Run returns once the
-// stack is up (or, when req.Wait is set, once it is healthy). The flow registers
-// itself in orchestration.CurrentFlow(), so a later Stop() reaches it. The caller
-// MUST pass a context that governs the run's lifetime — cancelling it stops the
-// stack.
+// stack is up (or, when req.Wait is set, once it is healthy). The plane's
+// WorkspaceHost owns the flow so later status/stop calls do not depend on
+// process-global state. The caller MUST pass a context that governs the run's
+// lifetime — cancelling it stops the stack.
 func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) {
+	if p.host == nil || p.host.Flows() == nil {
+		return RunHandle{}, fmt.Errorf("control plane has no workspace host")
+	}
+	flows := p.host.Flows()
 	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(f *orchestration.Flow) {
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
@@ -151,18 +155,29 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 	if err != nil {
 		return RunHandle{}, err
 	}
+	flowID := req.Service
+	if err := flows.Register(flowID, flow); err != nil {
+		stopFlow(flow)
+		return RunHandle{}, err
+	}
 	// Buffered so the final Start result never blocks the goroutine, even when
 	// nobody is waiting (req.Wait == false).
 	started := make(chan error, 1)
-	go func() { started <- flow.Start(ctx) }()
+	go func() {
+		err := flow.Start(ctx)
+		started <- err
+		if flows.Release(flowID, flow) {
+			stopFlow(flow)
+		}
+	}()
 
 	if req.Wait {
 		if err := waitReady(ctx, flow, started); err != nil {
-			stopFlow(flow)
+			_ = flows.Stop(flowID, false)
 			return RunHandle{}, err
 		}
 	}
-	return RunHandle{FlowID: req.Service}, nil
+	return RunHandle{FlowID: flowID}, nil
 }
 
 // waitReady blocks until the flow reports ready, the flow exits/fails, or ctx is
@@ -189,19 +204,18 @@ func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan err
 	}
 }
 
-// Stop stops the active flow, matching the legacy StopFlow/DestroyFlow (both of
-// which simply call Flow.Stop()). NameFilter and Destroy are not yet honored at
-// the flow level — noted so the adapters don't assume otherwise.
+// Stop stops the host-owned active flow. NameFilter remains a service-level
+// filter and is not yet supported by orchestration.
 func (p *planeImpl) Stop(ctx context.Context, req StopRequest) error {
-	flow := orchestration.CurrentFlow()
+	if p.host == nil || p.host.Flows() == nil {
+		return nil
+	}
+	id, flow := p.host.Flows().Active()
 	if flow == nil {
 		return nil // nothing running
 	}
-	if err := flow.Stop(); err != nil {
+	if err := p.host.Flows().Stop(id, req.Destroy); err != nil {
 		return fmt.Errorf("stop flow: %w", err)
-	}
-	for _, key := range flow.AgentCacheKeys() {
-		services.ClearAgent(key)
 	}
 	return nil
 }
