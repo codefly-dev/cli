@@ -143,8 +143,11 @@ func (p *planeImpl) OpenTerminal(ctx context.Context, req OpenTerminalRequest) (
 	go func() {
 		_ = cmd.Wait()
 		_ = f.Close()
-		close(sess.done)
 		p.terminals.remove(string(id))
+		// done means teardown is fully observable, including removal from the
+		// manager. Closing it first lets CloseTerminal return while
+		// ListTerminals can still see the dead session.
+		close(sess.done)
 	}()
 	return id, nil
 }
