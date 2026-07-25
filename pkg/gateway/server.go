@@ -1436,11 +1436,16 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 		}
 	}
 	sort.Strings(changed)
+	state := "formatted"
+	if len(changed) == 0 {
+		state = "clean"
+	}
 	return &gatewayv1.FormatResponse{
 		Success:      len(diagnostics) == 0,
 		ChangedFiles: changed,
 		Errors:       diagnostics,
 		Output:       strings.TrimSpace(output.String()),
+		Act:          actReceipt("code.format.applied", req.GetService(), state, strings.Join(changed, ","), "codefly-plugin"),
 	}, nil
 }
 
@@ -2128,13 +2133,17 @@ func (s *Server) ForgeRequestReview(ctx context.Context, req *gatewayv1.ForgeReq
 }
 
 func gitActReceipt(kind, target, revision string) *gatewayv1.ActReceipt {
+	return actReceipt(kind, target, "applied", revision, "git")
+}
+
+func actReceipt(kind, target, state, revision, source string) *gatewayv1.ActReceipt {
 	return &gatewayv1.ActReceipt{
 		EventId:             fmt.Sprintf("%s:%s:%s", kind, target, revision),
 		Kind:                kind,
 		Target:              target,
-		State:               "applied",
+		State:               state,
 		Revision:            revision,
-		AuthoritativeSource: "git",
+		AuthoritativeSource: source,
 		ObservedAt:          timestamppb.Now(),
 	}
 }
