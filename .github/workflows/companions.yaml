@@ -35,12 +35,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out cli
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: cli
 
       - name: Check out core
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: codefly-dev/core
           ref: ${{ github.event.inputs.core_ref || 'main' }}
@@ -50,7 +50,7 @@ jobs:
           path: core
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: cli/go.mod
           cache: false
@@ -81,12 +81,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out cli
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: cli
 
       - name: Check out core
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: codefly-dev/core
           ref: ${{ github.event.inputs.core_ref || 'main' }}
@@ -94,7 +94,7 @@ jobs:
           path: core
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: cli/go.mod
           cache: false
