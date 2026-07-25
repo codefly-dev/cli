@@ -1,3 +1,5 @@
+//go:build integration
+
 package control
 
 import (
@@ -6,7 +8,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"testing"
@@ -14,7 +15,6 @@ import (
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/runners/dockerrun"
 )
 
 // A workspace with an origin service ("api") that declares a real redis
@@ -54,7 +54,7 @@ module: app
 agent:
     kind: codefly:service
     name: redis
-    version: latest
+    version: 0.0.74
     publisher: codefly.dev
 endpoints:
     - name: tcp
@@ -157,12 +157,6 @@ func TestHostPortFromConnectionStringRejectsUnparseable(t *testing.T) {
 // started dependency's connection string via Configurations, connects to it
 // for real, and tears down with no leaked containers or agent processes.
 func TestRunExcludeRootStartsRealDependencyInProcess(t *testing.T) {
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not available")
-	}
-	if !dockerrun.DockerEngineRunning(context.Background()) {
-		t.Skip("docker engine not reachable")
-	}
 	root := writeRunDependencyWorkspace(t)
 
 	plane, err := NewAt(root)
