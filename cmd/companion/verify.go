@@ -20,9 +20,9 @@ import (
 // Scope: verify resolves tags from info.codefly.yaml, the source of truth
 // the issue and `publish` both use. It does NOT chase image references core
 // hardcodes in Go code outside that convention (e.g. a DAP language image
-// pinned to a literal tag) — keeping those in sync with info.codefly.yaml
-// is core's responsibility, not something the CLI can derive from a
-// checkout.
+// pinned to a literal tag) — keeping those in sync with info.codefly.yaml,
+// or exposing the embedded set as data the CLI can consume, is tracked in
+// codefly-dev/core#73 and can't be derived from a checkout here.
 var VerifyCmd = &cobra.Command{
 	Use:   "verify [name]",
 	Short: "Verify companion images defined under core/companions exist in the registry",
