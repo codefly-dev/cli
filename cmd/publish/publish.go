@@ -36,8 +36,10 @@ type Mode string
 
 const (
 	// ModeAgent — service-agent or module-agent repo. Bumps
-	// agent.codefly.yaml. Goreleaser typically picks up the tag and
-	// produces release artifacts the agent loader downloads.
+	// agent.codefly.yaml. Beyond tagging, agent publishes run
+	// release-grade CI and upload the loader-compatible release assets
+	// (darwin/arm64 + linux/amd64 archives and SBOMs) that
+	// `codefly agent install` downloads — see cmd/publish/agent_release.go.
 	ModeAgent Mode = "agent"
 	// ModeCoreModule — the codefly core repo. Bumps version/info.codefly.yaml.
 	ModeCoreModule Mode = "core-module"

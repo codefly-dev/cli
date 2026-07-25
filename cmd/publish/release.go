@@ -3,6 +3,7 @@ package publish
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -18,6 +19,20 @@ type Engine struct {
 	BumpType string // "patch" | "minor" | "major"
 	DryRun   bool
 	WorkDir  string // git operations run from here; defaults to manifest's dir parent
+
+	// BeforeCommit, when set, runs after the bumped version is written to
+	// the manifest (the working tree now carries the new version) but
+	// before any git mutation. Returning an error restores the manifest
+	// and aborts with nothing committed, tagged, or pushed. Agent mode
+	// uses it to run release-grade CI and stage loader release assets
+	// built from the exact version being tagged.
+	BeforeCommit func(ctx context.Context, newTag string) error
+
+	// AfterPush, when set, runs after the tag is pushed to origin. Agent
+	// mode uses it to create the GitHub release, upload the loader
+	// assets, and verify them. An error is returned with the tag already
+	// live — the caller reports it rather than pretending it didn't ship.
+	AfterPush func(ctx context.Context, newTag string) error
 }
 
 // Release executes the full publish flow — pre-flight gates, bump,
@@ -65,6 +80,18 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("write version: %w", err)
 	}
 
+	// Gate on BeforeCommit while the tree is still pristine except for the
+	// version bump. A failure here (e.g. release CI failed, or a required
+	// platform is missing) must leave the repo exactly as it was found.
+	if e.BeforeCommit != nil {
+		if err := e.BeforeCommit(ctx, newTag); err != nil {
+			if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
+				return "", errors.Join(err, restoreErr)
+			}
+			return "", err
+		}
+	}
+
 	if err := e.gitCommit(ctx, newTag); err != nil {
 		return "", fmt.Errorf("commit: %w", err)
 	}
@@ -74,7 +101,23 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	if err := e.gitPush(ctx, newTag); err != nil {
 		return "", fmt.Errorf("push: %w", err)
 	}
+
+	if e.AfterPush != nil {
+		if err := e.AfterPush(ctx, newTag); err != nil {
+			return newTag, err
+		}
+	}
 	return newTag, nil
+}
+
+// restoreManifest reverts the working-tree version bump after an aborted
+// release. Pre-flight guaranteed a clean tree, so checking out the
+// manifest restores the previously committed version verbatim.
+func (e *Engine) restoreManifest(ctx context.Context) error {
+	if _, err := e.git(ctx, "checkout", "--", e.Manifest.Path); err != nil {
+		return fmt.Errorf("restore manifest after aborted release: %w", err)
+	}
+	return nil
 }
 
 // --- Pre-flight ----------------------------------------------------
@@ -266,6 +309,16 @@ func (e *Engine) ReTag(ctx context.Context) (string, error) {
 		return tag, nil
 	}
 
+	// Re-tag is the recovery path for an agent whose release assets never
+	// uploaded (that is its documented purpose). Rebuild them from the
+	// current version before moving the tag; no manifest is written, so a
+	// failure here needs no revert.
+	if e.BeforeCommit != nil {
+		if err := e.BeforeCommit(ctx, tag); err != nil {
+			return "", err
+		}
+	}
+
 	// Delete locally first (idempotent).
 	if localExists {
 		if _, err := e.git(ctx, "tag", "-d", tag); err != nil {
@@ -279,6 +332,12 @@ func (e *Engine) ReTag(ctx context.Context) (string, error) {
 	// Force-push the tag specifically. NOT main.
 	if _, err := e.git(ctx, "push", "origin", tag, "--force"); err != nil {
 		return "", fmt.Errorf("force-push tag: %w", err)
+	}
+
+	if e.AfterPush != nil {
+		if err := e.AfterPush(ctx, tag); err != nil {
+			return tag, err
+		}
 	}
 	return tag, nil
 }
