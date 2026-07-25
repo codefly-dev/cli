@@ -63,6 +63,114 @@ func TestLoadAgentCIManifestRejectsIncompleteAndUnsupported(t *testing.T) {
 	}
 }
 
+func TestLoadAgentCIManifestConformanceModes(t *testing.T) {
+	base := "publisher: codefly\nkind: codefly:service\nname: python\nversion: 1.2.3\n"
+	tests := []struct {
+		name     string
+		content  string
+		wantErr  string
+		wantMode string
+	}{
+		{
+			name:     "default is generated-service",
+			content:  base,
+			wantMode: conformanceModeGeneratedService,
+		},
+		{
+			name:     "explicit attach-existing-source with fixture",
+			content:  base + "conformance:\n  mode: attach-existing-source\n  fixture: ./conformance/fixture\n",
+			wantMode: conformanceModeAttachSource,
+		},
+		{
+			name:    "attach-existing-source without fixture is rejected",
+			content: base + "conformance:\n  mode: attach-existing-source\n",
+			wantErr: "requires conformance.fixture",
+		},
+		{
+			name:    "unknown mode is rejected",
+			content: base + "conformance:\n  mode: bring-your-own\n",
+			wantErr: "unsupported conformance mode",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), test.content)
+			manifest, err := loadAgentCIManifest(dir)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("loadAgentCIManifest error = %v, want containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadAgentCIManifest: %v", err)
+			}
+			if got := conformanceMode(manifest); got != test.wantMode {
+				t.Fatalf("conformanceMode = %q, want %q", got, test.wantMode)
+			}
+		})
+	}
+}
+
+func TestRunAttachSourceConformanceFailsClosedWithoutFixtureWorkspace(t *testing.T) {
+	agentDir := t.TempDir()
+	fixture := "conformance/fixture"
+	if err := os.MkdirAll(filepath.Join(agentDir, fixture), 0o755); err != nil {
+		t.Fatalf("create fixture dir: %v", err)
+	}
+	manifest := agentYAML{Conformance: &agentConformance{Mode: conformanceModeAttachSource, Fixture: fixture}}
+	_, _, err := runAttachSourceConformance(context.Background(), t.TempDir(), t.TempDir(), agentDir, manifest)
+	if err == nil || !strings.Contains(err.Error(), "workspace.codefly.yaml") {
+		t.Fatalf("runAttachSourceConformance error = %v, want fixture missing workspace.codefly.yaml", err)
+	}
+}
+
+func TestAssertFixtureTargetsAgent(t *testing.T) {
+	manifest := agentYAML{Publisher: "codefly.dev", Name: "python", Version: "1.2.3"}
+	service := func(publisher, name, version string) string {
+		return "name: subject\nversion: 0.0.1\nagent:\n  kind: codefly:service\n  name: " + name + "\n  version: " + version + "\n  publisher: " + publisher + "\n"
+	}
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "latest resolves to the build under test", content: service("codefly.dev", "python", "latest")},
+		{name: "exact version under test is accepted", content: service("codefly.dev", "python", "1.2.3")},
+		{
+			name:    "mismatched pin is rejected",
+			content: service("codefly.dev", "python", "0.9.0"),
+			wantErr: `use "latest"`,
+		},
+		{
+			name:    "unrelated agent does not satisfy the contract",
+			content: service("codefly.dev", "go", "latest"),
+			wantErr: "must declare a service using agent codefly.dev/python",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixtureDir := t.TempDir()
+			serviceDir := filepath.Join(fixtureDir, "app", "subject")
+			if err := os.MkdirAll(serviceDir, 0o755); err != nil {
+				t.Fatalf("create service dir: %v", err)
+			}
+			writeFile(t, filepath.Join(serviceDir, "service.codefly.yaml"), test.content)
+			err := assertFixtureTargetsAgent(fixtureDir, "conformance/fixture", manifest)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("assertFixtureTargetsAgent error = %v, want containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("assertFixtureTargetsAgent: %v", err)
+			}
+		})
+	}
+}
+
 func TestBoundedAgentCIOutputPreservesBothEnds(t *testing.T) {
 	input := "START-" + strings.Repeat("x", 10_000) + "-END"
 	got := boundedAgentCIOutput([]byte(input))
