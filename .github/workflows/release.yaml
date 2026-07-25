@@ -8,23 +8,16 @@ jobs:
   build:
     name: Build and Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
 
       - name: set up
-        uses: actions/setup-go@v4 # Updated to latest major version, verify for minor version updates
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.25.11'
-
-      - name: Cache Go Modules
-        uses: actions/cache@v3 # Already latest major version
-        continue-on-error: true
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          go-version-file: go.mod
+          cache: false
 
       - name: Build Binary Darwin Intel
         run: |
@@ -36,7 +29,7 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '-extldflags "-static"' -o codefly-linux-x86_64 main.go
       - name: Checkout Target Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
         with:
           repository: 'codefly-dev/cli-releases'
           token: ${{ secrets.GH_PAT }}
@@ -59,79 +52,50 @@ jobs:
         run: |
           cd cli-releases
           git add codefly-darwin-amd64 codefly-darwin-arm64 codefly-linux-x86_64
-          # Check for changes
-          git diff --staged --quiet || {
+          if git diff --staged --quiet; then
             echo "No changes to commit"
             exit 0
-          }
+          fi
           git commit -m "Add new release binary"
           git push
 
-      - name: Create Release in Target Repository
-        id: create_release
-        uses: actions/github-script@v3
-        with:
-          github-token: ${{ secrets.GH_PAT }}
-          script: |
-            const repoName = 'cli-releases';
-            const ownerName = 'codefly-dev';
-
-            const releaseResponse = await github.repos.createRelease({
-              owner: ownerName,
-              repo: repoName,
-              tag_name: '${{ github.ref }}',
-              name: 'Release ${{ github.ref }}',
-              draft: false,
-              prerelease: false
-            });
-
-            core.setOutput('upload_url', releaseResponse.data.upload_url);
-
-      - name: Upload AMD Binary to cli-releases Release
-        uses: actions/upload-release-asset@v1
+      - name: Create cli-releases release and upload binaries
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./cli-releases/codefly-darwin-amd64
-          asset_name: codefly-darwin-amd64
-          asset_content_type: application/octet-stream
-
-      - name: Upload ARM Binary to cli-releases Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./cli-releases/codefly-darwin-arm64
-          asset_name: codefly-darwin-arm64
-          asset_content_type: application/octet-stream
-
-      - name: Upload Linux Binary to cli-releases Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./cli-releases/codefly-linux-x86_64
-          asset_name: codefly-linux-x86_64
-          asset_content_type: application/octet-stream
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo codefly-dev/cli-releases >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo codefly-dev/cli-releases \
+              --target main \
+              --title "Release $RELEASE_TAG" \
+              --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" \
+            ./cli-releases/codefly-darwin-amd64 \
+            ./cli-releases/codefly-darwin-arm64 \
+            ./cli-releases/codefly-linux-x86_64 \
+            --repo codefly-dev/cli-releases \
+            --clobber
 
       - name: Check out the formula repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
         with:
           repository: codefly-dev/homebrew-cli
           token: ${{ secrets.GH_PAT }}
+          path: homebrew-cli
 
       - name: Update the formula
-        run: |
-          # Update formula file with new version and SHA
-          # This could be a script that updates the URL and sha256 fields in the formula file
-          ./update_homebrew.sh ${{ github.event.release.tag_name }}
+        working-directory: homebrew-cli
+        run: ./update_homebrew.sh ${{ github.event.release.tag_name }}
 
       - name: Commit and push changes
         run: |
-          git config --global user.name 'Your Name'
-          git config --global user.email 'your-email@example.com'
-          git commit -am "Update formula to version ${{ github.event.release.tag_name }}"
-          git push
+          git -C homebrew-cli config user.name 'GitHub Action'
+          git -C homebrew-cli config user.email 'action@github.com'
+          if git -C homebrew-cli diff --quiet; then
+            echo "Homebrew formula already current"
+            exit 0
+          fi
+          git -C homebrew-cli commit -am "Update formula to version ${{ github.event.release.tag_name }}"
+          git -C homebrew-cli push
