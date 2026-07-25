@@ -50,6 +50,7 @@ func init() {
 	BuildCmd.Flags().Bool("push", false, "Push each image to the registry after a successful build")
 	BuildCmd.Flags().Bool("force-docker", false, "Skip the flake.nix path even when present + nix is installed")
 	BuildCmd.Flags().Bool("pull", false, "Always pull a newer base image (docker build --pull) — picks up upstream patch releases (e.g. golang:1.26-alpine → latest 1.26.x)")
+	BuildCmd.Flags().String("platform", "", "Target platform for docker builds (e.g. linux/amd64). Default: host arch. Set this to publish arch-correct images from a different host (companion images are linux/amd64).")
 }
 
 // BuildOptions controls a companion build run. Shared by the `companion
@@ -61,6 +62,11 @@ type BuildOptions struct {
 	// (golang:1.26-alpine, …) is refreshed to its latest patch. This is
 	// how `update deps` clears base-image CVEs like the Go stdlib bumps.
 	Pull bool
+	// Platform overrides the docker build target (e.g. "linux/amd64").
+	// Empty means host arch. Companion images in the registry are
+	// linux/amd64, so publishing from an arm64 host must set this to avoid
+	// pushing an arch-mismatched image. Ignored by the nix build path.
+	Platform string
 }
 
 // BuildAll builds every companion under coreDir/companions in dependency
@@ -81,46 +87,64 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	push, _ := cmd.Flags().GetBool("push")
 	forceDocker, _ := cmd.Flags().GetBool("force-docker")
 	pull, _ := cmd.Flags().GetBool("pull")
+	platform, _ := cmd.Flags().GetString("platform")
 
-	cwd, err := os.Getwd()
+	coreDir, err := resolveCoreDir(coreDirFlag)
 	if err != nil {
-		return fmt.Errorf("cannot read working directory: %w", err)
+		return err
 	}
+	if !all && len(args) == 0 {
+		return fmt.Errorf("must specify a companion name or --all")
+	}
+	targets, err := selectTargets(coreDir, all, args)
+	if err != nil {
+		return err
+	}
+
+	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull, Platform: platform}
+	return buildTargets(coreDir, targets, opts)
+}
+
+// resolveCoreDir turns the --core-dir flag (or, when empty, an upward walk
+// from cwd) into an absolute core directory, and validates that its
+// companions/ subdirectory exists. Shared by build, publish, and verify so
+// they agree on how the tree is located.
+func resolveCoreDir(coreDirFlag string) (string, error) {
 	coreDir := coreDirFlag
 	if coreDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot read working directory: %w", err)
+		}
 		coreDir = FindCompanionsRoot(cwd)
 	}
 	companionsDir := filepath.Join(coreDir, "companions")
 	if info, err := os.Stat(companionsDir); err != nil || !info.IsDir() {
-		return fmt.Errorf("companions directory not found at %s; pass --core-dir or run from within the codefly.dev tree", companionsDir)
+		return "", fmt.Errorf("companions directory not found at %s; pass --core-dir or run from within the codefly.dev tree", companionsDir)
 	}
+	return coreDir, nil
+}
 
-	if !all && len(args) == 0 {
-		return fmt.Errorf("must specify a companion name or --all")
-	}
-
-	var targets []*Companion
+// selectTargets resolves the companions to act on: a single named companion
+// (args[0]), or every companion under coreDir when all is true. The --all
+// set is returned in dependency-build order (codefly base first) so a
+// build/publish run over the whole set can't fail on an unbuilt base image.
+func selectTargets(coreDir string, all bool, args []string) ([]*Companion, error) {
 	if all {
-		targets, err = listCompanionsRequired(coreDir)
-		if err != nil {
-			return err
+		if len(args) > 0 {
+			return nil, fmt.Errorf("cannot combine --all with a companion name (%q)", args[0])
 		}
-		// Order: codefly base first; language companions next; rest
-		// last. This mirrors build_companions.sh's hard-coded order.
-		targets = sortCompanionsForBuild(targets)
-	} else {
-		c, err := LoadCompanion(filepath.Join(companionsDir, args[0]))
+		targets, err := listCompanionsRequired(coreDir)
 		if err != nil {
-			return fmt.Errorf("cannot load companion %q: %w", args[0], err)
+			return nil, err
 		}
-		targets = []*Companion{c}
+		return sortCompanionsForBuild(targets), nil
 	}
-
-	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull}
-	if err := buildTargets(coreDir, targets, opts); err != nil {
-		return err
+	c, err := LoadCompanion(filepath.Join(coreDir, "companions", args[0]))
+	if err != nil {
+		return nil, fmt.Errorf("cannot load companion %q: %w", args[0], err)
 	}
-	return nil
+	return []*Companion{c}, nil
 }
 
 // buildTargets builds the given companions in the order provided. It
@@ -157,7 +181,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		case "nix":
 			buildErr = buildWithNix(c)
 		default:
-			buildErr = buildWithDocker(c, coreDir, opts.Pull)
+			buildErr = buildWithDocker(c, coreDir, opts.Pull, opts.Platform)
 		}
 		if buildErr != nil {
 			return fmt.Errorf("build %s failed: %w", c.Name, buildErr)
@@ -276,11 +300,13 @@ func buildLinuxCLI(coreDir string) error {
 // are fast; CI matrices that need cross-arch must opt in via
 // `docker buildx`. We deliberately don't try to be clever about that
 // here — the sh path was already explicit about it.
-func buildWithDocker(c *Companion, coreDir string, pull bool) error {
+func buildWithDocker(c *Companion, coreDir string, pull bool, platform string) error {
 	if !c.HasDockerfile {
 		return fmt.Errorf("no Dockerfile in %s", c.Dir)
 	}
-	platform := "linux/" + dockerArch()
+	if platform == "" {
+		platform = "linux/" + dockerArch()
+	}
 	dockerfile := filepath.Join("companions", c.Name, "Dockerfile")
 
 	dockerArgs := []string{"build", "--platform", platform}

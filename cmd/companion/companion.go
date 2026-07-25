@@ -160,3 +160,11 @@ func ListCompanions(root string) ([]*Companion, error) {
 func (c *Companion) Tag() string {
 	return fmt.Sprintf("codeflydev/%s:%s", c.Name, c.Info.Version)
 }
+
+// ProducesImage reports whether this companion builds a Docker image. A
+// directory with an info.codefly.yaml but neither a Dockerfile nor a
+// flake.nix (e.g. the `golang` Go-package companion) is a real companion
+// but has no image to publish or verify.
+func (c *Companion) ProducesImage() bool {
+	return c.HasDockerfile || c.HasFlake
+}

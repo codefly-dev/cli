@@ -24,5 +24,7 @@ var CompanionCmd = &cobra.Command{
 func init() {
 	CompanionCmd.AddCommand(companion.BuildCmd)
 	CompanionCmd.AddCommand(companion.PushCmd)
+	CompanionCmd.AddCommand(companion.PublishCmd)
+	CompanionCmd.AddCommand(companion.VerifyCmd)
 	CompanionCmd.AddCommand(companion.ListCmd)
 }
