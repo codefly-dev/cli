@@ -18,9 +18,9 @@ type ManagedFlow interface {
 }
 
 // FlowManager owns the long-lived orchestration flows started through one
-// WorkspaceHost. It replaces process-global flow lookup for host-based
-// adapters while orchestration.CurrentFlow remains as a legacy compatibility
-// hook for callers that have not migrated yet.
+// WorkspaceHost (or, via NewFlowManager, an adapter that owns flows outside a
+// host). It replaces process-global flow lookup, so two flows in one process
+// can never alias each other.
 type FlowManager struct {
 	mu       sync.RWMutex
 	flows    map[string]ManagedFlow
@@ -29,7 +29,11 @@ type FlowManager struct {
 	closed   bool
 }
 
-func newFlowManager() *FlowManager {
+// NewFlowManager returns an empty, ready-to-use flow registry. Most callers
+// get one implicitly via WorkspaceHost.Flows(); this constructor is for
+// adapters (e.g. pkg/web/go-grpc) that own flows outside a WorkspaceHost but
+// still need host-owned registration instead of a process-global lookup.
+func NewFlowManager() *FlowManager {
 	return &FlowManager{flows: make(map[string]ManagedFlow)}
 }
 

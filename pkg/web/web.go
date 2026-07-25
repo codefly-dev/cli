@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 
+	"github.com/codefly-dev/cli/pkg/engine"
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
@@ -25,6 +26,10 @@ type ServerData struct {
 	// gRPC/REST port pair. Must match the scope the test SDK uses so the
 	// client and server land on the same port. Empty string = no scope.
 	NamingScope string
+	// Flows owns the orchestration flow(s) this server observes/controls. The
+	// caller registers its flow(s) into it directly; a nil Flows means the
+	// server's flow-scoped RPCs report "nothing running".
+	Flows *engine.FlowManager
 }
 
 // NewServer builds the CLI's gRPC and REST servers. Ports are derived
@@ -46,7 +51,7 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 		EndpointGrpc: loopbackEndpoint(grpcPort),
 		EndpointRest: loopbackEndpoint(restPort),
 	}
-	server, err := go_grpc.NewServer(&config, input.Workspace)
+	server, err := go_grpc.NewServer(&config, input.Workspace, input.Flows)
 	if err != nil {
 		return nil, err
 	}

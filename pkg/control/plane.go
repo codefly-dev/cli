@@ -1,6 +1,10 @@
 package control
 
-import "context"
+import (
+	"context"
+
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+)
 
 // Plane is the complete control surface for a codefly workspace. It is the union
 // of every operation the CLI, Mind Gateway, MCP server, and dashboard need,
@@ -50,6 +54,11 @@ type Introspector interface {
 	FlowStatus(ctx context.Context) (FlowStatus, error)
 	// Addresses resolves the reachable endpoints for service.
 	Addresses(ctx context.Context, service string) ([]Endpoint, error)
+	// Configurations returns the service's own configuration plus the
+	// configurations of its dependencies, resolved for the active flow. It
+	// returns the authoritative core protobuf rather than a shadow DTO,
+	// mirroring the per-service leaf contract documented in doc.go.
+	Configurations(ctx context.Context, service string) ([]*basev0.Configuration, error)
 	// Logs streams log lines for the active session until ctx is done; each
 	// line is delivered to emit. follow keeps the stream open for new lines.
 	Logs(ctx context.Context, opts LogOptions, emit func(LogLine) error) error

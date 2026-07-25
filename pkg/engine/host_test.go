@@ -128,7 +128,7 @@ func TestParentResourceDirFindsNearestTypedBoundary(t *testing.T) {
 }
 
 func TestFlowManagerOwnsRegisteredFlow(t *testing.T) {
-	manager := newFlowManager()
+	manager := NewFlowManager()
 	flow := &inertManagedFlow{}
 	if err := manager.Register("module/service", flow); err != nil {
 		t.Fatalf("Register() = %v", err)
@@ -149,7 +149,7 @@ func TestFlowManagerOwnsRegisteredFlow(t *testing.T) {
 }
 
 func TestFlowManagerCloseRejectsNewFlows(t *testing.T) {
-	manager := newFlowManager()
+	manager := NewFlowManager()
 	if err := manager.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}
@@ -159,7 +159,7 @@ func TestFlowManagerCloseRejectsNewFlows(t *testing.T) {
 }
 
 func TestFlowManagerRestoresPreviousActiveFlow(t *testing.T) {
-	manager := newFlowManager()
+	manager := NewFlowManager()
 	first := &inertManagedFlow{}
 	second := &inertManagedFlow{}
 	if err := manager.Register("first", first); err != nil {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
@@ -116,6 +117,20 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return err
 	}
 
+	serviceName := resources.WithUnique(service).Unique()
+
+	var flow *orchestration.Flow
+
+	// flowManager, when the CLI server is up, is how the server's RPCs
+	// resolve this run's flow — never through a process-global, which would
+	// alias a second flow started elsewhere in the same process.
+	var flowManager *engine.FlowManager
+	registerFlow := func() {
+		if flowManager != nil && flow != nil {
+			_ = flowManager.Register(serviceName, flow)
+		}
+	}
+
 	var serverResult chan error
 	defer func() {
 		cancelRun()
@@ -126,6 +141,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		}
 	}()
 	if withCLIServer {
+		flowManager = engine.NewFlowManager()
 		// Propagate --naming-scope into the server's port derivation.
 		// The test SDK (WithDependencies) appends the naming scope to
 		// the workspace name when deriving CLIServerPort, so the spawned
@@ -135,7 +151,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		// naming scope: the SDK client only knows the scope it passed, so
 		// a workspace-declared scope must affect service naming only,
 		// never this port contract.
-		server, err := web.NewServer(web.ServerData{Workspace: workspace, NamingScope: namingScope})
+		server, err := web.NewServer(web.ServerData{Workspace: workspace, NamingScope: namingScope, Flows: flowManager})
 		if err != nil {
 			return fmt.Errorf("cannot create web server: %w", err)
 		}
@@ -149,16 +165,15 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		}()
 	}
 
-	serviceName := resources.WithUnique(service).Unique()
-
-	var flow *orchestration.Flow
-
 	// stopFresh tears down whatever the flow started, using a FRESH context
 	// (ctx/runCtx are cancelled by the time we shut down) with a generous
 	// timeout so docker stop + agent shutdown run to completion. Used on
 	// every exit path — including failures — so a partially-started flow
 	// never orphans agents or containers.
 	stopFresh := func() error {
+		if flowManager != nil {
+			flowManager.Release(serviceName, flow)
+		}
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		err := stopService(shutdownCtx, flow)
 		shutdownCancel()
@@ -193,6 +208,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		phase(tui.StateLoading)
 		var err error
 		flow, err = initRunService(ctx, workspace, module, service)
+		registerFlow()
 		if err != nil {
 			return fmt.Errorf("cannot initialize service %s: %w", serviceName, err)
 		}
@@ -380,6 +396,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			var err error
 			t.SendState(serviceName, tui.StateLoading)
 			flow, err = initRunService(runCtx, workspace, module, service)
+			registerFlow()
 			if err != nil {
 				// Keep the full error: initRunService returns w.NewError
 				// (unwrapped) for an invalid runtime context, so Unwrap
@@ -613,6 +630,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 		return nil, w.Wrap(err)
 	}
 
+	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithOutputEnv(outputEnv)

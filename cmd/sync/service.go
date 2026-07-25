@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/cli/communicate"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -79,6 +80,8 @@ func initSyncService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	flow.WithOutputSink(cli.NewOutputSink())
+	flow.WithAnswerProvider(communicate.NewPrompt())
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)
 	if err != nil {

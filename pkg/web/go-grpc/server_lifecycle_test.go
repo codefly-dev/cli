@@ -7,7 +7,7 @@ import (
 )
 
 func TestServerRunHonorsCancelledContext(t *testing.T) {
-	server, err := NewServer(&Configuration{EndpointGrpc: "127.0.0.1:0"}, nil)
+	server, err := NewServer(&Configuration{EndpointGrpc: "127.0.0.1:0"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

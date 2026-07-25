@@ -10,11 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/dockerstart"
 	"github.com/codefly-dev/core/architecture"
@@ -30,12 +27,6 @@ import (
 	"github.com/codefly-dev/core/wool"
 	multierror "github.com/hashicorp/go-multierror"
 )
-
-var currentFlow atomic.Pointer[Flow]
-
-func CurrentFlow() *Flow {
-	return currentFlow.Load()
-}
 
 type Flow struct {
 	workspace *resources.Workspace
@@ -171,6 +162,15 @@ type World struct {
 	RemoteManager deployments.Manager
 
 	SyncRequest *builderv0.SyncRequest
+
+	// OutputSink receives narration otherwise printed directly via pkg/cli.
+	// Always non-nil: NewFlow defaults it to a no-op sink.
+	OutputSink OutputSink
+
+	// AnswerProvider answers interactive questions a builder plugin asks
+	// during Sync. Always non-nil: NewFlow defaults it to a headless
+	// (defaults-only) provider.
+	AnswerProvider AnswerProvider
 }
 
 // FlowFailure carries a runner-level death up to the top-level command.
@@ -197,10 +197,12 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 
 	world := &World{
-		Env:          env,
-		Mode:         mode,
-		Workspace:    workspace,
-		Dependencies: dependencies,
+		Env:            env,
+		Mode:           mode,
+		Workspace:      workspace,
+		Dependencies:   dependencies,
+		OutputSink:     noopOutputSink{},
+		AnswerProvider: headlessAnswerProvider{},
 	}
 
 	configurationManager, err := configurations.NewManager(ctx, workspace)
@@ -261,7 +263,6 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 	flow.preferences = prefs
 
-	currentFlow.Store(flow)
 	return flow, nil
 }
 
@@ -587,7 +588,6 @@ func (flow *Flow) Load(ctx context.Context) error {
 		manager.DoSetFailureSink(flow.reportFailure)
 	}
 
-	currentFlow.Store(flow)
 	return nil
 }
 
@@ -799,6 +799,25 @@ func (flow *Flow) WithStateListener(l StateListener) *Flow {
 	return flow
 }
 
+// WithOutputSink routes this flow's narration to sink instead of the default
+// no-op. Returns the flow for chaining. A nil sink is ignored.
+func (flow *Flow) WithOutputSink(sink OutputSink) *Flow {
+	if flow != nil && flow.world != nil && sink != nil {
+		flow.world.OutputSink = sink
+	}
+	return flow
+}
+
+// WithAnswerProvider routes this flow's Sync-time interactive questions to
+// provider instead of the default headless (defaults-only) behavior. Returns
+// the flow for chaining. A nil provider is ignored.
+func (flow *Flow) WithAnswerProvider(provider AnswerProvider) *Flow {
+	if flow != nil && flow.world != nil && provider != nil {
+		flow.world.AnswerProvider = provider
+	}
+	return flow
+}
+
 // emitState forwards a transition to the listener if one is set. Satisfies the
 // stateEmitter interface so the runtime policy can report without knowing the
 // flow concretely.
@@ -970,6 +989,24 @@ func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
 	return origin, dependencies
 }
 
+// newTeardownContext builds a fresh, wool-instrumented background context for
+// Stop/Shutdown, independent of the caller's (possibly already Done) context,
+// logging through the flow's OutputSink.
+func (flow *Flow) newTeardownContext() (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := wool.New(ctx, resources.CLI.AsResource())
+	sink := OutputSink(noopOutputSink{})
+	if flow.world != nil && flow.world.OutputSink != nil {
+		sink = flow.world.OutputSink
+	}
+	provider.WithLogger(sink)
+	ctx = provider.Inject(ctx)
+	return ctx, func() {
+		cancel()
+		provider.Done()
+	}
+}
+
 func (flow *Flow) Stop() error {
 	if flow == nil || flow.hub == nil {
 		return nil
@@ -980,7 +1017,7 @@ func (flow *Flow) Stop() error {
 		return nil
 	}
 	// Don't call on a possibly Done context
-	stoppedContext, done := common.NewContext()
+	stoppedContext, done := flow.newTeardownContext()
 	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
 	// Clear any stale pause state — if a paused action is still sitting
@@ -1020,7 +1057,7 @@ func (flow *Flow) Shutdown() error {
 		return nil
 	}
 	// Don't call on a possibly Done context
-	stoppedContext, done := common.NewContext()
+	stoppedContext, done := flow.newTeardownContext()
 	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
 	if flow.playbook != nil && flow.playbook.pause != nil {
@@ -1169,7 +1206,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	var preloadedOrigin *Manager
 	if flow.world.Mode == TestMode && !flow.excludeRoot {
 		manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
-		cli.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
+		flow.world.OutputSink.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
 		if err != nil {
 			return w.Wrap(err)
 		}
@@ -1210,7 +1247,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// init orphans those agents (and any process group they hold) until the
 	// next run's reaper sweeps them.
 	for _, unique := range required {
-		cli.RegisterLoggingResource(unique)
+		flow.world.OutputSink.RegisterLoggingResource(unique)
 		// Register source to handle "pretty" logging
 
 		info, err := resources.ParseServiceWithOptionalModule(unique)
@@ -1252,7 +1289,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	} else if !flow.excludeRoot {
 		w.Debug("creating run manager", wool.Field("for", resources.WithUnique(flow.originService).Unique()))
 		manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
-		cli.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
+		flow.world.OutputSink.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
 		if err != nil {
 			return w.Wrap(err)
 		}
@@ -1297,7 +1334,7 @@ func (flow *Flow) configureTestExecution(runner *Runner) error {
 	flow.standAlone = execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
 	runner.WithTestRequest(execution.Request)
 	runner.WithServiceRunningForTest(execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
-	cli.Info("Test suite <%s> for <%s> uses dependency mode %s", execution.DisplaySuite(), runner.Unique(), execution.DependencyMode.String())
+	flow.world.OutputSink.Info("Test suite <%s> for <%s> uses dependency mode %s", execution.DisplaySuite(), runner.Unique(), execution.DependencyMode.String())
 	return nil
 }
 
@@ -1311,7 +1348,7 @@ func (flow *Flow) logRunPlan(ctx context.Context, dependencyUniques []string, re
 		runSet = append(runSet, origin)
 	}
 	if len(runSet) == 0 {
-		cli.Info("Will run no local services for <%s>", origin)
+		flow.world.OutputSink.Info("Will run no local services for <%s>", origin)
 		return nil
 	}
 
@@ -1327,7 +1364,7 @@ func (flow *Flow) logRunPlan(ctx context.Context, dependencyUniques []string, re
 		}
 		entries = append(entries, formatServiceRunPlanEntry(unique, svc, remotes[unique]))
 	}
-	cli.Info("Will run %d service(s): %s", len(entries), strings.Join(entries, "; "))
+	flow.world.OutputSink.Info("Will run %d service(s): %s", len(entries), strings.Join(entries, "; "))
 	return nil
 }
 
@@ -1353,7 +1390,7 @@ func (flow *Flow) CreateManager(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
 	w.Debug("creating run manager", wool.Field("for", resources.WithUnique(flow.originService).Unique()))
 	manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
-	cli.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
+	flow.world.OutputSink.RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
 	if err != nil {
 		return w.Wrap(err)
 	}
@@ -1595,7 +1632,7 @@ func (flow *Flow) WithOutputEnv(envPath string) {
 	if exists, err := shared.FileExists(context.Background(), envPath); err == nil && exists {
 		err := shared.DeleteFile(context.Background(), envPath)
 		if err != nil {
-			cli.Error("cannot delete file %s: %s", envPath, err)
+			flow.world.OutputSink.Error("cannot delete file %s: %s", envPath, err)
 		}
 	}
 	flow.outputEnvPath = envPath
