@@ -40,6 +40,15 @@ Push is NEVER --force for main or the tag. If pre-flight fails the
 operator must resolve the divergence by hand — refusing to overwrite
 in-flight work is the whole point.
 
+For agent repos (agent.codefly.yaml) publish also, in order:
+  - runs release-grade agent CI against the bumped version and aborts
+    the publish untouched if it fails or a required loader platform
+    (darwin/arm64, linux/amd64) is missing
+  - creates the GitHub release for the new tag
+  - uploads the loader-compatible archives + SBOMs
+  - verifies every archive resolves through the install URL resolver
+Requires the gh CLI to be authenticated.
+
 Examples:
   codefly publish              # patch bump
   codefly publish minor
@@ -78,7 +87,21 @@ func run(c *cobra.Command, args []string) error {
 		WorkDir:  workDir,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Agent releases additionally run release-grade CI and upload
+	// loader-compatible GitHub release assets. Both are far slower than a
+	// bare tag push, so they get a generous timeout.
+	timeout := 60 * time.Second
+	if manifest.Mode == ModeAgent && !dryRun {
+		releaser, err := newAgentReleaser(filepath.Dir(manifest.Path), workDir)
+		if err != nil {
+			return err
+		}
+		defer releaser.cleanup()
+		releaser.attach(engine)
+		timeout = 30 * time.Minute
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	tag, err := engine.Release(ctx)

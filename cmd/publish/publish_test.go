@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Masterminds/semver"
@@ -361,6 +362,97 @@ func TestEngine_Release_ReconcilesPastExistingTag(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(out), "v0.1.2", "the reconciled tag must be pushed to origin")
 }
+
+// --- Engine: release hooks -----------------------------------------
+
+// TestEngine_Release_BeforeCommitFailure_RevertsAndPushesNothing pins the
+// abort contract the agent-release gate relies on: if BeforeCommit fails
+// (e.g. release CI failed or a required platform is missing), the manifest
+// bump is reverted and no commit, tag, or push happens.
+func TestEngine_Release_BeforeCommitFailure_RevertsAndPushesNothing(t *testing.T) {
+	dir := t.TempDir()
+	origin := initBareGitRepo(t, dir)
+	target := writeManifest(t, dir, "agent.codefly.yaml", "0.1.0")
+	require.NoError(t, addAndCommit(dir, target, "add manifest"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+
+	m, err := publish.Detect(dir)
+	require.NoError(t, err)
+
+	engine := &publish.Engine{
+		Manifest: m,
+		BumpType: "patch",
+		WorkDir:  dir,
+		BeforeCommit: func(context.Context, string) error {
+			return errCIFailed
+		},
+	}
+
+	_, err = engine.Release(context.Background())
+	require.ErrorIs(t, err, errCIFailed)
+
+	// Manifest reverted to the committed version.
+	got, _ := os.ReadFile(target)
+	require.Equal(t, "version: 0.1.0\n", string(got),
+		"a failed BeforeCommit must restore the manifest verbatim")
+
+	// No tag anywhere.
+	out, _ := exec.Command("git", "-C", dir, "tag", "-l").Output()
+	require.Empty(t, strings.TrimSpace(string(out)), "no tag must be created locally")
+	out, _ = exec.Command("git", "-C", origin, "tag", "-l").Output()
+	require.Empty(t, strings.TrimSpace(string(out)), "no tag must be pushed to origin")
+
+	// Clean tree — nothing committed.
+	out, _ = exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	require.Empty(t, strings.TrimSpace(string(out)), "working tree must be clean after abort")
+}
+
+// TestEngine_Release_AfterPushFailure_ReturnsLiveTag confirms the tag is
+// reported as shipped even when the post-push upload step fails — the tag
+// is live and must not be silently swallowed.
+func TestEngine_Release_AfterPushFailure_ReturnsLiveTag(t *testing.T) {
+	dir := t.TempDir()
+	origin := initBareGitRepo(t, dir)
+	target := writeManifest(t, dir, "agent.codefly.yaml", "0.1.0")
+	require.NoError(t, addAndCommit(dir, target, "add manifest"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+
+	m, err := publish.Detect(dir)
+	require.NoError(t, err)
+
+	var beforeCalled bool
+	engine := &publish.Engine{
+		Manifest: m,
+		BumpType: "patch",
+		WorkDir:  dir,
+		BeforeCommit: func(context.Context, string) error {
+			beforeCalled = true
+			return nil
+		},
+		AfterPush: func(context.Context, string) error {
+			return errUploadFailed
+		},
+	}
+
+	tag, err := engine.Release(context.Background())
+	require.ErrorIs(t, err, errUploadFailed)
+	require.Equal(t, "v0.1.1", tag, "the live tag must be returned alongside the upload error")
+	require.True(t, beforeCalled, "BeforeCommit must run before the tag is pushed")
+
+	// The tag really was pushed — the failure is upload-only.
+	out, err := exec.Command("git", "-C", origin, "tag", "-l", tag).Output()
+	require.NoError(t, err)
+	require.Contains(t, string(out), tag)
+}
+
+var (
+	errCIFailed     = errSentinel("release CI failed")
+	errUploadFailed = errSentinel("upload failed")
+)
+
+type errSentinel string
+
+func (e errSentinel) Error() string { return string(e) }
 
 // --- Helpers --------------------------------------------------------
 

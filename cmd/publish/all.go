@@ -137,9 +137,28 @@ func runAll(c *cobra.Command, args []string) error {
 	fmt.Println("==> all repos validated; publishing...")
 	var done []string
 	for _, t := range targets {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		tag, rerr := t.engine(bumpType, false).Release(ctx)
+		engine := t.engine(bumpType, false)
+
+		// Agent repos additionally run release-grade CI and upload
+		// loader-compatible release assets — both far slower than a bare
+		// tag push, so they get a generous timeout.
+		timeout := 120 * time.Second
+		var releaser *agentReleaser
+		if t.Manifest.Mode == ModeAgent {
+			releaser, err = newAgentReleaser(filepath.Dir(t.Manifest.Path), t.Dir)
+			if err != nil {
+				return fmt.Errorf("prepare agent release for %s: %w", relOrBase(root, t.Dir), err)
+			}
+			releaser.attach(engine)
+			timeout = 30 * time.Minute
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		tag, rerr := engine.Release(ctx)
 		cancel()
+		if releaser != nil {
+			releaser.cleanup()
+		}
 		if rerr != nil {
 			return fmt.Errorf("publish failed at %s: %w\n  already released: %s",
 				relOrBase(root, t.Dir), rerr, strings.Join(done, ", "))
