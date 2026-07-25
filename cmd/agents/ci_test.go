@@ -268,6 +268,39 @@ func TestAgentCIStagePreservesTypedFailure(t *testing.T) {
 	}
 }
 
+func TestSeedAgentCISourcePackagerCopiesExactInstalledSeed(t *testing.T) {
+	sourceHome := t.TempDir()
+	agentHome := t.TempDir()
+	source := sourcePackagerPath(sourceHome)
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("exact-packager"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := seedAgentCISourcePackager(sourceHome, agentHome); err != nil {
+		t.Fatalf("seedAgentCISourcePackager: %v", err)
+	}
+	destination := sourcePackagerPath(agentHome)
+	payload, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatalf("read seeded packager: %v", err)
+	}
+	if string(payload) != "exact-packager" {
+		t.Fatalf("seeded payload = %q", payload)
+	}
+	if info, err := os.Stat(destination); err != nil || info.Mode()&0o111 == 0 {
+		t.Fatalf("seeded packager is not executable: info=%v err=%v", info, err)
+	}
+}
+
+func TestSeedAgentCISourcePackagerAllowsMissingSeed(t *testing.T) {
+	if err := seedAgentCISourcePackager(t.TempDir(), t.TempDir()); err != nil {
+		t.Fatalf("missing installed packager should fall back to source bootstrap: %v", err)
+	}
+}
+
 func TestMarshalAgentCIReportUsesGeneratedProtoFieldNamesAndDefaults(t *testing.T) {
 	report := &civ0.AgentCIReport{
 		SchemaVersion: 1,

@@ -248,6 +248,9 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return finalizeAgentCI(state, err), err
 	}
 	if err := runStage("build", func() error {
+		if err := seedAgentCISourcePackager(state.sourceHome, state.agentHome); err != nil {
+			return err
+		}
 		log := &agentLogger{}
 		result := compileAgent(ctx, options.dir, log, options.nativeOnly)
 		state.build = result
@@ -718,6 +721,30 @@ func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error 
 		if err := copyAgentCIDirectory(state.conformance, filepath.Join(options.output, "workspace")); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// seedAgentCISourcePackager copies the exact installed Go packager into the
+// isolated CI home when one is available. Publishing the generic Go agent
+// temporarily bumps its own manifest before release CI; that bumped source
+// cannot bootstrap the older packager version selected by this CLI. Seeding
+// the already-installed exact version breaks that cycle while the isolated
+// runner still packages and validates the bumped source under test.
+func seedAgentCISourcePackager(sourceHome, agentHome string) error {
+	source := sourcePackagerPath(sourceHome)
+	info, err := os.Stat(source)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect installed source packager: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+		return fmt.Errorf("installed source packager %s is not an executable file", source)
+	}
+	if err := copyAgentCIFile(source, sourcePackagerPath(agentHome)); err != nil {
+		return fmt.Errorf("seed isolated source packager: %w", err)
 	}
 	return nil
 }
