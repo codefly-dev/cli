@@ -289,7 +289,11 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
 	}
 
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints)
+	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
+	}
+	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
@@ -301,10 +305,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		wool.Field("project configurations", resources.MakeManyConfigurationSummary(workspaceConfigurations)),
 		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
 
-	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
-	}
 	req := &runtimev0.InitRequest{
 		RuntimeContext:             runtimeContext,
 		ProposedNetworkMappings:    networkMappings,
@@ -380,7 +380,11 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	// With a remote environment
 	// We only need to setup Networking
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance))
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints)
+	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
+	}
+	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}

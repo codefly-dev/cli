@@ -223,6 +223,7 @@ func initializeRuntime(ctx context.Context, session *AgentSession) error {
 		descriptor.workspace,
 		resourceIdentity,
 		loadResponse.GetEndpoints(),
+		resources.NewRuntimeContextNative(),
 	)
 	if err != nil {
 		return fmt.Errorf("generate local runtime mappings: %w", err)
