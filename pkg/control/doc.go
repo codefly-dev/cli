@@ -1,5 +1,6 @@
-// Package control is the single control plane for codefly — the one place that
-// knows how to run, build, deploy, test, inspect, and mutate a workspace.
+// Package control is Codefly's workspace-level control facade. It composes the
+// transport-independent runtime behavior in pkg/engine with orchestration,
+// filesystem, git, mutation-authority, and terminal capabilities.
 //
 // # Why this package exists
 //
@@ -12,29 +13,33 @@
 //   - pkg/gateway — the Mind Gateway gRPC service (the richest surface: files,
 //     git, build/test/lint, terminals — but no Run or Deploy)
 //
-// control.Plane collapses those into ONE implementation. Every entry point
-// becomes a thin ADAPTER that translates its own wire protocol to and from this
-// package's types and calls the Plane. No business logic lives in an adapter.
+// A long-lived adapter creates one engine.WorkspaceHost and binds a Plane to it.
+// The host owns agent processes, active flows, source behavior, and tools;
+// adapters translate their own wire protocol and keep only boundary-specific
+// policy such as Gateway authentication and signed mutation permits.
 //
 //	cobra CLI ─┐
-//	gateway  ──┼──▶ control.Plane ──▶ orchestration · plugin gRPC · git · fs
+//	gateway  ──┼──▶ control.Plane ──▶ engine.WorkspaceHost
 //	mcp      ──┤
-//	web      ──┘
+//	agent loop ┘                         ├─ service-agent gRPC
+//	                                    ├─ orchestration flows
+//	                                    └─ in-process toolbox
 //
-// # DTO boundary
+// # Contract boundaries
 //
-// The Plane speaks its OWN request/response types (this package), never a
-// specific transport's generated protobufs. Adapters own the translation. This
-// keeps the core independent of any one protocol and lets the interface be
-// reviewed and tested on its own terms. It is also what will let pkg/control
-// (with pkg/orchestration) later extract into a standalone codefly-dev/engine
-// module that both the CLI and a future `codefly server` import as peers.
+// Per-service leaf behavior uses the existing typed Codefly agent protobufs:
+// those messages are already the contract between Codefly and language agents,
+// so a second shadow DTO would add translation without isolation. Workspace
+// orchestration uses the small Go types in this package. MCP and the Mind
+// Gateway remain adapters over those behaviors. A future deployable Codefly
+// gRPC service can expose the stable subset it needs without making an
+// unvalidated network schema the in-process engine API.
 //
 // # Layering
 //
-// control depends downward on core (shared types) and sideways on
-// pkg/orchestration and the plugin gRPC clients. It must NOT be imported by
-// plugins/agents — they are the things being controlled, so they sit below it.
+// control depends on pkg/engine and pkg/orchestration. engine depends downward
+// on core's shared contracts but never on a transport adapter. Plugins must not
+// import engine or control: they are the behavior providers being supervised.
 //
 // # Failure convention
 //

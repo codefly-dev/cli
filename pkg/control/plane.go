@@ -26,6 +26,10 @@ type Plane interface {
 	// operations target that service. This is what service-scoped adapters (the
 	// Gateway, mind.yaml) delegate to. See scope.go.
 	Service(ctx context.Context, name string) (ServiceScope, error)
+
+	// Close releases terminals and any WorkspaceHost created by New/NewAt.
+	// A plane created with NewWithHost leaves that externally owned host open.
+	Close() error
 }
 
 // Introspector answers read-only questions about the workspace and any live

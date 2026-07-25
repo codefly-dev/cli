@@ -32,7 +32,6 @@ import (
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
-	"github.com/codefly-dev/core/resources"
 	codefly "github.com/codefly-dev/sdk-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -56,6 +55,35 @@ type mockCodeClient struct {
 
 type mockRuntimeClient struct {
 	testFn func(ctx context.Context, in *runtimev0.TestRequest, opts ...grpc.CallOption) (*runtimev0.TestResponse, error)
+}
+
+type mockServiceExecution struct {
+	code    codev0.CodeClient
+	runtime runtimev0.RuntimeClient
+	agent   agentv0.AgentClient
+}
+
+func (m *mockServiceExecution) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
+	return m.code.Execute(ctx, request)
+}
+
+func (m *mockServiceExecution) Build(ctx context.Context, request *runtimev0.BuildRequest) (*runtimev0.BuildResponse, error) {
+	return m.runtime.Build(ctx, request)
+}
+
+func (m *mockServiceExecution) Test(ctx context.Context, request *runtimev0.TestRequest) (*runtimev0.TestResponse, error) {
+	return m.runtime.Test(ctx, request)
+}
+
+func (m *mockServiceExecution) Lint(ctx context.Context, request *runtimev0.LintRequest) (*runtimev0.LintResponse, error) {
+	return m.runtime.Lint(ctx, request)
+}
+
+func (m *mockServiceExecution) ListCommands(ctx context.Context, request *agentv0.ListCommandsRequest) (*agentv0.ListCommandsResponse, error) {
+	if m.agent == nil {
+		return &agentv0.ListCommandsResponse{}, nil
+	}
+	return m.agent.ListCommands(ctx, request)
 }
 
 func (m *mockCodeClient) Execute(ctx context.Context, in *codev0.CodeRequest, opts ...grpc.CallOption) (*codev0.CodeResponse, error) {
@@ -153,7 +181,7 @@ func (m *mockRuntimeClient) Communicate(context.Context, ...grpc.CallOption) (gr
 	return nil, fmt.Errorf("not exercised in mock")
 }
 
-// newTestServer creates a Server with the mock injected into the plugins map.
+// newTestServer creates a Server with the mock injected at the behavior port.
 // The service name "test-svc" is used throughout, matching the mindYAML config.
 func newTestServer(mock codev0.CodeClient) *Server {
 	return newTestServerWithWorkDir(mock, os.TempDir())
@@ -173,18 +201,14 @@ func newTestServerWithWorkDir(mock codev0.CodeClient, workDir string) *Server {
 				Type: "go",
 			},
 		},
-		plugins:    make(map[string]*pluginConn),
-		stopHealth: make(chan struct{}),
-	}
-	s.plugins["test-svc"] = &pluginConn{
-		code: mock,
+		serviceBehavior: &mockServiceExecution{code: mock},
 	}
 	return s
 }
 
 func newTestServerWithRuntime(runtime runtimev0.RuntimeClient) *Server {
 	s := newTestServer(&mockCodeClient{})
-	s.plugins["test-svc"].runtime = runtime
+	s.serviceBehavior.(*mockServiceExecution).runtime = runtime
 	return s
 }
 
@@ -959,45 +983,6 @@ func TestDirectWorkspaceFileOperationsRejectUnknownService(t *testing.T) {
 	}
 }
 
-func TestParentResourceDirFindsNearestTypedBoundary(t *testing.T) {
-	root := t.TempDir()
-	moduleDir := filepath.Join(root, "modules", "platform")
-	serviceDir := filepath.Join(moduleDir, "services", "warden")
-	codeDir := filepath.Join(serviceDir, "code", "crates")
-	if err := os.MkdirAll(codeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for path, body := range map[string]string{
-		filepath.Join(root, resources.WorkspaceConfigurationName):     "name: workspace\nlayout: modules\n",
-		filepath.Join(moduleDir, resources.ModuleConfigurationName):   "name: platform\n",
-		filepath.Join(serviceDir, resources.ServiceConfigurationName): "name: warden\nversion: 0.0.0\n",
-	} {
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	tests := map[string]struct {
-		name string
-		want string
-	}{
-		"workspace": {name: resources.WorkspaceConfigurationName, want: root},
-		"module":    {name: resources.ModuleConfigurationName, want: moduleDir},
-		"service":   {name: resources.ServiceConfigurationName, want: serviceDir},
-	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			got, err := parentResourceDir(codeDir, test.name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != test.want {
-				t.Fatalf("resource dir=%q, want %q", got, test.want)
-			}
-		})
-	}
-}
-
 func TestListDependencies(t *testing.T) {
 	mock := &mockCodeClient{
 		listDependenciesFn: func(_ context.Context, _ *codev0.ListDependenciesRequest, _ ...grpc.CallOption) (*codev0.ListDependenciesResponse, error) {
@@ -1068,7 +1053,6 @@ func TestGitStatus(t *testing.T) {
 	s := &Server{
 		cfg:      Config{WorkDir: dir},
 		mindYAML: &MindYAML{Service: "test-svc", Plugin: "generic-go"},
-		plugins:  make(map[string]*pluginConn),
 	}
 	resp, err := s.GitStatus(context.Background(), &gatewayv1.GitStatusRequest{})
 	if err != nil {
@@ -1386,15 +1370,15 @@ func TestPluginToAgentName(t *testing.T) {
 		want   string
 	}{
 		// Canonical names (new).
-		{"go-generic", "go-generic:latest"},
-		{"rust-generic", "rust-generic:latest"},
-		{"node-generic", "node-generic:latest"},
-		{"python-generic", "python-generic:latest"},
+		{"go-generic", "go:latest"},
+		{"rust-generic", "rust:latest"},
+		{"node-generic", "nextjs:latest"},
+		{"python-generic", "python:latest"},
 		// Legacy names (backward compat).
-		{"generic-go", "go-generic:latest"},
-		{"generic-rust", "rust-generic:latest"},
-		{"generic-node", "node-generic:latest"},
-		{"generic-python", "python-generic:latest"},
+		{"generic-go", "go:latest"},
+		{"generic-rust", "rust:latest"},
+		{"generic-node", "nextjs:latest"},
+		{"generic-python", "python:latest"},
 		// Unknown.
 		{"custom-plugin", "custom-plugin:latest"},
 	}
@@ -1547,6 +1531,38 @@ func TestNewServerNormalizesWorkDirToAbsolute(t *testing.T) {
 	}
 	if !filepath.IsAbs(s.cfg.WorkDir) || s.cfg.WorkDir != dir {
 		t.Fatalf("WorkDir = %q, want %q", s.cfg.WorkDir, dir)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+}
+
+func TestGatewayCloseReapsTerminalsAndRejectsPathEscape(t *testing.T) {
+	s, err := NewServer(Config{WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OpenTerminal(context.Background(), &gatewayv1.OpenTerminalRequest{
+		Shell: "/bin/sh", WorkingDir: "../outside",
+	}); err == nil {
+		t.Fatal("terminal accepted a working directory outside the gateway root")
+	}
+	opened, err := s.OpenTerminal(context.Background(), &gatewayv1.OpenTerminalRequest{Shell: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, ok := s.terminals.get(opened.GetTerminalId())
+	if !ok {
+		t.Fatal("opened terminal was not registered")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gateway close did not reap terminal")
+	}
+	if _, err := s.OpenTerminal(context.Background(), &gatewayv1.OpenTerminalRequest{Shell: "/bin/sh"}); err == nil {
+		t.Fatal("terminal opened after gateway close")
 	}
 }
 

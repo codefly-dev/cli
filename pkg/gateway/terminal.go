@@ -17,7 +17,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -41,6 +40,7 @@ type termSession struct {
 type terminalManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*termSession
+	closed   bool
 }
 
 func newTerminalManager() *terminalManager {
@@ -54,6 +54,57 @@ func (m *terminalManager) get(id string) (*termSession, bool) {
 	return s, ok
 }
 
+func (m *terminalManager) add(session *termSession) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return fmt.Errorf("terminal manager is closed")
+	}
+	m.sessions[session.id] = session
+	return nil
+}
+
+func (m *terminalManager) take(id string) (*termSession, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	session, ok := m.sessions[id]
+	if ok {
+		delete(m.sessions, id)
+	}
+	return session, ok
+}
+
+func (m *terminalManager) remove(id string) {
+	m.mu.Lock()
+	delete(m.sessions, id)
+	m.mu.Unlock()
+}
+
+func (m *terminalManager) close() {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
+	sessions := make([]*termSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.sessions = make(map[string]*termSession)
+	m.mu.Unlock()
+
+	for _, session := range sessions {
+		if session.cmd.Process != nil {
+			_ = session.cmd.Process.Kill()
+		}
+		_ = session.ptmx.Close()
+	}
+	for _, session := range sessions {
+		<-session.done
+	}
+}
+
 // OpenTerminal spawns a PTY-backed shell in the gateway's working directory.
 func (s *Server) OpenTerminal(_ context.Context, req *gatewayv1.OpenTerminalRequest) (*gatewayv1.OpenTerminalResponse, error) {
 	shell := req.Shell
@@ -65,10 +116,11 @@ func (s *Server) OpenTerminal(_ context.Context, req *gatewayv1.OpenTerminalRequ
 	}
 	workDir := s.serviceRoot()
 	if req.WorkingDir != "" {
-		workDir = filepath.Join(workDir, req.WorkingDir)
-	}
-	if _, err := os.Stat(workDir); err != nil {
-		return nil, fmt.Errorf("working directory not found: %s", workDir)
+		var err error
+		workDir, err = s.resolveCommandDir(req.WorkingDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve terminal working directory: %w", err)
+		}
 	}
 
 	cmd := exec.Command(shell)
@@ -93,15 +145,22 @@ func (s *Server) OpenTerminal(_ context.Context, req *gatewayv1.OpenTerminalRequ
 		createdAt:  time.Now(),
 		done:       make(chan struct{}),
 	}
+	if err := s.terminals.add(sess); err != nil {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = ptmx.Close()
+		_ = cmd.Wait()
+		close(sess.done)
+		return nil, err
+	}
 	go func() {
 		_ = cmd.Wait()
 		sess.exitCode = cmd.ProcessState.ExitCode()
+		_ = ptmx.Close()
 		close(sess.done)
+		s.terminals.remove(id)
 	}()
-
-	s.terminals.mu.Lock()
-	s.terminals.sessions[id] = sess
-	s.terminals.mu.Unlock()
 
 	return &gatewayv1.OpenTerminalResponse{TerminalId: id, Shell: shell, WorkingDir: workDir}, nil
 }
@@ -182,13 +241,8 @@ func (s *Server) ResizeTerminal(_ context.Context, req *gatewayv1.ResizeTerminal
 	return &gatewayv1.ResizeTerminalResponse{}, nil
 }
 
-func (s *Server) CloseTerminal(_ context.Context, req *gatewayv1.CloseTerminalRequest) (*gatewayv1.CloseTerminalResponse, error) {
-	s.terminals.mu.Lock()
-	sess, ok := s.terminals.sessions[req.TerminalId]
-	if ok {
-		delete(s.terminals.sessions, req.TerminalId)
-	}
-	s.terminals.mu.Unlock()
+func (s *Server) CloseTerminal(ctx context.Context, req *gatewayv1.CloseTerminalRequest) (*gatewayv1.CloseTerminalResponse, error) {
+	sess, ok := s.terminals.take(req.TerminalId)
 	if !ok {
 		return nil, fmt.Errorf("terminal not found: %s", req.TerminalId)
 	}
@@ -196,7 +250,12 @@ func (s *Server) CloseTerminal(_ context.Context, req *gatewayv1.CloseTerminalRe
 		_ = sess.cmd.Process.Kill()
 	}
 	_ = sess.ptmx.Close()
-	return &gatewayv1.CloseTerminalResponse{}, nil
+	select {
+	case <-sess.done:
+		return &gatewayv1.CloseTerminalResponse{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (s *Server) ListTerminals(_ context.Context, _ *gatewayv1.ListTerminalsRequest) (*gatewayv1.ListTerminalsResponse, error) {

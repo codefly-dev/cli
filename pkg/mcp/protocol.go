@@ -1,6 +1,10 @@
 package mcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/codefly-dev/cli/pkg/toolbox"
+)
 
 // JSON-RPC 2.0 types for MCP protocol
 const JSONRPCVersion = "2.0"
@@ -80,24 +84,11 @@ type InitializeResult struct {
 	ServerInfo      ServerInfo         `json:"serverInfo"`
 }
 
-// MCP Tool types
-type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	InputSchema InputSchema `json:"inputSchema"`
-}
-
-type InputSchema struct {
-	Type       string                    `json:"type"` // Always "object"
-	Properties map[string]PropertySchema `json:"properties,omitempty"`
-	Required   []string                  `json:"required,omitempty"`
-}
-
-type PropertySchema struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
-}
+// MCP tool types are aliases of the transport-neutral toolbox contract. The
+// JSON-RPC adapter adds no parallel definition or translation layer.
+type Tool = toolbox.Tool
+type InputSchema = toolbox.InputSchema
+type PropertySchema = toolbox.PropertySchema
 
 type ListToolsResult struct {
 	Tools []Tool `json:"tools"`
@@ -141,17 +132,7 @@ type ResourceContents struct {
 }
 
 // Content types
-type Content struct {
-	Type     string `json:"type"` // "text", "image", "resource"
-	Text     string `json:"text,omitempty"`
-	Data     string `json:"data,omitempty"`
-	MimeType string `json:"mimeType,omitempty"`
-}
+type Content = toolbox.Content
 
-func TextContent(text string) Content {
-	return Content{Type: "text", Text: text}
-}
-
-func ErrorContent(err error) Content {
-	return Content{Type: "text", Text: "Error: " + err.Error()}
-}
+var TextContent = toolbox.TextContent
+var ErrorContent = toolbox.ErrorContent

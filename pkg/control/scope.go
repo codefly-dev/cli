@@ -3,7 +3,11 @@ package control
 import (
 	"context"
 
+	"github.com/codefly-dev/cli/pkg/engine"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	codecore "github.com/codefly-dev/core/code"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 )
 
 // ServiceScope is a view of the plane bound to ONE service. File and git
@@ -40,6 +44,7 @@ type ServiceScope interface {
 	Lint(ctx context.Context, req CheckRequest) (CheckResult, error)
 	Compile(ctx context.Context, req CheckRequest) (CheckResult, error)
 	RunChecks(ctx context.Context, req CheckRequest) (CheckResult, error)
+	Stop(ctx context.Context) error
 	ListCommands(ctx context.Context) ([]Command, error)
 	RunCommand(ctx context.Context, command string, args []string) (CommandResult, error)
 
@@ -56,7 +61,14 @@ func (p *planeImpl) Service(ctx context.Context, name string) (ServiceScope, err
 	if err != nil {
 		return nil, err
 	}
-	return &serviceScope{plane: p, name: name, dir: service.Dir()}, nil
+	var behavior *engine.Service
+	if p.host != nil {
+		behavior, err = p.host.Service(engine.ServiceTarget{Name: service.Name, Root: service.Dir()})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &serviceScope{plane: p, behavior: behavior, name: name, dir: service.Dir()}, nil
 }
 
 // ServiceScopeAt returns a scope whose file/git operations root at dir WITHOUT
@@ -66,16 +78,17 @@ func (p *planeImpl) Service(ctx context.Context, name string) (ServiceScope, err
 // workspace on use and will error when there is none, so an adapter in that mode
 // should only call the source/VCS methods.
 func ServiceScopeAt(name, dir string) ServiceScope {
-	return &serviceScope{plane: New().(*planeImpl), name: name, dir: dir}
+	return &serviceScope{plane: newPlaneRooted(dir), name: name, dir: dir}
 }
 
 // serviceScope implements ServiceScope. File/git ops reuse the shared *With /
 // *At helpers rooted at the service dir; lifecycle/commands delegate to the
 // workspace-scoped plane methods with the bound service name.
 type serviceScope struct {
-	plane *planeImpl
-	name  string
-	dir   string
+	plane    *planeImpl
+	behavior *engine.Service
+	name     string
+	dir      string
 }
 
 func (s *serviceScope) Name() string { return s.name }
@@ -144,16 +157,57 @@ func (s *serviceScope) GitCommit(ctx context.Context, req GitCommitRequest) (Git
 // --- Lifecycle / checks / commands (bound service) ---
 
 func (s *serviceScope) Build(ctx context.Context, req BuildRequest) (BuildResult, error) {
+	if s.behavior != nil {
+		response, err := s.behavior.Build(ctx, &runtimev0.BuildRequest{})
+		if err != nil {
+			return BuildResult{}, err
+		}
+		return BuildResult{
+			Succeeded: response.GetStatus().GetState() == runtimev0.BuildStatus_SUCCESS,
+			Output:    response.GetOutput(),
+		}, nil
+	}
 	req.Service = s.name
 	return s.plane.Build(ctx, req)
 }
 
 func (s *serviceScope) Test(ctx context.Context, req TestRequest) (CheckResult, error) {
+	if s.behavior != nil && req.RuntimeContext == "" {
+		request := &runtimev0.TestRequest{Suite: req.Suite}
+		if req.Filter != "" {
+			request.Filters = []string{req.Filter}
+		}
+		response, err := s.behavior.Test(ctx, request)
+		if err != nil {
+			return CheckResult{}, err
+		}
+		return CheckResult{
+			Passed: orchestration.TestSucceeded(response),
+			Output: orchestration.RenderTestReport(response),
+		}, nil
+	}
 	req.Service = s.name
 	return s.plane.Test(ctx, req)
 }
 
 func (s *serviceScope) Lint(ctx context.Context, req CheckRequest) (CheckResult, error) {
+	if s.behavior != nil && req.RuntimeContext == "" {
+		response, err := s.behavior.Lint(ctx, &runtimev0.LintRequest{})
+		if err != nil {
+			return CheckResult{}, err
+		}
+		result := CheckResult{
+			Passed: response.GetStatus().GetState() == runtimev0.LintStatus_SUCCESS,
+			Output: response.GetOutput(),
+		}
+		for _, diagnostic := range response.GetDiagnostics() {
+			result.Details = append(result.Details, CheckFinding{
+				File: diagnostic.GetFile(), Line: int(diagnostic.GetLine()),
+				Severity: diagnostic.GetSeverity().String(), Message: diagnostic.GetMessage(),
+			})
+		}
+		return result, nil
+	}
 	req.Service = s.name
 	return s.plane.Lint(ctx, req)
 }
@@ -169,9 +223,41 @@ func (s *serviceScope) RunChecks(ctx context.Context, req CheckRequest) (CheckRe
 }
 
 func (s *serviceScope) ListCommands(ctx context.Context) ([]Command, error) {
+	if s.behavior != nil {
+		response, err := s.behavior.ListCommands(ctx, &agentv0.ListCommandsRequest{})
+		if err != nil {
+			return nil, err
+		}
+		commands := make([]Command, 0, len(response.GetCommands()))
+		for _, command := range response.GetCommands() {
+			commands = append(commands, Command{
+				Name: command.GetName(), Description: command.GetDescription(),
+				Usage: command.GetUsage(), Tags: command.GetTags(), Destructive: command.GetDestructive(),
+			})
+		}
+		return commands, nil
+	}
 	return s.plane.ListCommands(ctx, s.name)
 }
 
 func (s *serviceScope) RunCommand(ctx context.Context, command string, args []string) (CommandResult, error) {
+	if s.behavior != nil {
+		response, err := s.behavior.RunCommand(ctx, &agentv0.RunPluginCommandRequest{Command: command, Args: args})
+		if err != nil {
+			return CommandResult{}, err
+		}
+		if !response.GetSuccess() {
+			return CommandResult{ExitCode: 1, Output: response.GetError()}, nil
+		}
+		return CommandResult{Output: response.GetOutput()}, nil
+	}
 	return s.plane.RunCommand(ctx, RunCommandRequest{Service: s.name, Command: command, Args: args})
+}
+
+func (s *serviceScope) Stop(ctx context.Context) error {
+	if s.behavior == nil {
+		return s.plane.Stop(ctx, StopRequest{})
+	}
+	_, err := s.behavior.Stop(ctx, &runtimev0.StopRequest{})
+	return err
 }

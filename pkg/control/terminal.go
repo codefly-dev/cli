@@ -24,6 +24,7 @@ import (
 type terminalManager struct {
 	mu       sync.Mutex
 	sessions map[string]*termSession
+	closed   bool
 }
 
 type termSession struct {
@@ -48,6 +49,41 @@ func (m *terminalManager) remove(id string) {
 	m.mu.Lock()
 	delete(m.sessions, id)
 	m.mu.Unlock()
+}
+
+func (m *terminalManager) add(id string, session *termSession) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return fmt.Errorf("terminal manager is closed")
+	}
+	m.sessions[id] = session
+	return nil
+}
+
+func (m *terminalManager) close() {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
+	sessions := make([]*termSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.sessions = make(map[string]*termSession)
+	m.mu.Unlock()
+
+	for _, session := range sessions {
+		if session.cmd.Process != nil {
+			_ = session.cmd.Process.Kill()
+		}
+		_ = session.ptyFile.Close()
+	}
+	for _, session := range sessions {
+		<-session.done
+	}
 }
 
 // terminalDir resolves where a session's shell starts: the service directory
@@ -93,9 +129,15 @@ func (p *planeImpl) OpenTerminal(ctx context.Context, req OpenTerminalRequest) (
 	}
 	id := TerminalID(uuid.New().String())
 	sess := &termSession{ptyFile: f, cmd: cmd, done: make(chan struct{})}
-	p.terminals.mu.Lock()
-	p.terminals.sessions[string(id)] = sess
-	p.terminals.mu.Unlock()
+	if err := p.terminals.add(string(id), sess); err != nil {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = f.Close()
+		_ = cmd.Wait()
+		close(sess.done)
+		return "", err
+	}
 
 	// Reaper: wait the shell, close its PTY, drop the session.
 	go func() {

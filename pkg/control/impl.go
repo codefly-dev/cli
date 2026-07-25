@@ -3,48 +3,133 @@ package control
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"sync"
 
+	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/resources"
 )
 
-// planeImpl is the single implementation of Plane. It caches nothing beyond
-// construction: like the legacy pkg/web server it (re)loads the workspace from
-// the current directory on demand, and reaches a running flow through the
-// orchestration.CurrentFlow() global. Capability groups are lifted onto it one
-// at a time; methods not yet lifted live in unimplemented.go and return
-// errNotImplemented.
+// planeImpl is the single implementation of Plane. Its root and runtime
+// ownership are fixed at construction; operations never consult process CWD or
+// a process-global flow registry after that point.
 type planeImpl struct {
+	root     string
+	host     *engine.WorkspaceHost
+	ownsHost bool
+	initErr  error
 	// gate enforces the mutation-authority policy for destructive/outward
 	// actions (Deploy and, under prepared authority, edits). See mutation.go.
 	gate *mutationGate
 	// terminals holds this plane's live PTY sessions. See terminal.go.
 	terminals *terminalManager
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// New returns the control plane. Most operations resolve the workspace/flow at
-// call time; construction-time state is the mutation-authority gate (defaults to
-// open, trusted local caller) and the terminal session manager.
+// New returns a control plane rooted at the current directory as observed once,
+// at construction. Prefer NewAt or NewWithHost in long-lived adapters.
 func New() Plane {
-	return &planeImpl{gate: newMutationGate(), terminals: newTerminalManager()}
+	root, err := os.Getwd()
+	if err != nil {
+		return &planeImpl{initErr: fmt.Errorf("resolve control-plane root: %w", err), gate: newMutationGate(), terminals: newTerminalManager()}
+	}
+	plane, err := NewAt(root)
+	if err != nil {
+		return &planeImpl{root: root, initErr: err, gate: newMutationGate(), terminals: newTerminalManager()}
+	}
+	return plane
+}
+
+// NewAt creates a control plane and its owning host at an explicit root.
+func NewAt(root string) (Plane, error) {
+	host, err := engine.NewWorkspaceHost(engine.Config{Root: root})
+	if err != nil {
+		return nil, err
+	}
+	return &planeImpl{
+		root:      host.Root(),
+		host:      host,
+		ownsHost:  true,
+		gate:      newMutationGate(),
+		terminals: newTerminalManager(),
+	}, nil
+}
+
+// Close releases every resource owned by this plane. NewWithHost callers keep
+// ownership of the shared host and close it at their adapter boundary.
+func (p *planeImpl) Close() error {
+	if p == nil {
+		return nil
+	}
+	p.closeOnce.Do(func() {
+		if p.terminals != nil {
+			p.terminals.close()
+		}
+		if p.ownsHost && p.host != nil {
+			p.closeErr = p.host.Close()
+		}
+	})
+	return p.closeErr
+}
+
+// NewWithHost binds a control plane to an existing runtime owner.
+func NewWithHost(host *engine.WorkspaceHost) Plane {
+	if host == nil {
+		return &planeImpl{initErr: fmt.Errorf("workspace host is required"), gate: newMutationGate(), terminals: newTerminalManager()}
+	}
+	return &planeImpl{root: host.Root(), host: host, gate: newMutationGate(), terminals: newTerminalManager()}
+}
+
+func newPlaneRooted(root string) *planeImpl {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return &planeImpl{root: root, initErr: fmt.Errorf("resolve control-plane root: %w", err), gate: newMutationGate(), terminals: newTerminalManager()}
+	}
+	return &planeImpl{root: filepath.Clean(absolute), gate: newMutationGate(), terminals: newTerminalManager()}
 }
 
 // Compile-time proof that planeImpl satisfies the full control surface.
 var _ Plane = (*planeImpl)(nil)
 
-// workspace loads the workspace rooted at the current directory. Kept private so
-// every method resolves it the same way.
+// workspace loads the workspace containing the plane's immutable root.
 func (p *planeImpl) workspace(ctx context.Context) (*resources.Workspace, error) {
-	ws, err := resources.FindWorkspaceUp(ctx)
+	if p.initErr != nil {
+		return nil, p.initErr
+	}
+	root, err := workspaceRootFrom(p.root)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := resources.LoadWorkspaceFromDir(ctx, root)
 	if err != nil {
 		return nil, fmt.Errorf("load workspace: %w", err)
 	}
-	if ws == nil {
-		return nil, fmt.Errorf("no workspace found from the current directory")
-	}
 	return ws, nil
+}
+
+func workspaceRootFrom(start string) (string, error) {
+	if start == "" {
+		return "", fmt.Errorf("control-plane root is required")
+	}
+	current := filepath.Clean(start)
+	for {
+		config := filepath.Join(current, resources.WorkspaceConfigurationName)
+		if info, err := os.Stat(config); err == nil && !info.IsDir() {
+			return current, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect workspace configuration %s: %w", config, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no workspace found from %s", start)
+		}
+		current = parent
+	}
 }
 
 // --- Introspector ---
@@ -183,7 +268,11 @@ func (p *planeImpl) DependencyGraph(ctx context.Context, service string) (Depend
 // per-service list currently carries just the origin service. Richer per-service
 // state requires accumulating orchestration StateListener events — a later lift.
 func (p *planeImpl) FlowStatus(ctx context.Context) (FlowStatus, error) {
-	flow := orchestration.CurrentFlow()
+	if p.host == nil || p.host.Flows() == nil {
+		return FlowStatus{State: FlowIdle}, nil
+	}
+	_, managed := p.host.Flows().Active()
+	flow, _ := managed.(*orchestration.Flow)
 	if flow == nil {
 		return FlowStatus{State: FlowIdle}, nil
 	}
