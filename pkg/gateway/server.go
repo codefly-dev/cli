@@ -1436,9 +1436,12 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 		}
 	}
 	sort.Strings(changed)
-	state := "formatted"
-	if len(changed) == 0 {
-		state = "clean"
+	state := "failed"
+	if len(diagnostics) == 0 {
+		state = "formatted"
+		if len(changed) == 0 {
+			state = "clean"
+		}
 	}
 	return &gatewayv1.FormatResponse{
 		Success:      len(diagnostics) == 0,
@@ -2130,6 +2133,20 @@ func (s *Server) ForgeRequestReview(ctx context.Context, req *gatewayv1.ForgeReq
 		return &gatewayv1.ForgeRequestReviewResponse{Success: false, Error: err.Error()}, nil
 	}
 	return result, nil
+}
+
+func (s *Server) ForgeNormalizeWebhook(_ context.Context, req *gatewayv1.ForgeNormalizeWebhookRequest) (*gatewayv1.ForgeNormalizeWebhookResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "forge webhook request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	event, err := s.forgeToolbox().NormalizeWebhook(req)
+	if err != nil {
+		return &gatewayv1.ForgeNormalizeWebhookResponse{Error: err.Error()}, nil
+	}
+	return &gatewayv1.ForgeNormalizeWebhookResponse{Event: event}, nil
 }
 
 func gitActReceipt(kind, target, revision string) *gatewayv1.ActReceipt {
