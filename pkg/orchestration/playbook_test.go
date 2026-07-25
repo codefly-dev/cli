@@ -204,7 +204,11 @@ signalled:
 
 	// Now we will send a new action
 	playbook.WithStoppingAfter(func(ctx context.Context, action orchestration.Action) bool {
-		return action.Type == orchestration.RuntimeStart
+		// The signal is emitted before the worker checks stopAfter for the
+		// current action. Under a slow scheduler (notably `go test -race` in
+		// CI), installing this predicate can otherwise stop round 1 before
+		// Seed has a chance to enqueue round 2.
+		return action.Round >= 2 && action.Type == orchestration.RuntimeStart
 	})
 
 	err = playbook.Seed(ctx, orchestration.Action{Type: orchestration.RuntimeInit, Service: start})
