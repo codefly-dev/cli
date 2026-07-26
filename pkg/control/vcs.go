@@ -210,7 +210,12 @@ func gitBranchAt(ctx context.Context, repo string, req GitBranchRequest) (GitAct
 	if err := validateRevision(startPoint); err != nil {
 		return GitAct{}, err
 	}
-	if _, err := git(ctx, repo, "branch", "--", name, startPoint); err != nil {
+	args := []string{"branch"}
+	if req.Force {
+		args = append(args, "-f")
+	}
+	args = append(args, "--", name, startPoint)
+	if _, err := git(ctx, repo, args...); err != nil {
 		return GitAct{}, err
 	}
 	revision, err := git(ctx, repo, "rev-parse", name+"^{commit}")
@@ -234,7 +239,12 @@ func gitCheckoutAt(ctx context.Context, repo string, req GitCheckoutRequest) (Gi
 	if err := validateRevision(ref); err != nil {
 		return GitAct{}, err
 	}
-	if _, err := git(ctx, repo, "checkout", ref, "--"); err != nil {
+	args := []string{"checkout"}
+	if req.Detach {
+		args = append(args, "--detach")
+	}
+	args = append(args, ref, "--")
+	if _, err := git(ctx, repo, args...); err != nil {
 		return GitAct{}, err
 	}
 	branch, err := currentBranch(ctx, repo)

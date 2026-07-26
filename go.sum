@@ -89,6 +89,8 @@ github.com/cloudflare/circl v1.6.3 h1:9GPOhQGF9MCYUeXyMYlqTR6a5gTrgR/fBLXvUgtVcg
 github.com/cloudflare/circl v1.6.3/go.mod h1:2eXP6Qfat4O/Yhh8BznvKnJ+uzEoTQ6jVKJRn81BiS4=
 github.com/codefly-dev/core v0.2.37-0.20260725195525-297a1518d0a3 h1:aays+5kNutAtYjGgqYam8qrYCHfDf/yuEMqlJWqxlEE=
 github.com/codefly-dev/core v0.2.37-0.20260725195525-297a1518d0a3/go.mod h1:eT7oXvFsMnKYlVz3Uyxc88snhX+yhXxbXTvfdr+GRJ4=
+github.com/codefly-dev/core v0.2.37-0.20260726091211-1f7efaee0abc h1:UDCALBG4Mq21XqG5Loy19vj7AB5/aTN94sJJTr2SHpk=
+github.com/codefly-dev/core v0.2.37-0.20260726091211-1f7efaee0abc/go.mod h1:eT7oXvFsMnKYlVz3Uyxc88snhX+yhXxbXTvfdr+GRJ4=
 github.com/codefly-dev/golor v0.1.3 h1:xmo+ceyJFRYZdvpWE2fNd0jeaadp/Ibm1BnganiGKOc=
 github.com/codefly-dev/golor v0.1.3/go.mod h1:sl/u/K1l7J0Pr3xyVZp8fOJYQItKKst1No9JqgzLLoY=
 github.com/codefly-dev/gortk v0.2.0 h1:7bOlS5valYz2zil+fZctQNcPCYBcPj86abcw9N8h1hQ=
