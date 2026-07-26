@@ -36,6 +36,12 @@ type ServiceScope interface {
 	GitDiff(ctx context.Context, req GitDiffRequest) (string, error)
 	GitLog(ctx context.Context, req GitLogRequest) ([]GitCommit, error)
 	GitCommit(ctx context.Context, req GitCommitRequest) (GitCommit, error)
+	GitBranch(ctx context.Context, req GitBranchRequest) (GitAct, error)
+	GitCheckout(ctx context.Context, req GitCheckoutRequest) (GitAct, error)
+	GitPush(ctx context.Context, req GitPushRequest) (GitPushResult, error)
+	GitTag(ctx context.Context, req GitTagRequest) (GitAct, error)
+	GitMerge(ctx context.Context, req GitMergeRequest) (GitAct, error)
+	GitRevert(ctx context.Context, req GitRevertRequest) (GitAct, error)
 
 	// Lifecycle / checks / commands (this service; any Service on the request is
 	// overridden with the scoped one)
@@ -152,6 +158,30 @@ func (s *serviceScope) GitLog(ctx context.Context, req GitLogRequest) ([]GitComm
 
 func (s *serviceScope) GitCommit(ctx context.Context, req GitCommitRequest) (GitCommit, error) {
 	return gitCommitAt(ctx, s.dir, req)
+}
+
+func (s *serviceScope) GitBranch(ctx context.Context, req GitBranchRequest) (GitAct, error) {
+	return gitBranchAt(ctx, s.dir, req)
+}
+
+func (s *serviceScope) GitCheckout(ctx context.Context, req GitCheckoutRequest) (GitAct, error) {
+	return gitCheckoutAt(ctx, s.dir, req)
+}
+
+func (s *serviceScope) GitPush(ctx context.Context, req GitPushRequest) (GitPushResult, error) {
+	return gitPushAt(ctx, s.dir, req)
+}
+
+func (s *serviceScope) GitTag(ctx context.Context, req GitTagRequest) (GitAct, error) {
+	return gitTagAt(ctx, s.dir, req)
+}
+
+func (s *serviceScope) GitMerge(ctx context.Context, req GitMergeRequest) (GitAct, error) {
+	return gitMergeAt(ctx, s.dir, req)
+}
+
+func (s *serviceScope) GitRevert(ctx context.Context, req GitRevertRequest) (GitAct, error) {
+	return gitRevertAt(ctx, s.dir, req)
 }
 
 // --- Lifecycle / checks / commands (bound service) ---

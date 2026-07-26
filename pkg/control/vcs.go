@@ -152,8 +152,8 @@ func gitLogAt(ctx context.Context, repo string, req GitLogRequest) ([]GitCommit,
 	return commits, nil
 }
 
-// GitCommit stages req.Paths (all currently-staged changes when empty), commits
-// with req.Message, and returns the new commit.
+// GitCommit stages the requested workspace changes, commits with req.Message,
+// and returns the new commit.
 func (p *planeImpl) GitCommit(ctx context.Context, req GitCommitRequest) (GitCommit, error) {
 	repo, err := p.gitDir(ctx, req.Dir)
 	if err != nil {
@@ -166,7 +166,14 @@ func gitCommitAt(ctx context.Context, repo string, req GitCommitRequest) (GitCom
 	if strings.TrimSpace(req.Message) == "" {
 		return GitCommit{}, fmt.Errorf("commit message is required")
 	}
-	if len(req.Paths) > 0 {
+	if req.All && len(req.Paths) > 0 {
+		return GitCommit{}, fmt.Errorf("commit all and paths are mutually exclusive")
+	}
+	if req.All {
+		if _, err := git(ctx, repo, "add", "--all"); err != nil {
+			return GitCommit{}, err
+		}
+	} else if len(req.Paths) > 0 {
 		args := append([]string{"add", "--"}, req.Paths...)
 		if _, err := git(ctx, repo, args...); err != nil {
 			return GitCommit{}, err
@@ -180,4 +187,273 @@ func gitCommitAt(ctx context.Context, repo string, req GitCommitRequest) (GitCom
 		return GitCommit{}, err
 	}
 	return GitCommit{SHA: sha, Message: req.Message}, nil
+}
+
+// GitBranch creates a branch and resolves its exact commit.
+func (p *planeImpl) GitBranch(ctx context.Context, req GitBranchRequest) (GitAct, error) {
+	repo, err := p.gitDir(ctx, req.Dir)
+	if err != nil {
+		return GitAct{}, err
+	}
+	return gitBranchAt(ctx, repo, req)
+}
+
+func gitBranchAt(ctx context.Context, repo string, req GitBranchRequest) (GitAct, error) {
+	name := strings.TrimSpace(req.Name)
+	if err := validateBranchName(ctx, repo, name); err != nil {
+		return GitAct{}, err
+	}
+	startPoint := strings.TrimSpace(req.StartPoint)
+	if startPoint == "" {
+		startPoint = "HEAD"
+	}
+	if err := validateRevision(startPoint); err != nil {
+		return GitAct{}, err
+	}
+	if _, err := git(ctx, repo, "branch", "--", name, startPoint); err != nil {
+		return GitAct{}, err
+	}
+	revision, err := git(ctx, repo, "rev-parse", name+"^{commit}")
+	if err != nil {
+		return GitAct{}, err
+	}
+	return GitAct{Target: name, Revision: revision}, nil
+}
+
+// GitCheckout switches to an existing ref and resolves the resulting HEAD.
+func (p *planeImpl) GitCheckout(ctx context.Context, req GitCheckoutRequest) (GitAct, error) {
+	repo, err := p.gitDir(ctx, req.Dir)
+	if err != nil {
+		return GitAct{}, err
+	}
+	return gitCheckoutAt(ctx, repo, req)
+}
+
+func gitCheckoutAt(ctx context.Context, repo string, req GitCheckoutRequest) (GitAct, error) {
+	ref := strings.TrimSpace(req.Ref)
+	if err := validateRevision(ref); err != nil {
+		return GitAct{}, err
+	}
+	if _, err := git(ctx, repo, "checkout", ref, "--"); err != nil {
+		return GitAct{}, err
+	}
+	branch, err := currentBranch(ctx, repo)
+	if err != nil {
+		return GitAct{}, err
+	}
+	revision, err := git(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		return GitAct{}, err
+	}
+	return GitAct{Branch: branch, Target: ref, Revision: revision}, nil
+}
+
+// GitPush publishes one branch and verifies the remote ref after git accepts it.
+func (p *planeImpl) GitPush(ctx context.Context, req GitPushRequest) (GitPushResult, error) {
+	repo, err := p.gitDir(ctx, req.Dir)
+	if err != nil {
+		return GitPushResult{}, err
+	}
+	return gitPushAt(ctx, repo, req)
+}
+
+func gitPushAt(ctx context.Context, repo string, req GitPushRequest) (GitPushResult, error) {
+	remote := strings.TrimSpace(req.Remote)
+	if remote == "" {
+		remote = "origin"
+	}
+	if err := validateGitAtom("remote", remote); err != nil {
+		return GitPushResult{}, err
+	}
+	if _, err := git(ctx, repo, "remote", "get-url", "--", remote); err != nil {
+		return GitPushResult{}, err
+	}
+	branch := strings.TrimSpace(req.Branch)
+	if branch == "" {
+		var err error
+		branch, err = currentBranch(ctx, repo)
+		if err != nil {
+			return GitPushResult{}, err
+		}
+	}
+	if err := validateBranchName(ctx, repo, branch); err != nil {
+		return GitPushResult{}, err
+	}
+	if req.Mode != GitPushFastForwardOnly && req.Mode != GitPushForceWithLease {
+		return GitPushResult{}, fmt.Errorf("git push mode is required")
+	}
+	revision, err := git(ctx, repo, "rev-parse", "refs/heads/"+branch+"^{commit}")
+	if err != nil {
+		return GitPushResult{}, err
+	}
+	args := []string{"push", "--porcelain"}
+	if req.SetUpstream {
+		args = append(args, "--set-upstream")
+	}
+	if req.Mode == GitPushForceWithLease {
+		args = append(args, "--force-with-lease")
+	}
+	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
+	args = append(args, "--", remote, refspec)
+	if _, err := git(ctx, repo, args...); err != nil {
+		return GitPushResult{}, err
+	}
+	remoteLine, err := git(ctx, repo, "ls-remote", "--exit-code", "--refs", remote, "refs/heads/"+branch)
+	if err != nil {
+		return GitPushResult{}, fmt.Errorf("verify pushed ref: %w", err)
+	}
+	fields := strings.Fields(remoteLine)
+	if len(fields) < 2 || fields[0] != revision {
+		return GitPushResult{}, fmt.Errorf("verify pushed ref: remote %s/%s is %q, want %s", remote, branch, remoteLine, revision)
+	}
+	return GitPushResult{Remote: remote, Branch: branch, Revision: revision}, nil
+}
+
+// GitTag creates an annotated or signed tag and resolves its commit target.
+func (p *planeImpl) GitTag(ctx context.Context, req GitTagRequest) (GitAct, error) {
+	repo, err := p.gitDir(ctx, req.Dir)
+	if err != nil {
+		return GitAct{}, err
+	}
+	return gitTagAt(ctx, repo, req)
+}
+
+func gitTagAt(ctx context.Context, repo string, req GitTagRequest) (GitAct, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return GitAct{}, fmt.Errorf("tag name is required")
+	}
+	if _, err := git(ctx, repo, "check-ref-format", "refs/tags/"+name); err != nil {
+		return GitAct{}, fmt.Errorf("invalid tag name %q: %w", name, err)
+	}
+	revision := strings.TrimSpace(req.Revision)
+	if revision == "" {
+		revision = "HEAD"
+	}
+	if err := validateRevision(revision); err != nil {
+		return GitAct{}, err
+	}
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		return GitAct{}, fmt.Errorf("annotated tag message is required")
+	}
+	mode := "-a"
+	if req.Sign {
+		mode = "-s"
+	}
+	// `--` guards a leading-dash name from being parsed as a git tag option.
+	if _, err := git(ctx, repo, "tag", mode, "-m", message, "--", name, revision); err != nil {
+		return GitAct{}, err
+	}
+	resolved, err := git(ctx, repo, "rev-parse", name+"^{commit}")
+	if err != nil {
+		return GitAct{}, err
+	}
+	return GitAct{Target: name, Revision: resolved}, nil
+}
+
+// GitMerge merges one revision and resolves the receiving branch head.
+func (p *planeImpl) GitMerge(ctx context.Context, req GitMergeRequest) (GitAct, error) {
+	repo, err := p.gitDir(ctx, req.Dir)
+	if err != nil {
+		return GitAct{}, err
+	}
+	return gitMergeAt(ctx, repo, req)
+}
+
+func gitMergeAt(ctx context.Context, repo string, req GitMergeRequest) (GitAct, error) {
+	ref := strings.TrimSpace(req.Ref)
+	if err := validateRevision(ref); err != nil {
+		return GitAct{}, err
+	}
+	args := []string{"merge", "--no-edit"}
+	if req.NoFastForward {
+		args = append(args, "--no-ff")
+	}
+	if message := strings.TrimSpace(req.Message); message != "" {
+		args = append(args, "-m", message)
+	}
+	args = append(args, "--", ref)
+	if _, err := git(ctx, repo, args...); err != nil {
+		// Keep the act atomic: a conflicted merge leaves the tree mid-merge, so
+		// abort (best-effort) before surfacing the failure to the caller.
+		_, _ = git(ctx, repo, "merge", "--abort")
+		return GitAct{}, err
+	}
+	branch, err := currentBranch(ctx, repo)
+	if err != nil {
+		return GitAct{}, err
+	}
+	revision, err := git(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		return GitAct{}, err
+	}
+	return GitAct{Branch: branch, Target: ref, Revision: revision}, nil
+}
+
+// GitRevert creates one canonical revert commit and resolves the new head.
+func (p *planeImpl) GitRevert(ctx context.Context, req GitRevertRequest) (GitAct, error) {
+	repo, err := p.gitDir(ctx, req.Dir)
+	if err != nil {
+		return GitAct{}, err
+	}
+	return gitRevertAt(ctx, repo, req)
+}
+
+func gitRevertAt(ctx context.Context, repo string, req GitRevertRequest) (GitAct, error) {
+	revision := strings.TrimSpace(req.Revision)
+	if err := validateRevision(revision); err != nil {
+		return GitAct{}, err
+	}
+	reverted, err := git(ctx, repo, "rev-parse", revision+"^{commit}")
+	if err != nil {
+		return GitAct{}, err
+	}
+	if _, err := git(ctx, repo, "revert", "--no-edit", "--", revision); err != nil {
+		// Keep the act atomic: abort a conflicted/partial revert instead of
+		// leaving the sequencer mid-operation for the next act to trip over.
+		_, _ = git(ctx, repo, "revert", "--abort")
+		return GitAct{}, err
+	}
+	branch, err := currentBranch(ctx, repo)
+	if err != nil {
+		return GitAct{}, err
+	}
+	head, err := git(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		return GitAct{}, err
+	}
+	return GitAct{Branch: branch, Target: reverted, Revision: head}, nil
+}
+
+func currentBranch(ctx context.Context, repo string) (string, error) {
+	branch, err := git(ctx, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return branch, nil
+}
+
+func validateBranchName(ctx context.Context, repo, branch string) error {
+	if branch == "" {
+		return fmt.Errorf("branch name is required")
+	}
+	if _, err := git(ctx, repo, "check-ref-format", "--branch", branch); err != nil {
+		return fmt.Errorf("invalid branch name %q: %w", branch, err)
+	}
+	return nil
+}
+
+func validateRevision(revision string) error {
+	if revision == "" {
+		return fmt.Errorf("git revision is required")
+	}
+	return validateGitAtom("revision", revision)
+}
+
+func validateGitAtom(name, value string) error {
+	if strings.HasPrefix(value, "-") || strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("invalid git %s %q", name, value)
+	}
+	return nil
 }

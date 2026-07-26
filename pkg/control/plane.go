@@ -109,6 +109,12 @@ type VCS interface {
 	GitDiff(ctx context.Context, req GitDiffRequest) (string, error)
 	GitLog(ctx context.Context, req GitLogRequest) ([]GitCommit, error)
 	GitCommit(ctx context.Context, req GitCommitRequest) (GitCommit, error)
+	GitBranch(ctx context.Context, req GitBranchRequest) (GitAct, error)
+	GitCheckout(ctx context.Context, req GitCheckoutRequest) (GitAct, error)
+	GitPush(ctx context.Context, req GitPushRequest) (GitPushResult, error)
+	GitTag(ctx context.Context, req GitTagRequest) (GitAct, error)
+	GitMerge(ctx context.Context, req GitMergeRequest) (GitAct, error)
+	GitRevert(ctx context.Context, req GitRevertRequest) (GitAct, error)
 }
 
 // DependencyManager inspects and edits a service's declared dependencies.

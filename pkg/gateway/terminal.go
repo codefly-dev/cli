@@ -24,6 +24,8 @@ import (
 	"github.com/google/uuid"
 
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type termSession struct {
@@ -107,6 +109,12 @@ func (m *terminalManager) close() {
 
 // OpenTerminal spawns a PTY-backed shell in the gateway's working directory.
 func (s *Server) OpenTerminal(_ context.Context, req *gatewayv1.OpenTerminalRequest) (*gatewayv1.OpenTerminalResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "terminal request is required")
+	}
+	if err := validateUnstructuredUse(req.GetUnstructuredUse()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	shell := req.Shell
 	if shell == "" {
 		shell = os.Getenv("SHELL")

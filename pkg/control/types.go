@@ -276,6 +276,74 @@ type GitCommitRequest struct {
 	Dir     string
 	Message string
 	Paths   []string // empty = all staged
+	All     bool
+}
+
+// GitAct is the repository state observed after one typed git mutation.
+type GitAct struct {
+	Branch   string
+	Target   string
+	Revision string
+}
+
+// GitBranchRequest creates a branch without switching to it.
+type GitBranchRequest struct {
+	Dir        string
+	Name       string
+	StartPoint string
+}
+
+// GitCheckoutRequest switches to an existing branch or revision.
+type GitCheckoutRequest struct {
+	Dir string
+	Ref string
+}
+
+// GitPushMode controls publication safety.
+type GitPushMode string
+
+const (
+	GitPushFastForwardOnly GitPushMode = "fast-forward-only"
+	GitPushForceWithLease  GitPushMode = "force-with-lease"
+)
+
+// GitPushRequest publishes one local branch.
+type GitPushRequest struct {
+	Dir         string
+	Remote      string
+	Branch      string
+	SetUpstream bool
+	Mode        GitPushMode
+}
+
+// GitPushResult is the remote-confirmed branch revision.
+type GitPushResult struct {
+	Remote   string
+	Branch   string
+	Revision string
+}
+
+// GitTagRequest creates an annotated or signed tag.
+type GitTagRequest struct {
+	Dir      string
+	Name     string
+	Revision string
+	Message  string
+	Sign     bool
+}
+
+// GitMergeRequest merges one revision into the current branch.
+type GitMergeRequest struct {
+	Dir           string
+	Ref           string
+	Message       string
+	NoFastForward bool
+}
+
+// GitRevertRequest reverts one commit with git's canonical message.
+type GitRevertRequest struct {
+	Dir      string
+	Revision string
 }
 
 // --- Dependencies ---
