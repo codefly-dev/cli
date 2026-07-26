@@ -15,10 +15,12 @@ import (
 // caller's choices (bump type, dry-run, working dir). Created once
 // per `codefly publish` invocation.
 type Engine struct {
-	Manifest *Manifest
-	BumpType string // "patch" | "minor" | "major"
-	DryRun   bool
-	WorkDir  string // git operations run from here; defaults to manifest's dir parent
+	Manifest            *Manifest
+	AdditionalManifests []*Manifest
+	BumpType            string // "patch" | "minor" | "major"
+	DryRun              bool
+	WorkDir             string // git operations run from here; defaults to manifest's dir parent
+	SignTag             bool
 
 	// BeforeCommit, when set, runs after the bumped version is written to
 	// the manifest (the working tree now carries the new version) but
@@ -57,6 +59,10 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		e.Manifest.Version = latest
 	}
 
+	manifests := e.manifests()
+	for _, manifest := range manifests[1:] {
+		manifest.Version = e.Manifest.Version
+	}
 	newVer, err := e.Manifest.Bump(e.BumpType)
 	if err != nil {
 		return "", fmt.Errorf("bump version: %w", err)
@@ -76,8 +82,13 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		return newTag, nil
 	}
 
-	if err := e.Manifest.WriteVersion(newVer); err != nil {
-		return "", fmt.Errorf("write version: %w", err)
+	for _, manifest := range manifests {
+		if err := manifest.WriteVersion(newVer); err != nil {
+			if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
+				return "", errors.Join(fmt.Errorf("write version: %w", err), restoreErr)
+			}
+			return "", fmt.Errorf("write version: %w", err)
+		}
 	}
 
 	// Gate on BeforeCommit while the tree is still pristine except for the
@@ -114,10 +125,18 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 // release. Pre-flight guaranteed a clean tree, so checking out the
 // manifest restores the previously committed version verbatim.
 func (e *Engine) restoreManifest(ctx context.Context) error {
-	if _, err := e.git(ctx, "checkout", "--", e.Manifest.Path); err != nil {
+	args := []string{"checkout", "--"}
+	for _, manifest := range e.manifests() {
+		args = append(args, manifest.Path)
+	}
+	if _, err := e.git(ctx, args...); err != nil {
 		return fmt.Errorf("restore manifest after aborted release: %w", err)
 	}
 	return nil
+}
+
+func (e *Engine) manifests() []*Manifest {
+	return append([]*Manifest{e.Manifest}, e.AdditionalManifests...)
 }
 
 // --- Pre-flight ----------------------------------------------------
@@ -239,7 +258,11 @@ func (e *Engine) latestTaggedVersion(ctx context.Context) *semver.Version {
 // gitCommit stages the manifest and creates a release commit. The
 // commit message is `release: <tag>` — short, indexable.
 func (e *Engine) gitCommit(ctx context.Context, tag string) error {
-	if _, err := e.git(ctx, "add", e.Manifest.Path); err != nil {
+	args := []string{"add"}
+	for _, manifest := range e.manifests() {
+		args = append(args, manifest.Path)
+	}
+	if _, err := e.git(ctx, args...); err != nil {
 		return err
 	}
 	if _, err := e.git(ctx, "commit", "-m", "release: "+tag); err != nil {
@@ -253,7 +276,11 @@ func (e *Engine) gitCommit(ctx context.Context, tag string) error {
 // a tagger identity + message + are GPG-signable when the repo's
 // signing config is on.
 func (e *Engine) gitTag(ctx context.Context, tag string) error {
-	_, err := e.git(ctx, "tag", "-a", tag, "-m", "Version "+strings.TrimPrefix(tag, "v"))
+	mode := "-a"
+	if e.SignTag {
+		mode = "-s"
+	}
+	_, err := e.git(ctx, "tag", mode, tag, "-m", "Version "+strings.TrimPrefix(tag, "v"))
 	return err
 }
 
