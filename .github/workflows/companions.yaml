@@ -6,9 +6,10 @@ name: Companions
 # breaks every Codefly-native build at the companion pull.
 #
 # Two jobs:
-#   publish - on release / on demand, build+push the whole set, then verify.
-#   verify  - a standing gate (daily + on demand) that fails fast when an
-#             embedded tag is missing from the registry, without publishing.
+#   publish - an explicit operator action that builds+pushes the whole set,
+#             then verifies it. This requires Docker Hub release credentials.
+#   verify  - a standing gate (CLI release + daily) that fails fast when an
+#             embedded public tag is missing, without mutating the registry.
 #
 # The fail-fast-on-bump gate ideally also lives in core's CI (that is where
 # companion versions change); this repo runs it against core@main on a
@@ -30,8 +31,10 @@ on:
 jobs:
   publish:
     name: Publish and verify companion images
-    # Publishing mutates the registry; only do it on release or a manual run.
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # Companion versions are owned by core, not by the CLI version. Publishing
+    # is therefore an explicit registry mutation, never a side effect of every
+    # unrelated CLI release.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Check out cli
@@ -76,8 +79,9 @@ jobs:
 
   verify:
     name: Verify embedded companion tags
-    # Standing gate: never publishes. Runs on the schedule and on demand.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Standing read-only gate. A manual run uses the publish job above, whose
+    # final step verifies the same immutable tags after pushing.
+    if: github.event_name == 'release' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Check out cli
@@ -102,14 +106,6 @@ jobs:
       - name: Build the codefly CLI
         working-directory: cli
         run: GOWORK=off GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
-
-      # Authenticated so a missing tag on a namespaced repo reports as
-      # "manifest unknown" rather than an anonymous "unauthorized".
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Verify every embedded tag is in the registry
         run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"
