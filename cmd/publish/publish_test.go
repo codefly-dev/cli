@@ -298,9 +298,11 @@ func TestReleaseCodeUnitsPublishesOneSignedRelease(t *testing.T) {
 	require.NoError(t, runGit(dir, "config", "gpg.ssh.program", "ssh-keygen"))
 	require.NoError(t, runGit(dir, "config", "user.signingkey", signingKey))
 
+	// Deliberately un-normalized input (padded id, "./" prefix) to lock in that
+	// the result reports the cleaned values the release actually acts on.
 	result, err := publish.ReleaseCodeUnits(t.Context(), dir, "minor", []publish.CodeUnitRelease{
-		{CodeUnitID: "second", VersionFile: "modules/second/service.codefly.yaml"},
-		{CodeUnitID: "first", VersionFile: "modules/first/service.codefly.yaml"},
+		{CodeUnitID: "second", VersionFile: "./modules/second/service.codefly.yaml"},
+		{CodeUnitID: " first ", VersionFile: "modules/first/service.codefly.yaml"},
 	})
 	require.NoError(t, err)
 	require.Equal(t, "v1.3.0", result.Tag)

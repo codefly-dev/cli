@@ -245,6 +245,13 @@ func ReleaseCodeUnits(ctx context.Context, workDir, bump string, units []CodeUni
 		return CodeUnitReleaseResult{}, fmt.Errorf("release requires at least one code unit")
 	}
 	units = append([]CodeUnitRelease(nil), units...)
+	// Normalize in place before sorting and deduping so the ordering keys, the
+	// uniqueness checks, and the returned Units all reflect the exact values the
+	// release acts on — not the caller's raw, possibly-padded input.
+	for i := range units {
+		units[i].CodeUnitID = strings.TrimSpace(units[i].CodeUnitID)
+		units[i].VersionFile = filepath.Clean(strings.TrimSpace(units[i].VersionFile))
+	}
 	sort.Slice(units, func(i, j int) bool {
 		if units[i].CodeUnitID != units[j].CodeUnitID {
 			return units[i].CodeUnitID < units[j].CodeUnitID
@@ -255,8 +262,6 @@ func ReleaseCodeUnits(ctx context.Context, workDir, bump string, units []CodeUni
 	seenFiles := map[string]bool{}
 	manifests := make([]*Manifest, 0, len(units))
 	for _, unit := range units {
-		unit.CodeUnitID = strings.TrimSpace(unit.CodeUnitID)
-		unit.VersionFile = filepath.Clean(strings.TrimSpace(unit.VersionFile))
 		if unit.CodeUnitID == "" || unit.VersionFile == "." || filepath.IsAbs(unit.VersionFile) {
 			return CodeUnitReleaseResult{}, fmt.Errorf("release code unit id and relative version file are required")
 		}
