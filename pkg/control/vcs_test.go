@@ -216,6 +216,38 @@ func TestTypedGitPublicationLifecycle(t *testing.T) {
 	}
 }
 
+func TestGitBranchForceMovesExistingBranch(t *testing.T) {
+	dir := initGitRepo(t)
+	ctx := t.Context()
+	plane := New()
+
+	original, err := plane.GitBranch(ctx, GitBranchRequest{Dir: dir, Name: "semantic-change"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCommit(t, plane, ctx, dir, "README.md", "new head\n", "new head")
+	moved, err := plane.GitBranch(ctx, GitBranchRequest{
+		Dir: dir, Name: "semantic-change", StartPoint: "HEAD", Force: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.Revision == original.Revision {
+		t.Fatalf("forced branch stayed at %s", original.Revision)
+	}
+}
+
+func TestGitCheckoutDetachDoesNotAttachSymbolicRef(t *testing.T) {
+	dir := initGitRepo(t)
+	result, err := New().GitCheckout(t.Context(), GitCheckoutRequest{Dir: dir, Ref: "main", Detach: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Branch != "HEAD" || result.Revision == "" {
+		t.Fatalf("detached checkout = %+v", result)
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

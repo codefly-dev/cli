@@ -2014,15 +2014,21 @@ func (s *Server) GitBranch(ctx context.Context, req *gatewayv1.GitBranchRequest)
 	if err := s.validateService(req.GetService()); err != nil {
 		return nil, err
 	}
-	result, err := s.controlScope().GitBranch(ctx, control.GitBranchRequest{Name: req.GetName(), StartPoint: req.GetStartPoint()})
+	result, err := s.controlScope().GitBranch(ctx, control.GitBranchRequest{
+		Name: req.GetName(), StartPoint: req.GetStartPoint(), Force: req.GetForce(),
+	})
 	if err != nil {
 		return &gatewayv1.GitBranchResponse{Success: false, Error: err.Error()}, nil
+	}
+	kind := "git.branch.created"
+	if req.GetForce() {
+		kind = "git.branch.updated"
 	}
 	return &gatewayv1.GitBranchResponse{
 		Success:  true,
 		Branch:   result.Target,
 		Revision: result.Revision,
-		Act:      gitActReceipt("git.branch.created", result.Target, result.Revision),
+		Act:      gitActReceipt(kind, result.Target, result.Revision),
 	}, nil
 }
 
@@ -2033,7 +2039,7 @@ func (s *Server) GitCheckout(ctx context.Context, req *gatewayv1.GitCheckoutRequ
 	if err := s.validateService(req.GetService()); err != nil {
 		return nil, err
 	}
-	result, err := s.controlScope().GitCheckout(ctx, control.GitCheckoutRequest{Ref: req.GetRef()})
+	result, err := s.controlScope().GitCheckout(ctx, control.GitCheckoutRequest{Ref: req.GetRef(), Detach: req.GetDetach()})
 	if err != nil {
 		return &gatewayv1.GitCheckoutResponse{Success: false, Error: err.Error()}, nil
 	}

@@ -291,12 +291,14 @@ type GitBranchRequest struct {
 	Dir        string
 	Name       string
 	StartPoint string
+	Force      bool
 }
 
 // GitCheckoutRequest switches to an existing branch or revision.
 type GitCheckoutRequest struct {
-	Dir string
-	Ref string
+	Dir    string
+	Ref    string
+	Detach bool
 }
 
 // GitPushMode controls publication safety.
