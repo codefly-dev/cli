@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/codefly-dev/core/failures"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
+	"github.com/codefly-dev/core/resources"
 )
 
 func TestLoadAgentCIManifest(t *testing.T) {
@@ -31,6 +33,48 @@ version: 1.2.3
 	}
 	if manifest.Publisher != "codefly" || manifest.Kind != "codefly:service" || manifest.Name != "nextjs" || manifest.Version != "1.2.3" {
 		t.Fatalf("unexpected manifest: %+v", manifest)
+	}
+}
+
+func TestAgentCIChildEnvironmentDisablesParentGoWorkspace(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, "/stale/codefly-home")
+	t.Setenv("GOWORK", "/parent/go.work")
+	t.Setenv("CODEFLY_AGENT_CI_SENTINEL", "preserved")
+
+	environment := agentCIChildEnvironment(
+		"/isolated/codefly-home",
+		"CI=1",
+		"GOWORK=/caller/go.work",
+	)
+
+	values := map[string][]string{}
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[name] = append(values[name], value)
+		}
+	}
+	if got := values[resources.CodeflyHomeEnv]; !reflect.DeepEqual(got, []string{"/isolated/codefly-home"}) {
+		t.Fatalf("%s = %v, want isolated home only", resources.CodeflyHomeEnv, got)
+	}
+	if got := values["GOWORK"]; !reflect.DeepEqual(got, []string{"off"}) {
+		t.Fatalf("GOWORK = %v, want standalone module mode only", got)
+	}
+	if got := values["CI"]; !reflect.DeepEqual(got, []string{"1"}) {
+		t.Fatalf("CI = %v, want child override", got)
+	}
+	if got := values["CODEFLY_AGENT_CI_SENTINEL"]; !reflect.DeepEqual(got, []string{"preserved"}) {
+		t.Fatalf("sentinel = %v, want inherited environment", got)
+	}
+}
+
+func TestAgentConformanceGateRecordsAuditWithoutDuplicatingReleasePolicy(t *testing.T) {
+	arguments := agentConformanceGateArguments()
+	if !slices.Contains(arguments, "--fail-on-vuln=false") {
+		t.Fatalf("conformance arguments = %v, want non-blocking duplicate audit", arguments)
+	}
+	if !slices.Contains(arguments, "--all") || !slices.Contains(arguments, "--local-agents") {
+		t.Fatalf("conformance arguments = %v, want full gate against local agent", arguments)
 	}
 }
 
