@@ -128,3 +128,13 @@ func TestNormalizeTestSuitesDefaultsAndDeduplicates(t *testing.T) {
 		t.Fatalf("normalized suites = %v, want %v", got, want)
 	}
 }
+
+func TestCIRuntimeAuditIsTheDefault(t *testing.T) {
+	flag := RunCmd.Flags().Lookup("audit-include-dev")
+	if flag == nil {
+		t.Fatal("ci run has no --audit-include-dev flag")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("--audit-include-dev default = %q, want false", flag.DefValue)
+	}
+}

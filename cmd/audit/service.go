@@ -27,6 +27,7 @@ import (
 var (
 	jsonOut         bool
 	includeOutdated bool
+	includeDev      bool
 	failOnVuln      bool
 )
 
@@ -96,8 +97,9 @@ func auditService(ctx context.Context, workspace *resources.Workspace, module *r
 		return nil, w.Wrapf(err, "builder load")
 	}
 	return instance.Builder.Audit(ctx, &builderv0.AuditRequest{
-		IncludeOutdated: includeOutdated,
-		FailOnVuln:      failOnVuln,
+		IncludeOutdated:        includeOutdated,
+		FailOnVuln:             failOnVuln,
+		IncludeDevDependencies: includeDev,
 	})
 }
 
@@ -175,5 +177,6 @@ func emitTable(identity *resources.ServiceIdentity, r *builderv0.AuditResponse) 
 func init() {
 	ServiceCmd.Flags().BoolVar(&jsonOut, "json", false, "Emit raw JSON instead of a table")
 	ServiceCmd.Flags().BoolVar(&includeOutdated, "outdated", true, "Also report available dependency releases")
+	ServiceCmd.Flags().BoolVar(&includeDev, "include-dev", false, "Include development/test-only dependencies")
 	ServiceCmd.Flags().BoolVar(&failOnVuln, "fail-on-vuln", false, "Exit non-zero if any HIGH/CRITICAL finding is present")
 }

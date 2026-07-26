@@ -257,6 +257,7 @@ func init() {
 	RunCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for validation and tests")
 	RunCmd.Flags().StringSliceVar(&testSuites, "suite", nil, "Named test suite to run during the test phase (repeatable; default: each agent's advertised default)")
 	RunCmd.Flags().BoolVar(&ciAuditIncludeOutdated, "audit-outdated", true, "Include outdated dependencies in audit evidence")
+	RunCmd.Flags().BoolVar(&ciAuditIncludeDev, "audit-include-dev", false, "Include development/test-only dependencies in audit evidence")
 	RunCmd.Flags().BoolVar(&ciAuditFailOnVuln, "fail-on-vuln", true, "Fail audit on HIGH or CRITICAL vulnerabilities")
 	RunCmd.Flags().BoolVar(&ciSBOMIncludeDev, "sbom-include-dev", true, "Include development/test dependencies in CI SBOMs")
 	bindSchedulingFlags(RunCmd)
