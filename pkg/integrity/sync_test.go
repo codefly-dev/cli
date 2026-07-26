@@ -72,6 +72,111 @@ func TestBaseSyncRefusesModifiedBaseAndOverlayCollisionWithoutMutation(t *testin
 	assertFileContents(t, filepath.Join(target, "collision.txt"), "product side addition")
 }
 
+func TestBaseSyncAppliesOnlyExplicitUpstreamResolutions(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "owned.txt"), "new owned")
+	writeTestFile(t, filepath.Join(source, "collision.txt"), "new base")
+	writeTestFile(t, filepath.Join(target, "owned.txt"), "product edited base")
+	writeTestFile(t, filepath.Join(target, "collision.txt"), "product side addition")
+	writeManifest(t, source, "owned.txt", "collision.txt")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-manifest.json"), baseManifest{
+		Files: map[string]string{"owned.txt": digestOf(t, "old owned")},
+	})
+
+	plan, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Applicable(); err == nil {
+		t.Fatal("unreviewed overlay collision did not remain a blocker")
+	}
+	if !reflect.DeepEqual(plan.ResolveUpstream, []string{"owned.txt"}) ||
+		!reflect.DeepEqual(plan.Collisions, []string{"collision.txt"}) {
+		t.Fatalf("unexpected partial reconciliation plan: %#v", plan)
+	}
+	assertFileContents(t, filepath.Join(target, "owned.txt"), "product edited base")
+
+	plan, err = ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt", "collision.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.ResolveUpstream, []string{"collision.txt", "owned.txt"}) {
+		t.Fatalf("resolved paths = %v", plan.ResolveUpstream)
+	}
+	assertFileContents(t, filepath.Join(target, "owned.txt"), "new owned")
+	assertFileContents(t, filepath.Join(target, "collision.txt"), "new base")
+}
+
+func TestBaseSyncUpstreamResolutionIsResumable(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "owned.txt"), "new owned")
+	writeTestFile(t, filepath.Join(target, "owned.txt"), "product edited base")
+	writeManifest(t, source, "owned.txt")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-manifest.json"), baseManifest{
+		Files: map[string]string{"owned.txt": digestOf(t, "old owned")},
+	})
+
+	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.ReconciledUpstream, []string{"owned.txt"}) {
+		t.Fatalf("already reconciled paths = %v", plan.ReconciledUpstream)
+	}
+	if err := plan.Applicable(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBaseSyncRejectsUnsafeUpstreamResolutionSelections(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "clean-update.txt"), "new")
+	writeTestFile(t, filepath.Join(source, "protected.txt"), "upstream")
+	writeTestFile(t, filepath.Join(target, "clean-update.txt"), "old")
+	writeTestFile(t, filepath.Join(target, "protected.txt"), "product")
+	writeManifest(t, source, "clean-update.txt", "protected.txt")
+	writeManifest(t, target, "clean-update.txt")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-integrity-allow.json"), map[string]any{
+		"requiredAdditions": map[string]string{"protected.txt": "product survival contract"},
+	})
+
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "clean update", path: "clean-update.txt"},
+		{name: "unknown path", path: "missing.txt"},
+		{name: "path traversal", path: "../outside.txt"},
+		{name: "required product addition", path: "protected.txt"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := PlanBaseSyncWithResolutions(source, target, []string{test.path}); err == nil {
+				t.Fatalf("unsafe upstream selection %q was accepted", test.path)
+			}
+		})
+	}
+}
+
+func TestBaseSyncRejectsDuplicateUpstreamResolution(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "owned.txt"), "new")
+	writeTestFile(t, filepath.Join(target, "owned.txt"), "modified")
+	writeManifest(t, source, "owned.txt")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-manifest.json"), baseManifest{
+		Files: map[string]string{"owned.txt": digestOf(t, "old")},
+	})
+
+	if _, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt", "owned.txt"}); err == nil {
+		t.Fatal("duplicate upstream selection was accepted")
+	}
+}
+
 func TestBaseSyncDoesNotInstallServicesOutsideConsumerComposition(t *testing.T) {
 	source, target := syncFixture(t)
 	writeTestFile(t, filepath.Join(source, "services", "kept", "base.txt"), "new kept")

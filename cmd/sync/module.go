@@ -35,10 +35,11 @@ type moduleSourceLock struct {
 }
 
 type moduleSyncOptions struct {
-	Source       string
-	To           string
-	Subdirectory string
-	Apply        bool
+	Source         string
+	To             string
+	Subdirectory   string
+	AcceptUpstream []string
+	Apply          bool
 }
 
 // ModuleCmd updates an immutable base underneath a product-owned overlay.
@@ -61,6 +62,11 @@ First pin a remote source:
 Future updates use the consumer-owned tools/base-source.json lock:
   codefly sync module saas --to v0.0.9
   codefly sync module saas --to v0.0.9 --apply
+
+After reviewing a genuine conflict, explicitly select the immutable upstream
+version path by path. There is deliberately no accept-all option:
+  codefly sync module saas --to v0.0.9 --accept-upstream services/frontend/code/package.json
+  codefly sync module saas --to v0.0.9 --accept-upstream services/frontend/code/package.json --apply
 
 For local upstream development, --source may be a repository or module path.
 Local paths are preview-only and never persisted in the portable source lock.`,
@@ -89,6 +95,7 @@ func init() {
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Source, "source", "", "canonical Git repository URL or local repository/module path")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.To, "to", "", "immutable semantic-version tag to resolve (for example v0.0.8)")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
+	ModuleCmd.Flags().StringArrayVar(&moduleSyncFlags.AcceptUpstream, "accept-upstream", nil, "replace one reviewed conflicting path with the immutable upstream version (repeatable)")
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.Apply, "apply", false, "apply the reviewed update; default is dry-run")
 }
 
@@ -99,7 +106,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options m
 	}
 	defer cleanup()
 
-	plan, err := integrity.PlanBaseSync(resolved.Root, target.Dir())
+	plan, err := integrity.PlanBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream)
 	if err != nil {
 		return err
 	}
@@ -126,7 +133,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options m
 	if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), *resolved.Lock); err != nil {
 		return fmt.Errorf("write module source lock: %w", err)
 	}
-	if _, err := integrity.ApplyBaseSync(resolved.Root, target.Dir()); err != nil {
+	if _, err := integrity.ApplyBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream); err != nil {
 		return err
 	}
 	output.Info("✓ module <%s> base updated; product overlays preserved", target.Name)
@@ -341,6 +348,7 @@ func printModuleSyncPlan(module string, plan integrity.BaseSyncPlan, applying bo
 		output.Info("  source: %s (local, not persisted)", plan.SourceRoot)
 	}
 	output.Info("  unchanged=%d create=%d update=%d remove=%d omitted=%d allowed=%d", len(plan.Unchanged), len(plan.Create), len(plan.Update), len(plan.Remove), len(plan.Omitted), len(plan.Allowed))
+	output.Info("  resolve-upstream=%d already-reconciled=%d", len(plan.ResolveUpstream), len(plan.ReconciledUpstream))
 	output.Info("  modified=%d collisions=%d stale-modified=%d released=%d", len(plan.Modified), len(plan.Collisions), len(plan.StaleModified), len(plan.Released))
 	groups := []struct {
 		label string
@@ -348,6 +356,8 @@ func printModuleSyncPlan(module string, plan integrity.BaseSyncPlan, applying bo
 	}{
 		{"CREATE", plan.Create}, {"UPDATE", plan.Update}, {"REMOVE", plan.Remove},
 		{"RELEASED TO OVERLAY OWNERSHIP", plan.Released},
+		{"RESOLVE FROM UPSTREAM", plan.ResolveUpstream},
+		{"ALREADY RECONCILED FROM UPSTREAM", plan.ReconciledUpstream},
 		{"INVALID SOURCE PATHS", plan.SourceInvalid}, {"INVALID TARGET PATHS", plan.TargetInvalid},
 		{"MODIFIED BASE", plan.Modified}, {"OVERLAY COLLISIONS", plan.Collisions},
 		{"MODIFIED UPSTREAM DELETIONS", plan.StaleModified}, {"MISSING REQUIRED OVERLAYS", plan.MissingRequiredAdditions},
