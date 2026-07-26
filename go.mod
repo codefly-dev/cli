@@ -11,7 +11,7 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.2.36
+	github.com/codefly-dev/core v0.2.39
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.0
 	github.com/codefly-dev/sdk-go v0.1.58
@@ -106,6 +106,7 @@ require (
 	github.com/go-openapi/swag/typeutils v0.26.0 // indirect
 	github.com/go-openapi/swag/yamlutils v0.26.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
+	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/cel-go v0.28.0 // indirect

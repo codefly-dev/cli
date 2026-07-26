@@ -16,6 +16,7 @@ func Choice(ctx context.Context, msg *agentv0.Message, c *agentv0.Choice) (*agen
 		entry := &models.Entry{
 			Identifier:  option.Message,
 			Description: option.Description,
+			Current:     option.Name == c.GetDefaultOption(),
 		}
 		entries = append(entries, entry)
 		toNames[entry.Identifier] = option.Name
