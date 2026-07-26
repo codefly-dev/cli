@@ -468,15 +468,37 @@ func validateAgentSource(ctx context.Context, dir, sourceHome string) error {
 }
 
 func agentCIChildEnvironment(codeflyHome string, additional ...string) []string {
-	prefix := resources.CodeflyHomeEnv + "="
-	environment := make([]string, 0, len(os.Environ())+len(additional)+1)
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, prefix) {
-			environment = append(environment, value)
+	overrideOrder := []string{}
+	overrides := map[string]string{}
+	setOverride := func(name, value string) {
+		if _, exists := overrides[name]; !exists {
+			overrideOrder = append(overrideOrder, name)
+		}
+		overrides[name] = value
+	}
+	setOverride(resources.CodeflyHomeEnv, codeflyHome)
+	for _, entry := range additional {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && name != "GOWORK" {
+			setOverride(name, value)
 		}
 	}
-	environment = append(environment, prefix+codeflyHome)
-	environment = append(environment, additional...)
+	// Agent CI and release packaging must prove the repository builds from its
+	// published module graph. A parent or developer-local go.work can otherwise
+	// make the release succeed locally and fail for every downstream consumer.
+	setOverride("GOWORK", "off")
+
+	environment := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		name, _, ok := strings.Cut(entry, "=")
+		if _, overridden := overrides[name]; ok && overridden {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	for _, name := range overrideOrder {
+		environment = append(environment, name+"="+overrides[name])
+	}
 	return environment
 }
 
@@ -632,7 +654,7 @@ func assertFixtureTargetsAgent(fixtureDir, fixture string, manifest agentYAML) e
 }
 
 func runWorkspaceGate(ctx context.Context, executable, workspaceDir string, environment []string) ([]byte, string, error) {
-	command := exec.CommandContext(ctx, executable, "--timestamps=false", "--local-agents", "ci", "run", "--all", "--format", "json", "--output", ".codefly/ci")
+	command := exec.CommandContext(ctx, executable, agentConformanceGateArguments()...)
 	command.Dir = workspaceDir
 	command.Env = environment
 	output, err := command.CombinedOutput()
@@ -647,6 +669,22 @@ func runWorkspaceGate(ctx context.Context, executable, workspaceDir string, envi
 		return report, conformanceDir, fmt.Errorf("run workspace gate: %w\n%s", err, boundedAgentCIOutput(output))
 	}
 	return report, conformanceDir, nil
+}
+
+func agentConformanceGateArguments() []string {
+	return []string{
+		"--timestamps=false",
+		"--local-agents",
+		"ci", "run",
+		"--all",
+		"--format", "json",
+		"--output", ".codefly/ci",
+		// The preceding agent audit is the release's vulnerability policy gate
+		// and fails on actionable HIGH/CRITICAL findings. Conformance still
+		// records audit evidence, but must not reinterpret unpatched upstream
+		// findings as a second, stricter release failure.
+		"--fail-on-vuln=false",
+	}
 }
 
 func readGeneratedWorkspaceReport(workspaceDir string) []byte {
