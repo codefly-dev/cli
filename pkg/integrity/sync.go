@@ -21,21 +21,29 @@ type BaseSyncPlan struct {
 	SourceRoot string
 	TargetRoot string
 
-	Unchanged     []string
-	Create        []string
-	Update        []string
-	Remove        []string
-	Released      []string
-	Omitted       []string
-	Allowed       []string
-	Modified      []string
-	Collisions    []string
-	StaleModified []string
-	SourceInvalid []string
-	TargetInvalid []string
+	Unchanged  []string
+	Create     []string
+	Update     []string
+	Remove     []string
+	Released   []string
+	Omitted    []string
+	Allowed    []string
+	Modified   []string
+	Collisions []string
+	// ResolveUpstream contains explicitly reviewed conflicts that will be
+	// replaced by the immutable upstream version. ReconciledUpstream contains
+	// requested paths that already match upstream, which makes an interrupted
+	// reconciliation safe to resume with the same command.
+	ResolveUpstream    []string
+	ReconciledUpstream []string
+	StaleModified      []string
+	SourceInvalid      []string
+	TargetInvalid      []string
 
 	MissingRequiredAdditions []string
 	InvalidRequiredAdditions []string
+
+	resolutionTargetDigests map[string]string
 }
 
 func (plan BaseSyncPlan) Applicable() error {
@@ -185,6 +193,64 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	return plan, nil
 }
 
+// PlanBaseSyncWithResolutions applies explicit, path-by-path reconciliation
+// decisions to a base sync plan. Only source-owned modified paths and overlay
+// collisions can be replaced. A source-equal path is also accepted so the same
+// command can safely resume after an interruption.
+func PlanBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream []string) (BaseSyncPlan, error) {
+	plan, err := PlanBaseSync(sourceRoot, targetRoot)
+	if err != nil {
+		return BaseSyncPlan{}, err
+	}
+	if len(acceptUpstream) == 0 {
+		return plan, nil
+	}
+	sourceManifest, err := readBaseManifest(filepath.Join(plan.SourceRoot, baseManifestRelativePath))
+	if err != nil {
+		return BaseSyncPlan{}, fmt.Errorf("re-read source base manifest: %w", err)
+	}
+	allow, err := loadBaseIntegrityAllow(filepath.Join(plan.TargetRoot, "tools", "base-integrity-allow.json"))
+	if err != nil {
+		return BaseSyncPlan{}, fmt.Errorf("re-read target base integrity policy: %w", err)
+	}
+
+	plan.resolutionTargetDigests = make(map[string]string)
+	seen := make(map[string]bool, len(acceptUpstream))
+	for _, requested := range acceptUpstream {
+		relative := strings.TrimSpace(requested)
+		if _, ok := canonicalModulePath(relative); !ok {
+			return BaseSyncPlan{}, fmt.Errorf("accepted upstream path %q is not a canonical module-relative path", requested)
+		}
+		if seen[relative] {
+			return BaseSyncPlan{}, fmt.Errorf("accepted upstream path %q was provided more than once", relative)
+		}
+		seen[relative] = true
+		if _, protected := allow.RequiredAdditions[relative]; protected {
+			return BaseSyncPlan{}, fmt.Errorf("accepted upstream path %q is a required product addition and cannot be overwritten", relative)
+		}
+		if _, sourceOwned := sourceManifest.Files[relative]; !sourceOwned {
+			return BaseSyncPlan{}, fmt.Errorf("accepted upstream path %q is not owned by the source base manifest", relative)
+		}
+
+		switch {
+		case removeSortedPath(&plan.Modified, relative), removeSortedPath(&plan.Collisions, relative):
+			digest, digestErr := sha256File(filepath.Join(plan.TargetRoot, filepath.FromSlash(relative)))
+			if digestErr != nil {
+				return BaseSyncPlan{}, fmt.Errorf("hash accepted upstream target %s: %w", relative, digestErr)
+			}
+			plan.ResolveUpstream = append(plan.ResolveUpstream, relative)
+			plan.resolutionTargetDigests[relative] = digest
+		case containsSortedPath(plan.Unchanged, relative):
+			plan.ReconciledUpstream = append(plan.ReconciledUpstream, relative)
+		default:
+			return BaseSyncPlan{}, fmt.Errorf("accepted upstream path %q is not a modified base path or overlay collision", relative)
+		}
+	}
+	sort.Strings(plan.ResolveUpstream)
+	sort.Strings(plan.ReconciledUpstream)
+	return plan, nil
+}
+
 // ApplyBaseSync re-plans immediately before mutation and writes the new
 // manifest last. Each file replacement is atomic. If the process is
 // interrupted, rerunning converges safely because already-updated files match
@@ -259,6 +325,43 @@ func ApplyBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	return plan, nil
 }
 
+// ApplyBaseSyncWithResolutions replaces only explicitly reviewed conflicts,
+// then applies the ordinary fail-closed base update. Source and target digests
+// are checked again immediately before every accepted replacement.
+func ApplyBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream []string) (BaseSyncPlan, error) {
+	plan, err := PlanBaseSyncWithResolutions(sourceRoot, targetRoot, acceptUpstream)
+	if err != nil {
+		return BaseSyncPlan{}, err
+	}
+	if err := plan.Applicable(); err != nil {
+		return plan, err
+	}
+	sourceManifest, err := readBaseManifest(filepath.Join(plan.SourceRoot, baseManifestRelativePath))
+	if err != nil {
+		return plan, fmt.Errorf("re-read source base manifest: %w", err)
+	}
+	for _, relative := range plan.ResolveUpstream {
+		targetDigest, digestErr := sha256File(filepath.Join(plan.TargetRoot, filepath.FromSlash(relative)))
+		if digestErr != nil || targetDigest != plan.resolutionTargetDigests[relative] {
+			return plan, fmt.Errorf("accepted upstream target %s changed after preview; re-run the dry-run", relative)
+		}
+		sourceDigest, digestErr := sha256File(filepath.Join(plan.SourceRoot, filepath.FromSlash(relative)))
+		if digestErr != nil || sourceDigest != sourceManifest.Files[relative] {
+			return plan, fmt.Errorf("source base path %s changed after preview", relative)
+		}
+		if err := atomicCopyFile(
+			filepath.Join(plan.SourceRoot, filepath.FromSlash(relative)),
+			filepath.Join(plan.TargetRoot, filepath.FromSlash(relative)),
+		); err != nil {
+			return plan, fmt.Errorf("resolve base file %s from upstream: %w", relative, err)
+		}
+	}
+	if _, err := ApplyBaseSync(plan.SourceRoot, plan.TargetRoot); err != nil {
+		return plan, err
+	}
+	return plan, nil
+}
+
 func readBaseManifest(path string) (baseManifest, error) {
 	payload, err := os.ReadFile(path)
 	if err != nil {
@@ -281,6 +384,20 @@ func sortedManifestPaths(manifest baseManifest) []string {
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+func containsSortedPath(paths []string, relative string) bool {
+	index := sort.SearchStrings(paths, relative)
+	return index < len(paths) && paths[index] == relative
+}
+
+func removeSortedPath(paths *[]string, relative string) bool {
+	index := sort.SearchStrings(*paths, relative)
+	if index >= len(*paths) || (*paths)[index] != relative {
+		return false
+	}
+	*paths = append((*paths)[:index], (*paths)[index+1:]...)
+	return true
 }
 
 func composedServiceNames(targetRoot string) (map[string]bool, error) {

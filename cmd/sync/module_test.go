@@ -20,6 +20,10 @@ func TestModuleCommandIsPreviewFirstAndRejectsAmbiguousArguments(t *testing.T) {
 	if err := ModuleCmd.Args(ModuleCmd, []string{"one", "two"}); err == nil {
 		t.Fatal("sync module accepted multiple module names")
 	}
+	flag := ModuleCmd.Flags().Lookup("accept-upstream")
+	if flag == nil || flag.Value.Type() != "stringArray" {
+		t.Fatal("sync module does not expose repeatable --accept-upstream reconciliation")
+	}
 }
 
 func TestResolveModuleSourceRequiresGitTagAndPinsCommit(t *testing.T) {
