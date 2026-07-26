@@ -2,10 +2,10 @@ package communicate
 
 import (
 	"context"
-	"fmt"
 	"os"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	agentscommunicate "github.com/codefly-dev/core/agents/communicate"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/wool"
 	"golang.org/x/term"
@@ -56,37 +56,14 @@ func (h *Prompt) Answer(ctx context.Context, q *agentv0.Question) (*agentv0.Answ
 	}
 }
 
-// answerHeadless resolves defaults without consulting a terminal. Confirm and
-// typed Input carry defaults in the wire contract. Choice and Selection do
-// not, so silently picking an option would turn CI into an architectural
-// decision-maker; those question types fail with a precise error instead.
+// answerHeadless resolves protocol-declared defaults without consulting a
+// terminal. The policy lives in Core so CLI and embedded orchestration cannot
+// drift. A plugin that omits a default still fails closed.
 func answerHeadless(ctx context.Context, q *agentv0.Question) (*agentv0.Answer, error) {
-	name := "<unnamed>"
-	if q.Message != nil && q.Message.Name != "" {
-		name = q.Message.Name
-	}
-	switch v := q.Value.(type) {
+	switch value := q.Value.(type) {
 	case *agentv0.Question_Display:
-		return Display(ctx, q.Message, v.Display)
-	case *agentv0.Question_Confirm:
-		return &agentv0.Answer{Value: &agentv0.Answer_Confirm{Confirm: &agentv0.ConfirmAnswer{Confirmed: v.Confirm.GetDefault()}}}, nil
-	case *agentv0.Question_Input:
-		if v.Input == nil || v.Input.Default == nil {
-			return nil, fmt.Errorf("headless question %q requires input but declares no default", name)
-		}
-		switch value := v.Input.Default.(type) {
-		case *agentv0.Input_StringDefault:
-			return &agentv0.Answer{Value: &agentv0.Answer_Input{Input: &agentv0.InputAnswer{Answer: &agentv0.InputAnswer_StringValue{StringValue: value.StringDefault}}}}, nil
-		case *agentv0.Input_IntDefault:
-			return &agentv0.Answer{Value: &agentv0.Answer_Input{Input: &agentv0.InputAnswer{Answer: &agentv0.InputAnswer_IntValue{IntValue: value.IntDefault}}}}, nil
-		default:
-			return nil, fmt.Errorf("headless question %q has an unsupported input default %T", name, value)
-		}
-	case *agentv0.Question_Choice:
-		return nil, fmt.Errorf("headless question %q requires a choice but the protocol declares no default option", name)
-	case *agentv0.Question_Selection:
-		return nil, fmt.Errorf("headless question %q requires a selection but the protocol declares no default selection", name)
+		return Display(ctx, q.Message, value.Display)
 	default:
-		return nil, fmt.Errorf("headless question %q has unknown type %T", name, q.Value)
+		return agentscommunicate.AnswerDefault(q)
 	}
 }

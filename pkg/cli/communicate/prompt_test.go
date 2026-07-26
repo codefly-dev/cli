@@ -48,6 +48,34 @@ func TestHeadlessPromptUsesDeclaredDefaults(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "choice",
+			question: &agentv0.Question{Message: &agentv0.Message{Name: "runtime"}, Value: &agentv0.Question_Choice{
+				Choice: &agentv0.Choice{
+					Options:       []*agentv0.Message{{Name: "development"}, {Name: "production"}},
+					DefaultOption: "production",
+				},
+			}},
+			assert: func(t *testing.T, answer *agentv0.Answer) {
+				if got := answer.GetChoice().GetOption(); got != "production" {
+					t.Fatalf("choice answer = %q, want production", got)
+				}
+			},
+		},
+		{
+			name: "explicitly empty selection",
+			question: &agentv0.Question{Message: &agentv0.Message{Name: "features"}, Value: &agentv0.Question_Selection{
+				Selection: &agentv0.Selection{
+					Options: []*agentv0.Message{{Name: "grpc"}},
+					Default: &agentv0.SelectionDefault{},
+				},
+			}},
+			assert: func(t *testing.T, answer *agentv0.Answer) {
+				if answer.GetSelection() == nil || len(answer.GetSelection().GetSelected()) != 0 {
+					t.Fatalf("selection answer = %#v, want explicit empty selection", answer)
+				}
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
