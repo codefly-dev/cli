@@ -1,6 +1,10 @@
 package audit
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
 
 func TestWorkspaceAuditResult(t *testing.T) {
 	tests := []struct {
@@ -22,5 +26,17 @@ func TestWorkspaceAuditResult(t *testing.T) {
 				t.Fatalf("workspaceAuditResult() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestAuditCommandsDefaultToRuntimeDependencies(t *testing.T) {
+	for _, command := range []*cobra.Command{ServiceCmd, WorkspaceCmd} {
+		flag := command.Flags().Lookup("include-dev")
+		if flag == nil {
+			t.Fatalf("%s has no --include-dev flag", command.CommandPath())
+		}
+		if flag.DefValue != "false" {
+			t.Fatalf("%s --include-dev default = %q, want false", command.CommandPath(), flag.DefValue)
+		}
 	}
 }

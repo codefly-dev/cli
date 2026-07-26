@@ -16,6 +16,7 @@ import (
 
 var (
 	ciAuditIncludeOutdated bool
+	ciAuditIncludeDev      bool
 	ciAuditFailOnVuln      bool
 	ciSBOMIncludeDev       bool
 )
@@ -27,8 +28,9 @@ func runAuditService(ctx context.Context, workspace *resources.Workspace, module
 		return w.Wrap(err)
 	}
 	response, auditErr := instance.Builder.Audit(ctx, &builderv0.AuditRequest{
-		IncludeOutdated: ciAuditIncludeOutdated,
-		FailOnVuln:      ciAuditFailOnVuln,
+		IncludeOutdated:        ciAuditIncludeOutdated,
+		IncludeDevDependencies: ciAuditIncludeDev,
+		FailOnVuln:             ciAuditFailOnVuln,
 	})
 	recordCIReportAudit(ctx, summarizeAuditResponse(response))
 	if auditErr != nil {

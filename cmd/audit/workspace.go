@@ -117,5 +117,6 @@ func init() {
 	// workspace CI gate could never exit non-zero.
 	WorkspaceCmd.Flags().BoolVar(&jsonOut, "json", false, "Emit raw JSON instead of a table")
 	WorkspaceCmd.Flags().BoolVar(&includeOutdated, "outdated", true, "Also report outdated patch+minor releases")
+	WorkspaceCmd.Flags().BoolVar(&includeDev, "include-dev", false, "Include development/test-only dependencies")
 	WorkspaceCmd.Flags().BoolVar(&failOnVuln, "fail-on-vuln", false, "Exit non-zero if any HIGH/CRITICAL finding is present")
 }
