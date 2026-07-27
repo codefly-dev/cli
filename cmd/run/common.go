@@ -24,6 +24,11 @@ var excludeDependencies []string
 // With fixture across the runtime
 var fixture string
 
+// Workspace environment selected for this run. The default preserves the
+// historical local-development behavior; production-shaped local runs opt in
+// explicitly with --env.
+var environmentName string
+
 // Per-service runtime overrides: each entry is "service:KEY=VAL".
 var setOverrides []string
 

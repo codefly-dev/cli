@@ -586,14 +586,14 @@ func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 	return name, strings.TrimSpace(string(out))
 }
 
-// runEnvironment resolves the local environment this run executes in. The
-// workspace's declared "local" environment (secret backends, cluster, naming
-// policy, …) wins over the synthetic default, and the --naming-scope override
-// applies to this invocation's copy only — never to the shared declaration.
+// runEnvironment resolves the selected environment this run executes in. The
+// workspace declaration (secret backends, configuration profile, naming
+// policy, …) wins over defaults, and the --naming-scope override applies to
+// this invocation's copy only — never to the shared declaration.
 // An explicitly passed empty --naming-scope clears a declared scope; an
 // absent flag keeps it.
 func runEnvironment(workspace *resources.Workspace) (*resources.Environment, error) {
-	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	env, err := orchestration.SelectEnvironment(workspace, environmentName)
 	if err != nil {
 		return nil, err
 	}
@@ -799,6 +799,7 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
+	ServiceCmd.Flags().StringVar(&environmentName, "env", orchestration.LocalEnvironmentName, "Workspace environment to run")
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")
