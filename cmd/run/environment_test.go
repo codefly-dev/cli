@@ -117,12 +117,17 @@ endpoints:
 
 	// An explicit runtime context skips the Docker probe so the flow builds
 	// hermetically; no agent is spawned before InitManagers.
-	prevContext := runtimeContext
-	t.Cleanup(func() { runtimeContext = prevContext })
+	prevContext, prevTemporaryPorts := runtimeContext, temporaryPorts
+	t.Cleanup(func() {
+		runtimeContext = prevContext
+		temporaryPorts = prevTemporaryPorts
+	})
 	runtimeContext = resources.RuntimeContextNative
+	temporaryPorts = true
 
 	flow, err := newRunFlow(ctx, workspace, module, service)
 	require.NoError(t, err)
+	require.True(t, flow.TemporaryPortsEnabled())
 
 	env := flow.Environment()
 	require.NotNil(t, env)

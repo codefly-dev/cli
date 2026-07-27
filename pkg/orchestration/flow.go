@@ -99,6 +99,7 @@ type Flow struct {
 	// suite advertisement before dependency managers are selected. Legacy
 	// agents retain the dependency-free behavior they had before the contract.
 	testDependencyMode agentv0.TestDependencyMode
+	temporaryPorts     bool
 
 	// syncRequest carries CI dry-run intent to every builder participating in a
 	// SyncMode flow. Nil retains the conventional mutating sync behavior.
@@ -1565,6 +1566,22 @@ func (flow *Flow) WithStandAlone(alone bool) {
 
 func (flow *Flow) WithRuntimeContext(runtimeContext string) {
 	flow.runtimeContext = runtimeContext
+}
+
+// WithTemporaryPorts switches this flow from deterministic named ports to
+// OS-probed ephemeral ports. It is intended for short-lived SDK-owned test
+// dependency stacks, where separate package processes have independent
+// RuntimeManagers and therefore cannot coordinate deterministic hash
+// collisions through one in-memory allocation table.
+func (flow *Flow) WithTemporaryPorts(enabled bool) {
+	flow.temporaryPorts = enabled
+	if enabled && flow.world != nil && flow.world.LocalNetworkManager != nil {
+		flow.world.LocalNetworkManager.WithTemporaryPorts()
+	}
+}
+
+func (flow *Flow) TemporaryPortsEnabled() bool {
+	return flow != nil && flow.temporaryPorts
 }
 
 func (flow *Flow) WithDockerStatus(status DockerStatus) {
