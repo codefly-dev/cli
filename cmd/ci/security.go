@@ -2,19 +2,18 @@ package ci
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	coreaudit "github.com/codefly-dev/core/agents/services/audit"
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
-	"github.com/gofrs/flock"
 )
 
 var (
@@ -30,16 +29,13 @@ func runAuditService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return w.Wrap(err)
 	}
-	response, auditErr := instance.Builder.Audit(ctx, &builderv0.AuditRequest{
+	response, auditErr := auditWithTrivyDBRecovery(ctx, &builderv0.AuditRequest{
 		IncludeOutdated:        ciAuditIncludeOutdated,
 		IncludeDevDependencies: ciAuditIncludeDev,
 		FailOnVuln:             ciAuditFailOnVuln,
-	})
+	}, instance.Builder.Audit, coreaudit.ResetTrivyDatabases)
 	recordCIReportAudit(ctx, summarizeAuditResponse(response))
 	if auditErr != nil {
-		if purgeCorruptTrivyDB(ctx, auditErr) {
-			return w.Wrapf(auditErr, "audit service: removed corrupt Trivy vulnerability DB cache, rerun the audit to re-download a clean database")
-		}
 		return w.Wrapf(auditErr, "audit service")
 	}
 	if response == nil || response.GetState() == nil {
@@ -145,43 +141,40 @@ func auditHasHighSeverity(response *builderv0.AuditResponse) bool {
 	return false
 }
 
-// purgeCorruptTrivyDB removes the Trivy vulnerability database when the audit
-// failed on a torn or incompletely downloaded DB, so the next run re-downloads
-// a clean copy instead of mmapping the poisoned one. A truncated bbolt DB
-// SIGSEGVs Trivy in FastCheck, and the fault persists across reruns until the
-// file is deleted — reruns cannot otherwise self-heal. Returns true when the
-// cache was purged.
-func purgeCorruptTrivyDB(ctx context.Context, auditErr error) bool {
-	if !isCorruptTrivyDBError(auditErr) {
-		return false
-	}
-	cache, err := trivyCacheDir()
-	if err != nil {
-		return false
-	}
-	return removeTrivyDB(ctx, cache)
-}
+type auditCall func(context.Context, *builderv0.AuditRequest) (*builderv0.AuditResponse, error)
+type resetTrivyDBCall func(context.Context) error
 
-// removeTrivyDB deletes the vulnerability-database directories under a Trivy
-// cache, leaving Trivy to re-download them on the next scan. The lock file at
-// the cache root is preserved so the held lock's descriptor stays valid.
-func removeTrivyDB(ctx context.Context, cache string) bool {
-	// Trivy's BoltDB cache is single-writer and codefly audits services in
-	// parallel; take the same cross-process lock core uses around the scan so
-	// the purge cannot race a concurrent re-download.
-	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	lock := flock.New(filepath.Join(cache, ".codefly.lock"))
-	locked, err := lock.TryLockContext(lockCtx, 250*time.Millisecond)
-	if err != nil || !locked {
-		return false
+// auditWithTrivyDBRecovery retries one audit in the same run after core resets
+// a database identified by a Trivy-specific corruption signature. If the retry
+// corrupts the database again, reset it once more so the poisoned cache is not
+// left behind for another attempt.
+func auditWithTrivyDBRecovery(ctx context.Context, request *builderv0.AuditRequest, audit auditCall, reset resetTrivyDBCall) (*builderv0.AuditResponse, error) {
+	response, auditErr := audit(ctx, request)
+	if auditErr == nil || !isCorruptTrivyDBError(auditErr) {
+		return response, auditErr
 	}
-	defer func() { _ = lock.Unlock() }()
-	if err := os.RemoveAll(filepath.Join(cache, "db")); err != nil {
-		return false
+	if resetErr := reset(ctx); resetErr != nil {
+		return response, fmt.Errorf("recover corrupt Trivy database: %w", errors.Join(
+			auditErr,
+			fmt.Errorf("reset Trivy databases: %w", resetErr),
+		))
 	}
-	_ = os.RemoveAll(filepath.Join(cache, "java-db"))
-	return true
+
+	retryResponse, retryErr := audit(ctx, request)
+	if retryErr == nil {
+		return retryResponse, nil
+	}
+	retryErr = fmt.Errorf("audit retry after resetting corrupt Trivy database: %w", retryErr)
+	if !isCorruptTrivyDBError(retryErr) {
+		return retryResponse, retryErr
+	}
+	if resetErr := reset(ctx); resetErr != nil {
+		return retryResponse, errors.Join(
+			retryErr,
+			fmt.Errorf("reset Trivy databases after failed retry: %w", resetErr),
+		)
+	}
+	return retryResponse, fmt.Errorf("Trivy database was reset again after a corrupt audit retry: %w", retryErr)
 }
 
 // isCorruptTrivyDBError reports whether an audit failure carries the signature
@@ -192,33 +185,14 @@ func isCorruptTrivyDBError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	// Older agents can surface only the subprocess output, without the
-	// "trivy audit failed" wrapper. These signatures are specific enough to
-	// identify Trivy's database failure on their own.
-	if strings.Contains(msg, "failed to download vulnerability db") ||
-		(strings.Contains(msg, "bbolt") && strings.Contains(msg, "fastcheck")) {
+	if strings.Contains(msg, "failed to download vulnerability db") {
 		return true
 	}
-	if !strings.Contains(msg, "trivy") {
+	if !strings.Contains(msg, "bbolt") || !strings.Contains(msg, "fastcheck") {
 		return false
 	}
-	for _, signature := range []string{"vulnerability db", "bbolt", "fastcheck", "sigsegv", "fatal error: fault"} {
-		if strings.Contains(msg, signature) {
-			return true
-		}
-	}
-	return false
-}
-
-// trivyCacheDir mirrors the cache directory core's audit package hands to Trivy
-// (os.UserCacheDir()/codefly/trivy). Core does not export it, so the CLI ci gate
-// reconstructs the same path to own the cache lifecycle across runs.
-func trivyCacheDir() (string, error) {
-	userCache, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(userCache, "codefly", "trivy"), nil
+	return strings.Contains(msg, "github.com/aquasecurity/trivy-db/") ||
+		strings.Contains(msg, "github.com/aquasecurity/trivy-java-db/")
 }
 
 func safeCIArtifactName(value string) string {
