@@ -106,7 +106,8 @@ type Flow struct {
 	syncRequest *builderv0.SyncRequest
 
 	// Output running configurations
-	outputEnvPath string
+	outputEnvPath    string
+	outputEnvService string
 
 	// actual services running
 	services []*resources.Service
@@ -1339,7 +1340,9 @@ func (flow *Flow) configureRunner(runner *Runner, service *resources.Service) {
 	runner.WithRuntimeContext(flow.runtimeContextFor(service))
 	runner.WithFixture(flow.fixture)
 	runner.WithOverrides(flow.overrides[service.Name])
-	runner.WithOutputEnv(flow.outputEnvPath)
+	if flow.exportsRuntimeEnvironmentFor(service) {
+		runner.WithOutputEnv(flow.outputEnvPath)
+	}
 }
 
 func (flow *Flow) configureTestExecution(runner *Runner) error {
@@ -1662,6 +1665,12 @@ func (flow *Flow) Origin() *resources.Service {
 }
 
 func (flow *Flow) WithOutputEnv(envPath string) {
+	envPath = strings.TrimSpace(envPath)
+	flow.outputEnvPath = envPath
+	flow.outputEnvService = ""
+	if envPath == "" {
+		return
+	}
 	// Delete the file first
 	if exists, err := shared.FileExists(context.Background(), envPath); err == nil && exists {
 		err := shared.DeleteFile(context.Background(), envPath)
@@ -1669,7 +1678,25 @@ func (flow *Flow) WithOutputEnv(envPath string) {
 			flow.output().Error("cannot delete file %s: %s", envPath, err)
 		}
 	}
-	flow.outputEnvPath = envPath
+}
+
+// WithOutputEnvService selects which one service contributes the flat
+// --output-env artifact. Without an explicit selection the origin service is
+// exported. Multiple service environments cannot be appended safely because
+// identity and endpoint keys overlap and the last runner would silently win.
+func (flow *Flow) WithOutputEnvService(unique string) {
+	flow.outputEnvService = strings.TrimSpace(unique)
+}
+
+func (flow *Flow) exportsRuntimeEnvironmentFor(service *resources.Service) bool {
+	if flow == nil || flow.outputEnvPath == "" || service == nil {
+		return false
+	}
+	target := flow.outputEnvService
+	if target == "" && flow.originService != nil {
+		target = resources.WithUnique(flow.originService).Unique()
+	}
+	return resources.WithUnique(service).Unique() == target
 }
 
 type Remote struct {

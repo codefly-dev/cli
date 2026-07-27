@@ -48,11 +48,11 @@ func TestAppendRuntimeEnvironmentToFileIncludesSDKDiscoveryCapabilities(t *testi
 	path := filepath.Join(t.TempDir(), "runtime.env")
 	identity := &basev0.ServiceIdentity{
 		Workspace: "warden-platform",
-		Module:    "saas",
-		Name:      "frontend",
+		Module:    "platform",
+		Name:      "warden",
 		Version:   "0.0.0",
 	}
-	mapping := &basev0.NetworkMapping{
+	providedMapping := &basev0.NetworkMapping{
 		Endpoint: &basev0.Endpoint{
 			Module:  "platform",
 			Service: "warden",
@@ -64,6 +64,18 @@ func TestAppendRuntimeEnvironmentToFileIncludesSDKDiscoveryCapabilities(t *testi
 			Access:  resources.NewNativeNetworkAccess(),
 		}},
 	}
+	dependencyMapping := &basev0.NetworkMapping{
+		Endpoint: &basev0.Endpoint{
+			Module:  "saas",
+			Service: "accounts",
+			Name:    "connect",
+			Api:     "connect",
+		},
+		Instances: []*basev0.NetworkInstance{{
+			Address: "http://localhost:10650",
+			Access:  resources.NewNativeNetworkAccess(),
+		}},
+	}
 
 	if err := AppendRuntimeEnvironmentToFile(
 		context.Background(),
@@ -72,7 +84,7 @@ func TestAppendRuntimeEnvironmentToFileIncludesSDKDiscoveryCapabilities(t *testi
 		resources.NewRuntimeContextNative(),
 		"codefly",
 		nil,
-		[]*basev0.NetworkMapping{mapping},
+		[]*basev0.NetworkMapping{providedMapping, dependencyMapping},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -82,10 +94,11 @@ func TestAppendRuntimeEnvironmentToFileIncludesSDKDiscoveryCapabilities(t *testi
 	}
 	text := string(body)
 	for _, expected := range []string{
-		"CODEFLY__MODULE=saas\n",
-		"CODEFLY__SERVICE=frontend\n",
+		"CODEFLY__MODULE=platform\n",
+		"CODEFLY__SERVICE=warden\n",
 		"CODEFLY__FIXTURE=codefly\n",
 		"CODEFLY__ENDPOINT__PLATFORM__WARDEN__REST__REST=http://localhost:18982\n",
+		"CODEFLY__ENDPOINT__SAAS__ACCOUNTS__CONNECT__CONNECT=http://localhost:10650\n",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("runtime environment is missing %q:\n%s", expected, text)

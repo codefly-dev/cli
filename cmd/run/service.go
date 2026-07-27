@@ -634,6 +634,15 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithOutputEnv(outputEnv)
+	if outputEnvService != "" {
+		if outputEnv == "" {
+			return nil, w.NewError("--output-env-service requires --output-env")
+		}
+		if _, err := flow.ServiceFromUnique(outputEnvService); err != nil {
+			return nil, w.Wrapf(err, "cannot select output environment service %q", outputEnvService)
+		}
+		flow.WithOutputEnvService(outputEnvService)
+	}
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
@@ -795,7 +804,8 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed temporary ports for this flow (advanced; intended for SDK-managed tests)")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
-	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Output environment variables")
+	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's runtime environment variables to an owner-only file")
+	ServiceCmd.Flags().StringVar(&outputEnvService, "output-env-service", "", "Service whose runtime environment to export (module/service; defaults to the root service)")
 	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
