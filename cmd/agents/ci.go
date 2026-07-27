@@ -231,7 +231,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	}
 
 	if err := runStage("manifest", func() error {
-		manifest, err := loadAgentCIManifest(options.dir)
+		manifest, err := loadAgentCIManifest(options.dir, options.skipConformance)
 		if err != nil {
 			return err
 		}
@@ -406,7 +406,7 @@ func agentCIDurationMS(duration time.Duration) int32 {
 	return int32(milliseconds)
 }
 
-func loadAgentCIManifest(dir string) (agentYAML, error) {
+func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 	payload, err := os.ReadFile(filepath.Join(dir, "agent.codefly.yaml"))
 	if err != nil {
 		return agentYAML{}, fmt.Errorf("read agent.codefly.yaml: %w", err)
@@ -417,6 +417,12 @@ func loadAgentCIManifest(dir string) (agentYAML, error) {
 	}
 	if manifest.Publisher == "" || manifest.Kind == "" || manifest.Name == "" || manifest.Version == "" {
 		return agentYAML{}, fmt.Errorf("agent.codefly.yaml must have publisher, kind, name, and version")
+	}
+	if manifest.Kind == "codefly:module" {
+		if !skipConformance {
+			return agentYAML{}, fmt.Errorf("module-agent CI requires --skip-conformance until generated-module conformance is available")
+		}
+		return manifest, nil
 	}
 	if manifest.Kind != "codefly:service" {
 		return agentYAML{}, fmt.Errorf("agent conformance currently requires kind codefly:service, got %s", manifest.Kind)
