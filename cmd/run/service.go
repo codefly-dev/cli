@@ -637,6 +637,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
+	flow.WithTemporaryPorts(temporaryPorts)
 	// Only the "free" default lets codefly pick Docker-or-nix, so only then do
 	// we probe Docker (which shells out to the docker CLI). An explicit context
 	// is honored as-is and needs no probe.
@@ -791,6 +792,7 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free auto-picks Docker-or-nix)")
 	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope (for testing encapsulation)")
+	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed temporary ports for this flow (advanced; intended for SDK-managed tests)")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
 	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Output environment variables")

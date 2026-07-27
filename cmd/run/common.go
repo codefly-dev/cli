@@ -36,6 +36,11 @@ var namingScope string
 // flag keeps it.
 var namingScopeExplicit bool
 
+// temporaryPorts asks the runtime allocator for OS-probed ephemeral ports.
+// The Codefly SDK enables this for test-owned dependency stacks so independent
+// package test processes cannot collide through the deterministic port hash.
+var temporaryPorts bool
+
 // Runtime context
 var runtimeContext string
 
