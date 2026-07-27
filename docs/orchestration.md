@@ -69,7 +69,8 @@ flow.WithExcludeRoot(true)          // Start dependencies only, skip target
 flow.WithRuntimeContext("nix")      // Set runtime context
 flow.WithFixture("seed")            // Use named test fixture
 flow.WithRemotes([]*Remote{...})    // Use remote services for some deps
-flow.WithOutputEnv(".env")          // Write endpoint addresses to file
+flow.WithOutputEnv(".env")          // Export the origin service's runtime environment
+flow.WithOutputEnvService("api/web") // Or select one dependency explicitly
 flow.WithLoadOnly(true)             // Stop after Load phase
 flow.WithInitOnly(true)             // Stop after Init phase
 ```

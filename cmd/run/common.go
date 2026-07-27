@@ -11,6 +11,7 @@ var servicePath string
 
 // Output environment variables
 var outputEnv string
+var outputEnvService string
 
 // Remote services
 var remotes []string
