@@ -27,7 +27,7 @@ name: nextjs
 version: 1.2.3
 `)
 
-	manifest, err := loadAgentCIManifest(dir)
+	manifest, err := loadAgentCIManifest(dir, false)
 	if err != nil {
 		t.Fatalf("loadAgentCIManifest: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestLoadAgentCIManifestRejectsIncompleteAndUnsupported(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), test.content)
-			_, err := loadAgentCIManifest(dir)
+			_, err := loadAgentCIManifest(dir, false)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("loadAgentCIManifest error = %v, want containing %q", err, test.want)
 			}
@@ -140,7 +140,7 @@ func TestLoadAgentCIManifestConformanceModes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), test.content)
-			manifest, err := loadAgentCIManifest(dir)
+			manifest, err := loadAgentCIManifest(dir, false)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 					t.Fatalf("loadAgentCIManifest error = %v, want containing %q", err, test.wantErr)
@@ -154,6 +154,26 @@ func TestLoadAgentCIManifestConformanceModes(t *testing.T) {
 				t.Fatalf("conformanceMode = %q, want %q", got, test.wantMode)
 			}
 		})
+	}
+}
+
+func TestLoadAgentCIManifestAllowsModuleOnlyWithoutServiceConformance(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), `publisher: codefly.dev
+kind: codefly:module
+name: saas-starter
+version: 0.0.20
+`)
+
+	if _, err := loadAgentCIManifest(dir, false); err == nil || !strings.Contains(err.Error(), "--skip-conformance") {
+		t.Fatalf("module manifest with service conformance error = %v", err)
+	}
+	manifest, err := loadAgentCIManifest(dir, true)
+	if err != nil {
+		t.Fatalf("module manifest without service conformance: %v", err)
+	}
+	if manifest.Kind != "codefly:module" || manifest.Name != "saas-starter" {
+		t.Fatalf("unexpected module manifest: %+v", manifest)
 	}
 }
 

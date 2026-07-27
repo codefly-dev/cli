@@ -377,6 +377,51 @@ type agentReleaser struct {
 	assets    []loaderAsset
 }
 
+type releaseGate interface {
+	attach(*Engine)
+	cleanup()
+}
+
+type agentIdentity struct {
+	Publisher string `yaml:"publisher"`
+	Kind      string `yaml:"kind"`
+	Name      string `yaml:"name"`
+}
+
+// newAgentReleaseGate selects release behavior from the manifest kind. Service
+// agents ship executable loader assets. Module agents are immutable source
+// releases consumed by `codefly sync module`, so they run source/build/audit
+// CI but deliberately publish only the signed Git tag.
+func newAgentReleaseGate(agentDir, workDir string) (releaseGate, error) {
+	identity, err := readAgentIdentity(filepath.Join(agentDir, "agent.codefly.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	switch identity.Kind {
+	case "", "codefly:service":
+		return newAgentReleaser(agentDir, workDir)
+	case "codefly:module":
+		return newModuleAgentReleaser(agentDir)
+	default:
+		return nil, fmt.Errorf("publish does not yet define release semantics for agent kind %q", identity.Kind)
+	}
+}
+
+func checkAgentReleasePreconditionsForManifest(path string) error {
+	identity, err := readAgentIdentity(path)
+	if err != nil {
+		return err
+	}
+	switch identity.Kind {
+	case "", "codefly:service":
+		return checkAgentReleasePreconditions()
+	case "codefly:module":
+		return nil
+	default:
+		return fmt.Errorf("publish does not yet define release semantics for agent kind %q", identity.Kind)
+	}
+}
+
 func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
 	if err := checkAgentReleasePreconditions(); err != nil {
 		return nil, err
@@ -385,7 +430,7 @@ func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve codefly executable: %w", err)
 	}
-	publisher, name, err := readAgentIdentity(filepath.Join(agentDir, "agent.codefly.yaml"))
+	identity, err := readAgentIdentity(filepath.Join(agentDir, "agent.codefly.yaml"))
 	if err != nil {
 		return nil, err
 	}
@@ -402,8 +447,8 @@ func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
 		self:      self,
 		agentDir:  agentDir,
 		workDir:   workDir,
-		publisher: publisher,
-		name:      name,
+		publisher: identity.Publisher,
+		name:      identity.Name,
 		ciOutput:  ciOutput,
 		stageDir:  stageDir,
 	}, nil
@@ -440,20 +485,62 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	return verifyReleaseAssets(ctx, r.publisher, r.name, version, r.assets)
 }
 
-func readAgentIdentity(path string) (publisher, name string, err error) {
+type moduleAgentReleaser struct {
+	self     string
+	agentDir string
+	output   string
+}
+
+func newModuleAgentReleaser(agentDir string) (*moduleAgentReleaser, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve codefly executable: %w", err)
+	}
+	output, err := os.MkdirTemp("", "codefly-publish-module-ci-*")
+	if err != nil {
+		return nil, err
+	}
+	return &moduleAgentReleaser{self: self, agentDir: agentDir, output: output}, nil
+}
+
+func (r *moduleAgentReleaser) attach(engine *Engine) {
+	engine.BeforeCommit = r.beforeCommit
+}
+
+func (r *moduleAgentReleaser) cleanup() {
+	os.RemoveAll(r.output)
+}
+
+func (r *moduleAgentReleaser) beforeCommit(ctx context.Context, _ string) error {
+	cmd := exec.CommandContext(ctx, r.self,
+		"--timestamps=false",
+		"agent", "ci",
+		"--dir", r.agentDir,
+		"--output", r.output,
+		"--native-only",
+		"--skip-conformance",
+	)
+	cmd.Dir = r.agentDir
+	cmd.Env = os.Environ()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("release-grade module-agent CI failed: %w", err)
+	}
+	return nil
+}
+
+func readAgentIdentity(path string) (agentIdentity, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", fmt.Errorf("read agent manifest: %w", err)
+		return agentIdentity{}, fmt.Errorf("read agent manifest: %w", err)
 	}
-	var manifest struct {
-		Publisher string `yaml:"publisher"`
-		Name      string `yaml:"name"`
-	}
+	var manifest agentIdentity
 	if err := yaml.Unmarshal(raw, &manifest); err != nil {
-		return "", "", fmt.Errorf("parse agent manifest: %w", err)
+		return agentIdentity{}, fmt.Errorf("parse agent manifest: %w", err)
 	}
 	if manifest.Publisher == "" || manifest.Name == "" {
-		return "", "", fmt.Errorf("agent manifest %s missing publisher or name", path)
+		return agentIdentity{}, fmt.Errorf("agent manifest %s missing publisher or name", path)
 	}
-	return manifest.Publisher, manifest.Name, nil
+	return manifest, nil
 }

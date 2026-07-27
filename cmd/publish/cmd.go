@@ -42,7 +42,7 @@ Push is NEVER --force for main or the tag. If pre-flight fails the
 operator must resolve the divergence by hand — refusing to overwrite
 in-flight work is the whole point.
 
-For agent repos (agent.codefly.yaml) publish also, in order:
+For service-agent repos (agent.codefly.yaml) publish also, in order:
   - runs release-grade agent CI against the bumped version and aborts
     the publish untouched if it fails or a required loader platform
     (darwin/arm64, linux/amd64) is missing
@@ -50,6 +50,9 @@ For agent repos (agent.codefly.yaml) publish also, in order:
   - uploads the loader-compatible archives + SBOMs
   - verifies every archive resolves through the install URL resolver
 Requires the gh CLI to be authenticated.
+
+Module-agent repos run source/build/audit CI and publish the immutable Git tag
+consumed by codefly sync module; they do not publish service-loader assets.
 
 Examples:
   codefly publish              # patch bump
@@ -94,7 +97,7 @@ func run(c *cobra.Command, args []string) error {
 	// bare tag push, so they get a generous timeout.
 	timeout := 60 * time.Second
 	if manifest.Mode == ModeAgent && !dryRun {
-		releaser, err := newAgentReleaser(filepath.Dir(manifest.Path), workDir)
+		releaser, err := newAgentReleaseGate(filepath.Dir(manifest.Path), workDir)
 		if err != nil {
 			return err
 		}
@@ -165,7 +168,7 @@ func runReTag(c *cobra.Command, _ []string) error {
 	// but failed to upload. Same generous timeout as publish.
 	timeout := 60 * time.Second
 	if manifest.Mode == ModeAgent && !dryRun {
-		releaser, err := newAgentReleaser(filepath.Dir(manifest.Path), workDir)
+		releaser, err := newAgentReleaseGate(filepath.Dir(manifest.Path), workDir)
 		if err != nil {
 			return err
 		}
