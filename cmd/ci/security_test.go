@@ -48,8 +48,8 @@ func TestAuditHasHighSeverityAllowsMediumAndNil(t *testing.T) {
 
 func TestIsCorruptTrivyDBErrorMatchesDBFaultSignatures(t *testing.T) {
 	corrupt := []string{
-		"builder audit failed: trivy audit failed: signal SIGSEGV: go.etcd.io/bbolt/internal/common.(*Page).FastCheck",
-		"builder audit failed: trivy audit failed: exit status 2: FATAL run error: init error: DB error: failed to download vulnerability DB",
+		"builder audit failed\nfatal error: fault\n[signal SIGSEGV]\ngo.etcd.io/bbolt/internal/common.(*Page).FastCheck",
+		"builder audit failed: exit status 2: FATAL run error: init error: DB error: failed to download vulnerability DB",
 		"builder audit failed: trivy audit failed: fatal error: fault",
 	}
 	for _, msg := range corrupt {
@@ -61,6 +61,8 @@ func TestIsCorruptTrivyDBErrorMatchesDBFaultSignatures(t *testing.T) {
 		"",
 		"builder audit failed: agent returned no status",
 		"builder audit failed: npm audit failed: network unreachable",
+		"builder audit failed: npm audit failed: signal SIGSEGV",
+		"builder audit failed: bbolt transaction failed",
 		"trivy audit failed: image pull failed: not found",
 	}
 	for _, msg := range healthy {
@@ -76,6 +78,10 @@ func TestIsCorruptTrivyDBErrorMatchesDBFaultSignatures(t *testing.T) {
 
 func TestRemoveTrivyDBClearsDatabasesAndKeepsLock(t *testing.T) {
 	cache := t.TempDir()
+	lockFile := filepath.Join(cache, ".codefly.lock")
+	if err := os.WriteFile(lockFile, []byte("lock"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	dbFile := filepath.Join(cache, "db", "trivy.db")
 	if err := os.MkdirAll(filepath.Dir(dbFile), 0o700); err != nil {
 		t.Fatal(err)
@@ -98,6 +104,9 @@ func TestRemoveTrivyDBClearsDatabasesAndKeepsLock(t *testing.T) {
 	}
 	if _, err := os.Stat(cache); err != nil {
 		t.Fatalf("cache root should be preserved for re-download: %v", err)
+	}
+	if got, err := os.ReadFile(lockFile); err != nil || string(got) != "lock" {
+		t.Fatalf("lock file should be preserved: contents %q, error %v", got, err)
 	}
 }
 

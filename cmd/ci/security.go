@@ -192,6 +192,13 @@ func isCorruptTrivyDBError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	// Older agents can surface only the subprocess output, without the
+	// "trivy audit failed" wrapper. These signatures are specific enough to
+	// identify Trivy's database failure on their own.
+	if strings.Contains(msg, "failed to download vulnerability db") ||
+		(strings.Contains(msg, "bbolt") && strings.Contains(msg, "fastcheck")) {
+		return true
+	}
 	if !strings.Contains(msg, "trivy") {
 		return false
 	}
