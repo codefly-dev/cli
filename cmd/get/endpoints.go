@@ -15,8 +15,7 @@ import (
 )
 
 // EndpointsCmd lists a service's endpoints, optionally filtered by API type,
-// resolving each endpoint's concrete address deterministically and probing
-// whether it is currently live.
+// preferring a running flow's concrete address and probing whether it is live.
 var EndpointsCmd = &cobra.Command{
 	Use:   "endpoints [service]",
 	Short: "Report addresses and health for a service's declared endpoints",
@@ -24,8 +23,8 @@ var EndpointsCmd = &cobra.Command{
 visibility — together with the localhost address each binds to and whether
 it is currently reachable.
 
-Addresses are computed deterministically (the same port hash the runtime
-uses), so they are correct whether or not the service is running. The STATUS
+A running scoped flow is authoritative for addresses. Without one, addresses
+fall back to the same deterministic hash used for offline planning. The STATUS
 column reflects a live TCP probe: "up" means something is listening now.
 
 Examples:
@@ -63,7 +62,7 @@ Examples:
 		fmt.Fprintln(w, "NAME\tTYPE\tVISIBILITY\tADDRESS\tSTATUS")
 		anyUp := false
 		for _, ep := range endpoints {
-			resolved, rErr := common.ResolveNative(ctx, workspace.Name, module.Name, service.Name, namingScope, ep)
+			resolved, rErr := common.ResolvePreferredNative(ctx, workspace.Name, module.Name, service.Name, namingScope, ep)
 			address, statusText := "-", "-"
 			switch {
 			case rErr != nil:

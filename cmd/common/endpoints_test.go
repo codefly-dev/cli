@@ -97,3 +97,27 @@ func TestResolveNative(t *testing.T) {
 		t.Errorf("external endpoint should be External with no address, got %+v", r)
 	}
 }
+
+func TestResolvedEndpointFromAddress(t *testing.T) {
+	for _, test := range []struct {
+		address  string
+		hostPort string
+	}{
+		{address: "http://localhost:53231", hostPort: "localhost:53231"},
+		{address: "127.0.0.1:6690", hostPort: "127.0.0.1:6690"},
+		{address: "http://[::1]:8080", hostPort: "[::1]:8080"},
+	} {
+		resolved, err := resolvedEndpointFromAddress(test.address)
+		if err != nil {
+			t.Fatalf("resolvedEndpointFromAddress(%q): %v", test.address, err)
+		}
+		if resolved.Address != test.address || resolved.HostPort != test.hostPort {
+			t.Errorf("resolvedEndpointFromAddress(%q) = %+v", test.address, resolved)
+		}
+	}
+	for _, invalid := range []string{"", "http://localhost", "localhost"} {
+		if _, err := resolvedEndpointFromAddress(invalid); err == nil {
+			t.Errorf("resolvedEndpointFromAddress(%q) accepted an address without a port", invalid)
+		}
+	}
+}

@@ -1168,8 +1168,17 @@ func (flow *Flow) GetAddressForEndpoint(ctx context.Context, module string, serv
 	}
 	for _, np := range mappings {
 		if np.Endpoint.Name == endpoint {
+			// The CLI server is reached from the host, so its concrete answer
+			// must prefer the host-native mapping. Private services normally
+			// have native + container instances and no public instance.
 			for _, instance := range np.Instances {
-				if instance.Access.Kind == resources.NetworkAccessPublic {
+				if instance.Access != nil && instance.Access.Kind == resources.NetworkAccessNative {
+					return instance.Address, nil
+				}
+			}
+			// External endpoints may only have a public instance.
+			for _, instance := range np.Instances {
+				if instance.Access != nil && instance.Access.Kind == resources.NetworkAccessPublic {
 					return instance.Address, nil
 				}
 			}
