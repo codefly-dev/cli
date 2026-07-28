@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	coreaudit "github.com/codefly-dev/core/agents/services/audit"
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -27,11 +28,11 @@ func runAuditService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return w.Wrap(err)
 	}
-	response, auditErr := instance.Builder.Audit(ctx, &builderv0.AuditRequest{
+	response, auditErr := coreaudit.AuditWithTrivyDatabaseRecovery(ctx, &builderv0.AuditRequest{
 		IncludeOutdated:        ciAuditIncludeOutdated,
 		IncludeDevDependencies: ciAuditIncludeDev,
 		FailOnVuln:             ciAuditFailOnVuln,
-	})
+	}, instance.Builder.Audit)
 	recordCIReportAudit(ctx, summarizeAuditResponse(response))
 	if auditErr != nil {
 		return w.Wrapf(auditErr, "audit service")

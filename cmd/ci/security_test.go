@@ -1,9 +1,11 @@
 package ci
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
+	coreaudit "github.com/codefly-dev/core/agents/services/audit"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 )
 
@@ -39,6 +41,24 @@ func TestAuditHasHighSeverityAllowsMediumAndNil(t *testing.T) {
 	response := &builderv0.AuditResponse{Findings: []*builderv0.AuditFinding{{Severity: builderv0.AuditFinding_MEDIUM}}}
 	if auditHasHighSeverity(response) {
 		t.Fatal("medium finding tripped the high-severity gate")
+	}
+}
+
+func TestCoreTrivyDatabaseRecoveryContractReturnsFinalAuditResponse(t *testing.T) {
+	clean := &builderv0.AuditResponse{
+		State: &builderv0.AuditStatus{State: builderv0.AuditStatus_CLEAN},
+		Tool:  "trivy",
+	}
+	audit := func(context.Context, *builderv0.AuditRequest) (*builderv0.AuditResponse, error) {
+		return clean, nil
+	}
+
+	response, err := coreaudit.AuditWithTrivyDatabaseRecovery(context.Background(), &builderv0.AuditRequest{}, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response != clean {
+		t.Fatalf("response = %p, want %p", response, clean)
 	}
 }
 

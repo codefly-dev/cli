@@ -56,4 +56,12 @@
 // flow through the mutation-authority gate rather than executing on a bare
 // call, mirroring the prepared-mutation pattern the Gateway already uses. See
 // the MutationAuthority group.
+//
+// # Durable local services
+//
+// ServiceInstallation is the OS-native lifecycle for long-running embedded
+// products. It writes a per-user LaunchAgent on macOS or systemd user unit on
+// Linux and always leaves daemonization and crash restart to that supervisor.
+// Its versioned materialized contract is distinct from a process-local RunHandle
+// and never destroys product data or carries sensitive environment values.
 package control

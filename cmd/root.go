@@ -246,6 +246,9 @@ func init() {
 	// Daemon (background service management)
 	RootCmd.AddCommand(DaemonCmd)
 
+	// Durable per-user services managed by launchd or systemd.
+	RootCmd.AddCommand(ServiceCmd)
+
 	// Logs (show the CLI session logs)
 	RootCmd.AddCommand(LogsCmd)
 
