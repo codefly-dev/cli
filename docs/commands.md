@@ -491,7 +491,38 @@ on message prose; renaming or removing a code bumps `schema_version`.
 
 ### `codefly version`
 
-Print the CLI version.
+Print the CLI version. `--json` also reports the release commit and build date.
+
+### `codefly self check-update`
+
+Check immutable Codefly GitHub releases without changing the installation.
+
+```bash
+codefly self check-update
+codefly self check-update --channel beta
+codefly self check-update --json
+```
+
+The stable channel ignores prereleases. JSON output is schema-versioned and
+includes the detected install kind, selected asset, cache state, and the
+installation-owner action.
+
+### `codefly self update`
+
+Install the selected authenticated release over a directly installed Codefly
+binary.
+
+```bash
+codefly self update
+codefly self update --yes
+codefly self update --channel beta --yes
+codefly self update --allow-downgrade --yes
+```
+
+Prereleases require `--channel beta`; an older selected release requires
+`--allow-downgrade`. Homebrew, development, symlinked, and managed
+installations are reported with their owner-specific upgrade command and are
+never overwritten.
 
 ### `codefly open`
 

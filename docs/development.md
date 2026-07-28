@@ -106,12 +106,16 @@ codefly self build
 codefly self build
 ```
 
-For a versioned installation without a checkout, use the executable entry
-point whose final path component preserves the `codefly` binary name:
+`go install` produces an operator-managed development build. It does not carry
+the authenticated release metadata and `codefly self update` will not replace
+it:
 
 ```bash
 go install github.com/codefly-dev/cli/cmd/codefly@<version>
 ```
+
+For a self-updating direct installation, use a signed release archive as
+described in [CLI releases and updates](cli-updates.md).
 
 ### 5. Run tests
 

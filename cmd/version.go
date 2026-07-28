@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -17,7 +18,16 @@ var VersionCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot get current version: %w", err)
 		}
+		if versionJSON {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(cli.GetBuildInfo())
+		}
 		cmd.Println(version)
 		return nil
 	},
+}
+
+var versionJSON bool
+
+func init() {
+	VersionCmd.Flags().BoolVar(&versionJSON, "json", false, "Print version, commit, and build date as JSON")
 }

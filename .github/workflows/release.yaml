@@ -1,101 +1,179 @@
 name: Release
 
 on:
-  release:
-    types: [released]
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 jobs:
-  build:
-    name: Build and Release
+  release:
+    name: Qualify and publish
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-      - name: Check out code
+      - name: Check out the tagged source
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-      - name: set up
+      - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: false
 
-      - name: Build Binary Darwin Intel
-        run: |
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags '-s -w' -o codefly-darwin-amd64 main.go
-      - name: Build Binary Darwin ARM
-        run: |
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags '-s -w' -o codefly-darwin-arm64 main.go
-      - name: Build Binary Linux
-        run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '-extldflags "-static"' -o codefly-linux-x86_64 main.go
-      - name: Checkout Target Repository
-        uses: actions/checkout@v5
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
         with:
-          repository: 'codefly-dev/cli-releases'
-          token: ${{ secrets.GH_PAT }}
-          path: 'cli-releases'
+          distribution: goreleaser
+          version: "~> v2.17"
+          install-only: true
 
-      - name: Copy File to Target Repository
+      - name: Install Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@v0
+        with:
+          syft-version: v1.44.0
+
+      - name: Add Syft to PATH
+        env:
+          SYFT_PATH: ${{ steps.syft.outputs.cmd }}
+        run: echo "$(dirname "$SYFT_PATH")" >> "$GITHUB_PATH"
+
+      - name: Load and verify the release signing key
+        env:
+          CODEFLY_RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/codefly-release-signing-key.pem
+          RELEASE_SIGNING_KEY: ${{ secrets.CODEFLY_RELEASE_SIGNING_KEY }}
         run: |
-          cp ./codefly-darwin-amd64 ./cli-releases/
-          cp ./codefly-darwin-arm64 ./cli-releases/
-          cp ./codefly-linux-x86_64 ./cli-releases/
+          set -euo pipefail
+          umask 077
+          printf '%s' "$RELEASE_SIGNING_KEY" > "$CODEFLY_RELEASE_SIGNING_KEY_PATH"
+          openssl pkey -in "$CODEFLY_RELEASE_SIGNING_KEY_PATH" -check -noout
+          key_fingerprint="$(
+            openssl pkey -in "$CODEFLY_RELEASE_SIGNING_KEY_PATH" -pubout -outform DER |
+              sha256sum | cut -d' ' -f1
+          )"
+          certificate_fingerprint="$(
+            openssl x509 -in pkg/cliupdate/release-signing-cert.pem -pubkey -noout |
+              openssl pkey -pubin -outform DER |
+              sha256sum | cut -d' ' -f1
+          )"
+          test "$key_fingerprint" = "$certificate_fingerprint"
 
-      - name: Configure Git with PAT
+      - name: Qualify the clean tag
+        env:
+          CODEFLY_RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/codefly-release-signing-key.pem
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          git config --global user.email "action@github.com"
-          git config --global user.name "GitHub Action"
-          git -C cli-releases remote set-url origin https://x-access-token:${{ secrets.GH_PAT }}@github.com/codefly-dev/cli-releases.git
+          set -euo pipefail
+          manifest_version="$(sed -n 's/^version:[[:space:]]*//p' pkg/cli/info.yaml)"
+          test "$RELEASE_TAG" = "v$manifest_version"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+          git diff --exit-code
+          goreleaser check
+          goreleaser release --snapshot --clean
 
+          for target in darwin:amd64 darwin:arm64 linux:amd64 linux:arm64; do
+            goos="${target%%:*}"
+            goarch="${target##*:}"
+            jq -e --arg goos "$goos" --arg goarch "$goarch" \
+              '[.[] | select(.type == "Archive" and .goos == $goos and .goarch == $goarch)] | length == 1' \
+              dist/artifacts.json
+          done
+          jq -e '[.[] | select(.type == "SBOM")] | length == 4' dist/artifacts.json
+          jq -e '[.[] | select(.type == "Signature")] | length == 1' dist/artifacts.json
+          test -s dist/checksums.txt
+          test -s dist/checksums.txt.sig
 
-      - name: Commit and Push to Target Repository
-        run: |
-          cd cli-releases
-          git add codefly-darwin-amd64 codefly-darwin-arm64 codefly-linux-x86_64
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-          git commit -m "Add new release binary"
-          git push
+          openssl x509 -in pkg/cliupdate/release-signing-cert.pem -pubkey -noout > "$RUNNER_TEMP/codefly-release-public-key.pem"
+          openssl dgst -sha256 \
+            -verify "$RUNNER_TEMP/codefly-release-public-key.pem" \
+            -signature dist/checksums.txt.sig \
+            dist/checksums.txt
+          (cd dist && sha256sum --check checksums.txt)
 
-      - name: Create cli-releases release and upload binaries
+      - name: Enable immutable GitHub releases
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if ! gh release view "$RELEASE_TAG" --repo codefly-dev/cli-releases >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" \
-              --repo codefly-dev/cli-releases \
-              --target main \
-              --title "Release $RELEASE_TAG" \
-              --generate-notes
-          fi
-          gh release upload "$RELEASE_TAG" \
-            ./cli-releases/codefly-darwin-amd64 \
-            ./cli-releases/codefly-darwin-arm64 \
-            ./cli-releases/codefly-linux-x86_64 \
-            --repo codefly-dev/cli-releases \
-            --clobber
+          gh api \
+            --method PUT \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            repos/codefly-dev/cli/immutable-releases
 
-      - name: Check out the formula repository
-        uses: actions/checkout@v5
+      - name: Publish the immutable release and Homebrew cask
+        env:
+          CODEFLY_RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/codefly-release-signing-key.pem
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: goreleaser release --clean
+
+      - name: Attest released archives
+        uses: actions/attest@v4
         with:
-          repository: codefly-dev/homebrew-cli
-          token: ${{ secrets.GH_PAT }}
-          path: homebrew-cli
+          subject-checksums: dist/checksums.txt
 
-      - name: Update the formula
-        working-directory: homebrew-cli
-        run: ./update_homebrew.sh ${{ github.event.release.tag_name }}
+      - name: Attest published SBOMs
+        uses: actions/attest@v4
+        with:
+          subject-path: "dist/*.sbom.json"
 
-      - name: Commit and push changes
+      - name: Verify the published release
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          git -C homebrew-cli config user.name 'GitHub Action'
-          git -C homebrew-cli config user.email 'action@github.com'
-          if git -C homebrew-cli diff --quiet; then
-            echo "Homebrew formula already current"
-            exit 0
-          fi
-          git -C homebrew-cli commit -am "Update formula to version ${{ github.event.release.tag_name }}"
-          git -C homebrew-cli push
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          release_json="$(
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/codefly-dev/cli/releases/tags/$RELEASE_TAG"
+          )"
+          test "$(jq -r .immutable <<<"$release_json")" = "true"
+          test "$(gh api "repos/codefly-dev/cli/commits/$RELEASE_TAG" --jq .sha)" = "$GITHUB_SHA"
+
+          for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+            archive="codefly_${version}_${target}.tar.gz"
+            sbom="${archive}.sbom.json"
+            jq -e --arg name "$archive" '[.assets[].name] | index($name) != null' <<<"$release_json"
+            jq -e --arg name "$sbom" '[.assets[].name] | index($name) != null' <<<"$release_json"
+          done
+          for name in checksums.txt checksums.txt.sig; do
+            jq -e --arg name "$name" '[.assets[].name] | index($name) != null' <<<"$release_json"
+          done
+
+          verify_dir="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" \
+            --repo codefly-dev/cli \
+            --dir "$verify_dir" \
+            --pattern "codefly_${version}_*.tar.gz" \
+            --pattern "codefly_${version}_*.sbom.json" \
+            --pattern checksums.txt \
+            --pattern checksums.txt.sig
+          openssl dgst -sha256 \
+            -verify "$RUNNER_TEMP/codefly-release-public-key.pem" \
+            -signature "$verify_dir/checksums.txt.sig" \
+            "$verify_dir/checksums.txt"
+          (cd "$verify_dir" && sha256sum --check checksums.txt)
+          for artifact in \
+            "$verify_dir"/codefly_"${version}"_*.tar.gz \
+            "$verify_dir"/codefly_"${version}"_*.sbom.json; do
+            gh attestation verify "$artifact" --repo codefly-dev/cli
+          done
+
+          cask="$(
+            gh api repos/codefly-dev/homebrew-cli/contents/codefly.rb --jq .content |
+              base64 --decode
+          )"
+          grep -F 'cask "codefly"' <<<"$cask"
+          grep -F "releases/download/$RELEASE_TAG/" <<<"$cask"
