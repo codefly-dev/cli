@@ -77,17 +77,18 @@ var ServiceCmd = &cobra.Command{
 
 func initDeployService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(resources.WithUnique(service)))
-	orchestration.SetDryRun(dryRun)
 	env, err := orchestration.SelectEnvironment(workspace, envInput)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	var deploymentManager *deployments.LocalApplyManager
+	var deploymentManager deployments.Manager
 	if directApplyRequested() {
 		deploymentManager, err = deployments.NewLocalApplyManager(ctx, workspace, env)
 		if err != nil {
 			return nil, w.Wrap(err)
 		}
+	} else {
+		deploymentManager = deployments.NewRenderManager(workspace, env)
 	}
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
@@ -107,9 +108,7 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 		return nil, w.Wrap(err)
 	}
 
-	if deploymentManager != nil {
-		flow.WithDeploymentManager(deploymentManager)
-	}
+	flow.WithDeploymentManager(deploymentManager)
 	return flow, nil
 }
 

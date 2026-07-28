@@ -6,7 +6,6 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	"github.com/codefly-dev/core/resources"
 )
 
 // Deploy ships a service to an environment. This is a destructive/outward
@@ -36,16 +35,20 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 	if err != nil {
 		return DeployResult{}, fmt.Errorf("select environment %q: %w", envName, err)
 	}
-	var deploymentManager *deployments.LocalApplyManager
-	if !req.DryRun {
-		deploymentManager, err = deployments.NewLocalApplyManager(ctx, ws, env)
-		if err != nil {
-			return DeployResult{}, err
+	var deploymentManager deployments.Manager
+	var evidenceProvider deployments.EvidenceProvider
+	if req.DryRun {
+		manager := deployments.NewRenderManager(ws, env)
+		deploymentManager = manager
+		evidenceProvider = manager
+	} else {
+		manager, managerErr := deployments.NewLocalApplyManager(ctx, ws, env)
+		if managerErr != nil {
+			return DeployResult{}, managerErr
 		}
+		deploymentManager = manager
+		evidenceProvider = manager
 	}
-	// Set unconditionally to the requested value so a prior deploy's dry-run
-	// toggle (a package-level global in orchestration) never leaks into this one.
-	orchestration.SetDryRun(req.DryRun)
 
 	flow, err := orchestration.NewFlow(ctx, ws, module, service, env, orchestration.DeployMode)
 	if err != nil {
@@ -57,53 +60,45 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 	if err := flow.Load(ctx); err != nil {
 		return DeployResult{}, fmt.Errorf("load flow: %w", err)
 	}
-	if deploymentManager != nil {
-		flow.WithDeploymentManager(deploymentManager)
-	}
+	flow.WithDeploymentManager(deploymentManager)
 	defer stopFlow(flow)
 
 	if err := flow.Deploy(ctx); err != nil {
-		result, _ := deployResult(ctx, false, req.DryRun, deploymentManager, ws, module, service)
+		result, _ := deployResult(false, evidenceProvider)
 		return result, fmt.Errorf("deploy %s: %w", req.Service, err)
 	}
-	result, err := deployResult(ctx, true, req.DryRun, deploymentManager, ws, module, service)
+	result, err := deployResult(true, evidenceProvider)
 	if err != nil {
 		return result, fmt.Errorf("collect deployment evidence for %s: %w", req.Service, err)
 	}
 	return result, nil
 }
 
-func deployResult(
-	ctx context.Context,
-	succeeded bool,
-	dryRun bool,
-	manager *deployments.LocalApplyManager,
-	workspace *resources.Workspace,
-	module *resources.Module,
-	service *resources.Service,
-) (DeployResult, error) {
+func deployResult(succeeded bool, provider deployments.EvidenceProvider) (DeployResult, error) {
 	result := DeployResult{Succeeded: succeeded}
-	if dryRun {
-		digest, err := deployments.RenderedTreeDigest(deployments.KustomizeDir(ctx, workspace, module, service))
-		if err != nil {
-			return result, err
+	evidence := provider.Evidence()
+	if evidence.Target != nil {
+		target := evidence.Target
+		result.Target = &DeployTarget{
+			Kind:            target.Kind,
+			Kubeconfig:      target.Kubeconfig,
+			Context:         target.Context,
+			Cluster:         target.Cluster,
+			APIServer:       target.APIServer,
+			K3dCluster:      target.K3dCluster,
+			ClusterIdentity: target.ClusterIdentity,
 		}
-		result.RenderedTreeDigest = digest
-		return result, nil
 	}
-	target := manager.Target()
-	result.Target = &DeployTarget{
-		Kind:       target.Kind,
-		Kubeconfig: target.Kubeconfig,
-		Context:    target.Context,
-		Cluster:    target.Cluster,
-		APIServer:  target.APIServer,
-		K3dCluster: target.K3dCluster,
+	for _, tree := range evidence.RenderedTrees {
+		result.RenderedTrees = append(result.RenderedTrees, RenderedTree{
+			Module:    tree.Module,
+			Service:   tree.Service,
+			Digest:    tree.Digest,
+			Manifests: tree.Manifests,
+		})
 	}
-	var ok bool
-	result.RenderedTreeDigest, ok = manager.RenderedDigest(ctx, module, service)
-	if !ok {
-		return result, fmt.Errorf("rendered-tree digest is unavailable")
+	if len(result.RenderedTrees) == 0 {
+		return result, fmt.Errorf("rendered-tree evidence is unavailable")
 	}
 	return result, nil
 }

@@ -1,12 +1,9 @@
 package deploy
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"path"
-	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -58,12 +55,16 @@ var ModuleCmd = &cobra.Command{
 			return err
 		}
 
-		var deploymentManager *deployments.LocalApplyManager
+		var deploymentManager deployments.Manager
+		var localApplyManager *deployments.LocalApplyManager
 		if directApplyRequested() {
-			deploymentManager, err = deployments.NewLocalApplyManager(ctx, workspace, env)
+			localApplyManager, err = deployments.NewLocalApplyManager(ctx, workspace, env)
 			if err != nil {
 				return err
 			}
+			deploymentManager = localApplyManager
+		} else {
+			deploymentManager = deployments.NewRenderManager(workspace, env)
 		}
 
 		cli.Header(1, "Deploying module %s to env %s", module.Name, env.Name)
@@ -88,7 +89,7 @@ var ModuleCmd = &cobra.Command{
 		// committed already). Skipped silently when the module hasn't
 		// scaffolded a deployment/ folder yet.
 		if directApplyRequested() {
-			if err := applyModuleKustomize(ctx, module, env, deploymentManager.Target()); err != nil {
+			if err := applyModuleKustomize(ctx, module, env, localApplyManager); err != nil {
 				return fmt.Errorf("cannot apply module-level kustomize: %w", err)
 			}
 		}
@@ -101,15 +102,13 @@ var ModuleCmd = &cobra.Command{
 // deployOneService runs a one-shot deploy Flow for a single service.
 // Mirrors initDeployService in service.go but inline-built so the
 // module loop can iterate without goroutine indirection.
-func deployOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment, deploymentManager *deployments.LocalApplyManager) error {
+func deployOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment, deploymentManager deployments.Manager) error {
 	w := wool.Get(ctx).In("deployModule.deployOneService", wool.NameField(name))
 
 	service, err := module.LoadServiceFromName(ctx, name)
 	if err != nil {
 		return w.Wrapf(err, "cannot load service")
 	}
-
-	orchestration.SetDryRun(dryRun)
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
 	if err != nil {
@@ -132,9 +131,7 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 	if err := flow.Load(ctx); err != nil {
 		return w.Wrap(err)
 	}
-	if deploymentManager != nil {
-		flow.WithDeploymentManager(deploymentManager)
-	}
+	flow.WithDeploymentManager(deploymentManager)
 
 	if err := flow.Deploy(ctx); err != nil {
 		return w.Wrapf(err, "deploy failed")
@@ -148,7 +145,7 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 // for the module-level overlay matching the env. Silently no-ops when
 // the module hasn't scaffolded module/deployment/kustomize/ yet —
 // services-only modules are valid.
-func applyModuleKustomize(ctx context.Context, module *resources.Module, env *resources.Environment, target deployments.VerifiedKubernetesTarget) error {
+func applyModuleKustomize(ctx context.Context, module *resources.Module, env *resources.Environment, manager *deployments.LocalApplyManager) error {
 	w := wool.Get(ctx).In("applyModuleKustomize", wool.NameField(module.Name))
 
 	dir := path.Join(module.Dir(), "deployment", "kustomize", "overlays", env.Name)
@@ -163,24 +160,7 @@ func applyModuleKustomize(ctx context.Context, module *resources.Module, env *re
 
 	cli.Header(2, "Applying module-level kustomize at %s", dir)
 
-	// Render with kustomize. Fails loudly if the overlay is malformed —
-	// better here than mid-apply with a half-applied state.
-	build := exec.CommandContext(ctx, "kustomize", "build", dir)
-	var stdout, stderr bytes.Buffer
-	build.Stdout = &stdout
-	build.Stderr = &stderr
-	if err := build.Run(); err != nil {
-		return w.Wrapf(err, "kustomize build failed: %s", stderr.String())
-	}
-
-	objs := strings.Split(stdout.String(), "---")
-	var resourcesToApply []string
-	for _, obj := range objs {
-		if strings.TrimSpace(obj) != "" {
-			resourcesToApply = append(resourcesToApply, obj)
-		}
-	}
-	return deployments.KubernetesApply(ctx, env, target, resourcesToApply...)
+	return manager.ApplyModuleKustomize(ctx, module, dir)
 }
 
 func init() {

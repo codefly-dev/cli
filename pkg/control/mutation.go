@@ -73,7 +73,7 @@ func (p *planeImpl) PrepareMutation(ctx context.Context, m Mutation) (PreparedMu
 	return PreparedMutation{Token: token}, nil
 }
 
-func (p *planeImpl) ApplyPreparedMutation(ctx context.Context, token PreparedMutation) error {
+func (p *planeImpl) ApplyPreparedMutation(ctx context.Context, token PreparedMutation) (MutationResult, error) {
 	p.gate.mu.Lock()
 	pending, ok := p.gate.pending[token.Token]
 	if ok {
@@ -84,32 +84,36 @@ func (p *planeImpl) ApplyPreparedMutation(ctx context.Context, token PreparedMut
 	p.gate.mu.Unlock()
 
 	if !ok {
-		return fmt.Errorf("unknown or already-consumed prepared mutation")
+		return MutationResult{}, fmt.Errorf("unknown or already-consumed prepared mutation")
 	}
 	if time.Now().After(pending.expiresAt) {
-		return fmt.Errorf("prepared mutation expired")
+		return MutationResult{}, fmt.Errorf("prepared mutation expired")
 	}
-	return p.executeMutation(ctx, pending.mutation)
+	return executeMutation(ctx, p, pending.mutation)
 }
 
-// executeMutation dispatches a prepared mutation to the underlying operation.
-func (p *planeImpl) executeMutation(ctx context.Context, m Mutation) error {
+type mutationExecutor interface {
+	ApplyEdit(context.Context, Edit) error
+	runDeploy(context.Context, DeployRequest) (DeployResult, error)
+}
+
+func executeMutation(ctx context.Context, executor mutationExecutor, m Mutation) (MutationResult, error) {
 	switch m.Kind {
 	case MutationFile:
 		edit, ok := m.Payload.(Edit)
 		if !ok {
-			return fmt.Errorf("file mutation payload must be an Edit, got %T", m.Payload)
+			return MutationResult{}, fmt.Errorf("file mutation payload must be an Edit, got %T", m.Payload)
 		}
-		return p.ApplyEdit(ctx, edit)
+		return MutationResult{}, executor.ApplyEdit(ctx, edit)
 	case MutationDeploy:
 		req, ok := m.Payload.(DeployRequest)
 		if !ok {
-			return fmt.Errorf("deploy mutation payload must be a DeployRequest, got %T", m.Payload)
+			return MutationResult{}, fmt.Errorf("deploy mutation payload must be a DeployRequest, got %T", m.Payload)
 		}
-		_, err := p.runDeploy(ctx, req)
-		return err
+		result, err := executor.runDeploy(ctx, req)
+		return MutationResult{Deploy: &result}, err
 	default:
-		return fmt.Errorf("unsupported mutation kind %q", m.Kind)
+		return MutationResult{}, fmt.Errorf("unsupported mutation kind %q", m.Kind)
 	}
 }
 

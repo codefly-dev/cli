@@ -164,5 +164,5 @@ type TerminalController interface {
 type MutationAuthority interface {
 	ConfigureMutationAuthority(ctx context.Context, cfg AuthorityConfig) error
 	PrepareMutation(ctx context.Context, m Mutation) (PreparedMutation, error)
-	ApplyPreparedMutation(ctx context.Context, token PreparedMutation) error
+	ApplyPreparedMutation(ctx context.Context, token PreparedMutation) (MutationResult, error)
 }

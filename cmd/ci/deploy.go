@@ -65,7 +65,6 @@ func runDeployService(ctx context.Context, workspace *resources.Workspace, modul
 
 func initDeployService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*orchestration.Flow, *platform.DeploymentManager, error) {
 	w := wool.Get(ctx).In("deployService", wool.ThisField(resources.WithUnique(service)))
-	orchestration.SetDryRun(dryRun)
 	env, err := orchestration.SelectEnvironment(workspace, envInput)
 	if err != nil {
 		return nil, nil, w.Wrap(err)
@@ -87,9 +86,11 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 	if err != nil {
 		return nil, nil, stopFlowAfterError(flow, w.Wrap(err))
 	}
-	deploymentManager := platform.NewDeploymentManager(ctx, workspace, env)
-
-	flow.WithDeploymentManager(deploymentManager)
+	var deploymentManager *platform.DeploymentManager
+	if !dryRun {
+		deploymentManager = platform.NewDeploymentManager(ctx, workspace, env)
+		flow.WithDeploymentManager(deploymentManager)
+	}
 	return flow, deploymentManager, nil
 }
 
@@ -99,9 +100,11 @@ func deployService(ctx context.Context, flow *orchestration.Flow, deploymentMana
 	if err != nil {
 		return w.Wrapf(err, "cannot start service")
 	}
-	err = deploymentManager.Deploy(ctx, workspace)
-	if err != nil {
-		return w.Wrapf(err, "cannot deploy service")
+	if deploymentManager != nil {
+		err = deploymentManager.Deploy(ctx, workspace)
+		if err != nil {
+			return w.Wrapf(err, "cannot deploy service")
+		}
 	}
 	return nil
 

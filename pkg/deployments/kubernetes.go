@@ -3,6 +3,7 @@ package deployments
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,15 +24,16 @@ type VerifiedKubernetesTarget struct {
 	Cluster    string
 	APIServer  string
 	K3dCluster string
+	// ClusterIdentity is the digest of the complete kubeconfig cluster entry,
+	// including certificate and routing settings.
+	ClusterIdentity string
 }
 
 type kubeconfigView struct {
 	CurrentContext string `json:"current-context" yaml:"current-context"`
 	Clusters       []struct {
-		Name    string `json:"name" yaml:"name"`
-		Cluster struct {
-			Server string `json:"server" yaml:"server"`
-		} `json:"cluster" yaml:"cluster"`
+		Name    string         `json:"name" yaml:"name"`
+		Cluster map[string]any `json:"cluster" yaml:"cluster"`
 	} `json:"clusters" yaml:"clusters"`
 	Contexts []struct {
 		Name    string `json:"name" yaml:"name"`
@@ -114,6 +116,13 @@ func verifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (Veri
 	if err != nil {
 		return VerifiedKubernetesTarget{}, nil, fmt.Errorf("resolve kubeconfig %q: %w", configPath, err)
 	}
+	kubeContext := env.Cluster.Context
+	if kubeContext == "" {
+		return VerifiedKubernetesTarget{}, nil, fmt.Errorf(
+			"environment %q must declare cluster.context to permit direct apply; use --render-only and publish the rendered manifests through GitOps",
+			env.Name,
+		)
+	}
 
 	selected, snapshot, err := readSelectedKubeconfig(ctx, configPath)
 	if err != nil {
@@ -123,10 +132,7 @@ func verifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (Veri
 	if currentContext == "" {
 		return VerifiedKubernetesTarget{}, nil, fmt.Errorf("kubeconfig %q has no current context; refusing direct apply", configPath)
 	}
-	kubeContext := env.Cluster.Context
-	if kubeContext == "" {
-		kubeContext = currentContext
-	} else if kubeContext != currentContext {
+	if kubeContext != currentContext {
 		return VerifiedKubernetesTarget{}, nil, fmt.Errorf(
 			"declared context %q does not match kubeconfig %q current context %q; refusing direct apply",
 			kubeContext,
@@ -138,7 +144,7 @@ func verifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (Veri
 		return VerifiedKubernetesTarget{}, nil, fmt.Errorf("context %q is not a k3d context; refusing direct apply", kubeContext)
 	}
 
-	clusterName, apiServer, err := selected.target(kubeContext)
+	clusterName, apiServer, clusterIdentity, err := selected.target(kubeContext)
 	if err != nil {
 		return VerifiedKubernetesTarget{}, nil, fmt.Errorf("resolve context %q from kubeconfig %q: %w", kubeContext, configPath, err)
 	}
@@ -147,13 +153,14 @@ func verifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (Veri
 	if err != nil {
 		return VerifiedKubernetesTarget{}, nil, err
 	}
-	ownedCluster, ownedServer, err := owned.target(kubeContext)
+	ownedCluster, ownedServer, ownedIdentity, err := owned.target(kubeContext)
 	if err != nil {
 		return VerifiedKubernetesTarget{}, nil, fmt.Errorf("resolve k3d-owned cluster %q: %w", k3dCluster, err)
 	}
 	if owned.CurrentContext != kubeContext ||
 		ownedCluster != clusterName ||
-		ownedServer != apiServer {
+		ownedServer != apiServer ||
+		ownedIdentity != clusterIdentity {
 		return VerifiedKubernetesTarget{}, nil, fmt.Errorf(
 			"context %q resolves to cluster %q at %q, which does not match k3d-owned cluster %q at %q; refusing direct apply",
 			kubeContext,
@@ -165,26 +172,27 @@ func verifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (Veri
 	}
 
 	return VerifiedKubernetesTarget{
-		Kind:       env.Cluster.Kind,
-		Kubeconfig: filepath.Clean(configPath),
-		Context:    kubeContext,
-		Cluster:    clusterName,
-		APIServer:  apiServer,
-		K3dCluster: k3dCluster,
+		Kind:            env.Cluster.Kind,
+		Kubeconfig:      filepath.Clean(configPath),
+		Context:         kubeContext,
+		Cluster:         clusterName,
+		APIServer:       apiServer,
+		K3dCluster:      k3dCluster,
+		ClusterIdentity: clusterIdentity,
 	}, snapshot, nil
 }
 
-func VerifyLocalK3dTargetUnchanged(ctx context.Context, env *resources.Environment, planned VerifiedKubernetesTarget) error {
+func VerifyLocalK3dTargetUnchanged(ctx context.Context, env *resources.Environment, planned *VerifiedKubernetesTarget) error {
 	_, err := verifiedKubeconfigSnapshot(ctx, env, planned)
 	return err
 }
 
-func verifiedKubeconfigSnapshot(ctx context.Context, env *resources.Environment, planned VerifiedKubernetesTarget) ([]byte, error) {
+func verifiedKubeconfigSnapshot(ctx context.Context, env *resources.Environment, planned *VerifiedKubernetesTarget) ([]byte, error) {
 	current, snapshot, err := verifyLocalK3dTarget(ctx, env)
 	if err != nil {
 		return nil, err
 	}
-	if current != planned {
+	if current != *planned {
 		return nil, fmt.Errorf(
 			"Kubernetes target changed after validation (planned context %q, cluster %q, server %q; current context %q, cluster %q, server %q); refusing direct apply",
 			planned.Context,
@@ -228,7 +236,7 @@ func readK3dKubeconfig(ctx context.Context, cluster string) (kubeconfigView, err
 	return config, nil
 }
 
-func (config kubeconfigView) target(contextName string) (string, string, error) {
+func (config kubeconfigView) target(contextName string) (string, string, string, error) {
 	clusterName := ""
 	contextMatches := 0
 	for _, candidate := range config.Contexts {
@@ -237,15 +245,16 @@ func (config kubeconfigView) target(contextName string) (string, string, error) 
 		}
 		contextMatches++
 		if contextMatches > 1 {
-			return "", "", fmt.Errorf("context %q is declared more than once", contextName)
+			return "", "", "", fmt.Errorf("context %q is declared more than once", contextName)
 		}
 		clusterName = candidate.Context.Cluster
 	}
 	if clusterName == "" {
-		return "", "", fmt.Errorf("context %q does not select a cluster", contextName)
+		return "", "", "", fmt.Errorf("context %q does not select a cluster", contextName)
 	}
 
 	apiServer := ""
+	clusterIdentity := ""
 	clusterMatches := 0
 	for _, candidate := range config.Clusters {
 		if candidate.Name != clusterName {
@@ -253,17 +262,26 @@ func (config kubeconfigView) target(contextName string) (string, string, error) 
 		}
 		clusterMatches++
 		if clusterMatches > 1 {
-			return "", "", fmt.Errorf("cluster %q is declared more than once", clusterName)
+			return "", "", "", fmt.Errorf("cluster %q is declared more than once", clusterName)
 		}
-		apiServer = candidate.Cluster.Server
+		var ok bool
+		apiServer, ok = candidate.Cluster["server"].(string)
+		if !ok || apiServer == "" {
+			return "", "", "", fmt.Errorf("cluster %q has no API server", clusterName)
+		}
+		encoded, err := json.Marshal(candidate.Cluster)
+		if err != nil {
+			return "", "", "", fmt.Errorf("encode cluster %q identity: %w", clusterName, err)
+		}
+		clusterIdentity = fmt.Sprintf("sha256:%x", sha256.Sum256(encoded))
 	}
 	if apiServer == "" {
-		return "", "", fmt.Errorf("cluster %q has no API server", clusterName)
+		return "", "", "", fmt.Errorf("cluster %q has no API server", clusterName)
 	}
-	return clusterName, apiServer, nil
+	return clusterName, apiServer, clusterIdentity, nil
 }
 
-func kubectlApply(ctx context.Context, target VerifiedKubernetesTarget, kubeconfig []byte, resource string) error {
+func kubectlApply(ctx context.Context, target *VerifiedKubernetesTarget, kubeconfig []byte, resource string) error {
 	w := wool.Get(ctx).In("kubectlApply")
 	snapshot, err := os.CreateTemp("", "codefly-verified-kubeconfig-*")
 	if err != nil {
@@ -303,7 +321,7 @@ func kubectlApply(ctx context.Context, target VerifiedKubernetesTarget, kubeconf
 	return nil
 }
 
-func KubernetesApply(ctx context.Context, env *resources.Environment, target VerifiedKubernetesTarget, sources ...string) error {
+func KubernetesApply(ctx context.Context, env *resources.Environment, target *VerifiedKubernetesTarget, sources ...string) error {
 	w := wool.Get(ctx).In("KubernetesApply")
 	for _, r := range sources {
 		snapshot, err := verifiedKubeconfigSnapshot(ctx, env, target)

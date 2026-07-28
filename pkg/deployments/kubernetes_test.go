@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -58,6 +59,79 @@ func TestVerifyLocalK3dTargetRejectsMismatchedKubeconfigServer(t *testing.T) {
 	require.Contains(t, err.Error(), "does not match k3d-owned cluster")
 }
 
+func TestVerifyLocalK3dTargetRejectsMismatchedClusterConnectionIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		selected map[string]any
+		owned    map[string]any
+	}{
+		{
+			name: "certificate authority",
+			selected: map[string]any{
+				"server":                     "https://127.0.0.1:6443",
+				"certificate-authority-data": "selected-ca",
+			},
+			owned: map[string]any{
+				"server":                     "https://127.0.0.1:6443",
+				"certificate-authority-data": "owned-ca",
+			},
+		},
+		{
+			name: "proxy",
+			selected: map[string]any{
+				"server":    "https://127.0.0.1:6443",
+				"proxy-url": "https://remote.example.com",
+			},
+			owned: map[string]any{
+				"server": "https://127.0.0.1:6443",
+			},
+		},
+		{
+			name: "insecure tls",
+			selected: map[string]any{
+				"server":                   "https://127.0.0.1:6443",
+				"insecure-skip-tls-verify": true,
+			},
+			owned: map[string]any{
+				"server": "https://127.0.0.1:6443",
+			},
+		},
+		{
+			name: "tls server name",
+			selected: map[string]any{
+				"server":          "https://127.0.0.1:6443",
+				"tls-server-name": "remote.example.com",
+			},
+			owned: map[string]any{
+				"server": "https://127.0.0.1:6443",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newKubernetesCommandHarness(t)
+			harness.writeSelected(kubeconfigDocumentWithCluster("k3d-dev", "k3d-dev", "k3d-dev", test.selected))
+			harness.writeOwned(kubeconfigDocumentWithCluster("k3d-dev", "k3d-dev", "k3d-dev", test.owned))
+
+			_, err := VerifyLocalK3dTarget(context.Background(), harness.environment("k3d-dev"))
+
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "does not match k3d-owned cluster")
+		})
+	}
+}
+
+func TestVerifyLocalK3dTargetRequiresDeclaredContext(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	config := kubeconfigDocument("k3d-other", "k3d-other", "k3d-other", "https://127.0.0.1:7443")
+	harness.writeSelected(config)
+	harness.writeOwned(config)
+
+	_, err := VerifyLocalK3dTarget(context.Background(), harness.environment(""))
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must declare cluster.context")
+}
+
 func TestVerifyLocalK3dTargetRejectsRenamedNonK3dContext(t *testing.T) {
 	harness := newKubernetesCommandHarness(t)
 	harness.writeSelected(kubeconfigDocument("k3d-production", "k3d-production", "production", "https://eks.example.com"))
@@ -78,6 +152,8 @@ func TestVerifyLocalK3dTargetBindsExactIdentity(t *testing.T) {
 	target, err := VerifyLocalK3dTarget(context.Background(), harness.environment("k3d-dev"))
 
 	require.NoError(t, err)
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, target.ClusterIdentity)
+	target.ClusterIdentity = ""
 	require.Equal(t, VerifiedKubernetesTarget{
 		Kind:       "k3d",
 		Kubeconfig: harness.kubeconfig,
@@ -93,7 +169,7 @@ func TestKubernetesApplyRejectsContextSwapAfterValidation(t *testing.T) {
 	dev := kubeconfigDocument("k3d-dev", "k3d-dev", "k3d-dev", "https://127.0.0.1:6443")
 	harness.writeSelected(dev)
 	harness.writeOwned(dev)
-	env := harness.environment("")
+	env := harness.environment("k3d-dev")
 
 	target, err := VerifyLocalK3dTarget(context.Background(), env)
 	require.NoError(t, err)
@@ -102,9 +178,10 @@ func TestKubernetesApplyRejectsContextSwapAfterValidation(t *testing.T) {
 	harness.writeSelected(other)
 	harness.writeOwned(other)
 
-	err = KubernetesApply(context.Background(), env, target, "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: blocked\n")
+	err = KubernetesApply(context.Background(), env, &target, "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: blocked\n")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "target changed after validation")
+	require.Contains(t, err.Error(), "does not match")
+	require.Contains(t, err.Error(), "k3d-other")
 	require.NoFileExists(t, harness.applyLog)
 }
 
@@ -153,10 +230,93 @@ func TestLocalApplyManagerRecordsTargetAndRenderedTreeDigest(t *testing.T) {
 
 	require.NoError(t, manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput()))
 
-	digest, ok := manager.RenderedDigest(context.Background(), module, service)
-	require.True(t, ok)
-	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, digest)
-	require.Equal(t, "https://127.0.0.1:6443", manager.Target().APIServer)
+	evidence := manager.Evidence()
+	require.NotNil(t, evidence.Target)
+	require.Equal(t, "https://127.0.0.1:6443", evidence.Target.APIServer)
+	require.Len(t, evidence.RenderedTrees, 1)
+	require.Equal(t, "backend", evidence.RenderedTrees[0].Module)
+	require.Equal(t, "api", evidence.RenderedTrees[0].Service)
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, evidence.RenderedTrees[0].Digest)
+	require.Contains(t, evidence.RenderedTrees[0].Manifests, "kind: Namespace")
+	require.FileExists(t, harness.applyLog)
+}
+
+func TestRenderManagerReturnsRenderedEvidenceWithoutApplying(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	workspace, module, service := deploymentFixture(t)
+	manager := NewRenderManager(workspace, harness.environment("k3d-dev"))
+
+	require.NoError(t, manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput()))
+
+	evidence := manager.Evidence()
+	require.Nil(t, evidence.Target)
+	require.Equal(t, []RenderedTreeEvidence{{
+		Module:    "backend",
+		Service:   "api",
+		Digest:    evidence.RenderedTrees[0].Digest,
+		Manifests: "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: applied\n",
+	}}, evidence.RenderedTrees)
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, evidence.RenderedTrees[0].Digest)
+	require.NoFileExists(t, harness.applyLog)
+}
+
+func TestRenderManagersKeepConcurrentRequestEvidenceIsolated(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	firstWorkspace, firstModule, firstService := deploymentFixture(t)
+	secondWorkspace, secondModule, secondService := deploymentFixture(t)
+	first := NewRenderManager(firstWorkspace, harness.environment("k3d-dev"))
+	second := NewRenderManager(secondWorkspace, harness.environment("k3d-dev"))
+
+	var wait sync.WaitGroup
+	errorsOut := make(chan error, 2)
+	for _, deploy := range []struct {
+		manager *RenderManager
+		module  *resources.Module
+		service *resources.Service
+	}{
+		{manager: first, module: firstModule, service: firstService},
+		{manager: second, module: secondModule, service: secondService},
+	} {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			errorsOut <- deploy.manager.Handle(context.Background(), deploy.service, deploy.module, kubernetesDeploymentOutput())
+		}()
+	}
+	wait.Wait()
+	close(errorsOut)
+	for err := range errorsOut {
+		require.NoError(t, err)
+	}
+
+	require.Len(t, first.Evidence().RenderedTrees, 1)
+	require.Len(t, second.Evidence().RenderedTrees, 1)
+	require.NoFileExists(t, harness.applyLog)
+}
+
+func TestLocalApplyManagerRecordsModuleTreeEvidence(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	config := kubeconfigDocument("k3d-dev", "k3d-dev", "k3d-dev", "https://127.0.0.1:6443")
+	harness.writeSelected(config)
+	harness.writeOwned(config)
+	workspace, module, _ := deploymentFixture(t)
+	dir := filepath.Join(module.Dir(), "deployment", "kustomize", "overlays", "local")
+	writeTestFile(t, filepath.Join(dir, "kustomization.yaml"), "resources: []\n")
+	writeTestFile(t, filepath.Join(module.Dir(), "deployment", "kustomize", "base", "namespace.yaml"), "kind: Namespace\n")
+	manager, err := NewLocalApplyManager(context.Background(), workspace, harness.environment("k3d-dev"))
+	require.NoError(t, err)
+
+	require.NoError(t, manager.ApplyModuleKustomize(context.Background(), module, dir))
+
+	evidence := manager.Evidence()
+	require.Len(t, evidence.RenderedTrees, 1)
+	require.Equal(t, "backend", evidence.RenderedTrees[0].Module)
+	require.Empty(t, evidence.RenderedTrees[0].Service)
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, evidence.RenderedTrees[0].Digest)
+	wantDigest, err := RenderedTreeDigest(filepath.Join(module.Dir(), "deployment", "kustomize"))
+	require.NoError(t, err)
+	require.Equal(t, wantDigest, evidence.RenderedTrees[0].Digest)
+	require.Contains(t, evidence.RenderedTrees[0].Manifests, "kind: Namespace")
 	require.FileExists(t, harness.applyLog)
 }
 
@@ -178,6 +338,28 @@ func TestRenderedTreeDigestBindsPathsAndContents(t *testing.T) {
 	changedDigest, err := RenderedTreeDigest(second)
 	require.NoError(t, err)
 	require.NotEqual(t, firstDigest, changedDigest)
+}
+
+func TestExtractKustomizeImagesUsesOriginalNameWhenNewNameIsOmitted(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "kustomization.yaml"), `images:
+  - name: app
+    newTag: test
+  - name: registry.example.com:5000/team/worker:old
+    newTag: current
+  - name: original
+    newName: replacement
+    newTag: latest
+`)
+
+	images, err := extractKustomizeImages(dir)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"app:test",
+		"registry.example.com:5000/team/worker:current",
+		"replacement:latest",
+	}, images)
 }
 
 type kubernetesCommandHarness struct {
@@ -284,6 +466,12 @@ func (h kubernetesCommandHarness) writeOwned(content string) {
 }
 
 func kubeconfigDocument(currentContext, contextName, clusterName, apiServer string) string {
+	return kubeconfigDocumentWithCluster(currentContext, contextName, clusterName, map[string]any{
+		"server": apiServer,
+	})
+}
+
+func kubeconfigDocumentWithCluster(currentContext, contextName, clusterName string, cluster map[string]any) string {
 	document := map[string]any{
 		"apiVersion":      "v1",
 		"current-context": currentContext,
@@ -294,10 +482,8 @@ func kubeconfigDocument(currentContext, contextName, clusterName, apiServer stri
 			},
 		}},
 		"clusters": []any{map[string]any{
-			"name": clusterName,
-			"cluster": map[string]any{
-				"server": apiServer,
-			},
+			"name":    clusterName,
+			"cluster": cluster,
 		}},
 	}
 	encoded, err := json.Marshal(document)

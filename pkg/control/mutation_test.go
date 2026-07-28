@@ -39,7 +39,7 @@ func TestPreparedFileMutationAppliesOnceThenIsConsumed(t *testing.T) {
 	}
 
 	// First apply performs the edit.
-	if err := p.ApplyPreparedMutation(ctx, token); err != nil {
+	if _, err := p.ApplyPreparedMutation(ctx, token); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := p.ReadFile(ctx, fixtureFile)
@@ -48,14 +48,42 @@ func TestPreparedFileMutationAppliesOnceThenIsConsumed(t *testing.T) {
 	}
 
 	// The token is single-use — a second apply must fail.
-	if err := p.ApplyPreparedMutation(ctx, token); err == nil {
+	if _, err := p.ApplyPreparedMutation(ctx, token); err == nil {
 		t.Error("prepared mutation token should be single-use")
 	}
 }
 
 func TestApplyUnknownTokenFails(t *testing.T) {
-	if err := New().ApplyPreparedMutation(context.Background(), PreparedMutation{Token: "deadbeef"}); err == nil {
+	if _, err := New().ApplyPreparedMutation(context.Background(), PreparedMutation{Token: "deadbeef"}); err == nil {
 		t.Error("applying an unknown token should fail")
+	}
+}
+
+func TestExecuteDeployMutationReturnsDeploymentEvidence(t *testing.T) {
+	want := DeployResult{
+		Succeeded: true,
+		RenderedTrees: []RenderedTree{{
+			Module:    "backend",
+			Service:   "api",
+			Digest:    "sha256:rendered",
+			Manifests: "kind: Deployment\n",
+		}},
+	}
+	executor := mutationExecutorStub{deployResult: want}
+
+	result, err := executeMutation(context.Background(), executor, Mutation{
+		Kind:    MutationDeploy,
+		Payload: DeployRequest{Service: "backend/api"},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deploy == nil {
+		t.Fatal("prepared deploy returned no deployment result")
+	}
+	if result.Deploy.RenderedTrees[0].Digest != want.RenderedTrees[0].Digest {
+		t.Fatalf("prepared deploy digest = %q, want %q", result.Deploy.RenderedTrees[0].Digest, want.RenderedTrees[0].Digest)
 	}
 }
 
@@ -70,4 +98,16 @@ func TestDeployRefusedUnderPreparedAuthority(t *testing.T) {
 	if _, err := p.Deploy(ctx, DeployRequest{Service: "backend/api"}); err == nil {
 		t.Error("direct Deploy should be refused under prepared authority")
 	}
+}
+
+type mutationExecutorStub struct {
+	deployResult DeployResult
+}
+
+func (mutationExecutorStub) ApplyEdit(context.Context, Edit) error {
+	return nil
+}
+
+func (s mutationExecutorStub) runDeploy(context.Context, DeployRequest) (DeployResult, error) {
+	return s.deployResult, nil
 }

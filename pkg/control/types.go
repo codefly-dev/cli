@@ -179,20 +179,27 @@ type DeployRequest struct {
 
 // DeployResult is the outcome of a deploy.
 type DeployResult struct {
-	Succeeded          bool
-	Rendered           string // manifests when DryRun/render-only
-	RenderedTreeDigest string
-	Target             *DeployTarget
-	Output             string
+	Succeeded     bool
+	RenderedTrees []RenderedTree
+	Target        *DeployTarget
+	Output        string
+}
+
+type RenderedTree struct {
+	Module    string
+	Service   string
+	Digest    string
+	Manifests string
 }
 
 type DeployTarget struct {
-	Kind       string
-	Kubeconfig string
-	Context    string
-	Cluster    string
-	APIServer  string
-	K3dCluster string
+	Kind            string
+	Kubeconfig      string
+	Context         string
+	Cluster         string
+	APIServer       string
+	K3dCluster      string
+	ClusterIdentity string
 }
 
 // --- Source ---
@@ -449,4 +456,8 @@ type Mutation struct {
 // consumed by ApplyPreparedMutation.
 type PreparedMutation struct {
 	Token string
+}
+
+type MutationResult struct {
+	Deploy *DeployResult
 }

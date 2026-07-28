@@ -271,9 +271,3 @@ func SetBuilderPush() {
 func (b *Builder) Unique() string {
 	return b.instance.Unique()
 }
-
-var dryRun bool
-
-func SetDryRun(d bool) {
-	dryRun = d
-}
