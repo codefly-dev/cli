@@ -449,7 +449,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			identity,
 			runtimeContext,
 			runner.fixture,
-			runner.overrides,
+			runner.runtimeOverrides(),
 			endpointMappings,
 		); err != nil {
 			return nil, w.Wrapf(err, "cannot write runtime environment variables to file")
@@ -459,7 +459,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	req := &runtimev0.StartRequest{
 		DependenciesNetworkMappings: dependenciesNetworkMappings,
 		Fixture:                     runner.fixture,
-		Overrides:                   runner.overrides,
+		Overrides:                   runner.runtimeOverrides(),
 	}
 	err = resources.Validate(req)
 	if err != nil {
@@ -947,6 +947,22 @@ func (runner *Runner) WithOverrides(overrides map[string]string) {
 		return
 	}
 	runner.overrides = overrides
+}
+
+// runtimeOverrides carries invocation-scoped runtime identity through the
+// backwards-compatible StartRequest override seam. This makes naming-scope
+// isolation available to already-published service agents; newer agents also
+// derive the same carrier from Environment, so both paths converge on the
+// identical value.
+func (runner *Runner) runtimeOverrides() map[string]string {
+	overrides := make(map[string]string, len(runner.overrides)+1)
+	for key, value := range runner.overrides {
+		overrides[key] = value
+	}
+	if runner.world != nil && runner.world.Env != nil && runner.world.Env.NamingScope != "" {
+		overrides[resources.NamingScopePrefix] = runner.world.Env.NamingScope
+	}
+	return overrides
 }
 
 func (runner *Runner) WithOutputEnv(path string) {
