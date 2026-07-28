@@ -115,6 +115,7 @@ jobs:
         env:
           CODEFLY_RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/codefly-release-signing-key.pem
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: goreleaser release --clean
 
       - name: Attest released archives

@@ -73,6 +73,7 @@ homebrew_casks:
     repository:
       owner: codefly-dev
       name: homebrew-cli
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
       branch: main
     commit_author:
       name: Codefly Release
