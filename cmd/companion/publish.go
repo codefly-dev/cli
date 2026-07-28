@@ -43,7 +43,7 @@ func init() {
 	PublishCmd.Flags().String("core-dir", "", "Path to the core directory (default: walk up from cwd looking for companions/)")
 	PublishCmd.Flags().Bool("force-docker", false, "Skip the flake.nix path even when present + nix is installed")
 	PublishCmd.Flags().Bool("pull", false, "Always pull a newer base image (docker build --pull) before building")
-	PublishCmd.Flags().String("platform", "", "Target platform for docker builds (e.g. linux/amd64). Default: host arch. Companion images are linux/amd64, so publishing from an arm64 host must set this.")
+	PublishCmd.Flags().String("platform", "", "Target platform(s) for Docker builds (e.g. linux/amd64,linux/arm64). Multiple platforms publish one manifest with buildx.")
 }
 
 func runPublish(cmd *cobra.Command, args []string) error {
