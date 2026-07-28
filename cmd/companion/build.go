@@ -50,7 +50,7 @@ func init() {
 	BuildCmd.Flags().Bool("push", false, "Push each image to the registry after a successful build")
 	BuildCmd.Flags().Bool("force-docker", false, "Skip the flake.nix path even when present + nix is installed")
 	BuildCmd.Flags().Bool("pull", false, "Always pull a newer base image (docker build --pull) — picks up upstream patch releases (e.g. golang:1.26-alpine → latest 1.26.x)")
-	BuildCmd.Flags().String("platform", "", "Target platform for docker builds (e.g. linux/amd64). Default: host arch. Set this to publish arch-correct images from a different host (companion images are linux/amd64).")
+	BuildCmd.Flags().String("platform", "", "Target platform(s) for Docker builds (e.g. linux/amd64 or linux/amd64,linux/arm64). Multiple platforms require --push.")
 }
 
 // BuildOptions controls a companion build run. Shared by the `companion
@@ -62,10 +62,9 @@ type BuildOptions struct {
 	// (golang:1.26-alpine, …) is refreshed to its latest patch. This is
 	// how `update deps` clears base-image CVEs like the Go stdlib bumps.
 	Pull bool
-	// Platform overrides the docker build target (e.g. "linux/amd64").
-	// Empty means host arch. Companion images in the registry are
-	// linux/amd64, so publishing from an arm64 host must set this to avoid
-	// pushing an arch-mismatched image. Ignored by the nix build path.
+	// Platform overrides the Docker build target. A comma-separated list
+	// publishes one multi-platform manifest through buildx. Empty means the
+	// host Linux architecture. Ignored by the Nix build path.
 	Platform string
 }
 
@@ -151,13 +150,23 @@ func selectTargets(coreDir string, all bool, args []string) ([]*Companion, error
 // cross-compiles the linux CLI once up front when any target needs it
 // (language companions COPY it). Returns the first build/push error.
 func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error {
-	// When a language companion is in the set it COPYs a linux/amd64
-	// codefly binary; produce it once up front so the build isn't broken
-	// by a stale binary. Cheap to skip when no language companion is
-	// targeted.
+	platforms, err := resolveDockerPlatforms(opts.Platform)
+	if err != nil {
+		return err
+	}
+	multiPlatform := len(platforms) > 1
+	if multiPlatform && !opts.Push {
+		return fmt.Errorf("multi-platform companion builds require --push")
+	}
+
+	// Companion Dockerfiles select bin/linux/$TARGETARCH/codefly. Produce
+	// one binary per requested architecture before BuildKit evaluates the
+	// platform-specific stages.
 	if needsLinuxCLI(targets) {
-		if err := buildLinuxCLI(coreDir); err != nil {
-			return fmt.Errorf("cross-compile codefly CLI for linux/amd64: %w", err)
+		for _, platform := range platforms {
+			if err := buildLinuxCLI(coreDir, platform.Arch); err != nil {
+				return fmt.Errorf("cross-compile codefly CLI for %s: %w", platform.Value, err)
+			}
 		}
 	}
 
@@ -174,6 +183,9 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		if c.HasFlake && !opts.ForceDocker && nixOnPath() {
 			method = "nix"
 		}
+		if multiPlatform && method == "nix" {
+			return fmt.Errorf("multi-platform companion %s must use Docker; pass --force-docker", c.Name)
+		}
 		fmt.Printf("==> Building %s (%s) via %s\n", c.Tag(), c.Dir, method)
 
 		var buildErr error
@@ -181,14 +193,16 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		case "nix":
 			buildErr = buildWithNix(c)
 		default:
-			buildErr = buildWithDocker(c, coreDir, opts.Pull, opts.Platform)
+			buildErr = buildWithDocker(c, coreDir, opts.Pull, platforms, opts.Push)
 		}
 		if buildErr != nil {
 			return fmt.Errorf("build %s failed: %w", c.Name, buildErr)
 		}
 		fmt.Printf("    built %s\n", c.Tag())
 
-		if opts.Push {
+		// A multi-platform build is pushed atomically by buildx; there is no
+		// single local image for `docker push` to publish afterward.
+		if opts.Push && !(method == "docker" && multiPlatform) {
 			if err := pushImage(c.Tag()); err != nil {
 				return fmt.Errorf("push %s failed: %w", c.Name, err)
 			}
@@ -244,7 +258,7 @@ func sortCompanionsForBuild(in []*Companion) []*Companion {
 
 // needsLinuxCLI returns true when at least one target companion is a
 // language or execution runtime — those embed the cross-compiled CLI,
-// so we must produce a fresh linux/amd64 binary. The codefly base
+// so we must produce a fresh binary for each target architecture. The codefly base
 // companion itself ALSO needs the binary (it's the source of the
 // COPY --from used by language images), so we treat it as needing the
 // CLI too.
@@ -258,22 +272,21 @@ func needsLinuxCLI(targets []*Companion) bool {
 	return false
 }
 
-// buildLinuxCLI cross-compiles the codefly CLI for linux/amd64 with
-// symbol stripping. Output: <core>/bin/linux/codefly. Mirrors the
-// in-line invocation at the top of build_companions.sh.
+// buildLinuxCLI cross-compiles the codefly CLI for one Linux architecture
+// with symbol stripping. Output: <core>/bin/linux/<arch>/codefly.
 //
 // CGO disabled + -extldflags "-static" produces a fully static binary
 // the alpine images can run without glibc. Flag stripping (-s -w)
 // drops the symbol table and DWARF info; ~25-30% size reduction with
 // no runtime cost.
-func buildLinuxCLI(coreDir string) error {
+func buildLinuxCLI(coreDir, arch string) error {
 	cliDir := filepath.Join(coreDir, "..", "cli")
 	if info, err := os.Stat(cliDir); err != nil || !info.IsDir() {
 		return fmt.Errorf("cli directory not found at %s (expected sibling of core/)", cliDir)
 	}
-	outBin := filepath.Join(coreDir, "bin", "linux", "codefly")
+	outBin := filepath.Join(coreDir, "bin", "linux", arch, "codefly")
 	if err := os.MkdirAll(filepath.Dir(outBin), 0o755); err != nil {
-		return fmt.Errorf("create bin/linux: %w", err)
+		return fmt.Errorf("create bin/linux/%s: %w", arch, err)
 	}
 
 	cmd := exec.Command("go", "build",
@@ -285,38 +298,71 @@ func buildLinuxCLI(coreDir string) error {
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
 		"GOOS=linux",
-		"GOARCH=amd64",
+		"GOARCH="+arch,
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-// buildWithDocker invokes `docker build` with the host platform.
-// build_companions.sh does the same — multi-arch publish is a
-// separate pipeline (docker buildx push).
-//
-// Uses host-arch (uname -m mapped to amd64/arm64) so dev iterations
-// are fast; CI matrices that need cross-arch must opt in via
-// `docker buildx`. We deliberately don't try to be clever about that
-// here — the sh path was already explicit about it.
-func buildWithDocker(c *Companion, coreDir string, pull bool, platform string) error {
+type dockerPlatform struct {
+	Value string
+	Arch  string
+}
+
+func resolveDockerPlatforms(value string) ([]dockerPlatform, error) {
+	if strings.TrimSpace(value) == "" {
+		value = "linux/" + dockerArch()
+	}
+	raw := strings.Split(value, ",")
+	platforms := make([]dockerPlatform, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, candidate := range raw {
+		candidate = strings.TrimSpace(candidate)
+		parts := strings.Split(candidate, "/")
+		if len(parts) != 2 || parts[0] != "linux" ||
+			(parts[1] != "amd64" && parts[1] != "arm64") {
+			return nil, fmt.Errorf("unsupported companion platform %q; expected linux/amd64 or linux/arm64", candidate)
+		}
+		if _, duplicate := seen[candidate]; duplicate {
+			return nil, fmt.Errorf("duplicate companion platform %q", candidate)
+		}
+		seen[candidate] = struct{}{}
+		platforms = append(platforms, dockerPlatform{Value: candidate, Arch: parts[1]})
+	}
+	return platforms, nil
+}
+
+// buildWithDocker uses the ordinary daemon build for one platform and an
+// atomic buildx manifest push for multiple platforms.
+func buildWithDocker(c *Companion, coreDir string, pull bool, platforms []dockerPlatform, push bool) error {
 	if !c.HasDockerfile {
 		return fmt.Errorf("no Dockerfile in %s", c.Dir)
 	}
-	if platform == "" {
-		platform = "linux/" + dockerArch()
+	platformValues := make([]string, 0, len(platforms))
+	for _, platform := range platforms {
+		platformValues = append(platformValues, platform.Value)
 	}
 	dockerfile := filepath.Join("companions", c.Name, "Dockerfile")
 
-	dockerArgs := []string{"build", "--platform", platform}
+	dockerArgs := []string{"build", "--platform", strings.Join(platformValues, ",")}
+	if len(platforms) > 1 {
+		dockerArgs = []string{"buildx", "build", "--platform", strings.Join(platformValues, ",")}
+	}
 	if pull {
 		// --pull re-resolves floating base tags (golang:1.26-alpine) to the
 		// latest patch, so a rebuild clears upstream base-image CVEs instead
 		// of reusing the cached older layer.
 		dockerArgs = append(dockerArgs, "--pull")
 	}
-	dockerArgs = append(dockerArgs, "-f", dockerfile, "-t", c.Tag(), ".")
+	dockerArgs = append(dockerArgs, "-f", dockerfile, "-t", c.Tag())
+	if len(platforms) > 1 {
+		if !push {
+			return fmt.Errorf("multi-platform companion builds require push")
+		}
+		dockerArgs = append(dockerArgs, "--push")
+	}
+	dockerArgs = append(dockerArgs, ".")
 	cmd := exec.Command("docker", dockerArgs...)
 	cmd.Dir = coreDir // build context is core/
 	cmd.Stdout = os.Stdout
