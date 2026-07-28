@@ -63,7 +63,11 @@ func NewService() (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	stateDirectory := filepath.Join(resources.CodeflyHomeDir(), "update")
+	stateDirectory, err := filepath.Abs(filepath.Join(resources.CodeflyHomeDir(), "update"))
+	if err != nil {
+		return nil, fmt.Errorf("resolve update state directory: %w", err)
+	}
+	stateDirectory = filepath.Clean(stateDirectory)
 	state := NewStateStore(stateDirectory)
 	client := &http.Client{Timeout: 30 * time.Second}
 	checker, err := releaseupdate.NewGitHubChecker(releaseupdate.GitHubOptions{

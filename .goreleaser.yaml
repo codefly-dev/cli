@@ -63,7 +63,7 @@ homebrew_casks:
       - codefly
     binaries:
       - codefly
-    directory: "."
+    directory: Casks
     homepage: https://codefly.ai
     description: Build, run, test, and deploy services in a Codefly workspace
     skip_upload: auto

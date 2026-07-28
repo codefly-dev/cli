@@ -3,6 +3,7 @@ package cliupdate
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -106,6 +107,17 @@ func TestServiceCheckDevelopmentBuildDoesNotUseReleaseSource(t *testing.T) {
 	}
 	if result.Current != "development" || result.Available {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestNewServiceUsesAbsoluteUpdatePaths(t *testing.T) {
+	t.Setenv("CODEFLY_HOME", "relative-codefly-home")
+	service, err := NewService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(service.stagingDir) {
+		t.Fatalf("staging directory = %q, want absolute path", service.stagingDir)
 	}
 }
 

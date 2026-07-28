@@ -115,8 +115,13 @@ jobs:
         env:
           CODEFLY_RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/codefly-release-signing-key.pem
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: goreleaser release --clean
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/codefly-dev/cli/commits/$RELEASE_TAG" --jq .sha)" = "$GITHUB_SHA"
+          goreleaser release --clean
 
       - name: Attest released archives
         uses: actions/attest@v4
@@ -173,7 +178,7 @@ jobs:
           done
 
           cask="$(
-            gh api repos/codefly-dev/homebrew-cli/contents/codefly.rb --jq .content |
+            gh api repos/codefly-dev/homebrew-cli/contents/Casks/codefly.rb --jq .content |
               base64 --decode
           )"
           grep -F 'cask "codefly"' <<<"$cask"
