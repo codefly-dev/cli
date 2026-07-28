@@ -114,6 +114,28 @@ func TestMissingLoaderPlatforms(t *testing.T) {
 	}
 }
 
+func TestModuleAgentSelectsSourceReleaseGateWithoutLoaderAssets(t *testing.T) {
+	dir := t.TempDir()
+	manifest := []byte("publisher: codefly.dev\nkind: codefly:module\nname: saas-starter\nversion: 0.0.20\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
+
+	require.NoError(t, checkAgentReleasePreconditionsForManifest(filepath.Join(dir, "agent.codefly.yaml")))
+	gate, err := newAgentReleaseGate(dir, dir)
+	require.NoError(t, err)
+	defer gate.cleanup()
+	_, ok := gate.(*moduleAgentReleaser)
+	require.True(t, ok, "module agents must not use service loader-asset publishing")
+}
+
+func TestUnknownAgentKindFailsClosedDuringReleaseSelection(t *testing.T) {
+	dir := t.TempDir()
+	manifest := []byte("publisher: codefly.dev\nkind: codefly:toolbox\nname: web\nversion: 0.0.1\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
+
+	_, err := newAgentReleaseGate(dir, dir)
+	require.ErrorContains(t, err, `release semantics for agent kind "codefly:toolbox"`)
+}
+
 // --- helpers -------------------------------------------------------
 
 // stageCIArtifacts writes a fake `codefly agent ci` output tree (report

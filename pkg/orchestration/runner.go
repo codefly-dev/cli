@@ -436,6 +436,13 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			WorkspacePath:       runner.instance.Identity.WorkspacePath,
 			RelativeToWorkspace: runner.instance.Identity.RelativeToWorkspace,
 		}
+		endpointMappings := make(
+			[]*basev0.NetworkMapping,
+			0,
+			len(runner.networkMappings)+len(dependenciesNetworkMappings),
+		)
+		endpointMappings = append(endpointMappings, runner.networkMappings...)
+		endpointMappings = append(endpointMappings, dependenciesNetworkMappings...)
 		if err := AppendRuntimeEnvironmentToFile(
 			ctx,
 			runner.outputEnv,
@@ -443,7 +450,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			runtimeContext,
 			runner.fixture,
 			runner.overrides,
-			dependenciesNetworkMappings,
+			endpointMappings,
 		); err != nil {
 			return nil, w.Wrapf(err, "cannot write runtime environment variables to file")
 		}
@@ -970,9 +977,10 @@ func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, conf
 }
 
 // AppendRuntimeEnvironmentToFile exports the identity and endpoint
-// capabilities that agents add during Start. --output-env previously wrote
-// configuration values only, so an SDK process could see dependency secrets
-// but could not discover a dependency endpoint.
+// capabilities that agents add during Init and Start. The mappings must include
+// the selected service's provided APIs as well as its dependencies: an SDK
+// process running outside the service needs both to reproduce that service's
+// live runtime environment.
 func AppendRuntimeEnvironmentToFile(
 	ctx context.Context,
 	filePath string,
@@ -980,7 +988,7 @@ func AppendRuntimeEnvironmentToFile(
 	runtimeContext *basev0.RuntimeContext,
 	fixture string,
 	overrides map[string]string,
-	dependencyMappings []*basev0.NetworkMapping,
+	endpointMappings []*basev0.NetworkMapping,
 ) error {
 	w := wool.Get(ctx).In("resources.AppendRuntimeEnvironmentToFile", wool.Field("filePath", filePath))
 	if identity == nil {
@@ -993,10 +1001,10 @@ func AppendRuntimeEnvironmentToFile(
 	manager.AddOverrides(overrides)
 	if err := manager.AddEndpoints(
 		ctx,
-		dependencyMappings,
+		endpointMappings,
 		resources.NetworkAccessFromRuntimeContext(runtimeContext),
 	); err != nil {
-		return w.Wrapf(err, "cannot add dependency endpoints")
+		return w.Wrapf(err, "cannot add runtime endpoints")
 	}
 	environments, err := manager.All()
 	if err != nil {

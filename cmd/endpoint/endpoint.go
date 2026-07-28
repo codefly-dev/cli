@@ -8,10 +8,10 @@
 // Mind's CLI/desktop) can discover an endpoint WITHOUT a hand-written
 // discovery file.
 //
-// The address is computed deterministically from the service's static
-// definition (the same port hash the runtime uses), so it resolves whether or
-// not the service is currently running. Liveness is the caller's concern; pass
-// --require-up to additionally fail when nothing is listening.
+// A running scoped flow is authoritative for the concrete address. When no
+// flow CLI server is available, the address falls back to deterministic static
+// resolution so pre-start scripts still work. Pass --require-up to additionally
+// fail when nothing is listening.
 package endpoint
 
 import (
@@ -32,11 +32,11 @@ var Cmd = &cobra.Command{
 prints just that address to stdout (nothing else). Exits non-zero if no
 single endpoint matches.
 
-The address is computed deterministically, so it resolves even before the
-service starts. Use --type to pick the API when a service has several
-endpoints, or --endpoint to pick by name; if exactly one endpoint matches,
-neither is required. Pass --require-up to fail unless the endpoint is
-actually reachable.
+A running flow is authoritative for the concrete address; otherwise the
+address is computed deterministically so it still resolves before the service
+starts. Use --type to pick the API when a service has several endpoints, or
+--endpoint to pick by name; if exactly one endpoint matches, neither is
+required. Pass --require-up to fail unless the endpoint is actually reachable.
 
 Examples:
   codefly endpoint mind --type grpc           # -> localhost:6690
@@ -76,7 +76,7 @@ Examples:
 		}
 
 		ep := matches[0]
-		resolved, err := common.ResolveNative(ctx, workspace.Name, module.Name, service.Name, namingScope, ep)
+		resolved, err := common.ResolvePreferredNative(ctx, workspace.Name, module.Name, service.Name, namingScope, ep)
 		if err != nil {
 			return fmt.Errorf("codefly endpoint: cannot resolve %s/%s endpoint %q: %w", module.Name, service.Name, ep.Name, err)
 		}

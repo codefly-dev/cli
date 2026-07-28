@@ -586,14 +586,14 @@ func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 	return name, strings.TrimSpace(string(out))
 }
 
-// runEnvironment resolves the local environment this run executes in. The
-// workspace's declared "local" environment (secret backends, cluster, naming
-// policy, …) wins over the synthetic default, and the --naming-scope override
-// applies to this invocation's copy only — never to the shared declaration.
+// runEnvironment resolves the selected environment this run executes in. The
+// workspace declaration (secret backends, configuration profile, naming
+// policy, …) wins over defaults, and the --naming-scope override applies to
+// this invocation's copy only — never to the shared declaration.
 // An explicitly passed empty --naming-scope clears a declared scope; an
 // absent flag keeps it.
 func runEnvironment(workspace *resources.Workspace) (*resources.Environment, error) {
-	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	env, err := orchestration.SelectEnvironment(workspace, environmentName)
 	if err != nil {
 		return nil, err
 	}
@@ -634,9 +634,19 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithOutputEnv(outputEnv)
+	if outputEnvService != "" {
+		if outputEnv == "" {
+			return nil, w.NewError("--output-env-service requires --output-env")
+		}
+		if _, err := flow.ServiceFromUnique(outputEnvService); err != nil {
+			return nil, w.Wrapf(err, "cannot select output environment service %q", outputEnvService)
+		}
+		flow.WithOutputEnvService(outputEnvService)
+	}
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
+	flow.WithTemporaryPorts(temporaryPorts)
 	// Only the "free" default lets codefly pick Docker-or-nix, so only then do
 	// we probe Docker (which shells out to the docker CLI). An explicit context
 	// is honored as-is and needs no probe.
@@ -791,12 +801,15 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free auto-picks Docker-or-nix)")
 	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope (for testing encapsulation)")
+	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed temporary ports for this flow (advanced; intended for SDK-managed tests)")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
-	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Output environment variables")
+	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's runtime environment variables to an owner-only file")
+	ServiceCmd.Flags().StringVar(&outputEnvService, "output-env-service", "", "Service whose runtime environment to export (module/service; defaults to the root service)")
 	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
+	ServiceCmd.Flags().StringVar(&environmentName, "env", orchestration.LocalEnvironmentName, "Workspace environment to run")
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")

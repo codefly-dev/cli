@@ -99,13 +99,15 @@ type Flow struct {
 	// suite advertisement before dependency managers are selected. Legacy
 	// agents retain the dependency-free behavior they had before the contract.
 	testDependencyMode agentv0.TestDependencyMode
+	temporaryPorts     bool
 
 	// syncRequest carries CI dry-run intent to every builder participating in a
 	// SyncMode flow. Nil retains the conventional mutating sync behavior.
 	syncRequest *builderv0.SyncRequest
 
 	// Output running configurations
-	outputEnvPath string
+	outputEnvPath    string
+	outputEnvService string
 
 	// actual services running
 	services []*resources.Service
@@ -1167,8 +1169,17 @@ func (flow *Flow) GetAddressForEndpoint(ctx context.Context, module string, serv
 	}
 	for _, np := range mappings {
 		if np.Endpoint.Name == endpoint {
+			// The CLI server is reached from the host, so its concrete answer
+			// must prefer the host-native mapping. Private services normally
+			// have native + container instances and no public instance.
 			for _, instance := range np.Instances {
-				if instance.Access.Kind == resources.NetworkAccessPublic {
+				if instance.Access != nil && instance.Access.Kind == resources.NetworkAccessNative {
+					return instance.Address, nil
+				}
+			}
+			// External endpoints may only have a public instance.
+			for _, instance := range np.Instances {
+				if instance.Access != nil && instance.Access.Kind == resources.NetworkAccessPublic {
 					return instance.Address, nil
 				}
 			}
@@ -1329,7 +1340,9 @@ func (flow *Flow) configureRunner(runner *Runner, service *resources.Service) {
 	runner.WithRuntimeContext(flow.runtimeContextFor(service))
 	runner.WithFixture(flow.fixture)
 	runner.WithOverrides(flow.overrides[service.Name])
-	runner.WithOutputEnv(flow.outputEnvPath)
+	if flow.exportsRuntimeEnvironmentFor(service) {
+		runner.WithOutputEnv(flow.outputEnvPath)
+	}
 }
 
 func (flow *Flow) configureTestExecution(runner *Runner) error {
@@ -1567,6 +1580,22 @@ func (flow *Flow) WithRuntimeContext(runtimeContext string) {
 	flow.runtimeContext = runtimeContext
 }
 
+// WithTemporaryPorts switches this flow from deterministic named ports to
+// OS-probed ephemeral ports. It is intended for short-lived SDK-owned test
+// dependency stacks, where separate package processes have independent
+// RuntimeManagers and therefore cannot coordinate deterministic hash
+// collisions through one in-memory allocation table.
+func (flow *Flow) WithTemporaryPorts(enabled bool) {
+	flow.temporaryPorts = enabled
+	if enabled && flow.world != nil && flow.world.LocalNetworkManager != nil {
+		flow.world.LocalNetworkManager.WithTemporaryPorts()
+	}
+}
+
+func (flow *Flow) TemporaryPortsEnabled() bool {
+	return flow != nil && flow.temporaryPorts
+}
+
 func (flow *Flow) WithDockerStatus(status DockerStatus) {
 	flow.docker = status
 	flow.dockerProbed = true
@@ -1636,6 +1665,12 @@ func (flow *Flow) Origin() *resources.Service {
 }
 
 func (flow *Flow) WithOutputEnv(envPath string) {
+	envPath = strings.TrimSpace(envPath)
+	flow.outputEnvPath = envPath
+	flow.outputEnvService = ""
+	if envPath == "" {
+		return
+	}
 	// Delete the file first
 	if exists, err := shared.FileExists(context.Background(), envPath); err == nil && exists {
 		err := shared.DeleteFile(context.Background(), envPath)
@@ -1643,7 +1678,25 @@ func (flow *Flow) WithOutputEnv(envPath string) {
 			flow.output().Error("cannot delete file %s: %s", envPath, err)
 		}
 	}
-	flow.outputEnvPath = envPath
+}
+
+// WithOutputEnvService selects which one service contributes the flat
+// --output-env artifact. Without an explicit selection the origin service is
+// exported. Multiple service environments cannot be appended safely because
+// identity and endpoint keys overlap and the last runner would silently win.
+func (flow *Flow) WithOutputEnvService(unique string) {
+	flow.outputEnvService = strings.TrimSpace(unique)
+}
+
+func (flow *Flow) exportsRuntimeEnvironmentFor(service *resources.Service) bool {
+	if flow == nil || flow.outputEnvPath == "" || service == nil {
+		return false
+	}
+	target := flow.outputEnvService
+	if target == "" && flow.originService != nil {
+		target = resources.WithUnique(flow.originService).Unique()
+	}
+	return resources.WithUnique(service).Unique() == target
 }
 
 type Remote struct {

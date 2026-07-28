@@ -113,6 +113,7 @@ codefly run service api --service-path ./my-svc   # Override service path
 codefly run service api --fixture seed            # Use a named fixture
 codefly run service api --remote backend/db:staging  # Use remote dependency
 codefly run service api --output-env .env         # Write endpoint env vars to file
+codefly run service web --output-env .env --output-env-service backend/api
 codefly run service api --exclude-root            # Only run dependencies, not the service itself
 codefly run service api --exclude-dependency infra/temporal  # Omit optional dependency
 codefly run service api --silent backend/db       # Suppress log output for a dependency
@@ -131,7 +132,8 @@ codefly run service api --with-server             # Run with web companion UI
 | `--fixture` | Named fixture for test data |
 | `--remote` | Use a remote service instead of local (format: `module/service:environment`) |
 | `--silent` | Suppress output for named services |
-| `--output-env` | Write runtime environment variables to a file |
+| `--output-env` | Write the root service's runtime environment variables to an owner-only file |
+| `--output-env-service` | Export a specific running service (`module/service`) instead of the root |
 | `--load-only` | Stop after Load phase |
 | `--init-only` | Stop after Init phase |
 | `--with-server` | Start the web companion server |

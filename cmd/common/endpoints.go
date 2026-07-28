@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -94,6 +95,51 @@ func ResolveNative(ctx context.Context, workspace, module, service, namingScope 
 		// "host:port", so the probe target must be built from Hostname+Port.
 		HostPort: fmt.Sprintf("%s:%d", inst.Hostname, inst.Port),
 	}, nil
+}
+
+// ResolvePreferredNative returns the concrete endpoint recorded by a live,
+// scoped Codefly flow when its CLI server is available. Static deterministic
+// resolution remains the offline fallback. This matters for container
+// runtimes and persisted flow allocations, which may legitimately bind a
+// different host port than a fresh hash would predict.
+func ResolvePreferredNative(ctx context.Context, workspace, module, service, namingScope string, ep *resources.Endpoint) (ResolvedEndpoint, error) {
+	resolved, err := ResolveNative(ctx, workspace, module, service, namingScope, ep)
+	if err != nil || resolved.External || resolved.Unsupported {
+		return resolved, err
+	}
+	client, closeClient := DialDaemon(workspace, namingScope)
+	if client == nil {
+		return resolved, nil
+	}
+	defer closeClient()
+	address, err := ResolveAddress(ctx, client, module, service, ep.Name)
+	if err != nil {
+		return resolved, nil
+	}
+	running, err := resolvedEndpointFromAddress(address)
+	if err != nil {
+		return resolved, nil
+	}
+	return running, nil
+}
+
+func resolvedEndpointFromAddress(address string) (ResolvedEndpoint, error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return ResolvedEndpoint{}, fmt.Errorf("empty runtime endpoint address")
+	}
+	hostPort := address
+	if strings.Contains(address, "://") {
+		parsed, err := url.Parse(address)
+		if err != nil {
+			return ResolvedEndpoint{}, fmt.Errorf("parse runtime endpoint address: %w", err)
+		}
+		hostPort = parsed.Host
+	}
+	if _, _, err := net.SplitHostPort(hostPort); err != nil {
+		return ResolvedEndpoint{}, fmt.Errorf("runtime endpoint address has no concrete port: %q", address)
+	}
+	return ResolvedEndpoint{Address: address, HostPort: hostPort}, nil
 }
 
 // Reachable reports whether a TCP connection to hostPort succeeds within a

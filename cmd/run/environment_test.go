@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -29,10 +30,18 @@ func loadWorkspaceFixture(t *testing.T, content string) *resources.Workspace {
 	return workspace
 }
 
+func useRunEnvironment(t *testing.T, name string) {
+	t.Helper()
+	previous := environmentName
+	t.Cleanup(func() { environmentName = previous })
+	environmentName = name
+}
+
 // Regression for #81: `codefly run service` synthesized a fresh local
 // environment, so a workspace-declared local secret backend never reached
 // the flow and op:// references failed to resolve.
 func TestRunEnvironmentHonorsDeclaredLocal(t *testing.T) {
+	useRunEnvironment(t, orchestration.LocalEnvironmentName)
 	workspace := loadWorkspaceFixture(t, declaredLocalWorkspace)
 
 	env, err := runEnvironment(workspace)
@@ -44,6 +53,7 @@ func TestRunEnvironmentHonorsDeclaredLocal(t *testing.T) {
 }
 
 func TestRunEnvironmentUndeclaredLocalKeepsLegacyDefault(t *testing.T) {
+	useRunEnvironment(t, orchestration.LocalEnvironmentName)
 	workspace := loadWorkspaceFixture(t, "name: bare\nlayout: flat\n")
 
 	env, err := runEnvironment(workspace)
@@ -52,6 +62,7 @@ func TestRunEnvironmentUndeclaredLocalKeepsLegacyDefault(t *testing.T) {
 }
 
 func TestRunEnvironmentExplicitEmptyNamingScopeClearsDeclaredScope(t *testing.T) {
+	useRunEnvironment(t, orchestration.LocalEnvironmentName)
 	workspace := loadWorkspaceFixture(t, declaredLocalWorkspace)
 
 	prevScope, prevExplicit := namingScope, namingScopeExplicit
@@ -68,6 +79,7 @@ func TestRunEnvironmentExplicitEmptyNamingScopeClearsDeclaredScope(t *testing.T)
 // by `codefly run service` must carry the workspace-declared local
 // environment all the way into orchestration.
 func TestNewRunFlowCarriesDeclaredLocalEnvironment(t *testing.T) {
+	useRunEnvironment(t, orchestration.LocalEnvironmentName)
 	ctx := context.Background()
 	dir := t.TempDir()
 	files := map[string]string{
@@ -117,12 +129,17 @@ endpoints:
 
 	// An explicit runtime context skips the Docker probe so the flow builds
 	// hermetically; no agent is spawned before InitManagers.
-	prevContext := runtimeContext
-	t.Cleanup(func() { runtimeContext = prevContext })
+	prevContext, prevTemporaryPorts := runtimeContext, temporaryPorts
+	t.Cleanup(func() {
+		runtimeContext = prevContext
+		temporaryPorts = prevTemporaryPorts
+	})
 	runtimeContext = resources.RuntimeContextNative
+	temporaryPorts = true
 
 	flow, err := newRunFlow(ctx, workspace, module, service)
 	require.NoError(t, err)
+	require.True(t, flow.TemporaryPortsEnabled())
 
 	env := flow.Environment()
 	require.NotNil(t, env)
@@ -134,6 +151,7 @@ endpoints:
 }
 
 func TestRunEnvironmentNamingScopeOverrideStaysInvocationLocal(t *testing.T) {
+	useRunEnvironment(t, orchestration.LocalEnvironmentName)
 	workspace := loadWorkspaceFixture(t, declaredLocalWorkspace)
 
 	previous := namingScope
@@ -151,4 +169,32 @@ func TestRunEnvironmentNamingScopeOverrideStaysInvocationLocal(t *testing.T) {
 	fresh, err := runEnvironment(workspace)
 	require.NoError(t, err)
 	require.Equal(t, "from-yaml", fresh.NamingScope)
+}
+
+func TestRunEnvironmentSelectsDeclaredProductionProfile(t *testing.T) {
+	useRunEnvironment(t, "production")
+	workspace := loadWorkspaceFixture(t, `name: production-run
+layout: flat
+environments:
+    - name: local
+      naming-scope: dev
+    - name: production
+      naming-scope: stable
+      configuration-profile: local
+`)
+
+	env, err := runEnvironment(workspace)
+	require.NoError(t, err)
+	require.Equal(t, "production", env.Name)
+	require.Equal(t, "stable", env.NamingScope)
+	require.Equal(t, "local", env.ConfigurationProfile)
+}
+
+func TestRunEnvironmentRejectsUndeclaredNonLocalProfile(t *testing.T) {
+	useRunEnvironment(t, "production")
+	workspace := loadWorkspaceFixture(t, "name: local-only\nlayout: flat\n")
+
+	env, err := runEnvironment(workspace)
+	require.Nil(t, env)
+	require.ErrorContains(t, err, `does not declare environment "production"`)
 }

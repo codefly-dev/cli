@@ -11,6 +11,7 @@ var servicePath string
 
 // Output environment variables
 var outputEnv string
+var outputEnvService string
 
 // Remote services
 var remotes []string
@@ -24,6 +25,11 @@ var excludeDependencies []string
 // With fixture across the runtime
 var fixture string
 
+// Workspace environment selected for this run. The default preserves the
+// historical local-development behavior; production-shaped local runs opt in
+// explicitly with --env.
+var environmentName string
+
 // Per-service runtime overrides: each entry is "service:KEY=VAL".
 var setOverrides []string
 
@@ -35,6 +41,11 @@ var namingScope string
 // explicit empty value can clear a workspace-declared scope while an absent
 // flag keeps it.
 var namingScopeExplicit bool
+
+// temporaryPorts asks the runtime allocator for OS-probed ephemeral ports.
+// The Codefly SDK enables this for test-owned dependency stacks so independent
+// package test processes cannot collide through the deterministic port hash.
+var temporaryPorts bool
 
 // Runtime context
 var runtimeContext string

@@ -2,7 +2,6 @@ package ci
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -29,11 +28,11 @@ func runAuditService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return w.Wrap(err)
 	}
-	response, auditErr := auditWithTrivyDBRecovery(ctx, &builderv0.AuditRequest{
+	response, auditErr := coreaudit.AuditWithTrivyDatabaseRecovery(ctx, &builderv0.AuditRequest{
 		IncludeOutdated:        ciAuditIncludeOutdated,
 		IncludeDevDependencies: ciAuditIncludeDev,
 		FailOnVuln:             ciAuditFailOnVuln,
-	}, instance.Builder.Audit, coreaudit.ResetTrivyDatabases)
+	}, instance.Builder.Audit)
 	recordCIReportAudit(ctx, summarizeAuditResponse(response))
 	if auditErr != nil {
 		return w.Wrapf(auditErr, "audit service")
@@ -139,60 +138,6 @@ func auditHasHighSeverity(response *builderv0.AuditResponse) bool {
 		}
 	}
 	return false
-}
-
-type auditCall func(context.Context, *builderv0.AuditRequest) (*builderv0.AuditResponse, error)
-type resetTrivyDBCall func(context.Context) error
-
-// auditWithTrivyDBRecovery retries one audit in the same run after core resets
-// a database identified by a Trivy-specific corruption signature. If the retry
-// corrupts the database again, reset it once more so the poisoned cache is not
-// left behind for another attempt.
-func auditWithTrivyDBRecovery(ctx context.Context, request *builderv0.AuditRequest, audit auditCall, reset resetTrivyDBCall) (*builderv0.AuditResponse, error) {
-	response, auditErr := audit(ctx, request)
-	if auditErr == nil || !isCorruptTrivyDBError(auditErr) {
-		return response, auditErr
-	}
-	if resetErr := reset(ctx); resetErr != nil {
-		return response, fmt.Errorf("recover corrupt Trivy database: %w", errors.Join(
-			auditErr,
-			fmt.Errorf("reset Trivy databases: %w", resetErr),
-		))
-	}
-
-	retryResponse, retryErr := audit(ctx, request)
-	if retryErr == nil {
-		return retryResponse, nil
-	}
-	retryErr = fmt.Errorf("audit retry after resetting corrupt Trivy database: %w", retryErr)
-	if !isCorruptTrivyDBError(retryErr) {
-		return retryResponse, retryErr
-	}
-	if resetErr := reset(ctx); resetErr != nil {
-		return retryResponse, errors.Join(
-			retryErr,
-			fmt.Errorf("reset Trivy databases after failed retry: %w", resetErr),
-		)
-	}
-	return retryResponse, fmt.Errorf("Trivy database was reset again after a corrupt audit retry: %w", retryErr)
-}
-
-// isCorruptTrivyDBError reports whether an audit failure carries the signature
-// of a torn or unusable Trivy vulnerability DB — a bbolt page fault from a
-// truncated mmap, or a failed/rate-limited DB download that left a partial file.
-func isCorruptTrivyDBError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "failed to download vulnerability db") {
-		return true
-	}
-	if !strings.Contains(msg, "bbolt") || !strings.Contains(msg, "fastcheck") {
-		return false
-	}
-	return strings.Contains(msg, "github.com/aquasecurity/trivy-db/") ||
-		strings.Contains(msg, "github.com/aquasecurity/trivy-java-db/")
 }
 
 func safeCIArtifactName(value string) string {

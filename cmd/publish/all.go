@@ -33,7 +33,7 @@ released before the consumers that pin it.
 
 Safety — the whole run is atomic at the pre-flight boundary:
   1. EVERY repo is validated first (clean tree, on main, in sync with
-     origin, target tag free; agents also: host can build every loader
+     origin, target tag free; service agents also: host can build every loader
      platform and gh is available). If ANY repo fails, the run aborts
      before a single tag is pushed.
   2. Only once all repos pass does it publish, sequentially, stopping at
@@ -120,7 +120,7 @@ func runAll(c *cobra.Command, args []string) error {
 		// repos then failing at an agent. Skipped for --dry-run, which is a
 		// pure plan preview and never pushes (matching single publish).
 		if t.Manifest.Mode == ModeAgent && !dryRun {
-			if perr := checkAgentReleasePreconditions(); perr != nil {
+			if perr := checkAgentReleasePreconditionsForManifest(t.Manifest.Path); perr != nil {
 				failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), perr))
 				continue
 			}
@@ -158,9 +158,9 @@ func runAll(c *cobra.Command, args []string) error {
 		// loader-compatible release assets — both far slower than a bare
 		// tag push, so they get a generous timeout.
 		timeout := 120 * time.Second
-		var releaser *agentReleaser
+		var releaser releaseGate
 		if t.Manifest.Mode == ModeAgent {
-			releaser, err = newAgentReleaser(filepath.Dir(t.Manifest.Path), t.Dir)
+			releaser, err = newAgentReleaseGate(filepath.Dir(t.Manifest.Path), t.Dir)
 			if err != nil {
 				return fmt.Errorf("prepare agent release for %s: %w", relOrBase(root, t.Dir), err)
 			}
