@@ -20,8 +20,10 @@ import (
 type updateService interface {
 	Installation() cliupdate.Installation
 	Check(context.Context, releaseupdate.Channel, bool) (cliupdate.CheckResult, error)
-	StageAndApply(context.Context, cliupdate.CheckResult) (releaseupdate.ApplyResult, error)
+	StageAndApply(context.Context, *cliupdate.CheckResult) (releaseupdate.ApplyResult, error)
 }
+
+const developmentVersion = "development"
 
 type machineReadableUpdateError struct {
 	error
@@ -61,7 +63,7 @@ func newCheckUpdateCommand() *cobra.Command {
 			if jsonOutput {
 				return json.NewEncoder(command.OutOrStdout()).Encode(result)
 			}
-			renderCheckResult(command.OutOrStdout(), command.ErrOrStderr(), result)
+			renderCheckResult(command.OutOrStdout(), command.ErrOrStderr(), &result)
 			return nil
 		},
 	}
@@ -142,7 +144,7 @@ func runUpdate(
 		}
 	}
 
-	applyResult, err := service.StageAndApply(ctx, result)
+	applyResult, err := service.StageAndApply(ctx, &result)
 	if applyResult.Applied {
 		fmt.Fprintf(output, "Updated Codefly from %s to v%s.\n", displayVersion(result.Current), result.Latest)
 	}
@@ -150,16 +152,26 @@ func runUpdate(
 		if applyResult.Applied && errors.Is(err, releaseupdate.ErrApplyCleanup) {
 			fmt.Fprintln(errorOutput, "The verified update was installed, but cleanup of the previous executable needs attention.")
 		}
+		renderApplyRecovery(errorOutput, applyResult)
 		return err
 	}
 	return nil
 }
 
-func renderCheckResult(output, errorOutput io.Writer, result cliupdate.CheckResult) {
+func renderApplyRecovery(output io.Writer, result releaseupdate.ApplyResult) {
+	if result.PreviousPath != "" {
+		fmt.Fprintf(output, "Previous Codefly executable retained at %s\n", result.PreviousPath)
+	}
+	if result.CleanupPath != "" {
+		fmt.Fprintf(output, "Update transaction retained at %s\n", result.CleanupPath)
+	}
+}
+
+func renderCheckResult(output, errorOutput io.Writer, result *cliupdate.CheckResult) {
 	if result.Warning != "" {
 		fmt.Fprintln(errorOutput, result.Warning)
 	}
-	if result.Current == "development" {
+	if result.Current == developmentVersion {
 		fmt.Fprintf(output, "This is a development Codefly build. %s\n", result.Action)
 		return
 	}
@@ -186,6 +198,8 @@ func writeCheckError(command *cobra.Command, jsonOutput bool, err error) error {
 	if !jsonOutput {
 		return err
 	}
+	command.SilenceErrors = true
+	command.SilenceUsage = true
 	payload := struct {
 		SchemaVersion int    `json:"schema_version"`
 		Error         string `json:"error"`
@@ -200,7 +214,7 @@ func writeCheckError(command *cobra.Command, jsonOutput bool, err error) error {
 }
 
 func displayVersion(version string) string {
-	if version == "" || version == "development" || strings.HasPrefix(version, "v") {
+	if version == "" || version == developmentVersion || strings.HasPrefix(version, "v") {
 		return version
 	}
 	return "v" + version

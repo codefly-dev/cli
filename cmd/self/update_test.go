@@ -39,7 +39,7 @@ func (service *fakeUpdateService) Check(
 
 func (service *fakeUpdateService) StageAndApply(
 	_ context.Context,
-	_ cliupdate.CheckResult,
+	_ *cliupdate.CheckResult,
 ) (releaseupdate.ApplyResult, error) {
 	service.applied = true
 	return service.applyResult, service.applyErr
@@ -116,16 +116,48 @@ func TestRunUpdateReportsCommittedReplacementWithCleanupError(t *testing.T) {
 			Latest:    "1.3.0",
 			Available: true,
 		},
-		applyResult: releaseupdate.ApplyResult{Applied: true},
-		applyErr:    releaseupdate.ErrApplyCleanup,
+		applyResult: releaseupdate.ApplyResult{
+			Applied:      true,
+			PreviousPath: "/tmp/codefly-update/previous",
+			CleanupPath:  "/tmp/codefly-update",
+		},
+		applyErr: releaseupdate.ErrApplyCleanup,
 	}
 	var output, errorOutput bytes.Buffer
 	err := runUpdate(context.Background(), &output, &errorOutput, service, releaseupdate.ChannelStable, true, false)
 	if !errors.Is(err, releaseupdate.ErrApplyCleanup) {
 		t.Fatalf("error = %v, want ErrApplyCleanup", err)
 	}
-	if !strings.Contains(output.String(), "Updated Codefly") || !strings.Contains(errorOutput.String(), "was installed") {
+	if !strings.Contains(output.String(), "Updated Codefly") ||
+		!strings.Contains(errorOutput.String(), "was installed") ||
+		!strings.Contains(errorOutput.String(), service.applyResult.PreviousPath) ||
+		!strings.Contains(errorOutput.String(), service.applyResult.CleanupPath) {
 		t.Fatalf("stdout = %q, stderr = %q", output.String(), errorOutput.String())
+	}
+}
+
+func TestRunUpdateReportsRetainedPreviousExecutableAfterRollbackFailure(t *testing.T) {
+	service := &fakeUpdateService{
+		installation: cliupdate.Installation{Kind: cliupdate.InstallKindDirect},
+		result: cliupdate.CheckResult{
+			Current:   "1.2.3",
+			Latest:    "1.3.0",
+			Available: true,
+		},
+		applyResult: releaseupdate.ApplyResult{
+			PreviousPath: "/tmp/codefly-update/previous",
+			CleanupPath:  "/tmp/codefly-update",
+		},
+		applyErr: errors.New("install replacement; restore failed"),
+	}
+	var errorOutput bytes.Buffer
+	err := runUpdate(context.Background(), &bytes.Buffer{}, &errorOutput, service, releaseupdate.ChannelStable, true, false)
+	if !errors.Is(err, service.applyErr) {
+		t.Fatalf("error = %v, want %v", err, service.applyErr)
+	}
+	if !strings.Contains(errorOutput.String(), service.applyResult.PreviousPath) ||
+		!strings.Contains(errorOutput.String(), service.applyResult.CleanupPath) {
+		t.Fatalf("stderr = %q", errorOutput.String())
 	}
 }
 
@@ -159,13 +191,16 @@ func TestCheckUpdateCommandDevelopmentJSON(t *testing.T) {
 
 func TestCheckUpdateCommandJSONErrorIsMachineReadable(t *testing.T) {
 	command := newCheckUpdateCommand()
-	var output bytes.Buffer
+	var output, errorOutput bytes.Buffer
 	command.SetOut(&output)
-	command.SetErr(&bytes.Buffer{})
+	command.SetErr(&errorOutput)
 	command.SetArgs([]string{"--channel", "nightly", "--json"})
 	err := command.Execute()
 	if err == nil {
 		t.Fatal("expected unsupported channel error")
+	}
+	if errorOutput.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty machine-readable output", errorOutput.String())
 	}
 	var marker interface{ MachineReadable() bool }
 	if !errors.As(err, &marker) || !marker.MachineReadable() {

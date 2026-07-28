@@ -160,7 +160,7 @@ func (service *Service) Check(ctx context.Context, channel releaseupdate.Channel
 	return result, nil
 }
 
-func (service *Service) StageAndApply(ctx context.Context, result CheckResult) (releaseupdate.ApplyResult, error) {
+func (service *Service) StageAndApply(ctx context.Context, result *CheckResult) (releaseupdate.ApplyResult, error) {
 	if service.installation.Kind != InstallKindDirect {
 		return releaseupdate.ApplyResult{}, releaseupdate.ErrInstallNotOwned
 	}
@@ -182,15 +182,11 @@ func (service *Service) StageAndApply(ctx context.Context, result CheckResult) (
 	return staged.Apply(ctx)
 }
 
-func (service *Service) BeginAutomaticCheck(now time.Time, cadence time.Duration) (bool, error) {
+func (service *Service) BeginAutomaticCheck(now time.Time, cadence time.Duration) (*AutomaticCheck, error) {
 	return service.state.BeginAutomaticCheck(now, cadence)
 }
 
-func (service *Service) MarkNotified(version string) (bool, error) {
-	return service.state.MarkNotified(version)
-}
-
-func (result CheckResult) Notice() string {
+func (result *CheckResult) Notice() string {
 	if !result.Available {
 		return ""
 	}

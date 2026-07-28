@@ -1,6 +1,7 @@
 package cliupdate
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,6 +68,26 @@ func TestDetectInstallationRejectsOwnershipOverride(t *testing.T) {
 	path := executableFile(t, filepath.Join(t.TempDir(), "codefly"))
 	if _, err := detectInstallation(path, releasedBuild, "direct", false); err == nil {
 		t.Fatal("expected direct ownership override to be rejected")
+	}
+}
+
+func TestRunningInContainerRecognizesRuntimeMarkers(t *testing.T) {
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		t.Run(marker, func(t *testing.T) {
+			stat := func(path string) error {
+				if path == marker {
+					return nil
+				}
+				return os.ErrNotExist
+			}
+			if !runningInContainerWith(stat, func(string) string { return "" }) {
+				t.Fatalf("container marker %q was ignored", marker)
+			}
+		})
+	}
+
+	if runningInContainerWith(func(string) error { return errors.New("unavailable") }, func(string) string { return "" }) {
+		t.Fatal("filesystem errors were treated as container markers")
 	}
 }
 

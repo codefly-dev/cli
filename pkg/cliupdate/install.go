@@ -159,8 +159,17 @@ func inCLICheckout(executable string) bool {
 }
 
 func runningInContainer() bool {
-	if _, err := os.Stat("/.dockerenv"); err == nil {
-		return true
+	return runningInContainerWith(func(path string) error {
+		_, err := os.Stat(path)
+		return err
+	}, os.Getenv)
+}
+
+func runningInContainerWith(stat func(string) error, getenv func(string) string) bool {
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if stat(marker) == nil {
+			return true
+		}
 	}
-	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+	return getenv("KUBERNETES_SERVICE_HOST") != ""
 }

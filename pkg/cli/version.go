@@ -57,22 +57,23 @@ func checkForCLIForUpdate() {
 	if err != nil {
 		return
 	}
-	due, err := service.BeginAutomaticCheck(time.Now(), 24*time.Hour)
-	if err != nil || !due {
+	check, err := service.BeginAutomaticCheck(time.Now(), 24*time.Hour)
+	if err != nil || check == nil {
 		return
 	}
+	defer func() { _ = check.Cancel() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	result, err := service.Check(ctx, releaseupdate.ChannelStable, false)
-	if err != nil || !result.Available {
-		return
+	notifiedVersion := ""
+	if err == nil && result.Available && check.NotificationDue(result.Latest) {
+		emitUpdateNotice("%s", result.Notice())
+		notifiedVersion = result.Latest
 	}
-	notify, err := service.MarkNotified(result.Latest)
-	if err != nil || !notify {
-		return
-	}
-	emitUpdateNotice("%s", result.Notice())
+	completeCtx, completeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer completeCancel()
+	_ = check.Complete(completeCtx, time.Now(), notifiedVersion)
 }
 
 func GetCurrentVersion() (string, error) {

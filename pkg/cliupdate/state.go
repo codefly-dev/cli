@@ -7,18 +7,23 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/codefly-dev/core/releaseupdate"
 	"github.com/gofrs/flock"
 )
 
-const stateSchemaVersion = 1
+const (
+	stateSchemaVersion = 1
+	lockRetryDelay     = 10 * time.Millisecond
+)
 
 type StateStore struct {
-	directory string
-	statePath string
-	lockPath  string
+	directory         string
+	statePath         string
+	lockPath          string
+	automaticLockPath string
 }
 
 type persistedState struct {
@@ -32,11 +37,20 @@ type automaticState struct {
 	LastNotified string    `json:"last_notified,omitempty"`
 }
 
+type AutomaticCheck struct {
+	store        *StateStore
+	lock         *flock.Flock
+	lastNotified string
+	mutex        sync.Mutex
+	closed       bool
+}
+
 func NewStateStore(directory string) *StateStore {
 	return &StateStore{
-		directory: directory,
-		statePath: filepath.Join(directory, "state.json"),
-		lockPath:  filepath.Join(directory, "state.lock"),
+		directory:         directory,
+		statePath:         filepath.Join(directory, "state.json"),
+		lockPath:          filepath.Join(directory, "state.lock"),
+		automaticLockPath: filepath.Join(directory, "automatic-check.lock"),
 	}
 }
 
@@ -44,7 +58,7 @@ func (store *StateStore) Load(ctx context.Context, key string) (entry releaseupd
 	if err := ctx.Err(); err != nil {
 		return releaseupdate.CacheEntry{}, false, err
 	}
-	result = store.withLock(false, func() error {
+	result = store.withLock(ctx, false, func() error {
 		state, err := store.read()
 		if err != nil {
 			return err
@@ -55,11 +69,11 @@ func (store *StateStore) Load(ctx context.Context, key string) (entry releaseupd
 	return entry, found, result
 }
 
-func (store *StateStore) Save(ctx context.Context, key string, entry releaseupdate.CacheEntry) error {
+func (store *StateStore) Save(ctx context.Context, key string, entry releaseupdate.CacheEntry) error { //nolint:gocritic // releaseupdate.Store fixes the value signature.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return store.withLock(true, func() error {
+	return store.withLock(ctx, true, func() error {
 		state, err := store.read()
 		if err != nil {
 			return err
@@ -69,71 +83,108 @@ func (store *StateStore) Save(ctx context.Context, key string, entry releaseupda
 	})
 }
 
-func (store *StateStore) BeginAutomaticCheck(now time.Time, cadence time.Duration) (bool, error) {
+func (store *StateStore) BeginAutomaticCheck(now time.Time, cadence time.Duration) (*AutomaticCheck, error) {
 	if cadence <= 0 {
-		return false, errors.New("automatic update cadence must be positive")
+		return nil, errors.New("automatic update cadence must be positive")
 	}
-	return store.tryMutate(func(state *persistedState) bool {
-		now = now.UTC()
-		last := state.Automatic.LastAttempt
-		if !last.IsZero() && !last.After(now) && now.Sub(last) < cadence {
-			return false
-		}
-		state.Automatic.LastAttempt = now
-		return true
-	})
-}
-
-func (store *StateStore) MarkNotified(version string) (bool, error) {
-	if version == "" {
-		return false, errors.New("notification version is required")
-	}
-	return store.tryMutate(func(state *persistedState) bool {
-		if state.Automatic.LastNotified == version {
-			return false
-		}
-		state.Automatic.LastNotified = version
-		return true
-	})
-}
-
-func (store *StateStore) tryMutate(mutate func(*persistedState) bool) (bool, error) {
 	if err := store.prepare(); err != nil {
-		return false, err
+		return nil, err
 	}
-	lock := flock.New(store.lockPath, flock.SetPermissions(0o600))
-	locked, err := lock.TryLock()
+	automaticLock := flock.New(store.automaticLockPath, flock.SetPermissions(0o600))
+	locked, err := automaticLock.TryLock()
 	if err != nil || !locked {
-		return false, err
+		return nil, err
 	}
-	defer func() { _ = lock.Unlock() }()
 
+	stateLock := flock.New(store.lockPath, flock.SetPermissions(0o600))
+	locked, err = stateLock.TryRLock()
+	if err != nil || !locked {
+		_ = automaticLock.Unlock()
+		return nil, err
+	}
 	state, err := store.read()
+	unlockErr := stateLock.Unlock()
 	if err != nil {
-		return false, err
+		_ = automaticLock.Unlock()
+		return nil, errors.Join(err, unlockErr)
 	}
-	if !mutate(&state) {
-		return false, nil
+	if unlockErr != nil {
+		_ = automaticLock.Unlock()
+		return nil, unlockErr
 	}
-	if err := store.write(state); err != nil {
-		return false, err
+
+	now = now.UTC()
+	last := state.Automatic.LastAttempt
+	if !last.IsZero() && !last.After(now) && now.Sub(last) < cadence {
+		return nil, automaticLock.Unlock()
 	}
-	return true, nil
+	return &AutomaticCheck{
+		store:        store,
+		lock:         automaticLock,
+		lastNotified: state.Automatic.LastNotified,
+	}, nil
 }
 
-func (store *StateStore) withLock(exclusive bool, action func() error) error {
+func (check *AutomaticCheck) NotificationDue(version string) bool {
+	return version != "" && version != check.lastNotified
+}
+
+func (check *AutomaticCheck) Complete(ctx context.Context, completedAt time.Time, notifiedVersion string) error {
+	check.mutex.Lock()
+	defer check.mutex.Unlock()
+	if check.closed {
+		return errors.New("automatic update check is already closed")
+	}
+	check.closed = true
+
+	var result error
+	if completedAt.IsZero() {
+		result = errors.New("automatic update completion time is required")
+	} else {
+		result = check.store.withLock(ctx, true, func() error {
+			state, err := check.store.read()
+			if err != nil {
+				return err
+			}
+			state.Automatic.LastAttempt = completedAt.UTC()
+			if notifiedVersion != "" {
+				state.Automatic.LastNotified = notifiedVersion
+			}
+			return check.store.write(state)
+		})
+	}
+	return errors.Join(result, check.lock.Unlock())
+}
+
+func (check *AutomaticCheck) Cancel() error {
+	check.mutex.Lock()
+	defer check.mutex.Unlock()
+	if check.closed {
+		return nil
+	}
+	check.closed = true
+	return check.lock.Unlock()
+}
+
+func (store *StateStore) withLock(ctx context.Context, exclusive bool, action func() error) error {
 	if err := store.prepare(); err != nil {
 		return err
 	}
 	lock := flock.New(store.lockPath, flock.SetPermissions(0o600))
-	var err error
+	var (
+		locked bool
+		err    error
+	)
 	if exclusive {
-		err = lock.Lock()
+		locked, err = lock.TryLockContext(ctx, lockRetryDelay)
 	} else {
-		err = lock.RLock()
+		locked, err = lock.TryRLockContext(ctx, lockRetryDelay)
 	}
 	if err != nil {
 		return err
+	}
+	if !locked {
+		return ctx.Err()
 	}
 	defer func() { _ = lock.Unlock() }()
 	return action()

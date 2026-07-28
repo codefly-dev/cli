@@ -11,7 +11,9 @@ semantic tag publishes four archives:
 The same release contains `checksums.txt`, its publisher signature
 `checksums.txt.sig`, one Syft SBOM per archive, and GitHub artifact
 attestations. The binary reports the tag-derived semantic version, commit, and
-UTC build date with `codefly version --json`.
+UTC build date with `codefly version --json`. Published macOS binaries are
+Developer ID signed and notarized before they enter either release archives or
+the Homebrew cask.
 
 ## Install
 
