@@ -82,6 +82,13 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	var deploymentManager *deployments.LocalApplyManager
+	if directApplyRequested() {
+		deploymentManager, err = deployments.NewLocalApplyManager(ctx, workspace, env)
+		if err != nil {
+			return nil, w.Wrap(err)
+		}
+	}
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
 	if err != nil {
@@ -100,17 +107,8 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 		return nil, w.Wrap(err)
 	}
 
-	// Apply mode (default): the LocalApplyManager runs `kustomize build
-	// | kubectl apply` after each agent renders its manifests, plus
-	// imports built images into k3d when the env declares it.
-	//
-	// Render-only mode (--render-only): skip the manager wiring. Agents
-	// still write the rendered kustomize tree to disk via KustomizeDeploy
-	// (in builder_deploy.go), but no kubectl apply runs. ArgoCD or a
-	// separate gitops sync picks the rendered tree up from the workspace
-	// once it's committed.
-	if !renderOnly {
-		flow.WithDeploymentManager(deployments.NewLocalApplyManager(ctx, workspace, env))
+	if deploymentManager != nil {
+		flow.WithDeploymentManager(deploymentManager)
 	}
 	return flow, nil
 }
@@ -135,9 +133,13 @@ var envInput string
 var dryRun bool
 var renderOnly bool
 
+func directApplyRequested() bool {
+	return !renderOnly && !dryRun
+}
+
 func init() {
 	ServiceCmd.Flags().StringVar(&envInput, "env", "local", "Environment to deploy the service")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
-	ServiceCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Dry run the deployment")
+	ServiceCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Render the deployment without applying it")
 	ServiceCmd.Flags().BoolVar(&renderOnly, "render-only", false, "Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.")
 }

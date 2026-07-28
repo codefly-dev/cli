@@ -179,9 +179,20 @@ type DeployRequest struct {
 
 // DeployResult is the outcome of a deploy.
 type DeployResult struct {
-	Succeeded bool
-	Rendered  string // manifests when DryRun/render-only
-	Output    string
+	Succeeded          bool
+	Rendered           string // manifests when DryRun/render-only
+	RenderedTreeDigest string
+	Target             *DeployTarget
+	Output             string
+}
+
+type DeployTarget struct {
+	Kind       string
+	Kubeconfig string
+	Context    string
+	Cluster    string
+	APIServer  string
+	K3dCluster string
 }
 
 // --- Source ---
