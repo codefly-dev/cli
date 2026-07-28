@@ -26,6 +26,20 @@ type releaseWorkflowStep struct {
 	Run  string            `yaml:"run"`
 }
 
+func TestReleaseCertificateIsTracked(t *testing.T) {
+	command := exec.Command(
+		"git",
+		"-C",
+		repositoryPath("."),
+		"ls-files",
+		"--error-unmatch",
+		"pkg/cliupdate/release-signing-cert.pem",
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("release certificate is absent from clean checkouts: %v\n%s", err, output)
+	}
+}
+
 func TestReleaseWorkflowKeepsPostPublicationWorkRerunnable(t *testing.T) {
 	var workflow releaseWorkflow
 	readRepositoryYAML(t, ".github/workflows/release.yaml", &workflow)
