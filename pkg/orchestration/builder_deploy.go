@@ -93,10 +93,6 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for deploy")
 	}
 
-	// Handle
-	if dryRun {
-		return outputProperty, nil
-	}
 	if resp.Deployment == nil {
 		return outputProperty, nil
 	}

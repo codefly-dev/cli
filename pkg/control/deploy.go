@@ -19,11 +19,6 @@ func (p *planeImpl) Deploy(ctx context.Context, req DeployRequest) (DeployResult
 	return p.runDeploy(ctx, req)
 }
 
-// runDeploy builds a DeployMode flow and drives it, mirroring `codefly deploy
-// service`. It constructs the flow inline (rather than via buildFlow) because it
-// needs the workspace + environment to wire the apply manager. DryRun renders
-// manifests without applying (no deployment manager); otherwise the local apply
-// manager runs kustomize build | kubectl apply.
 func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployResult, error) {
 	if req.Module != "" && req.Service == "" {
 		return DeployResult{}, fmt.Errorf("module-wide deploy is not yet supported via the control plane; specify a service")
@@ -40,9 +35,20 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 	if err != nil {
 		return DeployResult{}, fmt.Errorf("select environment %q: %w", envName, err)
 	}
-	// Set unconditionally to the requested value so a prior deploy's dry-run
-	// toggle (a package-level global in orchestration) never leaks into this one.
-	orchestration.SetDryRun(req.DryRun)
+	var deploymentManager deployments.Manager
+	var evidenceProvider deployments.EvidenceProvider
+	if req.DryRun {
+		manager := deployments.NewRenderManager(ws, env)
+		deploymentManager = manager
+		evidenceProvider = manager
+	} else {
+		manager, managerErr := deployments.NewLocalApplyManager(ctx, ws, env)
+		if managerErr != nil {
+			return DeployResult{}, managerErr
+		}
+		deploymentManager = manager
+		evidenceProvider = manager
+	}
 
 	flow, err := orchestration.NewFlow(ctx, ws, module, service, env, orchestration.DeployMode)
 	if err != nil {
@@ -54,15 +60,45 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 	if err := flow.Load(ctx); err != nil {
 		return DeployResult{}, fmt.Errorf("load flow: %w", err)
 	}
-	// Wire the apply manager AFTER Load (matching the deploy command). Skipped on
-	// dry-run so agents only render manifests to disk.
-	if !req.DryRun {
-		flow.WithDeploymentManager(deployments.NewLocalApplyManager(ctx, ws, env))
-	}
+	flow.WithDeploymentManager(deploymentManager)
 	defer stopFlow(flow)
 
 	if err := flow.Deploy(ctx); err != nil {
-		return DeployResult{Succeeded: false}, fmt.Errorf("deploy %s: %w", req.Service, err)
+		result, _ := deployResult(false, evidenceProvider)
+		return result, fmt.Errorf("deploy %s: %w", req.Service, err)
 	}
-	return DeployResult{Succeeded: true}, nil
+	result, err := deployResult(true, evidenceProvider)
+	if err != nil {
+		return result, fmt.Errorf("collect deployment evidence for %s: %w", req.Service, err)
+	}
+	return result, nil
+}
+
+func deployResult(succeeded bool, provider deployments.EvidenceProvider) (DeployResult, error) {
+	result := DeployResult{Succeeded: succeeded}
+	evidence := provider.Evidence()
+	if evidence.Target != nil {
+		target := evidence.Target
+		result.Target = &DeployTarget{
+			Kind:            target.Kind,
+			Kubeconfig:      target.Kubeconfig,
+			Context:         target.Context,
+			Cluster:         target.Cluster,
+			APIServer:       target.APIServer,
+			K3dCluster:      target.K3dCluster,
+			ClusterIdentity: target.ClusterIdentity,
+		}
+	}
+	for _, tree := range evidence.RenderedTrees {
+		result.RenderedTrees = append(result.RenderedTrees, RenderedTree{
+			Module:    tree.Module,
+			Service:   tree.Service,
+			Digest:    tree.Digest,
+			Manifests: tree.Manifests,
+		})
+	}
+	if len(result.RenderedTrees) == 0 {
+		return result, fmt.Errorf("rendered-tree evidence is unavailable")
+	}
+	return result, nil
 }

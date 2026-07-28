@@ -1,12 +1,9 @@
 package deploy
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"path"
-	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -23,13 +20,14 @@ import (
 // module-level kustomize layer (namespace, AppProject, Applications,
 // shared Ingress, etc.) at module/deployment/kustomize/overlays/<env>.
 //
-// Two modes via --render-only:
+// Apply mode is the default. Both --render-only and --dry-run are
+// no-mutation modes:
 //
 //	(default)  apply mode    — agents render + LocalApplyManager kubectl-applies
 //	            each service, then the module-level kustomize is applied via
 //	            kubectl. Used for local-k3d direct-deploy.
 //
-//	--render-only            — agents render but skip apply. Module-level
+//	--render-only/--dry-run  — agents render but skip apply. Module-level
 //	            kustomize is NOT applied either (it's static YAML committed
 //	            to git). Used for the gitops/ArgoCD flow where ArgoCD syncs
 //	            the rendered tree from git.
@@ -57,9 +55,21 @@ var ModuleCmd = &cobra.Command{
 			return err
 		}
 
+		var deploymentManager deployments.Manager
+		var localApplyManager *deployments.LocalApplyManager
+		if directApplyRequested() {
+			localApplyManager, err = deployments.NewLocalApplyManager(ctx, workspace, env)
+			if err != nil {
+				return err
+			}
+			deploymentManager = localApplyManager
+		} else {
+			deploymentManager = deployments.NewRenderManager(workspace, env)
+		}
+
 		cli.Header(1, "Deploying module %s to env %s", module.Name, env.Name)
-		if renderOnly {
-			cli.Header(2, "render-only mode — manifests written to disk, no kubectl apply")
+		if !directApplyRequested() {
+			cli.Header(2, "no-mutation mode — manifests written to disk, no kubectl apply")
 		}
 
 		// Phase 1: per-service flows. Each service is its own Flow with
@@ -69,17 +79,17 @@ var ModuleCmd = &cobra.Command{
 		// than a clean failure to investigate.
 		for _, ref := range module.ServiceReferences {
 			cli.Header(2, "Deploying service %s", ref.Name)
-			if err := deployOneService(ctx, workspace, module, ref.Name, env); err != nil {
+			if err := deployOneService(ctx, workspace, module, ref.Name, env, deploymentManager); err != nil {
 				return fmt.Errorf("cannot deploy service %s: %w", ref.Name, err)
 			}
 		}
 
-		// Phase 2: module-level kustomize. Skipped in render-only mode
+		// Phase 2: module-level kustomize. Skipped in no-mutation modes
 		// (the module-level YAML is static; nothing to render — it's
 		// committed already). Skipped silently when the module hasn't
 		// scaffolded a deployment/ folder yet.
-		if !renderOnly {
-			if err := applyModuleKustomize(ctx, module, env); err != nil {
+		if directApplyRequested() {
+			if err := applyModuleKustomize(ctx, module, env, localApplyManager); err != nil {
 				return fmt.Errorf("cannot apply module-level kustomize: %w", err)
 			}
 		}
@@ -92,15 +102,13 @@ var ModuleCmd = &cobra.Command{
 // deployOneService runs a one-shot deploy Flow for a single service.
 // Mirrors initDeployService in service.go but inline-built so the
 // module loop can iterate without goroutine indirection.
-func deployOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment) error {
+func deployOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment, deploymentManager deployments.Manager) error {
 	w := wool.Get(ctx).In("deployModule.deployOneService", wool.NameField(name))
 
 	service, err := module.LoadServiceFromName(ctx, name)
 	if err != nil {
 		return w.Wrapf(err, "cannot load service")
 	}
-
-	orchestration.SetDryRun(dryRun)
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
 	if err != nil {
@@ -123,9 +131,7 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 	if err := flow.Load(ctx); err != nil {
 		return w.Wrap(err)
 	}
-	if !renderOnly {
-		flow.WithDeploymentManager(deployments.NewLocalApplyManager(ctx, workspace, env))
-	}
+	flow.WithDeploymentManager(deploymentManager)
 
 	if err := flow.Deploy(ctx); err != nil {
 		return w.Wrapf(err, "deploy failed")
@@ -139,7 +145,7 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 // for the module-level overlay matching the env. Silently no-ops when
 // the module hasn't scaffolded module/deployment/kustomize/ yet —
 // services-only modules are valid.
-func applyModuleKustomize(ctx context.Context, module *resources.Module, env *resources.Environment) error {
+func applyModuleKustomize(ctx context.Context, module *resources.Module, env *resources.Environment, manager *deployments.LocalApplyManager) error {
 	w := wool.Get(ctx).In("applyModuleKustomize", wool.NameField(module.Name))
 
 	dir := path.Join(module.Dir(), "deployment", "kustomize", "overlays", env.Name)
@@ -154,51 +160,7 @@ func applyModuleKustomize(ctx context.Context, module *resources.Module, env *re
 
 	cli.Header(2, "Applying module-level kustomize at %s", dir)
 
-	// Render with kustomize. Fails loudly if the overlay is malformed —
-	// better here than mid-apply with a half-applied state.
-	build := exec.CommandContext(ctx, "kustomize", "build", dir)
-	var stdout, stderr bytes.Buffer
-	build.Stdout = &stdout
-	build.Stderr = &stderr
-	if err := build.Run(); err != nil {
-		return w.Wrapf(err, "kustomize build failed: %s", stderr.String())
-	}
-
-	// Resolve kubeconfig the same way the per-service path does, so a
-	// single workspace.codefly.yaml env declaration drives both layers.
-	configPath, err := deployments.GetK8sConfig(ctx, env)
-	if err != nil {
-		return w.Wrapf(err, "cannot get k8s config")
-	}
-
-	// Apply via kubectl. Splitting on `---` keeps the per-resource log
-	// shape consistent with how cli/pkg/deployments/kubernetes.go
-	// applies per-service manifests.
-	objs := strings.Split(stdout.String(), "---")
-	for _, obj := range objs {
-		if strings.TrimSpace(obj) == "" {
-			continue
-		}
-		args := []string{"--kubeconfig", configPath}
-		if env.Cluster != nil && env.Cluster.Context != "" {
-			args = append(args, "--context", env.Cluster.Context)
-		}
-		args = append(args, "apply", "-f", "-")
-
-		apply := exec.CommandContext(ctx, "kubectl", args...)
-		apply.Stdin = strings.NewReader(obj)
-		var out, errOut bytes.Buffer
-		apply.Stdout = &out
-		apply.Stderr = &errOut
-		if err := apply.Run(); err != nil {
-			return w.Wrapf(err, "kubectl apply failed: %s", errOut.String())
-		}
-		line := strings.TrimSpace(out.String())
-		if line != "" && !strings.Contains(line, "unchanged") {
-			cli.Info("%s", line)
-		}
-	}
-	return nil
+	return manager.ApplyModuleKustomize(ctx, module, dir)
 }
 
 func init() {
@@ -207,6 +169,6 @@ func init() {
 	// Go variable being the receiver for two different commands' flags
 	// — each command has its own pflag set.
 	ModuleCmd.Flags().StringVar(&envInput, "env", "local", "Environment to deploy the module")
-	ModuleCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Dry run the deployment")
+	ModuleCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Render the deployment without applying it")
 	ModuleCmd.Flags().BoolVar(&renderOnly, "render-only", false, "Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.")
 }

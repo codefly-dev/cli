@@ -62,3 +62,70 @@ endpoints:
 	require.Contains(t, err.Error(), `"production"`)
 	require.Contains(t, err.Error(), "deploy-env")
 }
+
+func TestDirectApplyRequestedTreatsDryRunAndRenderOnlyAsNoMutation(t *testing.T) {
+	previousDryRun := dryRun
+	previousRenderOnly := renderOnly
+	t.Cleanup(func() {
+		dryRun = previousDryRun
+		renderOnly = previousRenderOnly
+	})
+
+	for _, test := range []struct {
+		name       string
+		dryRun     bool
+		renderOnly bool
+		want       bool
+	}{
+		{name: "default", want: true},
+		{name: "dry run", dryRun: true},
+		{name: "render only", renderOnly: true},
+		{name: "both", dryRun: true, renderOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dryRun = test.dryRun
+			renderOnly = test.renderOnly
+			require.Equal(t, test.want, directApplyRequested())
+		})
+	}
+}
+
+func TestInitDeployServiceRejectsRemoteDirectApplyBeforeStartingFlow(t *testing.T) {
+	previousEnv := envInput
+	previousDryRun := dryRun
+	previousRenderOnly := renderOnly
+	t.Cleanup(func() {
+		envInput = previousEnv
+		dryRun = previousDryRun
+		renderOnly = previousRenderOnly
+	})
+	envInput = "production"
+	dryRun = false
+	renderOnly = false
+	workspace := &resources.Workspace{
+		Name: "deploy-env",
+		Environments: []*resources.Environment{{
+			Name: "production",
+			Cluster: &resources.EnvironmentCluster{
+				Kind:       "eks",
+				Kubeconfig: "/does/not/exist",
+				Context:    "k3d-production",
+			},
+		}},
+	}
+	service := &resources.Service{Name: "gateway"}
+	service.WithModule("web")
+
+	flow, err := initDeployService(
+		context.Background(),
+		workspace,
+		&resources.Module{Name: "web"},
+		service,
+		true,
+	)
+
+	require.Nil(t, flow)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exact local k3d target")
+	require.Contains(t, err.Error(), "--render-only")
+}
