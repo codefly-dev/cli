@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/codefly-dev/cli/pkg/gitops"
 )
 
 // This file lifts the MutationAuthority group. It is the transport-agnostic gate
@@ -95,6 +97,8 @@ func (p *planeImpl) ApplyPreparedMutation(ctx context.Context, token PreparedMut
 type mutationExecutor interface {
 	ApplyEdit(context.Context, Edit) error
 	runDeploy(context.Context, DeployRequest) (DeployResult, error)
+	publishGitOps(context.Context, gitops.PublishMutation) (gitops.PublishResult, error)
+	rollbackGitOps(context.Context, gitops.RollbackMutation) (gitops.PublishResult, error)
 }
 
 func executeMutation(ctx context.Context, executor mutationExecutor, m Mutation) (MutationResult, error) {
@@ -112,6 +116,20 @@ func executeMutation(ctx context.Context, executor mutationExecutor, m Mutation)
 		}
 		result, err := executor.runDeploy(ctx, req)
 		return MutationResult{Deploy: &result}, err
+	case MutationGitOpsPublish:
+		req, ok := m.Payload.(gitops.PublishMutation)
+		if !ok {
+			return MutationResult{}, fmt.Errorf("gitops publish mutation payload must be a gitops.PublishMutation, got %T", m.Payload)
+		}
+		result, err := executor.publishGitOps(ctx, req)
+		return MutationResult{GitOpsPublish: &result}, err
+	case MutationGitOpsRollback:
+		req, ok := m.Payload.(gitops.RollbackMutation)
+		if !ok {
+			return MutationResult{}, fmt.Errorf("gitops rollback mutation payload must be a gitops.RollbackMutation, got %T", m.Payload)
+		}
+		result, err := executor.rollbackGitOps(ctx, req)
+		return MutationResult{GitOpsPublish: &result}, err
 	default:
 		return MutationResult{}, fmt.Errorf("unsupported mutation kind %q", m.Kind)
 	}
@@ -128,6 +146,14 @@ func validateMutation(m Mutation) error {
 	case MutationDeploy:
 		if _, ok := m.Payload.(DeployRequest); !ok {
 			return fmt.Errorf("deploy mutation payload must be a DeployRequest, got %T", m.Payload)
+		}
+	case MutationGitOpsPublish:
+		if _, ok := m.Payload.(gitops.PublishMutation); !ok {
+			return fmt.Errorf("gitops publish mutation payload must be a gitops.PublishMutation, got %T", m.Payload)
+		}
+	case MutationGitOpsRollback:
+		if _, ok := m.Payload.(gitops.RollbackMutation); !ok {
+			return fmt.Errorf("gitops rollback mutation payload must be a gitops.RollbackMutation, got %T", m.Payload)
 		}
 	default:
 		return fmt.Errorf("unsupported mutation kind %q", m.Kind)

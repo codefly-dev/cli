@@ -1,5 +1,7 @@
 package control
 
+import "github.com/codefly-dev/cli/pkg/gitops"
+
 // This file defines transport-neutral workspace-orchestration types. Typed
 // per-service leaf behavior uses the existing Codefly agent protobufs in
 // pkg/engine; these Go types cover the higher-level operations that do not
@@ -200,6 +202,13 @@ type DeployTarget struct {
 	APIServer       string
 	K3dCluster      string
 	ClusterIdentity string
+}
+
+type GitOpsRenderRequest struct {
+	Module     string
+	Service    string
+	Env        string
+	AppProject string
 }
 
 // --- Source ---
@@ -440,8 +449,10 @@ type AuthorityConfig struct {
 type MutationKind string
 
 const (
-	MutationFile   MutationKind = "file"
-	MutationDeploy MutationKind = "deploy"
+	MutationFile           MutationKind = "file"
+	MutationDeploy         MutationKind = "deploy"
+	MutationGitOpsPublish  MutationKind = "gitops-publish"
+	MutationGitOpsRollback MutationKind = "gitops-rollback"
 )
 
 // Mutation is a proposed change to be prepared before it applies.
@@ -459,5 +470,6 @@ type PreparedMutation struct {
 }
 
 type MutationResult struct {
-	Deploy *DeployResult
+	Deploy        *DeployResult
+	GitOpsPublish *gitops.PublishResult
 }

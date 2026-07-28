@@ -21,7 +21,21 @@ func (p *planeImpl) Deploy(ctx context.Context, req DeployRequest) (DeployResult
 
 func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployResult, error) {
 	if req.Module != "" && req.Service == "" {
-		return DeployResult{}, fmt.Errorf("module-wide deploy is not yet supported via the control plane; specify a service")
+		if !req.DryRun {
+			return DeployResult{}, fmt.Errorf("module-wide direct apply is not supported via the control plane; use a GitOps render")
+		}
+		rendered, err := p.RenderGitOps(ctx, GitOpsRenderRequest{Module: req.Module, Env: req.Env})
+		if err != nil {
+			return DeployResult{}, err
+		}
+		return DeployResult{
+			Succeeded: true,
+			RenderedTrees: []RenderedTree{{
+				Module: req.Module,
+				Digest: rendered.Inventory.Digest,
+			}},
+			Output: rendered.Path,
+		}, nil
 	}
 	ws, module, service, err := p.loadTarget(ctx, req.Service)
 	if err != nil {

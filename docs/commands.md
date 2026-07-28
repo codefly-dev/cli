@@ -177,6 +177,58 @@ Deploy a service to a target environment.
 ```bash
 codefly deploy service api
 codefly deploy service api --standalone
+codefly deploy service api --env production --render-only
+```
+
+`--render-only` writes a validated, inventoried service-owned tree without
+calling Kubernetes. For a complete module promotion, use the GitOps lifecycle:
+
+```bash
+codefly deploy gitops render payments --env production --app-project payments
+codefly deploy gitops plan payments --env production
+codefly deploy gitops publish payments --env production
+
+# After review and merge:
+codefly deploy gitops observe payments --env production \
+  --app-project payments \
+  --application payments-api \
+  --revision <exact-merge-commit>
+
+# Recovery is another reviewed promotion, never a direct cluster mutation:
+codefly deploy gitops rollback payments --env production \
+  --to-revision <previous-reviewed-commit>
+```
+
+The workspace declares the destination repository, owned path, and Argo target
+branch:
+
+```yaml
+gitops:
+  repo-url: git@github.com:example/platform-manifests.git
+  path: environments/production
+  branch: main
+```
+
+Render first writes to a temporary sibling, rejects unsafe or non-promotable
+manifests, and installs only `deployments/modules/<module>`. The installed
+`.codefly-render.json` contains the sorted file inventory and aggregate digest.
+Publish clones `workspace.gitops.repo-url`, stages only
+`<workspace.gitops.path>/modules/<module>`, prints a stable plan and diff, then
+uses a single-use prepared mutation to create a signed commit, push without
+force, and open or update a pull request. Observe requires an approved, merged
+pull request and exact Argo CD revision, project, destination, sync, operation,
+and Healthy status before writing evidence under `.codefly/gitops/evidence/`.
+Publishing requires configured Git commit signing and an authenticated `gh`
+session; observation uses the active authenticated `argocd` context. Rollback
+refuses a target revision unless a prior Healthy reviewed evidence receipt
+links that revision.
+
+Maintainers can run the disposable local qualification (k3d, an in-network Git
+daemon, and pinned Argo CD) with:
+
+```bash
+CODEFLY_GITOPS_K3D_QUALIFY=1 \
+  go test ./pkg/gitops -run TestLocalK3dDisposableGitQualification -v -count=1
 ```
 
 ### `codefly deploy init`

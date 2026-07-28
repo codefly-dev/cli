@@ -8,6 +8,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -33,6 +34,20 @@ var ServiceCmd = &cobra.Command{
 		workspace, module, service, err := common.LoadRequiredE(ctx, args)
 		if err != nil {
 			return err
+		}
+		if renderOnly {
+			env, err := orchestration.SelectEnvironment(workspace, envInput)
+			if err != nil {
+				return err
+			}
+			result, err := gitops.RenderService(ctx, workspace, module, service, env, appProject, standAlone, cli.NewOutputSink())
+			if err != nil {
+				return fmt.Errorf("cannot render service: %w", err)
+			}
+			cli.Info("Rendered %s", result.Path)
+			cli.Info("Digest %s", result.Inventory.Digest)
+			cli.Header(1, "Service render done!")
+			return nil
 		}
 
 		flow, err := initDeployService(ctx, workspace, module, service, standAlone)
@@ -131,6 +146,7 @@ var standAlone bool
 var envInput string
 var dryRun bool
 var renderOnly bool
+var appProject string
 
 func directApplyRequested() bool {
 	return !renderOnly && !dryRun
@@ -141,4 +157,5 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Render the deployment without applying it")
 	ServiceCmd.Flags().BoolVar(&renderOnly, "render-only", false, "Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.")
+	ServiceCmd.Flags().StringVar(&appProject, "app-project", "", "AppProject contract used to validate cluster-scoped rendered resources")
 }

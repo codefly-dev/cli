@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 
+	"github.com/codefly-dev/cli/pkg/gitops"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 )
 
@@ -25,6 +26,7 @@ type Plane interface {
 	TerminalController
 	MutationAuthority
 	ServiceInstallation
+	GitOps
 
 	// Service returns a handle scoped to one service — file/git operations root
 	// at the service directory rather than the workspace, and lifecycle/command
@@ -35,6 +37,13 @@ type Plane interface {
 	// Close releases terminals and any WorkspaceHost created by New/NewAt.
 	// A plane created with NewWithHost leaves that externally owned host open.
 	Close() error
+}
+
+type GitOps interface {
+	RenderGitOps(ctx context.Context, req GitOpsRenderRequest) (gitops.RenderResult, error)
+	PlanGitOpsPublish(ctx context.Context, req gitops.PublishRequest) (gitops.PublishPlan, error)
+	PlanGitOpsRollback(ctx context.Context, req gitops.RollbackRequest) (gitops.RollbackPlan, error)
+	ObserveGitOps(ctx context.Context, req gitops.ObserveRequest) (gitops.ObserveResult, error)
 }
 
 // Introspector answers read-only questions about the workspace and any live
