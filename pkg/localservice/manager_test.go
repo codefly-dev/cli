@@ -101,7 +101,8 @@ func TestLaunchdLifecycleUsesModernPerUserCommands(t *testing.T) {
 	t.Setenv("CODEFLY_TEST_TRACE", tracePath)
 	t.Setenv("CODEFLY_TEST_STATE", statePath)
 
-	manager := newManager("darwin", home, 501, executeCommand)
+	uid := os.Getuid()
+	manager := newManager("darwin", home, uid, executeCommand)
 	request := testRequest(t)
 	request.StartAtLogin = true
 	request.Logs = LogRouting{
@@ -130,11 +131,12 @@ func TestLaunchdLifecycleUsesModernPerUserCommands(t *testing.T) {
 	}
 
 	trace := readFile(t, tracePath)
+	domain := "gui/" + strconv.Itoa(uid)
 	for _, expected := range []string{
-		"bootstrap gui/501 ",
-		"kickstart -k gui/501/dev.codefly.test",
-		"bootout gui/501/dev.codefly.test",
-		"print gui/501/dev.codefly.test",
+		"bootstrap " + domain + " ",
+		"kickstart -k " + domain + "/dev.codefly.test",
+		"bootout " + domain + "/dev.codefly.test",
+		"print " + domain + "/dev.codefly.test",
 	} {
 		if !strings.Contains(trace, expected) {
 			t.Errorf("launchctl trace does not contain %q:\n%s", expected, trace)
