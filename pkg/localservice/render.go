@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const contractMarker = "codefly-service-contract:"
@@ -45,7 +46,7 @@ func renderLaunchAgent(request InstallServiceRequest, encodedContract string) ([
 		return nil, err
 	}
 	for _, argument := range request.Arguments {
-		if err := writePlistValue(&out, "    ", argument); err != nil {
+		if err := writePlistValue(&out, "    ", argument.Value); err != nil {
 			return nil, err
 		}
 	}
@@ -120,7 +121,7 @@ func renderSystemdUnit(request InstallServiceRequest, encodedContract string) []
 	out.WriteString(systemdExecQuote(request.Executable))
 	for _, argument := range request.Arguments {
 		out.WriteByte(' ')
-		out.WriteString(systemdExecQuote(argument))
+		out.WriteString(systemdExecQuote(argument.Value))
 	}
 	out.WriteByte('\n')
 	if request.WorkingDirectory != "" {
@@ -182,7 +183,7 @@ func systemdExecQuote(value string) string {
 }
 
 func restartDelaySeconds(request InstallServiceRequest) int64 {
-	seconds := int64(request.RestartDelay.Seconds())
+	seconds := int64(request.RestartDelay / time.Second)
 	if seconds < 1 {
 		return 5
 	}

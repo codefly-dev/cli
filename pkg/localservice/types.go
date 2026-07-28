@@ -30,7 +30,7 @@ type InstallServiceRequest struct {
 	Ref              ServiceRef            `json:"ref"`
 	Version          string                `json:"version"`
 	Executable       string                `json:"executable"`
-	Arguments        []string              `json:"arguments,omitempty"`
+	Arguments        []ServiceArgument     `json:"arguments,omitempty"`
 	Environment      []EnvironmentVariable `json:"environment,omitempty"`
 	WorkingDirectory string                `json:"working_directory,omitempty"`
 	Health           HealthProbe           `json:"health,omitempty"`
@@ -40,13 +40,25 @@ type InstallServiceRequest struct {
 	Logs             LogRouting            `json:"logs,omitempty"`
 }
 
-// EnvironmentVariable is a non-sensitive literal passed to the service.
-// Sensitive values are rejected at installation and must instead be resolved
-// by the service through its runtime configuration boundary.
+// ValueClassification requires callers to classify every materialized value.
+type ValueClassification string
+
+const (
+	ValuePublic    ValueClassification = "public"
+	ValueSensitive ValueClassification = "sensitive"
+)
+
+// ServiceArgument is one explicitly classified executable argument.
+type ServiceArgument struct {
+	Value          string              `json:"value"`
+	Classification ValueClassification `json:"classification"`
+}
+
+// EnvironmentVariable is one explicitly classified environment literal.
 type EnvironmentVariable struct {
-	Name      string `json:"name"`
-	Value     string `json:"value,omitempty"`
-	Sensitive bool   `json:"sensitive,omitempty"`
+	Name           string              `json:"name"`
+	Value          string              `json:"value,omitempty"`
+	Classification ValueClassification `json:"classification"`
 }
 
 // RestartPolicy controls native supervisor restart behavior.
@@ -123,14 +135,15 @@ const (
 
 // ServiceStatus combines native process state with product readiness.
 type ServiceStatus struct {
-	Ref          ServiceRef        `json:"ref"`
-	Version      string            `json:"version,omitempty"`
-	State        ServiceState      `json:"state"`
-	Installed    bool              `json:"installed"`
-	Running      bool              `json:"running"`
-	Healthy      bool              `json:"healthy"`
-	StartAtLogin bool              `json:"start_at_login"`
-	Diagnostics  ServiceDiagnostic `json:"diagnostics"`
+	Ref             ServiceRef        `json:"ref"`
+	Version         string            `json:"version,omitempty"`
+	State           ServiceState      `json:"state"`
+	Installed       bool              `json:"installed"`
+	Running         bool              `json:"running"`
+	Healthy         bool              `json:"healthy"`
+	StartAtLogin    bool              `json:"start_at_login"`
+	OperatorStopped bool              `json:"operator_stopped"`
+	Diagnostics     ServiceDiagnostic `json:"diagnostics"`
 }
 
 // ServiceDiagnostic exposes parsed native details so callers never need to

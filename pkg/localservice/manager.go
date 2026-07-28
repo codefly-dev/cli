@@ -89,6 +89,11 @@ func (m *manager) InstallService(ctx context.Context, request InstallServiceRequ
 	if err != nil {
 		return InstalledService{}, err
 	}
+	unlock, err := m.acquireServiceLock(ctx, request.Ref)
+	if err != nil {
+		return InstalledService{}, err
+	}
+	defer unlock()
 	path, err := m.definitionPath(request.Ref)
 	if err != nil {
 		return InstalledService{}, err
@@ -126,7 +131,7 @@ func (m *manager) InstallService(ctx context.Context, request InstallServiceRequ
 		return InstalledService{}, fmt.Errorf("read existing service definition: %w", err)
 	}
 
-	wasLoaded, err := m.prepareUpdate(ctx, request.Ref, previous != nil)
+	wasLoaded, err := m.prepareUpdate(ctx, request.Ref)
 	if err != nil {
 		return InstalledService{}, err
 	}
@@ -153,20 +158,32 @@ func (m *manager) InstallService(ctx context.Context, request InstallServiceRequ
 }
 
 func (m *manager) StartService(ctx context.Context, ref ServiceRef) (ServiceStatus, error) {
+	unlock, err := m.acquireServiceLock(ctx, ref)
+	if err != nil {
+		return ServiceStatus{}, err
+	}
 	request, path, err := m.installedRequest(ref)
 	if err != nil {
+		unlock()
 		if os.IsNotExist(err) {
 			return m.notInstalledStatus(ref, path), nil
 		}
 		return ServiceStatus{}, err
 	}
 	if err := m.start(ctx, request, path); err != nil {
+		unlock()
 		return ServiceStatus{}, err
 	}
+	unlock()
 	return m.waitForReadiness(ctx, request)
 }
 
 func (m *manager) StopService(ctx context.Context, ref ServiceRef) (ServiceStatus, error) {
+	unlock, err := m.acquireServiceLock(ctx, ref)
+	if err != nil {
+		return ServiceStatus{}, err
+	}
+	defer unlock()
 	request, path, err := m.installedRequest(ref)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -181,27 +198,55 @@ func (m *manager) StopService(ctx context.Context, ref ServiceRef) (ServiceStatu
 }
 
 func (m *manager) RestartService(ctx context.Context, ref ServiceRef) (ServiceStatus, error) {
+	unlock, err := m.acquireServiceLock(ctx, ref)
+	if err != nil {
+		return ServiceStatus{}, err
+	}
 	request, path, err := m.installedRequest(ref)
 	if err != nil {
+		unlock()
 		if os.IsNotExist(err) {
 			return m.notInstalledStatus(ref, path), nil
 		}
 		return ServiceStatus{}, err
 	}
 	if err := m.restart(ctx, request, path); err != nil {
+		unlock()
 		return ServiceStatus{}, err
 	}
+	unlock()
 	return m.waitForReadiness(ctx, request)
 }
 
 func (m *manager) UninstallService(ctx context.Context, request UninstallServiceRequest) error {
+	unlock, err := m.acquireServiceLock(ctx, request.Ref)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	path, err := m.definitionPath(request.Ref)
 	if err != nil {
 		return err
 	}
 	definition, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return nil
+		status, statusErr := m.orphanedServiceStatus(ctx, request.Ref, path)
+		if statusErr != nil {
+			return statusErr
+		}
+		if status.State == ServiceNotInstalled {
+			return m.clearOperatorStopped(request.Ref)
+		}
+		if request.Version != "" {
+			return fmt.Errorf("cannot verify version of stale or corrupt service %q without its Codefly definition", request.Ref.Label)
+		}
+		if err := m.removeInstallation(ctx, request.Ref); err != nil {
+			return err
+		}
+		if err := m.reloadAfterRemoval(ctx, request.Ref); err != nil {
+			return err
+		}
+		return m.clearOperatorStopped(request.Ref)
 	}
 	if err != nil {
 		return fmt.Errorf("read service definition: %w", err)
@@ -221,10 +266,10 @@ func (m *manager) UninstallService(ctx context.Context, request UninstallService
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove service definition: %w", err)
 	}
-	if err := m.reloadAfterRemoval(ctx); err != nil {
+	if err := m.reloadAfterRemoval(ctx, request.Ref); err != nil {
 		return err
 	}
-	return nil
+	return m.clearOperatorStopped(request.Ref)
 }
 
 func (m *manager) ServiceStatus(ctx context.Context, ref ServiceRef) (ServiceStatus, error) {
@@ -234,7 +279,7 @@ func (m *manager) ServiceStatus(ctx context.Context, ref ServiceRef) (ServiceSta
 	}
 	definition, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return m.notInstalledStatus(ref, path), nil
+		return m.orphanedServiceStatus(ctx, ref, path)
 	}
 	if err != nil {
 		return ServiceStatus{}, fmt.Errorf("read service definition: %w", err)
@@ -265,6 +310,10 @@ func (m *manager) ServiceStatus(ctx context.Context, ref ServiceRef) (ServiceSta
 		}, nil
 	}
 	status, err := m.nativeStatus(ctx, request, path)
+	if err != nil {
+		return ServiceStatus{}, err
+	}
+	status.OperatorStopped, err = m.operatorStopped(request.Ref)
 	if err != nil {
 		return ServiceStatus{}, err
 	}
@@ -340,7 +389,7 @@ func (m *manager) installedRequest(ref ServiceRef) (InstallServiceRequest, strin
 }
 
 func (m *manager) normalizeRequest(request InstallServiceRequest) InstallServiceRequest {
-	request.Arguments = append([]string(nil), request.Arguments...)
+	request.Arguments = append([]ServiceArgument(nil), request.Arguments...)
 	request.Environment = append([]EnvironmentVariable(nil), request.Environment...)
 	request.Executable = cleanAbsolute(request.Executable)
 	request.WorkingDirectory = cleanAbsolute(request.WorkingDirectory)
@@ -406,7 +455,14 @@ func validateRequest(request InstallServiceRequest) error {
 		return err
 	}
 	for _, argument := range request.Arguments {
-		if err := validateMaterializedString("service argument", argument); err != nil {
+		switch argument.Classification {
+		case ValuePublic:
+		case ValueSensitive:
+			return fmt.Errorf("sensitive service argument cannot be embedded in a service definition")
+		default:
+			return fmt.Errorf("service argument classification is required")
+		}
+		if err := validateMaterializedString("service argument", argument.Value); err != nil {
 			return err
 		}
 	}
@@ -433,13 +489,20 @@ func validateRequest(request InstallServiceRequest) error {
 	if request.RestartDelay < time.Second {
 		return fmt.Errorf("restart delay must be at least 1s")
 	}
+	if request.RestartDelay%time.Second != 0 {
+		return fmt.Errorf("restart delay must use whole-second precision")
+	}
 	seen := make(map[string]struct{}, len(request.Environment))
 	for _, variable := range request.Environment {
 		if !environmentPattern.MatchString(variable.Name) {
 			return fmt.Errorf("environment variable name %q is invalid", variable.Name)
 		}
-		if variable.Sensitive {
+		switch variable.Classification {
+		case ValuePublic:
+		case ValueSensitive:
 			return fmt.Errorf("sensitive environment variable %q cannot be embedded in a service definition", variable.Name)
+		default:
+			return fmt.Errorf("environment variable %q classification is required", variable.Name)
 		}
 		if err := validateMaterializedString("environment value "+variable.Name, variable.Value); err != nil {
 			return err
@@ -581,6 +644,36 @@ func prepareLogFiles(logs LogRouting) error {
 		if err := file.Close(); err != nil {
 			return fmt.Errorf("close service log file: %w", err)
 		}
+	}
+	return nil
+}
+
+func (m *manager) operatorStopPath(ref ServiceRef) string {
+	return filepath.Join(m.home, ".codefly", "services", "state", ref.Label+".stopped")
+}
+
+func (m *manager) operatorStopped(ref ServiceRef) (bool, error) {
+	_, err := os.Stat(m.operatorStopPath(ref))
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("inspect operator stop state: %w", err)
+	}
+}
+
+func (m *manager) markOperatorStopped(ref ServiceRef) error {
+	if err := atomicWrite(m.operatorStopPath(ref), nil, 0o600); err != nil {
+		return fmt.Errorf("persist operator stop state: %w", err)
+	}
+	return nil
+}
+
+func (m *manager) clearOperatorStopped(ref ServiceRef) error {
+	if err := os.Remove(m.operatorStopPath(ref)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("clear operator stop state: %w", err)
 	}
 	return nil
 }

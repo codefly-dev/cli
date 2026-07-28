@@ -8,6 +8,8 @@ import (
 
 type ServiceRef = localservice.ServiceRef
 type InstallServiceRequest = localservice.InstallServiceRequest
+type ValueClassification = localservice.ValueClassification
+type ServiceArgument = localservice.ServiceArgument
 type EnvironmentVariable = localservice.EnvironmentVariable
 type RestartPolicy = localservice.RestartPolicy
 type HealthProbeKind = localservice.HealthProbeKind
@@ -21,6 +23,9 @@ type InstalledServiceStatus = localservice.ServiceStatus
 type ServiceDiagnostic = localservice.ServiceDiagnostic
 
 const (
+	ValuePublic    = localservice.ValuePublic
+	ValueSensitive = localservice.ValueSensitive
+
 	RestartNever     = localservice.RestartNever
 	RestartOnFailure = localservice.RestartOnFailure
 

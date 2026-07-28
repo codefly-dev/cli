@@ -15,21 +15,21 @@ import (
 var ServiceCmd = newServiceCommand()
 
 type serviceInstallOptions struct {
-	version          string
-	executable       string
-	arguments        []string
-	environment      []string
-	workingDirectory string
-	healthHTTP       string
-	healthTCP        string
-	healthTimeout    time.Duration
-	healthInterval   time.Duration
-	restart          string
-	restartDelay     time.Duration
-	startAtLogin     bool
-	logMode          string
-	stdoutLog        string
-	stderrLog        string
+	version           string
+	executable        string
+	publicArguments   []string
+	publicEnvironment []string
+	workingDirectory  string
+	healthHTTP        string
+	healthTCP         string
+	healthTimeout     time.Duration
+	healthInterval    time.Duration
+	restart           string
+	restartDelay      time.Duration
+	startAtLogin      bool
+	logMode           string
+	stdoutLog         string
+	stderrLog         string
 }
 
 func newServiceCommand() *cobra.Command {
@@ -73,8 +73,8 @@ only non-sensitive configuration, and remain authoritative across CLI runs.`,
 	}
 	installCommand.Flags().StringVar(&installOptions.version, "version", "", "Materialized service contract version")
 	installCommand.Flags().StringVar(&installOptions.executable, "executable", "", "Absolute foreground executable path")
-	installCommand.Flags().StringArrayVar(&installOptions.arguments, "arg", nil, "Executable argument (repeatable)")
-	installCommand.Flags().StringArrayVar(&installOptions.environment, "env", nil, "Non-sensitive NAME=VALUE environment variable (repeatable)")
+	installCommand.Flags().StringArrayVar(&installOptions.publicArguments, "public-arg", nil, "Explicitly public executable argument (repeatable)")
+	installCommand.Flags().StringArrayVar(&installOptions.publicEnvironment, "public-env", nil, "Explicitly public NAME=VALUE environment variable (repeatable)")
 	installCommand.Flags().StringVar(&installOptions.workingDirectory, "working-directory", "", "Absolute service working directory")
 	installCommand.Flags().StringVar(&installOptions.healthHTTP, "health-http", "", "HTTP(S) readiness URL")
 	installCommand.Flags().StringVar(&installOptions.healthTCP, "health-tcp", "", "TCP readiness address as host:port")
@@ -140,6 +140,12 @@ only non-sensitive configuration, and remain authoritative across CLI runs.`,
 
 type serviceStatusOperation func(control.Plane, *cobra.Command, control.ServiceRef) (control.InstalledServiceStatus, error)
 
+type machineReadableServiceError struct {
+	error
+}
+
+func (machineReadableServiceError) MachineReadable() bool { return true }
+
 func newServiceStatusCommand(use, short string, jsonOutput *bool, operation serviceStatusOperation, requireHealthy bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   use + " LABEL",
@@ -157,10 +163,18 @@ func newServiceStatusCommand(use, short string, jsonOutput *bool, operation serv
 					return err
 				}
 			} else {
-				writeServiceStatus(command.OutOrStdout(), status)
+				if err := writeServiceStatus(command.OutOrStdout(), status); err != nil {
+					return err
+				}
 			}
 			if requireHealthy && status.State != control.ServiceRunningHealthy {
-				return fmt.Errorf("service %s did not become healthy (state %s)", status.Ref.Label, status.State)
+				err := fmt.Errorf("service %s did not become healthy (state %s)", status.Ref.Label, status.State)
+				if *jsonOutput {
+					command.SilenceErrors = true
+					command.SilenceUsage = true
+					return machineReadableServiceError{error: err}
+				}
+				return err
 			}
 			return nil
 		},
@@ -171,13 +185,24 @@ func (options serviceInstallOptions) request(label string) (control.InstallServi
 	if options.healthHTTP != "" && options.healthTCP != "" {
 		return control.InstallServiceRequest{}, fmt.Errorf("--health-http and --health-tcp are mutually exclusive")
 	}
-	environment := make([]control.EnvironmentVariable, 0, len(options.environment))
-	for _, raw := range options.environment {
+	arguments := make([]control.ServiceArgument, 0, len(options.publicArguments))
+	for _, value := range options.publicArguments {
+		arguments = append(arguments, control.ServiceArgument{
+			Value:          value,
+			Classification: control.ValuePublic,
+		})
+	}
+	environment := make([]control.EnvironmentVariable, 0, len(options.publicEnvironment))
+	for _, raw := range options.publicEnvironment {
 		name, value, ok := strings.Cut(raw, "=")
 		if !ok || name == "" {
 			return control.InstallServiceRequest{}, fmt.Errorf("environment value %q must use NAME=VALUE", raw)
 		}
-		environment = append(environment, control.EnvironmentVariable{Name: name, Value: value})
+		environment = append(environment, control.EnvironmentVariable{
+			Name:           name,
+			Value:          value,
+			Classification: control.ValuePublic,
+		})
 	}
 	health := control.HealthProbe{}
 	switch {
@@ -204,7 +229,7 @@ func (options serviceInstallOptions) request(label string) (control.InstallServi
 		Ref:              control.ServiceRef{Label: label},
 		Version:          options.version,
 		Executable:       options.executable,
-		Arguments:        append([]string(nil), options.arguments...),
+		Arguments:        arguments,
 		Environment:      environment,
 		WorkingDirectory: options.workingDirectory,
 		Health:           health,
@@ -225,34 +250,62 @@ func writeJSON(output io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
-func writeServiceStatus(output io.Writer, status control.InstalledServiceStatus) {
-	fmt.Fprintf(output, "%s: %s\n", status.Ref.Label, status.State)
+func writeServiceStatus(output io.Writer, status control.InstalledServiceStatus) error {
+	if _, err := fmt.Fprintf(output, "%s: %s\n", status.Ref.Label, status.State); err != nil {
+		return err
+	}
 	if status.Version != "" {
-		fmt.Fprintf(output, "  Version: %s\n", status.Version)
-	}
-	fmt.Fprintf(output, "  Manager: %s\n", status.Diagnostics.Manager)
-	if status.Diagnostics.PID > 0 {
-		fmt.Fprintf(output, "  PID: %d\n", status.Diagnostics.PID)
-	}
-	if status.Diagnostics.NativeState != "" {
-		fmt.Fprintf(output, "  Native state: %s\n", status.Diagnostics.NativeState)
-	}
-	if status.Diagnostics.ExitCode != nil {
-		fmt.Fprintf(output, "  Exit code: %d\n", *status.Diagnostics.ExitCode)
-	}
-	if status.Diagnostics.ExitReason != "" {
-		fmt.Fprintf(output, "  Exit reason: %s\n", status.Diagnostics.ExitReason)
-	}
-	if status.Diagnostics.Message != "" {
-		fmt.Fprintf(output, "  Detail: %s\n", status.Diagnostics.Message)
-	}
-	if len(status.Diagnostics.LogPaths) > 0 {
-		fmt.Fprintf(output, "  Logs: %s\n", strings.Join(status.Diagnostics.LogPaths, ", "))
-	}
-	if len(status.Diagnostics.RecentLogs) > 0 {
-		fmt.Fprintln(output, "  Recent logs:")
-		for _, line := range status.Diagnostics.RecentLogs {
-			fmt.Fprintf(output, "    %s\n", line)
+		if _, err := fmt.Fprintf(output, "  Version: %s\n", status.Version); err != nil {
+			return err
 		}
 	}
+	if _, err := fmt.Fprintf(output, "  Manager: %s\n", status.Diagnostics.Manager); err != nil {
+		return err
+	}
+	if status.Diagnostics.PID > 0 {
+		if _, err := fmt.Fprintf(output, "  PID: %d\n", status.Diagnostics.PID); err != nil {
+			return err
+		}
+	}
+	if status.Diagnostics.NativeState != "" {
+		if _, err := fmt.Fprintf(output, "  Native state: %s\n", status.Diagnostics.NativeState); err != nil {
+			return err
+		}
+	}
+	if status.OperatorStopped {
+		if _, err := fmt.Fprintln(output, "  Operator stopped: true"); err != nil {
+			return err
+		}
+	}
+	if status.Diagnostics.ExitCode != nil {
+		if _, err := fmt.Fprintf(output, "  Exit code: %d\n", *status.Diagnostics.ExitCode); err != nil {
+			return err
+		}
+	}
+	if status.Diagnostics.ExitReason != "" {
+		if _, err := fmt.Fprintf(output, "  Exit reason: %s\n", status.Diagnostics.ExitReason); err != nil {
+			return err
+		}
+	}
+	if status.Diagnostics.Message != "" {
+		if _, err := fmt.Fprintf(output, "  Detail: %s\n", status.Diagnostics.Message); err != nil {
+			return err
+		}
+	}
+	if len(status.Diagnostics.LogPaths) > 0 {
+		if _, err := fmt.Fprintf(output, "  Logs: %s\n", strings.Join(status.Diagnostics.LogPaths, ", ")); err != nil {
+			return err
+		}
+	}
+	if len(status.Diagnostics.RecentLogs) > 0 {
+		if _, err := fmt.Fprintln(output, "  Recent logs:"); err != nil {
+			return err
+		}
+		for _, line := range status.Diagnostics.RecentLogs {
+			if _, err := fmt.Fprintf(output, "    %s\n", line); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

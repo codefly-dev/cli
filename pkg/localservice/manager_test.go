@@ -2,6 +2,7 @@ package localservice
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -193,6 +194,63 @@ func TestInstallRequiresVersionChangeForMaterializedChanges(t *testing.T) {
 	}
 }
 
+func TestConcurrentInstallsSerializeVersionValidation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	manager := newManager("linux", home, os.Getuid(), func(_ context.Context, _ string, _ ...string) (string, error) {
+		return "", nil
+	})
+	initial := testRequest(t)
+	initial.Version = "0"
+	initial.Logs = LogRouting{Mode: LogNative}
+	if _, err := manager.InstallService(context.Background(), initial); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	manager.run = func(_ context.Context, name string, arguments ...string) (string, error) {
+		if name == "systemctl" && len(arguments) > 1 && arguments[1] == "show" {
+			entered <- struct{}{}
+			<-release
+			return "LoadState=loaded\nActiveState=inactive\n", nil
+		}
+		return "", nil
+	}
+
+	first := initial
+	first.Version = "1"
+	first.Arguments = publicArguments("first")
+	second := initial
+	second.Version = "1"
+	second.Arguments = publicArguments("second")
+
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := manager.InstallService(context.Background(), first)
+		firstResult <- err
+	}()
+	<-entered
+	go func() {
+		_, err := manager.InstallService(context.Background(), second)
+		secondResult <- err
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(release)
+
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first install failed: %v", err)
+	}
+	if err := <-secondResult; err == nil || !strings.Contains(err.Error(), "contract changed without a version change") {
+		t.Fatalf("second install error = %v", err)
+	}
+}
+
 func TestInstallRollsBackDefinitionWhenSupervisorRejectsIt(t *testing.T) {
 	home := t.TempDir()
 	installNativeTool(t, "systemctl", "#!/bin/sh\nif [ \"$2\" = \"enable\" ]; then printf 'enable failed\\n' >&2; exit 1; fi\n")
@@ -211,6 +269,245 @@ func TestInstallRollsBackDefinitionWhenSupervisorRejectsIt(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("failed installation left a definition: %v", err)
+	}
+}
+
+func TestInstallReconcilesLoadedServiceWhenDefinitionIsMissing(t *testing.T) {
+	home := t.TempDir()
+	tracePath := filepath.Join(t.TempDir(), "trace")
+	statePath := filepath.Join(t.TempDir(), "state")
+	installNativeTool(t, "systemctl", systemctlFixture)
+	t.Setenv("CODEFLY_TEST_TRACE", tracePath)
+	t.Setenv("CODEFLY_TEST_STATE", statePath)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	manager := newManager("linux", home, os.Getuid(), executeCommand)
+	request := testRequest(t)
+	request.Logs = LogRouting{Mode: LogNative}
+
+	installed, err := manager.InstallService(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.StartService(context.Background(), request.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(installed.DefinitionPath); err != nil {
+		t.Fatal(err)
+	}
+
+	request.Version = "2"
+	request.Arguments = publicArguments("updated")
+	if _, err := manager.InstallService(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if trace := readFile(t, tracePath); !strings.Contains(trace, "--user try-restart dev.codefly.test.service") {
+		t.Fatalf("orphaned active service was not restarted after reinstall:\n%s", trace)
+	}
+}
+
+func TestStatusAndUninstallReconcileLoadedServiceWhenDefinitionIsMissing(t *testing.T) {
+	home := t.TempDir()
+	tracePath := filepath.Join(t.TempDir(), "trace")
+	statePath := filepath.Join(t.TempDir(), "state")
+	installNativeTool(t, "systemctl", systemctlFixture)
+	t.Setenv("CODEFLY_TEST_TRACE", tracePath)
+	t.Setenv("CODEFLY_TEST_STATE", statePath)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	manager := newManager("linux", home, os.Getuid(), executeCommand)
+	request := testRequest(t)
+	request.Logs = LogRouting{Mode: LogNative}
+
+	installed, err := manager.InstallService(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.StartService(context.Background(), request.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(installed.DefinitionPath); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := manager.ServiceStatus(context.Background(), request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != ServiceStaleCorrupt || !status.Installed || !status.Running || status.Diagnostics.PID != 4321 {
+		t.Fatalf("orphaned service status = %#v", status)
+	}
+
+	if err := manager.UninstallService(context.Background(), UninstallServiceRequest{
+		Ref: request.Ref, Version: request.Version,
+	}); err == nil {
+		t.Fatal("version-guarded orphan uninstall succeeded without a contract to verify")
+	}
+	t.Setenv("CODEFLY_TEST_DISABLE_MISSING", "1")
+	if err := manager.UninstallService(context.Background(), UninstallServiceRequest{Ref: request.Ref}); err != nil {
+		t.Fatal(err)
+	}
+	if state := strings.TrimSpace(readFile(t, statePath)); state != "inactive" {
+		t.Fatalf("native service state after orphan uninstall = %q", state)
+	}
+}
+
+func TestSystemdStartAndRestartRecoverTargetFromStartLimit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	active := false
+	limited := false
+	manager := newManager("linux", home, os.Getuid(), func(_ context.Context, name string, arguments ...string) (string, error) {
+		if name != "systemctl" || len(arguments) < 2 {
+			return "", nil
+		}
+		switch arguments[1] {
+		case "show":
+			if active {
+				return "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=4321\nExecMainStatus=0\nExecMainCode=0\nNRestarts=0\nResult=success\n", nil
+			}
+			return "LoadState=loaded\nActiveState=failed\nSubState=failed\nMainPID=0\nExecMainStatus=1\nExecMainCode=exited\nNRestarts=5\nResult=start-limit-hit\n", nil
+		case "reset-failed":
+			if len(arguments) == 3 && arguments[2] == "dev.codefly.test.service" {
+				limited = false
+			}
+		case "start", "restart":
+			if limited {
+				return "", errors.New("start request repeated too quickly")
+			}
+			active = true
+		}
+		return "", nil
+	})
+	request := testRequest(t)
+	request.Logs = LogRouting{Mode: LogNative}
+	if _, err := manager.InstallService(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+
+	limited = true
+	status, err := manager.StartService(context.Background(), request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != ServiceRunningHealthy {
+		t.Fatalf("status after start-limit recovery = %#v", status)
+	}
+
+	active = false
+	limited = true
+	status, err = manager.RestartService(context.Background(), request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != ServiceRunningHealthy {
+		t.Fatalf("status after restart-limit recovery = %#v", status)
+	}
+}
+
+func TestSystemdUninstallDoesNotResetUnrelatedFailedUnits(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	unrelatedFailed := true
+	manager := newManager("linux", home, os.Getuid(), func(_ context.Context, name string, arguments ...string) (string, error) {
+		if name == "systemctl" && len(arguments) > 1 {
+			if arguments[1] == "show" {
+				return "LoadState=loaded\nActiveState=inactive\n", nil
+			}
+			if arguments[1] == "reset-failed" && len(arguments) == 2 {
+				unrelatedFailed = false
+			}
+		}
+		return "", nil
+	})
+	request := testRequest(t)
+	request.Logs = LogRouting{Mode: LogNative}
+	if _, err := manager.InstallService(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.UninstallService(context.Background(), UninstallServiceRequest{Ref: request.Ref}); err != nil {
+		t.Fatal(err)
+	}
+	if !unrelatedFailed {
+		t.Fatal("uninstall reset an unrelated failed user unit")
+	}
+}
+
+func TestExplicitStopSurvivesReinstallUntilExplicitStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	active := false
+	enabled := false
+	failStart := false
+	manager := newManager("linux", home, os.Getuid(), func(_ context.Context, name string, arguments ...string) (string, error) {
+		if name != "systemctl" || len(arguments) < 2 {
+			return "", nil
+		}
+		switch arguments[1] {
+		case "show":
+			if active {
+				return "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=4321\nExecMainStatus=0\nExecMainCode=0\nNRestarts=0\nResult=success\n", nil
+			}
+			return "LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nExecMainStatus=0\nExecMainCode=0\nNRestarts=0\nResult=success\n", nil
+		case "enable":
+			enabled = true
+		case "disable":
+			enabled = false
+		case "start", "restart":
+			if failStart {
+				return "", errors.New("native start failed")
+			}
+			active = true
+		case "stop":
+			active = false
+		}
+		return "", nil
+	})
+	request := testRequest(t)
+	request.StartAtLogin = true
+	request.Logs = LogRouting{Mode: LogNative}
+	if _, err := manager.InstallService(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.StartService(context.Background(), request.Ref); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.StopService(context.Background(), request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.OperatorStopped || enabled {
+		t.Fatalf("status after explicit stop = %#v, enabled = %t", status, enabled)
+	}
+
+	if _, err := manager.InstallService(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	status, err = manager.ServiceStatus(context.Background(), request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.OperatorStopped || enabled {
+		t.Fatalf("reinstall lost explicit stop: status = %#v, enabled = %t", status, enabled)
+	}
+
+	failStart = true
+	if _, err := manager.StartService(context.Background(), request.Ref); err == nil {
+		t.Fatal("failed native start succeeded")
+	}
+	status, err = manager.ServiceStatus(context.Background(), request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.OperatorStopped || enabled {
+		t.Fatalf("failed start lost explicit stop: status = %#v, enabled = %t", status, enabled)
+	}
+
+	failStart = false
+	status, err = manager.StartService(context.Background(), request.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.OperatorStopped || !enabled || status.State != ServiceRunningHealthy {
+		t.Fatalf("explicit start did not clear stop intent: status = %#v, enabled = %t", status, enabled)
 	}
 }
 
@@ -380,6 +677,12 @@ case "$2" in
     ;;
   stop)
     printf 'inactive\n' > "$CODEFLY_TEST_STATE"
+    ;;
+  disable)
+    if [ "$CODEFLY_TEST_DISABLE_MISSING" = 1 ]; then
+      printf 'Failed to disable unit: Unit file dev.codefly.test.service does not exist.\n' >&2
+      exit 1
+    fi
     ;;
   show)
     if [ -f "$CODEFLY_TEST_STATE" ]; then

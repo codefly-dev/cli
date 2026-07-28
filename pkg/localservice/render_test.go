@@ -12,10 +12,10 @@ import (
 
 func TestRenderLaunchAgentRoundTripsMaterializedContract(t *testing.T) {
 	request := testRequest(t)
-	request.Arguments = []string{"serve", `value with "quotes" & <xml>`}
+	request.Arguments = publicArguments("serve", `value with "quotes" & <xml>`)
 	request.Environment = []EnvironmentVariable{
-		{Name: "Z_LAST", Value: "z"},
-		{Name: "A_FIRST", Value: `a&<"value">`},
+		{Name: "Z_LAST", Value: "z", Classification: ValuePublic},
+		{Name: "A_FIRST", Value: `a&<"value">`, Classification: ValuePublic},
 	}
 	request.StartAtLogin = true
 	request.Logs = LogRouting{
@@ -63,8 +63,10 @@ func TestRenderLaunchAgentRoundTripsMaterializedContract(t *testing.T) {
 
 func TestRenderSystemdUnitUsesForegroundAndCrashOnlyRestart(t *testing.T) {
 	request := testRequest(t)
-	request.Arguments = []string{"serve", `value with "quotes"`, `$RUNTIME %n`}
-	request.Environment = []EnvironmentVariable{{Name: "PUBLIC_SETTING", Value: `a\b"c`}}
+	request.Arguments = publicArguments("serve", `value with "quotes"`, `$RUNTIME %n`)
+	request.Environment = []EnvironmentVariable{{
+		Name: "PUBLIC_SETTING", Value: `a\b"c`, Classification: ValuePublic,
+	}}
 	request.Logs = LogRouting{Mode: LogNative}
 
 	definition, err := renderDefinition("linux", request)
@@ -123,9 +125,9 @@ func TestRenderRejectsSensitiveEnvironment(t *testing.T) {
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
 	request.Environment = []EnvironmentVariable{{
-		Name:      "PROVIDER_TOKEN",
-		Value:     "must-not-appear",
-		Sensitive: true,
+		Name:           "PROVIDER_TOKEN",
+		Value:          "must-not-appear",
+		Classification: ValueSensitive,
 	}}
 	definition, err := renderDefinition("linux", request)
 	if err == nil {
@@ -133,6 +135,18 @@ func TestRenderRejectsSensitiveEnvironment(t *testing.T) {
 	}
 	if strings.Contains(string(definition), "must-not-appear") {
 		t.Fatal("sensitive environment value appeared in a definition")
+	}
+
+	request.Environment = nil
+	request.Arguments = []ServiceArgument{{
+		Value: "must-not-appear", Classification: ValueSensitive,
+	}}
+	definition, err = renderDefinition("linux", request)
+	if err == nil {
+		t.Fatalf("sensitive argument was rendered:\n%s", definition)
+	}
+	if strings.Contains(string(definition), "must-not-appear") {
+		t.Fatal("sensitive argument appeared in a definition")
 	}
 }
 
@@ -152,9 +166,32 @@ func TestDefinitionValidationDetectsTampering(t *testing.T) {
 func TestRenderRejectsUnsupportedControlCharacters(t *testing.T) {
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
-	request.Arguments = []string{"invalid\x00argument"}
+	request.Arguments = publicArguments("invalid\x00argument")
 	if _, err := renderDefinition("linux", request); err == nil {
 		t.Fatal("argument containing NUL was accepted")
+	}
+}
+
+func TestRenderRejectsSubsecondRestartDelay(t *testing.T) {
+	request := testRequest(t)
+	request.Logs = LogRouting{Mode: LogNative}
+	request.RestartDelay = 1500 * time.Millisecond
+	if _, err := renderDefinition("linux", request); err == nil {
+		t.Fatal("subsecond restart delay was silently rounded")
+	}
+}
+
+func TestRenderRequiresClassificationForEveryMaterializedValue(t *testing.T) {
+	request := testRequest(t)
+	request.Logs = LogRouting{Mode: LogNative}
+	request.Arguments = []ServiceArgument{{Value: "unclassified"}}
+	if _, err := renderDefinition("linux", request); err == nil {
+		t.Fatal("unclassified argument was accepted")
+	}
+	request.Arguments = nil
+	request.Environment = []EnvironmentVariable{{Name: "SETTING", Value: "unclassified"}}
+	if _, err := renderDefinition("linux", request); err == nil {
+		t.Fatal("unclassified environment value was accepted")
 	}
 }
 
@@ -171,4 +208,12 @@ func testRequest(t *testing.T) InstallServiceRequest {
 		Restart:      RestartOnFailure,
 		RestartDelay: 5 * time.Second,
 	}
+}
+
+func publicArguments(values ...string) []ServiceArgument {
+	arguments := make([]ServiceArgument, 0, len(values))
+	for _, value := range values {
+		arguments = append(arguments, ServiceArgument{Value: value, Classification: ValuePublic})
+	}
+	return arguments
 }

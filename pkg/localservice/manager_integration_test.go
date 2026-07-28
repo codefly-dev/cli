@@ -32,7 +32,7 @@ func TestNativeUserManagerLifecycle(t *testing.T) {
 		Ref:          ref,
 		Version:      "1",
 		Executable:   "/bin/sh",
-		Arguments:    []string{"-c", "while :; do /bin/sleep 1; done"},
+		Arguments:    publicArguments("-c", "while :; do /bin/sleep 1; done"),
 		Restart:      RestartOnFailure,
 		RestartDelay: time.Second,
 		StartAtLogin: false,
@@ -92,7 +92,9 @@ func TestNativeUserManagerLifecycle(t *testing.T) {
 	}
 
 	request.Version = "2"
-	request.Environment = []EnvironmentVariable{{Name: "CODEFLY_INTEGRATION_VERSION", Value: "2"}}
+	request.Environment = []EnvironmentVariable{{
+		Name: "CODEFLY_INTEGRATION_VERSION", Value: "2", Classification: ValuePublic,
+	}}
 	updated, err := installation.InstallService(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)

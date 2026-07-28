@@ -32,10 +32,7 @@ func (m *manager) systemdUnit(ref ServiceRef) string {
 	return ref.Label + ".service"
 }
 
-func (m *manager) prepareUpdate(ctx context.Context, ref ServiceRef, existing bool) (bool, error) {
-	if !existing {
-		return false, nil
-	}
+func (m *manager) prepareUpdate(ctx context.Context, ref ServiceRef) (bool, error) {
 	switch m.platform {
 	case "darwin":
 		_, err := m.run(ctx, "launchctl", "print", m.launchdTarget(ref))
@@ -59,6 +56,64 @@ func (m *manager) prepareUpdate(ctx context.Context, ref ServiceRef, existing bo
 	}
 }
 
+func (m *manager) orphanedServiceStatus(ctx context.Context, ref ServiceRef, path string) (ServiceStatus, error) {
+	status := m.notInstalledStatus(ref, path)
+	switch m.platform {
+	case "darwin":
+		output, err := m.run(ctx, "launchctl", "print", m.launchdTarget(ref))
+		if err != nil {
+			if commandReportsMissing(err) {
+				return status, nil
+			}
+			return ServiceStatus{}, fmt.Errorf("inspect orphaned LaunchAgent: %w", err)
+		}
+		fields := parseLaunchdOutput(output)
+		status.State = ServiceStaleCorrupt
+		status.Installed = true
+		status.Diagnostics.NativeState = fields["state"]
+		status.Diagnostics.PID, _ = strconv.Atoi(fields["pid"])
+		status.Diagnostics.ExitCode = parseExitCode(fields["last exit code"])
+		if status.Diagnostics.ExitCode == nil {
+			status.Diagnostics.ExitCode = parseExitCode(fields["last exit status"])
+		}
+		status.Diagnostics.ExitReason = fields["last exit reason"]
+		status.Diagnostics.RestartCount, _ = strconv.Atoi(fields["runs"])
+		status.Diagnostics.Message = "launchd has loaded this service without its Codefly definition"
+		status.Running = status.Diagnostics.PID > 0
+		return status, nil
+	case "linux":
+		output, err := m.run(ctx, "systemctl", "--user", "show",
+			"--property=LoadState,ActiveState,SubState,MainPID,ExecMainStatus,ExecMainCode,NRestarts,Result",
+			m.systemdUnit(ref))
+		if err != nil && !strings.Contains(output, "LoadState=") {
+			if commandReportsMissing(err) {
+				return status, nil
+			}
+			return ServiceStatus{}, fmt.Errorf("inspect orphaned systemd user unit: %w", err)
+		}
+		fields := parseKeyValueOutput(output)
+		if (fields["LoadState"] == "" || fields["LoadState"] == "not-found") &&
+			(fields["ActiveState"] == "" || fields["ActiveState"] == "inactive") {
+			return status, nil
+		}
+		status.State = ServiceStaleCorrupt
+		status.Installed = true
+		status.Diagnostics.NativeState = fields["ActiveState"]
+		if fields["SubState"] != "" {
+			status.Diagnostics.NativeState += "/" + fields["SubState"]
+		}
+		status.Diagnostics.PID, _ = strconv.Atoi(fields["MainPID"])
+		status.Diagnostics.ExitCode = parseExitCode(fields["ExecMainStatus"])
+		status.Diagnostics.ExitReason = fields["Result"]
+		status.Diagnostics.RestartCount, _ = strconv.Atoi(fields["NRestarts"])
+		status.Diagnostics.Message = "systemd has loaded this service without its Codefly definition"
+		status.Running = status.Diagnostics.PID > 0
+		return status, nil
+	default:
+		return ServiceStatus{}, unsupportedPlatform(m.platform)
+	}
+}
+
 func (m *manager) applyInstallation(ctx context.Context, request InstallServiceRequest, path string, wasLoaded bool) error {
 	switch m.platform {
 	case "darwin":
@@ -73,17 +128,13 @@ func (m *manager) applyInstallation(ctx context.Context, request InstallServiceR
 				return fmt.Errorf("bootstrap updated LaunchAgent: %w", err)
 			}
 		}
-		return m.setLaunchdLoginPolicy(ctx, request)
+		return m.applyLoginPolicy(ctx, request)
 	case "linux":
 		if _, err := m.run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return fmt.Errorf("reload systemd user manager: %w", err)
 		}
-		enablement := "disable"
-		if request.StartAtLogin {
-			enablement = "enable"
-		}
-		if _, err := m.run(ctx, "systemctl", "--user", enablement, m.systemdUnit(request.Ref)); err != nil {
-			return fmt.Errorf("%s systemd user unit: %w", enablement, err)
+		if err := m.applyLoginPolicy(ctx, request); err != nil {
+			return err
 		}
 		if wasLoaded {
 			if _, err := m.run(ctx, "systemctl", "--user", "try-restart", m.systemdUnit(request.Ref)); err != nil {
@@ -128,7 +179,7 @@ func (m *manager) rollbackInstallation(ctx context.Context, ref ServiceRef, path
 				return err
 			}
 		}
-		return m.setLaunchdLoginPolicy(ctx, oldRequest)
+		return m.applyLoginPolicy(ctx, oldRequest)
 	case "linux":
 		if _, err := m.run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return err
@@ -141,11 +192,7 @@ func (m *manager) rollbackInstallation(ctx context.Context, ref ServiceRef, path
 		if err != nil {
 			return err
 		}
-		enablement := "disable"
-		if oldRequest.StartAtLogin {
-			enablement = "enable"
-		}
-		if _, err := m.run(ctx, "systemctl", "--user", enablement, m.systemdUnit(ref)); err != nil {
+		if err := m.applyLoginPolicy(ctx, oldRequest); err != nil {
 			return err
 		}
 		if wasLoaded {
@@ -165,32 +212,39 @@ func (m *manager) start(ctx context.Context, request InstallServiceRequest, path
 		}
 		if _, err := m.run(ctx, "launchctl", "print", m.launchdTarget(request.Ref)); err != nil {
 			if !commandReportsMissing(err) {
-				return fmt.Errorf("inspect LaunchAgent before start: %w", err)
+				return m.restoreLoginPolicy(ctx, request, fmt.Errorf("inspect LaunchAgent before start: %w", err))
 			}
 			if _, err := m.run(ctx, "launchctl", "bootstrap", m.launchdDomain(), path); err != nil {
-				return fmt.Errorf("bootstrap LaunchAgent: %w", err)
+				return m.restoreLoginPolicy(ctx, request, fmt.Errorf("bootstrap LaunchAgent: %w", err))
 			}
 		}
 		if _, err := m.run(ctx, "launchctl", "kickstart", m.launchdTarget(request.Ref)); err != nil {
-			return fmt.Errorf("start LaunchAgent: %w", err)
+			return m.restoreLoginPolicy(ctx, request, fmt.Errorf("start LaunchAgent: %w", err))
 		}
-		return m.setLaunchdLoginPolicy(ctx, request)
+		if err := m.clearOperatorStopped(request.Ref); err != nil {
+			return err
+		}
+		return m.applyLoginPolicy(ctx, request)
 	case "linux":
-		if request.StartAtLogin {
-			if _, err := m.run(ctx, "systemctl", "--user", "enable", m.systemdUnit(request.Ref)); err != nil {
-				return fmt.Errorf("enable systemd user unit: %w", err)
-			}
+		if err := m.resetSystemdFailure(ctx, request.Ref); err != nil {
+			return err
 		}
 		if _, err := m.run(ctx, "systemctl", "--user", "start", m.systemdUnit(request.Ref)); err != nil {
 			return fmt.Errorf("start systemd user unit: %w", err)
 		}
-		return nil
+		if err := m.clearOperatorStopped(request.Ref); err != nil {
+			return err
+		}
+		return m.applyLoginPolicy(ctx, request)
 	default:
 		return unsupportedPlatform(m.platform)
 	}
 }
 
 func (m *manager) stop(ctx context.Context, ref ServiceRef) error {
+	if err := m.markOperatorStopped(ref); err != nil {
+		return err
+	}
 	switch m.platform {
 	case "darwin":
 		if _, err := m.run(ctx, "launchctl", "disable", m.launchdTarget(ref)); err != nil {
@@ -221,28 +275,30 @@ func (m *manager) restart(ctx context.Context, request InstallServiceRequest, pa
 		}
 		if _, err := m.run(ctx, "launchctl", "print", m.launchdTarget(request.Ref)); err != nil {
 			if !commandReportsMissing(err) {
-				return fmt.Errorf("inspect LaunchAgent before restart: %w", err)
+				return m.restoreLoginPolicy(ctx, request, fmt.Errorf("inspect LaunchAgent before restart: %w", err))
 			}
 			if _, err := m.run(ctx, "launchctl", "bootstrap", m.launchdDomain(), path); err != nil {
-				return fmt.Errorf("bootstrap LaunchAgent: %w", err)
+				return m.restoreLoginPolicy(ctx, request, fmt.Errorf("bootstrap LaunchAgent: %w", err))
 			}
 		}
 		if _, err := m.run(ctx, "launchctl", "kickstart", "-k", m.launchdTarget(request.Ref)); err != nil {
-			return fmt.Errorf("restart LaunchAgent: %w", err)
+			return m.restoreLoginPolicy(ctx, request, fmt.Errorf("restart LaunchAgent: %w", err))
 		}
-		return m.setLaunchdLoginPolicy(ctx, request)
+		if err := m.clearOperatorStopped(request.Ref); err != nil {
+			return err
+		}
+		return m.applyLoginPolicy(ctx, request)
 	case "linux":
-		enablement := "disable"
-		if request.StartAtLogin {
-			enablement = "enable"
-		}
-		if _, err := m.run(ctx, "systemctl", "--user", enablement, m.systemdUnit(request.Ref)); err != nil {
-			return fmt.Errorf("%s systemd user unit: %w", enablement, err)
+		if err := m.resetSystemdFailure(ctx, request.Ref); err != nil {
+			return err
 		}
 		if _, err := m.run(ctx, "systemctl", "--user", "restart", m.systemdUnit(request.Ref)); err != nil {
 			return fmt.Errorf("restart systemd user unit: %w", err)
 		}
-		return nil
+		if err := m.clearOperatorStopped(request.Ref); err != nil {
+			return err
+		}
+		return m.applyLoginPolicy(ctx, request)
 	default:
 		return unsupportedPlatform(m.platform)
 	}
@@ -271,15 +327,22 @@ func (m *manager) removeInstallation(ctx context.Context, ref ServiceRef) error 
 	}
 }
 
-func (m *manager) reloadAfterRemoval(ctx context.Context) error {
+func (m *manager) reloadAfterRemoval(ctx context.Context, ref ServiceRef) error {
 	if m.platform != "linux" {
 		return nil
 	}
 	if _, err := m.run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 		return fmt.Errorf("reload systemd user manager: %w", err)
 	}
-	if _, err := m.run(ctx, "systemctl", "--user", "reset-failed"); err != nil {
-		return fmt.Errorf("reset failed systemd user units: %w", err)
+	if err := m.resetSystemdFailure(ctx, ref); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *manager) resetSystemdFailure(ctx context.Context, ref ServiceRef) error {
+	if _, err := m.run(ctx, "systemctl", "--user", "reset-failed", m.systemdUnit(ref)); err != nil && !commandReportsMissing(err) {
+		return fmt.Errorf("reset failed systemd user unit: %w", err)
 	}
 	return nil
 }
@@ -306,9 +369,9 @@ func (m *manager) nativeStatus(ctx context.Context, request InstallServiceReques
 	}
 }
 
-func (m *manager) setLaunchdLoginPolicy(ctx context.Context, request InstallServiceRequest) error {
+func (m *manager) setLaunchdLoginPolicy(ctx context.Context, request InstallServiceRequest, enabled bool) error {
 	action := "disable"
-	if request.StartAtLogin {
+	if enabled {
 		action = "enable"
 	}
 	if _, err := m.run(ctx, "launchctl", action, m.launchdTarget(request.Ref)); err != nil {
@@ -318,12 +381,17 @@ func (m *manager) setLaunchdLoginPolicy(ctx context.Context, request InstallServ
 }
 
 func (m *manager) applyLoginPolicy(ctx context.Context, request InstallServiceRequest) error {
+	operatorStopped, err := m.operatorStopped(request.Ref)
+	if err != nil {
+		return err
+	}
+	enabled := request.StartAtLogin && !operatorStopped
 	switch m.platform {
 	case "darwin":
-		return m.setLaunchdLoginPolicy(ctx, request)
+		return m.setLaunchdLoginPolicy(ctx, request, enabled)
 	case "linux":
 		action := "disable"
-		if request.StartAtLogin {
+		if enabled {
 			action = "enable"
 		}
 		if _, err := m.run(ctx, "systemctl", "--user", action, m.systemdUnit(request.Ref)); err != nil {
@@ -333,6 +401,13 @@ func (m *manager) applyLoginPolicy(ctx context.Context, request InstallServiceRe
 	default:
 		return unsupportedPlatform(m.platform)
 	}
+}
+
+func (m *manager) restoreLoginPolicy(ctx context.Context, request InstallServiceRequest, operationErr error) error {
+	if err := m.applyLoginPolicy(ctx, request); err != nil {
+		return fmt.Errorf("%w (restore login policy: %v)", operationErr, err)
+	}
+	return operationErr
 }
 
 func (m *manager) launchdStatus(ctx context.Context, request InstallServiceRequest, status ServiceStatus) (ServiceStatus, error) {
@@ -468,6 +543,9 @@ func commandReportsMissing(err error) bool {
 		return false
 	}
 	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "unit file") && strings.Contains(message, "does not exist") {
+		return true
+	}
 	for _, fragment := range []string{
 		"could not find service",
 		"service not found",
