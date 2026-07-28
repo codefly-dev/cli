@@ -360,6 +360,51 @@ codefly daemon monitor -w                     # Continuous monitoring (every 30s
 codefly daemon monitor --kill-orphans         # Kill orphaned agent processes
 ```
 
+### `codefly service`
+
+Install and operate a long-running foreground process through the current
+user's native supervisor. macOS uses a LaunchAgent in
+`~/Library/LaunchAgents` and modern `launchctl bootstrap`, `bootout`,
+`kickstart`, and `print` operations. Linux uses a user unit in
+`$XDG_CONFIG_HOME/systemd/user` (or `~/.config/systemd/user`) and
+`systemctl --user`.
+
+```bash
+codefly service install dev.codefly.mind \
+  --version 2026.07.28 \
+  --executable /absolute/path/to/mind-server \
+  --public-arg serve \
+  --public-arg=--foreground \
+  --health-http http://127.0.0.1:17400/healthz
+codefly service start dev.codefly.mind
+codefly service status dev.codefly.mind
+codefly service restart dev.codefly.mind
+codefly service stop dev.codefly.mind
+codefly service uninstall dev.codefly.mind --version 2026.07.28
+```
+
+The installation version is the identity of the complete materialized
+contract. Changing the executable, arguments, environment, working directory,
+probe, restart policy, login policy, or logs requires a new version; Codefly
+then atomically replaces the single definition. Reusing a version for different
+content is rejected so a stable label cannot be silently rebound.
+
+`--public-arg VALUE` and `--public-env NAME=VALUE` explicitly classify literals
+as safe to materialize. The typed control plane rejects sensitive or
+unclassified values; credentials and provider secrets must be resolved by the
+service at runtime. The default restart policy
+is `on-failure`, so a crash is restarted while an explicit stop remains
+stopped. `--start-at-login=true` enables future login startup. macOS defaults
+to owner-only files under `~/.codefly/services/logs`; Linux defaults to the user
+journal. Uninstall removes only supervisor configuration and preserves product
+data, credentials, and logs.
+
+Status combines native state, PID, exit information, restart count, recent log
+diagnostics, and the configured readiness probe. Its stable states are
+`not-installed`, `installed-stopped`, `starting`, `running-healthy`,
+`running-unhealthy`, `crash-looping`, `failed`, and `stale-corrupt`.
+Use `--json` on any lifecycle command for the typed result.
+
 ### `codefly server`
 
 Start the codefly web companion server (for workspace visualization).

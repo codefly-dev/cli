@@ -24,6 +24,7 @@ type Plane interface {
 	CommandRunner
 	TerminalController
 	MutationAuthority
+	ServiceInstallation
 
 	// Service returns a handle scoped to one service — file/git operations root
 	// at the service directory rather than the workspace, and lifecycle/command
@@ -83,6 +84,19 @@ type Lifecycle interface {
 	// Deploy ships service/module to an environment. It MUST be authorized
 	// through MutationAuthority (see PrepareMutation) before it will execute.
 	Deploy(ctx context.Context, req DeployRequest) (DeployResult, error)
+}
+
+// ServiceInstallation manages durable foreground services with the current
+// user's native OS supervisor. It is intentionally separate from Lifecycle:
+// RunHandle describes one process-local workspace flow, while these operations
+// remain authoritative across CLI processes, logout, and login.
+type ServiceInstallation interface {
+	InstallService(context.Context, InstallServiceRequest) (InstalledService, error)
+	StartService(context.Context, ServiceRef) (InstalledServiceStatus, error)
+	StopService(context.Context, ServiceRef) (InstalledServiceStatus, error)
+	RestartService(context.Context, ServiceRef) (InstalledServiceStatus, error)
+	UninstallService(context.Context, UninstallServiceRequest) error
+	ServiceStatus(context.Context, ServiceRef) (InstalledServiceStatus, error)
 }
 
 // SourceEditor reads and mutates service source. Lifted from pkg/gateway (the
