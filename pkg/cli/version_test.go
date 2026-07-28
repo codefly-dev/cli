@@ -13,35 +13,6 @@ import (
 	"testing"
 )
 
-func TestIsNewerVersion(t *testing.T) {
-	tests := []struct {
-		name    string
-		current string
-		latest  string
-		want    bool
-		wantErr bool
-	}{
-		{name: "new patch", current: "0.1.6", latest: "v0.1.7", want: true},
-		{name: "new minor", current: "v0.1.6", latest: "0.2.0", want: true},
-		{name: "equal", current: "0.1.6", latest: "v0.1.6"},
-		{name: "larger patch in older minor", current: "0.1.6", latest: "v0.0.130"},
-		{name: "older", current: "0.1.6", latest: "v0.1.5"},
-		{name: "invalid current", current: "development", latest: "v0.1.7", wantErr: true},
-		{name: "invalid latest", current: "0.1.6", latest: "latest", wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := isNewerVersion(tt.current, tt.latest)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("isNewerVersion() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("isNewerVersion() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCaptureUpdateNotice_RoutesToSink(t *testing.T) {
 	var got []string
 	var mu sync.Mutex

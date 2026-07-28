@@ -35,6 +35,7 @@ Thumbs.db
 # Certificates
 *.pem
 *.key
+!pkg/cliupdate/release-signing-cert.pem
 
 # Logs and databases
 *.log

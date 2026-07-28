@@ -314,6 +314,9 @@ func (e *Engine) gitPush(ctx context.Context, tag string) error {
 // don't assert "tag doesn't exist" because the whole point is the
 // tag DOES exist and needs replacing.
 func (e *Engine) ReTag(ctx context.Context) (string, error) {
+	if e.Manifest != nil && e.Manifest.Mode == ModeCLI {
+		return "", errors.New("CLI release tags are immutable; publish a new version instead")
+	}
 	if err := e.preflight(ctx); err != nil {
 		return "", err
 	}

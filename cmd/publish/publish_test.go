@@ -534,6 +534,17 @@ func TestEngine_ReTag_RunsReleaseHooks(t *testing.T) {
 	require.Contains(t, string(out), tag)
 }
 
+func TestEngine_ReTag_RefusesImmutableCLIRelease(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "pkg/cli/info.yaml", "0.1.0")
+	manifest, err := publish.Detect(dir)
+	require.NoError(t, err)
+
+	engine := &publish.Engine{Manifest: manifest, WorkDir: dir}
+	_, err = engine.ReTag(context.Background())
+	require.ErrorContains(t, err, "CLI release tags are immutable")
+}
+
 var (
 	errCIFailed     = errSentinel("release CI failed")
 	errUploadFailed = errSentinel("upload failed")

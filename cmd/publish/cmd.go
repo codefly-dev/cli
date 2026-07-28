@@ -132,8 +132,9 @@ recreates it at HEAD. Used when CI needs a fresh tag-push trigger
 without bumping the version.
 
 The TAG is force-pushed (that's the whole point); main is never
-touched. Pre-flight checks are the same as publish minus the
-"tag doesn't exist" gate (which would invert the meaning here).
+touched. CLI tags are immutable and cannot use this recovery path.
+Pre-flight checks are the same as publish minus the "tag doesn't
+exist" gate (which would invert the meaning here).
 
 If the tag doesn't exist, re-tag refuses and points at plain
 publish — first-time releases use the bump path.`,

@@ -1,32 +1,19 @@
 package cli
 
 import (
-	"embed"
-	"encoding/json"
-	"errors"
+	"context"
 	"fmt"
-	"io"
-	"io/fs"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/Masterminds/semver"
-	"gopkg.in/yaml.v2"
+	"github.com/codefly-dev/cli/pkg/cliupdate"
+	"github.com/codefly-dev/core/releaseupdate"
 )
 
-type Information struct {
-	Version string `json:"version"`
-}
-
-type Release struct {
-	TagName string `json:"tag_name"`
-}
-
 var (
-	noticeMu sync.Mutex
-	noticeFn = func(msg string) { Warning("%s", msg) }
+	noticeMu        sync.Mutex
+	noticeFn        = func(msg string) { Warning("%s", msg) }
+	updateCheckOnce sync.Once
 )
 
 // emitUpdateNotice delivers a message from the background update check to the
@@ -57,90 +44,42 @@ func CaptureUpdateNotice(sink func(msg string)) (restore func()) {
 }
 
 func CheckForCLIForUpdate() {
-	go checkForCLIForUpdate()
+	if !cliupdate.CurrentBuildInfo().Released() {
+		return
+	}
+	updateCheckOnce.Do(func() {
+		go checkForCLIForUpdate()
+	})
 }
 
 func checkForCLIForUpdate() {
-	latest, err := getLatestRelease()
-	if errors.Is(err, NoInternetError{}) {
-		return
-	} else if err != nil {
-		emitUpdateNotice("Cannot get latest release for CLI")
+	service, err := cliupdate.NewService()
+	if err != nil {
 		return
 	}
-	current, err := GetCurrentVersion()
-	if err != nil {
-		emitUpdateNotice("Cannot get current version for CLI")
+	check, err := service.BeginAutomaticCheck(time.Now(), 24*time.Hour)
+	if err != nil || check == nil {
 		return
 	}
-	newer, err := isNewerVersion(current, latest)
-	if err != nil {
-		emitUpdateNotice("Cannot compare CLI release versions")
-		return
-	}
-	if newer {
-		emitUpdateNotice("A new version of codefly is available. Please update to %s", latest)
-	}
-}
+	defer func() { _ = check.Cancel() }()
 
-func isNewerVersion(current, latest string) (bool, error) {
-	currentVersion, err := semver.NewVersion(current)
-	if err != nil {
-		return false, fmt.Errorf("parse current version %q: %w", current, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := service.Check(ctx, releaseupdate.ChannelStable, false)
+	notifiedVersion := ""
+	if err == nil && result.Available && check.NotificationDue(result.Latest) {
+		emitUpdateNotice("%s", result.Notice())
+		notifiedVersion = result.Latest
 	}
-	latestVersion, err := semver.NewVersion(latest)
-	if err != nil {
-		return false, fmt.Errorf("parse latest version %q: %w", latest, err)
-	}
-	return latestVersion.GreaterThan(currentVersion), nil
-}
-
-type NoInternetError struct {
-}
-
-func (NoInternetError) Error() string {
-	return "no internet"
-}
-
-func getLatestRelease() (string, error) {
-	client := http.Client{Timeout: time.Second}
-	resp, err := client.Get("https://api.github.com/repos/codefly-dev/cli-releases/releases/latest")
-	if err != nil {
-		if strings.Contains(err.Error(), "i/o timeout") {
-			return "", NoInternetError{}
-		}
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var release Release
-	err = json.Unmarshal(body, &release)
-	if err != nil {
-		return "", err
-	}
-
-	return release.TagName, nil
+	completeCtx, completeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer completeCancel()
+	_ = check.Complete(completeCtx, time.Now(), notifiedVersion)
 }
 
 func GetCurrentVersion() (string, error) {
-	data, err := fs.ReadFile(infoFS, "info.yaml")
-	if err != nil {
-		return "", fmt.Errorf("read embedded CLI version: %w", err)
-	}
-
-	// Unmarshal YAML into a struct
-	var info Information
-	err = yaml.Unmarshal(data, &info)
-	if err != nil {
-		return "", err
-	}
-	return info.Version, nil
+	return cliupdate.CurrentBuildInfo().Version, nil
 }
 
-//go:embed info.yaml
-var infoFS embed.FS
+func GetBuildInfo() cliupdate.BuildInfo {
+	return cliupdate.CurrentBuildInfo()
+}

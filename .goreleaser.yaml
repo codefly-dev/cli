@@ -1,30 +1,103 @@
+version: 2
+
 project_name: codefly
 
 builds:
-  - id: "codefly"
-    main: .
+  - id: codefly
+    main: ./cmd/codefly
     binary: codefly
+    env:
+      - CGO_ENABLED=0
     goos:
       - darwin
+      - linux
     goarch:
       - amd64
       - arm64
-    env:
-      - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - -s -w -extldflags "-static"
-    goarm:
-      - 6
-      - 7
-brews:
+      - -s -w
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.version={{ .Version }}
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.commit={{ .Commit }}
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.buildDate={{ .Date }}
+
+notarize:
+  macos:
+    - enabled: "{{ not .IsSnapshot }}"
+      ids:
+        - codefly
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+        timeout: 20m
+
+archives:
+  - id: codefly
+    ids:
+      - codefly
+    formats:
+      - tar.gz
+    name_template: "codefly_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - id: archives
+    artifacts: archive
+    documents:
+      - "${artifact}.sbom.json"
+    disable: false
+
+signs:
+  - id: checksums
+    artifacts: checksum
+    signature: "${artifact}.sig"
+    cmd: openssl
+    args:
+      - dgst
+      - -sha256
+      - -sign
+      - "{{ .Env.CODEFLY_RELEASE_SIGNING_KEY_PATH }}"
+      - -out
+      - "${signature}"
+      - "${artifact}"
+
+homebrew_casks:
   - name: codefly
-    description: "codefly CLI"
-    homepage: "https://codefly.ai" # replace with your project's homepage
-    url_template: "https://github.com/codefly-dev/cli/releases/download/{{ .Tag }}/codefly_{{ .Tag }}_{{ .Os }}_{{ .Arch }}.tar.gz"
-    caveats: "How to use your tool after installation"
-    test: "codefly version"
+    ids:
+      - codefly
+    binaries:
+      - codefly
+    directory: Casks
+    homepage: https://codefly.ai
+    description: Build, run, test, and deploy services in a Codefly workspace
+    skip_upload: auto
+    url:
+      template: "https://github.com/codefly-dev/cli/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+      verified: "github.com/codefly-dev/cli/"
     repository:
       owner: codefly-dev
-      name: cli-homebrew
+      name: homebrew-cli
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      branch: main
+    commit_author:
+      name: Codefly Release
+      email: action@github.com
+
+release:
+  mode: keep-existing
+  prerelease: auto
+  make_latest: auto
+  replace_existing_artifacts: false
+  replace_existing_draft: false
+  use_existing_draft: false

@@ -9,6 +9,19 @@
 
 ---
 
+# Install and update
+
+Install the release cask with:
+
+```shell
+brew install --cask codefly-dev/cli/codefly
+```
+
+Direct release archives and their verification material are published on the
+GitHub release for each immutable version. See [CLI releases and
+updates](docs/cli-updates.md) for direct installation, update commands,
+verification, rollback, and package-manager ownership.
+
 # Development
 
 ## Repository layout
