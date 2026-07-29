@@ -58,6 +58,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
+	dockerContext.ImageDigest = b.imageDigest
 
 	deploy, err := deployments.GetKubernetesDeployment(ctx, dockerContext, b.world.Workspace, b.instance.Module, b.instance.Service, b.world.Env, namespace)
 	if err != nil {

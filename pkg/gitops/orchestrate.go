@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -149,7 +150,19 @@ func renderServiceFlow(
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,
 ) (result error) {
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
+	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
+		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
+	}
+	builder.SetRepository(env.Registry.URL)
+	if env.Cluster != nil && env.Cluster.Kind == "k3d" {
+		if env.Registry.Auth != "" {
+			if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
+				return fmt.Errorf("authenticate snapshot registry: %w", err)
+			}
+		}
+		orchestration.SetBuilderPush()
+	}
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
 	if err != nil {
 		return err
 	}

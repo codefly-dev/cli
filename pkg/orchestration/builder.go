@@ -2,8 +2,11 @@ package orchestration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strings"
 	"sync/atomic"
 
 	"google.golang.org/grpc/codes"
@@ -42,7 +45,8 @@ type Builder struct {
 	outputPropertyForBuild *BuilderBuildManager
 	outputPropertyForSync  *BuilderSyncManager
 
-	push bool
+	push        bool
+	imageDigest string
 
 	syncResponse *builderv0.SyncResponse
 	syncSkipped  bool
@@ -236,19 +240,64 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
-	if push.Load() && resp.Result != nil {
-		if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
+	if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
+		if push.Load() {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.Images {
-				cmd := exec.Command("docker", "push", im)
+				cmd := exec.CommandContext(ctx, "docker", "push", im)
 				err := cmd.Run()
 				if err != nil {
 					return nil, w.Wrapf(err, "cannot push docker image")
 				}
 			}
 		}
+		if b.world.Mode == SnapshotMode && len(buildResult.Images) > 0 {
+			if len(buildResult.Images) != 1 {
+				return nil, w.NewError("snapshot build returned %d images for %s; exactly one deployable image is required", len(buildResult.Images), b.instance.Unique())
+			}
+			b.imageDigest, err = inspectImageDigest(ctx, buildResult.Images[0])
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
+			}
+		}
 	}
 	return outputProperty, nil
+}
+
+var sha256Digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+func inspectImageDigest(ctx context.Context, image string) (string, error) {
+	output, err := exec.CommandContext(
+		ctx,
+		"docker",
+		"image",
+		"inspect",
+		"--format",
+		"{{json .RepoDigests}}",
+		image,
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("inspect %s repository digests: %w", image, err)
+	}
+	var references []string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(output))), &references); err != nil {
+		return "", fmt.Errorf("decode %s repository digests: %w", image, err)
+	}
+	var digest string
+	for _, reference := range references {
+		_, candidate, ok := strings.Cut(reference, "@")
+		if !ok || !sha256Digest.MatchString(candidate) {
+			continue
+		}
+		if digest != "" && digest != candidate {
+			return "", fmt.Errorf("image %s resolves to multiple repository digests", image)
+		}
+		digest = candidate
+	}
+	if digest == "" {
+		return "", fmt.Errorf("image %s has no registry-backed sha256 digest; build and push the local snapshot first", image)
+	}
+	return digest, nil
 }
 
 func dockerBuildResult(result *builderv0.BuildResult) *builderv0.DockerBuildResult {
