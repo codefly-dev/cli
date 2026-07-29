@@ -580,6 +580,20 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
 			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderDeploy
 		})
+	case SnapshotMode:
+		policy, err := NewSnapshotPolicy(ctx, flow.world.Dependencies, flow)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderDeploy
+		})
 
 	}
 	flow.playbook = playbook
@@ -699,6 +713,25 @@ func (flow *Flow) OriginSyncSkipped() bool {
 		return false
 	}
 	return false
+}
+
+func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
+	outputs := make(map[string]*builderv0.DeploymentOutput)
+	if flow == nil || flow.hub == nil {
+		return outputs
+	}
+	for _, manager := range flow.hub.managers {
+		source, ok := manager.(interface {
+			BuilderDeploymentOutput() *builderv0.DeploymentOutput
+		})
+		if !ok {
+			continue
+		}
+		if output := source.BuilderDeploymentOutput(); output != nil {
+			outputs[manager.Unique()] = output
+		}
+	}
+	return outputs
 }
 
 func (flow *Flow) Build(ctx context.Context) error {
@@ -1025,7 +1058,7 @@ func (flow *Flow) Stop() error {
 	}
 	// Builder-only flows have no Runtime runner to stop. Their service-scoped
 	// agent connections are closed by the caller after this lifecycle hook.
-	if flow.world != nil && (flow.world.Mode == BuildMode || flow.world.Mode == SyncMode || flow.world.Mode == DeployMode) {
+	if flow.world != nil && (flow.world.Mode == BuildMode || flow.world.Mode == SyncMode || flow.world.Mode == DeployMode || flow.world.Mode == SnapshotMode) {
 		return nil
 	}
 	// Don't call on a possibly Done context

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 )
 
 const pinnedDeployment = `apiVersion: apps/v1
@@ -28,7 +30,7 @@ func promotableServiceGraph(module string, services []string) []InventoryService
 			Output: &KubernetesOutputInventory{
 				Kind: "KUSTOMIZE", Profile: "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
 				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
-				Validation: KubernetesValidationInventory{
+				Validation: &KubernetesValidationInventory{
 					StaticValidation: "STATUS_PASSED", ServerSideValidation: "STATUS_PASSED",
 					Promotable: true, Violations: []string{},
 				},
@@ -81,6 +83,78 @@ func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testin
 	}
 	if err := ValidateRenderedTree(destination, "", true); err != nil {
 		t.Fatalf("validate installed tree: %v", err)
+	}
+}
+
+func TestInventoryKubernetesOutputPreservesPromotableEvidence(t *testing.T) {
+	output := &builderv0.DeploymentOutput{
+		Kind: &builderv0.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv0.KubernetesDeploymentOutput{
+				Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
+				Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+				Validation: &builderv0.KubernetesManifestValidation{
+					StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
+					ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
+					Promotable:           true,
+				},
+			},
+		},
+	}
+
+	evidence := inventoryKubernetesOutput(output)
+	if evidence == nil || evidence.Kind != "KUSTOMIZE" ||
+		evidence.Profile != "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1" ||
+		evidence.ContractVersion != "codefly.dev/kubernetes-manifest/v1" ||
+		evidence.Validation == nil || !evidence.Validation.Promotable ||
+		evidence.Validation.Violations == nil {
+		t.Fatalf("evidence = %+v", evidence)
+	}
+}
+
+func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "deployments", "modules", "users")
+	output := &InventoryKubernetesOutput{
+		Kind:            "KUSTOMIZE",
+		Profile:         "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+		Validation: &InventoryKubernetesValidation{
+			StaticValidation:     "STATUS_PASSED",
+			ServerSideValidation: "STATUS_PASSED",
+			Promotable:           true,
+			Violations:           []string{},
+		},
+	}
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: destination,
+		Module:      "users",
+		Environment: "local",
+		AppProject:  "mind-users-local",
+		Promotable:  true,
+		OwnedPath:   "deployments/modules/users",
+		ServiceGraph: []InventoryService{
+			{Module: "users", Service: "accounts", Path: "services/accounts", Output: output},
+			{Module: "users", Service: "store", Managed: true},
+		},
+	}, func(_ context.Context, root string) error {
+		service := filepath.Join(root, "services", "accounts")
+		if err := os.MkdirAll(service, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(pinnedDeployment), 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := LoadInventory(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.SchemaVersion != 2 || inventory.OwnedPath != "deployments/modules/users" ||
+		len(inventory.ServiceGraph) != 2 || inventory.ServiceGraph[0].Output == nil ||
+		!inventory.ServiceGraph[1].Managed {
+		t.Fatalf("inventory = %+v", inventory)
 	}
 }
 

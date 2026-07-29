@@ -54,6 +54,12 @@ gitops:
 	workspace.Environments = append(workspace.Environments, &resources.Environment{
 		Name:    "aws",
 		Cluster: &resources.EnvironmentCluster{Kind: "eks"},
+		ManagedServices: map[string]resources.EnvironmentManagedService{
+			"cache":          {},
+			"object-storage": {},
+			"store":          {},
+			"vault":          {},
+		},
 	})
 	renderMindShapedFixture(t, workspace.Dir(), "aws")
 	configureSSHSigning(t)

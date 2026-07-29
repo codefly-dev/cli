@@ -1,10 +1,15 @@
 package gitops
 
-import "time"
+import (
+	"time"
+
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+)
 
 const (
-	InventoryFilename = ".codefly-render.json"
-	SchemaVersion     = 2
+	InventoryFilename     = ".codefly-render.json"
+	SchemaVersion         = 2
+	EvidenceSchemaVersion = 1
 )
 
 type Inventory struct {
@@ -24,22 +29,25 @@ type InventoryService struct {
 	Service string                     `json:"service"`
 	Path    string                     `json:"path,omitempty"`
 	Managed bool                       `json:"managed,omitempty"`
-	Output  *KubernetesOutputInventory `json:"output,omitempty"`
+	Output  *InventoryKubernetesOutput `json:"output,omitempty"`
 }
 
-type KubernetesOutputInventory struct {
-	Kind            string                        `json:"kind"`
-	Profile         string                        `json:"profile"`
-	ContractVersion string                        `json:"contractVersion"`
-	Validation      KubernetesValidationInventory `json:"validation"`
+type InventoryKubernetesOutput struct {
+	Kind            string                         `json:"kind"`
+	Profile         string                         `json:"profile"`
+	ContractVersion string                         `json:"contractVersion"`
+	Validation      *InventoryKubernetesValidation `json:"validation"`
 }
 
-type KubernetesValidationInventory struct {
+type InventoryKubernetesValidation struct {
 	StaticValidation     string   `json:"staticValidation"`
 	ServerSideValidation string   `json:"serverSideValidation"`
 	Promotable           bool     `json:"promotable"`
 	Violations           []string `json:"violations"`
 }
+
+type KubernetesOutputInventory = InventoryKubernetesOutput
+type KubernetesValidationInventory = InventoryKubernetesValidation
 
 type InventoryFile struct {
 	Path   string `json:"path"`
@@ -52,11 +60,34 @@ type RenderOptions struct {
 	Module       string
 	Service      string
 	Services     []string
-	OwnedPath    string
-	ServiceGraph []InventoryService
 	Environment  string
 	AppProject   string
 	Promotable   bool
+	OwnedPath    string
+	ServiceGraph []InventoryService
+}
+
+func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
+	kubernetes := output.GetKubernetes()
+	if kubernetes == nil {
+		return nil
+	}
+	validation := kubernetes.GetValidation()
+	if validation == nil {
+		return nil
+	}
+	violations := append([]string{}, validation.GetViolations()...)
+	return &InventoryKubernetesOutput{
+		Kind:            kubernetes.GetKind().String(),
+		Profile:         kubernetes.GetProfile().String(),
+		ContractVersion: kubernetes.GetContractVersion(),
+		Validation: &InventoryKubernetesValidation{
+			StaticValidation:     validation.GetStaticValidation().String(),
+			ServerSideValidation: validation.GetServerSideValidation().String(),
+			Promotable:           validation.GetPromotable(),
+			Violations:           violations,
+		},
+	}
 }
 
 type RenderResult struct {

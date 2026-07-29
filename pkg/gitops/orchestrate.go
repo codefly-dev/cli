@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
+	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
-	"google.golang.org/protobuf/proto"
-	"gopkg.in/yaml.v3"
 )
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
@@ -31,119 +32,142 @@ func renderModuleTree(
 	includeBootstrap bool,
 ) (RenderResult, error) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", module.Name)
-	managed, err := selectedManagedServices(workspace, env.Name)
-	if err != nil {
-		return RenderResult{}, err
-	}
-	services := make([]string, 0, len(module.ServiceReferences))
-	serviceGraph := make([]InventoryService, 0, len(module.ServiceReferences))
-	declared := make(map[string]struct{}, len(module.ServiceReferences))
-	for _, reference := range module.ServiceReferences {
-		declared[reference.Name] = struct{}{}
-		_, isManaged := managed[reference.Name]
-		service := InventoryService{Module: module.Name, Service: reference.Name, Managed: isManaged}
-		if !isManaged {
-			services = append(services, reference.Name)
-			service.Path = filepath.ToSlash(filepath.Join("services", reference.Name))
-		}
-		serviceGraph = append(serviceGraph, service)
-	}
-	for service := range managed {
-		if _, exists := declared[service]; !exists {
-			return RenderResult{}, fmt.Errorf("managed service %q is outside module %q", service, module.Name)
-		}
-	}
 	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", module.Name))
 	if workspace.Gitops != nil {
 		ownedPath = filepath.ToSlash(filepath.Join(workspace.Gitops.Path, ownedPath))
 	}
 	options := &RenderOptions{
 		Destination: destination,
-		Module:      module.Name, Services: services, OwnedPath: ownedPath, ServiceGraph: serviceGraph,
-		Environment: env.Name, AppProject: project,
-		Promotable: true,
+		Module:      module.Name,
+		Environment: env.Name,
+		AppProject:  project,
+		Promotable:  true,
+		OwnedPath:   ownedPath,
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
-		if includeBootstrap {
-			static := filepath.Join(module.Dir(), "deployment", "kustomize")
-			if info, statErr := os.Stat(static); statErr == nil && info.IsDir() {
-				if copyErr := copyEnvironmentBootstrap(static, env.Name, filepath.Join(stage, "bootstrap")); copyErr != nil {
-					return fmt.Errorf("copy module environment bootstrap: %w", copyErr)
-				}
-			} else if statErr != nil && !os.IsNotExist(statErr) {
-				return fmt.Errorf("inspect module kustomize tree: %w", statErr)
-			}
-		}
+		services := make([]*resources.Service, 0, len(module.ServiceReferences))
 		for _, reference := range module.ServiceReferences {
-			if _, isManaged := managed[reference.Name]; isManaged {
-				continue
-			}
 			service, err := module.LoadServiceFromName(ctx, reference.Name)
 			if err != nil {
 				return fmt.Errorf("load service %s: %w", reference.Name, err)
 			}
-			target := filepath.Join(stage, "services", service.Name)
-			output, err := renderServiceFlow(ctx, workspace, module, service, env, true, sink, func(_ *resources.Module, _ *resources.Service) string {
-				return target
-			})
-			if err != nil {
+			services = append(services, service)
+		}
+		roots, err := moduleRenderRoots(module.Name, services)
+		if err != nil {
+			return err
+		}
+		outputs := make(map[string]*builderv0.DeploymentOutput)
+		for _, service := range roots {
+			if err := renderServiceFlow(
+				ctx,
+				workspace,
+				module,
+				service,
+				env,
+				false,
+				sink,
+				func(_ *resources.Module, rendered *resources.Service) string {
+					return filepath.Join(stage, "services", rendered.Name)
+				},
+				func(rendered map[string]*builderv0.DeploymentOutput) {
+					for unique, output := range rendered {
+						outputs[unique] = output
+					}
+				},
+			); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
-			for index := range options.ServiceGraph {
-				if options.ServiceGraph[index].Service == service.Name {
-					options.ServiceGraph[index].Output = kubernetesOutputInventory(output)
-					break
+		}
+		for _, service := range services {
+			_, managed := env.ManagedServices[service.Name]
+			entry := InventoryService{
+				Module:  module.Name,
+				Service: service.Name,
+				Managed: managed,
+			}
+			if managed {
+				if err := os.RemoveAll(filepath.Join(stage, "services", service.Name)); err != nil {
+					return fmt.Errorf("remove managed service %s output: %w", service.Name, err)
+				}
+			} else {
+				entry.Path = filepath.ToSlash(filepath.Join("services", service.Name))
+				entry.Output = inventoryKubernetesOutput(outputs[resources.ServiceUnique(module.Name, service.Name)])
+				if entry.Output == nil {
+					return fmt.Errorf("service %s returned no Kubernetes deployment evidence", service.Name)
 				}
 			}
+			options.ServiceGraph = append(options.ServiceGraph, entry)
+		}
+		sort.Slice(options.ServiceGraph, func(i, j int) bool {
+			return options.ServiceGraph[i].Service < options.ServiceGraph[j].Service
+		})
+		if !includeBootstrap || module.Agent != nil {
+			return nil
+		}
+		static := filepath.Join(module.Dir(), "deployment", "kustomize")
+		info, err := os.Stat(static)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect module kustomize tree: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("module kustomize path is not a directory")
+		}
+		if err := copyEnvironmentBootstrap(static, env.Name, filepath.Join(stage, "bootstrap")); err != nil {
+			return fmt.Errorf("copy module environment bootstrap: %w", err)
 		}
 		return nil
 	})
 }
 
-func selectedManagedServices(workspace *resources.Workspace, environment string) (map[string]struct{}, error) {
-	data, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
-	if err != nil {
-		return nil, err
+func moduleRenderRoots(module string, services []*resources.Service) ([]*resources.Service, error) {
+	members := make(map[string]bool, len(services))
+	for _, service := range services {
+		members[service.Name] = true
 	}
-	var document struct {
-		Environments []struct {
-			Name            string         `yaml:"name"`
-			ManagedServices map[string]any `yaml:"managed-services"`
-		} `yaml:"environments"`
-	}
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		return nil, fmt.Errorf("decode managed service graph: %w", err)
-	}
-	managed := map[string]struct{}{}
-	for _, candidate := range document.Environments {
-		if candidate.Name != environment {
-			continue
+	required := make(map[string]bool, len(services))
+	for _, service := range services {
+		for _, dependency := range service.ServiceDependencies {
+			if (dependency.Module == "" || dependency.Module == module) && members[dependency.Name] {
+				required[dependency.Name] = true
+			}
 		}
-		for service := range candidate.ManagedServices {
-			managed[service] = struct{}{}
-		}
-		break
 	}
-	return managed, nil
+	var roots []*resources.Service
+	for _, service := range services {
+		if !required[service.Name] {
+			roots = append(roots, service)
+		}
+	}
+	if len(services) > 0 && len(roots) == 0 {
+		return nil, fmt.Errorf("module %s service graph has no entry point", module)
+	}
+	return roots, nil
 }
 
-func kubernetesOutputInventory(output *builderv0.KubernetesDeploymentOutput) *KubernetesOutputInventory {
-	if output == nil {
-		return nil
+func copySelectedEnvironmentBootstrap(moduleDir, environment, destination string) (bool, error) {
+	static := filepath.Join(moduleDir, "deployment", "kustomize")
+	info, err := os.Stat(static)
+	if os.IsNotExist(err) {
+		return false, nil
 	}
-	validation := output.GetValidation()
-	violations := append([]string{}, validation.GetViolations()...)
-	return &KubernetesOutputInventory{
-		Kind:            output.GetKind().String(),
-		Profile:         output.GetProfile().String(),
-		ContractVersion: output.GetContractVersion(),
-		Validation: KubernetesValidationInventory{
-			StaticValidation:     validation.GetStaticValidation().String(),
-			ServerSideValidation: validation.GetServerSideValidation().String(),
-			Promotable:           validation.GetPromotable(),
-			Violations:           violations,
-		},
+	if err != nil {
+		return false, fmt.Errorf("inspect module kustomize tree: %w", err)
 	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("module kustomize path is not a directory")
+	}
+	if err := copyEnvironmentBootstrap(
+		static,
+		environment,
+		filepath.Join(destination, "kustomize"),
+	); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func copyEnvironmentBootstrap(source, environment, destination string) error {
@@ -177,11 +201,23 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, "services", module.Name, service.Name)
 	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination,
-		Module:      module.Name, Service: service.Name, Environment: env.Name, AppProject: project,
-		Promotable: true,
+		Module:      module.Name,
+		Service:     service.Name,
+		Environment: env.Name,
+		AppProject:  project,
+		Promotable:  true,
 	}, func(ctx context.Context, stage string) error {
-		_, err := renderServiceFlow(ctx, workspace, module, service, env, standAlone, sink, serviceRenderDestinations(stage))
-		return err
+		return renderServiceFlow(
+			ctx,
+			workspace,
+			module,
+			service,
+			env,
+			standAlone,
+			sink,
+			serviceRenderDestinations(stage),
+			nil,
+		)
 	})
 }
 
@@ -200,10 +236,23 @@ func renderServiceFlow(
 	standAlone bool,
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,
-) (_ *builderv0.KubernetesDeploymentOutput, result error) {
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
+	record func(map[string]*builderv0.DeploymentOutput),
+) (result error) {
+	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
+		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
+	}
+	builder.SetRepository(env.Registry.URL)
+	if env.Cluster != nil && env.Cluster.Kind == "k3d" {
+		if env.Registry.Auth != "" {
+			if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
+				return fmt.Errorf("authenticate snapshot registry: %w", err)
+			}
+		}
+		orchestration.SetBuilderPush()
+	}
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if sink != nil {
 		flow.WithOutputSink(sink)
@@ -215,41 +264,36 @@ func renderServiceFlow(
 		}
 	}()
 	if err := flow.InitManagers(ctx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := flow.Load(ctx); err != nil {
-		return nil, err
+		return err
 	}
-	capture := &deploymentOutputCapture{}
-	flow.WithDeploymentManager(capture)
+	flow.WithDeploymentManager(gitOpsDeploymentOutputManager{})
 	flow.WithDeploymentDestination(destination)
 	flow.WithKubernetesOutputProfile(
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
 	)
 	if err := flow.Deploy(ctx); err != nil {
-		return nil, err
+		return err
 	}
-	return capture.output, nil
+	if record != nil {
+		record(flow.DeploymentOutputs())
+	}
+	return nil
 }
 
-type deploymentOutputCapture struct {
-	output *builderv0.KubernetesDeploymentOutput
-}
+type gitOpsDeploymentOutputManager struct{}
 
-func (*deploymentOutputCapture) RequiresDeploymentOutput() bool {
+func (gitOpsDeploymentOutputManager) RequiresDeploymentOutput() bool {
 	return true
 }
 
-func (capture *deploymentOutputCapture) Handle(
-	_ context.Context,
-	_ *resources.Service,
-	_ *resources.Module,
-	output *builderv0.DeploymentOutput,
+func (gitOpsDeploymentOutputManager) Handle(
+	context.Context,
+	*resources.Service,
+	*resources.Module,
+	*builderv0.DeploymentOutput,
 ) error {
-	kubernetes := output.GetKubernetes()
-	if kubernetes == nil {
-		return fmt.Errorf("plugin returned no Kubernetes deployment output")
-	}
-	capture.output = proto.Clone(kubernetes).(*builderv0.KubernetesDeploymentOutput)
 	return nil
 }

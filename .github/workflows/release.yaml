@@ -102,15 +102,6 @@ jobs:
             dist/checksums.txt
           (cd dist && sha256sum --check checksums.txt)
 
-      - name: Enable immutable GitHub releases
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          gh api \
-            --method PUT \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            repos/codefly-dev/cli/immutable-releases
-
       - name: Publish the immutable release and Homebrew cask
         env:
           CODEFLY_RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/codefly-release-signing-key.pem

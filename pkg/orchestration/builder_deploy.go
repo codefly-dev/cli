@@ -29,10 +29,19 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get ConfigurationManager information")
 	}
 
+	workspaceConfigurations, err := b.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(
+		ctx,
+		b.instance.Service.WorkspaceConfigurationDependencies...,
+	)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get workspace configurations")
+	}
+
 	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsFor(ctx, b.instance.Identity)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
+	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
 	profile := kubernetesOutputProfile(b.world)
 	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
 	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
@@ -71,6 +80,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
+	dockerContext.ImageDigest = b.imageDigest
 
 	deploy, err := deployments.GetKubernetesDeployment(
 		ctx,
@@ -126,6 +136,9 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		validationContext,
 	); err != nil {
 		return nil, w.Wrapf(err, "cannot verify service deployment output")
+	}
+	if resp.Deployment != nil {
+		b.deploymentOutput = proto.Clone(resp.Deployment).(*builderv0.DeploymentOutput)
 	}
 
 	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Identity, resp.Configuration)

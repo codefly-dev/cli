@@ -873,7 +873,7 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Service: opts.Service, Environment: opts.Environment,
-		AppProject: opts.AppProject, OwnedPath: opts.OwnedPath,
+		AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
 		ServiceGraph: append([]InventoryService(nil), opts.ServiceGraph...),
 	}
 	if len(inventory.ServiceGraph) == 0 {

@@ -171,7 +171,10 @@ func TestSelectEnvironmentConcurrentOverridesDoNotContaminate(t *testing.T) {
 // moment core grows the struct with a field the clone would silently share,
 // which would quietly reintroduce cross-flow contamination.
 func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
-	deepCopied := map[string]bool{"Cluster": true, "Registry": true, "Secrets": true}
+	deepCopied := map[string]bool{
+		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
+		"ManagedServices": true, "Secrets": true,
+	}
 	typ := reflect.TypeOf(resources.Environment{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)

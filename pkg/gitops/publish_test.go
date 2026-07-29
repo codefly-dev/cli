@@ -448,7 +448,7 @@ func TestRollbackRePromotesPriorReviewedTree(t *testing.T) {
 	}
 	mergePromotionToMain(t, remote, request.PromotionBranch)
 	if err := writeReceipt(workspace.Dir(), "evidence", "first.json", Evidence{
-		SchemaVersion: SchemaVersion, Module: "payments", Environment: "production",
+		SchemaVersion: EvidenceSchemaVersion, Module: "payments", Environment: "production",
 		RenderDigest: first.RenderDigest, SignedCommit: first.Commit, Tree: first.Tree,
 		ArgoRevision: first.Commit, Cluster: "local-k3d", Health: "Healthy",
 		Review: ReviewEvidence{
@@ -481,7 +481,7 @@ func TestRollbackRequiresEvidenceForSelectedModuleAndEnvironment(t *testing.T) {
 	workspace := loadGitopsWorkspace(t, remote)
 	revision := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main")
 	if err := writeReceipt(workspace.Dir(), "evidence", "other.json", Evidence{
-		SchemaVersion: SchemaVersion, Module: "other", Environment: "production",
+		SchemaVersion: EvidenceSchemaVersion, Module: "other", Environment: "production",
 		SignedCommit: revision, ArgoRevision: revision, Health: "Healthy",
 		Review: ReviewEvidence{
 			State: "LOCAL_REVIEW_REF", ReviewDecision: "LOCAL_QUALIFIED",

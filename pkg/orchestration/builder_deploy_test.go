@@ -78,6 +78,37 @@ func TestPromotableDeploymentInputsRejectSecretStructuredData(t *testing.T) {
 	require.EqualError(t, err, `structured secret configuration "certificate" requires typed Kubernetes key references`)
 }
 
+func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecrets(t *testing.T) {
+	workspaceConfiguration := &basev0.Configuration{
+		Origin: resources.ConfigurationWorkspace,
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "workos",
+			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "MODE", Value: "production"},
+				{Key: "WORKOS_CLIENT_SECRET", Value: "credential-bearing-value", Secret: true},
+			},
+		}},
+	}
+
+	_, dependencies, references, err := promotableDeploymentConfigurations(
+		nil,
+		[]*basev0.Configuration{workspaceConfiguration},
+		"accounts-secrets",
+	)
+	require.NoError(t, err)
+	values := dependencies[0].GetInfos()[0].GetConfigurationValues()
+	require.Len(t, values, 1)
+	require.Equal(t, "MODE", values[0].GetKey())
+	require.Equal(t, "production", values[0].GetValue())
+	require.False(t, values[0].GetSecret())
+	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
+		"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORKOS__WORKOS_CLIENT_SECRET": {
+			Name: "accounts-secrets",
+			Key:  "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORKOS__WORKOS_CLIENT_SECRET",
+		},
+	}, references)
+}
+
 func TestKubernetesOutputProfileReservesEphemeralForDirectLocalApply(t *testing.T) {
 	require.Equal(t,
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,

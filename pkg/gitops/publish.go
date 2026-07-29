@@ -288,10 +288,11 @@ func validateModuleServiceGraph(
 	if err != nil {
 		return fmt.Errorf("load rendered module %q: %w", moduleName, err)
 	}
-	managed, err := selectedManagedServices(workspace, environment)
+	selectedEnvironment, err := orchestration.SelectEnvironment(workspace, environment)
 	if err != nil {
 		return err
 	}
+	managed := selectedEnvironment.ManagedServices
 	declared := make([]string, 0, len(module.ServiceReferences))
 	for _, reference := range module.ServiceReferences {
 		declared = append(declared, reference.Name)
@@ -978,7 +979,7 @@ func requireReviewedRevision(root, module, environment, revision string) error {
 		}
 		reviewed := evidence.Review.State == "MERGED" && evidence.Review.ReviewDecision == approvedReviewDecision ||
 			evidence.Review.State == "LOCAL_REVIEW_REF" && evidence.Review.ReviewDecision == "LOCAL_QUALIFIED"
-		if evidence.SchemaVersion == SchemaVersion && evidence.Module == module && evidence.Environment == environment &&
+		if evidence.SchemaVersion == EvidenceSchemaVersion && evidence.Module == module && evidence.Environment == environment &&
 			evidence.Health == healthyStatus && reviewed &&
 			evidence.SignedCommit == revision {
 			return nil
