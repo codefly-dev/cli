@@ -28,10 +28,19 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get ConfigurationManager information")
 	}
 
+	workspaceConfigurations, err := b.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(
+		ctx,
+		b.instance.Service.WorkspaceConfigurationDependencies...,
+	)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get workspace configurations")
+	}
+
 	dependenciesConfigurations, err := b.world.SharedState.GetDependentConfigurationsFor(ctx, b.instance.Identity)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
+	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
 
 	networkMappings, err := b.world.RemoteNetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)
 	if err != nil {

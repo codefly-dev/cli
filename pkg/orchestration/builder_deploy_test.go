@@ -78,6 +78,35 @@ func TestPromotableDeploymentInputsRejectSecretStructuredData(t *testing.T) {
 	require.EqualError(t, err, `secret configuration data "certificate" has no Kubernetes Secret key reference`)
 }
 
+func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecrets(t *testing.T) {
+	workspaceConfiguration := &basev0.Configuration{
+		Origin: resources.ConfigurationWorkspace,
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "workos",
+			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "MODE", Value: "production"},
+				{Key: "WORKOS_CLIENT_SECRET", Value: "credential-bearing-value", Secret: true},
+			},
+		}},
+	}
+
+	_, dependencies, references, err := promotableDeploymentInputs(
+		"accounts",
+		nil,
+		[]*basev0.Configuration{workspaceConfiguration},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []*basev0.ConfigurationValue{
+		{Key: "MODE", Value: "production"},
+	}, dependencies[0].GetInfos()[0].GetConfigurationValues())
+	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
+		"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORKOS__WORKOS_CLIENT_SECRET": {
+			Name: "accounts-secrets",
+			Key:  "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORKOS__WORKOS_CLIENT_SECRET",
+		},
+	}, references)
+}
+
 func TestKubernetesOutputProfileDefaultsByClusterAndHonorsExplicitGitOps(t *testing.T) {
 	require.Equal(t,
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
