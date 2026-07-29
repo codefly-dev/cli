@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 )
 
@@ -60,21 +61,26 @@ func (p *planeImpl) ObserveGitOps(ctx context.Context, request gitops.ObserveReq
 		return gitops.ObserveResult{}, err
 	}
 	request.WorkspaceRoot = workspace.Dir()
+	env, err := orchestration.SelectEnvironment(workspace, request.Environment)
+	if err != nil {
+		return gitops.ObserveResult{}, fmt.Errorf("select environment %q: %w", request.Environment, err)
+	}
+	request.Local = env.IsK3d()
 	return gitops.Observe(ctx, request)
 }
 
-func (p *planeImpl) publishGitOps(ctx context.Context, mutation gitops.PublishMutation) (gitops.PublishResult, error) {
+func (p *planeImpl) publishGitOps(ctx context.Context, mutation gitops.PublishMutation, permit mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
 	workspace, err := p.workspace(ctx)
 	if err != nil {
 		return gitops.PublishResult{}, err
 	}
-	return gitops.Publish(ctx, workspace, mutation)
+	return gitops.Publish(ctx, workspace, mutation, permit)
 }
 
-func (p *planeImpl) rollbackGitOps(ctx context.Context, mutation gitops.RollbackMutation) (gitops.PublishResult, error) {
+func (p *planeImpl) rollbackGitOps(ctx context.Context, mutation gitops.RollbackMutation, permit mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
 	workspace, err := p.workspace(ctx)
 	if err != nil {
 		return gitops.PublishResult{}, err
 	}
-	return gitops.Rollback(ctx, workspace, mutation)
+	return gitops.Rollback(ctx, workspace, mutation, permit)
 }

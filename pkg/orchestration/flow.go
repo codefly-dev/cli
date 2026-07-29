@@ -149,7 +149,7 @@ type World struct {
 	Env                   *resources.Environment
 	Mode                  Mode
 	Workspace             *resources.Workspace
-	DeploymentDestination string
+	DeploymentDestination func(*resources.Module, *resources.Service) string
 
 	// DAG
 	Dependencies *architecture.ServiceDependencies
@@ -1573,7 +1573,7 @@ func (flow *Flow) WithDeploymentManager(manager deployments.Manager) {
 	flow.world.RemoteManager = manager
 }
 
-func (flow *Flow) WithDeploymentDestination(destination string) {
+func (flow *Flow) WithDeploymentDestination(destination func(*resources.Module, *resources.Service) string) {
 	flow.world.DeploymentDestination = destination
 }
 

@@ -18,6 +18,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+	"sigs.k8s.io/kustomize/api/krusty"
+	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
 var (
@@ -39,6 +41,12 @@ type manifest struct {
 	group string
 	kind  string
 	value map[string]any
+}
+
+type kustomization struct {
+	path       string
+	directory  string
+	references []string
 }
 
 type projectContract struct {
@@ -121,6 +129,11 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	if err != nil {
 		return err
 	}
+	if project == "" {
+		project = inventory.AppProject
+	} else if inventory.AppProject != project {
+		return fmt.Errorf("render inventory AppProject %q differs from selected AppProject %q", inventory.AppProject, project)
+	}
 	opts := RenderOptions{
 		Module: inventory.Module, Service: inventory.Service,
 		Environment: inventory.Environment, AppProject: project, Promotable: promotable,
@@ -148,7 +161,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 
 func validateTree(root string, opts RenderOptions) error {
 	var manifests []manifest
-	imageReplacements := map[string]struct{}{}
+	var kustomizations []kustomization
 	err := walkRegularFiles(root, func(path, relative string, info os.FileInfo) error {
 		if relative == InventoryFilename {
 			return nil
@@ -164,23 +177,23 @@ func validateTree(root string, opts RenderOptions) error {
 			return fmt.Errorf("%s contains an unresolved placeholder", relative)
 		}
 		extension := strings.ToLower(filepath.Ext(relative))
-		if extension != ".yaml" && extension != ".yml" {
+		if extension != ".yaml" && extension != ".yml" && extension != ".json" {
 			return nil
 		}
-		decoded, replacements, err := decodeYAML(relative, data)
+		decoded, customization, err := decodeYAML(relative, data)
 		if err != nil {
 			return err
 		}
 		manifests = append(manifests, decoded...)
-		for name := range replacements {
-			imageReplacements[name] = struct{}{}
+		if customization != nil {
+			kustomizations = append(kustomizations, *customization)
 		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if len(manifests) == 0 {
+	if len(manifests) == 0 && len(kustomizations) == 0 {
 		return fmt.Errorf("rendered tree contains no Kubernetes manifests")
 	}
 	contract, err := selectProjectContract(manifests, opts.AppProject)
@@ -188,16 +201,37 @@ func validateTree(root string, opts RenderOptions) error {
 		return err
 	}
 	for _, item := range manifests {
-		if err := validateManifest(item, contract, imageReplacements, opts.Promotable); err != nil {
+		if err := validateManifest(item, contract, false); err != nil {
+			return fmt.Errorf("%s: %w", item.path, err)
+		}
+	}
+	if !opts.Promotable {
+		return nil
+	}
+	covered, effective, err := renderKustomizations(root, kustomizations)
+	if err != nil {
+		return err
+	}
+	for _, item := range effective {
+		if err := validateManifest(item, contract, true); err != nil {
+			return fmt.Errorf("%s: %w", item.path, err)
+		}
+	}
+	for _, item := range manifests {
+		source := strings.SplitN(item.path, "#", 2)[0]
+		if covered[source] {
+			continue
+		}
+		if err := validateManifest(item, contract, true); err != nil {
 			return fmt.Errorf("%s: %w", item.path, err)
 		}
 	}
 	return nil
 }
 
-func decodeYAML(path string, data []byte) ([]manifest, map[string]struct{}, error) {
+func decodeYAML(path string, data []byte) ([]manifest, *kustomization, error) {
 	var manifests []manifest
-	replacements := map[string]struct{}{}
+	var customization *kustomization
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	for document := 1; ; document++ {
 		var value any
@@ -215,36 +249,75 @@ func decodeYAML(path string, data []byte) ([]manifest, map[string]struct{}, erro
 		if !ok {
 			return nil, nil, fmt.Errorf("%s document %d: YAML root must be a mapping", path, document)
 		}
-		if filepath.Base(path) == "kustomization.yaml" || root["kind"] == "Kustomization" {
+		if strings.EqualFold(filepath.Ext(path), ".json") && root["apiVersion"] == nil && root["kind"] == nil {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(path))
+		if base == "kustomization.yaml" || base == "kustomization.yml" || base == "kustomization" || root["kind"] == "Kustomization" {
+			if customization != nil {
+				return nil, nil, fmt.Errorf("%s contains multiple Kustomization documents", path)
+			}
 			found, err := validateKustomization(path, root)
 			if err != nil {
 				return nil, nil, err
 			}
-			for name := range found {
-				replacements[name] = struct{}{}
+			customization = &kustomization{
+				path: path, directory: filepath.ToSlash(filepath.Dir(filepath.FromSlash(path))),
+				references: found,
 			}
 			continue
 		}
-		apiVersion, _ := root["apiVersion"].(string)
-		kind, _ := root["kind"].(string)
-		if apiVersion == "" || kind == "" {
-			return nil, nil, fmt.Errorf("%s document %d: Kubernetes manifest requires apiVersion and kind", path, document)
+		decoded, err := decodeManifest(path, fmt.Sprintf("%d", document), root)
+		if err != nil {
+			return nil, nil, err
 		}
-		group := apiVersion
-		if slash := strings.IndexByte(group, '/'); slash >= 0 {
-			group = group[:slash]
-		} else {
-			group = ""
-		}
-		manifests = append(manifests, manifest{path: fmt.Sprintf("%s#%d", path, document), group: group, kind: kind, value: root})
+		manifests = append(manifests, decoded...)
 	}
-	return manifests, replacements, nil
+	return manifests, customization, nil
 }
 
-func validateKustomization(path string, root map[string]any) (map[string]struct{}, error) {
+func decodeManifest(path, location string, root map[string]any) ([]manifest, error) {
+	apiVersion, _ := root["apiVersion"].(string)
+	kind, _ := root["kind"].(string)
+	if apiVersion == "" || kind == "" {
+		return nil, fmt.Errorf("%s document %s: Kubernetes manifest requires apiVersion and kind", path, location)
+	}
+	if apiVersion == "v1" && kind == "List" {
+		items, ok := root["items"].([]any)
+		if !ok {
+			return nil, fmt.Errorf("%s document %s: Kubernetes List items must be an array", path, location)
+		}
+		var manifests []manifest
+		for index, raw := range items {
+			item, ok := raw.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("%s document %s item %d: Kubernetes manifest must be a mapping", path, location, index)
+			}
+			decoded, err := decodeManifest(path, fmt.Sprintf("%s.items[%d]", location, index), item)
+			if err != nil {
+				return nil, err
+			}
+			manifests = append(manifests, decoded...)
+		}
+		return manifests, nil
+	}
+	group := apiVersion
+	if slash := strings.IndexByte(group, '/'); slash >= 0 {
+		group = group[:slash]
+	} else {
+		group = ""
+	}
+	return []manifest{{path: fmt.Sprintf("%s#%s", path, location), group: group, kind: kind, value: root}}, nil
+}
+
+func validateKustomization(path string, root map[string]any) ([]string, error) {
 	if generators, ok := root["secretGenerator"].([]any); ok && len(generators) > 0 {
 		return nil, fmt.Errorf("%s: kustomize secretGenerator values are not allowed", path)
 	}
+	if err := inspectValue(root, nil, false); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	var references []string
 	for _, key := range []string{"resources", "bases", "components", "patchesStrategicMerge"} {
 		values, _ := root[key].([]any)
 		for _, raw := range values {
@@ -259,9 +332,11 @@ func validateKustomization(path string, root map[string]any) (map[string]struct{
 			if filepath.IsAbs(filepath.FromSlash(value)) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 				return nil, fmt.Errorf("%s: kustomize %s %q escapes the owned tree", path, key, value)
 			}
+			if key == "resources" || key == "bases" || key == "components" {
+				references = append(references, filepath.ToSlash(clean))
+			}
 		}
 	}
-	replacements := map[string]struct{}{}
 	images, _ := root["images"].([]any)
 	for _, raw := range images {
 		image, ok := raw.(map[string]any)
@@ -269,7 +344,6 @@ func validateKustomization(path string, root map[string]any) (map[string]struct{
 			continue
 		}
 		name, _ := image["name"].(string)
-		newName, _ := image["newName"].(string)
 		digest, _ := image["digest"].(string)
 		if digest == "" {
 			continue
@@ -277,14 +351,77 @@ func validateKustomization(path string, root map[string]any) (map[string]struct{
 		if !digestPattern.MatchString(digest) {
 			return nil, fmt.Errorf("%s: kustomize image %q has invalid digest %q", path, name, digest)
 		}
-		if name != "" {
-			replacements[name] = struct{}{}
-		}
-		if newName != "" {
-			replacements[newName] = struct{}{}
+	}
+	return references, nil
+}
+
+func renderKustomizations(root string, kustomizations []kustomization) (map[string]bool, []manifest, error) {
+	covered := map[string]bool{}
+	if len(kustomizations) == 0 {
+		return covered, nil, nil
+	}
+	byDirectory := map[string]kustomization{}
+	referencedDirectories := map[string]bool{}
+	for _, customization := range kustomizations {
+		byDirectory[customization.directory] = customization
+		for _, reference := range customization.references {
+			if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(reference))); err == nil && info.IsDir() {
+				referencedDirectories[reference] = true
+			}
 		}
 	}
-	return replacements, nil
+	var roots []kustomization
+	for _, customization := range kustomizations {
+		if !referencedDirectories[customization.directory] {
+			roots = append(roots, customization)
+		}
+	}
+	sort.Slice(roots, func(i, j int) bool { return roots[i].path < roots[j].path })
+	var effective []manifest
+	for _, customization := range roots {
+		markKustomizationCoverage(root, customization, byDirectory, covered, map[string]bool{})
+		kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
+		resources, err := kustomizer.Run(filesys.MakeFsOnDisk(), filepath.Join(root, filepath.FromSlash(customization.directory)))
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: build Kustomize output: %w", customization.path, err)
+		}
+		output, err := resources.AsYaml()
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: encode Kustomize output: %w", customization.path, err)
+		}
+		renderedPath := "kustomize:" + filepath.ToSlash(filepath.Join(customization.directory, "rendered.yaml"))
+		decoded, nested, err := decodeYAML(renderedPath, output)
+		if err != nil {
+			return nil, nil, err
+		}
+		if nested != nil {
+			return nil, nil, fmt.Errorf("%s: Kustomize output contains a Kustomization", customization.path)
+		}
+		effective = append(effective, decoded...)
+	}
+	return covered, effective, nil
+}
+
+func markKustomizationCoverage(root string, customization kustomization, byDirectory map[string]kustomization, covered, visiting map[string]bool) {
+	if visiting[customization.directory] {
+		return
+	}
+	visiting[customization.directory] = true
+	for _, reference := range customization.references {
+		path := filepath.Join(root, filepath.FromSlash(reference))
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			if nested, ok := byDirectory[reference]; ok {
+				markKustomizationCoverage(root, nested, byDirectory, covered, visiting)
+			}
+			continue
+		}
+		covered[reference] = true
+	}
+	delete(visiting, customization.directory)
 }
 
 func selectProjectContract(manifests []manifest, selected string) (*projectContract, error) {
@@ -329,6 +466,11 @@ func selectProjectContract(manifests []manifest, selected string) (*projectContr
 	if selected != "" {
 		contract, ok := projects[selected]
 		if !ok {
+			if len(projects) == 0 {
+				return &projectContract{
+					name: selected, destinations: map[string]struct{}{}, clusterResources: map[string]struct{}{},
+				}, nil
+			}
 			return nil, fmt.Errorf("selected AppProject %q is not present in rendered manifests", selected)
 		}
 		return contract, nil
@@ -344,7 +486,7 @@ func selectProjectContract(manifests []manifest, selected string) (*projectContr
 	return nil, nil
 }
 
-func validateManifest(item manifest, contract *projectContract, imageReplacements map[string]struct{}, promotable bool) error {
+func validateManifest(item manifest, contract *projectContract, promotable bool) error {
 	if item.kind == "Secret" {
 		for _, key := range []string{"data", "stringData"} {
 			if values, ok := item.value[key].(map[string]any); ok && len(values) > 0 {
@@ -376,7 +518,7 @@ func validateManifest(item manifest, contract *projectContract, imageReplacement
 			return fmt.Errorf("Application project %q differs from selected AppProject %q", project, contract.name)
 		}
 	}
-	return inspectValue(item.value, nil, imageReplacements, promotable)
+	return inspectValue(item.value, nil, promotable)
 }
 
 func isBuiltInAPIGroup(group string) bool {
@@ -390,7 +532,7 @@ func isBuiltInAPIGroup(group string) bool {
 	}
 }
 
-func inspectValue(value any, path []string, imageReplacements map[string]struct{}, promotable bool) error {
+func inspectValue(value any, path []string, promotable bool) error {
 	switch typed := value.(type) {
 	case map[string]any:
 		if name, ok := typed["name"].(string); ok && isCredentialKey(strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(name))) && scalarHasValue(typed["value"]) {
@@ -405,25 +547,16 @@ func inspectValue(value any, path []string, imageReplacements map[string]struct{
 			if key == "image" && promotable {
 				image, ok := child.(string)
 				if ok && !digestImagePattern.MatchString(image) {
-					base := image
-					if at := strings.IndexByte(base, '@'); at >= 0 {
-						base = base[:at]
-					}
-					if colon := strings.LastIndexByte(base, ':'); colon > strings.LastIndexByte(base, '/') {
-						base = base[:colon]
-					}
-					if _, replaced := imageReplacements[base]; !replaced {
-						return fmt.Errorf("%s image %q is not digest-pinned", strings.Join(next, "."), image)
-					}
+					return fmt.Errorf("%s image %q is not digest-pinned", strings.Join(next, "."), image)
 				}
 			}
-			if err := inspectValue(child, next, imageReplacements, promotable); err != nil {
+			if err := inspectValue(child, next, promotable); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for index, child := range typed {
-			if err := inspectValue(child, append(path, fmt.Sprintf("[%d]", index)), imageReplacements, promotable); err != nil {
+			if err := inspectValue(child, append(path, fmt.Sprintf("[%d]", index)), promotable); err != nil {
 				return err
 			}
 		}
@@ -442,6 +575,9 @@ func inspectValue(value any, path []string, imageReplacements map[string]struct{
 }
 
 func validateURLValue(path, value string) error {
+	if digestPattern.MatchString(value) {
+		return nil
+	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" {
 		return nil
@@ -506,6 +642,7 @@ func buildInventory(root string, opts RenderOptions) (Inventory, error) {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Service: opts.Service, Environment: opts.Environment,
+		AppProject: opts.AppProject,
 	}
 	hash := sha256.New()
 	err := walkRegularFiles(root, func(path, relative string, info os.FileInfo) error {
@@ -562,31 +699,19 @@ func walkRegularFiles(root string, visit func(path, relative string, info os.Fil
 }
 
 func replaceOwnedTree(stage, destination string) error {
-	backup := destination + ".codefly-backup"
-	if _, err := os.Stat(backup); err == nil {
-		return fmt.Errorf("render backup already exists at %s", backup)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("inspect render backup: %w", err)
-	}
-	existed := false
 	if _, err := os.Stat(destination); err == nil {
-		existed = true
-		if err := os.Rename(destination, backup); err != nil {
-			return fmt.Errorf("move previous owned tree: %w", err)
+		if err := exchangeDirectories(stage, destination); err != nil {
+			return fmt.Errorf("atomically replace rendered owned tree: %w", err)
 		}
+		if err := os.RemoveAll(stage); err != nil {
+			return fmt.Errorf("remove previous owned tree: %w", err)
+		}
+		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect previous owned tree: %w", err)
 	}
 	if err := os.Rename(stage, destination); err != nil {
-		if existed {
-			_ = os.Rename(backup, destination)
-		}
 		return fmt.Errorf("install rendered owned tree: %w", err)
-	}
-	if existed {
-		if err := os.RemoveAll(backup); err != nil {
-			return fmt.Errorf("remove previous owned tree backup: %w", err)
-		}
 	}
 	return nil
 }

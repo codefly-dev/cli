@@ -138,6 +138,7 @@ var gitOpsObserveCmd = &cobra.Command{
 			Module: module.Name, Environment: gitOpsEnv, AppProject: gitOpsProject,
 			Applications: gitOpsApplications, Revision: gitOpsRevision,
 			Commit: publication.Commit, Tree: publication.Tree, RenderDigest: publication.RenderDigest,
+			Repository: publication.Repository, Path: publication.Path,
 			PullRequest: publication.PullRequest, Timeout: gitOpsTimeout,
 		})
 		if err != nil {

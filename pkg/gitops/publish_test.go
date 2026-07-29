@@ -9,8 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/core/resources"
 )
+
+var preparedPermit = mutationauthority.NewPreparedPermit()
 
 func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	ctx := context.Background()
@@ -30,10 +33,16 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if plan.ID == "" || plan.Diff == "" || len(plan.Changed) == 0 {
 		t.Fatalf("publication plan is not inspectable: %+v", plan)
 	}
-	if _, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: "sha256:stale"}); err == nil || !strings.Contains(err.Error(), "stale") {
+	if plan.Path != "environments/production/modules/payments" {
+		t.Fatalf("publication path = %q", plan.Path)
+	}
+	if _, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: plan.ID}, mutationauthority.PreparedPermit{}); err == nil || !strings.Contains(err.Error(), "prepared authority") {
+		t.Fatalf("unprepared publication error = %v", err)
+	}
+	if _, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: "sha256:stale"}, preparedPermit); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("stale plan error = %v", err)
 	}
-	result, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: plan.ID})
+	result, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +70,46 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	}
 }
 
+func TestPublishRetriesPRAndReceiptForExistingSignedBranchCommit(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	configureSSHSigning(t)
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(workspace.Dir(), ".codefly", "gitops", "publications", "payments-production.json")); err != nil {
+		t.Fatal(err)
+	}
+	retryPlan, err := PlanPublish(ctx, workspace, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retryPlan.Changed) != 0 || retryPlan.ExistingCommit != first.Commit {
+		t.Fatalf("retry plan = %+v", retryPlan)
+	}
+	retried, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: retryPlan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Commit != first.Commit || retried.Tree != first.Tree || retried.PullRequest != first.PullRequest {
+		t.Fatalf("retried publication = %+v, first = %+v", retried, first)
+	}
+	if _, err := LoadPublishResult(workspace.Dir(), "payments", "production"); err != nil {
+		t.Fatalf("retry did not restore publication receipt: %v", err)
+	}
+}
+
 func TestPublishRejectsUnrelatedExistingPromotionChanges(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
@@ -70,6 +119,7 @@ func TestPublishRejectsUnrelatedExistingPromotionChanges(t *testing.T) {
 	gitRun(t, "", "clone", remote, work)
 	gitRun(t, work, "config", "user.name", "Codefly Test")
 	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
 	gitRun(t, work, "checkout", "-b", "codefly/promote-payments-production")
 	if err := os.WriteFile(filepath.Join(work, "unrelated.txt"), []byte("outside promotion\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -102,7 +152,7 @@ func TestRollbackRePromotesPriorReviewedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: firstPlan.ID})
+	first, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: firstPlan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +163,7 @@ func TestRollbackRePromotesPriorReviewedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: secondPlan.ID})
+	second, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: secondPlan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,12 +191,36 @@ func TestRollbackRePromotesPriorReviewedTree(t *testing.T) {
 	if rollbackPlan.RenderDigest != first.RenderDigest {
 		t.Fatalf("rollback digest = %s, want %s", rollbackPlan.RenderDigest, first.RenderDigest)
 	}
-	rollback, err := Rollback(ctx, workspace, RollbackMutation{Request: rollbackRequest, PlanID: rollbackPlan.ID})
+	rollback, err := Rollback(ctx, workspace, RollbackMutation{Request: rollbackRequest, PlanID: rollbackPlan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rollback.Commit == second.Commit || rollback.Tree == second.Tree {
 		t.Fatalf("rollback did not create a new signed re-promotion: %+v", rollback)
+	}
+}
+
+func TestRollbackRequiresEvidenceForSelectedModuleAndEnvironment(t *testing.T) {
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	revision := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main")
+	if err := writeReceipt(workspace.Dir(), "evidence", "other.json", Evidence{
+		SchemaVersion: SchemaVersion, Module: "other", Environment: "production",
+		SignedCommit: revision, ArgoRevision: revision, Health: "Healthy",
+		Review: ReviewEvidence{
+			State: "LOCAL_REVIEW_REF", ReviewDecision: "LOCAL_QUALIFIED",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := PlanRollback(context.Background(), workspace, RollbackRequest{
+		PublishRequest: PublishRequest{
+			Module: "payments", Environment: "production", Local: true,
+		},
+		ToRevision: revision,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no reviewed Healthy promotion evidence") {
+		t.Fatalf("rollback evidence error = %v", err)
 	}
 }
 
@@ -184,6 +258,7 @@ func mergePromotionToMain(t *testing.T, remote, branch string) {
 	gitRun(t, "", "clone", remote, work)
 	gitRun(t, work, "config", "user.name", "Codefly Test")
 	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
 	gitRun(t, work, "merge", "--ff-only", "origin/"+branch)
 	gitRun(t, work, "push", "origin", "main")
 }
@@ -197,6 +272,7 @@ func createBareRepository(t *testing.T) string {
 	gitRun(t, "", "clone", remote, work)
 	gitRun(t, work, "config", "user.name", "Codefly Test")
 	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("manifests\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +304,7 @@ gitops:
 
 func renderPublishFixture(t *testing.T, root, module, environment, name string) {
 	t.Helper()
-	destination := filepath.Join(root, "deployments", "modules", module)
+	destination := filepath.Join(root, "deployments", "environments", environment, "modules", module)
 	_, err := RenderOwnedTree(context.Background(), RenderOptions{
 		Destination: destination, Module: module, Environment: environment, Promotable: true,
 	}, func(ctx context.Context, stage string) error {

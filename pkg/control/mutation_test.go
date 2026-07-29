@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 )
 
 func TestConfigureMutationAuthorityRejectsUnknownMode(t *testing.T) {
@@ -104,7 +105,7 @@ func TestExecuteDeployMutationReturnsDeploymentEvidence(t *testing.T) {
 	result, err := executeMutation(context.Background(), executor, Mutation{
 		Kind:    MutationDeploy,
 		Payload: DeployRequest{Service: "backend/api"},
-	})
+	}, mutationauthority.NewPreparedPermit())
 
 	if err != nil {
 		t.Fatal(err)
@@ -142,10 +143,10 @@ func (s mutationExecutorStub) runDeploy(context.Context, DeployRequest) (DeployR
 	return s.deployResult, nil
 }
 
-func (mutationExecutorStub) publishGitOps(context.Context, gitops.PublishMutation) (gitops.PublishResult, error) {
+func (mutationExecutorStub) publishGitOps(context.Context, gitops.PublishMutation, mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
 	return gitops.PublishResult{}, nil
 }
 
-func (mutationExecutorStub) rollbackGitOps(context.Context, gitops.RollbackMutation) (gitops.PublishResult, error) {
+func (mutationExecutorStub) rollbackGitOps(context.Context, gitops.RollbackMutation, mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
 	return gitops.PublishResult{}, nil
 }

@@ -205,18 +205,21 @@ branch:
 ```yaml
 gitops:
   repo-url: git@github.com:example/platform-manifests.git
-  path: environments/production
+  path: environments
   branch: main
 ```
 
 Render first writes to a temporary sibling, rejects unsafe or non-promotable
-manifests, and installs only `deployments/modules/<module>`. The installed
+manifests, and installs only
+`deployments/environments/<environment>/modules/<module>`. The installed
 `.codefly-render.json` contains the sorted file inventory and aggregate digest.
 Publish clones `workspace.gitops.repo-url`, stages only
-`<workspace.gitops.path>/modules/<module>`, prints a stable plan and diff, then
+`<workspace.gitops.path>/<environment>/modules/<module>`, prints a stable plan
+and diff, then
 uses a single-use prepared mutation to create a signed commit, push without
 force, and open or update a pull request. Observe requires an approved, merged
-pull request and exact Argo CD revision, project, destination, sync, operation,
+pull request and verifies the published repository subtree digest, exact Argo
+CD revision, source path, project authority, cluster identity, sync, operation,
 and Healthy status before writing evidence under `.codefly/gitops/evidence/`.
 Publishing requires configured Git commit signing and an authenticated `gh`
 session; observation uses the active authenticated `argocd` context. Rollback

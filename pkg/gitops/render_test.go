@@ -92,6 +92,126 @@ stringData:
 	}
 }
 
+func TestRenderRejectsSecretInJSONAndKubernetesList(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		content  string
+	}{
+		{
+			name:     "JSON",
+			filename: "secret.json",
+			content:  `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"database"},"stringData":{"password":"plaintext"}}`,
+		},
+		{
+			name:     "Kubernetes List",
+			filename: "list.yaml",
+			content: `apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: database
+    stringData:
+      password: plaintext
+`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := RenderOwnedTree(context.Background(), RenderOptions{
+				Destination: filepath.Join(t.TempDir(), "owned"),
+				Module:      "payments", Environment: "production", Promotable: true,
+			}, func(ctx context.Context, root string) error {
+				return os.WriteFile(filepath.Join(root, test.filename), []byte(test.content), 0o644)
+			})
+			if err == nil || !strings.Contains(err.Error(), "Secret values") {
+				t.Fatalf("error = %v, want Secret rejection", err)
+			}
+		})
+	}
+}
+
+func TestRenderValidatesEffectiveKustomizeImagesWithinTheirOwnTree(t *testing.T) {
+	tests := []struct {
+		name          string
+		kustomization string
+		extra         bool
+		wantError     string
+	}{
+		{
+			name: "digest replacement",
+			kustomization: `resources:
+  - deployment.yaml
+images:
+  - name: example/api
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`,
+		},
+		{
+			name: "tag override",
+			kustomization: `resources:
+  - deployment.yaml
+images:
+  - name: example/api
+    newTag: latest
+`,
+			wantError: "not digest-pinned",
+		},
+		{
+			name: "replacement does not apply outside its tree",
+			kustomization: `resources:
+  - deployment.yaml
+images:
+  - name: example/api
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`,
+			extra:     true,
+			wantError: "not digest-pinned",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := RenderOwnedTree(context.Background(), RenderOptions{
+				Destination: filepath.Join(t.TempDir(), "owned"),
+				Module:      "payments", Environment: "production", Promotable: true,
+			}, func(ctx context.Context, root string) error {
+				service := filepath.Join(root, "service-a")
+				if err := os.MkdirAll(service, 0o755); err != nil {
+					return err
+				}
+				deployment := strings.Replace(
+					pinnedDeployment,
+					"ghcr.io/codefly-dev/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"example/api:build",
+					1,
+				)
+				if err := os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(deployment), 0o644); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(service, "kustomization.yaml"), []byte(test.kustomization), 0o644); err != nil {
+					return err
+				}
+				if test.extra {
+					if err := os.MkdirAll(filepath.Join(root, "service-b"), 0o755); err != nil {
+						return err
+					}
+					return os.WriteFile(filepath.Join(root, "service-b", "deployment.yaml"), []byte(deployment), 0o644)
+				}
+				return nil
+			})
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("error = %v, want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestRenderInventoryMustRemainCanonical(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "owned")
 	_, err := RenderOwnedTree(context.Background(), RenderOptions{
@@ -112,6 +232,28 @@ func TestRenderInventoryMustRemainCanonical(t *testing.T) {
 	}
 	if _, err := LoadInventory(destination); err == nil || !strings.Contains(err.Error(), "not canonical") {
 		t.Fatalf("non-canonical inventory error = %v", err)
+	}
+}
+
+func TestRenderInventoriesNonKubernetesJSONWithoutTreatingItAsAManifest(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "owned")
+	_, err := RenderOwnedTree(context.Background(), RenderOptions{
+		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
+	}, func(ctx context.Context, root string) error {
+		if err := os.WriteFile(filepath.Join(root, "deployment.yaml"), []byte(pinnedDeployment), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(root, "metadata.json"), []byte(`{"release":"production"}`), 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := LoadInventory(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Files) != 2 {
+		t.Fatalf("inventory files = %+v", inventory.Files)
 	}
 }
 
@@ -238,7 +380,7 @@ metadata:
 spec:
   project: payments
 `
-	_, err := RenderOwnedTree(context.Background(), RenderOptions{
+	result, err := RenderOwnedTree(context.Background(), RenderOptions{
 		Destination: filepath.Join(t.TempDir(), "owned"), Module: "payments",
 		Environment: "production", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, root string) error {
@@ -246,5 +388,11 @@ spec:
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if result.Inventory.AppProject != "payments" {
+		t.Fatalf("inventory AppProject = %q, want payments", result.Inventory.AppProject)
+	}
+	if err := ValidateRenderedTree(result.Path, "other", true); err == nil || !strings.Contains(err.Error(), "differs from selected") {
+		t.Fatalf("mismatched AppProject error = %v", err)
 	}
 }

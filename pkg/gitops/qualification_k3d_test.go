@@ -24,8 +24,8 @@ func TestLocalK3dDisposableGitQualification(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
 	_, err := RenderOwnedTree(context.Background(), RenderOptions{
-		Destination: filepath.Join(workspace.Dir(), "deployments", "modules", "payments"),
-		Module:      "payments", Environment: "local", Promotable: true,
+		Destination: filepath.Join(workspace.Dir(), "deployments", "environments", "local", "modules", "payments"),
+		Module:      "payments", Environment: "local", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		if err := os.WriteFile(filepath.Join(root, "kustomization.yaml"), []byte(`apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -55,7 +55,7 @@ data:
 	if err != nil {
 		t.Fatal(err)
 	}
-	published, err := Publish(context.Background(), workspace, PublishMutation{Request: request, PlanID: plan.ID})
+	published, err := Publish(context.Background(), workspace, PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ spec:
   source:
     repoURL: %s
     targetRevision: main
-    path: environments/modules/payments
+    path: environments/local/modules/payments
   destination:
     server: https://kubernetes.default.svc
     namespace: payments
@@ -137,18 +137,24 @@ fi
 if [ "$1" = "app" ]; then
   exec kubectl --kubeconfig "$CODEFLY_TEST_KUBECONFIG" -n argocd get application "$3" -o json
 fi
+if [ "$1" = "cluster" ]; then
+  printf '{"server":"https://kubernetes.default.svc","name":"%s","config":{"kubeconfig":"%s"}}\n' "$CODEFLY_TEST_CLUSTER" "$CODEFLY_TEST_KUBECONFIG"
+  exit 0
+fi
 exit 2
 `
 	if err := os.WriteFile(argocd, []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CODEFLY_TEST_KUBECONFIG", kubeconfig)
+	t.Setenv("CODEFLY_TEST_CLUSTER", cluster)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	observed, err := Observe(context.Background(), ObserveRequest{
 		WorkspaceRoot: workspace.Dir(), Module: "payments", Environment: "local",
 		AppProject: "payments", Applications: []string{"payments"},
 		Revision: published.Commit, Commit: published.Commit, Tree: published.Tree,
-		RenderDigest: published.RenderDigest, PullRequest: published.PullRequest,
+		RenderDigest: published.RenderDigest, Repository: published.Repository, Path: published.Path,
+		PullRequest: published.PullRequest, Local: true,
 		Timeout: 5 * time.Minute, PollInterval: 2 * time.Second,
 	})
 	if err != nil {

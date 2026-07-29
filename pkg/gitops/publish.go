@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -40,7 +41,10 @@ func PlanPublish(ctx context.Context, workspace *resources.Workspace, request Pu
 	return prepared.plan, nil
 }
 
-func Publish(ctx context.Context, workspace *resources.Workspace, mutation PublishMutation) (PublishResult, error) {
+func Publish(ctx context.Context, workspace *resources.Workspace, mutation PublishMutation, permit mutationauthority.PreparedPermit) (PublishResult, error) {
+	if err := permit.Validate(); err != nil {
+		return PublishResult{}, err
+	}
 	if mutation.PlanID == "" {
 		return PublishResult{}, fmt.Errorf("publish requires an inspected plan ID")
 	}
@@ -64,7 +68,10 @@ func PlanRollback(ctx context.Context, workspace *resources.Workspace, request R
 	return RollbackPlan{PublishPlan: prepared.plan, ToRevision: revision}, nil
 }
 
-func Rollback(ctx context.Context, workspace *resources.Workspace, mutation RollbackMutation) (PublishResult, error) {
+func Rollback(ctx context.Context, workspace *resources.Workspace, mutation RollbackMutation, permit mutationauthority.PreparedPermit) (PublishResult, error) {
+	if err := permit.Validate(); err != nil {
+		return PublishResult{}, err
+	}
 	if mutation.PlanID == "" {
 		return PublishResult{}, fmt.Errorf("rollback requires an inspected plan ID")
 	}
@@ -97,7 +104,7 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 	if err := validatePathComponent("environment", request.Environment); err != nil {
 		return nil, err
 	}
-	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", request.Module)
+	rendered := filepath.Join(workspace.Dir(), "deployments", "environments", request.Environment, "modules", request.Module)
 	var inventory Inventory
 	if restoreRevision == "" {
 		if err := ValidateRenderedTree(rendered, "", true); err != nil {
@@ -124,7 +131,7 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 		cleanup()
 		return nil, err
 	}
-	targetPath := filepath.ToSlash(filepath.Join(pathRoot, "modules", request.Module))
+	targetPath := filepath.ToSlash(filepath.Join(pathRoot, request.Environment, "modules", request.Module))
 	target, err := confinedJoin(repo, targetPath)
 	if err != nil {
 		return fail(err)
@@ -164,7 +171,9 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 		return fail(err)
 	}
 	if len(changed) == 0 {
-		return fail(fmt.Errorf("promotion has no changes"))
+		if branchRevision == "" {
+			return fail(fmt.Errorf("promotion has no changes"))
+		}
 	}
 	diff, err := gitCommand(ctx, repo, "diff", "--cached", "--binary", "--", targetPath)
 	if err != nil {
@@ -174,7 +183,8 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 		Repository: config.RepoURL, RepositorySlug: repositorySlug,
 		Path: targetPath, BaseBranch: baseBranch, BaseRevision: baseRevision,
 		PromotionBranch: promotionBranch, BranchRevision: branchRevision,
-		Module: request.Module, Environment: request.Environment,
+		ExistingCommit: branchRevision,
+		Module:         request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, Changed: changed, Diff: diff,
 	}
 	plan.ID, err = publishPlanID(plan, restoreRevision)
@@ -193,7 +203,7 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 	if !gitObjectPattern.MatchString(request.ToRevision) {
 		return nil, "", fmt.Errorf("rollback target must be an exact Git object ID")
 	}
-	if err := requireReviewedRevision(workspace.Dir(), request.ToRevision); err != nil {
+	if err := requireReviewedRevision(workspace.Dir(), request.Module, request.Environment, request.ToRevision); err != nil {
 		return nil, "", err
 	}
 	config, _, _, _, err := resolveGitops(workspace, request.Local)
@@ -224,7 +234,7 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 	return prepared, revision, nil
 }
 
-func requireReviewedRevision(root, revision string) error {
+func requireReviewedRevision(root, module, environment, revision string) error {
 	directory := filepath.Join(root, ".codefly", "gitops", "evidence")
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -244,7 +254,8 @@ func requireReviewedRevision(root, revision string) error {
 		}
 		reviewed := evidence.Review.State == "MERGED" && evidence.Review.ReviewDecision == "APPROVED" ||
 			evidence.Review.State == "LOCAL_REVIEW_REF" && evidence.Review.ReviewDecision == "LOCAL_QUALIFIED"
-		if evidence.SchemaVersion == SchemaVersion && evidence.Health == "Healthy" && reviewed &&
+		if evidence.SchemaVersion == SchemaVersion && evidence.Module == module && evidence.Environment == environment &&
+			evidence.Health == "Healthy" && reviewed &&
 			(evidence.ArgoRevision == revision || evidence.SignedCommit == revision) {
 			return nil
 		}
@@ -257,14 +268,18 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	if message == "" {
 		message = fmt.Sprintf("Promote %s to %s", request.Module, request.Environment)
 	}
-	if _, err := gitCommand(ctx, prepared.dir, "commit", "-S", "-m", message); err != nil {
-		return PublishResult{}, fmt.Errorf("create signed promotion commit: %w", err)
+	commit := prepared.plan.ExistingCommit
+	if len(prepared.plan.Changed) > 0 {
+		if _, err := gitCommand(ctx, prepared.dir, "commit", "-S", "-m", message); err != nil {
+			return PublishResult{}, fmt.Errorf("create signed promotion commit: %w", err)
+		}
+		var err error
+		commit, err = gitCommand(ctx, prepared.dir, "rev-parse", "HEAD^{commit}")
+		if err != nil {
+			return PublishResult{}, err
+		}
 	}
-	commit, err := gitCommand(ctx, prepared.dir, "rev-parse", "HEAD^{commit}")
-	if err != nil {
-		return PublishResult{}, err
-	}
-	tree, err := gitCommand(ctx, prepared.dir, "rev-parse", "HEAD^{tree}")
+	tree, err := gitCommand(ctx, prepared.dir, "rev-parse", commit+"^{tree}")
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -275,9 +290,11 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	if !strings.Contains(rawCommit, "\ngpgsig ") {
 		return PublishResult{}, fmt.Errorf("promotion commit %s is not signed", commit)
 	}
-	refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
-	if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
-		return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
+	if len(prepared.plan.Changed) > 0 {
+		refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
+		if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
+			return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
+		}
 	}
 	remote, err := gitCommand(ctx, prepared.dir, "ls-remote", "--exit-code", "--refs", "origin", "refs/heads/"+prepared.plan.PromotionBranch)
 	if err != nil {

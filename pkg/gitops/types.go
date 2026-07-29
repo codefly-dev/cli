@@ -12,6 +12,7 @@ type Inventory struct {
 	Module        string          `json:"module"`
 	Service       string          `json:"service,omitempty"`
 	Environment   string          `json:"environment"`
+	AppProject    string          `json:"appProject,omitempty"`
 	Files         []InventoryFile `json:"files"`
 	Digest        string          `json:"digest"`
 }
@@ -55,6 +56,7 @@ type PublishPlan struct {
 	BaseRevision    string   `json:"baseRevision"`
 	PromotionBranch string   `json:"promotionBranch"`
 	BranchRevision  string   `json:"branchRevision,omitempty"`
+	ExistingCommit  string   `json:"existingCommit,omitempty"`
 	Module          string   `json:"module"`
 	Environment     string   `json:"environment"`
 	RenderDigest    string   `json:"renderDigest"`
@@ -102,11 +104,14 @@ type ObserveRequest struct {
 	Environment   string
 	AppProject    string
 	Applications  []string
+	Repository    string
+	Path          string
 	Revision      string
 	Commit        string
 	Tree          string
 	RenderDigest  string
 	PullRequest   string
+	Local         bool
 	Timeout       time.Duration
 	PollInterval  time.Duration
 }
@@ -122,27 +127,33 @@ type ReviewEvidence struct {
 type ApplicationEvidence struct {
 	Name                 string `json:"name"`
 	Project              string `json:"project"`
+	Repository           string `json:"repository"`
+	Path                 string `json:"path"`
 	Sync                 string `json:"sync"`
 	Health               string `json:"health"`
 	Operation            string `json:"operation"`
 	Revision             string `json:"revision"`
 	Cluster              string `json:"cluster"`
+	ClusterIdentity      string `json:"clusterIdentity"`
 	DestinationNamespace string `json:"destinationNamespace,omitempty"`
 }
 
 type Evidence struct {
-	SchemaVersion int                   `json:"schemaVersion"`
-	Module        string                `json:"module"`
-	Environment   string                `json:"environment"`
-	RenderDigest  string                `json:"renderDigest"`
-	SignedCommit  string                `json:"signedCommit"`
-	Tree          string                `json:"tree"`
-	Review        ReviewEvidence        `json:"review"`
-	ArgoRevision  string                `json:"argoRevision"`
-	Cluster       string                `json:"cluster"`
-	Health        string                `json:"health"`
-	Applications  []ApplicationEvidence `json:"applications"`
-	ObservedAt    time.Time             `json:"observedAt"`
+	SchemaVersion   int                   `json:"schemaVersion"`
+	Module          string                `json:"module"`
+	Environment     string                `json:"environment"`
+	RenderDigest    string                `json:"renderDigest"`
+	SignedCommit    string                `json:"signedCommit"`
+	Tree            string                `json:"tree"`
+	Review          ReviewEvidence        `json:"review"`
+	Repository      string                `json:"repository"`
+	Path            string                `json:"path"`
+	ArgoRevision    string                `json:"argoRevision"`
+	Cluster         string                `json:"cluster"`
+	ClusterIdentity string                `json:"clusterIdentity"`
+	Health          string                `json:"health"`
+	Applications    []ApplicationEvidence `json:"applications"`
+	ObservedAt      time.Time             `json:"observedAt"`
 }
 
 type ObserveResult struct {

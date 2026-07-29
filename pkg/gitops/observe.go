@@ -2,8 +2,11 @@ package gitops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -22,7 +25,16 @@ type argoApplication struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
-		Project     string `json:"project"`
+		Project string `json:"project"`
+		Source  struct {
+			RepoURL        string `json:"repoURL"`
+			Path           string `json:"path"`
+			TargetRevision string `json:"targetRevision"`
+		} `json:"source"`
+		Sources []struct {
+			RepoURL string `json:"repoURL"`
+			Path    string `json:"path"`
+		} `json:"sources"`
 		Destination struct {
 			Server    string `json:"server"`
 			Name      string `json:"name"`
@@ -63,11 +75,20 @@ type argoProject struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
+		SourceRepos  []string `json:"sourceRepos"`
 		Destinations []struct {
 			Server    string `json:"server"`
 			Name      string `json:"name"`
 			Namespace string `json:"namespace"`
 		} `json:"destinations"`
+		ClusterResourceWhitelist []struct {
+			Group string `json:"group"`
+			Kind  string `json:"kind"`
+		} `json:"clusterResourceWhitelist"`
+		NamespaceResourceWhitelist []struct {
+			Group string `json:"group"`
+			Kind  string `json:"kind"`
+		} `json:"namespaceResourceWhitelist"`
 	} `json:"spec"`
 }
 
@@ -87,6 +108,12 @@ func Observe(ctx context.Context, request ObserveRequest) (ObserveResult, error)
 	if len(request.Applications) == 0 {
 		return ObserveResult{}, fmt.Errorf("at least one Argo CD application is required")
 	}
+	if request.Repository == "" || request.Path == "" {
+		return ObserveResult{}, fmt.Errorf("published repository and path are required")
+	}
+	if request.Local && request.Environment != "local" {
+		return ObserveResult{}, fmt.Errorf("local review qualification is limited to the local environment")
+	}
 	if request.Revision == "" || request.Commit == "" || request.Tree == "" || request.RenderDigest == "" {
 		return ObserveResult{}, fmt.Errorf("revision, signed commit, tree, and render digest are required")
 	}
@@ -100,15 +127,23 @@ func Observe(ctx context.Context, request ObserveRequest) (ObserveResult, error)
 	if !digestPattern.MatchString(request.RenderDigest) {
 		return ObserveResult{}, fmt.Errorf("render digest must be an exact SHA-256 digest")
 	}
+	seenApplications := map[string]struct{}{}
 	for _, application := range request.Applications {
 		if err := validateArgoName("application", application); err != nil {
 			return ObserveResult{}, err
 		}
+		if _, exists := seenApplications[application]; exists {
+			return ObserveResult{}, fmt.Errorf("Argo CD application %s is selected more than once", application)
+		}
+		seenApplications[application] = struct{}{}
 	}
 	if err := validateArgoName("AppProject", request.AppProject); err != nil {
 		return ObserveResult{}, err
 	}
-	review, err := observeReview(ctx, request.PullRequest, request.Revision, request.Commit)
+	if err := verifyPublishedRevision(ctx, request); err != nil {
+		return ObserveResult{}, err
+	}
+	review, err := observeReview(ctx, request.PullRequest, request.Revision, request.Commit, request.Repository, request.Local)
 	if err != nil {
 		return ObserveResult{}, err
 	}
@@ -129,14 +164,13 @@ func Observe(ctx context.Context, request ObserveRequest) (ObserveResult, error)
 
 	names := append([]string(nil), request.Applications...)
 	sort.Strings(names)
-	completed := map[string]ApplicationEvidence{}
 	last := map[string]ApplicationEvidence{}
-	for len(completed) != len(names) {
+	healthySweeps := 0
+	for {
+		current := map[string]ApplicationEvidence{}
+		allHealthy := true
 		for _, name := range names {
-			if _, ok := completed[name]; ok {
-				continue
-			}
-			app, evidence, done, err := observeApplication(observeCtx, project, name, request.Revision)
+			app, evidence, done, err := observeApplication(observeCtx, project, name, request)
 			if err != nil {
 				return ObserveResult{}, err
 			}
@@ -145,10 +179,18 @@ func Observe(ctx context.Context, request ObserveRequest) (ObserveResult, error)
 				return ObserveResult{}, fmt.Errorf("Argo CD application %s belongs to AppProject %s, expected %s", name, app.Spec.Project, request.AppProject)
 			}
 			if done {
-				completed[name] = evidence
+				current[name] = evidence
+			} else {
+				allHealthy = false
 			}
 		}
-		if len(completed) == len(names) {
+		if allHealthy {
+			healthySweeps++
+		} else {
+			healthySweeps = 0
+		}
+		if healthySweeps == 2 {
+			last = current
 			break
 		}
 		timer := time.NewTimer(interval)
@@ -168,16 +210,25 @@ func Observe(ctx context.Context, request ObserveRequest) (ObserveResult, error)
 	evidence := Evidence{
 		SchemaVersion: SchemaVersion, Module: request.Module, Environment: request.Environment,
 		RenderDigest: request.RenderDigest, SignedCommit: request.Commit, Tree: request.Tree,
-		Review: review, ArgoRevision: request.Revision, Health: "Healthy", ObservedAt: time.Now().UTC(),
+		Review: review, Repository: request.Repository, Path: request.Path,
+		ArgoRevision: request.Revision, Health: "Healthy", ObservedAt: time.Now().UTC(),
 	}
 	for _, name := range names {
-		item := completed[name]
+		item := last[name]
 		if evidence.Cluster == "" {
 			evidence.Cluster = item.Cluster
 		} else if evidence.Cluster != item.Cluster {
 			return ObserveResult{}, fmt.Errorf("applications reconcile to different clusters: %s and %s", evidence.Cluster, item.Cluster)
 		}
 		evidence.Applications = append(evidence.Applications, item)
+	}
+	clusterIdentity, err := loadClusterIdentity(ctx, evidence.Cluster)
+	if err != nil {
+		return ObserveResult{}, err
+	}
+	evidence.ClusterIdentity = clusterIdentity
+	for index := range evidence.Applications {
+		evidence.Applications[index].ClusterIdentity = clusterIdentity
 	}
 	filename := request.Module + "-" + request.Environment + "-" + request.Revision + ".json"
 	if err := writeReceipt(request.WorkspaceRoot, "evidence", filename, evidence); err != nil {
@@ -210,10 +261,31 @@ func loadArgoProject(ctx context.Context, name string) (argoProject, error) {
 			return argoProject{}, fmt.Errorf("AppProject %s contains wildcard destination authority", name)
 		}
 	}
+	for _, repository := range project.Spec.SourceRepos {
+		if strings.Contains(repository, "*") {
+			return argoProject{}, fmt.Errorf("AppProject %s contains wildcard source repository authority", name)
+		}
+	}
+	for _, whitelist := range []struct {
+		label     string
+		resources []struct {
+			Group string `json:"group"`
+			Kind  string `json:"kind"`
+		}
+	}{
+		{label: "cluster", resources: project.Spec.ClusterResourceWhitelist},
+		{label: "namespace", resources: project.Spec.NamespaceResourceWhitelist},
+	} {
+		for _, resource := range whitelist.resources {
+			if resource.Kind == "" || strings.Contains(resource.Group, "*") || strings.Contains(resource.Kind, "*") {
+				return argoProject{}, fmt.Errorf("AppProject %s contains wildcard or incomplete %s resource authority", name, whitelist.label)
+			}
+		}
+	}
 	return project, nil
 }
 
-func observeApplication(ctx context.Context, project argoProject, name, expectedRevision string) (argoApplication, ApplicationEvidence, bool, error) {
+func observeApplication(ctx context.Context, project argoProject, name string, request ObserveRequest) (argoApplication, ApplicationEvidence, bool, error) {
 	output, err := command(ctx, "", "argocd", "app", "get", name, "--refresh", "-o", "json")
 	if err != nil {
 		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("observe Argo CD application %s: %w", name, err)
@@ -224,6 +296,35 @@ func observeApplication(ctx context.Context, project argoProject, name, expected
 	}
 	if app.Metadata.Name != name {
 		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD returned application %q, expected %q", app.Metadata.Name, name)
+	}
+	if len(app.Spec.Sources) > 0 {
+		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD application %s uses multiple sources; exact publication identity is ambiguous", name)
+	}
+	if app.Spec.Source.RepoURL == "" || app.Spec.Source.Path == "" {
+		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD application %s source repository and path are required", name)
+	}
+	if !projectAllowsSource(project, app.Spec.Source.RepoURL) {
+		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD application %s source repository is outside AppProject %s", name, project.Metadata.Name)
+	}
+	if !request.Local {
+		matches, err := repositoriesMatch(request.Repository, app.Spec.Source.RepoURL)
+		if err != nil {
+			return argoApplication{}, ApplicationEvidence{}, false, err
+		}
+		if !matches {
+			return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD application %s observes repository %s, expected %s", name, app.Spec.Source.RepoURL, request.Repository)
+		}
+	}
+	sourcePath, err := validateRelativePath(app.Spec.Source.Path)
+	if err != nil {
+		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD application %s source path: %w", name, err)
+	}
+	expectedPath, err := validateRelativePath(request.Path)
+	if err != nil {
+		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("published path: %w", err)
+	}
+	if sourcePath != expectedPath {
+		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD application %s observes path %s, expected %s", name, sourcePath, expectedPath)
 	}
 	for _, condition := range app.Status.Conditions {
 		kind := strings.ToLower(condition.Type + " " + condition.Message)
@@ -239,10 +340,10 @@ func observeApplication(ctx context.Context, project argoProject, name, expected
 		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD application %s destination is outside AppProject %s", name, project.Metadata.Name)
 	}
 	for _, resource := range app.Status.Resources {
-		if resource.Namespace != "" && resource.Namespace != app.Spec.Destination.Namespace {
+		if !projectAllowsResource(project, app.Spec.Destination.Server, app.Spec.Destination.Name, resource.Group, resource.Kind, resource.Namespace) {
 			return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf(
-				"Argo CD application %s resource %s/%s is outside destination namespace %s",
-				name, resource.Kind, resource.Name, app.Spec.Destination.Namespace,
+				"Argo CD application %s resource %s/%s is outside AppProject %s authority",
+				name, resource.Kind, resource.Name, project.Metadata.Name,
 			)
 		}
 	}
@@ -260,7 +361,8 @@ func observeApplication(ctx context.Context, project argoProject, name, expected
 		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD application %s uses multiple source revisions; exact publication identity is ambiguous", name)
 	}
 	evidence := ApplicationEvidence{
-		Name: name, Project: app.Spec.Project, Sync: app.Status.Sync.Status,
+		Name: name, Project: app.Spec.Project, Repository: app.Spec.Source.RepoURL, Path: sourcePath,
+		Sync:   app.Status.Sync.Status,
 		Health: app.Status.Health.Status, Operation: app.Status.OperationState.Phase,
 		Revision: revision, Cluster: cluster, DestinationNamespace: app.Spec.Destination.Namespace,
 	}
@@ -271,8 +373,8 @@ func observeApplication(ctx context.Context, project argoProject, name, expected
 	done := app.Status.Sync.Status == "Synced" && app.Status.Health.Status == "Healthy" && app.Status.OperationState.Phase == "Succeeded"
 	if done {
 		for _, observed := range []string{revision, app.Status.OperationState.SyncResult.Revision} {
-			if observed != "" && observed != expectedRevision {
-				return app, evidence, false, fmt.Errorf("Argo CD application %s reconciled revision %s, expected %s", name, observed, expectedRevision)
+			if observed != "" && observed != request.Revision {
+				return app, evidence, false, fmt.Errorf("Argo CD application %s reconciled revision %s, expected %s", name, observed, request.Revision)
 			}
 		}
 		if revision == "" {
@@ -293,11 +395,175 @@ func projectAllows(project argoProject, server, name, namespace string) bool {
 	return false
 }
 
-func observeReview(ctx context.Context, pullRequest, expectedRevision, publishedCommit string) (ReviewEvidence, error) {
+func projectAllowsSource(project argoProject, repository string) bool {
+	for _, allowed := range project.Spec.SourceRepos {
+		if strings.TrimSuffix(allowed, ".git") == strings.TrimSuffix(repository, ".git") {
+			return true
+		}
+		matches, err := repositoriesMatch(allowed, repository)
+		if err == nil && matches {
+			return true
+		}
+	}
+	return false
+}
+
+func projectAllowsResource(project argoProject, server, name, group, kind, namespace string) bool {
+	if namespace == "" {
+		for _, allowed := range project.Spec.ClusterResourceWhitelist {
+			if allowed.Group == group && allowed.Kind == kind {
+				return true
+			}
+		}
+		return false
+	}
+	if !projectAllows(project, server, name, namespace) {
+		return false
+	}
+	if len(project.Spec.NamespaceResourceWhitelist) == 0 {
+		return true
+	}
+	for _, allowed := range project.Spec.NamespaceResourceWhitelist {
+		if allowed.Group == group && allowed.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func repositoriesMatch(left, right string) (bool, error) {
+	leftSlug, leftErr := validateRepositoryURL(left, strings.HasPrefix(left, "file://"))
+	rightSlug, rightErr := validateRepositoryURL(right, strings.HasPrefix(right, "file://"))
+	if leftErr != nil {
+		return false, fmt.Errorf("validate repository %s: %w", left, leftErr)
+	}
+	if rightErr != nil {
+		return false, fmt.Errorf("validate repository %s: %w", right, rightErr)
+	}
+	if leftSlug != "" || rightSlug != "" {
+		return leftSlug != "" && leftSlug == rightSlug, nil
+	}
+	leftURL, _ := filepath.Abs(strings.TrimPrefix(left, "file://"))
+	rightURL, _ := filepath.Abs(strings.TrimPrefix(right, "file://"))
+	return leftURL == rightURL, nil
+}
+
+func verifyPublishedRevision(ctx context.Context, request ObserveRequest) error {
+	if _, err := validateRepositoryURL(request.Repository, request.Local); err != nil {
+		return fmt.Errorf("published repository: %w", err)
+	}
+	targetPath, err := validateRelativePath(request.Path)
+	if err != nil {
+		return fmt.Errorf("published path: %w", err)
+	}
+	temp, err := os.MkdirTemp("", "codefly-gitops-observe-")
+	if err != nil {
+		return fmt.Errorf("create observation checkout: %w", err)
+	}
+	defer os.RemoveAll(temp)
+	repo := filepath.Join(temp, "repo")
+	if _, err := gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", request.Repository, repo); err != nil {
+		return fmt.Errorf("clone published repository: %w", err)
+	}
+	revision, err := gitCommand(ctx, repo, "rev-parse", request.Revision+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve published revision %s: %w", request.Revision, err)
+	}
+	if revision != request.Revision {
+		return fmt.Errorf("published revision resolved to %s, expected %s", revision, request.Revision)
+	}
+	commit, err := gitCommand(ctx, repo, "rev-parse", request.Commit+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve signed publication commit %s: %w", request.Commit, err)
+	}
+	if commit != request.Commit {
+		return fmt.Errorf("signed publication commit resolved to %s, expected %s", commit, request.Commit)
+	}
+	if _, err := gitCommand(ctx, repo, "merge-base", "--is-ancestor", request.Commit, request.Revision); err != nil {
+		return fmt.Errorf("signed publication commit %s is not contained in reviewed revision %s", request.Commit, request.Revision)
+	}
+	tree, err := gitCommand(ctx, repo, "rev-parse", request.Commit+"^{tree}")
+	if err != nil {
+		return err
+	}
+	if tree != request.Tree {
+		return fmt.Errorf("signed publication commit tree is %s, expected %s", tree, request.Tree)
+	}
+	rawCommit, err := gitCommand(ctx, repo, "cat-file", "-p", request.Commit)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(rawCommit, "\ngpgsig ") {
+		return fmt.Errorf("publication commit %s is not signed", request.Commit)
+	}
+	if _, err := gitCommand(ctx, repo, "checkout", "--quiet", request.Revision, "--", targetPath); err != nil {
+		return fmt.Errorf("checkout published path %s at %s: %w", targetPath, request.Revision, err)
+	}
+	target := filepath.Join(repo, filepath.FromSlash(targetPath))
+	if err := ValidateRenderedTree(target, request.AppProject, true); err != nil {
+		return fmt.Errorf("validate reconciled Git tree: %w", err)
+	}
+	inventory, err := LoadInventory(target)
+	if err != nil {
+		return err
+	}
+	if inventory.Digest != request.RenderDigest {
+		return fmt.Errorf("reconciled Git tree digest is %s, expected %s", inventory.Digest, request.RenderDigest)
+	}
+	return nil
+}
+
+func loadClusterIdentity(ctx context.Context, cluster string) (string, error) {
+	output, err := command(ctx, "", "argocd", "cluster", "get", cluster, "-o", "json")
+	if err != nil {
+		return "", fmt.Errorf("observe Argo CD cluster %s: %w", cluster, err)
+	}
+	var value struct {
+		Server string         `json:"server"`
+		Name   string         `json:"name"`
+		Config map[string]any `json:"config"`
+	}
+	if err := json.Unmarshal([]byte(output), &value); err != nil {
+		return "", fmt.Errorf("decode Argo CD cluster %s: %w", cluster, err)
+	}
+	if value.Server == "" && value.Name == "" {
+		return "", fmt.Errorf("Argo CD cluster %s has no registered identity", cluster)
+	}
+	if value.Server != cluster && value.Name != cluster {
+		return "", fmt.Errorf("Argo CD returned cluster %s/%s, expected %s", value.Name, value.Server, cluster)
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func observeReview(ctx context.Context, pullRequest, expectedRevision, publishedCommit, repository string, local bool) (ReviewEvidence, error) {
 	if pullRequest == "" {
 		return ReviewEvidence{}, fmt.Errorf("promotion pull request is required")
 	}
 	if strings.HasPrefix(pullRequest, "file://") {
+		if !local {
+			return ReviewEvidence{}, fmt.Errorf("local review references require explicit local qualification")
+		}
+		parts := strings.Split(pullRequest, "#")
+		if len(parts) != 2 || !strings.HasPrefix(parts[1], "refs/codefly/reviews/") {
+			return ReviewEvidence{}, fmt.Errorf("local promotion review must name an exact codefly review ref")
+		}
+		matches, err := repositoriesMatch(parts[0], repository)
+		if err != nil || !matches {
+			return ReviewEvidence{}, fmt.Errorf("local promotion review repository differs from published repository")
+		}
+		output, err := gitCommand(ctx, "", "ls-remote", "--exit-code", "--refs", parts[0], parts[1])
+		if err != nil {
+			return ReviewEvidence{}, fmt.Errorf("verify local promotion review ref: %w", err)
+		}
+		fields := strings.Fields(output)
+		if len(fields) != 2 || fields[0] != publishedCommit || publishedCommit != expectedRevision {
+			return ReviewEvidence{}, fmt.Errorf("local promotion review ref resolves to %q, expected %s", output, expectedRevision)
+		}
 		return ReviewEvidence{
 			URL: pullRequest, State: "LOCAL_REVIEW_REF", ReviewDecision: "LOCAL_QUALIFIED",
 			MergeCommit: expectedRevision,
