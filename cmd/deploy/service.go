@@ -40,7 +40,10 @@ var ServiceCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			result, err := gitops.RenderService(ctx, workspace, module, service, env, appProject, standAlone, cli.NewOutputSink())
+			result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+				Workspace: workspace, Module: module, Service: service, Environment: env,
+				AppProject: appProject, StandAlone: standAlone, Sink: cli.NewOutputSink(),
+			})
 			if err != nil {
 				return fmt.Errorf("cannot render service: %w", err)
 			}
