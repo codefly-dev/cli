@@ -33,7 +33,7 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if plan.ID == "" || plan.Diff == "" || len(plan.Changed) == 0 {
 		t.Fatalf("publication plan is not inspectable: %+v", plan)
 	}
-	if plan.Path != "environments/production/modules/payments" {
+	if plan.Path != "environments/deployments/modules/payments" {
 		t.Fatalf("publication path = %q", plan.Path)
 	}
 	if _, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, mutationauthority.PreparedPermit{}); err == nil || !strings.Contains(err.Error(), "prepared authority") {
@@ -304,7 +304,7 @@ gitops:
 
 func renderPublishFixture(t *testing.T, root, module, environment, name string) {
 	t.Helper()
-	destination := filepath.Join(root, "deployments", "environments", environment, "modules", module)
+	destination := filepath.Join(root, "deployments", "modules", module)
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: module, Environment: environment, Promotable: true,
 	}, func(ctx context.Context, stage string) error {

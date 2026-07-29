@@ -567,14 +567,33 @@ func inspectValue(value any, path []string, promotable bool) error {
 		if placeholderPattern.MatchString(typed) {
 			return fmt.Errorf("%s contains an unresolved placeholder", strings.Join(path, "."))
 		}
-		if err := validateURLValue(strings.Join(path, "."), typed); err != nil {
-			return err
+		if isURLPath(path) {
+			if err := validateURLValue(strings.Join(path, "."), typed); err != nil {
+				return err
+			}
 		}
 		if isAuthorityPath(path) && strings.Contains(typed, "*") {
 			return fmt.Errorf("%s contains wildcard authority", strings.Join(path, "."))
 		}
 	}
 	return nil
+}
+
+func isURLPath(path []string) bool {
+	for index := len(path) - 1; index >= 0; index-- {
+		part := path[index]
+		if strings.HasPrefix(part, "[") {
+			continue
+		}
+		normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(part))
+		return strings.Contains(normalized, "url") ||
+			strings.Contains(normalized, "uri") ||
+			normalized == "server" ||
+			normalized == "repository" ||
+			normalized == "repo" ||
+			normalized == "sourcerepos"
+	}
+	return false
 }
 
 func extendPath(path []string, part string) []string {

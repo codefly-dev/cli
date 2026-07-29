@@ -350,6 +350,17 @@ rules: []
 	}
 }
 
+func TestRenderAcceptsOCIImageSelectorsWithoutTreatingThemAsURLs(t *testing.T) {
+	err := inspectValue(map[string]any{
+		"images": []any{
+			map[string]any{"name": "image:tag"},
+		},
+	}, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRenderAllowsOnlyClusterScopeDeclaredBySelectedProject(t *testing.T) {
 	manifests := pinnedDeployment + `---
 apiVersion: argoproj.io/v1alpha1
