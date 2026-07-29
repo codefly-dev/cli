@@ -33,7 +33,10 @@ var gitOpsRenderCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		result, err := gitops.RenderModule(ctx, workspace, module, env, gitOpsProject, cli.NewOutputSink())
+		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			Workspace: workspace, Module: module, Environment: env,
+			AppProject: gitOpsProject, Sink: cli.NewOutputSink(),
+		})
 		if err != nil {
 			return err
 		}
@@ -80,7 +83,7 @@ var gitOpsPlanCmd = &cobra.Command{
 			return err
 		}
 		request := publishRequest(module.Name)
-		plan, err := gitops.PlanPublish(ctx, workspace, &request)
+		plan, err := gitops.NewCoordinator().PlanPublish(ctx, workspace, &request)
 		if err != nil {
 			return err
 		}

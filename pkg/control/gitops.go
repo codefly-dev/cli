@@ -9,6 +9,13 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 )
 
+// promotion is the in-process deployment/promotion driver both the control
+// plane and the command-line frontend drive. It is stateless, so a fresh
+// coordinator per call is equivalent to a shared one.
+func (p *planeImpl) promotion() *gitops.Coordinator {
+	return gitops.NewCoordinator()
+}
+
 func (p *planeImpl) RenderGitOps(ctx context.Context, request GitOpsRenderRequest) (gitops.RenderResult, error) {
 	workspace, err := p.workspace(ctx)
 	if err != nil {
@@ -29,14 +36,17 @@ func (p *planeImpl) RenderGitOps(ctx context.Context, request GitOpsRenderReques
 	if err != nil {
 		return gitops.RenderResult{}, fmt.Errorf("load module %s: %w", request.Module, err)
 	}
-	if request.Service == "" {
-		return gitops.RenderModule(ctx, workspace, module, env, request.AppProject, nil)
+	produce := gitops.ProduceRequest{
+		Workspace: workspace, Module: module, Environment: env, AppProject: request.AppProject,
 	}
-	service, err := module.LoadServiceFromName(ctx, request.Service)
-	if err != nil {
-		return gitops.RenderResult{}, fmt.Errorf("load service %s: %w", request.Service, err)
+	if request.Service != "" {
+		service, err := module.LoadServiceFromName(ctx, request.Service)
+		if err != nil {
+			return gitops.RenderResult{}, fmt.Errorf("load service %s: %w", request.Service, err)
+		}
+		produce.Service = service
 	}
-	return gitops.RenderService(ctx, workspace, module, service, env, request.AppProject, false, nil)
+	return p.promotion().Render(ctx, produce)
 }
 
 func (p *planeImpl) PlanGitOpsPublish(ctx context.Context, request *gitops.PublishRequest) (gitops.PublishPlan, error) {
@@ -44,7 +54,7 @@ func (p *planeImpl) PlanGitOpsPublish(ctx context.Context, request *gitops.Publi
 	if err != nil {
 		return gitops.PublishPlan{}, err
 	}
-	return gitops.PlanPublish(ctx, workspace, request)
+	return p.promotion().PlanPublish(ctx, workspace, request)
 }
 
 func (p *planeImpl) PlanGitOpsRollback(ctx context.Context, request *gitops.RollbackRequest) (gitops.RollbackPlan, error) {
@@ -52,7 +62,7 @@ func (p *planeImpl) PlanGitOpsRollback(ctx context.Context, request *gitops.Roll
 	if err != nil {
 		return gitops.RollbackPlan{}, err
 	}
-	return gitops.PlanRollback(ctx, workspace, request)
+	return p.promotion().PlanRollback(ctx, workspace, request)
 }
 
 func (p *planeImpl) ObserveGitOps(ctx context.Context, request *gitops.ObserveRequest) (gitops.ObserveResult, error) {
@@ -70,7 +80,7 @@ func (p *planeImpl) ObserveGitOps(ctx context.Context, request *gitops.ObserveRe
 		return gitops.ObserveResult{}, fmt.Errorf("select environment %q: %w", normalized.Environment, err)
 	}
 	normalized.Local = env.IsK3d()
-	return gitops.Observe(ctx, &normalized)
+	return p.promotion().Observe(ctx, &normalized)
 }
 
 func (p *planeImpl) publishGitOps(ctx context.Context, mutation *gitops.PublishMutation, permit mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
@@ -78,7 +88,7 @@ func (p *planeImpl) publishGitOps(ctx context.Context, mutation *gitops.PublishM
 	if err != nil {
 		return gitops.PublishResult{}, err
 	}
-	return gitops.Publish(ctx, workspace, mutation, permit)
+	return p.promotion().Publish(ctx, workspace, mutation, permit)
 }
 
 func (p *planeImpl) rollbackGitOps(ctx context.Context, mutation *gitops.RollbackMutation, permit mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
@@ -86,5 +96,5 @@ func (p *planeImpl) rollbackGitOps(ctx context.Context, mutation *gitops.Rollbac
 	if err != nil {
 		return gitops.PublishResult{}, err
 	}
-	return gitops.Rollback(ctx, workspace, mutation, permit)
+	return p.promotion().Rollback(ctx, workspace, mutation, permit)
 }
