@@ -42,10 +42,10 @@ codefly/
 `core/` must be a sibling of `cli/` and of every agent repo — the build tooling
 locates it by walking **up** the directory tree looking for the `core/` module.
 
-Pull/refresh every repo at once:
+Pull/refresh the CLI, Core, LLM, and canonical plugin repositories:
 
 ```shell
-codefly self pull        # pull latest main into every codefly repo (non-destructive)
+codefly self pull        # pull latest main into CLI/Core/LLM/plugins (non-destructive)
 ```
 
 ## Requirements
