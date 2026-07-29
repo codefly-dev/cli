@@ -37,14 +37,21 @@ func renderModuleTree(
 		Module:      module.Name, Environment: env.Name, AppProject: project,
 		Promotable: true,
 	}, func(ctx context.Context, stage string) error {
+		var services []*resources.Service
 		for _, reference := range module.ServiceReferences {
 			service, err := module.LoadServiceFromName(ctx, reference.Name)
 			if err != nil {
 				return fmt.Errorf("load service %s: %w", reference.Name, err)
 			}
-			target := filepath.Join(stage, "services", service.Name)
-			if err := renderServiceFlow(ctx, workspace, module, service, env, true, sink, func(_ *resources.Module, _ *resources.Service) string {
-				return target
+			services = append(services, service)
+		}
+		roots, err := moduleRenderRoots(module.Name, services)
+		if err != nil {
+			return err
+		}
+		for _, service := range roots {
+			if err := renderServiceFlow(ctx, workspace, module, service, env, false, sink, func(_ *resources.Module, rendered *resources.Service) string {
+				return filepath.Join(stage, "services", rendered.Name)
 			}); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
@@ -54,6 +61,31 @@ func renderModuleTree(
 		}
 		return generateEnvironmentBootstrap(ctx, workspace, module, env.Name, stage)
 	})
+}
+
+func moduleRenderRoots(module string, services []*resources.Service) ([]*resources.Service, error) {
+	members := make(map[string]bool, len(services))
+	for _, service := range services {
+		members[service.Name] = true
+	}
+	required := make(map[string]bool, len(services))
+	for _, service := range services {
+		for _, dependency := range service.ServiceDependencies {
+			if (dependency.Module == "" || dependency.Module == module) && members[dependency.Name] {
+				required[dependency.Name] = true
+			}
+		}
+	}
+	var roots []*resources.Service
+	for _, service := range services {
+		if !required[service.Name] {
+			roots = append(roots, service)
+		}
+	}
+	if len(services) > 0 && len(roots) == 0 {
+		return nil, fmt.Errorf("module %s service graph has no entry point", module)
+	}
+	return roots, nil
 }
 
 func generateEnvironmentBootstrap(
