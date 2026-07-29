@@ -1,0 +1,751 @@
+package gitops
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
+	"github.com/codefly-dev/core/resources"
+)
+
+var (
+	scpGitURLPattern     = regexp.MustCompile(`^git@github\.com:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?$`)
+	githubSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	pathComponentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+)
+
+const (
+	httpsScheme = "https"
+	sshScheme   = "ssh"
+)
+
+type preparedRepository struct {
+	dir     string
+	cleanup func()
+	plan    PublishPlan
+}
+
+func PlanPublish(ctx context.Context, workspace *resources.Workspace, request *PublishRequest) (PublishPlan, error) {
+	prepared, err := preparePublish(ctx, workspace, request, "")
+	if err != nil {
+		return PublishPlan{}, err
+	}
+	defer prepared.cleanup()
+	return prepared.plan, nil
+}
+
+func Publish(ctx context.Context, workspace *resources.Workspace, mutation *PublishMutation, permit mutationauthority.PreparedPermit) (PublishResult, error) {
+	if err := permit.Validate(); err != nil {
+		return PublishResult{}, err
+	}
+	if mutation.PlanID == "" {
+		return PublishResult{}, fmt.Errorf("publish requires an inspected plan ID")
+	}
+	prepared, err := preparePublish(ctx, workspace, &mutation.Request, "")
+	if err != nil {
+		return PublishResult{}, err
+	}
+	defer prepared.cleanup()
+	if prepared.plan.ID != mutation.PlanID {
+		return PublishResult{}, fmt.Errorf("publish plan is stale: prepared %s, current %s", mutation.PlanID, prepared.plan.ID)
+	}
+	return commitAndPublish(ctx, workspace, prepared, &mutation.Request)
+}
+
+func PlanRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest) (RollbackPlan, error) {
+	prepared, revision, err := prepareRollback(ctx, workspace, request)
+	if err != nil {
+		return RollbackPlan{}, err
+	}
+	defer prepared.cleanup()
+	return RollbackPlan{PublishPlan: prepared.plan, ToRevision: revision}, nil
+}
+
+func Rollback(ctx context.Context, workspace *resources.Workspace, mutation *RollbackMutation, permit mutationauthority.PreparedPermit) (PublishResult, error) {
+	if err := permit.Validate(); err != nil {
+		return PublishResult{}, err
+	}
+	if mutation.PlanID == "" {
+		return PublishResult{}, fmt.Errorf("rollback requires an inspected plan ID")
+	}
+	prepared, _, err := prepareRollback(ctx, workspace, &mutation.Request)
+	if err != nil {
+		return PublishResult{}, err
+	}
+	defer prepared.cleanup()
+	if prepared.plan.ID != mutation.PlanID {
+		return PublishResult{}, fmt.Errorf("rollback plan is stale: prepared %s, current %s", mutation.PlanID, prepared.plan.ID)
+	}
+	request := mutation.Request.PublishRequest
+	if request.CommitMessage == "" {
+		request.CommitMessage = "Re-promote " + mutation.Request.Module + " from " + mutation.Request.ToRevision
+	}
+	return commitAndPublish(ctx, workspace, prepared, &request)
+}
+
+func preparePublish(ctx context.Context, workspace *resources.Workspace, request *PublishRequest, restoreRevision string) (*preparedRepository, error) {
+	if err := validatePublishRequest(request); err != nil {
+		return nil, err
+	}
+	config, repositorySlug, baseBranch, pathRoot, err := resolveGitops(workspace, request.Local)
+	if err != nil {
+		return nil, err
+	}
+	rendered := filepath.Join(workspace.Dir(), "deployments", "environments", request.Environment, "modules", request.Module)
+	var inventory Inventory
+	if restoreRevision == "" {
+		if err := ValidateRenderedTree(rendered, "", true); err != nil {
+			return nil, fmt.Errorf("validate promotable render: %w", err)
+		}
+		inventory, err = LoadInventory(rendered)
+		if err != nil {
+			return nil, err
+		}
+		if inventory.Module != request.Module || inventory.Environment != request.Environment || inventory.Service != "" {
+			return nil, fmt.Errorf("render inventory targets module %q environment %q service %q", inventory.Module, inventory.Environment, inventory.Service)
+		}
+	}
+
+	promotionBranch := request.PromotionBranch
+	if promotionBranch == "" {
+		promotionBranch = "codefly/promote-" + sanitizeRef(request.Module) + "-" + sanitizeRef(request.Environment)
+	}
+	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, config.RepoURL, baseBranch, promotionBranch)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(err error) (*preparedRepository, error) {
+		cleanup()
+		return nil, err
+	}
+	targetPath := filepath.ToSlash(filepath.Join(pathRoot, request.Environment, "modules", request.Module))
+	target, err := confinedJoin(repo, targetPath)
+	if err != nil {
+		return fail(err)
+	}
+	if branchRevision != "" {
+		existing, err := changedPathsBetween(ctx, repo, baseRevision, branchRevision)
+		if err != nil {
+			return fail(err)
+		}
+		for _, changed := range existing {
+			if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") {
+				return fail(fmt.Errorf("promotion branch %s contains unrelated change %s", promotionBranch, changed))
+			}
+		}
+	}
+	if restoreRevision == "" {
+		if err := replaceCloneTree(rendered, target); err != nil {
+			return fail(fmt.Errorf("stage rendered tree: %w", err))
+		}
+	} else {
+		if err := restoreCloneTree(ctx, repo, targetPath, restoreRevision); err != nil {
+			return fail(err)
+		}
+		if err := ValidateRenderedTree(target, "", true); err != nil {
+			return fail(fmt.Errorf("validate rollback render: %w", err))
+		}
+		inventory, err = LoadInventory(target)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	if _, err := gitCommand(ctx, repo, "add", "-A", "--", targetPath); err != nil {
+		return fail(err)
+	}
+	changed, err := stagedPaths(ctx, repo, targetPath)
+	if err != nil {
+		return fail(err)
+	}
+	if len(changed) == 0 {
+		if branchRevision == "" {
+			return fail(fmt.Errorf("promotion has no changes"))
+		}
+	}
+	diff, err := gitCommand(ctx, repo, "diff", "--cached", "--binary", "--", targetPath)
+	if err != nil {
+		return fail(err)
+	}
+	plan := PublishPlan{
+		Repository: config.RepoURL, RepositorySlug: repositorySlug,
+		Path: targetPath, BaseBranch: baseBranch, BaseRevision: baseRevision,
+		PromotionBranch: promotionBranch, BranchRevision: branchRevision,
+		ExistingCommit: branchRevision,
+		Module:         request.Module, Environment: request.Environment,
+		RenderDigest: inventory.Digest, Changed: changed, Diff: diff,
+	}
+	plan.ID, err = publishPlanID(&plan, restoreRevision)
+	if err != nil {
+		return fail(err)
+	}
+	return &preparedRepository{
+		dir: repo, cleanup: cleanup, plan: plan,
+	}, nil
+}
+
+func validatePublishRequest(request *PublishRequest) error {
+	if request == nil || request.Module == "" || request.Environment == "" {
+		return fmt.Errorf("module and environment are required")
+	}
+	if err := validatePathComponent("module", request.Module); err != nil {
+		return err
+	}
+	return validatePathComponent("environment", request.Environment)
+}
+
+func prepareRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest) (*preparedRepository, string, error) {
+	if request == nil {
+		return nil, "", fmt.Errorf("rollback request is required")
+	}
+	normalized := *request
+	normalized.ToRevision = strings.ToLower(strings.TrimSpace(normalized.ToRevision))
+	request = &normalized
+	if request.ToRevision == "" {
+		return nil, "", fmt.Errorf("rollback target revision is required")
+	}
+	if !gitObjectPattern.MatchString(request.ToRevision) {
+		return nil, "", fmt.Errorf("rollback target must be an exact Git object ID")
+	}
+	if err := requireReviewedRevision(workspace.Dir(), request.Module, request.Environment, request.ToRevision); err != nil {
+		return nil, "", err
+	}
+	config, _, _, _, err := resolveGitops(workspace, request.Local)
+	if err != nil {
+		return nil, "", err
+	}
+	temp, err := os.MkdirTemp("", "codefly-gitops-revision-")
+	if err != nil {
+		return nil, "", err
+	}
+	defer os.RemoveAll(temp)
+	if _, err := gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", config.RepoURL, "repo"); err != nil {
+		return nil, "", err
+	}
+	revision, err := gitCommand(ctx, filepath.Join(temp, "repo"), "rev-parse", request.ToRevision+"^{commit}")
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve rollback revision: %w", err)
+	}
+	prepared, err := preparePublish(ctx, workspace, &request.PublishRequest, revision)
+	if err != nil {
+		return nil, "", err
+	}
+	prepared.plan.ID, err = publishPlanID(&prepared.plan, revision)
+	if err != nil {
+		prepared.cleanup()
+		return nil, "", err
+	}
+	return prepared, revision, nil
+}
+
+func requireReviewedRevision(root, module, environment, revision string) error {
+	directory := filepath.Join(root, ".codefly", "gitops", "evidence")
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("load reviewed promotion evidence: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(directory, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("read reviewed promotion evidence: %w", err)
+		}
+		var evidence Evidence
+		if err := json.Unmarshal(data, &evidence); err != nil {
+			return fmt.Errorf("decode reviewed promotion evidence %s: %w", entry.Name(), err)
+		}
+		reviewed := evidence.Review.State == "MERGED" && evidence.Review.ReviewDecision == approvedReviewDecision ||
+			evidence.Review.State == "LOCAL_REVIEW_REF" && evidence.Review.ReviewDecision == "LOCAL_QUALIFIED"
+		if evidence.SchemaVersion == SchemaVersion && evidence.Module == module && evidence.Environment == environment &&
+			evidence.Health == healthyStatus && reviewed &&
+			(evidence.ArgoRevision == revision || evidence.SignedCommit == revision) {
+			return nil
+		}
+	}
+	return fmt.Errorf("rollback target %s has no reviewed Healthy promotion evidence", revision)
+}
+
+func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepared *preparedRepository, request *PublishRequest) (PublishResult, error) {
+	message := strings.TrimSpace(request.CommitMessage)
+	if message == "" {
+		message = fmt.Sprintf("Promote %s to %s", request.Module, request.Environment)
+	}
+	commit := prepared.plan.ExistingCommit
+	if len(prepared.plan.Changed) > 0 {
+		if _, err := gitCommand(ctx, prepared.dir, "commit", "-S", "-m", message); err != nil {
+			return PublishResult{}, fmt.Errorf("create signed promotion commit: %w", err)
+		}
+		var err error
+		commit, err = gitCommand(ctx, prepared.dir, "rev-parse", "HEAD^{commit}")
+		if err != nil {
+			return PublishResult{}, err
+		}
+	}
+	tree, err := gitCommand(ctx, prepared.dir, "rev-parse", commit+"^{tree}")
+	if err != nil {
+		return PublishResult{}, err
+	}
+	rawCommit, err := gitCommand(ctx, prepared.dir, "cat-file", "-p", commit)
+	if err != nil {
+		return PublishResult{}, err
+	}
+	if !strings.Contains(rawCommit, "\ngpgsig ") {
+		return PublishResult{}, fmt.Errorf("promotion commit %s is not signed", commit)
+	}
+	if len(prepared.plan.Changed) > 0 {
+		refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
+		if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
+			return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
+		}
+	}
+	remote, err := gitCommand(ctx, prepared.dir, "ls-remote", "--exit-code", "--refs", "origin", "refs/heads/"+prepared.plan.PromotionBranch)
+	if err != nil {
+		return PublishResult{}, fmt.Errorf("verify promotion branch: %w", err)
+	}
+	fields := strings.Fields(remote)
+	if len(fields) < 2 || fields[0] != commit {
+		return PublishResult{}, fmt.Errorf("promotion branch resolved to %q, expected %s", remote, commit)
+	}
+	prURL, prID, err := openOrUpdatePullRequest(ctx, prepared, request, commit)
+	if err != nil {
+		return PublishResult{}, err
+	}
+	result := PublishResult{
+		PlanID: prepared.plan.ID, Repository: prepared.plan.Repository, Path: prepared.plan.Path,
+		BaseBranch: prepared.plan.BaseBranch, PromotionBranch: prepared.plan.PromotionBranch,
+		RenderDigest: prepared.plan.RenderDigest, Commit: commit, Tree: tree, Signed: true,
+		PullRequest: prURL, PullRequestID: prID,
+	}
+	if err := writeReceipt(workspace.Dir(), "publications", request.Module+"-"+request.Environment+".json", result); err != nil {
+		return PublishResult{}, err
+	}
+	return result, nil
+}
+
+func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string) (string, func(), string, string, error) {
+	temp, err := os.MkdirTemp("", "codefly-gitops-publish-")
+	if err != nil {
+		return "", nil, "", "", fmt.Errorf("create publication checkout: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(temp) }
+	repo := filepath.Join(temp, "repo")
+	if _, err := gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", repository, repo); err != nil {
+		cleanup()
+		return "", nil, "", "", err
+	}
+	if _, err := gitCommand(ctx, repo, "check-ref-format", "--branch", baseBranch); err != nil {
+		cleanup()
+		return "", nil, "", "", fmt.Errorf("invalid configured GitOps branch %q: %w", baseBranch, err)
+	}
+	baseRef := "refs/remotes/origin/" + baseBranch
+	baseRevision, err := gitCommand(ctx, repo, "rev-parse", baseRef+"^{commit}")
+	if err != nil {
+		cleanup()
+		return "", nil, "", "", fmt.Errorf("resolve configured GitOps branch %q: %w", baseBranch, err)
+	}
+	if _, err := gitCommand(ctx, repo, "check-ref-format", "--branch", promotionBranch); err != nil {
+		cleanup()
+		return "", nil, "", "", fmt.Errorf("invalid promotion branch %q: %w", promotionBranch, err)
+	}
+	remoteRef := "refs/remotes/origin/" + promotionBranch
+	branchRevision, branchErr := gitCommand(ctx, repo, "rev-parse", "--verify", remoteRef+"^{commit}")
+	if branchErr == nil {
+		if _, err := gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, remoteRef); err != nil {
+			cleanup()
+			return "", nil, "", "", err
+		}
+	} else {
+		branchRevision = ""
+		if _, err := gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, baseRef); err != nil {
+			cleanup()
+			return "", nil, "", "", err
+		}
+	}
+	status, err := gitCommand(ctx, repo, "status", "--porcelain=v1")
+	if err != nil {
+		cleanup()
+		return "", nil, "", "", err
+	}
+	if status != "" {
+		cleanup()
+		return "", nil, "", "", fmt.Errorf("publication checkout is unexpectedly dirty")
+	}
+	return repo, cleanup, baseRevision, branchRevision, nil
+}
+
+func restoreCloneTree(ctx context.Context, repo, targetPath, revision string) error {
+	if _, err := gitCommand(ctx, repo, "rm", "-r", "--ignore-unmatch", "--", targetPath); err != nil {
+		return err
+	}
+	if _, err := gitCommand(ctx, repo, "checkout", revision, "--", targetPath); err != nil {
+		return fmt.Errorf("restore GitOps tree from %s: %w", revision, err)
+	}
+	return nil
+}
+
+func replaceCloneTree(source, destination string) error {
+	if err := os.RemoveAll(destination); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	return copyTree(source, destination)
+}
+
+func stagedPaths(ctx context.Context, repo, targetPath string) ([]string, error) {
+	output, err := gitCommandBytes(ctx, repo, "diff", "--cached", "--name-only", "-z", "--", targetPath)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, raw := range bytes.Split(output, []byte{0}) {
+		if len(raw) > 0 {
+			paths = append(paths, string(raw))
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func changedPathsBetween(ctx context.Context, repo, baseRevision, branchRevision string) ([]string, error) {
+	output, err := gitCommandBytes(ctx, repo, "diff", "--name-only", "-z", baseRevision+"..."+branchRevision)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, raw := range bytes.Split(output, []byte{0}) {
+		if len(raw) > 0 {
+			paths = append(paths, string(raw))
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, request *PublishRequest, commit string) (string, int, error) {
+	if prepared.plan.RepositorySlug == "" {
+		reviewRef := "refs/codefly/reviews/" + strings.ReplaceAll(prepared.plan.PromotionBranch, "/", "-")
+		refspec := commit + ":" + reviewRef
+		if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--", "origin", refspec); err != nil {
+			return "", 0, fmt.Errorf("publish local review ref: %w", err)
+		}
+		return prepared.plan.Repository + "#" + reviewRef, 0, nil
+	}
+	title := strings.TrimSpace(request.Title)
+	if title == "" {
+		title = fmt.Sprintf("Promote %s to %s", request.Module, request.Environment)
+	}
+	body := strings.TrimSpace(request.Body)
+	if body == "" {
+		body = fmt.Sprintf("Render digest: `%s`\n\nSigned commit: `%s`", prepared.plan.RenderDigest, commit)
+	}
+	output, err := command(ctx, "", "gh", "pr", "list",
+		"--repo", prepared.plan.RepositorySlug, "--head", prepared.plan.PromotionBranch,
+		"--base", prepared.plan.BaseBranch, "--state", "open", "--json", "number,url,headRefOid")
+	if err != nil {
+		return "", 0, fmt.Errorf("inspect promotion pull request: %w", err)
+	}
+	var existing []struct {
+		Number     int    `json:"number"`
+		URL        string `json:"url"`
+		HeadRefOID string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal([]byte(output), &existing); err != nil {
+		return "", 0, fmt.Errorf("decode promotion pull request: %w", err)
+	}
+	if len(existing) > 1 {
+		return "", 0, fmt.Errorf("multiple open promotion pull requests target %s", prepared.plan.PromotionBranch)
+	}
+	if len(existing) == 1 {
+		pr := existing[0]
+		if pr.HeadRefOID != commit {
+			return "", 0, fmt.Errorf("pull request head is %s, expected %s", pr.HeadRefOID, commit)
+		}
+		if _, err := command(ctx, "", "gh", "pr", "edit", strconv.Itoa(pr.Number),
+			"--repo", prepared.plan.RepositorySlug, "--title", title, "--body", body); err != nil {
+			return "", 0, fmt.Errorf("update promotion pull request: %w", err)
+		}
+		return pr.URL, pr.Number, nil
+	}
+	url, err := command(ctx, "", "gh", "pr", "create", "--repo", prepared.plan.RepositorySlug,
+		"--base", prepared.plan.BaseBranch, "--head", prepared.plan.PromotionBranch,
+		"--title", title, "--body", body)
+	if err != nil {
+		return "", 0, fmt.Errorf("open promotion pull request: %w", err)
+	}
+	return verifyPullRequest(ctx, prepared.plan.RepositorySlug, strings.TrimSpace(url), prepared.plan.BaseBranch, commit)
+}
+
+func verifyPullRequest(ctx context.Context, repository, pullRequest, baseBranch, commit string) (string, int, error) {
+	output, err := command(ctx, "", "gh", "pr", "view", pullRequest, "--repo", repository,
+		"--json", "number,url,headRefOid,baseRefName")
+	if err != nil {
+		return "", 0, fmt.Errorf("verify promotion pull request: %w", err)
+	}
+	var response struct {
+		Number      int    `json:"number"`
+		URL         string `json:"url"`
+		HeadRefOID  string `json:"headRefOid"`
+		BaseRefName string `json:"baseRefName"`
+	}
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		return "", 0, fmt.Errorf("decode verified promotion pull request: %w", err)
+	}
+	if response.HeadRefOID != commit || response.BaseRefName != baseBranch {
+		return "", 0, fmt.Errorf(
+			"promotion pull request targets %s at %s, expected %s at %s",
+			response.BaseRefName, response.HeadRefOID, baseBranch, commit,
+		)
+	}
+	return response.URL, response.Number, nil
+}
+
+func resolveGitops(workspace *resources.Workspace, local bool) (*resources.WorkspaceGitops, string, string, string, error) {
+	if workspace == nil || workspace.Gitops == nil {
+		return nil, "", "", "", fmt.Errorf("workspace.gitops is required")
+	}
+	config := workspace.Gitops
+	slug, err := validateRepositoryURL(config.RepoURL, local)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	baseBranch := strings.TrimSpace(config.Branch)
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	pathRoot, err := validateRelativePath(config.Path)
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("workspace.gitops.path: %w", err)
+	}
+	return config, slug, baseBranch, pathRoot, nil
+}
+
+func validateRepositoryURL(raw string, local bool) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("workspace.gitops.repo-url is required")
+	}
+	if match := scpGitURLPattern.FindStringSubmatch(raw); len(match) == 3 {
+		return match[1] + "/" + strings.TrimSuffix(match[2], ".git"), nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("workspace.gitops.repo-url: %w", err)
+	}
+	if parsed.User != nil && parsed.Scheme == httpsScheme {
+		return "", fmt.Errorf("workspace.gitops.repo-url must not contain credentials")
+	}
+	if parsed.Scheme == sshScheme && parsed.User != nil {
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			return "", fmt.Errorf("workspace.gitops.repo-url must not contain credentials")
+		}
+	}
+	if strings.Contains(parsed.Hostname(), "*") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("workspace.gitops.repo-url contains unsafe authority")
+	}
+	switch parsed.Scheme {
+	case httpsScheme, sshScheme:
+		if parsed.Hostname() != "github.com" {
+			return "", fmt.Errorf("GitHub repository host must be github.com")
+		}
+		if parsed.Scheme == sshScheme && parsed.User != nil && parsed.User.Username() != "git" {
+			return "", fmt.Errorf("GitHub SSH repository user must be git")
+		}
+		parts := strings.Split(strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/"), "/")
+		if len(parts) != 2 || !githubSegmentPattern.MatchString(parts[0]) || !githubSegmentPattern.MatchString(parts[1]) {
+			return "", fmt.Errorf("workspace.gitops.repo-url must identify owner/repository")
+		}
+		return parts[0] + "/" + parts[1], nil
+	case "file":
+		if !local {
+			return "", fmt.Errorf("file GitOps repositories are allowed only for local qualification")
+		}
+		if parsed.User != nil || parsed.Host != "" || !filepath.IsAbs(parsed.Path) {
+			return "", fmt.Errorf("local GitOps repository must be an absolute file URL without credentials")
+		}
+		return "", nil
+	default:
+		return "", fmt.Errorf("workspace.gitops.repo-url must use HTTPS or SSH")
+	}
+}
+
+func validateRelativePath(value string) (string, error) {
+	if value == "" || value == "." {
+		return "", nil
+	}
+	if strings.Contains(value, `\`) || strings.ContainsAny(value, "\x00\r\n") {
+		return "", fmt.Errorf("%q contains unsafe path characters", value)
+	}
+	clean := filepath.Clean(filepath.FromSlash(value))
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%q escapes the repository", value)
+	}
+	return filepath.ToSlash(clean), nil
+}
+
+func confinedJoin(root, relative string) (string, error) {
+	target := filepath.Join(root, filepath.FromSlash(relative))
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("GitOps destination %q escapes repository", relative)
+	}
+	return target, nil
+}
+
+func publishPlanID(plan *PublishPlan, restoreRevision string) (string, error) {
+	planCopy := *plan
+	planCopy.ID = ""
+	planCopy.Diff = ""
+	payload := struct {
+		Plan            PublishPlan `json:"plan"`
+		DiffSHA256      string      `json:"diffSha256"`
+		RestoreRevision string      `json:"restoreRevision,omitempty"`
+	}{
+		Plan: planCopy, DiffSHA256: hashString(plan.Diff), RestoreRevision: restoreRevision,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode publication plan: %w", err)
+	}
+	return hashBytes(data), nil
+}
+
+func sanitizeRef(value string) string {
+	var result strings.Builder
+	for _, r := range strings.ToLower(value) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			result.WriteRune(r)
+		} else {
+			result.WriteByte('-')
+		}
+	}
+	return strings.Trim(result.String(), "-")
+}
+
+func hashString(value string) string {
+	return hashBytes([]byte(value))
+}
+
+func hashBytes(value []byte) string {
+	sum := sha256.Sum256(value)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func writeReceipt(root, kind, name string, value any) error {
+	if filepath.Base(kind) != kind || filepath.Base(name) != name || kind == "." || name == "." {
+		return fmt.Errorf("invalid GitOps receipt path")
+	}
+	dir := filepath.Join(root, ".codefly", "gitops", kind)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create GitOps receipt directory: %w", err)
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode GitOps receipt: %w", err)
+	}
+	data = append(data, '\n')
+	temp, err := os.CreateTemp(dir, ".receipt-")
+	if err != nil {
+		return fmt.Errorf("create GitOps receipt: %w", err)
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempName, filepath.Join(dir, name)); err != nil {
+		return fmt.Errorf("install GitOps receipt: %w", err)
+	}
+	return nil
+}
+
+func validatePathComponent(label, value string) error {
+	if len(value) > 253 || !pathComponentPattern.MatchString(value) || filepath.Base(value) != value {
+		return fmt.Errorf("%s %q is not a safe path component", label, value)
+	}
+	return nil
+}
+
+func LoadPublishResult(root, module, environment string) (PublishResult, error) {
+	if err := validatePathComponent("module", module); err != nil {
+		return PublishResult{}, err
+	}
+	if err := validatePathComponent("environment", environment); err != nil {
+		return PublishResult{}, err
+	}
+	path := filepath.Join(root, ".codefly", "gitops", "publications", module+"-"+environment+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return PublishResult{}, fmt.Errorf("read publication receipt: %w", err)
+	}
+	var result PublishResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return PublishResult{}, fmt.Errorf("decode publication receipt: %w", err)
+	}
+	if result.Commit == "" || result.Tree == "" || result.RenderDigest == "" || !result.Signed {
+		return PublishResult{}, fmt.Errorf("publication receipt is incomplete")
+	}
+	return result, nil
+}
+
+func gitCommand(ctx context.Context, dir string, args ...string) (string, error) {
+	return command(ctx, dir, "git", args...)
+}
+
+func gitCommandBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+	}
+	return stdout.Bytes(), nil
+}
+
+func command(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), message)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}

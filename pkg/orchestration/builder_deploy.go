@@ -58,6 +58,9 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
+	if b.world.DeploymentDestination != nil {
+		deploy.GetKubernetes().Destination = b.world.DeploymentDestination(b.instance.Module, b.instance.Service)
+	}
 
 	// Build the request
 	w.Debug("deployments", wool.Field("deployments", deploy))

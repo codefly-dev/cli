@@ -146,9 +146,10 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 }
 
 type World struct {
-	Env       *resources.Environment
-	Mode      Mode
-	Workspace *resources.Workspace
+	Env                   *resources.Environment
+	Mode                  Mode
+	Workspace             *resources.Workspace
+	DeploymentDestination func(*resources.Module, *resources.Service) string
 
 	// DAG
 	Dependencies *architecture.ServiceDependencies
@@ -1570,6 +1571,10 @@ func runtimeStarted(actions []Action, unique string) bool {
 
 func (flow *Flow) WithDeploymentManager(manager deployments.Manager) {
 	flow.world.RemoteManager = manager
+}
+
+func (flow *Flow) WithDeploymentDestination(destination func(*resources.Module, *resources.Service) string) {
+	flow.world.DeploymentDestination = destination
 }
 
 func (flow *Flow) WithStandAlone(alone bool) {

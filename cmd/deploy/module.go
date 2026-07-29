@@ -8,6 +8,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -53,6 +54,17 @@ var ModuleCmd = &cobra.Command{
 		env, err := orchestration.SelectEnvironment(workspace, envInput)
 		if err != nil {
 			return err
+		}
+		if renderOnly {
+			cli.Header(2, "render-only mode — manifests written to disk, no kubectl apply")
+			result, err := gitops.RenderModule(ctx, workspace, module, env, appProject, cli.NewOutputSink())
+			if err != nil {
+				return fmt.Errorf("cannot render module: %w", err)
+			}
+			cli.Info("Rendered %s", result.Path)
+			cli.Info("Digest %s", result.Inventory.Digest)
+			cli.Header(1, "Module render done!")
+			return nil
 		}
 
 		var deploymentManager deployments.Manager
@@ -171,4 +183,5 @@ func init() {
 	ModuleCmd.Flags().StringVar(&envInput, "env", "local", "Environment to deploy the module")
 	ModuleCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Render the deployment without applying it")
 	ModuleCmd.Flags().BoolVar(&renderOnly, "render-only", false, "Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.")
+	ModuleCmd.Flags().StringVar(&appProject, "app-project", "", "AppProject contract used to validate cluster-scoped rendered resources")
 }

@@ -19,3 +19,18 @@ func TestModuleCommandReturnsErrorsThroughCobra(t *testing.T) {
 		t.Fatal("deploy module accepted two module names")
 	}
 }
+
+func TestGitOpsCommandExposesCompletePromotionLifecycle(t *testing.T) {
+	names := map[string]bool{}
+	for _, command := range GitOpsCmd.Commands() {
+		names[command.Name()] = true
+		if command.RunE == nil || command.Run != nil {
+			t.Fatalf("gitops %s is not exclusively RunE", command.Name())
+		}
+	}
+	for _, name := range []string{"render", "plan", "publish", "observe", "rollback"} {
+		if !names[name] {
+			t.Errorf("gitops %s command is missing", name)
+		}
+	}
+}
