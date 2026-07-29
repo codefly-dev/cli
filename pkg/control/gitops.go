@@ -39,7 +39,7 @@ func (p *planeImpl) RenderGitOps(ctx context.Context, request GitOpsRenderReques
 	return gitops.RenderService(ctx, workspace, module, service, env, request.AppProject, false, nil)
 }
 
-func (p *planeImpl) PlanGitOpsPublish(ctx context.Context, request gitops.PublishRequest) (gitops.PublishPlan, error) {
+func (p *planeImpl) PlanGitOpsPublish(ctx context.Context, request *gitops.PublishRequest) (gitops.PublishPlan, error) {
 	workspace, err := p.workspace(ctx)
 	if err != nil {
 		return gitops.PublishPlan{}, err
@@ -47,7 +47,7 @@ func (p *planeImpl) PlanGitOpsPublish(ctx context.Context, request gitops.Publis
 	return gitops.PlanPublish(ctx, workspace, request)
 }
 
-func (p *planeImpl) PlanGitOpsRollback(ctx context.Context, request gitops.RollbackRequest) (gitops.RollbackPlan, error) {
+func (p *planeImpl) PlanGitOpsRollback(ctx context.Context, request *gitops.RollbackRequest) (gitops.RollbackPlan, error) {
 	workspace, err := p.workspace(ctx)
 	if err != nil {
 		return gitops.RollbackPlan{}, err
@@ -55,21 +55,25 @@ func (p *planeImpl) PlanGitOpsRollback(ctx context.Context, request gitops.Rollb
 	return gitops.PlanRollback(ctx, workspace, request)
 }
 
-func (p *planeImpl) ObserveGitOps(ctx context.Context, request gitops.ObserveRequest) (gitops.ObserveResult, error) {
+func (p *planeImpl) ObserveGitOps(ctx context.Context, request *gitops.ObserveRequest) (gitops.ObserveResult, error) {
+	if request == nil {
+		return gitops.ObserveResult{}, fmt.Errorf("observation request is required")
+	}
 	workspace, err := p.workspace(ctx)
 	if err != nil {
 		return gitops.ObserveResult{}, err
 	}
-	request.WorkspaceRoot = workspace.Dir()
-	env, err := orchestration.SelectEnvironment(workspace, request.Environment)
+	normalized := *request
+	normalized.WorkspaceRoot = workspace.Dir()
+	env, err := orchestration.SelectEnvironment(workspace, normalized.Environment)
 	if err != nil {
-		return gitops.ObserveResult{}, fmt.Errorf("select environment %q: %w", request.Environment, err)
+		return gitops.ObserveResult{}, fmt.Errorf("select environment %q: %w", normalized.Environment, err)
 	}
-	request.Local = env.IsK3d()
-	return gitops.Observe(ctx, request)
+	normalized.Local = env.IsK3d()
+	return gitops.Observe(ctx, &normalized)
 }
 
-func (p *planeImpl) publishGitOps(ctx context.Context, mutation gitops.PublishMutation, permit mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
+func (p *planeImpl) publishGitOps(ctx context.Context, mutation *gitops.PublishMutation, permit mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
 	workspace, err := p.workspace(ctx)
 	if err != nil {
 		return gitops.PublishResult{}, err
@@ -77,7 +81,7 @@ func (p *planeImpl) publishGitOps(ctx context.Context, mutation gitops.PublishMu
 	return gitops.Publish(ctx, workspace, mutation, permit)
 }
 
-func (p *planeImpl) rollbackGitOps(ctx context.Context, mutation gitops.RollbackMutation, permit mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
+func (p *planeImpl) rollbackGitOps(ctx context.Context, mutation *gitops.RollbackMutation, permit mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
 	workspace, err := p.workspace(ctx)
 	if err != nil {
 		return gitops.PublishResult{}, err

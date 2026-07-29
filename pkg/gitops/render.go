@@ -28,6 +28,8 @@ var (
 	placeholderPattern = regexp.MustCompile(`(?i)(\$\{[^}]+\}|\{\{[^}]+\}\}|<<[^>]+>>|\bCHANGE_?ME\b|\bREPLACE_?ME\b)`)
 )
 
+const argoAPIGroup = "argoproj.io"
+
 var clusterScopedKinds = map[string]struct{}{
 	"APIService": {}, "CSIDriver": {}, "CSINode": {}, "ClusterIssuer": {},
 	"ClusterRole": {}, "ClusterRoleBinding": {}, "CustomResourceDefinition": {},
@@ -55,7 +57,7 @@ type projectContract struct {
 	clusterResources map[string]struct{}
 }
 
-func RenderOwnedTree(ctx context.Context, opts RenderOptions, generate func(context.Context, string) error) (RenderResult, error) {
+func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(context.Context, string) error) (RenderResult, error) {
 	if opts.Destination == "" {
 		return RenderResult{}, fmt.Errorf("render destination is required")
 	}
@@ -92,7 +94,8 @@ func RenderOwnedTree(ctx context.Context, opts RenderOptions, generate func(cont
 		return RenderResult{}, fmt.Errorf("encode render inventory: %w", err)
 	}
 	canonical = append(canonical, '\n')
-	if err := os.WriteFile(filepath.Join(owned, InventoryFilename), canonical, 0o644); err != nil {
+	// The inventory contains public manifest identities and must remain inspectable beside the rendered files.
+	if err := os.WriteFile(filepath.Join(owned, InventoryFilename), canonical, 0o644); err != nil { //nolint:gosec
 		return RenderResult{}, fmt.Errorf("write render inventory: %w", err)
 	}
 	if err := replaceOwnedTree(owned, destination); err != nil {
@@ -134,7 +137,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	} else if inventory.AppProject != project {
 		return fmt.Errorf("render inventory AppProject %q differs from selected AppProject %q", inventory.AppProject, project)
 	}
-	opts := RenderOptions{
+	opts := &RenderOptions{
 		Module: inventory.Module, Service: inventory.Service,
 		Environment: inventory.Environment, AppProject: project, Promotable: promotable,
 	}
@@ -159,10 +162,10 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	return nil
 }
 
-func validateTree(root string, opts RenderOptions) error {
+func validateTree(root string, opts *RenderOptions) error {
 	var manifests []manifest
 	var kustomizations []kustomization
-	err := walkRegularFiles(root, func(path, relative string, info os.FileInfo) error {
+	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
 		if relative == InventoryFilename {
 			return nil
 		}
@@ -427,7 +430,7 @@ func markKustomizationCoverage(root string, customization kustomization, byDirec
 func selectProjectContract(manifests []manifest, selected string) (*projectContract, error) {
 	projects := map[string]*projectContract{}
 	for _, item := range manifests {
-		if item.group != "argoproj.io" || item.kind != "AppProject" {
+		if item.group != argoAPIGroup || item.kind != "AppProject" {
 			continue
 		}
 		name := metadataString(item.value, "name")
@@ -496,7 +499,7 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 	}
 	_, knownClusterScoped := clusterScopedKinds[item.kind]
 	customClusterScoped := item.group != "" && !isBuiltInAPIGroup(item.group) &&
-		item.group != "argoproj.io" && metadataString(item.value, "namespace") == ""
+		item.group != argoAPIGroup && metadataString(item.value, "namespace") == ""
 	if knownClusterScoped || customClusterScoped {
 		if contract == nil {
 			return fmt.Errorf("cluster-scoped %s is outside an AppProject contract", item.kind)
@@ -511,7 +514,7 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 			}
 		}
 	}
-	if item.group == "argoproj.io" && item.kind == "Application" && contract != nil {
+	if item.group == argoAPIGroup && item.kind == "Application" && contract != nil {
 		spec, _ := item.value["spec"].(map[string]any)
 		project, _ := spec["project"].(string)
 		if project != contract.name {
@@ -539,7 +542,7 @@ func inspectValue(value any, path []string, promotable bool) error {
 			return fmt.Errorf("%s.value contains credential value", strings.Join(path, "."))
 		}
 		for key, child := range typed {
-			next := append(path, key)
+			next := extendPath(path, key)
 			normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(key))
 			if isCredentialKey(normalized) && scalarHasValue(child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
@@ -556,7 +559,7 @@ func inspectValue(value any, path []string, promotable bool) error {
 		}
 	case []any:
 		for index, child := range typed {
-			if err := inspectValue(child, append(path, fmt.Sprintf("[%d]", index)), promotable); err != nil {
+			if err := inspectValue(child, extendPath(path, fmt.Sprintf("[%d]", index)), promotable); err != nil {
 				return err
 			}
 		}
@@ -572,6 +575,13 @@ func inspectValue(value any, path []string, promotable bool) error {
 		}
 	}
 	return nil
+}
+
+func extendPath(path []string, part string) []string {
+	extended := make([]string, len(path)+1)
+	copy(extended, path)
+	extended[len(path)] = part
+	return extended
 }
 
 func validateURLValue(path, value string) error {
@@ -638,7 +648,7 @@ func metadataString(value map[string]any, key string) string {
 	return result
 }
 
-func buildInventory(root string, opts RenderOptions) (Inventory, error) {
+func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Service: opts.Service, Environment: opts.Environment,

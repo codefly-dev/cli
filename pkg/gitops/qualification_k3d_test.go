@@ -23,7 +23,7 @@ func TestLocalK3dDisposableGitQualification(t *testing.T) {
 
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
-	_, err := RenderOwnedTree(context.Background(), RenderOptions{
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: filepath.Join(workspace.Dir(), "deployments", "environments", "local", "modules", "payments"),
 		Module:      "payments", Environment: "local", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, root string) error {
@@ -51,11 +51,11 @@ data:
 		Module: "payments", Environment: "local", Local: true,
 		PromotionBranch: "codefly/promote-payments-local",
 	}
-	plan, err := PlanPublish(context.Background(), workspace, request)
+	plan, err := PlanPublish(context.Background(), workspace, &request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	published, err := Publish(context.Background(), workspace, PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	published, err := Publish(context.Background(), workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ exit 2
 	t.Setenv("CODEFLY_TEST_KUBECONFIG", kubeconfig)
 	t.Setenv("CODEFLY_TEST_CLUSTER", cluster)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	observed, err := Observe(context.Background(), ObserveRequest{
+	observed, err := Observe(context.Background(), &ObserveRequest{
 		WorkspaceRoot: workspace.Dir(), Module: "payments", Environment: "local",
 		AppProject: "payments", Applications: []string{"payments"},
 		Revision: published.Commit, Commit: published.Commit, Tree: published.Tree,

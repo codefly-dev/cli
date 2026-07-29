@@ -26,13 +26,18 @@ var (
 	pathComponentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 )
 
+const (
+	httpsScheme = "https"
+	sshScheme   = "ssh"
+)
+
 type preparedRepository struct {
 	dir     string
 	cleanup func()
 	plan    PublishPlan
 }
 
-func PlanPublish(ctx context.Context, workspace *resources.Workspace, request PublishRequest) (PublishPlan, error) {
+func PlanPublish(ctx context.Context, workspace *resources.Workspace, request *PublishRequest) (PublishPlan, error) {
 	prepared, err := preparePublish(ctx, workspace, request, "")
 	if err != nil {
 		return PublishPlan{}, err
@@ -41,14 +46,14 @@ func PlanPublish(ctx context.Context, workspace *resources.Workspace, request Pu
 	return prepared.plan, nil
 }
 
-func Publish(ctx context.Context, workspace *resources.Workspace, mutation PublishMutation, permit mutationauthority.PreparedPermit) (PublishResult, error) {
+func Publish(ctx context.Context, workspace *resources.Workspace, mutation *PublishMutation, permit mutationauthority.PreparedPermit) (PublishResult, error) {
 	if err := permit.Validate(); err != nil {
 		return PublishResult{}, err
 	}
 	if mutation.PlanID == "" {
 		return PublishResult{}, fmt.Errorf("publish requires an inspected plan ID")
 	}
-	prepared, err := preparePublish(ctx, workspace, mutation.Request, "")
+	prepared, err := preparePublish(ctx, workspace, &mutation.Request, "")
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -56,10 +61,10 @@ func Publish(ctx context.Context, workspace *resources.Workspace, mutation Publi
 	if prepared.plan.ID != mutation.PlanID {
 		return PublishResult{}, fmt.Errorf("publish plan is stale: prepared %s, current %s", mutation.PlanID, prepared.plan.ID)
 	}
-	return commitAndPublish(ctx, workspace, prepared, mutation.Request)
+	return commitAndPublish(ctx, workspace, prepared, &mutation.Request)
 }
 
-func PlanRollback(ctx context.Context, workspace *resources.Workspace, request RollbackRequest) (RollbackPlan, error) {
+func PlanRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest) (RollbackPlan, error) {
 	prepared, revision, err := prepareRollback(ctx, workspace, request)
 	if err != nil {
 		return RollbackPlan{}, err
@@ -68,14 +73,14 @@ func PlanRollback(ctx context.Context, workspace *resources.Workspace, request R
 	return RollbackPlan{PublishPlan: prepared.plan, ToRevision: revision}, nil
 }
 
-func Rollback(ctx context.Context, workspace *resources.Workspace, mutation RollbackMutation, permit mutationauthority.PreparedPermit) (PublishResult, error) {
+func Rollback(ctx context.Context, workspace *resources.Workspace, mutation *RollbackMutation, permit mutationauthority.PreparedPermit) (PublishResult, error) {
 	if err := permit.Validate(); err != nil {
 		return PublishResult{}, err
 	}
 	if mutation.PlanID == "" {
 		return PublishResult{}, fmt.Errorf("rollback requires an inspected plan ID")
 	}
-	prepared, _, err := prepareRollback(ctx, workspace, mutation.Request)
+	prepared, _, err := prepareRollback(ctx, workspace, &mutation.Request)
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -87,21 +92,15 @@ func Rollback(ctx context.Context, workspace *resources.Workspace, mutation Roll
 	if request.CommitMessage == "" {
 		request.CommitMessage = "Re-promote " + mutation.Request.Module + " from " + mutation.Request.ToRevision
 	}
-	return commitAndPublish(ctx, workspace, prepared, request)
+	return commitAndPublish(ctx, workspace, prepared, &request)
 }
 
-func preparePublish(ctx context.Context, workspace *resources.Workspace, request PublishRequest, restoreRevision string) (*preparedRepository, error) {
+func preparePublish(ctx context.Context, workspace *resources.Workspace, request *PublishRequest, restoreRevision string) (*preparedRepository, error) {
+	if err := validatePublishRequest(request); err != nil {
+		return nil, err
+	}
 	config, repositorySlug, baseBranch, pathRoot, err := resolveGitops(workspace, request.Local)
 	if err != nil {
-		return nil, err
-	}
-	if request.Module == "" || request.Environment == "" {
-		return nil, fmt.Errorf("module and environment are required")
-	}
-	if err := validatePathComponent("module", request.Module); err != nil {
-		return nil, err
-	}
-	if err := validatePathComponent("environment", request.Environment); err != nil {
 		return nil, err
 	}
 	rendered := filepath.Join(workspace.Dir(), "deployments", "environments", request.Environment, "modules", request.Module)
@@ -187,7 +186,7 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 		Module:         request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, Changed: changed, Diff: diff,
 	}
-	plan.ID, err = publishPlanID(plan, restoreRevision)
+	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
 		return fail(err)
 	}
@@ -196,8 +195,24 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 	}, nil
 }
 
-func prepareRollback(ctx context.Context, workspace *resources.Workspace, request RollbackRequest) (*preparedRepository, string, error) {
-	if strings.TrimSpace(request.ToRevision) == "" {
+func validatePublishRequest(request *PublishRequest) error {
+	if request == nil || request.Module == "" || request.Environment == "" {
+		return fmt.Errorf("module and environment are required")
+	}
+	if err := validatePathComponent("module", request.Module); err != nil {
+		return err
+	}
+	return validatePathComponent("environment", request.Environment)
+}
+
+func prepareRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest) (*preparedRepository, string, error) {
+	if request == nil {
+		return nil, "", fmt.Errorf("rollback request is required")
+	}
+	normalized := *request
+	normalized.ToRevision = strings.ToLower(strings.TrimSpace(normalized.ToRevision))
+	request = &normalized
+	if request.ToRevision == "" {
 		return nil, "", fmt.Errorf("rollback target revision is required")
 	}
 	if !gitObjectPattern.MatchString(request.ToRevision) {
@@ -222,11 +237,11 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve rollback revision: %w", err)
 	}
-	prepared, err := preparePublish(ctx, workspace, request.PublishRequest, revision)
+	prepared, err := preparePublish(ctx, workspace, &request.PublishRequest, revision)
 	if err != nil {
 		return nil, "", err
 	}
-	prepared.plan.ID, err = publishPlanID(prepared.plan, revision)
+	prepared.plan.ID, err = publishPlanID(&prepared.plan, revision)
 	if err != nil {
 		prepared.cleanup()
 		return nil, "", err
@@ -252,10 +267,10 @@ func requireReviewedRevision(root, module, environment, revision string) error {
 		if err := json.Unmarshal(data, &evidence); err != nil {
 			return fmt.Errorf("decode reviewed promotion evidence %s: %w", entry.Name(), err)
 		}
-		reviewed := evidence.Review.State == "MERGED" && evidence.Review.ReviewDecision == "APPROVED" ||
+		reviewed := evidence.Review.State == "MERGED" && evidence.Review.ReviewDecision == approvedReviewDecision ||
 			evidence.Review.State == "LOCAL_REVIEW_REF" && evidence.Review.ReviewDecision == "LOCAL_QUALIFIED"
 		if evidence.SchemaVersion == SchemaVersion && evidence.Module == module && evidence.Environment == environment &&
-			evidence.Health == "Healthy" && reviewed &&
+			evidence.Health == healthyStatus && reviewed &&
 			(evidence.ArgoRevision == revision || evidence.SignedCommit == revision) {
 			return nil
 		}
@@ -263,7 +278,7 @@ func requireReviewedRevision(root, module, environment, revision string) error {
 	return fmt.Errorf("rollback target %s has no reviewed Healthy promotion evidence", revision)
 }
 
-func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepared *preparedRepository, request PublishRequest) (PublishResult, error) {
+func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepared *preparedRepository, request *PublishRequest) (PublishResult, error) {
 	message := strings.TrimSpace(request.CommitMessage)
 	if message == "" {
 		message = fmt.Sprintf("Promote %s to %s", request.Module, request.Environment)
@@ -421,7 +436,7 @@ func changedPathsBetween(ctx context.Context, repo, baseRevision, branchRevision
 	return paths, nil
 }
 
-func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, request PublishRequest, commit string) (string, int, error) {
+func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, request *PublishRequest, commit string) (string, int, error) {
 	if prepared.plan.RepositorySlug == "" {
 		reviewRef := "refs/codefly/reviews/" + strings.ReplaceAll(prepared.plan.PromotionBranch, "/", "-")
 		refspec := commit + ":" + reviewRef
@@ -531,10 +546,10 @@ func validateRepositoryURL(raw string, local bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("workspace.gitops.repo-url: %w", err)
 	}
-	if parsed.User != nil && parsed.Scheme == "https" {
+	if parsed.User != nil && parsed.Scheme == httpsScheme {
 		return "", fmt.Errorf("workspace.gitops.repo-url must not contain credentials")
 	}
-	if parsed.Scheme == "ssh" && parsed.User != nil {
+	if parsed.Scheme == sshScheme && parsed.User != nil {
 		if _, hasPassword := parsed.User.Password(); hasPassword {
 			return "", fmt.Errorf("workspace.gitops.repo-url must not contain credentials")
 		}
@@ -543,11 +558,11 @@ func validateRepositoryURL(raw string, local bool) (string, error) {
 		return "", fmt.Errorf("workspace.gitops.repo-url contains unsafe authority")
 	}
 	switch parsed.Scheme {
-	case "https", "ssh":
+	case httpsScheme, sshScheme:
 		if parsed.Hostname() != "github.com" {
 			return "", fmt.Errorf("GitHub repository host must be github.com")
 		}
-		if parsed.Scheme == "ssh" && parsed.User != nil && parsed.User.Username() != "git" {
+		if parsed.Scheme == sshScheme && parsed.User != nil && parsed.User.Username() != "git" {
 			return "", fmt.Errorf("GitHub SSH repository user must be git")
 		}
 		parts := strings.Split(strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/"), "/")
@@ -591,16 +606,16 @@ func confinedJoin(root, relative string) (string, error) {
 	return target, nil
 }
 
-func publishPlanID(plan PublishPlan, restoreRevision string) (string, error) {
-	copy := plan
-	copy.ID = ""
-	copy.Diff = ""
+func publishPlanID(plan *PublishPlan, restoreRevision string) (string, error) {
+	planCopy := *plan
+	planCopy.ID = ""
+	planCopy.Diff = ""
 	payload := struct {
 		Plan            PublishPlan `json:"plan"`
 		DiffSHA256      string      `json:"diffSha256"`
 		RestoreRevision string      `json:"restoreRevision,omitempty"`
 	}{
-		Plan: copy, DiffSHA256: hashString(plan.Diff), RestoreRevision: restoreRevision,
+		Plan: planCopy, DiffSHA256: hashString(plan.Diff), RestoreRevision: restoreRevision,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

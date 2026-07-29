@@ -41,9 +41,9 @@ type Plane interface {
 
 type GitOps interface {
 	RenderGitOps(ctx context.Context, req GitOpsRenderRequest) (gitops.RenderResult, error)
-	PlanGitOpsPublish(ctx context.Context, req gitops.PublishRequest) (gitops.PublishPlan, error)
-	PlanGitOpsRollback(ctx context.Context, req gitops.RollbackRequest) (gitops.RollbackPlan, error)
-	ObserveGitOps(ctx context.Context, req gitops.ObserveRequest) (gitops.ObserveResult, error)
+	PlanGitOpsPublish(ctx context.Context, req *gitops.PublishRequest) (gitops.PublishPlan, error)
+	PlanGitOpsRollback(ctx context.Context, req *gitops.RollbackRequest) (gitops.RollbackPlan, error)
+	ObserveGitOps(ctx context.Context, req *gitops.ObserveRequest) (gitops.ObserveResult, error)
 }
 
 // Introspector answers read-only questions about the workspace and any live

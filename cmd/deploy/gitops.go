@@ -22,7 +22,7 @@ var gitOpsRenderCmd = &cobra.Command{
 	Use:   "render [module]",
 	Short: "Render and validate a module-owned manifest tree",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
@@ -47,18 +47,19 @@ var gitOpsPlanCmd = &cobra.Command{
 	Use:   "plan [module]",
 	Short: "Inspect the exact GitOps publication diff",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
 		if err != nil {
 			return err
 		}
-		plan, err := gitops.PlanPublish(ctx, workspace, publishRequest(module.Name))
+		request := publishRequest(module.Name)
+		plan, err := gitops.PlanPublish(ctx, workspace, &request)
 		if err != nil {
 			return err
 		}
-		printPublishPlan(plan)
+		printPublishPlan(&plan)
 		return nil
 	},
 }
@@ -67,7 +68,7 @@ var gitOpsPublishCmd = &cobra.Command{
 	Use:   "publish [module]",
 	Short: "Create a signed promotion commit and open or update its pull request",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
@@ -80,11 +81,11 @@ var gitOpsPublishCmd = &cobra.Command{
 			return err
 		}
 		defer plane.Close()
-		plan, err := plane.PlanGitOpsPublish(ctx, request)
+		plan, err := plane.PlanGitOpsPublish(ctx, &request)
 		if err != nil {
 			return err
 		}
-		printPublishPlan(plan)
+		printPublishPlan(&plan)
 		if !gitOpsYes && !models.Confirm(ctx, "Publish this signed promotion and open or update its pull request?", false) {
 			return fmt.Errorf("publication not confirmed")
 		}
@@ -118,7 +119,7 @@ var gitOpsObserveCmd = &cobra.Command{
 	Use:   "observe [module]",
 	Short: "Verify Argo CD reconciled the reviewed Git revision and store evidence",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
@@ -134,7 +135,7 @@ var gitOpsObserveCmd = &cobra.Command{
 			return err
 		}
 		defer plane.Close()
-		result, err := plane.ObserveGitOps(ctx, gitops.ObserveRequest{
+		result, err := plane.ObserveGitOps(ctx, &gitops.ObserveRequest{
 			Module: module.Name, Environment: gitOpsEnv, AppProject: gitOpsProject,
 			Applications: gitOpsApplications, Revision: gitOpsRevision,
 			Commit: publication.Commit, Tree: publication.Tree, RenderDigest: publication.RenderDigest,
@@ -154,7 +155,7 @@ var gitOpsRollbackCmd = &cobra.Command{
 	Use:   "rollback [module]",
 	Short: "Re-promote a prior reviewed Git tree through a new pull request",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
@@ -170,11 +171,11 @@ var gitOpsRollbackCmd = &cobra.Command{
 			return err
 		}
 		defer plane.Close()
-		plan, err := plane.PlanGitOpsRollback(ctx, request)
+		plan, err := plane.PlanGitOpsRollback(ctx, &request)
 		if err != nil {
 			return err
 		}
-		printPublishPlan(plan.PublishPlan)
+		printPublishPlan(&plan.PublishPlan)
 		if !gitOpsYes && !models.Confirm(ctx, "Publish this reviewed GitOps re-promotion?", false) {
 			return fmt.Errorf("rollback publication not confirmed")
 		}
@@ -211,7 +212,7 @@ func publishRequest(module string) gitops.PublishRequest {
 	}
 }
 
-func printPublishPlan(plan gitops.PublishPlan) {
+func printPublishPlan(plan *gitops.PublishPlan) {
 	cli.Info("Plan %s", plan.ID)
 	cli.Info("Repository %s", plan.Repository)
 	cli.Info("Base %s@%s", plan.BaseBranch, plan.BaseRevision)

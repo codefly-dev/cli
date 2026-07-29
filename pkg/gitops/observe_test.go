@@ -21,7 +21,7 @@ func TestObserveStoresExactHealthyArgoEvidence(t *testing.T) {
 	installFakeArgo(t, argoProjectJSON(request.Repository), argoApplicationJSON(
 		"payments-api", request.Repository, request.Path, request.Revision, "Healthy", "Succeeded",
 	))
-	result, err := Observe(context.Background(), request)
+	result, err := Observe(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestObserveRejectsRevisionMismatchAndSharedResources(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := observedPublication(t)
 			installFakeArgo(t, argoProjectJSON(request.Repository), test.application(request))
-			_, err := Observe(context.Background(), request)
+			_, err := Observe(context.Background(), &request)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
@@ -113,7 +113,7 @@ func TestObserveRejectsSourceAndProjectAuthorityViolations(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := observedPublication(t)
 			installFakeArgo(t, test.project(request), test.app(request))
-			_, err := Observe(context.Background(), request)
+			_, err := Observe(context.Background(), &request)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
@@ -124,7 +124,7 @@ func TestObserveRejectsSourceAndProjectAuthorityViolations(t *testing.T) {
 func TestObserveRejectsDuplicateApplicationsWithoutPolling(t *testing.T) {
 	request := observedPublication(t)
 	request.Applications = []string{"payments-api", "payments-api"}
-	_, err := Observe(context.Background(), request)
+	_, err := Observe(context.Background(), &request)
 	if err == nil || !strings.Contains(err.Error(), "selected more than once") {
 		t.Fatalf("duplicate application error = %v", err)
 	}
@@ -133,7 +133,7 @@ func TestObserveRejectsDuplicateApplicationsWithoutPolling(t *testing.T) {
 func TestObserveRejectsPublishedSubtreeDigestMismatchBeforePollingArgo(t *testing.T) {
 	request := observedPublication(t)
 	request.RenderDigest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-	_, err := Observe(context.Background(), request)
+	_, err := Observe(context.Background(), &request)
 	if err == nil || !strings.Contains(err.Error(), "reconciled Git tree digest") {
 		t.Fatalf("digest mismatch error = %v", err)
 	}
@@ -176,7 +176,7 @@ fi
 	t.Setenv("CODEFLY_TEST_ARGO_CLUSTER", `{"server":"https://cluster.example.com","name":"test","config":{"tls":true}}`)
 	t.Setenv("CODEFLY_TEST_ARGO_COUNT", counter)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if _, err := Observe(context.Background(), request); err != nil {
+	if _, err := Observe(context.Background(), &request); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(counter)
@@ -194,11 +194,11 @@ func TestObserveRejectsUnverifiedLocalReviewReference(t *testing.T) {
 	installFakeArgo(t, argoProjectJSON(request.Repository), argoApplicationJSON(
 		"payments-api", request.Repository, request.Path, request.Revision, "Healthy", "Succeeded",
 	))
-	if _, err := Observe(context.Background(), request); err == nil || !strings.Contains(err.Error(), "verify local promotion review ref") {
+	if _, err := Observe(context.Background(), &request); err == nil || !strings.Contains(err.Error(), "verify local promotion review ref") {
 		t.Fatalf("unverified local review error = %v", err)
 	}
 	request.Local = false
-	if _, err := Observe(context.Background(), request); err == nil || !strings.Contains(err.Error(), "allowed only for local qualification") {
+	if _, err := Observe(context.Background(), &request); err == nil || !strings.Contains(err.Error(), "allowed only for local qualification") {
 		t.Fatalf("remote local-review error = %v", err)
 	}
 }
@@ -235,6 +235,11 @@ printf '%s\n' "$CODEFLY_TEST_GH_RESPONSE"
 		"https://github.com/codefly-dev/manifests.git", false); err == nil {
 		t.Fatal("review accepted a commit not present in the pull request")
 	}
+	if _, err := observeReview(context.Background(),
+		"https://github.com/codefly-dev/manifests/pull/42", observedRevision, signedCommit,
+		"https://github.com/codefly-dev/other.git", false); err == nil || !strings.Contains(err.Error(), "repository differs") {
+		t.Fatalf("cross-repository review error = %v", err)
+	}
 }
 
 func observedPublication(t *testing.T) ObserveRequest {
@@ -242,7 +247,7 @@ func observedPublication(t *testing.T) ObserveRequest {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", "local", "modules", "payments")
-	_, err := RenderOwnedTree(context.Background(), RenderOptions{
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", Environment: "local",
 		AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, stage string) error {
@@ -269,11 +274,11 @@ spec:
 		Module: "payments", Environment: "local", Local: true,
 		PromotionBranch: "codefly/promote-payments-local",
 	}
-	plan, err := PlanPublish(context.Background(), workspace, publish)
+	plan, err := PlanPublish(context.Background(), workspace, &publish)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := Publish(context.Background(), workspace, PublishMutation{Request: publish, PlanID: plan.ID}, preparedPermit)
+	result, err := Publish(context.Background(), workspace, &PublishMutation{Request: publish, PlanID: plan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}

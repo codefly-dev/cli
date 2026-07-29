@@ -26,7 +26,7 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 		Module: "payments", Environment: "production", Local: true,
 		PromotionBranch: "codefly/promote-payments-production",
 	}
-	plan, err := PlanPublish(ctx, workspace, request)
+	plan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,13 +36,13 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if plan.Path != "environments/production/modules/payments" {
 		t.Fatalf("publication path = %q", plan.Path)
 	}
-	if _, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: plan.ID}, mutationauthority.PreparedPermit{}); err == nil || !strings.Contains(err.Error(), "prepared authority") {
+	if _, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, mutationauthority.PreparedPermit{}); err == nil || !strings.Contains(err.Error(), "prepared authority") {
 		t.Fatalf("unprepared publication error = %v", err)
 	}
-	if _, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: "sha256:stale"}, preparedPermit); err == nil || !strings.Contains(err.Error(), "stale") {
+	if _, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: "sha256:stale"}, preparedPermit); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("stale plan error = %v", err)
 	}
-	result, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,25 +80,25 @@ func TestPublishRetriesPRAndReceiptForExistingSignedBranchCommit(t *testing.T) {
 		Module: "payments", Environment: "production", Local: true,
 		PromotionBranch: "codefly/promote-payments-production",
 	}
-	plan, err := PlanPublish(ctx, workspace, request)
+	plan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	first, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(workspace.Dir(), ".codefly", "gitops", "publications", "payments-production.json")); err != nil {
 		t.Fatal(err)
 	}
-	retryPlan, err := PlanPublish(ctx, workspace, request)
+	retryPlan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(retryPlan.Changed) != 0 || retryPlan.ExistingCommit != first.Commit {
 		t.Fatalf("retry plan = %+v", retryPlan)
 	}
-	retried, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: retryPlan.ID}, preparedPermit)
+	retried, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: retryPlan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestPublishRejectsUnrelatedExistingPromotionChanges(t *testing.T) {
 	gitRun(t, work, "commit", "-m", "unrelated")
 	gitRun(t, work, "push", "origin", "codefly/promote-payments-production")
 
-	_, err := PlanPublish(context.Background(), workspace, PublishRequest{
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{
 		Module: "payments", Environment: "production", Local: true,
 		PromotionBranch: "codefly/promote-payments-production",
 	})
@@ -148,22 +148,22 @@ func TestRollbackRePromotesPriorReviewedTree(t *testing.T) {
 	}
 
 	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
-	firstPlan, err := PlanPublish(ctx, workspace, request)
+	firstPlan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: firstPlan.ID}, preparedPermit)
+	first, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: firstPlan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mergePromotionToMain(t, remote, request.PromotionBranch)
 
 	renderPublishFixture(t, workspace.Dir(), "payments", "production", "worker")
-	secondPlan, err := PlanPublish(ctx, workspace, request)
+	secondPlan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Publish(ctx, workspace, PublishMutation{Request: request, PlanID: secondPlan.ID}, preparedPermit)
+	second, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: secondPlan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,14 +184,14 @@ func TestRollbackRePromotesPriorReviewedTree(t *testing.T) {
 	}
 
 	rollbackRequest := RollbackRequest{PublishRequest: request, ToRevision: first.Commit}
-	rollbackPlan, err := PlanRollback(ctx, workspace, rollbackRequest)
+	rollbackPlan, err := PlanRollback(ctx, workspace, &rollbackRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rollbackPlan.RenderDigest != first.RenderDigest {
 		t.Fatalf("rollback digest = %s, want %s", rollbackPlan.RenderDigest, first.RenderDigest)
 	}
-	rollback, err := Rollback(ctx, workspace, RollbackMutation{Request: rollbackRequest, PlanID: rollbackPlan.ID}, preparedPermit)
+	rollback, err := Rollback(ctx, workspace, &RollbackMutation{Request: rollbackRequest, PlanID: rollbackPlan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestRollbackRequiresEvidenceForSelectedModuleAndEnvironment(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := PlanRollback(context.Background(), workspace, RollbackRequest{
+	_, err := PlanRollback(context.Background(), workspace, &RollbackRequest{
 		PublishRequest: PublishRequest{
 			Module: "payments", Environment: "production", Local: true,
 		},
@@ -305,7 +305,7 @@ gitops:
 func renderPublishFixture(t *testing.T, root, module, environment, name string) {
 	t.Helper()
 	destination := filepath.Join(root, "deployments", "environments", environment, "modules", module)
-	_, err := RenderOwnedTree(context.Background(), RenderOptions{
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: module, Environment: environment, Promotable: true,
 	}, func(ctx context.Context, stage string) error {
 		manifest := strings.Replace(pinnedDeployment, "name: api", "name: "+name, 2)

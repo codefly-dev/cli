@@ -12,7 +12,7 @@ import (
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, "modules", module.Name)
-	return RenderOwnedTree(ctx, RenderOptions{
+	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination,
 		Module:      module.Name, Environment: env.Name, AppProject: project,
 		Promotable: !env.IsK3d(),
@@ -43,7 +43,7 @@ func RenderModule(ctx context.Context, workspace *resources.Workspace, module *r
 
 func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, "services", module.Name, service.Name)
-	return RenderOwnedTree(ctx, RenderOptions{
+	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination,
 		Module:      module.Name, Service: service.Name, Environment: env.Name, AppProject: project,
 		Promotable: !env.IsK3d(),

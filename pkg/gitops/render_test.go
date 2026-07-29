@@ -42,11 +42,11 @@ func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testin
 	options := RenderOptions{
 		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
 	}
-	first, err := RenderOwnedTree(context.Background(), options, render)
+	first, err := RenderOwnedTree(context.Background(), &options, render)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := RenderOwnedTree(context.Background(), options, render)
+	second, err := RenderOwnedTree(context.Background(), &options, render)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestRenderValidationFailureLeavesPreviousTreeUntouched(t *testing.T) {
 	if err := os.WriteFile(previous, []byte(pinnedDeployment), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := RenderOwnedTree(context.Background(), RenderOptions{
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		return os.WriteFile(filepath.Join(root, "secret.yaml"), []byte(`apiVersion: v1
@@ -120,7 +120,7 @@ items:
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := RenderOwnedTree(context.Background(), RenderOptions{
+			_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 				Destination: filepath.Join(t.TempDir(), "owned"),
 				Module:      "payments", Environment: "production", Promotable: true,
 			}, func(ctx context.Context, root string) error {
@@ -173,7 +173,7 @@ images:
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := RenderOwnedTree(context.Background(), RenderOptions{
+			_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 				Destination: filepath.Join(t.TempDir(), "owned"),
 				Module:      "payments", Environment: "production", Promotable: true,
 			}, func(ctx context.Context, root string) error {
@@ -214,7 +214,7 @@ images:
 
 func TestRenderInventoryMustRemainCanonical(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "owned")
-	_, err := RenderOwnedTree(context.Background(), RenderOptions{
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		return os.WriteFile(filepath.Join(root, "deployment.yaml"), []byte(pinnedDeployment), 0o644)
@@ -237,7 +237,7 @@ func TestRenderInventoryMustRemainCanonical(t *testing.T) {
 
 func TestRenderInventoriesNonKubernetesJSONWithoutTreatingItAsAManifest(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "owned")
-	_, err := RenderOwnedTree(context.Background(), RenderOptions{
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		if err := os.WriteFile(filepath.Join(root, "deployment.yaml"), []byte(pinnedDeployment), 0o644); err != nil {
@@ -337,7 +337,7 @@ rules: []
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := RenderOwnedTree(context.Background(), RenderOptions{
+			_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 				Destination: filepath.Join(t.TempDir(), "owned"),
 				Module:      "payments", Environment: "production", Promotable: true,
 			}, func(ctx context.Context, root string) error {
@@ -380,7 +380,7 @@ metadata:
 spec:
   project: payments
 `
-	result, err := RenderOwnedTree(context.Background(), RenderOptions{
+	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: filepath.Join(t.TempDir(), "owned"), Module: "payments",
 		Environment: "production", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, root string) error {

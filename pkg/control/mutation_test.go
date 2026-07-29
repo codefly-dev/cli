@@ -143,10 +143,10 @@ func (s mutationExecutorStub) runDeploy(context.Context, DeployRequest) (DeployR
 	return s.deployResult, nil
 }
 
-func (mutationExecutorStub) publishGitOps(context.Context, gitops.PublishMutation, mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
+func (mutationExecutorStub) publishGitOps(context.Context, *gitops.PublishMutation, mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
 	return gitops.PublishResult{}, nil
 }
 
-func (mutationExecutorStub) rollbackGitOps(context.Context, gitops.RollbackMutation, mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
+func (mutationExecutorStub) rollbackGitOps(context.Context, *gitops.RollbackMutation, mutationauthority.PreparedPermit) (gitops.PublishResult, error) {
 	return gitops.PublishResult{}, nil
 }
