@@ -48,8 +48,9 @@ type Builder struct {
 	push        bool
 	imageDigest string
 
-	syncResponse *builderv0.SyncResponse
-	syncSkipped  bool
+	syncResponse     *builderv0.SyncResponse
+	syncSkipped      bool
+	deploymentOutput *builderv0.DeploymentOutput
 }
 
 func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
@@ -66,6 +67,10 @@ func NewBuilder(ctx context.Context, instance *services.Instance, world *World) 
 		outputPropertyForSync:  NewBuilderSyncManager(instance.Unique()),
 	}
 	return b, nil
+}
+
+func (b *Builder) DeploymentOutput() *builderv0.DeploymentOutput {
+	return b.deploymentOutput
 }
 
 func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {

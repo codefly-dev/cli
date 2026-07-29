@@ -715,6 +715,25 @@ func (flow *Flow) OriginSyncSkipped() bool {
 	return false
 }
 
+func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
+	outputs := make(map[string]*builderv0.DeploymentOutput)
+	if flow == nil || flow.hub == nil {
+		return outputs
+	}
+	for _, manager := range flow.hub.managers {
+		source, ok := manager.(interface {
+			BuilderDeploymentOutput() *builderv0.DeploymentOutput
+		})
+		if !ok {
+			continue
+		}
+		if output := source.BuilderDeploymentOutput(); output != nil {
+			outputs[manager.Unique()] = output
+		}
+	}
+	return outputs
+}
+
 func (flow *Flow) Build(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Build")
 	// In stand-alone Mode, we set an ignore policy
