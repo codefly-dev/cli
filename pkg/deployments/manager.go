@@ -18,6 +18,15 @@ type Manager interface {
 	Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error
 }
 
+type DeploymentOutputRequirement interface {
+	RequiresDeploymentOutput() bool
+}
+
+func RequiresDeploymentOutput(manager Manager) bool {
+	requirement, ok := manager.(DeploymentOutputRequirement)
+	return ok && requirement.RequiresDeploymentOutput()
+}
+
 type RenderedTreeEvidence struct {
 	Module    string
 	Service   string
@@ -70,16 +79,35 @@ func (r *evidenceRecorder) renderedTrees() []RenderedTreeEvidence {
 	return trees
 }
 
-func GetKubernetesDeployment(ctx context.Context, dockerBuildContext *builderv0.DockerBuildContext, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, namespace string) (*builderv0.Deployment, error) {
+func GetKubernetesDeployment(
+	ctx context.Context,
+	dockerBuildContext *builderv0.DockerBuildContext,
+	workspace *resources.Workspace,
+	module *resources.Module,
+	service *resources.Service,
+	namespace string,
+	profile builderv0.KubernetesOutputProfile,
+	secretReferences map[string]*builderv0.KubernetesSecretKeyReference,
+) (*builderv0.Deployment, error) {
 	return &builderv0.Deployment{
 		Kind: &builderv0.Deployment_Kubernetes{
 			Kubernetes: &builderv0.KubernetesDeployment{
-				BuildContext: dockerBuildContext,
-				Namespace:    namespace,
-				Destination:  KustomizeDir(ctx, workspace, module, service),
+				BuildContext:       dockerBuildContext,
+				Namespace:          namespace,
+				Destination:        KustomizeDir(ctx, workspace, module, service),
+				Profile:            profile,
+				SecretReferences:   secretReferences,
+				ValidateServerSide: profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
 			},
 		},
 	}, nil
+}
+
+func KubernetesOutputProfile(manager Manager) builderv0.KubernetesOutputProfile {
+	if _, directLocalApply := manager.(*LocalApplyManager); directLocalApply {
+		return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
+	}
+	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
 }
 
 func NewLocalApplyManager(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) (*LocalApplyManager, error) {

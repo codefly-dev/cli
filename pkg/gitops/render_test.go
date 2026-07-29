@@ -22,6 +22,24 @@ spec:
           image: ghcr.io/codefly-dev/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `
 
+func promotableServiceGraph(module string, services []string) []InventoryService {
+	graph := make([]InventoryService, 0, len(services))
+	for _, service := range services {
+		graph = append(graph, InventoryService{
+			Module: module, Service: service, Path: filepath.ToSlash(filepath.Join("services", service)),
+			Output: &KubernetesOutputInventory{
+				Kind: "KUSTOMIZE", Profile: "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+				Validation: &KubernetesValidationInventory{
+					StaticValidation: "STATUS_PASSED", ServerSideValidation: "STATUS_PASSED",
+					Promotable: true, Violations: []string{},
+				},
+			},
+		})
+	}
+	return graph
+}
+
 func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testing.T) {
 	parent := t.TempDir()
 	destination := filepath.Join(parent, "modules", "payments")
@@ -36,13 +54,15 @@ func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testin
 		t.Fatal(err)
 	}
 	render := func(ctx context.Context, root string) error {
-		if err := os.MkdirAll(filepath.Join(root, "services", "api"), 0o755); err != nil {
+		overlay := filepath.Join(root, "services", "api", "overlays", "production")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(root, "services", "api", "deployment.yaml"), []byte(pinnedDeployment), 0o644)
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(pinnedDeployment), 0o644)
 	}
 	options := RenderOptions{
-		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
+		Destination: destination, Module: "payments", Services: []string{"api"},
+		Environment: "production", Promotable: true,
 	}
 	first, err := RenderOwnedTree(context.Background(), &options, render)
 	if err != nil {
@@ -166,6 +186,22 @@ stringData:
 	}
 }
 
+func TestPromotableRenderRejectsIdentifierOnlyKubernetesSecret(t *testing.T) {
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: filepath.Join(t.TempDir(), "owned"),
+		Module:      "payments", Service: "api", Environment: "production", Promotable: true,
+	}, func(ctx context.Context, root string) error {
+		return os.WriteFile(filepath.Join(root, "secret.yaml"), []byte(`apiVersion: v1
+kind: Secret
+metadata:
+  name: api
+`), 0o644)
+	})
+	if err == nil || !strings.Contains(err.Error(), "secret resources are not allowed") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestRenderRejectsSecretInJSONAndKubernetesList(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -224,6 +260,16 @@ images:
 `,
 		},
 		{
+			name: "OCI selector containing tag",
+			kustomization: `resources:
+  - deployment.yaml
+images:
+  - name: image:tag
+    newName: ghcr.io/codefly-dev/api
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`,
+		},
+		{
 			name: "tag override",
 			kustomization: `resources:
   - deployment.yaml
@@ -261,6 +307,9 @@ images:
 					"example/api:build",
 					1,
 				)
+				if test.name == "OCI selector containing tag" {
+					deployment = strings.Replace(deployment, "example/api:build", "image:tag", 1)
+				}
 				if err := os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(deployment), 0o644); err != nil {
 					return err
 				}
@@ -283,6 +332,26 @@ images:
 				t.Fatalf("error = %v, want %q", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestRenderAppliesURLPolicyOnlyToURLBearingFields(t *testing.T) {
+	manifest := pinnedDeployment + `---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: selectors
+data:
+  image-selector: image:tag
+  command-argument: http://handled-by-the-workload.example
+`
+	if _, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: filepath.Join(t.TempDir(), "owned"),
+		Module:      "payments", Environment: "production", Promotable: true,
+	}, func(_ context.Context, root string) error {
+		return os.WriteFile(filepath.Join(root, "manifests.yaml"), []byte(manifest), 0o644)
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

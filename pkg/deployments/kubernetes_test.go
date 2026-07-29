@@ -35,6 +35,24 @@ func TestVerifyLocalK3dTargetRejectsRemoteKindsBeforeInspectingKubeconfig(t *tes
 	}
 }
 
+func TestKubernetesOutputProfileReservesEphemeralForVerifiedLocalApply(t *testing.T) {
+	require.Equal(
+		t,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		KubernetesOutputProfile(nil),
+	)
+	require.Equal(
+		t,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		KubernetesOutputProfile(&RenderManager{}),
+	)
+	require.Equal(
+		t,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		KubernetesOutputProfile(&LocalApplyManager{}),
+	)
+}
+
 func TestVerifyLocalK3dTargetRejectsStaleCurrentContext(t *testing.T) {
 	harness := newKubernetesCommandHarness(t)
 	harness.writeSelected(kubeconfigDocument("eks-production", "eks-production", "production", "https://eks.example.com"))

@@ -15,8 +15,9 @@ const (
 type Inventory struct {
 	SchemaVersion int                `json:"schemaVersion"`
 	Module        string             `json:"module"`
+	Service       string             `json:"service,omitempty"`
 	Environment   string             `json:"environment"`
-	AppProject    string             `json:"appProject,omitempty"`
+	AppProject    string             `json:"appProject"`
 	OwnedPath     string             `json:"ownedPath"`
 	ServiceGraph  []InventoryService `json:"serviceGraph"`
 	Files         []InventoryFile    `json:"files"`
@@ -45,6 +46,9 @@ type InventoryKubernetesValidation struct {
 	Violations           []string `json:"violations"`
 }
 
+type KubernetesOutputInventory = InventoryKubernetesOutput
+type KubernetesValidationInventory = InventoryKubernetesValidation
+
 type InventoryFile struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
@@ -55,6 +59,7 @@ type RenderOptions struct {
 	Destination  string
 	Module       string
 	Service      string
+	Services     []string
 	Environment  string
 	AppProject   string
 	Promotable   bool
@@ -101,20 +106,21 @@ type PublishRequest struct {
 }
 
 type PublishPlan struct {
-	ID              string   `json:"id"`
-	Repository      string   `json:"repository"`
-	RepositorySlug  string   `json:"repositorySlug,omitempty"`
-	Path            string   `json:"path"`
-	BaseBranch      string   `json:"baseBranch"`
-	BaseRevision    string   `json:"baseRevision"`
-	PromotionBranch string   `json:"promotionBranch"`
-	BranchRevision  string   `json:"branchRevision,omitempty"`
-	ExistingCommit  string   `json:"existingCommit,omitempty"`
-	Module          string   `json:"module"`
-	Environment     string   `json:"environment"`
-	RenderDigest    string   `json:"renderDigest"`
-	Changed         []string `json:"changed"`
-	Diff            string   `json:"diff"`
+	ID               string   `json:"id"`
+	Repository       string   `json:"repository"`
+	RepositorySlug   string   `json:"repositorySlug,omitempty"`
+	Path             string   `json:"path"`
+	BaseBranch       string   `json:"baseBranch"`
+	BaseRevision     string   `json:"baseRevision"`
+	PromotionBranch  string   `json:"promotionBranch"`
+	BranchRevision   string   `json:"branchRevision,omitempty"`
+	ExistingCommit   string   `json:"existingCommit,omitempty"`
+	Module           string   `json:"module"`
+	Environment      string   `json:"environment"`
+	RenderDigest     string   `json:"renderDigest"`
+	SnapshotRevision string   `json:"snapshotRevision"`
+	Changed          []string `json:"changed"`
+	Diff             string   `json:"diff"`
 }
 
 type PublishMutation struct {
@@ -123,17 +129,18 @@ type PublishMutation struct {
 }
 
 type PublishResult struct {
-	PlanID          string `json:"planId"`
-	Repository      string `json:"repository"`
-	Path            string `json:"path"`
-	BaseBranch      string `json:"baseBranch"`
-	PromotionBranch string `json:"promotionBranch"`
-	RenderDigest    string `json:"renderDigest"`
-	Commit          string `json:"commit"`
-	Tree            string `json:"tree"`
-	Signed          bool   `json:"signed"`
-	PullRequest     string `json:"pullRequest"`
-	PullRequestID   int    `json:"pullRequestId,omitempty"`
+	PlanID           string `json:"planId"`
+	Repository       string `json:"repository"`
+	Path             string `json:"path"`
+	BaseBranch       string `json:"baseBranch"`
+	PromotionBranch  string `json:"promotionBranch"`
+	RenderDigest     string `json:"renderDigest"`
+	SnapshotRevision string `json:"snapshotRevision"`
+	Commit           string `json:"commit"`
+	Tree             string `json:"tree"`
+	Signed           bool   `json:"signed"`
+	PullRequest      string `json:"pullRequest"`
+	PullRequestID    int    `json:"pullRequestId,omitempty"`
 }
 
 type RollbackRequest struct {

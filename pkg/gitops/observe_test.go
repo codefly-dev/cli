@@ -19,7 +19,7 @@ const (
 func TestObserveStoresExactHealthyArgoEvidence(t *testing.T) {
 	request := observedPublication(t)
 	installFakeArgo(t, argoProjectJSON(request.Repository), argoApplicationJSON(
-		"payments-api", request.Repository, request.Path, request.Revision, "Healthy", "Succeeded",
+		"payments-api", request.Repository, observedServicePath(request), request.Revision, "Healthy", "Succeeded",
 	))
 	result, err := Observe(context.Background(), &request)
 	if err != nil {
@@ -46,18 +46,18 @@ func TestObserveRejectsRevisionMismatchAndSharedResources(t *testing.T) {
 		{
 			name: "revision",
 			application: func(request ObserveRequest) string {
-				return argoApplicationJSON("payments-api", request.Repository, request.Path, wrongRevision, "Healthy", "Succeeded")
+				return argoApplicationJSON("payments-api", request.Repository, observedServicePath(request), wrongRevision, "Healthy", "Succeeded")
 			},
-			want: "reconciled revision " + wrongRevision,
+			want: "targets revision",
 		},
 		{
 			name: "shared",
 			application: func(request ObserveRequest) string {
 				return fmt.Sprintf(`{
   "metadata":{"name":"payments-api"},
-  "spec":{"project":"payments","source":{"repoURL":%q,"path":%q},"destination":{"server":"https://cluster.example.com","namespace":"payments"}},
+  "spec":{"project":"payments","source":{"repoURL":%q,"path":%q,"targetRevision":%q},"destination":{"server":"https://cluster.example.com","namespace":"payments"}},
   "status":{"conditions":[{"type":"SharedResourceWarning","message":"Deployment/api is shared"}]}
-}`, request.Repository, request.Path)
+}`, request.Repository, observedServicePath(request), request.Revision)
 			},
 			want: "shared resources",
 		},
@@ -95,7 +95,7 @@ func TestObserveRejectsSourceAndProjectAuthorityViolations(t *testing.T) {
 				return strings.Replace(argoProjectJSON(request.Repository), request.Repository, "*", 1)
 			},
 			app: func(request ObserveRequest) string {
-				return argoApplicationJSON("payments-api", request.Repository, request.Path, request.Revision, "Healthy", "Succeeded")
+				return argoApplicationJSON("payments-api", request.Repository, observedServicePath(request), request.Revision, "Healthy", "Succeeded")
 			},
 			want: "wildcard source repository authority",
 		},
@@ -103,7 +103,7 @@ func TestObserveRejectsSourceAndProjectAuthorityViolations(t *testing.T) {
 			name:    "cluster resource outside whitelist",
 			project: func(request ObserveRequest) string { return argoProjectJSON(request.Repository) },
 			app: func(request ObserveRequest) string {
-				app := argoApplicationJSON("payments-api", request.Repository, request.Path, request.Revision, "Healthy", "Succeeded")
+				app := argoApplicationJSON("payments-api", request.Repository, observedServicePath(request), request.Revision, "Healthy", "Succeeded")
 				return strings.Replace(app, `"resources":[]`, `"resources":[{"group":"rbac.authorization.k8s.io","kind":"ClusterRole","name":"admin"}]`, 1)
 			},
 			want: "outside AppProject",
@@ -139,6 +139,60 @@ func TestObserveRejectsPublishedSubtreeDigestMismatchBeforePollingArgo(t *testin
 	}
 }
 
+func TestObserveRejectsSignedPublicationWithDifferentServiceBytes(t *testing.T) {
+	request := observedPublication(t)
+	work := t.TempDir()
+	gitRun(t, "", "clone", request.Repository, work)
+	gitRun(t, work, "checkout", "codefly/promote-payments-local")
+	serviceManifest := filepath.Join(
+		work,
+		filepath.FromSlash(request.Path),
+		"services",
+		"api",
+		"overlays",
+		"local",
+		"manifests.yaml",
+	)
+	data, err := os.ReadFile(serviceManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(serviceManifest, []byte(strings.Replace(string(data), "name: api", "name: changed-api", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(work, filepath.FromSlash(request.Path))
+	inventory, err := LoadInventory(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := buildInventory(target, &RenderOptions{
+		Module:       inventory.Module,
+		Services:     inventoryServiceNames(inventory.ServiceGraph),
+		OwnedPath:    inventory.OwnedPath,
+		ServiceGraph: inventory.ServiceGraph,
+		Environment:  inventory.Environment,
+		AppProject:   inventory.AppProject,
+		Promotable:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCanonicalInventory(filepath.Join(target, InventoryFilename), &updated); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", request.Path)
+	gitRun(t, work, "commit", "-S", "-m", "change reviewed service bytes")
+	gitRun(t, work, "push", "origin", "codefly/promote-payments-local")
+	request.Commit = gitOutput(t, work, "rev-parse", "HEAD^{commit}")
+	request.Tree = gitOutput(t, work, "rev-parse", "HEAD^{tree}")
+	request.RenderDigest = updated.Digest
+
+	_, err = verifyPublishedRevision(context.Background(), &request)
+	if err == nil || !strings.Contains(err.Error(), "changes immutable service snapshot files") {
+		t.Fatalf("service snapshot byte mismatch error = %v", err)
+	}
+}
+
 func TestObserveRechecksHealthyApplicationsUntilOneStableSweep(t *testing.T) {
 	request := observedPublication(t)
 	bin := t.TempDir()
@@ -168,10 +222,10 @@ fi
 	}
 	t.Setenv("CODEFLY_TEST_ARGO_PROJECT", argoProjectJSON(request.Repository))
 	t.Setenv("CODEFLY_TEST_ARGO_APPLICATION", argoApplicationJSON(
-		"payments-api", request.Repository, request.Path, request.Revision, "Healthy", "Succeeded",
+		"payments-api", request.Repository, observedServicePath(request), request.Revision, "Healthy", "Succeeded",
 	))
 	t.Setenv("CODEFLY_TEST_ARGO_DEGRADED", argoApplicationJSON(
-		"payments-api", request.Repository, request.Path, request.Revision, "Degraded", "Succeeded",
+		"payments-api", request.Repository, observedServicePath(request), request.Revision, "Degraded", "Succeeded",
 	))
 	t.Setenv("CODEFLY_TEST_ARGO_CLUSTER", `{"server":"https://cluster.example.com","name":"test","config":{"tls":true}}`)
 	t.Setenv("CODEFLY_TEST_ARGO_COUNT", counter)
@@ -192,7 +246,7 @@ func TestObserveRejectsUnverifiedLocalReviewReference(t *testing.T) {
 	request := observedPublication(t)
 	request.PullRequest = request.Repository + "#refs/codefly/reviews/missing"
 	installFakeArgo(t, argoProjectJSON(request.Repository), argoApplicationJSON(
-		"payments-api", request.Repository, request.Path, request.Revision, "Healthy", "Succeeded",
+		"payments-api", request.Repository, observedServicePath(request), request.Revision, "Healthy", "Succeeded",
 	))
 	if _, err := Observe(context.Background(), &request); err == nil || !strings.Contains(err.Error(), "verify local promotion review ref") {
 		t.Fatalf("unverified local review error = %v", err)
@@ -222,7 +276,7 @@ printf '%s\n' "$CODEFLY_TEST_GH_RESPONSE"
   "commits":[{"oid":"cccccccccccccccccccccccccccccccccccccccc"}]
 }`)
 	review, err := observeReview(context.Background(),
-		"https://github.com/codefly-dev/manifests/pull/42", observedRevision, signedCommit,
+		"https://github.com/codefly-dev/manifests/pull/42", signedCommit,
 		"https://github.com/codefly-dev/manifests.git", false)
 	if err != nil {
 		t.Fatal(err)
@@ -231,12 +285,12 @@ printf '%s\n' "$CODEFLY_TEST_GH_RESPONSE"
 		t.Fatalf("review evidence = %+v", review)
 	}
 	if _, err := observeReview(context.Background(),
-		"https://github.com/codefly-dev/manifests/pull/42", observedRevision, wrongRevision,
+		"https://github.com/codefly-dev/manifests/pull/42", wrongRevision,
 		"https://github.com/codefly-dev/manifests.git", false); err == nil {
 		t.Fatal("review accepted a commit not present in the pull request")
 	}
 	if _, err := observeReview(context.Background(),
-		"https://github.com/codefly-dev/manifests/pull/42", observedRevision, signedCommit,
+		"https://github.com/codefly-dev/manifests/pull/42", signedCommit,
 		"https://github.com/codefly-dev/other.git", false); err == nil || !strings.Contains(err.Error(), "repository differs") {
 		t.Fatalf("cross-repository review error = %v", err)
 	}
@@ -248,9 +302,14 @@ func observedPublication(t *testing.T) ObserveRequest {
 	workspace := loadGitopsWorkspace(t, remote)
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: destination, Module: "payments", Environment: "local",
-		AppProject: "payments", Promotable: true,
+		Destination: destination, Module: "payments", Services: []string{"api"}, Environment: "local",
+		AppProject: "payments", OwnedPath: "environments/deployments/modules/payments",
+		ServiceGraph: promotableServiceGraph("payments", []string{"api"}), Promotable: true,
 	}, func(ctx context.Context, stage string) error {
+		service := filepath.Join(stage, "services", "api", "overlays", "local")
+		if err := os.MkdirAll(service, 0o755); err != nil {
+			return err
+		}
 		manifests := pinnedDeployment + `---
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
@@ -264,7 +323,7 @@ spec:
     - namespace: payments
       server: https://cluster.example.com
 `
-		return os.WriteFile(filepath.Join(stage, "manifests.yaml"), []byte(manifests), 0o644)
+		return os.WriteFile(filepath.Join(service, "manifests.yaml"), []byte(manifests), 0o644)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -286,10 +345,14 @@ spec:
 		WorkspaceRoot: workspace.Dir(), Module: "payments", Environment: "local",
 		AppProject: "payments", Applications: []string{"payments-api"},
 		Repository: result.Repository, Path: result.Path,
-		Revision: result.Commit, Commit: result.Commit, Tree: result.Tree,
+		Revision: result.SnapshotRevision, Commit: result.Commit, Tree: result.Tree,
 		RenderDigest: result.RenderDigest, PullRequest: result.PullRequest, Local: true,
 		Timeout: time.Second, PollInterval: time.Millisecond,
 	}
+}
+
+func observedServicePath(request ObserveRequest) string {
+	return filepath.ToSlash(filepath.Join(request.Path, "services", "api", "overlays", request.Environment))
 }
 
 func argoProjectJSON(repository string) string {
@@ -309,7 +372,7 @@ func argoApplicationJSON(name, repository, path, revision, health, operation str
   "metadata":{"name":%q},
   "spec":{
     "project":"payments",
-    "source":{"repoURL":%q,"path":%q,"targetRevision":"main"},
+    "source":{"repoURL":%q,"path":%q,"targetRevision":%q},
     "destination":{"server":"https://cluster.example.com","namespace":"payments"}
   },
   "status":{
@@ -318,7 +381,7 @@ func argoApplicationJSON(name, repository, path, revision, health, operation str
     "operationState":{"phase":%q,"syncResult":{"revision":%q}},
     "resources":[]
   }
-}`, name, repository, path, revision, health, operation, revision)
+}`, name, repository, path, revision, revision, health, operation, revision)
 }
 
 func installFakeArgo(t *testing.T, project, application string) {

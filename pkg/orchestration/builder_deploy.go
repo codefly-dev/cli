@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
+	coreservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -41,6 +42,19 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
 	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
+	profile := kubernetesOutputProfile(b.world)
+	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
+	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+		secretName := "secret-" + b.instance.Service.Name
+		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
+			conf,
+			dependenciesConfigurations,
+			secretName,
+		)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot prepare promotable configuration")
+		}
+	}
 
 	networkMappings, err := b.world.RemoteNetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)
 	if err != nil {
@@ -62,44 +76,42 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get namespace")
 	}
 
-	// Build the request
 	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
 	dockerContext.ImageDigest = b.imageDigest
 
-	deploy, err := deployments.GetKubernetesDeployment(ctx, dockerContext, b.world.Workspace, b.instance.Module, b.instance.Service, b.world.Env, namespace)
+	deploy, err := deployments.GetKubernetesDeployment(
+		ctx,
+		dockerContext,
+		b.world.Workspace,
+		b.instance.Module,
+		b.instance.Service,
+		namespace,
+		profile,
+		secretReferences,
+	)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 	if b.world.DeploymentDestination != nil {
 		deploy.GetKubernetes().Destination = b.world.DeploymentDestination(b.instance.Module, b.instance.Service)
 	}
-	profile := kubernetesOutputProfile(b.world)
-	deploy.GetKubernetes().Profile = profile
 	deploy.GetKubernetes().ValidateServerSide =
 		profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 &&
 			b.world.Env.IsK3d()
 	validationContext := ""
-	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
-		if deploy.GetKubernetes().GetValidateServerSide() {
-			kubeconfig, contextName, targetErr := kubernetesValidationTarget(ctx, b.world.Env)
-			if targetErr != nil {
-				return nil, w.Wrapf(targetErr, "cannot resolve promotable GitOps validation target")
-			}
-			deploy.GetKubernetes().ValidationKubeconfig = kubeconfig
-			deploy.GetKubernetes().ValidationContext = contextName
-			validationContext = contextName
+	if deploy.GetKubernetes().GetValidateServerSide() {
+		kubeconfig, contextName, targetErr := kubernetesValidationTarget(ctx, b.world.Env)
+		if targetErr != nil {
+			return nil, w.Wrapf(targetErr, "cannot resolve promotable GitOps validation target")
 		}
-		conf, dependenciesConfigurations, deploy.GetKubernetes().SecretReferences, err =
-			promotableDeploymentInputs(b.instance.Service.Name, conf, dependenciesConfigurations)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot prepare promotable GitOps inputs")
-		}
+		deploy.GetKubernetes().ValidationKubeconfig = kubeconfig
+		deploy.GetKubernetes().ValidationContext = contextName
+		validationContext = contextName
 	}
 
-	// Build the request
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
 	resp, err := b.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
@@ -117,10 +129,17 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("cant deploy service instance")
 	}
-	if err = validateKubernetesDeploymentOutput(resp.GetDeployment(), profile, validationContext); err != nil {
-		return nil, w.Wrapf(err, "cannot accept Kubernetes deployment output")
+	if err := validateDeploymentOutput(
+		b.world.RemoteManager,
+		profile,
+		resp.Deployment,
+		validationContext,
+	); err != nil {
+		return nil, w.Wrapf(err, "cannot verify service deployment output")
 	}
-	b.deploymentOutput = proto.Clone(resp.GetDeployment()).(*builderv0.DeploymentOutput)
+	if resp.Deployment != nil {
+		b.deploymentOutput = proto.Clone(resp.Deployment).(*builderv0.DeploymentOutput)
+	}
 
 	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Identity, resp.Configuration)
 	if err != nil {
@@ -137,14 +156,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for deploy")
 	}
 
-	if resp.Deployment == nil {
-		return outputProperty, nil
-	}
-	// Render-only mode: caller (cli/cmd/deploy) skipped wiring a
-	// deployment manager so manifests get written to disk by the
-	// agent's KustomizeDeploy but no kubectl apply runs. Used by
-	// the gitops flow where ArgoCD picks up the rendered tree.
-	if b.world.RemoteManager == nil {
+	if resp.Deployment == nil || b.world.RemoteManager == nil {
 		return outputProperty, nil
 	}
 	err = b.world.RemoteManager.Handle(ctx, b.instance.Service, b.instance.Module, resp.Deployment)
@@ -179,107 +191,127 @@ func kubernetesOutputProfile(world *World) builderv0.KubernetesOutputProfile {
 	if world.KubernetesOutputProfile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_UNSPECIFIED {
 		return world.KubernetesOutputProfile
 	}
-	if world.Env.IsK3d() {
-		return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
-	}
-	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+	return deployments.KubernetesOutputProfile(world.RemoteManager)
 }
 
-func promotableDeploymentInputs(
-	secretName string,
+func promotableDeploymentConfigurations(
 	configuration *basev0.Configuration,
 	dependencies []*basev0.Configuration,
+	secretName string,
 ) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
-	references := make(map[string]*builderv0.KubernetesSecretKeyReference)
-	sanitized, err := sanitizePromotableConfiguration(secretName, configuration, references)
+	references := map[string]*builderv0.KubernetesSecretKeyReference{}
+	own, err := promotableConfiguration(configuration, secretName, references)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	sanitizedDependencies := make([]*basev0.Configuration, len(dependencies))
-	for index, dependency := range dependencies {
-		sanitizedDependencies[index], err = sanitizePromotableConfiguration(secretName, dependency, references)
+	safeDependencies := make([]*basev0.Configuration, 0, len(dependencies))
+	for _, dependency := range dependencies {
+		safe, err := promotableConfiguration(dependency, secretName, references)
 		if err != nil {
 			return nil, nil, nil, err
 		}
+		safeDependencies = append(safeDependencies, safe)
 	}
-	return sanitized, sanitizedDependencies, references, nil
+	return own, safeDependencies, references, nil
 }
 
-func sanitizePromotableConfiguration(
-	secretName string,
+func promotableConfiguration(
 	configuration *basev0.Configuration,
+	secretName string,
 	references map[string]*builderv0.KubernetesSecretKeyReference,
 ) (*basev0.Configuration, error) {
 	if configuration == nil {
 		return nil, nil
 	}
-	sanitized := proto.Clone(configuration).(*basev0.Configuration)
-	for _, information := range sanitized.GetInfos() {
-		if information.GetData().GetSecret() {
-			return nil, fmt.Errorf("secret configuration data %q has no Kubernetes Secret key reference", information.GetName())
+	safe := proto.Clone(configuration).(*basev0.Configuration)
+	safe.Infos = safe.Infos[:0]
+	for _, sourceInfo := range configuration.GetInfos() {
+		if sourceInfo.GetData().GetSecret() {
+			return nil, fmt.Errorf("structured secret configuration %q requires typed Kubernetes key references", sourceInfo.GetName())
 		}
-		values := information.GetConfigurationValues()
-		kept := values[:0]
-		for _, value := range values {
-			if value.GetSecret() || resources.IsSensitiveKey(value.GetKey()) {
-				value.Secret = true
+		info := proto.Clone(sourceInfo).(*basev0.ConfigurationInformation)
+		info.ConfigurationValues = info.ConfigurationValues[:0]
+		for _, sourceValue := range sourceInfo.GetConfigurationValues() {
+			if !sourceValue.GetSecret() && !resources.IsSensitiveKey(sourceValue.GetKey()) {
+				info.ConfigurationValues = append(info.ConfigurationValues, proto.Clone(sourceValue).(*basev0.ConfigurationValue))
 				continue
 			}
-			kept = append(kept, value)
+			secretConfiguration := &basev0.Configuration{
+				Origin: configuration.GetOrigin(),
+				Infos: []*basev0.ConfigurationInformation{{
+					Name: sourceInfo.GetName(),
+					ConfigurationValues: []*basev0.ConfigurationValue{{
+						Key: sourceValue.GetKey(), Secret: true,
+					}},
+				}},
+			}
+			environmentVariables := resources.ConfigurationAsEnvironmentVariables(secretConfiguration, true)
+			if len(environmentVariables) != 1 {
+				return nil, fmt.Errorf("secret configuration %q/%q has no environment identity", sourceInfo.GetName(), sourceValue.GetKey())
+			}
+			key := environmentVariables[0].Key
+			references[key] = &builderv0.KubernetesSecretKeyReference{Name: secretName, Key: key}
 		}
-		information.ConfigurationValues = kept
-	}
-
-	referenceSource := proto.Clone(configuration).(*basev0.Configuration)
-	for _, information := range referenceSource.GetInfos() {
-		for _, value := range information.GetConfigurationValues() {
-			value.Secret = value.GetSecret() || resources.IsSensitiveKey(value.GetKey())
+		if len(info.GetConfigurationValues()) > 0 || info.GetData() != nil {
+			safe.Infos = append(safe.Infos, info)
 		}
 	}
-	for _, environmentVariable := range resources.ConfigurationAsEnvironmentVariables(referenceSource, true) {
-		references[environmentVariable.Key] = &builderv0.KubernetesSecretKeyReference{
-			Name: secretName + "-secrets",
-			Key:  environmentVariable.Key,
-		}
-	}
-	return sanitized, nil
+	return safe, nil
 }
 
 func validateKubernetesDeploymentOutput(
-	deployment *builderv0.DeploymentOutput,
-	profile builderv0.KubernetesOutputProfile,
+	requested builderv0.KubernetesOutputProfile,
+	output *builderv0.DeploymentOutput,
 	validationContext string,
 ) error {
-	kubernetes := deployment.GetKubernetes()
+	kubernetes := output.GetKubernetes()
 	if kubernetes == nil {
-		return fmt.Errorf("builder returned no Kubernetes deployment output")
+		return fmt.Errorf("plugin returned no Kubernetes deployment output")
 	}
-	if kubernetes.GetProfile() != profile {
-		return fmt.Errorf("builder returned profile %s for requested profile %s", kubernetes.GetProfile(), profile)
+	if kubernetes.GetProfile() != requested {
+		return fmt.Errorf("plugin returned Kubernetes output profile %s, requested %s", kubernetes.GetProfile(), requested)
 	}
-	if kubernetes.GetContractVersion() == "" {
-		return fmt.Errorf("builder returned no Kubernetes contract version")
+	if requested != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+		return nil
+	}
+	if kubernetes.GetContractVersion() != coreservices.KubernetesManifestContractVersion {
+		return fmt.Errorf(
+			"plugin returned Kubernetes manifest contract %q, expected %q",
+			kubernetes.GetContractVersion(),
+			coreservices.KubernetesManifestContractVersion,
+		)
 	}
 	validation := kubernetes.GetValidation()
-	if validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
-		return fmt.Errorf("builder did not pass static Kubernetes validation")
+	if !validation.GetPromotable() ||
+		validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
+		return fmt.Errorf("plugin did not return a successfully validated promotable Kubernetes output")
 	}
-	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
-		if validationContext != "" {
-			if validation.GetServerSideValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
-				return fmt.Errorf("builder did not pass server-side Kubernetes validation")
-			}
-			if validation.GetValidatedContext() != validationContext {
-				return fmt.Errorf(
-					"builder validated Kubernetes context %q for requested context %q",
-					validation.GetValidatedContext(),
-					validationContext,
-				)
-			}
+	if validationContext != "" {
+		if validation.GetServerSideValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
+			return fmt.Errorf("plugin did not pass server-side Kubernetes validation")
 		}
-		if !validation.GetPromotable() {
-			return fmt.Errorf("builder did not return a promotable Kubernetes deployment")
+		if validation.GetValidatedContext() != validationContext {
+			return fmt.Errorf(
+				"plugin validated Kubernetes context %q, requested %q",
+				validation.GetValidatedContext(),
+				validationContext,
+			)
 		}
 	}
 	return nil
+}
+
+func validateDeploymentOutput(
+	manager deployments.Manager,
+	requested builderv0.KubernetesOutputProfile,
+	output *builderv0.DeploymentOutput,
+	validationContext string,
+) error {
+	if output == nil {
+		if deployments.RequiresDeploymentOutput(manager) {
+			return fmt.Errorf("plugin returned no Kubernetes deployment output")
+		}
+		return nil
+	}
+	return validateKubernetesDeploymentOutput(requested, output, validationContext)
 }

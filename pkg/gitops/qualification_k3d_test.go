@@ -9,7 +9,124 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/core/resources"
 )
+
+var mindShapedServices = []string{
+	"accounts",
+	"cache",
+	"forge-edge",
+	"frontend",
+	"object-storage",
+	"store",
+	"vault",
+}
+
+var mindShapedAWSManagedServices = map[string]struct{}{
+	"cache":          {},
+	"object-storage": {},
+	"store":          {},
+	"vault":          {},
+}
+
+func TestMindShapedAWSRenderPlanPublishDoesNotApplyKubernetes(t *testing.T) {
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspaceWithServices(t, remote, mindShapedServices)
+	workspaceConfiguration := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
+	data, err := os.ReadFile(workspaceConfiguration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(data), "gitops:\n", `  - name: aws
+    cluster:
+      kind: eks
+    managed-services:
+      cache: {}
+      object-storage: {}
+      store: {}
+      vault: {}
+gitops:
+`, 1)
+	if err := os.WriteFile(workspaceConfiguration, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace.Environments = append(workspace.Environments, &resources.Environment{
+		Name:    "aws",
+		Cluster: &resources.EnvironmentCluster{Kind: "eks"},
+		ManagedServices: map[string]resources.EnvironmentManagedService{
+			"cache":          {},
+			"object-storage": {},
+			"store":          {},
+			"vault":          {},
+		},
+	})
+	renderMindShapedFixture(t, workspace.Dir(), "aws")
+	configureSSHSigning(t)
+	repository := "https://github.com/codefly-test/manifests.git"
+	workspace.Gitops.RepoURL = repository
+	t.Setenv("GIT_CONFIG_COUNT", "4")
+	t.Setenv("GIT_CONFIG_KEY_3", "url.file://"+remote+".insteadOf")
+	t.Setenv("GIT_CONFIG_VALUE_3", repository)
+
+	bin := t.TempDir()
+	kubectlCalled := filepath.Join(t.TempDir(), "kubectl-called")
+	kubectl := filepath.Join(bin, "kubectl")
+	if err := os.WriteFile(kubectl, []byte("#!/bin/sh\ntouch \"$CODEFLY_TEST_KUBECTL_CALLED\"\nexit 97\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gh := filepath.Join(bin, "gh")
+	ghScript := `#!/bin/sh
+set -eu
+if [ "$1 $2" = "pr list" ]; then
+  printf '%s\n' '[]'
+  exit 0
+fi
+if [ "$1 $2" = "pr create" ]; then
+  printf '%s\n' 'https://github.com/codefly-test/manifests/pull/1'
+  exit 0
+fi
+if [ "$1 $2" = "pr view" ]; then
+  revision="$(git --git-dir "$CODEFLY_TEST_REMOTE" rev-parse refs/heads/codefly/promote-payments-aws)"
+  printf '{"number":1,"url":"https://github.com/codefly-test/manifests/pull/1","headRefOid":"%s","baseRefName":"main"}\n' "$revision"
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(gh, []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEFLY_TEST_KUBECTL_CALLED", kubectlCalled)
+	t.Setenv("CODEFLY_TEST_REMOTE", remote)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	request := PublishRequest{
+		Module: "payments", Environment: "aws",
+		PromotionBranch: "codefly/promote-payments-aws",
+	}
+	plan, err := PlanPublish(context.Background(), workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Changed) == 0 || plan.SnapshotRevision == "" {
+		t.Fatalf("AWS publication plan = %+v", plan)
+	}
+	result, err := Publish(
+		context.Background(),
+		workspace,
+		&PublishMutation{Request: request, PlanID: plan.ID},
+		preparedPermit,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SnapshotRevision == "" || result.Commit == "" {
+		t.Fatalf("AWS publication = %+v", result)
+	}
+	if _, err := os.Stat(kubectlCalled); !os.IsNotExist(err) {
+		t.Fatalf("AWS GitOps publication invoked kubectl: %v", err)
+	}
+}
 
 func TestLocalK3dDisposableGitQualification(t *testing.T) {
 	if os.Getenv("CODEFLY_GITOPS_K3D_QUALIFY") != "1" {
@@ -22,30 +139,8 @@ func TestLocalK3dDisposableGitQualification(t *testing.T) {
 	}
 
 	remote := createBareRepository(t)
-	workspace := loadGitopsWorkspace(t, remote)
-	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: filepath.Join(workspace.Dir(), "deployments", "modules", "payments"),
-		Module:      "payments", Environment: "local", AppProject: "payments", Promotable: true,
-	}, func(ctx context.Context, root string) error {
-		if err := os.WriteFile(filepath.Join(root, "kustomization.yaml"), []byte(`apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - configmap.yaml
-`), 0o644); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(root, "configmap.yaml"), []byte(`apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: codefly-gitops-qualification
-  namespace: payments
-data:
-  release: qualified
-`), 0o644)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	workspace := loadGitopsWorkspaceWithServices(t, remote, mindShapedServices)
+	renderMindShapedFixture(t, workspace.Dir(), "local")
 	configureSSHSigning(t)
 	request := PublishRequest{
 		Module: "payments", Environment: "local", Local: true,
@@ -95,7 +190,8 @@ data:
 	kubectl(nil, "create", "namespace", "payments")
 
 	repository := "git://" + gitServer + "/" + filepath.Base(remote)
-	argoResources := fmt.Sprintf(`apiVersion: argoproj.io/v1alpha1
+	var argoResources strings.Builder
+	fmt.Fprintf(&argoResources, `apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
   name: payments
@@ -106,18 +202,20 @@ spec:
   destinations:
     - namespace: payments
       server: https://kubernetes.default.svc
----
+`, repository)
+	for _, service := range mindShapedServices {
+		fmt.Fprintf(&argoResources, `---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: payments
+  name: payments-%s
   namespace: argocd
 spec:
   project: payments
   source:
     repoURL: %s
-    targetRevision: main
-    path: environments/deployments/modules/payments
+    targetRevision: %s
+    path: environments/deployments/modules/payments/services/%s/overlays/local
   destination:
     server: https://kubernetes.default.svc
     namespace: payments
@@ -125,8 +223,9 @@ spec:
     automated:
       prune: true
       selfHeal: true
-`, repository, repository)
-	kubectl([]byte(argoResources), "apply", "-f", "-")
+`, service, repository, published.SnapshotRevision, service)
+	}
+	kubectl([]byte(argoResources.String()), "apply", "-f", "-")
 
 	bin := t.TempDir()
 	argocd := filepath.Join(bin, "argocd")
@@ -149,10 +248,14 @@ exit 2
 	t.Setenv("CODEFLY_TEST_KUBECONFIG", kubeconfig)
 	t.Setenv("CODEFLY_TEST_CLUSTER", cluster)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	applications := make([]string, 0, len(mindShapedServices))
+	for _, service := range mindShapedServices {
+		applications = append(applications, "payments-"+service)
+	}
 	observed, err := Observe(context.Background(), &ObserveRequest{
 		WorkspaceRoot: workspace.Dir(), Module: "payments", Environment: "local",
-		AppProject: "payments", Applications: []string{"payments"},
-		Revision: published.Commit, Commit: published.Commit, Tree: published.Tree,
+		AppProject: "payments", Applications: applications,
+		Revision: published.SnapshotRevision, Commit: published.Commit, Tree: published.Tree,
 		RenderDigest: published.RenderDigest, Repository: published.Repository, Path: published.Path,
 		PullRequest: published.PullRequest, Local: true,
 		Timeout: 5 * time.Minute, PollInterval: 2 * time.Second,
@@ -160,8 +263,67 @@ exit 2
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.Evidence.Health != "Healthy" || observed.Evidence.ArgoRevision != published.Commit {
+	if observed.Evidence.Health != "Healthy" || observed.Evidence.ArgoRevision != published.SnapshotRevision {
 		t.Fatalf("qualification evidence = %+v", observed.Evidence)
+	}
+	for _, service := range mindShapedServices {
+		name := "codefly-gitops-" + service
+		if value := kubectl(nil, "get", "configmap", name, "-n", "payments", "-o", "jsonpath={.data.release}"); value != "qualified" {
+			t.Fatalf("ConfigMap %s release = %q", name, value)
+		}
+	}
+}
+
+func renderMindShapedFixture(t *testing.T, root, environment string) {
+	t.Helper()
+	services := append([]string(nil), mindShapedServices...)
+	graph := promotableServiceGraph("payments", mindShapedServices)
+	if environment == "aws" {
+		services = services[:0]
+		for index := range graph {
+			if _, managed := mindShapedAWSManagedServices[graph[index].Service]; managed {
+				graph[index].Managed = true
+				graph[index].Path = ""
+				graph[index].Output = nil
+				continue
+			}
+			services = append(services, graph[index].Service)
+		}
+	}
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: filepath.Join(root, "deployments", "modules", "payments"),
+		Module:      "payments", Services: services, Environment: environment,
+		AppProject: "payments", OwnedPath: "environments/deployments/modules/payments",
+		ServiceGraph: graph, Promotable: true,
+	}, func(ctx context.Context, root string) error {
+		for _, service := range services {
+			overlay := filepath.Join(root, "services", service, "overlays", environment)
+			if err := os.MkdirAll(overlay, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), []byte(`apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap.yaml
+`), 0o644); err != nil {
+				return err
+			}
+			manifest := fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: codefly-gitops-%s
+  namespace: payments
+data:
+  release: qualified
+`, service)
+			if err := os.WriteFile(filepath.Join(overlay, "configmap.yaml"), []byte(manifest), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

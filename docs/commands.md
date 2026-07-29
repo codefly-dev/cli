@@ -191,8 +191,7 @@ codefly deploy gitops publish payments --env production
 # After review and merge:
 codefly deploy gitops observe payments --env production \
   --app-project payments \
-  --application payments-api \
-  --revision <exact-merge-commit>
+  --application payments-api
 
 # Recovery is another reviewed promotion, never a direct cluster mutation:
 codefly deploy gitops rollback payments --env production \
@@ -210,17 +209,19 @@ gitops:
 ```
 
 Render first writes to a temporary sibling, rejects unsafe or non-promotable
-manifests, and installs only
-`deployments/environments/<environment>/modules/<module>`. The installed
+manifests, and installs the selected environment bootstrap and exact service
+graph under `deployments/modules/<module>`. The installed
 `.codefly-render.json` contains the sorted file inventory and aggregate digest.
-Publish clones `workspace.gitops.repo-url`, stages only
-`<workspace.gitops.path>/<environment>/modules/<module>`, prints a stable plan
-and diff, then
-uses a single-use prepared mutation to create a signed commit, push without
-force, and open or update a pull request. Observe requires an approved, merged
-pull request and verifies the published repository subtree digest, exact Argo
-CD revision, source path, project authority, cluster identity, sync, operation,
-and Healthy status before writing evidence under `.codefly/gitops/evidence/`.
+Publish clones `workspace.gitops.repo-url`, commits and advertises the immutable
+service snapshot under
+`<workspace.gitops.path>/deployments/modules/<module>/services`, invokes the
+module generator against that exact snapshot, then creates the signed
+publication commit and opens or updates a pull request. Planning does not
+advertise the snapshot or mutate the remote. Observe requires an
+approved, merged pull request and verifies the publication digest, the
+snapshot revision bound into every Application, exact service paths, project
+authority, cluster identity, sync, operation, and Healthy status before writing
+evidence under `.codefly/gitops/evidence/`.
 Publishing requires configured Git commit signing and an authenticated `gh`
 session; observation uses the active authenticated `argocd` context. Rollback
 refuses a target revision unless a prior Healthy reviewed evidence receipt

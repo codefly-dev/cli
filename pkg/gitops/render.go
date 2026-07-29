@@ -17,6 +17,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	coreservices "github.com/codefly-dev/core/agents/services"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
@@ -105,24 +107,28 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 }
 
 func LoadInventory(root string) (Inventory, error) {
-	data, err := os.ReadFile(filepath.Join(root, InventoryFilename))
+	return loadInventory(filepath.Join(root, InventoryFilename), "render")
+}
+
+func loadInventory(path, label string) (Inventory, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return Inventory{}, fmt.Errorf("read render inventory: %w", err)
+		return Inventory{}, fmt.Errorf("read %s inventory: %w", label, err)
 	}
 	var inventory Inventory
 	if err := json.Unmarshal(data, &inventory); err != nil {
-		return Inventory{}, fmt.Errorf("decode render inventory: %w", err)
+		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
 	if inventory.SchemaVersion != SchemaVersion {
-		return Inventory{}, fmt.Errorf("unsupported render inventory schema %d", inventory.SchemaVersion)
+		return Inventory{}, fmt.Errorf("unsupported %s inventory schema %d", label, inventory.SchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
 	if err != nil {
-		return Inventory{}, fmt.Errorf("encode render inventory: %w", err)
+		return Inventory{}, fmt.Errorf("encode %s inventory: %w", label, err)
 	}
 	canonical = append(canonical, '\n')
 	if !bytes.Equal(data, canonical) {
-		return Inventory{}, fmt.Errorf("render inventory is not canonical")
+		return Inventory{}, fmt.Errorf("%s inventory is not canonical", label)
 	}
 	return inventory, nil
 }
@@ -137,10 +143,18 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	} else if inventory.AppProject != project {
 		return fmt.Errorf("render inventory AppProject %q differs from selected AppProject %q", inventory.AppProject, project)
 	}
+	if err := validateInventoryServiceGraph(&inventory); err != nil {
+		return err
+	}
 	opts := &RenderOptions{
-		Module:      inventory.Module,
-		Environment: inventory.Environment, AppProject: project, Promotable: promotable,
+		Module: inventory.Module, Service: inventory.Service,
 		OwnedPath: inventory.OwnedPath, ServiceGraph: inventory.ServiceGraph,
+		Environment: inventory.Environment, AppProject: project, Promotable: promotable,
+	}
+	for _, service := range inventory.ServiceGraph {
+		if !service.Managed {
+			opts.Services = append(opts.Services, service.Service)
+		}
 	}
 	if err := validateTree(root, opts); err != nil {
 		return err
@@ -149,21 +163,167 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	if err != nil {
 		return err
 	}
+	return validateInventory(&inventory, &actual, "render")
+}
+
+func ValidateServiceSnapshot(root string) error {
+	inventory, err := LoadInventory(root)
+	if err != nil {
+		return err
+	}
+	if err := validateInventoryServiceGraph(&inventory); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() != InventoryFilename && entry.Name() != "services" {
+			return fmt.Errorf("service snapshot contains unexpected path %s", entry.Name())
+		}
+	}
+	services := filepath.Join(root, "services")
+	var names []string
+	for _, service := range inventory.ServiceGraph {
+		if !service.Managed {
+			names = append(names, service.Service)
+		}
+	}
+	if err := validateServiceDirectories(root, names, inventory.Environment); err != nil {
+		return err
+	}
+	for _, service := range names {
+		opts := &RenderOptions{
+			Module: inventory.Module, Service: service,
+			Environment: inventory.Environment, AppProject: inventory.AppProject, Promotable: true,
+		}
+		if err := validateTree(filepath.Join(services, service), opts); err != nil {
+			return fmt.Errorf("validate service %s: %w", service, err)
+		}
+	}
+	if err := validateServiceSnapshotCoverage(&inventory); err != nil {
+		return err
+	}
+	opts := &RenderOptions{
+		Module: inventory.Module, Services: names,
+		OwnedPath: inventory.OwnedPath, ServiceGraph: inventory.ServiceGraph,
+		Environment: inventory.Environment, AppProject: inventory.AppProject, Promotable: true,
+	}
+	actual, err := buildInventory(root, opts)
+	if err != nil {
+		return err
+	}
+	return validateInventory(&inventory, &actual, "service snapshot")
+}
+
+func validateServiceSnapshotCoverage(inventory *Inventory) error {
+	covered := make(map[string]bool)
+	for _, service := range inventory.ServiceGraph {
+		if !service.Managed {
+			covered[service.Path] = false
+		}
+	}
+	for _, file := range inventory.Files {
+		owner := ""
+		for servicePath := range covered {
+			if file.Path == servicePath || strings.HasPrefix(file.Path, servicePath+"/") {
+				if owner != "" {
+					return fmt.Errorf("service snapshot file %s belongs to overlapping service paths", file.Path)
+				}
+				owner = servicePath
+			}
+		}
+		if owner == "" {
+			return fmt.Errorf("service snapshot file %s is outside the exact service graph", file.Path)
+		}
+		covered[owner] = true
+	}
+	for servicePath, present := range covered {
+		if !present {
+			return fmt.Errorf("service snapshot path %s contains no files", servicePath)
+		}
+	}
+	return nil
+}
+
+func validateInventoryServiceGraph(inventory *Inventory) error {
+	if inventory.Service != "" {
+		if len(inventory.ServiceGraph) != 0 {
+			return fmt.Errorf("service render inventory must not contain a module service graph")
+		}
+		return nil
+	}
+	previous := ""
+	for _, service := range inventory.ServiceGraph {
+		if service.Service == "" || service.Module != inventory.Module {
+			return fmt.Errorf("render inventory contains invalid service graph entry %q/%q", service.Module, service.Service)
+		}
+		if previous != "" && service.Service <= previous {
+			return fmt.Errorf("render inventory service graph is not strictly sorted")
+		}
+		previous = service.Service
+		if service.Managed {
+			if service.Path != "" || service.Output != nil {
+				return fmt.Errorf("managed service %s must not contain a rendered path or output", service.Service)
+			}
+			continue
+		}
+		expectedPath := filepath.ToSlash(filepath.Join("services", service.Service))
+		if service.Path != expectedPath {
+			return fmt.Errorf("service %s render path is %q, expected %q", service.Service, service.Path, expectedPath)
+		}
+		if inventory.OwnedPath == "" {
+			continue
+		}
+		if err := validateInventoryKubernetesOutput(service.Service, service.Output); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateInventoryKubernetesOutput(service string, output *KubernetesOutputInventory) error {
+	if output == nil {
+		return fmt.Errorf("service %s has no promotable Kubernetes output evidence", service)
+	}
+	if output.Kind != builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String() ||
+		output.Profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String() ||
+		output.ContractVersion != coreservices.KubernetesManifestContractVersion {
+		return fmt.Errorf("service %s has incompatible Kubernetes output evidence", service)
+	}
+	passed := builderv0.KubernetesManifestValidation_STATUS_PASSED.String()
+	if output.Validation.StaticValidation != passed ||
+		output.Validation.ServerSideValidation != passed ||
+		!output.Validation.Promotable ||
+		output.Validation.Violations == nil ||
+		len(output.Validation.Violations) != 0 {
+		return fmt.Errorf("service %s has failed promotable Kubernetes validation evidence", service)
+	}
+	return nil
+}
+
+func validateInventory(inventory, actual *Inventory, label string) error {
 	if actual.Digest != inventory.Digest {
-		return fmt.Errorf("render digest changed: inventory has %s, tree has %s", inventory.Digest, actual.Digest)
+		return fmt.Errorf("%s digest changed: inventory has %s, tree has %s", label, inventory.Digest, actual.Digest)
 	}
 	if len(actual.Files) != len(inventory.Files) {
-		return fmt.Errorf("render inventory changed: inventory has %d files, tree has %d", len(inventory.Files), len(actual.Files))
+		return fmt.Errorf("%s inventory changed: inventory has %d files, tree has %d", label, len(inventory.Files), len(actual.Files))
 	}
 	for i := range actual.Files {
 		if actual.Files[i] != inventory.Files[i] {
-			return fmt.Errorf("render inventory changed at %s", actual.Files[i].Path)
+			return fmt.Errorf("%s inventory changed at %s", label, actual.Files[i].Path)
 		}
 	}
 	return nil
 }
 
 func validateTree(root string, opts *RenderOptions) error {
+	if opts.Service == "" && len(opts.Services) > 0 {
+		if err := validateServiceDirectories(root, opts.Services, opts.Environment); err != nil {
+			return err
+		}
+	}
 	var manifests []manifest
 	var kustomizations []kustomization
 	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
@@ -228,6 +388,46 @@ func validateTree(root string, opts *RenderOptions) error {
 		}
 		if err := validateManifest(item, contract, true); err != nil {
 			return fmt.Errorf("%s: %w", item.path, err)
+		}
+	}
+	return nil
+}
+
+func validateServiceDirectories(root string, services []string, environment string) error {
+	serviceRoot := filepath.Join(root, "services")
+	entries, err := os.ReadDir(serviceRoot)
+	if err != nil {
+		return fmt.Errorf("read rendered service graph: %w", err)
+	}
+	expected := make(map[string]struct{}, len(services))
+	for _, service := range services {
+		expected[service] = struct{}{}
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return fmt.Errorf("rendered service graph contains unexpected file %s", entry.Name())
+		}
+		if _, exists := expected[entry.Name()]; !exists {
+			return fmt.Errorf("rendered service graph contains unexpected service %s", entry.Name())
+		}
+		delete(expected, entry.Name())
+	}
+	if len(expected) > 0 {
+		missing := make([]string, 0, len(expected))
+		for service := range expected {
+			missing = append(missing, service)
+		}
+		sort.Strings(missing)
+		return fmt.Errorf("rendered service graph is missing services %v", missing)
+	}
+	for _, service := range services {
+		overlay := filepath.Join(serviceRoot, service, "overlays", environment)
+		info, err := os.Stat(overlay)
+		if err != nil {
+			return fmt.Errorf("service %s environment overlay %s: %w", service, environment, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("service %s environment overlay %s is not a directory", service, environment)
 		}
 	}
 	return nil
@@ -492,6 +692,9 @@ func selectProjectContract(manifests []manifest, selected string) (*projectContr
 
 func validateManifest(item manifest, contract *projectContract, promotable bool) error {
 	if item.kind == "Secret" {
+		if promotable {
+			return fmt.Errorf("secret resources are not allowed")
+		}
 		for _, key := range []string{"data", "stringData"} {
 			if values, ok := item.value[key].(map[string]any); ok && len(values) > 0 {
 				return fmt.Errorf("Kubernetes Secret values are not allowed")
@@ -568,7 +771,7 @@ func inspectValue(value any, path []string, promotable bool) error {
 		if placeholderPattern.MatchString(typed) {
 			return fmt.Errorf("%s contains an unresolved placeholder", strings.Join(path, "."))
 		}
-		if isURLPath(path) {
+		if isURLBearingPath(path) {
 			if err := validateURLValue(strings.Join(path, "."), typed); err != nil {
 				return err
 			}
@@ -580,19 +783,17 @@ func inspectValue(value any, path []string, promotable bool) error {
 	return nil
 }
 
-func isURLPath(path []string) bool {
+func isURLBearingPath(path []string) bool {
 	for index := len(path) - 1; index >= 0; index-- {
 		part := path[index]
 		if strings.HasPrefix(part, "[") {
 			continue
 		}
 		normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(part))
-		return strings.Contains(normalized, "url") ||
-			strings.Contains(normalized, "uri") ||
-			normalized == "server" ||
-			normalized == "repository" ||
-			normalized == "repo" ||
-			normalized == "sourcerepos"
+		return normalized == "server" ||
+			normalized == "sourcerepos" ||
+			strings.HasSuffix(normalized, "url") ||
+			strings.HasSuffix(normalized, "uri")
 	}
 	return false
 }
@@ -671,12 +872,20 @@ func metadataString(value map[string]any, key string) string {
 func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
-		Module:        opts.Module,
-		Environment:   opts.Environment,
-		AppProject:    opts.AppProject,
-		OwnedPath:     filepath.ToSlash(opts.OwnedPath),
-		ServiceGraph:  append([]InventoryService{}, opts.ServiceGraph...),
+		Module:        opts.Module, Service: opts.Service, Environment: opts.Environment,
+		AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
+		ServiceGraph: append([]InventoryService(nil), opts.ServiceGraph...),
 	}
+	if len(inventory.ServiceGraph) == 0 {
+		for _, service := range opts.Services {
+			inventory.ServiceGraph = append(inventory.ServiceGraph, InventoryService{
+				Module: opts.Module, Service: service, Path: filepath.ToSlash(filepath.Join("services", service)),
+			})
+		}
+	}
+	sort.Slice(inventory.ServiceGraph, func(i, j int) bool {
+		return inventory.ServiceGraph[i].Service < inventory.ServiceGraph[j].Service
+	})
 	hash := sha256.New()
 	err := walkRegularFiles(root, func(path, relative string, info os.FileInfo) error {
 		if relative == InventoryFilename {

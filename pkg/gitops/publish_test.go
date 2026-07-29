@@ -36,26 +36,52 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if plan.Path != "environments/deployments/modules/payments" {
 		t.Fatalf("publication path = %q", plan.Path)
 	}
+	snapshotRef := "refs/heads/codefly/snapshot-payments-production"
+	if err := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", snapshotRef).Run(); err == nil {
+		t.Fatal("publication plan advertised the service snapshot")
+	}
 	if _, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, mutationauthority.PreparedPermit{}); err == nil || !strings.Contains(err.Error(), "prepared authority") {
 		t.Fatalf("unprepared publication error = %v", err)
 	}
 	if _, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: "sha256:stale"}, preparedPermit); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("stale plan error = %v", err)
 	}
+	if err := exec.Command("git", "--git-dir", remote, "show-ref", "--verify", snapshotRef).Run(); err == nil {
+		t.Fatal("stale publication advertised the service snapshot")
+	}
 	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Signed || result.Commit == "" || result.Tree == "" {
+	if !result.Signed || result.SnapshotRevision == "" || result.Commit == "" || result.Tree == "" {
 		t.Fatalf("publication identities are incomplete: %+v", result)
+	}
+	if result.SnapshotRevision == result.Commit {
+		t.Fatalf("service snapshot and signed publication commit are not distinct: %+v", result)
 	}
 	if !strings.Contains(result.PullRequest, "#refs/codefly/reviews/") {
 		t.Fatalf("local review ref = %q", result.PullRequest)
 	}
 	branch := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/"+request.PromotionBranch+"^{commit}")
-	review := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/codefly/reviews/codefly-promote-payments-production^{commit}")
+	review := gitOutput(t, "", "--git-dir", remote, "rev-parse", localReviewRef(request.PromotionBranch, result.Commit)+"^{commit}")
 	if branch != result.Commit || review != result.Commit {
 		t.Fatalf("published refs branch=%s review=%s, want %s", branch, review, result.Commit)
+	}
+	snapshot := gitOutput(t, "", "--git-dir", remote, "rev-parse", snapshotRef+"^{commit}")
+	if snapshot != result.SnapshotRevision {
+		t.Fatalf("published snapshot ref = %s, want %s", snapshot, result.SnapshotRevision)
+	}
+	gitRun(t, "", "--git-dir", remote, "merge-base", "--is-ancestor", result.SnapshotRevision, result.Commit)
+	serviceInventory := gitOutput(
+		t,
+		"",
+		"--git-dir",
+		remote,
+		"show",
+		result.SnapshotRevision+":"+result.Path+"/"+InventoryFilename,
+	)
+	if !strings.Contains(serviceInventory, `"serviceGraph": [`) || !strings.Contains(serviceInventory, `"service": "api"`) {
+		t.Fatalf("immutable service inventory = %s", serviceInventory)
 	}
 	raw := gitOutput(t, "", "--git-dir", remote, "cat-file", "-p", result.Commit)
 	if !strings.Contains(raw, "\ngpgsig ") {
@@ -65,8 +91,163 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.Commit != result.Commit || receipt.Tree != result.Tree {
+	if receipt.SnapshotRevision != result.SnapshotRevision || receipt.Commit != result.Commit || receipt.Tree != result.Tree {
 		t.Fatalf("receipt = %+v, publication = %+v", receipt, result)
+	}
+}
+
+func TestBootstrapApplicationsRequireTheImmutableServiceSnapshot(t *testing.T) {
+	root := t.TempDir()
+	application := `apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payments-api
+spec:
+  source:
+    targetRevision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`
+	if err := os.WriteFile(filepath.Join(root, "application.yaml"), []byte(application), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBootstrapRevision(root, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	err := validateBootstrapRevision(root, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if err == nil || !strings.Contains(err.Error(), "expected service snapshot") {
+		t.Fatalf("snapshot mismatch error = %v", err)
+	}
+}
+
+func TestPublishInvokesModuleGeneratorAgainstCommittedServiceSnapshot(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspaceWithAgent(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	configureSSHSigning(t)
+
+	home := t.TempDir()
+	t.Setenv(resources.CodeflyHomeEnv, home)
+	agent := &resources.Agent{
+		Kind: resources.ModuleAgent, Publisher: "codefly.dev", Name: "gitops-test", Version: "1.0.0",
+	}
+	binary, err := agent.Path(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	generator := `#!/bin/sh
+set -eu
+module_dir="$1"
+revision="$(sed -n 's/^[[:space:]]*revision: //p' workspace.codefly.yaml | head -n 1)"
+checkout="$(sed -n 's/^[[:space:]]*checkout: //p' workspace.codefly.yaml | head -n 1)"
+inventory="$(sed -n 's/^[[:space:]]*inventory: //p' workspace.codefly.yaml | head -n 1)"
+test "$inventory" = "environments/deployments/modules/payments/.codefly-render.json"
+git -C "$checkout" cat-file -e "$revision:$inventory"
+git -C "$checkout" cat-file -e "$revision:environments/deployments/modules/payments/services/api/overlays/production/deployment.yaml"
+destination="$module_dir/deployment/kustomize/overlays/production"
+mkdir -p "$destination"
+{
+  printf '%s\n' \
+    'apiVersion: argoproj.io/v1alpha1' \
+    'kind: Application' \
+    'metadata:' \
+    '  name: payments-api' \
+    '  namespace: argocd' \
+    'spec:' \
+    '  project: payments' \
+    '  source:' \
+    '    repoURL: https://github.com/codefly-dev/manifests.git' \
+    "    targetRevision: $revision" \
+    '    path: environments/deployments/modules/payments/services/api/overlays/production' \
+    '  destination:' \
+    '    server: https://kubernetes.default.svc' \
+    '    namespace: payments'
+} > "$destination/application.yaml"
+`
+	if err := os.WriteFile(binary, []byte(generator), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := gitOutput(
+		t,
+		"",
+		"--git-dir",
+		remote,
+		"show",
+		result.Commit+":"+result.Path+"/bootstrap/overlays/production/application.yaml",
+	)
+	if !strings.Contains(application, "targetRevision: "+result.SnapshotRevision) {
+		t.Fatalf("generated Application = %s", application)
+	}
+}
+
+func TestPlanPublishRejectsModuleGeneratorMutationOfServiceSnapshot(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspaceWithAgent(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	home := t.TempDir()
+	t.Setenv(resources.CodeflyHomeEnv, home)
+	agent := &resources.Agent{
+		Kind: resources.ModuleAgent, Publisher: "codefly.dev", Name: "gitops-test", Version: "1.0.0",
+	}
+	binary, err := agent.Path(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	generator := `#!/bin/sh
+set -eu
+module_dir="$1"
+revision="$(sed -n 's/^[[:space:]]*revision: //p' workspace.codefly.yaml | head -n 1)"
+checkout="$(sed -n 's/^[[:space:]]*checkout: //p' workspace.codefly.yaml | head -n 1)"
+printf '\n# changed by generator\n' >> "$checkout/environments/deployments/modules/payments/services/api/overlays/production/deployment.yaml"
+destination="$module_dir/deployment/kustomize/overlays/production"
+mkdir -p "$destination"
+{
+  printf '%s\n' \
+    'apiVersion: argoproj.io/v1alpha1' \
+    'kind: Application' \
+    'metadata:' \
+    '  name: payments-api' \
+    '  namespace: argocd' \
+    'spec:' \
+    '  project: payments' \
+    '  source:' \
+    '    repoURL: https://github.com/codefly-dev/manifests.git' \
+    "    targetRevision: $revision" \
+    '    path: environments/deployments/modules/payments/services/api/overlays/production' \
+    '  destination:' \
+    '    server: https://kubernetes.default.svc' \
+    '    namespace: payments'
+} > "$destination/application.yaml"
+`
+	if err := os.WriteFile(binary, []byte(generator), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = PlanPublish(ctx, workspace, &PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed immutable service snapshot files") {
+		t.Fatalf("module generator service mutation error = %v", err)
 	}
 }
 
@@ -110,6 +291,50 @@ func TestPublishRetriesPRAndReceiptForExistingSignedBranchCommit(t *testing.T) {
 	}
 }
 
+func TestPublishPreservesSnapshotLineageAfterSquashAndBranchDeletion(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	configureSSHSigning(t)
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	firstPlan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: firstPlan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	gitRun(t, work, "merge", "--squash", "origin/"+request.PromotionBranch)
+	gitRun(t, work, "commit", "-m", "squash promotion")
+	gitRun(t, work, "push", "origin", "main")
+	gitRun(t, work, "push", "origin", "--delete", request.PromotionBranch)
+
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "worker")
+	secondPlan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: secondPlan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, "", "--git-dir", remote, "merge-base", "--is-ancestor", first.SnapshotRevision, second.SnapshotRevision)
+	if first.SnapshotRevision == second.SnapshotRevision {
+		t.Fatal("changed service tree reused the previous snapshot")
+	}
+}
+
 func TestPublishRejectsUnrelatedExistingPromotionChanges(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
@@ -134,6 +359,57 @@ func TestPublishRejectsUnrelatedExistingPromotionChanges(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unrelated change") {
 		t.Fatalf("plan error = %v", err)
+	}
+}
+
+func TestPublishRejectsRenderOutsideTheExactModuleServiceGraph(t *testing.T) {
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspaceWithServices(t, remote, []string{"api", "worker"})
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "differs from module service graph") {
+		t.Fatalf("service graph error = %v", err)
+	}
+}
+
+func TestPlanPublishRejectsRepositorySymlinkWithoutTouchingItsTarget(t *testing.T) {
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+
+	victim := t.TempDir()
+	victimFile := filepath.Join(victim, "keep.txt")
+	if err := os.WriteFile(victimFile, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	targetParent := filepath.Join(work, "environments", "deployments", "modules")
+	if err := os.MkdirAll(targetParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(targetParent, "payments")); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", "environments")
+	gitRun(t, work, "commit", "-m", "seed hostile publication path")
+	gitRun(t, work, "push", "origin", "main")
+
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "traverses symbolic link") {
+		t.Fatalf("symlink publication error = %v", err)
+	}
+	data, readErr := os.ReadFile(victimFile)
+	if readErr != nil || string(data) != "keep\n" {
+		t.Fatalf("external target changed: data=%q err=%v", data, readErr)
 	}
 }
 
@@ -224,6 +500,25 @@ func TestRollbackRequiresEvidenceForSelectedModuleAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestRollbackRequiresTheReviewedPublicationCommitNotItsServiceSnapshot(t *testing.T) {
+	root := t.TempDir()
+	snapshot := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := writeReceipt(root, "evidence", "snapshot.json", Evidence{
+		SchemaVersion: SchemaVersion, Module: "payments", Environment: "production",
+		SignedCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ArgoRevision: snapshot, Health: "Healthy",
+		Review: ReviewEvidence{
+			State: "LOCAL_REVIEW_REF", ReviewDecision: "LOCAL_QUALIFIED",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := requireReviewedRevision(root, "payments", "production", snapshot)
+	if err == nil || !strings.Contains(err.Error(), "no reviewed Healthy promotion evidence") {
+		t.Fatalf("snapshot rollback error = %v", err)
+	}
+}
+
 func TestRemotePublishRequiresSafeGitHubRepository(t *testing.T) {
 	tests := []string{
 		"https://token@github.com/codefly-dev/manifests.git",
@@ -249,6 +544,23 @@ func TestRemotePublishRequiresSafeGitHubRepository(t *testing.T) {
 				t.Fatalf("safe repository %q => %q, %v", repository, slug, err)
 			}
 		})
+	}
+}
+
+func TestPlanPublishRejectsLocalQualificationForRemoteEnvironment(t *testing.T) {
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	workspace.Environments = append(workspace.Environments, &resources.Environment{
+		Name:    "aws",
+		Cluster: &resources.EnvironmentCluster{Kind: "eks"},
+	})
+	renderPublishFixture(t, workspace.Dir(), "payments", "aws", "api")
+
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{
+		Module: "payments", Environment: "aws", Local: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires a k3d environment") {
+		t.Fatalf("remote environment local qualification error = %v", err)
 	}
 }
 
@@ -284,15 +596,75 @@ func createBareRepository(t *testing.T) string {
 
 func loadGitopsWorkspace(t *testing.T, remote string) *resources.Workspace {
 	t.Helper()
+	return loadGitopsWorkspaceWithServices(t, remote, []string{"api"})
+}
+
+func loadGitopsWorkspaceWithServices(t *testing.T, remote string, services []string) *resources.Workspace {
+	t.Helper()
 	root := t.TempDir()
-	config := fmt.Sprintf(`name: test
+	var serviceReferences strings.Builder
+	for _, service := range services {
+		fmt.Fprintf(&serviceReferences, "  - name: %s\n", service)
+	}
+	config := fmt.Sprintf(`name: payments
 layout: flat
+services:
+%s
+environments:
+  - name: production
+    cluster:
+      kind: k3d
 gitops:
   repo-url: file://%s
+  fetch-repo-url: https://host.k3d.internal/manifests.git
+  path: environments
+  branch: main
+`, serviceReferences.String(), remote)
+	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return workspace
+}
+
+func loadGitopsWorkspaceWithAgent(t *testing.T, remote string) *resources.Workspace {
+	t.Helper()
+	root := t.TempDir()
+	config := fmt.Sprintf(`name: workspace
+layout: modules
+modules:
+  - name: payments
+environments:
+  - name: production
+    cluster:
+      kind: k3d
+gitops:
+  repo-url: file://%s
+  fetch-repo-url: https://host.k3d.internal/manifests.git
   path: environments
   branch: main
 `, remote)
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	module := `kind: module
+name: payments
+agent:
+  kind: codefly:module
+  publisher: codefly.dev
+  name: gitops-test
+  version: 1.0.0
+services:
+  - name: api
+`
+	moduleDir := filepath.Join(root, "modules", "payments")
+	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleDir, resources.ModuleConfigurationName), []byte(module), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
@@ -306,10 +678,17 @@ func renderPublishFixture(t *testing.T, root, module, environment, name string) 
 	t.Helper()
 	destination := filepath.Join(root, "deployments", "modules", module)
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: destination, Module: module, Environment: environment, Promotable: true,
+		Destination: destination, Module: module, Services: []string{"api"},
+		OwnedPath:    filepath.ToSlash(filepath.Join("environments", "deployments", "modules", module)),
+		ServiceGraph: promotableServiceGraph(module, []string{"api"}),
+		Environment:  environment, AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, stage string) error {
 		manifest := strings.Replace(pinnedDeployment, "name: api", "name: "+name, 2)
-		return os.WriteFile(filepath.Join(stage, "deployment.yaml"), []byte(manifest), 0o644)
+		service := filepath.Join(stage, "services", "api", "overlays", environment)
+		if err := os.MkdirAll(service, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(manifest), 0o644)
 	})
 	if err != nil {
 		t.Fatal(err)
