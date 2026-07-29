@@ -43,6 +43,31 @@ var gitOpsRenderCmd = &cobra.Command{
 	},
 }
 
+var gitOpsSnapshotCmd = &cobra.Command{
+	Use:   "snapshot [module]",
+	Short: "Render and validate the immutable service snapshot consumed by module generators",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(_ *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		if err != nil {
+			return err
+		}
+		env, err := orchestration.SelectEnvironment(workspace, gitOpsEnv)
+		if err != nil {
+			return err
+		}
+		result, err := gitops.RenderModuleSnapshot(ctx, workspace, module, env, gitOpsProject, cli.NewOutputSink())
+		if err != nil {
+			return err
+		}
+		cli.Info("Rendered service snapshot %s", result.Path)
+		cli.Info("Digest %s", result.Inventory.Digest)
+		return nil
+	},
+}
+
 var gitOpsPlanCmd = &cobra.Command{
 	Use:   "plan [module]",
 	Short: "Inspect the exact GitOps publication diff",
@@ -243,11 +268,13 @@ var (
 )
 
 func init() {
-	GitOpsCmd.AddCommand(gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd)
-	for _, command := range []*cobra.Command{gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd} {
+	GitOpsCmd.AddCommand(gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd)
+	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsEnv, "env", "local", "Environment to promote")
 	}
-	gitOpsRenderCmd.Flags().StringVar(&gitOpsProject, "app-project", "", "AppProject contract for cluster-scoped resources")
+	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd} {
+		command.Flags().StringVar(&gitOpsProject, "app-project", "", "AppProject contract for cluster-scoped resources")
+	}
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsBranch, "promotion-branch", "", "Promotion branch (deterministic default when empty)")
 		command.Flags().BoolVar(&gitOpsLocal, "local", false, "Use a disposable local file Git remote for k3d qualification")

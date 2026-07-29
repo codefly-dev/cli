@@ -28,7 +28,7 @@ func TestGitOpsCommandExposesCompletePromotionLifecycle(t *testing.T) {
 			t.Fatalf("gitops %s is not exclusively RunE", command.Name())
 		}
 	}
-	for _, name := range []string{"render", "plan", "publish", "observe", "rollback"} {
+	for _, name := range []string{"snapshot", "render", "plan", "publish", "observe", "rollback"} {
 		if !names[name] {
 			t.Errorf("gitops %s command is missing", name)
 		}

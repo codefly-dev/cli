@@ -246,7 +246,7 @@ func observedPublication(t *testing.T) ObserveRequest {
 	t.Helper()
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
-	destination := filepath.Join(workspace.Dir(), "deployments", "environments", "local", "modules", "payments")
+	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", Environment: "local",
 		AppProject: "payments", Promotable: true,

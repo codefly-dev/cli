@@ -103,7 +103,7 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 	if err != nil {
 		return nil, err
 	}
-	rendered := filepath.Join(workspace.Dir(), "deployments", "environments", request.Environment, "modules", request.Module)
+	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", request.Module)
 	var inventory Inventory
 	if restoreRevision == "" {
 		if err := ValidateRenderedTree(rendered, "", true); err != nil {
@@ -130,7 +130,7 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 		cleanup()
 		return nil, err
 	}
-	targetPath := filepath.ToSlash(filepath.Join(pathRoot, request.Environment, "modules", request.Module))
+	targetPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules", request.Module))
 	target, err := confinedJoin(repo, targetPath)
 	if err != nil {
 		return fail(err)

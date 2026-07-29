@@ -24,7 +24,7 @@ func TestLocalK3dDisposableGitQualification(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: filepath.Join(workspace.Dir(), "deployments", "environments", "local", "modules", "payments"),
+		Destination: filepath.Join(workspace.Dir(), "deployments", "modules", "payments"),
 		Module:      "payments", Environment: "local", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		if err := os.WriteFile(filepath.Join(root, "kustomization.yaml"), []byte(`apiVersion: kustomize.config.k8s.io/v1beta1
@@ -117,7 +117,7 @@ spec:
   source:
     repoURL: %s
     targetRevision: main
-    path: environments/local/modules/payments
+    path: environments/deployments/modules/payments
   destination:
     server: https://kubernetes.default.svc
     namespace: payments
