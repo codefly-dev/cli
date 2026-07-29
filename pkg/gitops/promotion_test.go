@@ -6,7 +6,43 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/core/resources"
 )
+
+// recordingProducer captures the request it was handed so tests can assert the
+// coordinator forwards every field faithfully.
+type recordingProducer struct {
+	seen ProduceRequest
+}
+
+func (r *recordingProducer) Produce(_ context.Context, request ProduceRequest) (RenderResult, error) {
+	r.seen = request
+	return RenderResult{}, nil
+}
+
+func TestCoordinatorForwardsProduceRequestUnchanged(t *testing.T) {
+	workspace := &resources.Workspace{}
+	module := &resources.Module{Name: "payments"}
+	service := &resources.Service{Name: "api"}
+	env := &resources.Environment{Name: "local"}
+
+	producer := &recordingProducer{}
+	coordinator := &Coordinator{Producer: producer}
+
+	request := ProduceRequest{
+		Workspace: workspace, Module: module, Service: service, Environment: env,
+		AppProject: "payments", StandAlone: true,
+	}
+	if _, err := coordinator.Render(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if producer.seen.Service != service || !producer.seen.StandAlone ||
+		producer.seen.AppProject != "payments" || producer.seen.Module != module ||
+		producer.seen.Environment != env || producer.seen.Workspace != workspace {
+		t.Fatalf("coordinator forwarded a mangled request: %+v", producer.seen)
+	}
+}
 
 // fakeManifestProducer stands in for any conforming plugin: it renders a
 // promotable bundle and knows nothing about repositories, reviews, or Argo CD.

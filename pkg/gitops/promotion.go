@@ -20,7 +20,10 @@ type ProduceRequest struct {
 	Service     *resources.Service // nil renders the whole module
 	Environment *resources.Environment
 	AppProject  string
-	Sink        orchestration.OutputSink
+	// StandAlone renders a single service without its dependencies. It applies
+	// only when Service is set and is ignored for a whole-module render.
+	StandAlone bool
+	Sink       orchestration.OutputSink
 }
 
 // ManifestProducer renders a validated, transport-neutral manifest bundle.
@@ -107,7 +110,7 @@ func (flowProducer) Produce(ctx context.Context, request ProduceRequest) (Render
 	if request.Service == nil {
 		return RenderModule(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink)
 	}
-	return RenderService(ctx, request.Workspace, request.Module, request.Service, request.Environment, request.AppProject, false, request.Sink)
+	return RenderService(ctx, request.Workspace, request.Module, request.Service, request.Environment, request.AppProject, request.StandAlone, request.Sink)
 }
 
 type repositoryPublisher struct{}
