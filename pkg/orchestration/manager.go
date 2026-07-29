@@ -16,13 +16,14 @@ import (
 type Mode string
 
 const (
-	RunMode     Mode = "run"
-	TestMode    Mode = "test"
-	LintMode    Mode = "lint"
-	CompileMode Mode = "compile"
-	SyncMode    Mode = "sync"
-	BuildMode   Mode = "build"
-	DeployMode  Mode = "deploy"
+	RunMode      Mode = "run"
+	TestMode     Mode = "test"
+	LintMode     Mode = "lint"
+	CompileMode  Mode = "compile"
+	SyncMode     Mode = "sync"
+	BuildMode    Mode = "build"
+	DeployMode   Mode = "deploy"
+	SnapshotMode Mode = "snapshot"
 )
 
 type IManager interface {
@@ -200,7 +201,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot follow service instance")
 		}
 		return nil
-	case BuildMode, SyncMode, DeployMode:
+	case BuildMode, SyncMode, DeployMode, SnapshotMode:
 		err = instance.LoadBuilder(ctx)
 		if err != nil {
 			return w.Wrapf(err, "cannot load service builder instance")
