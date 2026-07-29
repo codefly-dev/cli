@@ -111,6 +111,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err = validateKubernetesDeploymentOutput(resp.GetDeployment(), profile, validationContext); err != nil {
 		return nil, w.Wrapf(err, "cannot accept Kubernetes deployment output")
 	}
+	b.deploymentOutput = proto.Clone(resp.GetDeployment()).(*builderv0.DeploymentOutput)
 
 	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Identity, resp.Configuration)
 	if err != nil {

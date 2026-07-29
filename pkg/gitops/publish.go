@@ -113,8 +113,8 @@ func preparePublish(ctx context.Context, workspace *resources.Workspace, request
 		if err != nil {
 			return nil, err
 		}
-		if inventory.Module != request.Module || inventory.Environment != request.Environment || inventory.Service != "" {
-			return nil, fmt.Errorf("render inventory targets module %q environment %q service %q", inventory.Module, inventory.Environment, inventory.Service)
+		if inventory.Module != request.Module || inventory.Environment != request.Environment {
+			return nil, fmt.Errorf("render inventory targets module %q environment %q", inventory.Module, inventory.Environment)
 		}
 	}
 
@@ -269,7 +269,7 @@ func requireReviewedRevision(root, module, environment, revision string) error {
 		}
 		reviewed := evidence.Review.State == "MERGED" && evidence.Review.ReviewDecision == approvedReviewDecision ||
 			evidence.Review.State == "LOCAL_REVIEW_REF" && evidence.Review.ReviewDecision == "LOCAL_QUALIFIED"
-		if evidence.SchemaVersion == SchemaVersion && evidence.Module == module && evidence.Environment == environment &&
+		if evidence.SchemaVersion == EvidenceSchemaVersion && evidence.Module == module && evidence.Environment == environment &&
 			evidence.Health == healthyStatus && reviewed &&
 			(evidence.ArgoRevision == revision || evidence.SignedCommit == revision) {
 			return nil

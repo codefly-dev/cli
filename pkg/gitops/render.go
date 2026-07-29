@@ -138,8 +138,9 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 		return fmt.Errorf("render inventory AppProject %q differs from selected AppProject %q", inventory.AppProject, project)
 	}
 	opts := &RenderOptions{
-		Module: inventory.Module, Service: inventory.Service,
+		Module:      inventory.Module,
 		Environment: inventory.Environment, AppProject: project, Promotable: promotable,
+		OwnedPath: inventory.OwnedPath, ServiceGraph: inventory.ServiceGraph,
 	}
 	if err := validateTree(root, opts); err != nil {
 		return err
@@ -670,8 +671,11 @@ func metadataString(value map[string]any, key string) string {
 func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
-		Module:        opts.Module, Service: opts.Service, Environment: opts.Environment,
-		AppProject: opts.AppProject,
+		Module:        opts.Module,
+		Environment:   opts.Environment,
+		AppProject:    opts.AppProject,
+		OwnedPath:     filepath.ToSlash(opts.OwnedPath),
+		ServiceGraph:  append([]InventoryService{}, opts.ServiceGraph...),
 	}
 	hash := sha256.New()
 	err := walkRegularFiles(root, func(path, relative string, info os.FileInfo) error {

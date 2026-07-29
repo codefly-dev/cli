@@ -37,6 +37,24 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 		registry := *env.Registry
 		clone.Registry = &registry
 	}
+	if env.Gitops != nil {
+		gitops := *env.Gitops
+		clone.Gitops = &gitops
+	}
+	if len(env.Ingress) > 0 {
+		clone.Ingress = append([]resources.EnvironmentIngressRoute(nil), env.Ingress...)
+		for i := range clone.Ingress {
+			clone.Ingress[i].Hosts = append([]string(nil), env.Ingress[i].Hosts...)
+		}
+	}
+	if len(env.ManagedServices) > 0 {
+		clone.ManagedServices = make(map[string]resources.EnvironmentManagedService, len(env.ManagedServices))
+		for name, managed := range env.ManagedServices {
+			managed.EgressCIDRs = append([]string(nil), managed.EgressCIDRs...)
+			managed.SecretReferences = append([]resources.EnvironmentManagedSecretReference(nil), managed.SecretReferences...)
+			clone.ManagedServices[name] = managed
+		}
+	}
 	if len(env.Secrets) > 0 {
 		clone.Secrets = make([]*resources.EnvironmentSecretProvider, len(env.Secrets))
 		for i, provider := range env.Secrets {

@@ -168,7 +168,7 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 	}
 
 	evidence := Evidence{
-		SchemaVersion: SchemaVersion, Module: request.Module, Environment: request.Environment,
+		SchemaVersion: EvidenceSchemaVersion, Module: request.Module, Environment: request.Environment,
 		RenderDigest: request.RenderDigest, SignedCommit: request.Commit, Tree: request.Tree,
 		Review: review, Repository: request.Repository, Path: request.Path,
 		ArgoRevision: request.Revision, Health: healthyStatus, ObservedAt: time.Now().UTC(),

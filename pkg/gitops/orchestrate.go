@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
@@ -32,11 +33,13 @@ func renderModuleTree(
 	includeBootstrap bool,
 ) (RenderResult, error) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", module.Name)
-	return RenderOwnedTree(ctx, &RenderOptions{
+	options := &RenderOptions{
 		Destination: destination,
 		Module:      module.Name, Environment: env.Name, AppProject: project,
 		Promotable: true,
-	}, func(ctx context.Context, stage string) error {
+		OwnedPath:  filepath.ToSlash(filepath.Join("deployments", "modules", module.Name)),
+	}
+	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		var services []*resources.Service
 		for _, reference := range module.ServiceReferences {
 			service, err := module.LoadServiceFromName(ctx, reference.Name)
@@ -49,13 +52,41 @@ func renderModuleTree(
 		if err != nil {
 			return err
 		}
+		outputs := make(map[string]*builderv0.DeploymentOutput)
 		for _, service := range roots {
 			if err := renderServiceFlow(ctx, workspace, module, service, env, false, sink, func(_ *resources.Module, rendered *resources.Service) string {
 				return filepath.Join(stage, "services", rendered.Name)
+			}, func(rendered map[string]*builderv0.DeploymentOutput) {
+				for unique, output := range rendered {
+					outputs[unique] = output
+				}
 			}); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
 		}
+		for _, service := range services {
+			_, managed := env.ManagedServices[service.Name]
+			entry := InventoryService{
+				Module:  module.Name,
+				Service: service.Name,
+				Managed: managed,
+			}
+			if managed {
+				if err := os.RemoveAll(filepath.Join(stage, "services", service.Name)); err != nil {
+					return fmt.Errorf("remove managed service %s output: %w", service.Name, err)
+				}
+			} else {
+				entry.Path = filepath.ToSlash(filepath.Join("services", service.Name))
+				entry.Output = inventoryKubernetesOutput(outputs[resources.ServiceUnique(module.Name, service.Name)])
+				if entry.Output == nil {
+					return fmt.Errorf("service %s returned no Kubernetes deployment evidence", service.Name)
+				}
+			}
+			options.ServiceGraph = append(options.ServiceGraph, entry)
+		}
+		sort.Slice(options.ServiceGraph, func(i, j int) bool {
+			return options.ServiceGraph[i].Service < options.ServiceGraph[j].Service
+		})
 		if !includeBootstrap {
 			return nil
 		}
@@ -162,7 +193,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		Module:      module.Name, Service: service.Name, Environment: env.Name, AppProject: project,
 		Promotable: true,
 	}, func(ctx context.Context, stage string) error {
-		return renderServiceFlow(ctx, workspace, module, service, env, standAlone, sink, serviceRenderDestinations(stage))
+		return renderServiceFlow(ctx, workspace, module, service, env, standAlone, sink, serviceRenderDestinations(stage), nil)
 	})
 }
 
@@ -181,6 +212,7 @@ func renderServiceFlow(
 	standAlone bool,
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,
+	record func(map[string]*builderv0.DeploymentOutput),
 ) (result error) {
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
@@ -219,6 +251,9 @@ func renderServiceFlow(
 	)
 	if err := flow.Deploy(ctx); err != nil {
 		return err
+	}
+	if record != nil {
+		record(flow.DeploymentOutputs())
 	}
 	return nil
 }
