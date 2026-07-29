@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
@@ -28,8 +29,9 @@ var (
 )
 
 const (
-	httpsScheme = "https"
-	sshScheme   = "ssh"
+	httpsScheme   = "https"
+	sshScheme     = "ssh"
+	jsonExtension = ".json"
 )
 
 type preparedRepository struct {
@@ -113,7 +115,7 @@ func preparePublish(
 	restoreRevision string,
 	publishSnapshot bool,
 ) (*preparedRepository, error) {
-	if err := validatePublishRequest(request); err != nil {
+	if err := validatePublishRequest(workspace, request); err != nil {
 		return nil, err
 	}
 	config, repositorySlug, baseBranch, pathRoot, err := resolveGitops(workspace, request.Local)
@@ -123,21 +125,8 @@ func preparePublish(
 	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", request.Module)
 	var inventory Inventory
 	if restoreRevision == "" {
-		if err := ValidateRenderedTree(rendered, "", true); err != nil {
-			return nil, fmt.Errorf("validate promotable render: %w", err)
-		}
-		inventory, err = LoadInventory(rendered)
+		inventory, err = loadPublicationInventory(ctx, workspace, request, rendered, pathRoot)
 		if err != nil {
-			return nil, err
-		}
-		if inventory.Module != request.Module || inventory.Environment != request.Environment || inventory.Service != "" {
-			return nil, fmt.Errorf("render inventory targets module %q environment %q service %q", inventory.Module, inventory.Environment, inventory.Service)
-		}
-		expectedOwnedPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules", request.Module))
-		if inventory.OwnedPath != expectedOwnedPath {
-			return nil, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
-		}
-		if err := validateModuleServiceGraph(ctx, workspace, request.Module, request.Environment, inventory.ServiceGraph); err != nil {
 			return nil, err
 		}
 	}
@@ -174,7 +163,7 @@ func preparePublish(
 	if branchRevision != "" {
 		startRevision = branchRevision
 	}
-	snapshotRevision := restoreRevision
+	var snapshotRevision string
 	if restoreRevision == "" {
 		module, err := workspace.LoadModuleFromName(ctx, request.Module)
 		if err != nil {
@@ -183,11 +172,10 @@ func preparePublish(
 		snapshotRevision, inventory, err = prepareServicePublication(
 			ctx,
 			repo,
-			startRevision,
 			target,
 			targetPath,
 			rendered,
-			inventory,
+			&inventory,
 			workspace,
 			module,
 			request.Environment,
@@ -251,6 +239,44 @@ func preparePublish(
 	}, nil
 }
 
+func loadPublicationInventory(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	request *PublishRequest,
+	rendered,
+	pathRoot string,
+) (Inventory, error) {
+	if err := ValidateRenderedTree(rendered, "", true); err != nil {
+		return Inventory{}, fmt.Errorf("validate promotable render: %w", err)
+	}
+	inventory, err := LoadInventory(rendered)
+	if err != nil {
+		return Inventory{}, err
+	}
+	if inventory.Module != request.Module || inventory.Environment != request.Environment || inventory.Service != "" {
+		return Inventory{}, fmt.Errorf(
+			"render inventory targets module %q environment %q service %q",
+			inventory.Module,
+			inventory.Environment,
+			inventory.Service,
+		)
+	}
+	expectedOwnedPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules", request.Module))
+	if inventory.OwnedPath != expectedOwnedPath {
+		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
+	}
+	if err := validateModuleServiceGraph(
+		ctx,
+		workspace,
+		request.Module,
+		request.Environment,
+		inventory.ServiceGraph,
+	); err != nil {
+		return Inventory{}, err
+	}
+	return inventory, nil
+}
+
 func validateModuleServiceGraph(
 	ctx context.Context,
 	workspace *resources.Workspace,
@@ -297,11 +323,10 @@ func validateModuleServiceGraph(
 func prepareServicePublication(
 	ctx context.Context,
 	repo string,
-	startRevision string,
 	target string,
 	targetPath string,
 	rendered string,
-	renderedInventory Inventory,
+	renderedInventory *Inventory,
 	workspace *resources.Workspace,
 	module *resources.Module,
 	environment string,
@@ -309,82 +334,20 @@ func prepareServicePublication(
 	promotionBranch string,
 	publishSnapshot bool,
 ) (string, Inventory, error) {
-	renderedServices := filepath.Join(rendered, "services")
-	if info, err := os.Stat(renderedServices); err != nil || !info.IsDir() {
-		return "", Inventory{}, fmt.Errorf("rendered module contains no service snapshot")
-	}
-	if err := replaceCloneTree(renderedServices, filepath.Join(target, "services")); err != nil {
-		return "", Inventory{}, fmt.Errorf("stage rendered services: %w", err)
-	}
-	servicePath := filepath.ToSlash(filepath.Join(targetPath, "services"))
-	if _, err := gitCommand(ctx, repo, "add", "-A", "--", servicePath); err != nil {
-		return "", Inventory{}, err
-	}
-	serviceChanges, err := stagedPathsSince(ctx, repo, "HEAD", servicePath)
+	snapshot, err := prepareServiceSnapshot(
+		ctx,
+		repo,
+		target,
+		targetPath,
+		rendered,
+		renderedInventory,
+		module,
+		environment,
+		publishSnapshot,
+	)
 	if err != nil {
 		return "", Inventory{}, err
 	}
-	existingSnapshot, err := bootstrapRevision(filepath.Join(target, "bootstrap"))
-	if err != nil {
-		return "", Inventory{}, err
-	}
-	if existingSnapshot == "" {
-		existingSnapshot, _ = gitCommand(ctx, repo, "rev-parse", "HEAD^")
-	}
-	if err := removePublicationRemainder(target); err != nil {
-		return "", Inventory{}, err
-	}
-	serviceNames := inventoryServiceNames(renderedInventory.ServiceGraph)
-	snapshotOptions := &RenderOptions{
-		Module:       renderedInventory.Module,
-		Services:     serviceNames,
-		OwnedPath:    targetPath,
-		ServiceGraph: renderedInventory.ServiceGraph,
-		Environment:  renderedInventory.Environment,
-		AppProject:   renderedInventory.AppProject,
-		Promotable:   true,
-	}
-	snapshotInventory, err := buildInventory(target, snapshotOptions)
-	if err != nil {
-		return "", Inventory{}, err
-	}
-	snapshotData, err := canonicalInventory(snapshotInventory)
-	if err != nil {
-		return "", Inventory{}, err
-	}
-	if err := os.WriteFile(filepath.Join(target, InventoryFilename), snapshotData, 0o644); err != nil {
-		return "", Inventory{}, fmt.Errorf("write service snapshot inventory: %w", err)
-	}
-	if err := ValidateServiceSnapshot(target); err != nil {
-		return "", Inventory{}, fmt.Errorf("validate service snapshot: %w", err)
-	}
-	snapshotChanged := len(serviceChanges) > 0 || existingSnapshot == ""
-	if !snapshotChanged {
-		existingData, showErr := gitCommandBytes(ctx, repo, "show", existingSnapshot+":"+targetPath+"/"+InventoryFilename)
-		snapshotChanged = showErr != nil || !bytes.Equal(existingData, snapshotData)
-	}
-	if !snapshotChanged {
-		_, diffErr := gitCommand(ctx, repo, "diff", "--quiet", existingSnapshot, "HEAD", "--", servicePath)
-		snapshotChanged = diffErr != nil
-	}
-	snapshotRevision := existingSnapshot
-	if snapshotChanged {
-		if _, err := gitCommand(ctx, repo, "add", "-A", "--", targetPath); err != nil {
-			return "", Inventory{}, err
-		}
-		snapshotRevision, err = commitServiceSnapshot(ctx, repo, module.Name, environment)
-		if err != nil {
-			return "", Inventory{}, err
-		}
-	} else if snapshotRevision == "" {
-		snapshotRevision = startRevision
-	}
-	if publishSnapshot {
-		if err := publishServiceSnapshot(ctx, repo, module.Name, environment, snapshotRevision); err != nil {
-			return "", Inventory{}, err
-		}
-	}
-
 	if err := removePublicationRemainder(target); err != nil {
 		return "", Inventory{}, err
 	}
@@ -397,31 +360,34 @@ func prepareServicePublication(
 			config,
 			promotionBranch,
 			repo,
-			snapshotRevision,
+			snapshot.revision,
 			filepath.ToSlash(filepath.Join(targetPath, InventoryFilename)),
-			filepath.Join(target, "bootstrap"),
+			filepath.ToSlash(filepath.Join(targetPath, "bootstrap")),
 			!publishSnapshot,
 		); err != nil {
 			return "", Inventory{}, err
 		}
 	} else {
 		renderedBootstrap := filepath.Join(rendered, "bootstrap")
-		if info, err := os.Stat(renderedBootstrap); err == nil && info.IsDir() {
+		if info, statErr := os.Stat(renderedBootstrap); statErr == nil && info.IsDir() {
 			if err := copyTree(renderedBootstrap, filepath.Join(target, "bootstrap")); err != nil {
 				return "", Inventory{}, fmt.Errorf("stage rendered bootstrap: %w", err)
 			}
-		} else if err != nil && !os.IsNotExist(err) {
-			return "", Inventory{}, fmt.Errorf("inspect rendered bootstrap: %w", err)
+		} else if statErr != nil && !os.IsNotExist(statErr) {
+			return "", Inventory{}, fmt.Errorf("inspect rendered bootstrap: %w", statErr)
 		}
 	}
-	if err := validateBootstrapRevision(filepath.Join(target, "bootstrap"), snapshotRevision); err != nil {
+	if err := verifyServiceSnapshotBinding(ctx, repo, snapshot.revision, snapshot.servicePath); err != nil {
+		return "", Inventory{}, err
+	}
+	if err := validateBootstrapRevision(filepath.Join(target, "bootstrap"), snapshot.revision); err != nil {
 		return "", Inventory{}, err
 	}
 	if module.Agent != nil {
 		if err := validateBootstrapServiceGraph(
 			filepath.Join(target, "bootstrap"),
 			targetPath,
-			serviceNames,
+			snapshot.services,
 			environment,
 		); err != nil {
 			return "", Inventory{}, err
@@ -430,7 +396,7 @@ func prepareServicePublication(
 
 	options := &RenderOptions{
 		Module:       renderedInventory.Module,
-		Services:     serviceNames,
+		Services:     snapshot.services,
 		OwnedPath:    targetPath,
 		ServiceGraph: renderedInventory.ServiceGraph,
 		Environment:  renderedInventory.Environment,
@@ -444,16 +410,128 @@ func prepareServicePublication(
 	if err != nil {
 		return "", Inventory{}, err
 	}
-	if err := writeCanonicalInventory(filepath.Join(target, InventoryFilename), finalInventory); err != nil {
+	if err := writeCanonicalInventory(filepath.Join(target, InventoryFilename), &finalInventory); err != nil {
 		return "", Inventory{}, err
 	}
 	if err := ValidateRenderedTree(target, renderedInventory.AppProject, true); err != nil {
 		return "", Inventory{}, fmt.Errorf("validate generated publication inventory: %w", err)
 	}
-	return snapshotRevision, finalInventory, nil
+	return snapshot.revision, finalInventory, nil
 }
 
-func writeCanonicalInventory(path string, inventory Inventory) error {
+type serviceSnapshotPreparation struct {
+	revision    string
+	services    []string
+	servicePath string
+}
+
+func prepareServiceSnapshot(
+	ctx context.Context,
+	repo,
+	target,
+	targetPath,
+	rendered string,
+	renderedInventory *Inventory,
+	module *resources.Module,
+	environment string,
+	publishSnapshot bool,
+) (serviceSnapshotPreparation, error) {
+	renderedServices := filepath.Join(rendered, "services")
+	if info, err := os.Stat(renderedServices); err != nil || !info.IsDir() {
+		return serviceSnapshotPreparation{}, fmt.Errorf("rendered module contains no service snapshot")
+	}
+	servicePath := filepath.ToSlash(filepath.Join(targetPath, "services"))
+	if err := replaceCloneTree(renderedServices, repo, servicePath); err != nil {
+		return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered services: %w", err)
+	}
+	if _, err := gitCommand(ctx, repo, "add", "-A", "--", servicePath); err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
+	existingSnapshot, err := existingServiceSnapshot(ctx, repo, module.Name, environment, filepath.Join(target, "bootstrap"))
+	if err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
+	if err := removePublicationRemainder(target); err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
+	serviceNames := inventoryServiceNames(renderedInventory.ServiceGraph)
+	snapshotOptions := &RenderOptions{
+		Module:       renderedInventory.Module,
+		Services:     serviceNames,
+		OwnedPath:    targetPath,
+		ServiceGraph: renderedInventory.ServiceGraph,
+		Environment:  renderedInventory.Environment,
+		AppProject:   renderedInventory.AppProject,
+		Promotable:   true,
+	}
+	snapshotInventory, err := buildInventory(target, snapshotOptions)
+	if err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
+	if err := writeCanonicalInventory(filepath.Join(target, InventoryFilename), &snapshotInventory); err != nil {
+		return serviceSnapshotPreparation{}, fmt.Errorf("write service snapshot inventory: %w", err)
+	}
+	if err := ValidateServiceSnapshot(target); err != nil {
+		return serviceSnapshotPreparation{}, fmt.Errorf("validate service snapshot: %w", err)
+	}
+	if _, err := gitCommand(ctx, repo, "add", "-A", "--", targetPath); err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
+	snapshotChanged := existingSnapshot == ""
+	if !snapshotChanged {
+		snapshotChanges, diffErr := stagedPathsSince(
+			ctx,
+			repo,
+			existingSnapshot,
+			servicePath,
+			filepath.ToSlash(filepath.Join(targetPath, InventoryFilename)),
+		)
+		if diffErr != nil {
+			return serviceSnapshotPreparation{}, diffErr
+		}
+		snapshotChanged = len(snapshotChanges) > 0
+	}
+	lineageMissing := false
+	if existingSnapshot != "" {
+		lineageMissing, err = snapshotLineageMissing(ctx, repo, existingSnapshot)
+		if err != nil {
+			return serviceSnapshotPreparation{}, err
+		}
+	}
+	snapshotRevision := existingSnapshot
+	if snapshotChanged || lineageMissing {
+		snapshotRevision, err = commitServiceSnapshot(ctx, repo, module.Name, environment, existingSnapshot)
+		if err != nil {
+			return serviceSnapshotPreparation{}, err
+		}
+	}
+	if publishSnapshot {
+		if err := publishServiceSnapshot(ctx, repo, module.Name, environment, snapshotRevision); err != nil {
+			return serviceSnapshotPreparation{}, err
+		}
+	}
+	return serviceSnapshotPreparation{
+		revision:    snapshotRevision,
+		services:    serviceNames,
+		servicePath: servicePath,
+	}, nil
+}
+
+func verifyServiceSnapshotBinding(ctx context.Context, repo, snapshotRevision, servicePath string) error {
+	if _, err := gitCommand(ctx, repo, "add", "-A", "--", servicePath); err != nil {
+		return err
+	}
+	changed, err := stagedPathsSince(ctx, repo, snapshotRevision, servicePath)
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		return fmt.Errorf("module generation changed immutable service snapshot files %v", changed)
+	}
+	return nil
+}
+
+func writeCanonicalInventory(path string, inventory *Inventory) error {
 	data, err := canonicalInventory(inventory)
 	if err != nil {
 		return err
@@ -461,13 +539,13 @@ func writeCanonicalInventory(path string, inventory Inventory) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write render inventory: %w", err)
 	}
 	return nil
 }
 
-func canonicalInventory(inventory Inventory) ([]byte, error) {
+func canonicalInventory(inventory *Inventory) ([]byte, error) {
 	data, err := json.MarshalIndent(inventory, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode render inventory: %w", err)
@@ -486,36 +564,97 @@ func inventoryServiceNames(graph []InventoryService) []string {
 	return services
 }
 
-func commitServiceSnapshot(ctx context.Context, repo, module, environment string) (string, error) {
-	rawTimestamp, err := gitCommand(ctx, repo, "show", "-s", "--format=%ct", "HEAD")
+func existingServiceSnapshot(
+	ctx context.Context,
+	repo,
+	module,
+	environment,
+	bootstrapRoot string,
+) (string, error) {
+	remoteRef := "refs/remotes/origin/" + serviceSnapshotBranch(module, environment)
+	revision, err := gitCommand(ctx, repo, "for-each-ref", "--format=%(objectname)", remoteRef)
 	if err != nil {
 		return "", err
 	}
-	timestamp, err := strconv.ParseInt(rawTimestamp, 10, 64)
-	if err != nil {
-		return "", fmt.Errorf("parse parent commit timestamp %q: %w", rawTimestamp, err)
+	if revision != "" {
+		return gitCommand(ctx, repo, "rev-parse", revision+"^{commit}")
 	}
+	return bootstrapRevision(bootstrapRoot)
+}
+
+func snapshotLineageMissing(ctx context.Context, repo, snapshot string) (bool, error) {
+	if _, err := gitCommand(ctx, repo, "merge-base", "--is-ancestor", snapshot, "HEAD"); err == nil {
+		return false, nil
+	}
+	if _, err := gitCommand(ctx, repo, "cat-file", "-e", snapshot+"^{commit}"); err != nil {
+		return false, fmt.Errorf("resolve previous service snapshot %s: %w", snapshot, err)
+	}
+	return true, nil
+}
+
+func commitServiceSnapshot(ctx context.Context, repo, module, environment, previousSnapshot string) (string, error) {
+	head, err := gitCommand(ctx, repo, "rev-parse", "HEAD^{commit}")
+	if err != nil {
+		return "", err
+	}
+	parents := []string{head}
+	if previousSnapshot != "" {
+		missing, lineageErr := snapshotLineageMissing(ctx, repo, previousSnapshot)
+		if lineageErr != nil {
+			return "", lineageErr
+		}
+		if missing {
+			parents = append(parents, previousSnapshot)
+		}
+	}
+	var timestamp int64
+	for _, parent := range parents {
+		rawTimestamp, showErr := gitCommand(ctx, repo, "show", "-s", "--format=%ct", parent)
+		if showErr != nil {
+			return "", showErr
+		}
+		parentTimestamp, parseErr := strconv.ParseInt(rawTimestamp, 10, 64)
+		if parseErr != nil {
+			return "", fmt.Errorf("parse parent commit timestamp %q: %w", rawTimestamp, parseErr)
+		}
+		if parentTimestamp > timestamp {
+			timestamp = parentTimestamp
+		}
+	}
+	tree, err := gitCommand(ctx, repo, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	args := []string{"commit-tree", tree}
+	for _, parent := range parents {
+		args = append(args, "-p", parent)
+	}
+	args = append(args, "-m", fmt.Sprintf("Snapshot %s services for %s", module, environment))
 	date := fmt.Sprintf("@%d +0000", timestamp+1)
-	if _, err := gitCommandWithEnv(
+	revision, err := gitCommandWithEnv(
 		ctx,
 		repo,
-		[]string{"GIT_AUTHOR_DATE=" + date, "GIT_COMMITTER_DATE=" + date},
-		"commit",
-		"--no-gpg-sign",
-		"-m",
-		fmt.Sprintf("Snapshot %s services for %s", module, environment),
-	); err != nil {
+		[]string{
+			"GIT_AUTHOR_NAME=Codefly GitOps",
+			"GIT_AUTHOR_EMAIL=gitops@codefly.dev",
+			"GIT_COMMITTER_NAME=Codefly GitOps",
+			"GIT_COMMITTER_EMAIL=gitops@codefly.dev",
+			"GIT_AUTHOR_DATE=" + date,
+			"GIT_COMMITTER_DATE=" + date,
+		},
+		args...,
+	)
+	if err != nil {
 		return "", fmt.Errorf("create immutable service snapshot: %w", err)
 	}
-	revision, err := gitCommand(ctx, repo, "rev-parse", "HEAD^{commit}")
-	if err != nil {
+	if _, err := gitCommand(ctx, repo, "reset", "--soft", revision); err != nil {
 		return "", err
 	}
 	return revision, nil
 }
 
 func publishServiceSnapshot(ctx context.Context, repo, module, environment, revision string) error {
-	snapshotBranch := "codefly/snapshot-" + sanitizeRef(module) + "-" + sanitizeRef(environment)
+	snapshotBranch := serviceSnapshotBranch(module, environment)
 	refspec := revision + ":refs/heads/" + snapshotBranch
 	if _, err := gitCommand(ctx, repo, "push", "--porcelain", "--", "origin", refspec); err != nil {
 		return fmt.Errorf("publish immutable service snapshot without force: %w", err)
@@ -529,6 +668,10 @@ func publishServiceSnapshot(ctx context.Context, repo, module, environment, revi
 		return fmt.Errorf("service snapshot ref resolved to %q, expected %s", remote, revision)
 	}
 	return nil
+}
+
+func serviceSnapshotBranch(module, environment string) string {
+	return "codefly/snapshot-" + sanitizeRef(module) + "-" + sanitizeRef(environment)
 }
 
 func removePublicationRemainder(target string) error {
@@ -557,7 +700,7 @@ func generateModuleBootstrap(
 	checkout string,
 	snapshotRevision string,
 	inventoryPath string,
-	destination string,
+	destinationPath string,
 	planning bool,
 ) error {
 	binary, err := module.Agent.Path(ctx)
@@ -620,11 +763,15 @@ func generateModuleBootstrap(
 	if err != nil {
 		return fmt.Errorf("encode workspace for module generator: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(stage, resources.WorkspaceConfigurationName), encoded, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(stage, resources.WorkspaceConfigurationName), encoded, 0o600); err != nil {
 		return err
 	}
 	if _, err := command(ctx, stage, binary, stagedModule, module.Name); err != nil {
 		return fmt.Errorf("generate module bootstrap: %w", err)
+	}
+	destination, err := confinedJoin(checkout, destinationPath)
+	if err != nil {
+		return err
 	}
 	generated := filepath.Join(stagedModule, "deployment", "kustomize")
 	if err := copyEnvironmentBootstrap(generated, environment, destination); err != nil {
@@ -639,9 +786,9 @@ func planningRepositoryURL(fetchRepository string) (string, error) {
 		return "", fmt.Errorf("local module generation requires workspace.gitops.fetch-repo-url")
 	}
 	if parsed.Scheme == "http" {
-		parsed.Scheme = "https"
+		parsed.Scheme = httpsScheme
 	}
-	if parsed.Scheme != "https" {
+	if parsed.Scheme != httpsScheme {
 		return "", fmt.Errorf("local module generation requires an HTTP(S) workspace.gitops.fetch-repo-url")
 	}
 	return parsed.String(), nil
@@ -649,7 +796,7 @@ func planningRepositoryURL(fetchRepository string) (string, error) {
 
 func bootstrapRevision(root string) (string, error) {
 	revision := ""
-	err := walkBootstrapApplications(root, func(path, current, sourcePath string) error {
+	err := walkBootstrapApplications(root, func(_, current, _ string) error {
 		if revision == "" {
 			revision = current
 			return nil
@@ -663,7 +810,7 @@ func bootstrapRevision(root string) (string, error) {
 }
 
 func validateBootstrapRevision(root, expected string) error {
-	return walkBootstrapApplications(root, func(path, revision, sourcePath string) error {
+	return walkBootstrapApplications(root, func(path, revision, _ string) error {
 		if revision != expected {
 			return fmt.Errorf("bootstrap Application %s targets revision %q, expected service snapshot %s", path, revision, expected)
 		}
@@ -677,7 +824,7 @@ func validateBootstrapServiceGraph(root, targetPath string, services []string, e
 		path := filepath.ToSlash(filepath.Join(targetPath, "services", service, "overlays", environment))
 		expected[path] = struct{}{}
 	}
-	err := walkBootstrapApplications(root, func(path, revision, sourcePath string) error {
+	err := walkBootstrapApplications(root, func(path, _ string, sourcePath string) error {
 		if _, exists := expected[sourcePath]; !exists {
 			return fmt.Errorf("bootstrap Application %s targets service path %q outside the rendered service graph", path, sourcePath)
 		}
@@ -711,7 +858,7 @@ func walkBootstrapApplications(root string, visit func(path, revision, sourcePat
 	}
 	return walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
-		if extension != ".yaml" && extension != ".yml" && extension != ".json" {
+		if extension != ".yaml" && extension != ".yml" && extension != jsonExtension {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -741,14 +888,27 @@ func walkBootstrapApplications(root string, visit func(path, revision, sourcePat
 	})
 }
 
-func validatePublishRequest(request *PublishRequest) error {
+func validatePublishRequest(workspace *resources.Workspace, request *PublishRequest) error {
 	if request == nil || request.Module == "" || request.Environment == "" {
 		return fmt.Errorf("module and environment are required")
+	}
+	if workspace == nil {
+		return fmt.Errorf("workspace is required")
 	}
 	if err := validatePathComponent("module", request.Module); err != nil {
 		return err
 	}
-	return validatePathComponent("environment", request.Environment)
+	if err := validatePathComponent("environment", request.Environment); err != nil {
+		return err
+	}
+	environment, err := orchestration.SelectEnvironment(workspace, request.Environment)
+	if err != nil {
+		return err
+	}
+	if request.Local && !environment.IsK3d() {
+		return fmt.Errorf("local GitOps qualification requires a k3d environment, got %q", request.Environment)
+	}
+	return nil
 }
 
 func prepareRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest) (*preparedRepository, string, error) {
@@ -763,6 +923,9 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 	}
 	if !gitObjectPattern.MatchString(request.ToRevision) {
 		return nil, "", fmt.Errorf("rollback target must be an exact Git object ID")
+	}
+	if err := validatePublishRequest(workspace, &request.PublishRequest); err != nil {
+		return nil, "", err
 	}
 	if err := requireReviewedRevision(workspace.Dir(), request.Module, request.Environment, request.ToRevision); err != nil {
 		return nil, "", err
@@ -802,7 +965,7 @@ func requireReviewedRevision(root, module, environment, revision string) error {
 		return fmt.Errorf("load reviewed promotion evidence: %w", err)
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != jsonExtension {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(directory, entry.Name()))
@@ -876,7 +1039,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 		Commit: commit, Tree: tree, Signed: true,
 		PullRequest: prURL, PullRequestID: prID,
 	}
-	if err := writeReceipt(workspace.Dir(), "publications", request.Module+"-"+request.Environment+".json", result); err != nil {
+	if err := writeReceipt(workspace.Dir(), "publications", request.Module+"-"+request.Environment+jsonExtension, result); err != nil {
 		return PublishResult{}, err
 	}
 	return result, nil
@@ -940,10 +1103,17 @@ func restoreCloneTree(ctx context.Context, repo, targetPath, revision string) er
 	if _, err := gitCommand(ctx, repo, "checkout", revision, "--", targetPath); err != nil {
 		return fmt.Errorf("restore GitOps tree from %s: %w", revision, err)
 	}
+	if _, err := confinedJoin(repo, targetPath); err != nil {
+		return err
+	}
 	return nil
 }
 
-func replaceCloneTree(source, destination string) error {
+func replaceCloneTree(source, root, destinationPath string) error {
+	destination, err := confinedJoin(root, destinationPath)
+	if err != nil {
+		return err
+	}
 	if err := os.RemoveAll(destination); err != nil {
 		return err
 	}
@@ -954,7 +1124,8 @@ func replaceCloneTree(source, destination string) error {
 }
 
 func stagedPathsSince(ctx context.Context, repo, revision string, paths ...string) ([]string, error) {
-	args := []string{"diff", "--cached", "--name-only", "-z", revision, "--"}
+	args := make([]string, 0, 6+len(paths))
+	args = append(args, "diff", "--cached", "--name-only", "-z", revision, "--")
 	args = append(args, paths...)
 	output, err := gitCommandBytes(ctx, repo, args...)
 	if err != nil {
@@ -987,7 +1158,7 @@ func changedPathsBetween(ctx context.Context, repo, baseRevision, branchRevision
 
 func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, request *PublishRequest, commit string) (string, int, error) {
 	if prepared.plan.RepositorySlug == "" {
-		reviewRef := "refs/codefly/reviews/" + strings.ReplaceAll(prepared.plan.PromotionBranch, "/", "-")
+		reviewRef := localReviewRef(prepared.plan.PromotionBranch, commit)
 		refspec := commit + ":" + reviewRef
 		if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--", "origin", refspec); err != nil {
 			return "", 0, fmt.Errorf("publish local review ref: %w", err)
@@ -1042,6 +1213,10 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 		return "", 0, fmt.Errorf("open promotion pull request: %w", err)
 	}
 	return verifyPullRequest(ctx, prepared.plan.RepositorySlug, strings.TrimSpace(url), prepared.plan.BaseBranch, commit)
+}
+
+func localReviewRef(promotionBranch, commit string) string {
+	return "refs/codefly/reviews/" + strings.ReplaceAll(promotionBranch, "/", "-") + "/" + commit
 }
 
 func verifyPullRequest(ctx context.Context, repository, pullRequest, baseBranch, commit string) (string, int, error) {
@@ -1157,6 +1332,26 @@ func confinedJoin(root, relative string) (string, error) {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("GitOps destination %q escapes repository", relative)
 	}
+	current := root
+	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+		if component == "." || component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, statErr := os.Lstat(current)
+		if os.IsNotExist(statErr) {
+			break
+		}
+		if statErr != nil {
+			return "", fmt.Errorf("inspect GitOps destination %q: %w", relative, statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("GitOps destination %q traverses symbolic link %s", relative, current)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("GitOps destination %q traverses non-directory %s", relative, current)
+		}
+	}
 	return target, nil
 }
 
@@ -1253,7 +1448,7 @@ func LoadPublishResult(root, module, environment string) (PublishResult, error) 
 	if err := validatePathComponent("environment", environment); err != nil {
 		return PublishResult{}, err
 	}
-	path := filepath.Join(root, ".codefly", "gitops", "publications", module+"-"+environment+".json")
+	path := filepath.Join(root, ".codefly", "gitops", "publications", module+"-"+environment+jsonExtension)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return PublishResult{}, fmt.Errorf("read publication receipt: %w", err)

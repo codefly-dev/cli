@@ -143,7 +143,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	} else if inventory.AppProject != project {
 		return fmt.Errorf("render inventory AppProject %q differs from selected AppProject %q", inventory.AppProject, project)
 	}
-	if err := validateInventoryServiceGraph(inventory); err != nil {
+	if err := validateInventoryServiceGraph(&inventory); err != nil {
 		return err
 	}
 	opts := &RenderOptions{
@@ -163,7 +163,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	if err != nil {
 		return err
 	}
-	return validateInventory(inventory, actual, "render")
+	return validateInventory(&inventory, &actual, "render")
 }
 
 func ValidateServiceSnapshot(root string) error {
@@ -171,7 +171,7 @@ func ValidateServiceSnapshot(root string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateInventoryServiceGraph(inventory); err != nil {
+	if err := validateInventoryServiceGraph(&inventory); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(root)
@@ -202,7 +202,7 @@ func ValidateServiceSnapshot(root string) error {
 			return fmt.Errorf("validate service %s: %w", service, err)
 		}
 	}
-	if err := validateServiceSnapshotCoverage(inventory); err != nil {
+	if err := validateServiceSnapshotCoverage(&inventory); err != nil {
 		return err
 	}
 	opts := &RenderOptions{
@@ -214,10 +214,10 @@ func ValidateServiceSnapshot(root string) error {
 	if err != nil {
 		return err
 	}
-	return validateInventory(inventory, actual, "service snapshot")
+	return validateInventory(&inventory, &actual, "service snapshot")
 }
 
-func validateServiceSnapshotCoverage(inventory Inventory) error {
+func validateServiceSnapshotCoverage(inventory *Inventory) error {
 	covered := make(map[string]bool)
 	for _, service := range inventory.ServiceGraph {
 		if !service.Managed {
@@ -247,7 +247,7 @@ func validateServiceSnapshotCoverage(inventory Inventory) error {
 	return nil
 }
 
-func validateInventoryServiceGraph(inventory Inventory) error {
+func validateInventoryServiceGraph(inventory *Inventory) error {
 	if inventory.Service != "" {
 		if len(inventory.ServiceGraph) != 0 {
 			return fmt.Errorf("service render inventory must not contain a module service graph")
@@ -303,7 +303,7 @@ func validateInventoryKubernetesOutput(service string, output *KubernetesOutputI
 	return nil
 }
 
-func validateInventory(inventory, actual Inventory, label string) error {
+func validateInventory(inventory, actual *Inventory, label string) error {
 	if actual.Digest != inventory.Digest {
 		return fmt.Errorf("%s digest changed: inventory has %s, tree has %s", label, inventory.Digest, actual.Digest)
 	}
@@ -693,7 +693,7 @@ func selectProjectContract(manifests []manifest, selected string) (*projectContr
 func validateManifest(item manifest, contract *projectContract, promotable bool) error {
 	if item.kind == "Secret" {
 		if promotable {
-			return fmt.Errorf("Kubernetes Secret resources are not allowed")
+			return fmt.Errorf("secret resources are not allowed")
 		}
 		for _, key := range []string{"data", "stringData"} {
 			if values, ok := item.value[key].(map[string]any); ok && len(values) > 0 {

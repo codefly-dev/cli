@@ -4,27 +4,24 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/codefly-dev/core/resources"
 )
 
-func TestServiceRenderDestinationsKeepDependenciesInDistinctOwnedPaths(t *testing.T) {
-	resolve := serviceRenderDestinations("/render")
-	api := resolve(&resources.Module{Name: "payments"}, &resources.Service{Name: "api"})
-	database := resolve(&resources.Module{Name: "platform"}, &resources.Service{Name: "postgres"})
-	if api != filepath.Join("/render", "modules", "payments", "services", "api") {
-		t.Fatalf("origin destination = %q", api)
-	}
-	if database != filepath.Join("/render", "modules", "platform", "services", "postgres") {
-		t.Fatalf("dependency destination = %q", database)
-	}
-	if api == database {
-		t.Fatal("origin and dependency render destinations collide")
-	}
-}
-
-func TestCopyEnvironmentBootstrapCopiesOnlySelectedEnvironment(t *testing.T) {
+func TestCopyEnvironmentBootstrapPreservesSharedBaseAndExcludesOtherEnvironments(t *testing.T) {
 	source := t.TempDir()
+	base := filepath.Join(source, "base")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(base, "kustomization.yaml"),
+		[]byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "deployment.yaml"), []byte(pinnedDeployment), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for _, environment := range []string{"local", "aws"} {
 		root := filepath.Join(source, "overlays", environment)
 		if err := os.MkdirAll(root, 0o755); err != nil {
@@ -32,12 +29,9 @@ func TestCopyEnvironmentBootstrapCopiesOnlySelectedEnvironment(t *testing.T) {
 		}
 		if err := os.WriteFile(
 			filepath.Join(root, "kustomization.yaml"),
-			[]byte("resources:\n  - "+environment+".yaml\n"),
+			[]byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n"),
 			0o644,
 		); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(root, environment+".yaml"), []byte(pinnedDeployment), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -45,10 +39,16 @@ func TestCopyEnvironmentBootstrapCopiesOnlySelectedEnvironment(t *testing.T) {
 	if err := copyEnvironmentBootstrap(source, "local", destination); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(destination, "local.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(destination, "base", "deployment.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(destination, "aws.yaml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(destination, "overlays", "local", "kustomization.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "overlays", "aws")); !os.IsNotExist(err) {
 		t.Fatalf("unselected environment copied: %v", err)
+	}
+	if err := validateTree(destination, &RenderOptions{Promotable: true}); err != nil {
+		t.Fatalf("selected bootstrap dependency graph is invalid: %v", err)
 	}
 }

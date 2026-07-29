@@ -123,7 +123,7 @@ metadata:
   name: api
 `), 0o644)
 	})
-	if err == nil || !strings.Contains(err.Error(), "Secret resources are not allowed") {
+	if err == nil || !strings.Contains(err.Error(), "secret resources are not allowed") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -416,6 +416,17 @@ rules: []
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestRenderAcceptsOCIImageSelectorsWithoutTreatingThemAsURLs(t *testing.T) {
+	err := inspectValue(map[string]any{
+		"images": []any{
+			map[string]any{"name": "image:tag"},
+		},
+	}, nil, false)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

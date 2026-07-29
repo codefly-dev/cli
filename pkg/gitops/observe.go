@@ -400,7 +400,7 @@ func validateApplicationSource(
 	}
 	if app.Spec.Source.TargetRevision != request.Revision {
 		return "", fmt.Errorf(
-			"Argo CD application %s targets revision %q, expected immutable service snapshot %s",
+			"argo CD application %s targets revision %q, expected immutable service snapshot %s",
 			name,
 			app.Spec.Source.TargetRevision,
 			request.Revision,
@@ -428,7 +428,7 @@ func validateApplicationSource(
 			expected = append(expected, path)
 		}
 		sort.Strings(expected)
-		return "", fmt.Errorf("Argo CD application %s observes path %s, expected one of %v", name, sourcePath, expected)
+		return "", fmt.Errorf("argo CD application %s observes path %s, expected one of %v", name, sourcePath, expected)
 	}
 	return sourcePath, nil
 }
@@ -589,6 +589,26 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	}
 	if !strings.Contains(rawCommit, "\ngpgsig ") {
 		return Inventory{}, fmt.Errorf("publication commit %s is not signed", request.Commit)
+	}
+	servicePath := filepath.ToSlash(filepath.Join(targetPath, "services"))
+	changedServices, err := gitCommand(
+		ctx,
+		repo,
+		"diff",
+		"--name-only",
+		request.Revision,
+		request.Commit,
+		"--",
+		servicePath,
+	)
+	if err != nil {
+		return Inventory{}, fmt.Errorf("compare reviewed service snapshot: %w", err)
+	}
+	if changedServices != "" {
+		return Inventory{}, fmt.Errorf(
+			"signed publication changes immutable service snapshot files: %s",
+			strings.Join(strings.Fields(changedServices), ", "),
+		)
 	}
 	if _, err := gitCommand(ctx, repo, "checkout", "--quiet", request.Commit, "--", targetPath); err != nil {
 		return Inventory{}, fmt.Errorf("checkout published path %s at %s: %w", targetPath, request.Commit, err)

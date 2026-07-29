@@ -93,7 +93,7 @@ func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T
 			},
 		},
 	}
-	err := validateKubernetesDeploymentOutput(requested, output)
+	err := validateKubernetesDeploymentOutput(requested, output, "")
 	if err == nil || !strings.Contains(err.Error(), "requested") {
 		t.Fatalf("error = %v", err)
 	}
@@ -104,11 +104,11 @@ func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T
 		ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
 		Promotable:           true,
 	}
-	if err := validateKubernetesDeploymentOutput(requested, output); err != nil {
+	if err := validateKubernetesDeploymentOutput(requested, output, ""); err != nil {
 		t.Fatal(err)
 	}
 	output.GetKubernetes().Validation.Promotable = false
-	if err := validateKubernetesDeploymentOutput(requested, output); err == nil || !strings.Contains(err.Error(), "successfully validated") {
+	if err := validateKubernetesDeploymentOutput(requested, output, ""); err == nil || !strings.Contains(err.Error(), "successfully validated") {
 		t.Fatalf("validation error = %v", err)
 	}
 }

@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
@@ -32,7 +33,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get configuration")
 	}
-	profile := deployments.KubernetesOutputProfile(b.world.RemoteManager)
+	profile := kubernetesOutputProfile(b.world)
 	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
 	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
 		secretName := "secret-" + b.instance.Service.Name
@@ -66,7 +67,6 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get namespace")
 	}
 
-	// Build the request
 	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
@@ -78,7 +78,6 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		b.world.Workspace,
 		b.instance.Module,
 		b.instance.Service,
-		b.world.Env,
 		namespace,
 		profile,
 		secretReferences,
@@ -89,8 +88,20 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if b.world.DeploymentDestination != nil {
 		deploy.GetKubernetes().Destination = b.world.DeploymentDestination(b.instance.Module, b.instance.Service)
 	}
+	deploy.GetKubernetes().ValidateServerSide =
+		profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 &&
+			b.world.Env.IsK3d()
+	validationContext := ""
+	if deploy.GetKubernetes().GetValidateServerSide() {
+		kubeconfig, contextName, targetErr := kubernetesValidationTarget(ctx, b.world.Env)
+		if targetErr != nil {
+			return nil, w.Wrapf(targetErr, "cannot resolve promotable GitOps validation target")
+		}
+		deploy.GetKubernetes().ValidationKubeconfig = kubeconfig
+		deploy.GetKubernetes().ValidationContext = contextName
+		validationContext = contextName
+	}
 
-	// Build the request
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
 	resp, err := b.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
@@ -108,7 +119,12 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("cant deploy service instance")
 	}
-	if err := validateKubernetesDeploymentOutput(profile, resp.GetDeployment()); err != nil {
+	if err := validateDeploymentOutput(
+		b.world.RemoteManager,
+		profile,
+		resp.Deployment,
+		validationContext,
+	); err != nil {
 		return nil, w.Wrapf(err, "cannot verify service deployment output")
 	}
 
@@ -127,14 +143,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for deploy")
 	}
 
-	if resp.Deployment == nil {
-		return outputProperty, nil
-	}
-	// Render-only mode: caller (cli/cmd/deploy) skipped wiring a
-	// deployment manager so manifests get written to disk by the
-	// agent's KustomizeDeploy but no kubectl apply runs. Used by
-	// the gitops flow where ArgoCD picks up the rendered tree.
-	if b.world.RemoteManager == nil {
+	if resp.Deployment == nil || b.world.RemoteManager == nil {
 		return outputProperty, nil
 	}
 	err = b.world.RemoteManager.Handle(ctx, b.instance.Service, b.instance.Module, resp.Deployment)
@@ -142,6 +151,34 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot handle deployment")
 	}
 	return outputProperty, nil
+}
+
+func kubernetesValidationTarget(ctx context.Context, environment *resources.Environment) (string, string, error) {
+	if environment == nil || environment.Cluster == nil {
+		return "", "", fmt.Errorf("environment must declare a Kubernetes cluster")
+	}
+	if environment.Cluster.Context == "" {
+		return "", "", fmt.Errorf("environment %q must declare cluster.context", environment.Name)
+	}
+	kubeconfig, err := deployments.GetK8sConfig(ctx, environment)
+	if err != nil {
+		return "", "", err
+	}
+	if len(filepath.SplitList(kubeconfig)) != 1 {
+		return "", "", fmt.Errorf("environment %q must declare exactly one kubeconfig, got %q", environment.Name, kubeconfig)
+	}
+	kubeconfig, err = filepath.Abs(kubeconfig)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve kubeconfig %q: %w", kubeconfig, err)
+	}
+	return kubeconfig, environment.Cluster.Context, nil
+}
+
+func kubernetesOutputProfile(world *World) builderv0.KubernetesOutputProfile {
+	if world.KubernetesOutputProfile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_UNSPECIFIED {
+		return world.KubernetesOutputProfile
+	}
+	return deployments.KubernetesOutputProfile(world.RemoteManager)
 }
 
 func promotableDeploymentConfigurations(
@@ -212,6 +249,7 @@ func promotableConfiguration(
 func validateKubernetesDeploymentOutput(
 	requested builderv0.KubernetesOutputProfile,
 	output *builderv0.DeploymentOutput,
+	validationContext string,
 ) error {
 	kubernetes := output.GetKubernetes()
 	if kubernetes == nil {
@@ -220,20 +258,47 @@ func validateKubernetesDeploymentOutput(
 	if kubernetes.GetProfile() != requested {
 		return fmt.Errorf("plugin returned Kubernetes output profile %s, requested %s", kubernetes.GetProfile(), requested)
 	}
-	if requested == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
-		if kubernetes.GetContractVersion() != coreservices.KubernetesManifestContractVersion {
-			return fmt.Errorf(
-				"plugin returned Kubernetes manifest contract %q, expected %q",
-				kubernetes.GetContractVersion(),
-				coreservices.KubernetesManifestContractVersion,
-			)
+	if requested != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+		return nil
+	}
+	if kubernetes.GetContractVersion() != coreservices.KubernetesManifestContractVersion {
+		return fmt.Errorf(
+			"plugin returned Kubernetes manifest contract %q, expected %q",
+			kubernetes.GetContractVersion(),
+			coreservices.KubernetesManifestContractVersion,
+		)
+	}
+	validation := kubernetes.GetValidation()
+	if !validation.GetPromotable() ||
+		validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
+		return fmt.Errorf("plugin did not return a successfully validated promotable Kubernetes output")
+	}
+	if validationContext != "" {
+		if validation.GetServerSideValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
+			return fmt.Errorf("plugin did not pass server-side Kubernetes validation")
 		}
-		validation := kubernetes.GetValidation()
-		if !validation.GetPromotable() ||
-			validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED ||
-			validation.GetServerSideValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
-			return fmt.Errorf("plugin did not return a successfully validated promotable Kubernetes output")
+		if validation.GetValidatedContext() != validationContext {
+			return fmt.Errorf(
+				"plugin validated Kubernetes context %q, requested %q",
+				validation.GetValidatedContext(),
+				validationContext,
+			)
 		}
 	}
 	return nil
+}
+
+func validateDeploymentOutput(
+	manager deployments.Manager,
+	requested builderv0.KubernetesOutputProfile,
+	output *builderv0.DeploymentOutput,
+	validationContext string,
+) error {
+	if output == nil {
+		if deployments.RequiresDeploymentOutput(manager) {
+			return fmt.Errorf("plugin returned no Kubernetes deployment output")
+		}
+		return nil
+	}
+	return validateKubernetesDeploymentOutput(requested, output, validationContext)
 }

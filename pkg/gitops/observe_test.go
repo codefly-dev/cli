@@ -139,6 +139,60 @@ func TestObserveRejectsPublishedSubtreeDigestMismatchBeforePollingArgo(t *testin
 	}
 }
 
+func TestObserveRejectsSignedPublicationWithDifferentServiceBytes(t *testing.T) {
+	request := observedPublication(t)
+	work := t.TempDir()
+	gitRun(t, "", "clone", request.Repository, work)
+	gitRun(t, work, "checkout", "codefly/promote-payments-local")
+	serviceManifest := filepath.Join(
+		work,
+		filepath.FromSlash(request.Path),
+		"services",
+		"api",
+		"overlays",
+		"local",
+		"manifests.yaml",
+	)
+	data, err := os.ReadFile(serviceManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(serviceManifest, []byte(strings.Replace(string(data), "name: api", "name: changed-api", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(work, filepath.FromSlash(request.Path))
+	inventory, err := LoadInventory(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := buildInventory(target, &RenderOptions{
+		Module:       inventory.Module,
+		Services:     inventoryServiceNames(inventory.ServiceGraph),
+		OwnedPath:    inventory.OwnedPath,
+		ServiceGraph: inventory.ServiceGraph,
+		Environment:  inventory.Environment,
+		AppProject:   inventory.AppProject,
+		Promotable:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCanonicalInventory(filepath.Join(target, InventoryFilename), &updated); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", request.Path)
+	gitRun(t, work, "commit", "-S", "-m", "change reviewed service bytes")
+	gitRun(t, work, "push", "origin", "codefly/promote-payments-local")
+	request.Commit = gitOutput(t, work, "rev-parse", "HEAD^{commit}")
+	request.Tree = gitOutput(t, work, "rev-parse", "HEAD^{tree}")
+	request.RenderDigest = updated.Digest
+
+	_, err = verifyPublishedRevision(context.Background(), &request)
+	if err == nil || !strings.Contains(err.Error(), "changes immutable service snapshot files") {
+		t.Fatalf("service snapshot byte mismatch error = %v", err)
+	}
+}
+
 func TestObserveRechecksHealthyApplicationsUntilOneStableSweep(t *testing.T) {
 	request := observedPublication(t)
 	bin := t.TempDir()

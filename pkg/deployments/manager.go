@@ -18,6 +18,15 @@ type Manager interface {
 	Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error
 }
 
+type DeploymentOutputRequirement interface {
+	RequiresDeploymentOutput() bool
+}
+
+func RequiresDeploymentOutput(manager Manager) bool {
+	requirement, ok := manager.(DeploymentOutputRequirement)
+	return ok && requirement.RequiresDeploymentOutput()
+}
+
 type RenderedTreeEvidence struct {
 	Module    string
 	Service   string
@@ -76,7 +85,6 @@ func GetKubernetesDeployment(
 	workspace *resources.Workspace,
 	module *resources.Module,
 	service *resources.Service,
-	env *resources.Environment,
 	namespace string,
 	profile builderv0.KubernetesOutputProfile,
 	secretReferences map[string]*builderv0.KubernetesSecretKeyReference,

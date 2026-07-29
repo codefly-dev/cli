@@ -14,6 +14,22 @@ import (
 )
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
+	return renderModuleTree(ctx, workspace, module, env, project, sink, true)
+}
+
+func RenderModuleSnapshot(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
+	return renderModuleTree(ctx, workspace, module, env, project, sink, false)
+}
+
+func renderModuleTree(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	module *resources.Module,
+	env *resources.Environment,
+	project string,
+	sink orchestration.OutputSink,
+	includeBootstrap bool,
+) (RenderResult, error) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", module.Name)
 	managed, err := selectedManagedServices(workspace, env.Name)
 	if err != nil {
@@ -48,13 +64,15 @@ func RenderModule(ctx context.Context, workspace *resources.Workspace, module *r
 		Promotable: true,
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
-		static := filepath.Join(module.Dir(), "deployment", "kustomize")
-		if info, err := os.Stat(static); err == nil && info.IsDir() {
-			if err := copyEnvironmentBootstrap(static, env.Name, filepath.Join(stage, "bootstrap")); err != nil {
-				return fmt.Errorf("copy module environment bootstrap: %w", err)
+		if includeBootstrap {
+			static := filepath.Join(module.Dir(), "deployment", "kustomize")
+			if info, statErr := os.Stat(static); statErr == nil && info.IsDir() {
+				if copyErr := copyEnvironmentBootstrap(static, env.Name, filepath.Join(stage, "bootstrap")); copyErr != nil {
+					return fmt.Errorf("copy module environment bootstrap: %w", copyErr)
+				}
+			} else if statErr != nil && !os.IsNotExist(statErr) {
+				return fmt.Errorf("inspect module kustomize tree: %w", statErr)
 			}
-		} else if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("inspect module kustomize tree: %w", err)
 		}
 		for _, reference := range module.ServiceReferences {
 			if _, isManaged := managed[reference.Name]; isManaged {
@@ -137,7 +155,22 @@ func copyEnvironmentBootstrap(source, environment, destination string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("environment overlay %q is not a directory", environment)
 	}
-	return copyTree(selected, destination)
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		sourcePath := filepath.Join(source, entry.Name())
+		destinationPath := filepath.Join(destination, entry.Name())
+		if entry.Name() == "overlays" {
+			sourcePath = selected
+			destinationPath = filepath.Join(destinationPath, environment)
+		}
+		if err := copyTree(sourcePath, destinationPath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
@@ -190,6 +223,9 @@ func renderServiceFlow(
 	capture := &deploymentOutputCapture{}
 	flow.WithDeploymentManager(capture)
 	flow.WithDeploymentDestination(destination)
+	flow.WithKubernetesOutputProfile(
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+	)
 	if err := flow.Deploy(ctx); err != nil {
 		return nil, err
 	}
@@ -198,6 +234,10 @@ func renderServiceFlow(
 
 type deploymentOutputCapture struct {
 	output *builderv0.KubernetesDeploymentOutput
+}
+
+func (*deploymentOutputCapture) RequiresDeploymentOutput() bool {
+	return true
 }
 
 func (capture *deploymentOutputCapture) Handle(

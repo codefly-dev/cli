@@ -146,10 +146,11 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 }
 
 type World struct {
-	Env                   *resources.Environment
-	Mode                  Mode
-	Workspace             *resources.Workspace
-	DeploymentDestination func(*resources.Module, *resources.Service) string
+	Env                     *resources.Environment
+	Mode                    Mode
+	Workspace               *resources.Workspace
+	DeploymentDestination   func(*resources.Module, *resources.Service) string
+	KubernetesOutputProfile builderv0.KubernetesOutputProfile
 
 	// DAG
 	Dependencies *architecture.ServiceDependencies
@@ -1575,6 +1576,10 @@ func (flow *Flow) WithDeploymentManager(manager deployments.Manager) {
 
 func (flow *Flow) WithDeploymentDestination(destination func(*resources.Module, *resources.Service) string) {
 	flow.world.DeploymentDestination = destination
+}
+
+func (flow *Flow) WithKubernetesOutputProfile(profile builderv0.KubernetesOutputProfile) {
+	flow.world.KubernetesOutputProfile = profile
 }
 
 func (flow *Flow) WithStandAlone(alone bool) {

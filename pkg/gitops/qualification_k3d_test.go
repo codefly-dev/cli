@@ -34,26 +34,34 @@ func TestMindShapedAWSRenderPlanPublishDoesNotApplyKubernetes(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspaceWithServices(t, remote, mindShapedServices)
 	workspaceConfiguration := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
-	file, err := os.OpenFile(workspaceConfiguration, os.O_APPEND|os.O_WRONLY, 0o644)
+	data, err := os.ReadFile(workspaceConfiguration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.WriteString(`environments:
-  - name: aws
+	updated := strings.Replace(string(data), "gitops:\n", `  - name: aws
+    cluster:
+      kind: eks
     managed-services:
       cache: {}
       object-storage: {}
       store: {}
       vault: {}
-`); err != nil {
-		_ = file.Close()
+gitops:
+`, 1)
+	if err := os.WriteFile(workspaceConfiguration, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
+	workspace.Environments = append(workspace.Environments, &resources.Environment{
+		Name:    "aws",
+		Cluster: &resources.EnvironmentCluster{Kind: "eks"},
+	})
 	renderMindShapedFixture(t, workspace.Dir(), "aws")
 	configureSSHSigning(t)
+	repository := "https://github.com/codefly-test/manifests.git"
+	workspace.Gitops.RepoURL = repository
+	t.Setenv("GIT_CONFIG_COUNT", "4")
+	t.Setenv("GIT_CONFIG_KEY_3", "url.file://"+remote+".insteadOf")
+	t.Setenv("GIT_CONFIG_VALUE_3", repository)
 
 	bin := t.TempDir()
 	kubectlCalled := filepath.Join(t.TempDir(), "kubectl-called")
@@ -61,11 +69,33 @@ func TestMindShapedAWSRenderPlanPublishDoesNotApplyKubernetes(t *testing.T) {
 	if err := os.WriteFile(kubectl, []byte("#!/bin/sh\ntouch \"$CODEFLY_TEST_KUBECTL_CALLED\"\nexit 97\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	gh := filepath.Join(bin, "gh")
+	ghScript := `#!/bin/sh
+set -eu
+if [ "$1 $2" = "pr list" ]; then
+  printf '%s\n' '[]'
+  exit 0
+fi
+if [ "$1 $2" = "pr create" ]; then
+  printf '%s\n' 'https://github.com/codefly-test/manifests/pull/1'
+  exit 0
+fi
+if [ "$1 $2" = "pr view" ]; then
+  revision="$(git --git-dir "$CODEFLY_TEST_REMOTE" rev-parse refs/heads/codefly/promote-payments-aws)"
+  printf '{"number":1,"url":"https://github.com/codefly-test/manifests/pull/1","headRefOid":"%s","baseRefName":"main"}\n' "$revision"
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(gh, []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CODEFLY_TEST_KUBECTL_CALLED", kubectlCalled)
+	t.Setenv("CODEFLY_TEST_REMOTE", remote)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	request := PublishRequest{
-		Module: "payments", Environment: "aws", Local: true,
+		Module: "payments", Environment: "aws",
 		PromotionBranch: "codefly/promote-payments-aws",
 	}
 	plan, err := PlanPublish(context.Background(), workspace, &request)
