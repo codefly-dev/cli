@@ -108,6 +108,7 @@ var gitOpsPublishCmd = &cobra.Command{
 			return fmt.Errorf("publication returned no result")
 		}
 		result := *mutationResult.GitOpsPublish
+		cli.Info("Service snapshot %s", result.SnapshotRevision)
 		cli.Info("Signed commit %s", result.Commit)
 		cli.Info("Tree %s", result.Tree)
 		cli.Info("Pull request %s", result.PullRequest)
@@ -130,6 +131,9 @@ var gitOpsObserveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if gitOpsRevision != "" && gitOpsRevision != publication.SnapshotRevision {
+			return fmt.Errorf("requested revision %s differs from published service snapshot %s", gitOpsRevision, publication.SnapshotRevision)
+		}
 		plane, err := control.NewAt(workspace.Dir())
 		if err != nil {
 			return err
@@ -137,10 +141,10 @@ var gitOpsObserveCmd = &cobra.Command{
 		defer plane.Close()
 		result, err := plane.ObserveGitOps(ctx, &gitops.ObserveRequest{
 			Module: module.Name, Environment: gitOpsEnv, AppProject: gitOpsProject,
-			Applications: gitOpsApplications, Revision: gitOpsRevision,
+			Applications: gitOpsApplications, Revision: publication.SnapshotRevision,
 			Commit: publication.Commit, Tree: publication.Tree, RenderDigest: publication.RenderDigest,
 			Repository: publication.Repository, Path: publication.Path,
-			PullRequest: publication.PullRequest, Timeout: gitOpsTimeout,
+			PullRequest: publication.PullRequest, Local: gitOpsLocal, Timeout: gitOpsTimeout,
 		})
 		if err != nil {
 			return err
@@ -218,6 +222,7 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	cli.Info("Base %s@%s", plan.BaseBranch, plan.BaseRevision)
 	cli.Info("Promotion branch %s", plan.PromotionBranch)
 	cli.Info("Render digest %s", plan.RenderDigest)
+	cli.Info("Service snapshot %s", plan.SnapshotRevision)
 	cli.Info("Changed files:")
 	for _, path := range plan.Changed {
 		cli.Info("  %s", path)
@@ -260,11 +265,11 @@ func init() {
 	}
 	gitOpsObserveCmd.Flags().StringVar(&gitOpsProject, "app-project", "", "Selected Argo CD AppProject")
 	gitOpsObserveCmd.Flags().StringSliceVar(&gitOpsApplications, "application", nil, "Argo CD application to observe (repeatable)")
-	gitOpsObserveCmd.Flags().StringVar(&gitOpsRevision, "revision", "", "Exact reviewed Git revision Argo CD must reconcile")
+	gitOpsObserveCmd.Flags().StringVar(&gitOpsRevision, "revision", "", "Expected immutable service snapshot revision")
+	gitOpsObserveCmd.Flags().BoolVar(&gitOpsLocal, "local", false, "Observe a disposable local GitOps qualification")
 	gitOpsObserveCmd.Flags().DurationVar(&gitOpsTimeout, "timeout", 10*time.Minute, "Maximum time to wait for Synced and Healthy")
 	gitOpsRollbackCmd.Flags().StringVar(&gitOpsRollbackRevision, "to-revision", "", "Previously reviewed Git revision to re-promote")
 	_ = gitOpsObserveCmd.MarkFlagRequired("app-project")
 	_ = gitOpsObserveCmd.MarkFlagRequired("application")
-	_ = gitOpsObserveCmd.MarkFlagRequired("revision")
 	_ = gitOpsRollbackCmd.MarkFlagRequired("to-revision")
 }
