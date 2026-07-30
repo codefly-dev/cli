@@ -2,8 +2,10 @@ version: "2"
 
 run:
   # A cold-cache analysis of the whole repository is slower than a single test
-  # gate; keep this in step with the lint job's timeout in go.yml.
-  timeout: 10m
+  # gate. Keep this below the lint job's timeout in go.yml (leaving room for
+  # checkout and toolchain setup) so an overrun surfaces as a linter timeout
+  # rather than a hard job kill.
+  timeout: 8m
 
 linters:
   enable:

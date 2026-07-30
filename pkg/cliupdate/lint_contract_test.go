@@ -119,8 +119,8 @@ func TestLintJobIsPullRequestScopedWithHeadroom(t *testing.T) {
 		t.Fatalf("run.timeout %q is not a duration: %v", config.Run.Timeout, err)
 	}
 	jobBudget := time.Duration(lint.TimeoutMin) * time.Minute
-	if analysisTimeout > jobBudget {
-		t.Fatalf("analysis timeout %s exceeds the lint job budget %s; the job would kill it before it reports", analysisTimeout, jobBudget)
+	if analysisTimeout >= jobBudget {
+		t.Fatalf("analysis timeout %s must be strictly under the lint job budget %s so an overrun reports as a linter timeout, not a hard job kill", analysisTimeout, jobBudget)
 	}
 	if analysisTimeout <= 5*time.Minute {
 		t.Fatalf("analysis timeout %s leaves no cold-cache headroom over the 5m quality budget", analysisTimeout)
