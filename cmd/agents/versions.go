@@ -17,7 +17,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/resources"
-	"github.com/google/go-github/v37/github"
+	"github.com/google/go-github/v89/github"
 	"github.com/spf13/cobra"
 )
 
@@ -376,7 +376,10 @@ func pinnedVersions(ctx context.Context, agent *resources.Agent) []string {
 }
 
 func fetchReleasesFromGitHub(ctx context.Context, agent *resources.Agent) ([]releaseInfo, error) {
-	client := newGitHubClient()
+	client, err := newGitHubClient()
+	if err != nil {
+		return nil, err
+	}
 	owner, repo := githubSource(agent)
 	var out []releaseInfo
 	opt := &github.ListOptions{PerPage: 100}
@@ -409,7 +412,10 @@ func fetchReleasesFromGitHub(ctx context.Context, agent *resources.Agent) ([]rel
 }
 
 func fetchTagsFromGitHub(ctx context.Context, agent *resources.Agent) ([]string, error) {
-	client := newGitHubClient()
+	client, err := newGitHubClient()
+	if err != nil {
+		return nil, err
+	}
 	owner, repo := githubSource(agent)
 	var out []string
 	opt := &github.ListOptions{PerPage: 100}
@@ -439,12 +445,11 @@ func githubSource(agent *resources.Agent) (owner, repo string) {
 // when either is set. Listing every version of every pinned agent multiplies
 // requests fast, and the unauthenticated 60/hour limit turns this diagnostic
 // flaky exactly when a workspace has many pins to check.
-func newGitHubClient() *github.Client {
-	token := githubToken()
-	if token == "" {
-		return github.NewClient(nil)
+func newGitHubClient() (*github.Client, error) {
+	if token := githubToken(); token != "" {
+		return github.NewClient(github.WithAuthToken(token))
 	}
-	return github.NewClient(&http.Client{Transport: &tokenTransport{token: token}})
+	return github.NewClient()
 }
 
 // githubToken resolves a GitHub token from GITHUB_TOKEN/GH_TOKEN, falling back
@@ -464,16 +469,6 @@ func githubToken() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
-}
-
-type tokenTransport struct {
-	token string
-}
-
-func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", "Bearer "+t.token)
-	return http.DefaultTransport.RoundTrip(clone)
 }
 
 func localCacheVersions(ctx context.Context, agent *resources.Agent) []string {
