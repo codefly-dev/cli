@@ -27,6 +27,21 @@ func SelectEnvironment(workspace *resources.Workspace, name string) (*resources.
 	return cloneEnvironment(env), nil
 }
 
+// SelectedFixture resolves the fixture a workspace-bound flow runs with. An
+// environment declares the fixture its runtime should use, so an ordinary
+// `codefly run service` / `codefly test service` needs no --fixture at all.
+// An explicit override always wins, and an environment that deliberately
+// omits a fixture — because it loads a real provider — resolves to none.
+func SelectedFixture(environment *resources.Environment, override string) string {
+	if override != "" {
+		return override
+	}
+	if environment == nil {
+		return ""
+	}
+	return environment.Fixture
+}
+
 func cloneEnvironment(env *resources.Environment) *resources.Environment {
 	clone := *env
 	if env.Cluster != nil {

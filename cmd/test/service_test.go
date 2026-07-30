@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -52,13 +53,13 @@ func TestStopNilFlowIsSafe(t *testing.T) {
 
 func TestSelectedTestFixtureUsesEnvironmentAndAllowsOverride(t *testing.T) {
 	environment := &resources.Environment{Fixture: "dev-admin"}
-	if got := selectedTestFixture(environment, ""); got != "dev-admin" {
+	if got := orchestration.SelectedFixture(environment, ""); got != "dev-admin" {
 		t.Fatalf("selected fixture = %q, want environment fixture", got)
 	}
-	if got := selectedTestFixture(environment, "custom"); got != "custom" {
+	if got := orchestration.SelectedFixture(environment, "custom"); got != "custom" {
 		t.Fatalf("selected fixture = %q, want explicit override", got)
 	}
-	if got := selectedTestFixture(nil, ""); got != "" {
+	if got := orchestration.SelectedFixture(nil, ""); got != "" {
 		t.Fatalf("selected fixture without environment = %q, want empty", got)
 	}
 }
