@@ -22,13 +22,14 @@ jobs:
           - bootstrap-audit
           - control-integration
           - coverage
+          - lint
           - race
     steps:
       - name: checkout
         uses: actions/checkout@v5
 
       - name: Set up Go
-        if: matrix.gate == 'coverage' || matrix.gate == 'race'
+        if: matrix.gate == 'coverage' || matrix.gate == 'race' || matrix.gate == 'lint'
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -69,11 +70,16 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           codefly audit go --dir .
-#
-#      - name: golangci-lint
-#        uses: golangci/golangci-lint-action@v3 # Using 'latest' automatically fetches the latest version
-#        with:
-#          version: latest
+      # Loads the v2 .golangci.yaml. Pinned to match the version documented in
+      # the Makefile (`make lint`). only-new-issues gates PRs on newly
+      # introduced findings so the pre-existing backlog does not block work
+      # while the standard is enforced going forward.
+      - name: golangci-lint
+        if: matrix.gate == 'lint'
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          only-new-issues: true
 
       - name: Test with coverage
         if: matrix.gate == 'coverage'
