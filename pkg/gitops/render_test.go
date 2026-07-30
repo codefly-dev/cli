@@ -112,6 +112,46 @@ func TestInventoryKubernetesOutputPreservesPromotableEvidence(t *testing.T) {
 	}
 }
 
+func TestValidateInventoryKubernetesOutputAcceptsRenderOnlyValidation(t *testing.T) {
+	output := &KubernetesOutputInventory{
+		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String(),
+		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+		Validation: &KubernetesValidationInventory{
+			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
+			Promotable:           true,
+			Violations:           []string{},
+		},
+	}
+
+	if err := validateInventoryKubernetesOutput("accounts", output); err != nil {
+		t.Fatalf("render-only validation rejected: %v", err)
+	}
+}
+
+func TestValidateInventoryKubernetesOutputRejectsFailedOrMissingValidation(t *testing.T) {
+	output := &KubernetesOutputInventory{
+		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String(),
+		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+		Validation: &KubernetesValidationInventory{
+			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_FAILED.String(),
+			Promotable:           true,
+			Violations:           []string{},
+		},
+	}
+
+	if err := validateInventoryKubernetesOutput("accounts", output); err == nil {
+		t.Fatal("failed server-side validation was accepted")
+	}
+	output.Validation = nil
+	if err := validateInventoryKubernetesOutput("accounts", output); err == nil {
+		t.Fatal("missing validation evidence was accepted")
+	}
+}
+
 func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "deployments", "modules", "users")
 	output := &InventoryKubernetesOutput{
@@ -129,6 +169,7 @@ func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
 		Destination: destination,
 		Module:      "users",
 		Environment: "local",
+		Namespace:   "mind",
 		AppProject:  "mind-users-local",
 		Promotable:  true,
 		OwnedPath:   "deployments/modules/users",
@@ -151,7 +192,8 @@ func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inventory.SchemaVersion != 2 || inventory.OwnedPath != "deployments/modules/users" ||
+	if inventory.SchemaVersion != SchemaVersion || inventory.Namespace != "mind" ||
+		inventory.OwnedPath != "deployments/modules/users" ||
 		len(inventory.ServiceGraph) != 2 || inventory.ServiceGraph[0].Output == nil ||
 		!inventory.ServiceGraph[1].Managed {
 		t.Fatalf("inventory = %+v", inventory)

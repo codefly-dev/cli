@@ -55,6 +55,7 @@ type kustomization struct {
 
 type projectContract struct {
 	name             string
+	present          bool
 	destinations     map[string]struct{}
 	clusterResources map[string]struct{}
 }
@@ -148,11 +149,12 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	}
 	opts := &RenderOptions{
 		Module: inventory.Module, Service: inventory.Service,
-		OwnedPath: inventory.OwnedPath, ServiceGraph: inventory.ServiceGraph,
-		Environment: inventory.Environment, AppProject: project, Promotable: promotable,
+		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, ServiceGraph: inventory.ServiceGraph,
+		Environment: inventory.Environment, Namespace: inventory.Namespace,
+		AppProject: project, Promotable: promotable,
 	}
 	for _, service := range inventory.ServiceGraph {
-		if !service.Managed {
+		if service.Path != "" {
 			opts.Services = append(opts.Services, service.Service)
 		}
 	}
@@ -179,14 +181,14 @@ func ValidateServiceSnapshot(root string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() != InventoryFilename && entry.Name() != "services" {
+		if entry.Name() != InventoryFilename && entry.Name() != "services" && entry.Name() != "module" {
 			return fmt.Errorf("service snapshot contains unexpected path %s", entry.Name())
 		}
 	}
 	services := filepath.Join(root, "services")
 	var names []string
 	for _, service := range inventory.ServiceGraph {
-		if !service.Managed {
+		if service.Path != "" {
 			names = append(names, service.Service)
 		}
 	}
@@ -196,7 +198,8 @@ func ValidateServiceSnapshot(root string) error {
 	for _, service := range names {
 		opts := &RenderOptions{
 			Module: inventory.Module, Service: service,
-			Environment: inventory.Environment, AppProject: inventory.AppProject, Promotable: true,
+			Environment: inventory.Environment, Namespace: inventory.Namespace,
+			AppProject: inventory.AppProject, Promotable: true,
 		}
 		if err := validateTree(filepath.Join(services, service), opts); err != nil {
 			return fmt.Errorf("validate service %s: %w", service, err)
@@ -207,8 +210,9 @@ func ValidateServiceSnapshot(root string) error {
 	}
 	opts := &RenderOptions{
 		Module: inventory.Module, Services: names,
-		OwnedPath: inventory.OwnedPath, ServiceGraph: inventory.ServiceGraph,
-		Environment: inventory.Environment, AppProject: inventory.AppProject, Promotable: true,
+		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, ServiceGraph: inventory.ServiceGraph,
+		Environment: inventory.Environment, Namespace: inventory.Namespace,
+		AppProject: inventory.AppProject, Promotable: true,
 	}
 	actual, err := buildInventory(root, opts)
 	if err != nil {
@@ -219,8 +223,11 @@ func ValidateServiceSnapshot(root string) error {
 
 func validateServiceSnapshotCoverage(inventory *Inventory) error {
 	covered := make(map[string]bool)
+	if inventory.ModulePath != "" {
+		covered[inventory.ModulePath] = false
+	}
 	for _, service := range inventory.ServiceGraph {
-		if !service.Managed {
+		if service.Path != "" {
 			covered[service.Path] = false
 		}
 	}
@@ -264,8 +271,18 @@ func validateInventoryServiceGraph(inventory *Inventory) error {
 		}
 		previous = service.Service
 		if service.Managed {
-			if service.Path != "" || service.Output != nil {
-				return fmt.Errorf("managed service %s must not contain a rendered path or output", service.Service)
+			if service.Bootstrap {
+				expectedPath := filepath.ToSlash(filepath.Join("services", service.Service))
+				if service.Path != expectedPath {
+					return fmt.Errorf("managed bootstrap service %s render path is %q, expected %q", service.Service, service.Path, expectedPath)
+				}
+				if inventory.OwnedPath != "" {
+					if err := validateInventoryKubernetesOutput(service.Service, service.Output); err != nil {
+						return err
+					}
+				}
+			} else if service.Path != "" || service.Output != nil {
+				return fmt.Errorf("managed service %s without bootstrap output must not contain a rendered path or output", service.Service)
 			}
 			continue
 		}
@@ -292,9 +309,14 @@ func validateInventoryKubernetesOutput(service string, output *KubernetesOutputI
 		output.ContractVersion != coreservices.KubernetesManifestContractVersion {
 		return fmt.Errorf("service %s has incompatible Kubernetes output evidence", service)
 	}
+	if output.Validation == nil {
+		return fmt.Errorf("service %s has no promotable Kubernetes validation evidence", service)
+	}
 	passed := builderv0.KubernetesManifestValidation_STATUS_PASSED.String()
+	notRun := builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String()
+	serverSideValidation := output.Validation.ServerSideValidation
 	if output.Validation.StaticValidation != passed ||
-		output.Validation.ServerSideValidation != passed ||
+		(serverSideValidation != passed && serverSideValidation != notRun) ||
 		!output.Validation.Promotable ||
 		output.Validation.Violations == nil ||
 		len(output.Validation.Violations) != 0 {
@@ -363,6 +385,10 @@ func validateTree(root string, opts *RenderOptions) error {
 	contract, err := selectProjectContract(manifests, opts.AppProject)
 	if err != nil {
 		return err
+	}
+	if contract != nil && !contract.present && opts.ModulePath != "" && opts.Namespace != "" {
+		contract.destinations[opts.Namespace] = struct{}{}
+		contract.clusterResources["/Namespace"] = struct{}{}
 	}
 	for _, item := range manifests {
 		if err := validateManifest(item, contract, false); err != nil {
@@ -638,7 +664,7 @@ func selectProjectContract(manifests []manifest, selected string) (*projectContr
 		if name == "" {
 			return nil, fmt.Errorf("%s: AppProject metadata.name is required", item.path)
 		}
-		contract := &projectContract{name: name, destinations: map[string]struct{}{}, clusterResources: map[string]struct{}{}}
+		contract := &projectContract{name: name, present: true, destinations: map[string]struct{}{}, clusterResources: map[string]struct{}{}}
 		spec, _ := item.value["spec"].(map[string]any)
 		destinations, _ := spec["destinations"].([]any)
 		for _, raw := range destinations {
@@ -725,7 +751,11 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 			return fmt.Errorf("Application project %q differs from selected AppProject %q", project, contract.name)
 		}
 	}
-	return inspectValue(item.value, nil, promotable)
+	var allowCredentialReference func([]string) bool
+	if item.group == "external-secrets.io" && item.kind == "ExternalSecret" {
+		allowCredentialReference = externalSecretCredentialReference
+	}
+	return inspectValueAllowingReferences(item.value, nil, promotable, allowCredentialReference)
 }
 
 func isBuiltInAPIGroup(group string) bool {
@@ -740,6 +770,15 @@ func isBuiltInAPIGroup(group string) bool {
 }
 
 func inspectValue(value any, path []string, promotable bool) error {
+	return inspectValueAllowingReferences(value, path, promotable, nil)
+}
+
+func inspectValueAllowingReferences(
+	value any,
+	path []string,
+	promotable bool,
+	allowCredentialReference func([]string) bool,
+) error {
 	switch typed := value.(type) {
 	case map[string]any:
 		if name, ok := typed["name"].(string); ok && isCredentialKey(strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(name))) && scalarHasValue(typed["value"]) {
@@ -748,7 +787,8 @@ func inspectValue(value any, path []string, promotable bool) error {
 		for key, child := range typed {
 			next := extendPath(path, key)
 			normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(key))
-			if isCredentialKey(normalized) && scalarHasValue(child) {
+			if isCredentialKey(normalized) && scalarHasValue(child) &&
+				(allowCredentialReference == nil || !allowCredentialReference(next)) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
 			if key == "image" && promotable {
@@ -757,13 +797,18 @@ func inspectValue(value any, path []string, promotable bool) error {
 					return fmt.Errorf("%s image %q is not digest-pinned", strings.Join(next, "."), image)
 				}
 			}
-			if err := inspectValue(child, next, promotable); err != nil {
+			if err := inspectValueAllowingReferences(child, next, promotable, allowCredentialReference); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for index, child := range typed {
-			if err := inspectValue(child, extendPath(path, fmt.Sprintf("[%d]", index)), promotable); err != nil {
+			if err := inspectValueAllowingReferences(
+				child,
+				extendPath(path, fmt.Sprintf("[%d]", index)),
+				promotable,
+				allowCredentialReference,
+			); err != nil {
 				return err
 			}
 		}
@@ -781,6 +826,14 @@ func inspectValue(value any, path []string, promotable bool) error {
 		}
 	}
 	return nil
+}
+
+func externalSecretCredentialReference(path []string) bool {
+	return len(path) == 4 &&
+		path[0] == "spec" &&
+		path[1] == "data" &&
+		strings.HasPrefix(path[2], "[") &&
+		path[3] == "secretKey"
 }
 
 func isURLBearingPath(path []string) bool {
@@ -873,7 +926,8 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Service: opts.Service, Environment: opts.Environment,
-		AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
+		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
+		ModulePath:   filepath.ToSlash(opts.ModulePath),
 		ServiceGraph: append([]InventoryService(nil), opts.ServiceGraph...),
 	}
 	if len(inventory.ServiceGraph) == 0 {
@@ -967,42 +1021,46 @@ func copyTree(source, destination string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(destination, relative)
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s: symbolic links are not allowed", relative)
-		}
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%s: non-regular files are not allowed", relative)
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		input, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
-		if err != nil {
-			input.Close()
-			return err
-		}
-		writer := bufio.NewWriter(output)
-		_, copyErr := io.Copy(writer, input)
-		inputErr := input.Close()
-		flushErr := writer.Flush()
-		closeErr := output.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if inputErr != nil {
-			return inputErr
-		}
-		if flushErr != nil {
-			return flushErr
-		}
-		return closeErr
+		return copyTreeEntry(destination, path, relative, info)
 	})
+}
+
+func copyTreeEntry(destination, path, relative string, info os.FileInfo) error {
+	target := filepath.Join(destination, relative)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s: symbolic links are not allowed", relative)
+	}
+	if info.IsDir() {
+		return os.MkdirAll(target, info.Mode().Perm())
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: non-regular files are not allowed", relative)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	input, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		input.Close()
+		return err
+	}
+	writer := bufio.NewWriter(output)
+	_, copyErr := io.Copy(writer, input)
+	inputErr := input.Close()
+	flushErr := writer.Flush()
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if inputErr != nil {
+		return inputErr
+	}
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
 }

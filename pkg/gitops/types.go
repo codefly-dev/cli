@@ -8,7 +8,7 @@ import (
 
 const (
 	InventoryFilename     = ".codefly-render.json"
-	SchemaVersion         = 2
+	SchemaVersion         = 3
 	EvidenceSchemaVersion = 1
 )
 
@@ -17,19 +17,22 @@ type Inventory struct {
 	Module        string             `json:"module"`
 	Service       string             `json:"service,omitempty"`
 	Environment   string             `json:"environment"`
+	Namespace     string             `json:"namespace,omitempty"`
 	AppProject    string             `json:"appProject"`
 	OwnedPath     string             `json:"ownedPath"`
+	ModulePath    string             `json:"modulePath,omitempty"`
 	ServiceGraph  []InventoryService `json:"serviceGraph"`
 	Files         []InventoryFile    `json:"files"`
 	Digest        string             `json:"digest"`
 }
 
 type InventoryService struct {
-	Module  string                     `json:"module"`
-	Service string                     `json:"service"`
-	Path    string                     `json:"path,omitempty"`
-	Managed bool                       `json:"managed,omitempty"`
-	Output  *InventoryKubernetesOutput `json:"output,omitempty"`
+	Module    string                     `json:"module"`
+	Service   string                     `json:"service"`
+	Path      string                     `json:"path,omitempty"`
+	Managed   bool                       `json:"managed,omitempty"`
+	Bootstrap bool                       `json:"bootstrap,omitempty"`
+	Output    *InventoryKubernetesOutput `json:"output,omitempty"`
 }
 
 type InventoryKubernetesOutput struct {
@@ -61,9 +64,11 @@ type RenderOptions struct {
 	Service      string
 	Services     []string
 	Environment  string
+	Namespace    string
 	AppProject   string
 	Promotable   bool
 	OwnedPath    string
+	ModulePath   string
 	ServiceGraph []InventoryService
 }
 

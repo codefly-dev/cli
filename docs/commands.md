@@ -209,15 +209,15 @@ gitops:
 ```
 
 Render first writes to a temporary sibling, rejects unsafe or non-promotable
-manifests, and installs the selected environment bootstrap and exact service
-graph under `deployments/modules/<module>`. The installed
+manifests, invokes module agents for transport-neutral topology bundles, and
+installs the selected environment resources and exact service graph under
+`deployments/modules/<module>`. The installed
 `.codefly-render.json` contains the sorted file inventory and aggregate digest.
-Publish clones `workspace.gitops.repo-url`, commits and advertises the immutable
-service snapshot under
-`<workspace.gitops.path>/deployments/modules/<module>/services`, invokes the
-module generator against that exact snapshot, then creates the signed
-publication commit and opens or updates a pull request. Planning does not
-advertise the snapshot or mutate the remote. Observe requires an
+Publish clones the selected GitOps repository, commits and advertises the
+immutable service/module snapshot, derives exact AppProject authority from that
+snapshot, and adds CLI-owned Applications pinned to its commit and paths. It
+then creates the signed publication commit and opens or updates a pull request.
+Planning does not advertise the snapshot or mutate the remote. Observe requires an
 approved, merged pull request and verifies the publication digest, the
 snapshot revision bound into every Application, exact service paths, project
 authority, cluster identity, sync, operation, and Healthy status before writing

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -118,12 +119,163 @@ spec:
 	}
 }
 
-func TestPublishInvokesModuleGeneratorAgainstCommittedServiceSnapshot(t *testing.T) {
+func TestArgoRepositoryUsesWorkspaceFetchURLForLocalPromotion(t *testing.T) {
+	workspace := loadGitopsWorkspace(t, createBareRepository(t))
+	config, _, _, _, err := resolveGitops(workspace, "production", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := argoRepository(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != "https://host.k3d.internal/manifests.git" {
+		t.Fatalf("Argo repository = %q", repository)
+	}
+
+	config.FetchRepoURL = ""
+	if _, err := argoRepository(config); err == nil || !strings.Contains(err.Error(), "fetch-repo-url") {
+		t.Fatalf("missing local fetch repository error = %v", err)
+	}
+}
+
+func TestArgoRepositoryRejectsProductionFetchRepositoryMismatch(t *testing.T) {
+	config := &repositoryConfig{
+		RepoURL:      "git@github.com:codefly-dev/manifests.git",
+		FetchRepoURL: "https://github.com/codefly-dev/other-manifests.git",
+	}
+	if _, err := argoRepository(config); err == nil ||
+		!strings.Contains(err.Error(), "must identify the publication repository") {
+		t.Fatalf("mismatched fetch repository error = %v", err)
+	}
+	config.FetchRepoURL = "https://github.com/codefly-dev/manifests.git"
+	repository, err := argoRepository(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != config.FetchRepoURL {
+		t.Fatalf("Argo repository = %q", repository)
+	}
+}
+
+func TestModuleBundleRejectsArgoTransportResources(t *testing.T) {
+	root := t.TempDir()
+	application := `apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agent-owned
+`
+	if err := os.WriteFile(filepath.Join(root, "application.yaml"), []byte(application), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := validateTransportNeutralModuleBundle(root)
+	if err == nil || !strings.Contains(err.Error(), "CLI-owned Argo transport resource Application") {
+		t.Fatalf("Argo transport resource error = %v", err)
+	}
+}
+
+func TestManagedServicePromotionRetainsOnlyItsBootstrapJob(t *testing.T) {
+	root := t.TempDir()
+	serviceRoot := filepath.Join(root, "services", "store")
+	if err := os.MkdirAll(serviceRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rendered := `apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: store
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: store
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: store-migrate-aaaaaaaaaaaa
+  labels:
+    codefly.dev/bootstrap-service: store
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/codefly-dev/store-migrate@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`
+	if err := os.WriteFile(filepath.Join(serviceRoot, "rendered.yaml"), []byte(rendered), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	retained, err := retainManagedBootstrap(serviceRoot, "store", "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retained {
+		t.Fatal("managed migration Job was not retained")
+	}
+	var retainedManifests string
+	err = walkRegularFiles(serviceRoot, func(path, _ string, _ os.FileInfo) error {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		retainedManifests += string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(retainedManifests, "kind: Job") ||
+		strings.Contains(retainedManifests, "kind: StatefulSet") ||
+		strings.Contains(retainedManifests, "kind: Service\n") {
+		t.Fatalf("managed bootstrap tree = %s", retainedManifests)
+	}
+
+	revision := strings.Repeat("a", 40)
+	inventory := &Inventory{
+		SchemaVersion: SchemaVersion,
+		Module:        "payments",
+		Environment:   "production",
+		Namespace:     "payments",
+		AppProject:    "payments-production",
+		ServiceGraph: []InventoryService{{
+			Module: "payments", Service: "store", Path: "services/store",
+			Managed: true, Bootstrap: true,
+		}},
+	}
+	config := &repositoryConfig{RepoURL: "https://github.com/codefly-dev/manifests.git"}
+	if err := generateArgoBootstrap(
+		context.Background(),
+		config,
+		root,
+		"environments/deployments/modules/payments",
+		inventory,
+		"production",
+		revision,
+	); err != nil {
+		t.Fatal(err)
+	}
+	application, err := os.ReadFile(filepath.Join(root, "bootstrap", "applications", "payments-store.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(application), "targetRevision: "+revision) ||
+		!strings.Contains(string(application), "path: environments/deployments/modules/payments/services/store/overlays/production") {
+		t.Fatalf("managed bootstrap Application = %s", application)
+	}
+}
+
+func TestPublishComposesTransportNeutralModuleBundleIntoArgoPromotion(t *testing.T) {
 	ctx := context.Background()
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspaceWithAgent(t, remote)
-	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
 	configureSSHSigning(t)
+	t.Setenv("GITHUB_TOKEN", "must-not-reach-module-agent")
+	t.Setenv("AWS_ACCESS_KEY_ID", "must-not-reach-module-agent")
+	t.Setenv("KUBECONFIG", "/must/not/reach/module-agent")
+	t.Setenv("PULUMI_ACCESS_TOKEN", "must-not-reach-module-agent")
+	t.Setenv("SSH_AUTH_SOCK", "/must/not/reach/module-agent.sock")
 
 	home := t.TempDir()
 	t.Setenv(resources.CodeflyHomeEnv, home)
@@ -139,36 +291,69 @@ func TestPublishInvokesModuleGeneratorAgainstCommittedServiceSnapshot(t *testing
 	}
 	generator := `#!/bin/sh
 set -eu
+if grep -Eq 'gitops:|repo-url:|fetch-repo-url:|branch:' "$PWD/workspace.codefly.yaml"; then
+  echo "module agent received GitOps authority" >&2
+  exit 90
+fi
+if [ -n "${GITHUB_TOKEN-}${AWS_ACCESS_KEY_ID-}${KUBECONFIG-}${PULUMI_ACCESS_TOKEN-}${GIT_CONFIG_COUNT-}${SSH_AUTH_SOCK-}${CODEFLY_HOME-}" ]; then
+  echo "module agent inherited host credentials or configuration" >&2
+  exit 91
+fi
 module_dir="$1"
-revision="$(sed -n 's/^[[:space:]]*revision: //p' workspace.codefly.yaml | head -n 1)"
-checkout="$(sed -n 's/^[[:space:]]*checkout: //p' workspace.codefly.yaml | head -n 1)"
-inventory="$(sed -n 's/^[[:space:]]*inventory: //p' workspace.codefly.yaml | head -n 1)"
-test "$inventory" = "environments/deployments/modules/payments/.codefly-render.json"
-git -C "$checkout" cat-file -e "$revision:$inventory"
-git -C "$checkout" cat-file -e "$revision:environments/deployments/modules/payments/services/api/overlays/production/deployment.yaml"
-destination="$module_dir/deployment/kustomize/overlays/production"
-mkdir -p "$destination"
+destination="$module_dir/deployment/kustomize"
+mkdir -p "$destination/overlays/production/resources"
+cat > "$destination/overlays/production/resources/namespace.yaml" <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payments
+EOF
+cat > "$destination/overlays/production/resources/external-secret.yaml" <<'EOF'
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: payments-store
+  namespace: payments
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: production
+  target:
+    name: payments-store
+  data:
+    - secretKey: connection
+      remoteRef:
+        key: payments/store
+        property: connection
+EOF
+cat > "$destination/overlays/production/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - resources/namespace.yaml
+  - resources/external-secret.yaml
+EOF
+cat > "$destination/bundle.json" <<'EOF'
 {
-  printf '%s\n' \
-    'apiVersion: argoproj.io/v1alpha1' \
-    'kind: Application' \
-    'metadata:' \
-    '  name: payments-api' \
-    '  namespace: argocd' \
-    'spec:' \
-    '  project: payments' \
-    '  source:' \
-    '    repoURL: https://github.com/codefly-dev/manifests.git' \
-    "    targetRevision: $revision" \
-    '    path: environments/deployments/modules/payments/services/api/overlays/production' \
-    '  destination:' \
-    '    server: https://kubernetes.default.svc' \
-    '    namespace: payments'
-} > "$destination/application.yaml"
+  "schemaVersion": "codefly.dev/module-bundle/v1",
+  "module": "payments",
+  "namespace": "payments",
+  "serviceEntry": "api",
+  "environments": [{
+    "name": "production",
+    "namespace": "payments",
+    "cluster": "k3d",
+    "resourcePath": "overlays/production",
+    "services": ["api"],
+    "ingress": []
+  }]
+}
+EOF
 `
 	if err := os.WriteFile(binary, []byte(generator), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	renderPublishFixtureWithModuleAgent(t, workspace, "payments", "production", "api")
 
 	request := PublishRequest{
 		Module: "payments", Environment: "production", Local: true,
@@ -182,24 +367,86 @@ mkdir -p "$destination"
 	if err != nil {
 		t.Fatal(err)
 	}
+	moduleResource := gitOutput(
+		t,
+		"",
+		"--git-dir",
+		remote,
+		"show",
+		result.SnapshotRevision+":"+result.Path+"/module/overlays/production/resources/namespace.yaml",
+	)
+	if !strings.Contains(moduleResource, "name: payments") {
+		t.Fatalf("module resource snapshot = %s", moduleResource)
+	}
+	externalSecret := gitOutput(
+		t,
+		"",
+		"--git-dir",
+		remote,
+		"show",
+		result.SnapshotRevision+":"+result.Path+"/module/overlays/production/resources/external-secret.yaml",
+	)
+	if !strings.Contains(externalSecret, "kind: ExternalSecret") ||
+		!strings.Contains(externalSecret, "key: payments/store") {
+		t.Fatalf("external secret snapshot = %s", externalSecret)
+	}
+	project := gitOutput(
+		t,
+		"",
+		"--git-dir",
+		remote,
+		"show",
+		result.Commit+":"+result.Path+"/bootstrap/project.yaml",
+	)
+	if strings.Contains(project, `group: "*"`) || strings.Contains(project, `kind: "*"`) ||
+		!strings.Contains(project, "repoURL") && !strings.Contains(project, "sourceRepos") ||
+		!strings.Contains(project, "group: external-secrets.io") ||
+		!strings.Contains(project, "kind: ExternalSecret") {
+		t.Fatalf("generated AppProject authority = %s", project)
+	}
 	application := gitOutput(
 		t,
 		"",
 		"--git-dir",
 		remote,
 		"show",
-		result.Commit+":"+result.Path+"/bootstrap/overlays/production/application.yaml",
+		result.Commit+":"+result.Path+"/bootstrap/applications/payments-api.yaml",
 	)
-	if !strings.Contains(application, "targetRevision: "+result.SnapshotRevision) {
+	if !strings.Contains(application, "targetRevision: "+result.SnapshotRevision) ||
+		!strings.Contains(application, "path: environments/deployments/modules/payments/services/api/overlays/production") {
 		t.Fatalf("generated Application = %s", application)
+	}
+	moduleApplication := gitOutput(
+		t,
+		"",
+		"--git-dir",
+		remote,
+		"show",
+		result.Commit+":"+result.Path+"/bootstrap/applications/payments-resources.yaml",
+	)
+	if !strings.Contains(moduleApplication, "targetRevision: "+result.SnapshotRevision) ||
+		!strings.Contains(moduleApplication, "path: environments/deployments/modules/payments/module/overlays/production") {
+		t.Fatalf("generated module Application = %s", moduleApplication)
+	}
+	bootstrap := gitOutput(
+		t,
+		"",
+		"--git-dir",
+		remote,
+		"show",
+		result.Commit+":"+result.Path+"/bootstrap/kustomization.yaml",
+	)
+	if !strings.Contains(bootstrap, "project.yaml") ||
+		!strings.Contains(bootstrap, "applications/payments-resources.yaml") ||
+		!strings.Contains(bootstrap, "applications/payments-api.yaml") {
+		t.Fatalf("generated Argo bootstrap = %s", bootstrap)
 	}
 }
 
-func TestPlanPublishRejectsModuleGeneratorMutationOfServiceSnapshot(t *testing.T) {
+func TestPlanPublishRejectsModuleBundleWithPhantomService(t *testing.T) {
 	ctx := context.Background()
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspaceWithAgent(t, remote)
-	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
 	home := t.TempDir()
 	t.Setenv(resources.CodeflyHomeEnv, home)
 	agent := &resources.Agent{
@@ -215,39 +462,105 @@ func TestPlanPublishRejectsModuleGeneratorMutationOfServiceSnapshot(t *testing.T
 	generator := `#!/bin/sh
 set -eu
 module_dir="$1"
-revision="$(sed -n 's/^[[:space:]]*revision: //p' workspace.codefly.yaml | head -n 1)"
-checkout="$(sed -n 's/^[[:space:]]*checkout: //p' workspace.codefly.yaml | head -n 1)"
-printf '\n# changed by generator\n' >> "$checkout/environments/deployments/modules/payments/services/api/overlays/production/deployment.yaml"
-destination="$module_dir/deployment/kustomize/overlays/production"
-mkdir -p "$destination"
+destination="$module_dir/deployment/kustomize"
+mkdir -p "$destination/overlays/production"
+cat > "$destination/overlays/production/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []
+EOF
+cat > "$destination/bundle.json" <<'EOF'
 {
-  printf '%s\n' \
-    'apiVersion: argoproj.io/v1alpha1' \
-    'kind: Application' \
-    'metadata:' \
-    '  name: payments-api' \
-    '  namespace: argocd' \
-    'spec:' \
-    '  project: payments' \
-    '  source:' \
-    '    repoURL: https://github.com/codefly-dev/manifests.git' \
-    "    targetRevision: $revision" \
-    '    path: environments/deployments/modules/payments/services/api/overlays/production' \
-    '  destination:' \
-    '    server: https://kubernetes.default.svc' \
-    '    namespace: payments'
-} > "$destination/application.yaml"
+  "schemaVersion": "codefly.dev/module-bundle/v1",
+  "module": "payments",
+  "environments": [{
+    "name": "production",
+    "namespace": "payments",
+    "cluster": "k3d",
+    "resourcePath": "overlays/production",
+    "services": ["api", "auth-sidecar"]
+  }]
+}
+EOF
 `
 	if err := os.WriteFile(binary, []byte(generator), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	module, err := workspace.LoadModuleFromName(ctx, "payments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := orchestration.SelectEnvironment(workspace, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = renderModuleBundle(
+		ctx,
+		workspace,
+		module,
+		environment,
+		t.TempDir(),
+		promotableServiceGraph("payments", []string{"api"}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "services [api auth-sidecar] differ from rendered in-cluster graph [api]") {
+		t.Fatalf("phantom module service error = %v", err)
+	}
 
-	_, err = PlanPublish(ctx, workspace, &PublishRequest{
-		Module: "payments", Environment: "production", Local: true,
-		PromotionBranch: "codefly/promote-payments-production",
-	})
-	if err == nil || !strings.Contains(err.Error(), "changed immutable service snapshot files") {
-		t.Fatalf("module generator service mutation error = %v", err)
+	environment.Namespace = ""
+	err = renderModuleBundle(
+		ctx,
+		workspace,
+		module,
+		environment,
+		t.TempDir(),
+		promotableServiceGraph("payments", []string{"api"}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "requires an explicit namespace") {
+		t.Fatalf("implicit namespace error = %v", err)
+	}
+
+	environment.Namespace = "payments"
+	environment.Cluster = nil
+	err = renderModuleBundle(
+		ctx,
+		workspace,
+		module,
+		environment,
+		t.TempDir(),
+		promotableServiceGraph("payments", []string{"api"}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "requires an explicit cluster kind") {
+		t.Fatalf("implicit cluster error = %v", err)
+	}
+}
+
+func TestCopyModuleInputTreeExcludesTransientBuildOutput(t *testing.T) {
+	source := t.TempDir()
+	destination := filepath.Join(t.TempDir(), "module")
+	topology := filepath.Join(source, "deployment", "topology.bindings.codefly.yaml")
+	if err := os.MkdirAll(filepath.Dir(topology), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(topology, []byte("version: v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nextModules := filepath.Join(source, "services", "frontend", "code", ".next", "node_modules")
+	if err := os.MkdirAll(nextModules, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(nextModules, "transient-package")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyModuleInputTree(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(destination, "deployment", "topology.bindings.codefly.yaml"))
+	if err != nil || string(data) != "version: v1\n" {
+		t.Fatalf("module contract was not staged: data=%q error=%v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "services", "frontend", "code", ".next")); !os.IsNotExist(err) {
+		t.Fatalf("transient Next.js output was staged: %v", err)
 	}
 }
 
@@ -639,13 +952,14 @@ modules:
   - name: payments
 environments:
   - name: production
+    namespace: payments
     cluster:
       kind: k3d
-gitops:
-  repo-url: file://%s
-  fetch-repo-url: https://host.k3d.internal/manifests.git
-  path: environments
-  branch: main
+    gitops:
+      repo-url: file://%s
+      fetch-repo-url: https://host.k3d.internal/manifests.git
+      path: environments
+      branch: main
 `, remote)
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
@@ -681,18 +995,60 @@ func renderPublishFixture(t *testing.T, root, module, environment, name string) 
 		Destination: destination, Module: module, Services: []string{"api"},
 		OwnedPath:    filepath.ToSlash(filepath.Join("environments", "deployments", "modules", module)),
 		ServiceGraph: promotableServiceGraph(module, []string{"api"}),
-		Environment:  environment, AppProject: "payments", Promotable: true,
+		Environment:  environment, Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, stage string) error {
-		manifest := strings.Replace(pinnedDeployment, "name: api", "name: "+name, 2)
-		service := filepath.Join(stage, "services", "api", "overlays", environment)
-		if err := os.MkdirAll(service, 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(manifest), 0o644)
+		return writePublishServiceFixture(stage, environment, name)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func renderPublishFixtureWithModuleAgent(t *testing.T, workspace *resources.Workspace, moduleName, environmentName, name string) {
+	t.Helper()
+	ctx := context.Background()
+	module, err := workspace.LoadModuleFromName(ctx, moduleName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := orchestration.SelectEnvironment(workspace, environmentName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := promotableServiceGraph(moduleName, []string{"api"})
+	destination := filepath.Join(workspace.Dir(), "deployments", "modules", moduleName)
+	_, err = RenderOwnedTree(ctx, &RenderOptions{
+		Destination: destination, Module: moduleName, Services: []string{"api"},
+		OwnedPath:    filepath.ToSlash(filepath.Join("environments", "deployments", "modules", moduleName)),
+		ModulePath:   "module",
+		ServiceGraph: graph,
+		Environment:  environmentName, Namespace: environment.Namespace,
+		AppProject: "payments", Promotable: true,
+	}, func(ctx context.Context, stage string) error {
+		if err := writePublishServiceFixture(stage, environmentName, name); err != nil {
+			return err
+		}
+		return renderModuleBundle(ctx, workspace, module, environment, filepath.Join(stage, "module"), graph)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writePublishServiceFixture(stage, environment, name string) error {
+	manifest := strings.Replace(pinnedDeployment, "name: api", "name: "+name, 2)
+	service := filepath.Join(stage, "services", "api", "overlays", environment)
+	if err := os.MkdirAll(service, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(manifest), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(
+		filepath.Join(service, "kustomization.yaml"),
+		[]byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"),
+		0o644,
+	)
 }
 
 func configureSSHSigning(t *testing.T) {

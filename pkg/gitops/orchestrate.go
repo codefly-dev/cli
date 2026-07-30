@@ -33,13 +33,20 @@ func renderModuleTree(
 ) (RenderResult, error) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", module.Name)
 	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", module.Name))
-	if workspace.Gitops != nil {
-		ownedPath = filepath.ToSlash(filepath.Join(workspace.Gitops.Path, ownedPath))
+	gitopsPath := ""
+	if env.Gitops != nil {
+		gitopsPath = env.Gitops.Path
+	} else if workspace.Gitops != nil {
+		gitopsPath = workspace.Gitops.Path
+	}
+	if gitopsPath != "" {
+		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
 	}
 	options := &RenderOptions{
 		Destination: destination,
 		Module:      module.Name,
 		Environment: env.Name,
+		Namespace:   env.Namespace,
 		AppProject:  project,
 		Promotable:  true,
 		OwnedPath:   ownedPath,
@@ -87,8 +94,18 @@ func renderModuleTree(
 				Managed: managed,
 			}
 			if managed {
-				if err := os.RemoveAll(filepath.Join(stage, "services", service.Name)); err != nil {
-					return fmt.Errorf("remove managed service %s output: %w", service.Name, err)
+				bootstrap, err := retainManagedBootstrap(
+					filepath.Join(stage, "services", service.Name),
+					service.Name,
+					env.Name,
+				)
+				if err != nil {
+					return fmt.Errorf("select managed service %s bootstrap output: %w", service.Name, err)
+				}
+				if bootstrap {
+					entry.Path = filepath.ToSlash(filepath.Join("services", service.Name))
+					entry.Bootstrap = true
+					entry.Output = inventoryKubernetesOutput(outputs[resources.ServiceUnique(module.Name, service.Name)])
 				}
 			} else {
 				entry.Path = filepath.ToSlash(filepath.Join("services", service.Name))
@@ -102,7 +119,15 @@ func renderModuleTree(
 		sort.Slice(options.ServiceGraph, func(i, j int) bool {
 			return options.ServiceGraph[i].Service < options.ServiceGraph[j].Service
 		})
-		if !includeBootstrap || module.Agent != nil {
+		if module.Agent != nil {
+			modulePath := filepath.Join(stage, "module")
+			if err := renderModuleBundle(ctx, workspace, module, env, modulePath, options.ServiceGraph); err != nil {
+				return err
+			}
+			options.ModulePath = "module"
+			return nil
+		}
+		if !includeBootstrap {
 			return nil
 		}
 		static := filepath.Join(module.Dir(), "deployment", "kustomize")
@@ -204,6 +229,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		Module:      module.Name,
 		Service:     service.Name,
 		Environment: env.Name,
+		Namespace:   env.Namespace,
 		AppProject:  project,
 		Promotable:  true,
 	}, func(ctx context.Context, stage string) error {
