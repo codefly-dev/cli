@@ -108,9 +108,12 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 	if err != nil {
 		return ObserveResult{}, err
 	}
-	servicePaths := make(map[string]struct{}, len(inventory.ServiceGraph))
+	servicePaths := make(map[string]struct{}, len(inventory.ServiceGraph)+1)
+	if inventory.ModulePath != "" {
+		servicePaths[filepath.ToSlash(filepath.Join(request.Path, inventory.ModulePath, "overlays", request.Environment))] = struct{}{}
+	}
 	for _, service := range inventory.ServiceGraph {
-		if service.Managed {
+		if service.Path == "" {
 			continue
 		}
 		servicePaths[filepath.ToSlash(filepath.Join(request.Path, service.Path, "overlays", request.Environment))] = struct{}{}
@@ -590,17 +593,13 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	if !strings.Contains(rawCommit, "\ngpgsig ") {
 		return Inventory{}, fmt.Errorf("publication commit %s is not signed", request.Commit)
 	}
-	servicePath := filepath.ToSlash(filepath.Join(targetPath, "services"))
-	changedServices, err := gitCommand(
-		ctx,
-		repo,
-		"diff",
-		"--name-only",
-		request.Revision,
-		request.Commit,
-		"--",
-		servicePath,
-	)
+	snapshotPaths := []string{
+		filepath.ToSlash(filepath.Join(targetPath, "services")),
+		filepath.ToSlash(filepath.Join(targetPath, "module")),
+	}
+	args := []string{"diff", "--name-only", request.Revision, request.Commit, "--"}
+	args = append(args, snapshotPaths...)
+	changedServices, err := gitCommand(ctx, repo, args...)
 	if err != nil {
 		return Inventory{}, fmt.Errorf("compare reviewed service snapshot: %w", err)
 	}
@@ -636,8 +635,10 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	}
 	if snapshotInventory.Module != inventory.Module ||
 		snapshotInventory.Environment != inventory.Environment ||
+		snapshotInventory.Namespace != inventory.Namespace ||
 		snapshotInventory.AppProject != inventory.AppProject ||
 		snapshotInventory.OwnedPath != inventory.OwnedPath ||
+		snapshotInventory.ModulePath != inventory.ModulePath ||
 		!reflect.DeepEqual(snapshotInventory.ServiceGraph, inventory.ServiceGraph) {
 		return Inventory{}, fmt.Errorf("immutable service snapshot identity differs from the reviewed publication")
 	}

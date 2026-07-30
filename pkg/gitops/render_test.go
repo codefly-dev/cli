@@ -129,6 +129,7 @@ func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
 		Destination: destination,
 		Module:      "users",
 		Environment: "local",
+		Namespace:   "mind",
 		AppProject:  "mind-users-local",
 		Promotable:  true,
 		OwnedPath:   "deployments/modules/users",
@@ -151,7 +152,8 @@ func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inventory.SchemaVersion != 2 || inventory.OwnedPath != "deployments/modules/users" ||
+	if inventory.SchemaVersion != SchemaVersion || inventory.Namespace != "mind" ||
+		inventory.OwnedPath != "deployments/modules/users" ||
 		len(inventory.ServiceGraph) != 2 || inventory.ServiceGraph[0].Output == nil ||
 		!inventory.ServiceGraph[1].Managed {
 		t.Fatalf("inventory = %+v", inventory)

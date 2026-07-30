@@ -19,7 +19,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -38,6 +37,13 @@ type preparedRepository struct {
 	dir     string
 	cleanup func()
 	plan    PublishPlan
+}
+
+type repositoryConfig struct {
+	RepoURL      string
+	FetchRepoURL string
+	Path         string
+	Branch       string
 }
 
 func PlanPublish(ctx context.Context, workspace *resources.Workspace, request *PublishRequest) (PublishPlan, error) {
@@ -118,7 +124,7 @@ func preparePublish(
 	if err := validatePublishRequest(workspace, request); err != nil {
 		return nil, err
 	}
-	config, repositorySlug, baseBranch, pathRoot, err := resolveGitops(workspace, request.Local)
+	config, repositorySlug, baseBranch, pathRoot, err := resolveGitops(workspace, request.Environment, request.Local)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +337,7 @@ func prepareServicePublication(
 	workspace *resources.Workspace,
 	module *resources.Module,
 	environment string,
-	config *resources.WorkspaceGitops,
+	config *repositoryConfig,
 	promotionBranch string,
 	publishSnapshot bool,
 ) (string, Inventory, error) {
@@ -353,18 +359,14 @@ func prepareServicePublication(
 		return "", Inventory{}, err
 	}
 	if module.Agent != nil {
-		if err := generateModuleBootstrap(
+		if err := generateArgoBootstrap(
 			ctx,
-			workspace,
-			module,
-			environment,
 			config,
-			promotionBranch,
-			repo,
+			target,
+			targetPath,
+			renderedInventory,
+			environment,
 			snapshot.revision,
-			filepath.ToSlash(filepath.Join(targetPath, InventoryFilename)),
-			filepath.ToSlash(filepath.Join(targetPath, "bootstrap")),
-			!publishSnapshot,
 		); err != nil {
 			return "", Inventory{}, err
 		}
@@ -388,7 +390,7 @@ func prepareServicePublication(
 		if err := validateBootstrapServiceGraph(
 			filepath.Join(target, "bootstrap"),
 			targetPath,
-			snapshot.services,
+			renderedInventory,
 			environment,
 		); err != nil {
 			return "", Inventory{}, err
@@ -399,8 +401,10 @@ func prepareServicePublication(
 		Module:       renderedInventory.Module,
 		Services:     snapshot.services,
 		OwnedPath:    targetPath,
+		ModulePath:   renderedInventory.ModulePath,
 		ServiceGraph: renderedInventory.ServiceGraph,
 		Environment:  renderedInventory.Environment,
+		Namespace:    renderedInventory.Namespace,
 		AppProject:   renderedInventory.AppProject,
 		Promotable:   true,
 	}
@@ -445,6 +449,13 @@ func prepareServiceSnapshot(
 	if err := replaceCloneTree(renderedServices, repo, servicePath); err != nil {
 		return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered services: %w", err)
 	}
+	if renderedInventory.ModulePath != "" {
+		renderedModule := filepath.Join(rendered, filepath.FromSlash(renderedInventory.ModulePath))
+		modulePath := filepath.ToSlash(filepath.Join(targetPath, renderedInventory.ModulePath))
+		if err := replaceCloneTree(renderedModule, repo, modulePath); err != nil {
+			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered module resources: %w", err)
+		}
+	}
 	if _, err := gitCommand(ctx, repo, "add", "-A", "--", servicePath); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
@@ -460,8 +471,10 @@ func prepareServiceSnapshot(
 		Module:       renderedInventory.Module,
 		Services:     serviceNames,
 		OwnedPath:    targetPath,
+		ModulePath:   renderedInventory.ModulePath,
 		ServiceGraph: renderedInventory.ServiceGraph,
 		Environment:  renderedInventory.Environment,
+		Namespace:    renderedInventory.Namespace,
 		AppProject:   renderedInventory.AppProject,
 		Promotable:   true,
 	}
@@ -480,13 +493,7 @@ func prepareServiceSnapshot(
 	}
 	snapshotChanged := existingSnapshot == ""
 	if !snapshotChanged {
-		snapshotChanges, diffErr := stagedPathsSince(
-			ctx,
-			repo,
-			existingSnapshot,
-			servicePath,
-			filepath.ToSlash(filepath.Join(targetPath, InventoryFilename)),
-		)
+		snapshotChanges, diffErr := stagedPathsSince(ctx, repo, existingSnapshot, targetPath)
 		if diffErr != nil {
 			return serviceSnapshotPreparation{}, diffErr
 		}
@@ -557,7 +564,7 @@ func canonicalInventory(inventory *Inventory) ([]byte, error) {
 func inventoryServiceNames(graph []InventoryService) []string {
 	services := make([]string, 0, len(graph))
 	for _, service := range graph {
-		if !service.Managed {
+		if service.Path != "" {
 			services = append(services, service.Service)
 		}
 	}
@@ -681,7 +688,7 @@ func removePublicationRemainder(target string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() == "services" {
+		if entry.Name() == "services" || entry.Name() == "module" {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(target, entry.Name())); err != nil {
@@ -689,110 +696,6 @@ func removePublicationRemainder(target string) error {
 		}
 	}
 	return nil
-}
-
-func generateModuleBootstrap(
-	ctx context.Context,
-	workspace *resources.Workspace,
-	module *resources.Module,
-	environment string,
-	config *resources.WorkspaceGitops,
-	promotionBranch string,
-	checkout string,
-	snapshotRevision string,
-	inventoryPath string,
-	destinationPath string,
-	planning bool,
-) error {
-	binary, err := module.Agent.Path(ctx)
-	if err != nil {
-		return fmt.Errorf("resolve module generator: %w", err)
-	}
-	stage, err := os.MkdirTemp("", "codefly-module-gitops-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(stage)
-	relativeModule, err := filepath.Rel(workspace.Dir(), module.Dir())
-	if err != nil || !filepath.IsLocal(relativeModule) {
-		return fmt.Errorf("module %q is outside the workspace", module.Name)
-	}
-	stagedModule := filepath.Join(stage, relativeModule)
-	if err := copyTree(module.Dir(), stagedModule); err != nil {
-		return fmt.Errorf("stage module generator input: %w", err)
-	}
-	workspaceSource := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
-	data, err := os.ReadFile(workspaceSource)
-	if err != nil {
-		return err
-	}
-	var document map[string]any
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		return fmt.Errorf("decode workspace for module generator: %w", err)
-	}
-	gitops, _ := document["gitops"].(map[string]any)
-	if gitops == nil {
-		gitops = map[string]any{}
-		document["gitops"] = gitops
-	}
-	repository := config.RepoURL
-	if planning && strings.HasPrefix(repository, "file://") {
-		fetchRepository, _ := gitops["fetch-repo-url"].(string)
-		repository, err = planningRepositoryURL(fetchRepository)
-		if err != nil {
-			return err
-		}
-		original, err := gitCommand(ctx, checkout, "remote", "get-url", "origin")
-		if err != nil {
-			return err
-		}
-		if _, err := gitCommand(ctx, checkout, "remote", "set-url", "origin", repository); err != nil {
-			return err
-		}
-		defer func() {
-			_, _ = gitCommand(context.WithoutCancel(ctx), checkout, "remote", "set-url", "origin", original)
-		}()
-	}
-	gitops["repo-url"] = repository
-	gitops["path"] = config.Path
-	gitops["branch"] = promotionBranch
-	gitops["revision"] = snapshotRevision
-	gitops["checkout"] = checkout
-	gitops["inventory"] = inventoryPath
-	gitops["environment"] = environment
-	encoded, err := yaml.Marshal(document)
-	if err != nil {
-		return fmt.Errorf("encode workspace for module generator: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(stage, resources.WorkspaceConfigurationName), encoded, 0o600); err != nil {
-		return err
-	}
-	if _, err := command(ctx, stage, binary, stagedModule, module.Name); err != nil {
-		return fmt.Errorf("generate module bootstrap: %w", err)
-	}
-	destination, err := confinedJoin(checkout, destinationPath)
-	if err != nil {
-		return err
-	}
-	generated := filepath.Join(stagedModule, "deployment", "kustomize")
-	if err := copyEnvironmentBootstrap(generated, environment, destination); err != nil {
-		return fmt.Errorf("select generated module bootstrap: %w", err)
-	}
-	return nil
-}
-
-func planningRepositoryURL(fetchRepository string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(fetchRepository))
-	if err != nil || parsed.Host == "" || parsed.Path == "" {
-		return "", fmt.Errorf("local module generation requires workspace.gitops.fetch-repo-url")
-	}
-	if parsed.Scheme == "http" {
-		parsed.Scheme = httpsScheme
-	}
-	if parsed.Scheme != httpsScheme {
-		return "", fmt.Errorf("local module generation requires an HTTP(S) workspace.gitops.fetch-repo-url")
-	}
-	return parsed.String(), nil
 }
 
 func bootstrapRevision(root string) (string, error) {
@@ -819,10 +722,17 @@ func validateBootstrapRevision(root, expected string) error {
 	})
 }
 
-func validateBootstrapServiceGraph(root, targetPath string, services []string, environment string) error {
-	expected := make(map[string]struct{}, len(services))
-	for _, service := range services {
-		path := filepath.ToSlash(filepath.Join(targetPath, "services", service, "overlays", environment))
+func validateBootstrapServiceGraph(root, targetPath string, inventory *Inventory, environment string) error {
+	expected := make(map[string]struct{}, len(inventory.ServiceGraph)+1)
+	if inventory.ModulePath != "" {
+		path := filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment))
+		expected[path] = struct{}{}
+	}
+	for _, service := range inventory.ServiceGraph {
+		if service.Path == "" {
+			continue
+		}
+		path := filepath.ToSlash(filepath.Join(targetPath, service.Path, "overlays", environment))
 		expected[path] = struct{}{}
 	}
 	err := walkBootstrapApplications(root, func(path, _ string, sourcePath string) error {
@@ -931,7 +841,7 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 	if err := requireReviewedRevision(workspace.Dir(), request.Module, request.Environment, request.ToRevision); err != nil {
 		return nil, "", err
 	}
-	config, _, _, _, err := resolveGitops(workspace, request.Local)
+	config, _, _, _, err := resolveGitops(workspace, request.Environment, request.Local)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1244,11 +1154,33 @@ func verifyPullRequest(ctx context.Context, repository, pullRequest, baseBranch,
 	return response.URL, response.Number, nil
 }
 
-func resolveGitops(workspace *resources.Workspace, local bool) (*resources.WorkspaceGitops, string, string, string, error) {
-	if workspace == nil || workspace.Gitops == nil {
-		return nil, "", "", "", fmt.Errorf("workspace.gitops is required")
+func resolveGitops(workspace *resources.Workspace, environment string, local bool) (*repositoryConfig, string, string, string, error) {
+	if workspace == nil {
+		return nil, "", "", "", fmt.Errorf("workspace is required")
 	}
-	config := workspace.Gitops
+	var config repositoryConfig
+	for _, candidate := range workspace.Environments {
+		if candidate.Name != environment || candidate.Gitops == nil {
+			continue
+		}
+		config = repositoryConfig{
+			RepoURL:      candidate.Gitops.RepoURL,
+			FetchRepoURL: candidate.Gitops.FetchRepoURL,
+			Path:         candidate.Gitops.Path,
+			Branch:       candidate.Gitops.Branch,
+		}
+		break
+	}
+	if config.RepoURL == "" && workspace.Gitops != nil {
+		config = repositoryConfig{
+			RepoURL: workspace.Gitops.RepoURL,
+			Path:    workspace.Gitops.Path,
+			Branch:  workspace.Gitops.Branch,
+		}
+	}
+	if config.RepoURL == "" {
+		return nil, "", "", "", fmt.Errorf("environment %q gitops.repo-url is required", environment)
+	}
 	slug, err := validateRepositoryURL(config.RepoURL, local)
 	if err != nil {
 		return nil, "", "", "", err
@@ -1259,9 +1191,9 @@ func resolveGitops(workspace *resources.Workspace, local bool) (*resources.Works
 	}
 	pathRoot, err := validateRelativePath(config.Path)
 	if err != nil {
-		return nil, "", "", "", fmt.Errorf("workspace.gitops.path: %w", err)
+		return nil, "", "", "", fmt.Errorf("gitops.path: %w", err)
 	}
-	return config, slug, baseBranch, pathRoot, nil
+	return &config, slug, baseBranch, pathRoot, nil
 }
 
 func validateRepositoryURL(raw string, local bool) (string, error) {
