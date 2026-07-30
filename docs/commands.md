@@ -115,6 +115,7 @@ codefly run service api --remote backend/db:staging  # Use remote dependency
 codefly run service api --output-env .env         # Write endpoint env vars to file
 codefly run service web --output-env .env --output-env-service backend/api
 codefly run service api --exclude-root            # Only run dependencies, not the service itself
+codefly run service api --profile local           # Use a named workspace run profile
 codefly run service api --exclude-dependency infra/temporal  # Omit optional dependency
 codefly run service api --silent backend/db       # Suppress log output for a dependency
 codefly run service api --with-server             # Run with web companion UI
@@ -126,6 +127,7 @@ codefly run service api --with-server             # Run with web companion UI
 |------|-------------|
 | `--standalone` | Don't start dependency services |
 | `--exclude-root` | Start dependencies only, skip the target service |
+| `--profile` | Select a named run profile from `workspace.codefly.yaml` |
 | `--exclude-dependency` | Exclude optional dependency services from this run. Repeatable; accepts `module/service` or an unambiguous service name. |
 | `--service-path` | Override the path to the service directory |
 | `--runtime-context` | Runtime context (e.g., `nix`, `docker`) |
@@ -137,6 +139,33 @@ codefly run service api --with-server             # Run with web companion UI
 | `--load-only` | Stop after Load phase |
 | `--init-only` | Stop after Init phase |
 | `--with-server` | Start the web companion server |
+
+Run profiles define intentional local runtime shapes in
+`workspace.codefly.yaml`:
+
+```yaml
+run-profiles:
+  local:
+    exclude-dependencies:
+      - users/accounts
+      - coordination/work-coordinator
+    exclude-workspace-configurations:
+      - internal-auth
+      - forge-edge-auth
+  saas: {}
+```
+
+`exclude-dependencies` contains service references (`module/service` or an
+unambiguous service name). `exclude-workspace-configurations` contains names
+declared by a service under `workspace-configuration-dependencies`. Codefly
+validates the selected profile and all references before starting agents.
+Repeatable `--exclude-dependency` values add to the profile's service
+exclusions.
+
+Profiles affect run composition only: they do not rewrite service or workspace
+manifests, and build and deployment operations ignore them. In-process callers
+select the identical resolver through
+`control.RunRequest{Service: "mind/mind", Profile: "local"}`.
 
 ### `codefly run job [name]`
 

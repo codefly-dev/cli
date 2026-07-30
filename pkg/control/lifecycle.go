@@ -40,7 +40,7 @@ func (p *planeImpl) loadTarget(ctx context.Context, name string) (*resources.Wor
 // the target, select the environment, create the flow in the given mode, apply
 // caller configuration, spawn agents (InitManagers), and Load (which builds the
 // mode's policy + playbook). The returned flow is ready to drive.
-func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name, envName string, configure func(*orchestration.Flow)) (*orchestration.Flow, error) {
+func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name, envName string, configure func(*resources.Workspace, *orchestration.Flow) error) (*orchestration.Flow, error) {
 	ws, module, service, err := p.loadTarget(ctx, name)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,9 @@ func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name
 		return nil, fmt.Errorf("create flow: %w", err)
 	}
 	if configure != nil {
-		configure(flow)
+		if err := configure(ws, flow); err != nil {
+			return nil, fmt.Errorf("configure flow: %w", err)
+		}
 	}
 	if err := flow.InitManagers(ctx); err != nil {
 		return nil, fmt.Errorf("init managers: %w", err)
@@ -113,11 +115,12 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 	if req.Filter != "" {
 		testRequest.Filters = []string{req.Filter}
 	}
-	flow, err := p.buildFlow(ctx, orchestration.TestMode, req.Service, orchestration.LocalEnvironmentName, func(f *orchestration.Flow) {
+	flow, err := p.buildFlow(ctx, orchestration.TestMode, req.Service, orchestration.LocalEnvironmentName, func(_ *resources.Workspace, f *orchestration.Flow) error {
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}
 		f.WithTestRequest(testRequest)
+		return nil
 	})
 	if err != nil {
 		return CheckResult{}, err
@@ -144,14 +147,19 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		return RunHandle{}, fmt.Errorf("control plane has no workspace host")
 	}
 	flows := p.host.Flows()
-	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(f *orchestration.Flow) {
+	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(workspace *resources.Workspace, f *orchestration.Flow) error {
+		profile, err := orchestration.ResolveRunProfile(ctx, workspace, req.Profile, req.Exclude)
+		if err != nil {
+			return err
+		}
+		if err := f.WithRunProfile(profile); err != nil {
+			return err
+		}
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}
-		if len(req.Exclude) > 0 {
-			f.WithExcludedDependencies(req.Exclude)
-		}
 		f.WithExcludeRoot(req.ExcludeRoot)
+		return nil
 	})
 	if err != nil {
 		return RunHandle{}, err

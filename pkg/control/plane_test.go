@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,13 @@ const (
 layout: modules
 modules:
     - name: backend
+run-profiles:
+    unknown-service:
+        exclude-dependencies:
+            - backend/missing
+    unknown-configuration:
+        exclude-workspace-configurations:
+            - missing-auth
 `
 	fixtureModuleYAML = `kind: module
 name: backend
@@ -108,5 +116,55 @@ func TestFlowStatusIdleWhenNothingRunning(t *testing.T) {
 	}
 	if len(status.Services) != 0 {
 		t.Errorf("services = %v, want none running", status.Services)
+	}
+}
+
+func TestRunRejectsInvalidExclusionsBeforeStartingFlow(t *testing.T) {
+	plane, err := NewAt(writeWorkspace(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = plane.Close() })
+
+	tests := []struct {
+		name    string
+		request RunRequest
+		want    string
+	}{
+		{
+			name:    "profile",
+			request: RunRequest{Service: "backend/api", Profile: "missing"},
+			want:    `unknown run profile "missing"`,
+		},
+		{
+			name:    "profile service",
+			request: RunRequest{Service: "backend/api", Profile: "unknown-service"},
+			want:    `resolve excluded dependency "backend/missing"`,
+		},
+		{
+			name:    "explicit service",
+			request: RunRequest{Service: "backend/api", Exclude: []string{"backend/missing"}},
+			want:    `resolve excluded dependency "backend/missing"`,
+		},
+		{
+			name:    "workspace configuration",
+			request: RunRequest{Service: "backend/api", Profile: "unknown-configuration"},
+			want:    `excludes unknown workspace configuration "missing-auth"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := plane.Run(context.Background(), tt.request)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Run error = %v, want %q", err, tt.want)
+			}
+			status, statusErr := plane.FlowStatus(context.Background())
+			if statusErr != nil {
+				t.Fatal(statusErr)
+			}
+			if status.State != FlowIdle {
+				t.Fatalf("flow state = %q, want idle", status.State)
+			}
+		})
 	}
 }

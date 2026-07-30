@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 )
@@ -25,12 +27,20 @@ const (
 layout: modules
 modules:
     - name: app
+run-profiles:
+    local:
+        exclude-dependencies:
+            - app/managed
+        exclude-workspace-configurations:
+            - managed-auth
+    saas: {}
 `
 	runDepModuleYAML = `kind: module
 name: app
 services:
     - name: api
     - name: redis
+    - name: managed
 `
 	runDepAPIServiceYAML = `kind: service
 name: api
@@ -46,6 +56,13 @@ service-dependencies:
       module: app
       endpoints:
           - name: tcp
+    - name: managed
+      module: app
+      endpoints:
+          - name: tcp
+workspace-configuration-dependencies:
+    - local-auth
+    - managed-auth
 `
 	runDepRedisServiceYAML = `kind: service
 name: redis
@@ -58,6 +75,24 @@ agent:
     publisher: codefly.dev
 endpoints:
     - name: tcp
+workspace-configuration-dependencies:
+    - local-auth
+    - managed-auth
+`
+	runDepManagedServiceYAML = `kind: service
+name: managed
+version: 0.0.0
+module: app
+agent:
+    kind: codefly:service
+    name: redis
+    version: 0.0.74
+    publisher: codefly.dev
+endpoints:
+    - name: tcp
+workspace-configuration-dependencies:
+    - local-auth
+    - managed-auth
 `
 )
 
@@ -66,10 +101,13 @@ func writeRunDependencyWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		"workspace.codefly.yaml":                          runDepWorkspaceYAML,
-		"modules/app/module.codefly.yaml":                 runDepModuleYAML,
-		"modules/app/services/api/service.codefly.yaml":   runDepAPIServiceYAML,
-		"modules/app/services/redis/service.codefly.yaml": runDepRedisServiceYAML,
+		"workspace.codefly.yaml":                            runDepWorkspaceYAML,
+		"modules/app/module.codefly.yaml":                   runDepModuleYAML,
+		"modules/app/services/api/service.codefly.yaml":     runDepAPIServiceYAML,
+		"modules/app/services/redis/service.codefly.yaml":   runDepRedisServiceYAML,
+		"modules/app/services/managed/service.codefly.yaml": runDepManagedServiceYAML,
+		"configurations/local/local-auth.env":               "TOKEN=local\n",
+		"configurations/local/managed-auth.env":             "TOKEN=managed\n",
 	}
 	for rel, content := range files {
 		p := filepath.Join(root, rel)
@@ -81,6 +119,34 @@ func writeRunDependencyWorkspace(t *testing.T) string {
 		}
 	}
 	return root
+}
+
+func workspaceConfigurationNames(configs []*basev0.Configuration) []string {
+	var names []string
+	for _, configuration := range configs {
+		if configuration.GetOrigin() != resources.ConfigurationWorkspace {
+			continue
+		}
+		for _, info := range configuration.GetInfos() {
+			names = append(names, info.GetName())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func activeRunFlow(t *testing.T, plane Plane) *orchestration.Flow {
+	t.Helper()
+	implementation, ok := plane.(*planeImpl)
+	if !ok {
+		t.Fatalf("plane type = %T, want *planeImpl", plane)
+	}
+	_, managed := implementation.host.Flows().Active()
+	flow, ok := managed.(*orchestration.Flow)
+	if !ok {
+		t.Fatalf("active flow type = %T, want *orchestration.Flow", managed)
+	}
+	return flow
 }
 
 // connectionStringFrom extracts the "connection" value a dependency agent
@@ -151,59 +217,94 @@ func TestHostPortFromConnectionStringRejectsUnparseable(t *testing.T) {
 	}
 }
 
-// TestRunExcludeRootStartsRealDependencyInProcess is the acceptance proof for
-// #126: an embedder starts a real dependency flow in-process — no `codefly`
-// subprocess, no gRPC control channel, no os.Setenv round-trip — reads the
-// started dependency's connection string via Configurations, connects to it
-// for real, and tears down with no leaked containers or agent processes.
-func TestRunExcludeRootStartsRealDependencyInProcess(t *testing.T) {
-	root := writeRunDependencyWorkspace(t)
+// TestRunProfilesStartRealDependencyShapesInProcess proves that both named
+// profiles drive live Codefly agents and project only their selected workspace
+// configurations. The connection check preserves the in-process acceptance
+// coverage for dependency configuration and teardown.
+func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
+	tests := []struct {
+		profile            string
+		wantDependencies   []string
+		wantConfigurations []string
+	}{
+		{
+			profile:            "local",
+			wantDependencies:   []string{"redis"},
+			wantConfigurations: []string{"local-auth"},
+		},
+		{
+			profile:            "saas",
+			wantDependencies:   []string{"managed", "redis"},
+			wantConfigurations: []string{"local-auth", "managed-auth"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.profile, func(t *testing.T) {
+			root := writeRunDependencyWorkspace(t)
+			plane, err := NewAt(root)
+			if err != nil {
+				t.Fatalf("NewAt: %v", err)
+			}
+			defer func() {
+				if err := plane.Close(); err != nil {
+					t.Errorf("Close: %v", err)
+				}
+			}()
 
-	plane, err := NewAt(root)
-	if err != nil {
-		t.Fatalf("NewAt: %v", err)
-	}
-	defer func() {
-		if err := plane.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	}()
+			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+			defer cancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+			if _, err := plane.Run(ctx, RunRequest{
+				Service:        "app/api",
+				Profile:        tt.profile,
+				RuntimeContext: resources.RuntimeContextContainer,
+				ExcludeRoot:    true,
+				Wait:           true,
+			}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			defer func() {
+				if err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
+					t.Errorf("Stop: %v", err)
+				}
+			}()
 
-	if _, err := plane.Run(ctx, RunRequest{Service: "app/api", RuntimeContext: resources.RuntimeContextContainer, ExcludeRoot: true, Wait: true}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	defer func() {
-		if err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
-			t.Errorf("Stop: %v", err)
-		}
-	}()
+			flow := activeRunFlow(t, plane)
+			_, dependencies := flow.ManagedServices()
+			sort.Strings(dependencies)
+			if fmt.Sprint(dependencies) != fmt.Sprint(tt.wantDependencies) {
+				t.Fatalf("started dependencies = %v, want %v", dependencies, tt.wantDependencies)
+			}
+			for _, dependency := range dependencies {
+				if !flow.ServiceReachable("app/" + dependency) {
+					t.Fatalf("dependency app/%s is not reachable", dependency)
+				}
+			}
 
-	configs, err := plane.Configurations(ctx, "app/api")
-	if err != nil {
-		t.Fatalf("Configurations: %v", err)
-	}
-	dsn := connectionStringFrom(configs)
-	if dsn == "" {
-		t.Fatalf("no dependency connection string in configurations: %+v", configs)
-	}
+			configs, err := plane.Configurations(ctx, "app/api")
+			if err != nil {
+				t.Fatalf("Configurations: %v", err)
+			}
+			if got := workspaceConfigurationNames(configs); fmt.Sprint(got) != fmt.Sprint(tt.wantConfigurations) {
+				t.Fatalf("workspace configurations = %v, want %v", got, tt.wantConfigurations)
+			}
+			dsn := connectionStringFrom(configs)
+			if dsn == "" {
+				t.Fatalf("no dependency connection string in configurations: %+v", configs)
+			}
 
-	host, port, err := hostPortFromConnectionString(dsn)
-	if err != nil {
-		t.Fatalf("parse connection string %q: %v", dsn, err)
+			host, port, err := hostPortFromConnectionString(dsn)
+			if err != nil {
+				t.Fatalf("parse connection string %q: %v", dsn, err)
+			}
+			if host == "host.docker.internal" {
+				host = "127.0.0.1"
+			}
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second)
+			if err != nil {
+				t.Fatalf("dial resolved dependency address %s:%s: %v", host, port, err)
+			}
+			_ = conn.Close()
+		})
 	}
-	if host == "host.docker.internal" {
-		// The published DSN is meant for a sibling container, which resolves
-		// that name via Docker's embedded DNS. The test itself runs on the
-		// host, which has no such entry — but the published port is bound to
-		// every host interface, so the loopback address reaches it directly.
-		host = "127.0.0.1"
-	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second)
-	if err != nil {
-		t.Fatalf("dial resolved dependency address %s:%s: %v", host, port, err)
-	}
-	_ = conn.Close()
 }

@@ -89,9 +89,9 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: codefly agent install codefly.dev/redis:0.0.74
 
-      - name: Run the in-process dependency proof
+      - name: Run the in-process run-profile proof
         if: matrix.gate == 'control-integration'
-        run: go test -tags=integration -run '^TestRunExcludeRootStartsRealDependencyInProcess$' ./pkg/control -v
+        run: go test -tags=integration -run '^TestRunProfilesStartRealDependencyShapesInProcess$' ./pkg/control -v
 
   # golangci-lint runs as its own job, not a quality gate, for two reasons:
   # only-new-issues has a well-defined baseline only against a pull-request base

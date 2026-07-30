@@ -10,6 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/resources"
 )
 
 // This file finishes the remaining Introspector/Lifecycle checks:
@@ -28,12 +29,13 @@ import (
 // Passed:false with the error text in Output — indistinguishable from a genuine
 // lint/compile failure. Callers that need to tell them apart cannot today.
 func (p *planeImpl) runCheckFlow(ctx context.Context, mode orchestration.Mode, req CheckRequest) (CheckResult, error) {
-	flow, err := p.buildFlow(ctx, mode, req.Service, orchestration.LocalEnvironmentName, func(f *orchestration.Flow) {
+	flow, err := p.buildFlow(ctx, mode, req.Service, orchestration.LocalEnvironmentName, func(_ *resources.Workspace, f *orchestration.Flow) error {
 		// Static validation wants source + toolchain, not live dependencies.
 		f.WithStandAlone(true)
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}
+		return nil
 	})
 	if err != nil {
 		return CheckResult{}, err
@@ -119,11 +121,10 @@ func (p *planeImpl) Addresses(ctx context.Context, serviceName string) ([]Endpoi
 	return endpoints, nil
 }
 
-// Configurations returns a running service's own configuration plus the
-// configurations of its dependencies, resolved by the active flow's
-// ConfigurationManager and SharedState — the same data
-// pkg/web/go-grpc/server.go proxies over gRPC, reachable here as plain Go
-// calls. Like Addresses, this only has data while a flow is running.
+// Configurations returns a running service's own, selected workspace, and
+// dependency configurations. Workspace configurations use the same projection
+// passed to the service agent during runtime Init. Like Addresses, this only has
+// data while a flow is running.
 func (p *planeImpl) Configurations(ctx context.Context, serviceName string) ([]*basev0.Configuration, error) {
 	if p.host == nil || p.host.Flows() == nil {
 		return nil, fmt.Errorf("no running flow; configurations are only available while a service is running")
@@ -145,13 +146,19 @@ func (p *planeImpl) Configurations(ctx context.Context, serviceName string) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("get service configuration: %w", err)
 	}
+	workspaceConfigurations, err := flow.WorkspaceConfigurationsFor(ctx, service)
+	if err != nil {
+		return nil, fmt.Errorf("get workspace configurations: %w", err)
+	}
 	deps, err := flow.SharedState.GetDependentConfigurationsFor(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("get dependency configurations: %w", err)
 	}
-	configs := deps
+	configs := make([]*basev0.Configuration, 0, len(workspaceConfigurations)+len(deps)+1)
 	if own != nil {
-		configs = append([]*basev0.Configuration{own}, deps...)
+		configs = append(configs, own)
 	}
+	configs = append(configs, workspaceConfigurations...)
+	configs = append(configs, deps...)
 	return configs, nil
 }

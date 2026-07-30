@@ -11,6 +11,16 @@ func TestServiceCommandReturnsErrors(t *testing.T) {
 	}
 }
 
+func TestServiceCommandIncludesRunProfileFlag(t *testing.T) {
+	flag := ServiceCmd.Flags().Lookup("profile")
+	if flag == nil {
+		t.Fatal("run service has no --profile flag")
+	}
+	if flag.Usage != "Named workspace run profile" {
+		t.Fatalf("--profile help = %q", flag.Usage)
+	}
+}
+
 func TestSetupOnlyRunsDoNotWait(t *testing.T) {
 	tests := []struct {
 		name     string

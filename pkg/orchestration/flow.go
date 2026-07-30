@@ -167,6 +167,8 @@ type World struct {
 
 	SyncRequest *builderv0.SyncRequest
 
+	excludedWorkspaceConfigurations map[string]bool
+
 	// OutputSink receives narration otherwise printed directly via pkg/cli.
 	// Always non-nil: NewFlow defaults it to a no-op sink.
 	OutputSink OutputSink
@@ -1753,6 +1755,18 @@ func (flow *Flow) WithRemotes(services []*Remote) {
 
 func (flow *Flow) WithExcludedDependencies(services []string) {
 	flow.excludedDependencyServices = services
+}
+
+func (flow *Flow) WithRunProfile(profile ResolvedRunProfile) error {
+	if flow == nil || flow.world == nil || flow.world.Mode != RunMode {
+		return fmt.Errorf("run profiles can only be applied to run flows")
+	}
+	flow.excludedDependencyServices = append([]string(nil), profile.ExcludedDependencies...)
+	flow.world.excludedWorkspaceConfigurations = make(map[string]bool, len(profile.ExcludedWorkspaceConfigurations))
+	for _, configuration := range profile.ExcludedWorkspaceConfigurations {
+		flow.world.excludedWorkspaceConfigurations[configuration] = true
+	}
+	return nil
 }
 
 var _ ExecutorManager = &Flow{}
