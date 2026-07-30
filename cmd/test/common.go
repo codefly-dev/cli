@@ -7,6 +7,10 @@ var scope string
 // Runtime context
 var runtimeContext string
 
+// Fixture selected for dependency-backed tests. Empty means use the fixture
+// declared by the selected Codefly environment.
+var testFixture string
+
 // load only mode
 var loadOnly bool
 
