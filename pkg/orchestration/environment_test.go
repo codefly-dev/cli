@@ -269,3 +269,20 @@ endpoints:
 	require.Equal(t, "local", proto.Name)
 	require.Equal(t, "from-yaml", proto.NamingScope)
 }
+
+func TestSelectedFixturePrefersOverrideThenEnvironment(t *testing.T) {
+	declared := &resources.Environment{Fixture: "dev-admin"}
+
+	// The common case: an environment declares its fixture, so neither
+	// `codefly run service` nor `codefly test service` needs --fixture.
+	require.Equal(t, "dev-admin", SelectedFixture(declared, ""))
+
+	// An explicit override always wins.
+	require.Equal(t, "custom", SelectedFixture(declared, "custom"))
+
+	// An environment that deliberately omits a fixture keeps loading its real
+	// provider configuration instead of silently falling back to one.
+	require.Empty(t, SelectedFixture(&resources.Environment{}, ""))
+	require.Equal(t, "custom", SelectedFixture(&resources.Environment{}, "custom"))
+	require.Empty(t, SelectedFixture(nil, ""))
+}

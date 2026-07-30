@@ -178,7 +178,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTestRequest(request)
-	flow.WithFixture(selectedTestFixture(env, testFixture))
+	flow.WithFixture(orchestration.SelectedFixture(env, testFixture))
 
 	// Return the flow even when init fails: InitManagers spawns agents
 	// incrementally (and Load can fail after they're live), so a partial failure
@@ -194,16 +194,6 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return flow, w.Wrap(err)
 	}
 	return flow, nil
-}
-
-func selectedTestFixture(environment *resources.Environment, override string) string {
-	if override != "" {
-		return override
-	}
-	if environment == nil {
-		return ""
-	}
-	return environment.Fixture
 }
 
 func testService(ctx context.Context, flow *orchestration.Flow) error {
