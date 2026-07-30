@@ -1753,10 +1753,6 @@ func (flow *Flow) WithRemotes(services []*Remote) {
 	flow.remoteServices = services
 }
 
-func (flow *Flow) WithExcludedDependencies(services []string) {
-	flow.excludedDependencyServices = services
-}
-
 // WithRunProfile applies an already-resolved run profile (the canonical,
 // validated exclusions produced by resources.Workspace.ResolveRunProfile) to a
 // run flow. Profiles only trim local run composition, so this rejects any other
