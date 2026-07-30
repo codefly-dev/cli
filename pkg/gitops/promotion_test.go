@@ -50,6 +50,7 @@ type fakeManifestProducer struct {
 	module      string
 	environment string
 	appProject  string
+	services    []string
 	manifests   string
 }
 
@@ -58,8 +59,21 @@ func (f fakeManifestProducer) Produce(ctx context.Context, request ProduceReques
 	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: f.module, Environment: f.environment,
 		AppProject: f.appProject, Promotable: true,
+		OwnedPath: filepath.ToSlash(filepath.Join(
+			request.Workspace.Gitops.Path, "deployments", "modules", f.module,
+		)),
+		ServiceGraph: promotableServiceGraph(f.module, f.services),
 	}, func(_ context.Context, stage string) error {
-		return os.WriteFile(filepath.Join(stage, "manifests.yaml"), []byte(f.manifests), 0o644)
+		for _, service := range f.services {
+			overlay := filepath.Join(stage, "services", service, "overlays", f.environment)
+			if err := os.MkdirAll(overlay, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(overlay, "manifests.yaml"), []byte(f.manifests), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -86,6 +100,7 @@ func TestCoordinatorDrivesFakeProducerThroughPublishAndObserve(t *testing.T) {
 	coordinator := &Coordinator{
 		Producer: fakeManifestProducer{
 			module: "payments", environment: "local", appProject: "payments",
+			services:  []string{"api"},
 			manifests: pinnedDeployment + paymentsAppProject,
 		},
 		Publisher: repositoryPublisher{},
@@ -121,7 +136,9 @@ func TestCoordinatorDrivesFakeProducerThroughPublishAndObserve(t *testing.T) {
 	}
 
 	installFakeArgo(t, argoProjectJSON(result.Repository), argoApplicationJSON(
-		"payments-api", result.Repository, result.Path, result.Commit, "Healthy", "Succeeded",
+		"payments-api", result.Repository,
+		filepath.ToSlash(filepath.Join(result.Path, "services", "api", "overlays", "local")),
+		result.Commit, "Healthy", "Succeeded",
 	))
 	observed, err := coordinator.Observe(ctx, &ObserveRequest{
 		WorkspaceRoot: workspace.Dir(), Module: "payments", Environment: "local",
