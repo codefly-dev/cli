@@ -270,7 +270,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
-	workspaceConfigurations, err := runner.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(cfgCtx, runner.instance.Service.WorkspaceConfigurationDependencies...)
+	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service)
 	if err != nil {
 		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
 			w.Warn("timeout waiting for workspace dependencies configurations after 30s; check that dependency services are reachable")
@@ -370,6 +370,23 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	return outputProperty, nil
+}
+
+func (world *World) workspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
+	dependencies := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
+	for _, dependency := range service.WorkspaceConfigurationDependencies {
+		if !world.excludedWorkspaceConfigurations[dependency] {
+			dependencies = append(dependencies, dependency)
+		}
+	}
+	return world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
+}
+
+func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
+	if flow == nil || flow.world == nil {
+		return nil, nil
+	}
+	return flow.world.workspaceConfigurationsFor(ctx, service)
 }
 
 func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {

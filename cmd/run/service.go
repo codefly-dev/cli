@@ -661,11 +661,13 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	}
 	flow.WithOverrides(overrides)
 	flow.WithRemotes(remoteServices)
-	excludedDependencies, err := resolveExcludedDependencies(ctx, workspace, excludeDependencies)
+	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	flow.WithExcludedDependencies(excludedDependencies)
+	if err := flow.WithRunProfile(resolvedProfile); err != nil {
+		return nil, w.Wrap(err)
+	}
 	return flow, nil
 }
 
@@ -693,33 +695,6 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return flow, w.Wrap(err)
 	}
 	return flow, nil
-}
-
-func resolveExcludedDependencies(ctx context.Context, workspace *resources.Workspace, inputs []string) ([]string, error) {
-	if len(inputs) == 0 {
-		return nil, nil
-	}
-	seen := make(map[string]bool)
-	var out []string
-	for _, input := range inputs {
-		for _, raw := range strings.Split(input, ",") {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				continue
-			}
-			ref, err := workspace.FindUniqueServiceAndModuleByName(ctx, raw)
-			if err != nil {
-				return nil, fmt.Errorf("resolving --exclude-dependency %q: %w", raw, err)
-			}
-			unique := ref.Unique()
-			if seen[unique] {
-				continue
-			}
-			seen[unique] = true
-			out = append(out, unique)
-		}
-	}
-	return out, nil
 }
 
 // parseSetOverrides turns repeatable --set entries of the form
@@ -811,6 +786,7 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
 	ServiceCmd.Flags().StringVar(&environmentName, "env", orchestration.LocalEnvironmentName, "Workspace environment to run")
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
+	ServiceCmd.Flags().StringVar(&profile, "profile", "", "Named workspace run profile")
 	ServiceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture to use for the service")
 	ServiceCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood")

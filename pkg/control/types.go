@@ -150,8 +150,9 @@ type CheckFinding struct {
 type RunRequest struct {
 	Service        string
 	RuntimeContext string
+	Profile        string   // named run profile from workspace.codefly.yaml
 	Wait           bool     // block until the flow is healthy
-	Exclude        []string // dependencies to skip
+	Exclude        []string // additional dependency service references to skip
 	// ExcludeRoot starts the dependency graph without the origin service —
 	// for an embedder that IS the origin, so it doesn't spawn a second copy
 	// of itself.

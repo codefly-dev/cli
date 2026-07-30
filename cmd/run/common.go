@@ -22,6 +22,9 @@ var silent []string
 // Services to omit from the dependency graph for this run.
 var excludeDependencies []string
 
+// Named workspace run profile.
+var profile string
+
 // With fixture across the runtime
 var fixture string
 

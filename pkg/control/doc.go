@@ -35,6 +35,13 @@
 // gRPC service can expose the stable subset it needs without making an
 // unvalidated network schema the in-process engine API.
 //
+// RunRequest.Profile selects a typed run profile declared under run-profiles in
+// workspace.codefly.yaml. Profiles exclude dependency services and workspace
+// configuration dependencies from local run composition only. RunRequest.Exclude
+// adds service exclusions to the selected profile; profile and explicit
+// references are resolved and validated before any agent starts. Build, test,
+// and deployment operations do not read or apply run profiles.
+//
 // # Layering
 //
 // control depends on pkg/engine and pkg/orchestration. engine depends downward
