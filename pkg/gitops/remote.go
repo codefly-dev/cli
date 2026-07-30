@@ -9,7 +9,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -51,6 +50,7 @@ const (
 	remoteImage = "nginx:1.27.3-alpine@sha256:41523187cf7d7a2f2677a80609d9caa14388bf5c1fbca9c410ba3de602aaaab4"
 
 	remoteContainerPort = 443
+	loopbackIPv4        = "127.0.0.1"
 	remoteMountRepo     = "/srv/repo.git"
 	remoteMountTLS      = "/tls"
 	remoteMountConf     = "/etc/nginx/nginx.conf"
@@ -179,23 +179,28 @@ func NewRemoteSpec(cfg *RemoteConfig) (RemoteSpec, error) {
 	}
 	hostAddr := strings.TrimSpace(cfg.HostAddr)
 	if hostAddr == "" {
-		hostAddr = "127.0.0.1"
+		hostAddr = loopbackIPv4
 	}
 	if ip := net.ParseIP(hostAddr); ip == nil || !ip.IsLoopback() {
 		return RemoteSpec{}, fmt.Errorf("host verification address %q must be IPv4 loopback", hostAddr)
 	}
-	identity := strings.Join([]string{owner, sanitizeDNSLabel(cfg.Workspace), environment, cluster, cfg.RepositorySlug}, "|")
+	// The identity that names the container is the structural one: workspace,
+	// environment, cluster, and repository. The human owner is provenance
+	// metadata (a label), never part of the name — otherwise a transient change
+	// in $USER between `up` and `down` would compute a different name and make
+	// teardown silently miss the running container.
+	identity := strings.Join([]string{sanitizeDNSLabel(cfg.Workspace), environment, cluster, cfg.RepositorySlug}, "|")
 	sum := sha256.Sum256([]byte(identity))
 	short := hex.EncodeToString(sum[:])[:8]
 	name := sanitizeDNSLabel("codefly-gitops-remote-" + environment + "-" + short)
 	if len(name) > 63 {
 		name = name[:63]
 	}
+	// HostPort 0 means "let Docker bind a free loopback port"; the actual port
+	// is discovered from the running container. This avoids collisions between
+	// remotes of different environments or workspaces.
 	hostPort := cfg.HostPort
-	if hostPort == 0 {
-		hostPort = 49152 + int(binary.BigEndian.Uint16(sum[8:10]))%8192
-	}
-	if hostPort < 1 || hostPort > 65535 {
+	if hostPort < 0 || hostPort > 65535 {
 		return RemoteSpec{}, fmt.Errorf("host port %d is out of range", hostPort)
 	}
 	validity := cfg.CertValidity
@@ -246,10 +251,19 @@ func (s *RemoteSpec) ArgoRepository() string {
 	return "https://" + s.DNSName + "/repo.git"
 }
 
-// HostVerifyURL is the loopback-only endpoint the CLI probes; it is never an
-// Argo fetch path.
-func (s *RemoteSpec) HostVerifyURL() string {
-	return fmt.Sprintf("https://%s:%d/repo.git/info/refs?service=git-upload-pack", s.HostAddr, s.HostPort)
+// hostVerifyURL is the loopback-only dumb-HTTP endpoint the CLI probes at the
+// discovered host port; it is never an Argo fetch path.
+func (s *RemoteSpec) hostVerifyURL(hostPort string) string {
+	return "https://" + net.JoinHostPort(s.HostAddr, hostPort) + "/repo.git/info/refs"
+}
+
+// hostBinding renders the loopback host binding for display; a zero HostPort is
+// Docker-assigned at start time.
+func (s *RemoteSpec) hostBinding() string {
+	if s.HostPort == 0 {
+		return fmt.Sprintf("%s:(auto) -> %d/tcp", s.HostAddr, s.ContainerPort)
+	}
+	return fmt.Sprintf("%s:%d -> %d/tcp", s.HostAddr, s.HostPort, s.ContainerPort)
 }
 
 // Labels are the exact ownership markers stamped on the container. Teardown and
@@ -279,9 +293,13 @@ func (s *RemoteSpec) dockerRunArgs(labels map[string]string) []string {
 		"--network", s.Network,
 		"--restart", "unless-stopped",
 		"--read-only",
-		"--publish", fmt.Sprintf("%s:%d:%d", s.HostAddr, s.HostPort, s.ContainerPort),
+		"--publish", s.publishSpec(),
 	}
-	for _, writable := range []string{"/var/cache/nginx", "/var/run", "/tmp"} {
+	// The rootfs is read-only, so every path nginx writes to must be a tmpfs:
+	// its cache and temp dirs, the pid file, and its log directory (nginx opens
+	// the compiled-in default error-log path before it reads our config, so that
+	// directory must be writable regardless of the image's symlink layout).
+	for _, writable := range []string{"/var/cache/nginx", "/var/run", "/var/log/nginx", "/tmp"} {
 		args = append(args, "--tmpfs", writable)
 	}
 	for _, mount := range []string{
@@ -302,9 +320,19 @@ func (s *RemoteSpec) dockerRunArgs(labels map[string]string) []string {
 	return append(args, s.Image)
 }
 
+// publishSpec binds the host verification port to IPv4 loopback only. A zero
+// HostPort lets Docker pick a free loopback port (discovered after start).
+func (s *RemoteSpec) publishSpec() string {
+	if s.HostPort == 0 {
+		return fmt.Sprintf("%s::%d", s.HostAddr, s.ContainerPort)
+	}
+	return fmt.Sprintf("%s:%d:%d", s.HostAddr, s.HostPort, s.ContainerPort)
+}
+
 func (s *RemoteSpec) nginxConfig() string {
 	return `worker_processes 1;
 pid /var/run/nginx.pid;
+error_log stderr warn;
 events { worker_connections 64; }
 http {
   access_log off;
@@ -344,7 +372,7 @@ func (s *RemoteSpec) Plan(revision string) RemotePlan {
 		ContainerName:  s.ContainerName,
 		Image:          s.Image,
 		Network:        s.Network,
-		HostBinding:    fmt.Sprintf("%s:%d -> %d/tcp", s.HostAddr, s.HostPort, s.ContainerPort),
+		HostBinding:    s.hostBinding(),
 		ArgoRepository: s.ArgoRepository(),
 		SourceRepo:     s.SourceRepo,
 		Revision:       revision,
@@ -606,10 +634,14 @@ type RemoteFinding struct {
 	Message  string `json:"message"`
 }
 
+// Severity levels a RemoteFinding can carry. Exported so callers (doctor) can
+// classify findings without duplicating the literal.
 const (
-	severityWarn = "warn"
-	severityFail = "fail"
+	SeverityWarn = "warn"
+	SeverityFail = "fail"
+)
 
+const (
 	codeOwnershipDrift = "ownership-drift"
 	codeNetworkDrift   = "network-drift"
 
@@ -637,7 +669,7 @@ func AuditState(state *ContainerState, now time.Time) []RemoteFinding {
 		if isWildcardHost(binding.HostIP) {
 			findings = append(findings, RemoteFinding{
 				Code:     "wildcard-binding",
-				Severity: severityFail,
+				Severity: SeverityFail,
 				Message:  fmt.Sprintf("%s publishes %s on wildcard host %q; bind IPv4 loopback only", state.Name, binding.ContainerPort, binding.HostIP),
 			})
 		}
@@ -645,7 +677,7 @@ func AuditState(state *ContainerState, now time.Time) []RemoteFinding {
 	if !strings.Contains(state.Image, "@sha256:") {
 		findings = append(findings, RemoteFinding{
 			Code:     "mutable-image",
-			Severity: severityFail,
+			Severity: SeverityFail,
 			Message:  fmt.Sprintf("%s runs mutable image %q; pin by digest", state.Name, state.Image),
 		})
 	}
@@ -653,7 +685,7 @@ func AuditState(state *ContainerState, now time.Time) []RemoteFinding {
 		if notAfter, err := time.Parse(time.RFC3339, raw); err == nil && !now.Before(notAfter) {
 			findings = append(findings, RemoteFinding{
 				Code:     "expired-certificate",
-				Severity: severityFail,
+				Severity: SeverityFail,
 				Message:  fmt.Sprintf("%s certificate expired at %s", state.Name, raw),
 			})
 		}
@@ -661,7 +693,7 @@ func AuditState(state *ContainerState, now time.Time) []RemoteFinding {
 	if !state.Running {
 		findings = append(findings, RemoteFinding{
 			Code:     "not-running",
-			Severity: severityWarn,
+			Severity: SeverityWarn,
 			Message:  fmt.Sprintf("%s is not running", state.Name),
 		})
 	}
@@ -673,13 +705,13 @@ func AuditState(state *ContainerState, now time.Time) []RemoteFinding {
 // plus everything AuditState covers.
 func InspectFindings(spec *RemoteSpec, state *ContainerState, revision string, now time.Time) []RemoteFinding {
 	if !state.Exists {
-		return []RemoteFinding{{Code: "absent", Severity: severityWarn, Message: "fetch remote is not created"}}
+		return []RemoteFinding{{Code: "absent", Severity: SeverityWarn, Message: "fetch remote is not created"}}
 	}
 	findings := AuditState(state, now)
 	if state.Labels[labelRole] != remoteRole {
 		return append(findings, RemoteFinding{
 			Code:     codeOwnershipDrift,
-			Severity: severityFail,
+			Severity: SeverityFail,
 			Message:  fmt.Sprintf("%s is missing the %s ownership marker", state.Name, labelRole),
 		})
 	}
@@ -693,7 +725,7 @@ func InspectFindings(spec *RemoteSpec, state *ContainerState, revision string, n
 		if got := state.Labels[label]; got != want {
 			findings = append(findings, RemoteFinding{
 				Code:     codeOwnershipDrift,
-				Severity: severityFail,
+				Severity: SeverityFail,
 				Message:  fmt.Sprintf("%s label %s=%q, expected %q", state.Name, label, got, want),
 			})
 		}
@@ -701,21 +733,21 @@ func InspectFindings(spec *RemoteSpec, state *ContainerState, revision string, n
 	if !slices.Contains(state.Networks, spec.Network) {
 		findings = append(findings, RemoteFinding{
 			Code:     codeNetworkDrift,
-			Severity: severityFail,
+			Severity: SeverityFail,
 			Message:  fmt.Sprintf("%s is not attached to %s (networks: %s)", state.Name, spec.Network, strings.Join(state.Networks, ",")),
 		})
 	}
 	if state.Labels[labelCAFingerprint] == "" {
 		findings = append(findings, RemoteFinding{
 			Code:     "missing-ca-trust",
-			Severity: severityFail,
+			Severity: SeverityFail,
 			Message:  fmt.Sprintf("%s carries no CA fingerprint; Argo repository-CA trust cannot be verified", state.Name),
 		})
 	}
 	if revision != "" && state.Labels[labelRevision] != revision {
 		findings = append(findings, RemoteFinding{
 			Code:     "stale-remote",
-			Severity: severityWarn,
+			Severity: SeverityWarn,
 			Message:  fmt.Sprintf("%s serves %q, expected reviewed revision %q", state.Name, state.Labels[labelRevision], revision),
 		})
 	}
@@ -758,12 +790,22 @@ func NewFetchRemote(workspace *resources.Workspace, environment string) (*FetchR
 	if err != nil {
 		return nil, err
 	}
-	cluster := ""
-	if env.Cluster != nil {
-		cluster = strings.TrimPrefix(strings.TrimSpace(env.Cluster.Context), "k3d-")
+	// The container joins the cluster's private docker network (k3d-<cluster>),
+	// which the k3d context names exactly. Guessing it risks attaching to the
+	// wrong or a nonexistent network, so require the declared context.
+	if env.Cluster == nil || strings.TrimSpace(env.Cluster.Context) == "" {
+		return nil, fmt.Errorf("environment %q must declare cluster.context to own a local fetch remote", environment)
 	}
-	if cluster == "" {
-		cluster = sanitizeDNSLabel(workspace.Name + "-" + environment)
+	clusterContext := strings.TrimSpace(env.Cluster.Context)
+	if !strings.HasPrefix(clusterContext, "k3d-") {
+		return nil, fmt.Errorf("environment %q cluster.context %q is not a k3d context", environment, clusterContext)
+	}
+	cluster := strings.TrimPrefix(clusterContext, "k3d-")
+	// A local file:// repository has no owner/name slug; its absolute URL is the
+	// stable repository identity for the ownership label and identity hash.
+	repository := slug
+	if repository == "" {
+		repository = strings.TrimSpace(config.RepoURL)
 	}
 	spec, err := NewRemoteSpec(&RemoteConfig{
 		WorkspaceRoot:  workspace.Dir(),
@@ -771,7 +813,7 @@ func NewFetchRemote(workspace *resources.Workspace, environment string) (*FetchR
 		Workspace:      workspace.Name,
 		Environment:    environment,
 		Cluster:        cluster,
-		RepositorySlug: slug,
+		RepositorySlug: repository,
 		SourceRepo:     config.RepoURL,
 	})
 	if err != nil {
@@ -836,17 +878,25 @@ func (r *FetchRemote) Up(ctx context.Context, revision string) (RemoteStatus, er
 	if err != nil {
 		return RemoteStatus{}, err
 	}
-	if err := writeFileMode(r.Spec.ConfPath(), []byte(r.Spec.nginxConfig()), 0o644); err != nil {
+	if err = writeFileMode(r.Spec.ConfPath(), []byte(r.Spec.nginxConfig()), 0o644); err != nil {
 		return RemoteStatus{}, err
 	}
-	if err := r.removeExisting(ctx); err != nil {
+	if err = r.removeExisting(ctx); err != nil {
 		return RemoteStatus{}, err
 	}
 	labels := r.Spec.Labels(revision, material.CAFingerprint, material.NotAfter)
-	if _, err := dockerRun(ctx, r.Spec.dockerRunArgs(labels)...); err != nil {
+	if _, err = dockerRun(ctx, r.Spec.dockerRunArgs(labels)...); err != nil {
 		return RemoteStatus{}, fmt.Errorf("start fetch remote: %w", err)
 	}
-	if err := r.probe(ctx, material.CAPEM); err != nil {
+	started, err := r.inspect(ctx)
+	if err != nil {
+		return RemoteStatus{}, err
+	}
+	hostPort, err := loopbackHostPort(&started, r.Spec.ContainerPort)
+	if err != nil {
+		return RemoteStatus{}, err
+	}
+	if err = r.probe(ctx, material.CAPEM, hostPort, revision); err != nil {
 		return RemoteStatus{}, err
 	}
 	receipt := remoteReceipt{
@@ -858,19 +908,33 @@ func (r *FetchRemote) Up(ctx context.Context, revision string) (RemoteStatus, er
 		CertNotAfter:   material.NotAfter,
 		UpdatedAt:      time.Now().UTC(),
 	}
-	if err := writeReceiptJSON(r.Spec.receiptPath(), receipt); err != nil {
+	if err = writeReceiptJSON(r.Spec.receiptPath(), receipt); err != nil {
 		return RemoteStatus{}, err
 	}
 	return r.Status(ctx, revision)
 }
 
 func (r *FetchRemote) mirror(ctx context.Context, revision string) error {
+	if err := os.MkdirAll(r.Spec.StateDir(), 0o700); err != nil {
+		return err
+	}
+	fresh := false
 	if _, err := os.Stat(filepath.Join(r.Spec.RepoDir(), "HEAD")); os.IsNotExist(err) {
 		if _, err := gitCommand(ctx, r.Spec.StateDir(), "clone", "--mirror", "--quiet", "--", r.Spec.SourceRepo, r.Spec.RepoDir()); err != nil {
 			return fmt.Errorf("mirror source repository: %w", err)
 		}
-	} else if _, err := gitCommand(ctx, r.Spec.RepoDir(), "remote", "update", "--prune"); err != nil {
-		return fmt.Errorf("update mirror: %w", err)
+		fresh = true
+	}
+	// The mirror is a serving artifact: disable automatic gc so a fetch never
+	// prunes an object that is reachable only through the serving ref between the
+	// prune below and its re-creation.
+	if _, err := gitCommand(ctx, r.Spec.RepoDir(), "config", "gc.auto", "0"); err != nil {
+		return fmt.Errorf("pin mirror maintenance policy: %w", err)
+	}
+	if !fresh {
+		if _, err := gitCommand(ctx, r.Spec.RepoDir(), "remote", "update", "--prune"); err != nil {
+			return fmt.Errorf("update mirror: %w", err)
+		}
 	}
 	if _, err := gitCommand(ctx, r.Spec.RepoDir(), "cat-file", "-e", revision+"^{commit}"); err != nil {
 		return fmt.Errorf("reviewed revision %s is absent from the mirror: %w", revision, err)
@@ -892,14 +956,47 @@ func (r *FetchRemote) removeExisting(ctx context.Context) error {
 	if !state.Exists {
 		return nil
 	}
-	if err = validateOwnership(&r.Spec, &state); err != nil {
+	if err = validateOwnership(r.specForValidation(), &state); err != nil {
 		return err
 	}
 	_, err = dockerRun(ctx, "rm", "--force", r.Spec.ContainerName)
 	return err
 }
 
-func (r *FetchRemote) probe(ctx context.Context, caPEM []byte) error {
+// loopbackHostPort returns the host port bound to containerPort/tcp, refusing a
+// wildcard binding — the endpoint must be reachable on loopback only.
+func loopbackHostPort(state *ContainerState, containerPort int) (string, error) {
+	want := fmt.Sprintf("%d/tcp", containerPort)
+	for _, binding := range state.PortBindings {
+		if binding.ContainerPort != want {
+			continue
+		}
+		if isWildcardHost(binding.HostIP) {
+			return "", fmt.Errorf("fetch remote %s publishes %s on wildcard host %q; expected IPv4 loopback", state.Name, want, binding.HostIP)
+		}
+		return binding.HostPort, nil
+	}
+	return "", fmt.Errorf("fetch remote %s has no host binding for %s", state.Name, want)
+}
+
+// refsAdvertisesRevision reports whether a dumb-HTTP info/refs advertisement
+// lists the reviewed revision, so the probe verifies the remote actually serves
+// the exact revision rather than merely returning any static file.
+func refsAdvertisesRevision(body []byte, revision string) bool {
+	revision = strings.ToLower(strings.TrimSpace(revision))
+	for line := range strings.SplitSeq(string(body), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if strings.ToLower(fields[0]) == revision {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *FetchRemote) probe(ctx context.Context, caPEM []byte, hostPort, revision string) error {
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return fmt.Errorf("fetch remote CA is not usable for verification")
@@ -910,21 +1007,26 @@ func (r *FetchRemote) probe(ctx context.Context, caPEM []byte) error {
 			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
 		},
 	}
+	url := r.Spec.hostVerifyURL(hostPort)
 	deadline := time.Now().Add(30 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.Spec.HostVerifyURL(), nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return err
 		}
 		response, err := client.Do(request)
 		if err == nil {
-			_, _ = io.Copy(io.Discard, response.Body)
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
+			switch {
+			case response.StatusCode != http.StatusOK:
+				lastErr = fmt.Errorf("host verification returned %s", response.Status)
+			case !refsAdvertisesRevision(body, revision):
+				lastErr = fmt.Errorf("host verification did not advertise reviewed revision %s", revision)
+			default:
 				return nil
 			}
-			lastErr = fmt.Errorf("host verification returned %s", response.Status)
 		} else {
 			lastErr = err
 		}
@@ -934,7 +1036,7 @@ func (r *FetchRemote) probe(ctx context.Context, caPEM []byte) error {
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("fetch remote did not become reachable on %s: %w", r.Spec.HostVerifyURL(), lastErr)
+	return fmt.Errorf("fetch remote did not serve %s on %s: %w", revision, url, lastErr)
 }
 
 // Status inspects the container and validates it against the spec and the
@@ -944,10 +1046,11 @@ func (r *FetchRemote) Status(ctx context.Context, revision string) (RemoteStatus
 	if err != nil {
 		return RemoteStatus{}, err
 	}
+	spec := r.specForValidation()
 	status := RemoteStatus{
-		Spec:           r.Spec,
+		Spec:           *spec,
 		State:          state,
-		ArgoRepository: r.Spec.ArgoRepository(),
+		ArgoRepository: spec.ArgoRepository(),
 	}
 	if receipt, err := readReceiptJSON(r.Spec.receiptPath()); err == nil {
 		status.CACertPath = receipt.CACertPath
@@ -957,8 +1060,20 @@ func (r *FetchRemote) Status(ctx context.Context, revision string) (RemoteStatus
 		}
 	}
 	status.Revision = revision
-	status.Findings = InspectFindings(&r.Spec, &state, revision, time.Now())
+	status.Findings = InspectFindings(spec, &state, revision, time.Now())
 	return status, nil
+}
+
+// specForValidation returns the identity a live container must be validated
+// against: the spec recorded by the last Up when available (the authoritative
+// record of what was created, including its owner), otherwise the spec derived
+// from the current workspace. This keeps teardown and status honest even when
+// the ambient owner ($USER) differs from the one that created the remote.
+func (r *FetchRemote) specForValidation() *RemoteSpec {
+	if receipt, err := readReceiptJSON(r.Spec.receiptPath()); err == nil && receipt.Spec.ContainerName == r.Spec.ContainerName {
+		return &receipt.Spec
+	}
+	return &r.Spec
 }
 
 // Down validates every ownership and network identity, then removes the
@@ -972,7 +1087,7 @@ func (r *FetchRemote) Down(ctx context.Context) error {
 	if !state.Exists {
 		return nil
 	}
-	if err = validateOwnership(&r.Spec, &state); err != nil {
+	if err = validateOwnership(r.specForValidation(), &state); err != nil {
 		return err
 	}
 	_, err = dockerRun(ctx, "rm", "--force", r.Spec.ContainerName)

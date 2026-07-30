@@ -319,7 +319,7 @@ func checkGitOpsFetchRemotes(ctx context.Context) checkResult {
 	worst := statusWarn
 	for _, finding := range findings {
 		messages = append(messages, finding.Message)
-		if finding.Severity == "fail" {
+		if finding.Severity == gitops.SeverityFail {
 			worst = statusFail
 		}
 	}
