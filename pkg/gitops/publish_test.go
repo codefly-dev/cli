@@ -877,6 +877,20 @@ func TestPlanPublishRejectsLocalQualificationForRemoteEnvironment(t *testing.T) 
 	}
 }
 
+func TestPlanPublishRejectsRemoteRepositoryForLocalQualification(t *testing.T) {
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	workspace.Gitops.RepoURL = "https://github.com/codefly-test/manifests.git"
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires an absolute file repository URL") {
+		t.Fatalf("remote repository local qualification error = %v", err)
+	}
+}
+
 func mergePromotionToMain(t *testing.T, remote, branch string) {
 	t.Helper()
 	work := t.TempDir()

@@ -1187,6 +1187,9 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 	if err != nil {
 		return nil, "", "", "", err
 	}
+	if local && !strings.HasPrefix(strings.TrimSpace(config.RepoURL), "file://") {
+		return nil, "", "", "", fmt.Errorf("local GitOps qualification requires an absolute file repository URL")
+	}
 	baseBranch := strings.TrimSpace(config.Branch)
 	if baseBranch == "" {
 		baseBranch = "main"
