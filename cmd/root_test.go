@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,6 +11,39 @@ import (
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
+
+func TestRootOwnsErrorRendering(t *testing.T) {
+	if !RootCmd.SilenceErrors {
+		t.Fatal("root command allows Cobra to duplicate error rendering")
+	}
+	if !RootCmd.SilenceUsage {
+		t.Fatal("root command prints usage for runtime failures")
+	}
+}
+
+func TestCancellationExitBehavior(t *testing.T) {
+	err := fmt.Errorf("wrapped interruption: %w", context.Canceled)
+	if !IsCancellationError(err) {
+		t.Fatalf("IsCancellationError(%v) = false", err)
+	}
+	if ShouldRenderError(err) {
+		t.Fatalf("ShouldRenderError(%v) = true", err)
+	}
+	if got := ExitCode(err); got != 130 {
+		t.Fatalf("ExitCode(cancellation) = %d, want 130", got)
+	}
+
+	ordinary := errors.New("boom")
+	if IsCancellationError(ordinary) {
+		t.Fatalf("IsCancellationError(%v) = true", ordinary)
+	}
+	if !ShouldRenderError(ordinary) {
+		t.Fatalf("ShouldRenderError(%v) = false", ordinary)
+	}
+	if got := ExitCode(ordinary); got != 1 {
+		t.Fatalf("ExitCode(ordinary error) = %d, want 1", got)
+	}
+}
 
 func TestCommandDescriptionsAreUseful(t *testing.T) {
 	placeholder := map[string]bool{

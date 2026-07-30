@@ -103,8 +103,7 @@ Examples:
 		var failures []error
 		for _, t := range targets {
 			if err := ctx.Err(); err != nil {
-				failures = append(failures, err)
-				break
+				return err
 			}
 			if !isGitRepo(t.path) {
 				// Only flag module-looking dirs so we don't spam about
@@ -117,6 +116,12 @@ Examples:
 			}
 			res, perr := pullRepo(ctx, t.path, remote, branch)
 			if perr != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				if errors.Is(perr, context.Canceled) {
+					return context.Canceled
+				}
 				// A vanished upstream (the GitHub repo was deleted/renamed while
 				// the local checkout lingers, e.g. proto/) is not a real
 				// failure — skip it quietly rather than failing the whole run.
@@ -322,6 +327,9 @@ func isRemoteMissing(out string) bool {
 func pullRepo(ctx context.Context, repo, remote, branch string) (pullResult, error) {
 	current, err := git(ctx, repo, "branch", "--show-current")
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return pullResult{}, ctxErr
+		}
 		return pullResult{}, fmt.Errorf("resolve current branch: %s", firstLine(current))
 	}
 	current = strings.TrimSpace(current)
