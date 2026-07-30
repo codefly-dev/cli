@@ -33,6 +33,25 @@ import (
 	"strings"
 )
 
+// The configuration file layout core/configurations reads. Kept as constants so
+// the writer and the reader cannot drift apart on a suffix.
+const (
+	// CommandName is this command group's name, used in error prefixes.
+	CommandName = "config"
+	// ConfigurationsDir is the directory each scope holds its profiles under.
+	ConfigurationsDir = "configurations"
+	// DefaultProfile is the configuration profile used when --env is absent.
+	DefaultProfile = "local"
+
+	// SecretSuffix marks a plaintext secret configuration.
+	SecretSuffix = ".secret.env"
+	// PlainSuffix marks a non-secret configuration.
+	PlainSuffix = ".env"
+	// referenceSuffix marks a reference-only manifest, which this package never
+	// writes — it only refuses to shadow one.
+	referenceSuffix = ".secret.ref.env"
+)
+
 // Target is one resolved configuration file: a scope directory (workspace root
 // or service root), an environment configuration profile, a configuration name,
 // and whether it holds secrets.
@@ -50,7 +69,7 @@ type Target struct {
 
 // Dir is the profile directory holding the target file.
 func (t Target) Dir() string {
-	return filepath.Join(t.ScopeDir, "configurations", t.Profile)
+	return filepath.Join(t.ScopeDir, ConfigurationsDir, t.Profile)
 }
 
 // Path is the configuration file this target reads and writes.
@@ -60,16 +79,16 @@ func (t Target) Path() string {
 
 func (t Target) suffix() string {
 	if t.Secret {
-		return ".secret.env"
+		return SecretSuffix
 	}
-	return ".env"
+	return PlainSuffix
 }
 
 // referencePath is the reference-only manifest for the same logical
 // configuration. core/configurations rejects a load that has both, so a write
 // must too.
 func (t Target) referencePath() string {
-	return filepath.Join(t.Dir(), t.Name+".secret.ref.env")
+	return filepath.Join(t.Dir(), t.Name+referenceSuffix)
 }
 
 func (t Target) fileMode() os.FileMode {
@@ -106,16 +125,16 @@ func (e *NotIgnoredError) Error() string {
 
 func (e *NotIgnoredError) Is(target error) bool { return target == ErrNotIgnored }
 
-// document is a parsed configuration file. Comments and blank lines are
+// Document is a parsed configuration file. Comments and blank lines are
 // preserved by position so a codefly-owned write does not destroy a
 // hand-maintained file's structure.
-type document struct {
+type Document struct {
 	lines []string       // raw lines, with entry lines marked by index
 	index map[string]int // key -> line index
 }
 
-func parseDocument(data []byte) *document {
-	doc := &document{index: map[string]int{}}
+func parseDocument(data []byte) *Document {
+	doc := &Document{index: map[string]int{}}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -145,7 +164,7 @@ func splitEntry(line string) (string, string, bool) {
 }
 
 // Has reports whether the key is present with a non-empty value.
-func (d *document) Has(key string) bool {
+func (d *Document) Has(key string) bool {
 	i, ok := d.index[key]
 	if !ok {
 		return false
@@ -155,7 +174,7 @@ func (d *document) Has(key string) bool {
 }
 
 // Keys returns the key names in file order. Values are never exposed.
-func (d *document) Keys() []string {
+func (d *Document) Keys() []string {
 	keys := make([]string, 0, len(d.index))
 	for key := range d.index {
 		keys = append(keys, key)
@@ -165,7 +184,7 @@ func (d *document) Keys() []string {
 }
 
 // Set writes key=value, replacing an existing line in place or appending.
-func (d *document) Set(key, value string) {
+func (d *Document) Set(key, value string) {
 	line := key + "=" + value
 	if i, ok := d.index[key]; ok {
 		d.lines[i] = line
@@ -175,16 +194,16 @@ func (d *document) Set(key, value string) {
 	d.index[key] = len(d.lines) - 1
 }
 
-func (d *document) Bytes() []byte {
+func (d *Document) Bytes() []byte {
 	if len(d.lines) == 0 {
 		return nil
 	}
 	return []byte(strings.Join(d.lines, "\n") + "\n")
 }
 
-// Load reads the target's current document. A missing file is an empty
-// document, not an error — writing is how it gets created.
-func Load(target Target) (*document, error) {
+// Load reads the target's current Document. A missing file is an empty
+// Document, not an error — writing is how it gets created.
+func Load(target Target) (*Document, error) {
 	data, err := os.ReadFile(target.Path())
 	if errors.Is(err, os.ErrNotExist) {
 		return parseDocument(nil), nil
@@ -195,9 +214,9 @@ func Load(target Target) (*document, error) {
 	return parseDocument(data), nil
 }
 
-// Write persists the document, creating the profile directory and enforcing the
+// Write persists the Document, creating the profile directory and enforcing the
 // target's file mode. Secret targets are refused when git would track them.
-func Write(target Target, doc *document) error {
+func Write(target Target, doc *Document) error {
 	if err := guardReferenceManifest(target); err != nil {
 		return err
 	}

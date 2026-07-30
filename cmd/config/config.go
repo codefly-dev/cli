@@ -36,7 +36,7 @@ import (
 
 // Cmd is the `codefly config` command group.
 var Cmd = &cobra.Command{
-	Use:   "config",
+	Use:   CommandName,
 	Short: "Provision and inspect service and workspace configuration values",
 	Long: `Config writes and inspects the configuration files Codefly reads at run and
 deploy time: <scope>/configurations/<profile>/<name>[.secret].env.
@@ -92,7 +92,7 @@ Examples:
   codefly config set runtime EXECUTION_SCHEDULER_TOKEN=$TOKEN --service mind/mind
   codefly config set edge EDGE_URL=https://localhost:8080 --plaintext`,
 	Args: cobra.MinimumNArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		cli.Init()
@@ -207,7 +207,7 @@ Examples:
   codefly config check internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_GATEWAY_TOKEN
   codefly config check runtime EXECUTION_SCHEDULER_TOKEN --service mind/mind`,
 	Args: cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		cli.Init()
@@ -253,7 +253,7 @@ Examples:
   codefly config list --service mind/mind
   codefly config list --env aws`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		cli.Init()
@@ -262,10 +262,10 @@ Examples:
 		if err != nil {
 			return err
 		}
-		dir := filepath.Join(scopeDir, "configurations", profile)
-		suffix := ".secret.env"
+		dir := filepath.Join(scopeDir, ConfigurationsDir, profile)
+		suffix := SecretSuffix
 		if plaintext {
-			suffix = ".env"
+			suffix = PlainSuffix
 		}
 		names, err := configurationNames(dir, suffix)
 		if err != nil {
@@ -307,7 +307,7 @@ func configurationNames(dir string, suffix string) ([]string, error) {
 		if !strings.HasSuffix(name, suffix) {
 			continue
 		}
-		if suffix == ".env" && strings.HasSuffix(name, ".secret.env") {
+		if suffix == PlainSuffix && strings.HasSuffix(name, SecretSuffix) {
 			continue
 		}
 		names = append(names, strings.TrimSuffix(name, suffix))
@@ -380,7 +380,7 @@ func resolveScopeIn(ctx context.Context, workspace *resources.Workspace) (string
 func resolveProfile(workspace *resources.Workspace) (string, error) {
 	name := strings.TrimSpace(environment)
 	if name == "" {
-		name = "local"
+		name = DefaultProfile
 	}
 	if env := workspace.FindEnvironment(name); env != nil {
 		profile, err := env.ConfigurationProfileName()
