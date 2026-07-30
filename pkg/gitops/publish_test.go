@@ -119,6 +119,42 @@ spec:
 	}
 }
 
+func TestArgoRepositoryUsesWorkspaceFetchURLForLocalPromotion(t *testing.T) {
+	workspace := loadGitopsWorkspace(t, createBareRepository(t))
+	config, _, _, _, err := resolveGitops(workspace, "production", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := argoRepository(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != "https://host.k3d.internal/manifests.git" {
+		t.Fatalf("Argo repository = %q", repository)
+	}
+
+	config.FetchRepoURL = ""
+	if _, err := argoRepository(config); err == nil || !strings.Contains(err.Error(), "fetch-repo-url") {
+		t.Fatalf("missing local fetch repository error = %v", err)
+	}
+}
+
+func TestModuleBundleRejectsArgoTransportResources(t *testing.T) {
+	root := t.TempDir()
+	application := `apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agent-owned
+`
+	if err := os.WriteFile(filepath.Join(root, "application.yaml"), []byte(application), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := validateTransportNeutralModuleBundle(root)
+	if err == nil || !strings.Contains(err.Error(), "CLI-owned Argo transport resource Application") {
+		t.Fatalf("Argo transport resource error = %v", err)
+	}
+}
+
 func TestManagedServicePromotionRetainsOnlyItsBootstrapJob(t *testing.T) {
 	root := t.TempDir()
 	serviceRoot := filepath.Join(root, "services", "store")

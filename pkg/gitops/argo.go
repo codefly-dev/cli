@@ -173,6 +173,9 @@ func argoRepository(config *repositoryConfig) (string, error) {
 		}
 		repository = parsed.String()
 	}
+	if strings.HasPrefix(repository, "file://") {
+		return "", fmt.Errorf("local Argo promotion requires gitops.fetch-repo-url")
+	}
 	if repository == "" {
 		return "", fmt.Errorf("GitOps repository is required")
 	}

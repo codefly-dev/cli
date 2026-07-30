@@ -87,6 +87,9 @@ func renderModuleBundle(
 	if err := copyEnvironmentBootstrap(root, environment.Name, destination); err != nil {
 		return fmt.Errorf("copy selected module bundle: %w", err)
 	}
+	if err := validateTransportNeutralModuleBundle(destination); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -226,6 +229,37 @@ func equalStrings(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+func validateTransportNeutralModuleBundle(root string) error {
+	return walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
+		extension := strings.ToLower(filepath.Ext(relative))
+		if extension != ".yaml" && extension != ".yml" && extension != jsonExtension {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		manifests, _, err := decodeYAML(relative, data)
+		if err != nil {
+			return err
+		}
+		for _, item := range manifests {
+			if item.group != argoAPIGroup {
+				continue
+			}
+			switch item.kind {
+			case "Application", "ApplicationSet", "AppProject":
+				return fmt.Errorf(
+					"module bundle contains CLI-owned Argo transport resource %s in %s",
+					item.kind,
+					item.path,
+				)
+			}
+		}
+		return nil
+	})
 }
 
 func retainManagedBootstrap(root, service, environment string) (bool, error) {

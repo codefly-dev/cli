@@ -19,6 +19,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -1173,9 +1174,10 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 	}
 	if config.RepoURL == "" && workspace.Gitops != nil {
 		config = repositoryConfig{
-			RepoURL: workspace.Gitops.RepoURL,
-			Path:    workspace.Gitops.Path,
-			Branch:  workspace.Gitops.Branch,
+			RepoURL:      workspace.Gitops.RepoURL,
+			FetchRepoURL: workspaceFetchRepository(workspace),
+			Path:         workspace.Gitops.Path,
+			Branch:       workspace.Gitops.Branch,
 		}
 	}
 	if config.RepoURL == "" {
@@ -1194,6 +1196,22 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 		return nil, "", "", "", fmt.Errorf("gitops.path: %w", err)
 	}
 	return &config, slug, baseBranch, pathRoot, nil
+}
+
+func workspaceFetchRepository(workspace *resources.Workspace) string {
+	data, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
+	if err != nil {
+		return ""
+	}
+	var document struct {
+		Gitops struct {
+			FetchRepoURL string `yaml:"fetch-repo-url"`
+		} `yaml:"gitops"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return ""
+	}
+	return document.Gitops.FetchRepoURL
 }
 
 func validateRepositoryURL(raw string, local bool) (string, error) {
