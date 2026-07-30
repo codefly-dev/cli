@@ -19,6 +19,7 @@ environments:
     - name: local
       description: developer machine
       naming-scope: from-yaml
+      fixture: dev-admin
       namespace: apps
       cluster:
           kind: k3d
@@ -72,6 +73,7 @@ func TestSelectEnvironmentDeclaredLocalKeepsEveryField(t *testing.T) {
 	require.Equal(t, "local", env.Name)
 	require.Equal(t, "developer machine", env.Description)
 	require.Equal(t, "from-yaml", env.NamingScope)
+	require.Equal(t, "dev-admin", env.Fixture)
 	require.Equal(t, "apps", env.Namespace)
 	require.NotNil(t, env.Cluster)
 	require.Equal(t, "k3d", env.Cluster.Kind)
