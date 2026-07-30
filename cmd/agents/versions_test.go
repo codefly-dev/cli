@@ -205,13 +205,31 @@ func TestNewGitHubClientAddsAuthorization(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resp, err := newGitHubClient().Client().Get(server.URL)
+	client, err := newGitHubClient()
+	if err != nil {
+		t.Fatalf("newGitHubClient: %v", err)
+	}
+	resp, err := client.Client().Get(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if got != "Bearer secret" {
 		t.Fatalf("Authorization = %q, want %q", got, "Bearer secret")
+	}
+}
+
+func TestNewGitHubClientUnauthenticated(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PATH", "") // no `gh` on PATH: force the tokenless path
+
+	client, err := newGitHubClient()
+	if err != nil {
+		t.Fatalf("newGitHubClient: %v", err)
+	}
+	if client == nil {
+		t.Fatal("newGitHubClient returned a nil client")
 	}
 }
 

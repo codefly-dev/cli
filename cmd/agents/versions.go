@@ -376,7 +376,10 @@ func pinnedVersions(ctx context.Context, agent *resources.Agent) []string {
 }
 
 func fetchReleasesFromGitHub(ctx context.Context, agent *resources.Agent) ([]releaseInfo, error) {
-	client := newGitHubClient()
+	client, err := newGitHubClient()
+	if err != nil {
+		return nil, err
+	}
 	owner, repo := githubSource(agent)
 	var out []releaseInfo
 	opt := &github.ListOptions{PerPage: 100}
@@ -409,7 +412,10 @@ func fetchReleasesFromGitHub(ctx context.Context, agent *resources.Agent) ([]rel
 }
 
 func fetchTagsFromGitHub(ctx context.Context, agent *resources.Agent) ([]string, error) {
-	client := newGitHubClient()
+	client, err := newGitHubClient()
+	if err != nil {
+		return nil, err
+	}
 	owner, repo := githubSource(agent)
 	var out []string
 	opt := &github.ListOptions{PerPage: 100}
@@ -439,15 +445,11 @@ func githubSource(agent *resources.Agent) (owner, repo string) {
 // when either is set. Listing every version of every pinned agent multiplies
 // requests fast, and the unauthenticated 60/hour limit turns this diagnostic
 // flaky exactly when a workspace has many pins to check.
-func newGitHubClient() *github.Client {
-	// NewClient only errors on enterprise-URL configuration, which we never
-	// pass, so the default/auth-token options here cannot fail.
+func newGitHubClient() (*github.Client, error) {
 	if token := githubToken(); token != "" {
-		client, _ := github.NewClient(github.WithAuthToken(token))
-		return client
+		return github.NewClient(github.WithAuthToken(token))
 	}
-	client, _ := github.NewClient()
-	return client
+	return github.NewClient()
 }
 
 // githubToken resolves a GitHub token from GITHUB_TOKEN/GH_TOKEN, falling back
