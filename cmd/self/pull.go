@@ -18,44 +18,34 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PullCmd pulls the latest code from the default branch into every git repo
-// under the codefly.dev monorepo root (cli/, core/, sdk-go/, ...) in
-// one step. It is intentionally NON-DESTRUCTIVE: local commits are preserved
-// (it merges, never resets), and uncommitted changes are stashed around the
-// merge and restored afterward. Nothing local is overwritten — if a merge or
-// stash-pop would conflict, that repo is left untouched and reported so you
-// can resolve it by hand.
-//
-// This replaces the ad-hoc "loop over the sibling repos and git pull" shell
-// script; the same discovery logic that powers `self build` (walk up to the
-// monorepo root) is reused so it works from anywhere in the tree.
+// PullCmd pulls the latest code into the repositories that define the local
+// Codefly runtime: cli, core, llm, and canonical plugin checkouts. It is
+// intentionally NON-DESTRUCTIVE: local commits are preserved (it merges, never
+// resets), and uncommitted changes are stashed around the merge and restored
+// afterward. Nothing local is overwritten — if a merge or stash-pop would
+// conflict, that repository is left untouched and reported for manual repair.
 var PullCmd = &cobra.Command{
 	Use:   "pull",
-	Short: "Fast-forward all Codefly repositories to their latest main branches",
-	Long: `Pull pulls the latest code from the default branch into every git
-repository under the codefly.dev monorepo root — cli/, core/, sdk-go/,
-and any other sibling repo — in a single step.
+	Short: "Fast-forward the CLI, Core, LLM, and plugins to their latest main branches",
+	Long: `Pull updates exactly the repositories that define the local Codefly
+runtime: cli/, core/, llm/, and canonical plugin repositories.
 
-By default it pulls the codefly module repos — cli/, core/, sdk-go/.
-Use --all to pull every git repository under the monorepo root instead (the
-whole workspace). Use --with-agents to ALSO iterate every agent repo under
-agents/ (services/*, modules/*, toolboxes/*) — agents/ is not a git repo
-itself; each agent is its own GitHub repo. This mirrors
-` + "`codefly self build --with-agents`" + `.
+Plugins are discovered by a top-level agent.codefly.yaml, the same boundary
+used by ` + "`codefly self build --with-agents`" + `. A checkout is canonical
+when its directory name matches its origin repository name; duplicate worktrees
+and task-specific clones are not touched. SDKs, templates, examples, websites,
+release repositories, and other workspace siblings are outside this command's
+scope.
 
 It never overrides existing code:
+  - Repositories on another branch or detached HEAD are skipped.
   - Local commits are preserved (it MERGES origin/<branch>, it never resets).
   - Uncommitted changes are stashed before the merge and restored after.
   - If a merge or stash restore would conflict, that repo is left exactly as
     it was and reported, so you can resolve it manually.
 
-Directories that are not git repositories (e.g. agents/, which is not
-version-controlled locally) are reported as skipped.
-
 Examples:
   codefly self pull
-  codefly self pull --with-agents
-  codefly self pull --all --with-agents
   codefly self pull --branch develop
   codefly self pull --remote upstream
   codefly self pull --dir ~/Development/deus/codefly.dev`,
@@ -78,14 +68,6 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("cannot read --remote: %w", err)
 		}
-		all, err := cmd.Flags().GetBool("all")
-		if err != nil {
-			return fmt.Errorf("cannot read --all: %w", err)
-		}
-		withAgents, err := cmd.Flags().GetBool("with-agents")
-		if err != nil {
-			return fmt.Errorf("cannot read --with-agents: %w", err)
-		}
 		if remote == "" || strings.HasPrefix(remote, "-") {
 			return fmt.Errorf("invalid --remote %q", remote)
 		}
@@ -97,39 +79,19 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("cannot locate the codefly monorepo root: %w", err)
 		}
-		scope := "the codefly module repos"
-		if all {
-			scope = "every repo"
-		}
-		if withAgents {
-			scope += " + agents"
-		}
-		cli.Info("Pulling %s/%s into %s under %s", remote, branch, scope, root)
+		cli.Info("Pulling %s/%s into CLI, Core, LLM, and plugins under %s", remote, branch, root)
 
-		names, err := pullTargets(ctx, root, all)
+		names, err := pullTargets(ctx, root)
 		if err != nil {
 			return fmt.Errorf("cannot read %s: %w", root, err)
 		}
 
-		// Build the unified target list. agents/ is not a git repo itself —
-		// each agent under it is. With --with-agents we expand it into those
-		// nested repos; otherwise the bare agents/ entry yields a skip notice.
-		var targets []repoTarget
+		targets := make([]repoTarget, 0, len(names))
 		for _, name := range names {
-			if name == "agents" && withAgents {
-				continue // expanded below
-			}
 			targets = append(targets, repoTarget{label: name, path: filepath.Join(root, name)})
 		}
-		if withAgents {
-			agentTargets, err := discoverAgentRepos(root)
-			if err != nil {
-				return fmt.Errorf("cannot discover agent repositories: %w", err)
-			}
-			targets = append(targets, agentTargets...)
-		}
 
-		// Width the label column to the longest label (agent paths are long).
+		// Width the label column to the longest plugin name.
 		width := 12
 		for _, t := range targets {
 			if len(t.label) > width {
@@ -137,7 +99,7 @@ Examples:
 			}
 		}
 
-		var pulled, skipped, failed int
+		var updated, unchanged, skipped, failed int
 		var failures []error
 		for _, t := range targets {
 			if err := ctx.Err(); err != nil {
@@ -168,11 +130,26 @@ Examples:
 				failures = append(failures, fmt.Errorf("%s: %w", t.label, perr))
 				continue
 			}
-			cli.Info("%-*s %s", width, t.label, res)
-			pulled++
+			switch res.kind {
+			case pullResultUpdated:
+				cli.Info("%-*s %s", width, t.label, res.message)
+				updated++
+			case pullResultUnchanged:
+				cli.Info("%-*s %s", width, t.label, res.message)
+				unchanged++
+			case pullResultSkipped:
+				cli.Warning("%-*s %s", width, t.label, res.message)
+				skipped++
+			}
 		}
 
-		cli.Info("Done: %d pulled, %d skipped, %d failed", pulled, skipped, failed)
+		cli.Info(
+			"Done: %d updated, %d already up to date, %d skipped, %d failed",
+			updated,
+			unchanged,
+			skipped,
+			failed,
+		)
 		return errors.Join(failures...)
 	},
 }
@@ -181,115 +158,84 @@ func init() {
 	PullCmd.Flags().String("dir", "", "Monorepo root or any directory inside it (default: auto-detect from current directory)")
 	PullCmd.Flags().String("branch", "main", "Branch to pull from")
 	PullCmd.Flags().String("remote", "origin", "Remote to pull from")
-	PullCmd.Flags().Bool("all", false, "Pull every git repo under the monorepo root, not just the codefly module repos")
-	PullCmd.Flags().Bool("with-agents", false, "Also pull every agent repo under agents/ (services, modules, toolboxes)")
 }
 
 // repoTarget is one repository to pull: an absolute path plus a short label
-// for display (e.g. "core" or "agents/services/go-grpc").
+// for display (e.g. "core" or "service-go-grpc").
 type repoTarget struct {
 	label string
 	path  string
 }
 
-// agentCategories are the agents/ subdirectories whose immediate children are
-// individual agent git repos. agents/ itself is not version-controlled; each
-// agent is its own GitHub repo (service-go-grpc, toolbox-docker, ...).
-var agentCategories = []string{"services", "modules", "toolboxes", "applications"}
+type pullResultKind uint8
 
-// discoverAgentRepos returns every agent git repo under root/agents, as
-// targets labelled by their path relative to root (so the output reads
-// "agents/services/go-grpc"). Sorted for stable, grouped output.
-func discoverAgentRepos(root string) ([]repoTarget, error) {
-	var targets []repoTarget
-	for _, category := range agentCategories {
-		base := filepath.Join(root, "agents", category)
-		entries, err := os.ReadDir(base)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("read %s: %w", base, err)
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			path := filepath.Join(base, e.Name())
-			if !isGitRepo(path) {
-				continue
-			}
-			targets = append(targets, repoTarget{
-				label: filepath.Join("agents", category, e.Name()),
-				path:  path,
-			})
-		}
-	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].label < targets[j].label })
-	return targets, nil
+const (
+	pullResultUpdated pullResultKind = iota
+	pullResultUnchanged
+	pullResultSkipped
+)
+
+type pullResult struct {
+	kind    pullResultKind
+	message string
 }
 
-// codeflyOrgMarker identifies a repository as a codefly module by its origin
-// remote. Both SSH (git@github.com:codefly-dev/…) and HTTPS
-// (https://github.com/codefly-dev/…) URLs contain this substring.
-const codeflyOrgMarker = "codefly-dev/"
+var pullFoundationRepos = []string{"cli", "core", "llm"}
 
-// alwaysConsider are directory names always included in the default target
-// list even when they aren't codefly git repos, so they still get a clear
-// notice. agents/ is not version-controlled locally (it holds nested repos)
-// and is expanded by --with-agents.
-var alwaysConsider = []string{"agents"}
-
-// pullTargets returns the directory names to consider, sorted. With --all it
-// is every subdirectory. Otherwise it is discovered DYNAMICALLY: every
-// immediate subdir that is a git repo whose origin remote points at the
-// codefly org (plus alwaysConsider entries). Nothing is hardcoded, so a
-// removed repo (e.g. proto) simply stops appearing and a new codefly repo is
-// picked up without a code change.
-func pullTargets(ctx context.Context, root string, all bool) ([]string, error) {
+// pullTargets returns exactly the canonical runtime repositories: cli, core,
+// llm, and top-level plugin checkouts. A plugin is identified by its
+// agent.codefly.yaml. Requiring the checkout directory to match the origin
+// repository name excludes task-specific clones and duplicate worktrees.
+func pullTargets(ctx context.Context, root string) ([]string, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
 	}
-	if all {
-		var names []string
-		for _, e := range entries {
-			if e.IsDir() {
-				names = append(names, e.Name())
-			}
+
+	selected := make(map[string]struct{})
+	for _, name := range pullFoundationRepos {
+		if isGitRepo(filepath.Join(root, name)) {
+			selected[name] = struct{}{}
 		}
-		sort.Strings(names)
-		return names, nil
 	}
-	var names []string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		if isCodeflyRepo(ctx, filepath.Join(root, e.Name())) {
-			names = append(names, e.Name())
+		if isCanonicalPluginRepo(ctx, filepath.Join(root, e.Name()), e.Name()) {
+			selected[e.Name()] = struct{}{}
 		}
 	}
-	for _, name := range alwaysConsider {
-		if info, err := os.Stat(filepath.Join(root, name)); err == nil && info.IsDir() {
-			names = append(names, name)
-		}
+
+	names := make([]string, 0, len(selected))
+	for name := range selected {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names, nil
 }
 
-// isCodeflyRepo reports whether dir is a git repo whose origin remote is a
-// codefly-dev repository.
-func isCodeflyRepo(ctx context.Context, dir string) bool {
+func isCanonicalPluginRepo(ctx context.Context, dir, name string) bool {
 	if !isGitRepo(dir) {
+		return false
+	}
+	manifest, err := os.Stat(filepath.Join(dir, "agent.codefly.yaml"))
+	if err != nil || manifest.IsDir() {
 		return false
 	}
 	out, err := git(ctx, dir, "remote", "get-url", "origin")
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, codeflyOrgMarker)
+	return remoteRepositoryName(out) == name
+}
+
+func remoteRepositoryName(remote string) string {
+	remote = strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(remote), "/"), ".git")
+	if separator := strings.LastIndexAny(remote, "/:"); separator >= 0 {
+		return remote[separator+1:]
+	}
+	return remote
 }
 
 // errRemoteMissing marks a fetch that failed because the upstream repository
@@ -314,24 +260,39 @@ func isRemoteMissing(out string) bool {
 	return false
 }
 
-// pullRepo merges remote/branch into the repo's current branch without ever
-// discarding local work. It fetches, stashes any dirty state, merges, then
-// restores the stash. On a merge conflict it aborts cleanly and returns an
-// error; the repo is left as it was found.
-func pullRepo(ctx context.Context, repo, remote, branch string) (string, error) {
+// pullRepo merges remote/branch only when the repository is already checked
+// out on branch. Feature branches and detached HEADs are skipped before fetch,
+// stash, or merge. For the selected branch, local work remains protected by a
+// stash around the merge.
+func pullRepo(ctx context.Context, repo, remote, branch string) (pullResult, error) {
+	current, err := git(ctx, repo, "branch", "--show-current")
+	if err != nil {
+		return pullResult{}, fmt.Errorf("resolve current branch: %s", firstLine(current))
+	}
+	current = strings.TrimSpace(current)
+	if current != branch {
+		if current == "" {
+			current = "detached HEAD"
+		}
+		return pullResult{
+			kind:    pullResultSkipped,
+			message: fmt.Sprintf("skipped (on %s; expected branch %s)", current, branch),
+		}, nil
+	}
+
 	if out, err := git(ctx, repo, "fetch", "--", remote, branch); err != nil {
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return pullResult{}, ctx.Err()
 		}
 		if isRemoteMissing(out) {
-			return "", fmt.Errorf("%w: %s", errRemoteMissing, firstLine(out))
+			return pullResult{}, fmt.Errorf("%w: %s", errRemoteMissing, firstLine(out))
 		}
-		return "", fmt.Errorf("fetch failed: %s", firstLine(out))
+		return pullResult{}, fmt.Errorf("fetch failed: %s", firstLine(out))
 	}
 
 	before, err := git(ctx, repo, "rev-parse", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("resolve current HEAD: %s", firstLine(before))
+		return pullResult{}, fmt.Errorf("resolve current HEAD: %s", firstLine(before))
 	}
 	before = strings.TrimSpace(before)
 
@@ -341,13 +302,13 @@ func pullRepo(ctx context.Context, repo, remote, branch string) (string, error) 
 	status, err := git(ctx, repo, "status", "--porcelain")
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return pullResult{}, ctx.Err()
 		}
-		return "", fmt.Errorf("inspect local changes: %s", firstLine(status))
+		return pullResult{}, fmt.Errorf("inspect local changes: %s", firstLine(status))
 	}
 	if strings.TrimSpace(status) != "" {
 		if _, err := git(ctx, repo, "stash", "push", "--include-untracked", "-m", "codefly self pull"); err != nil {
-			return "", fmt.Errorf("could not stash local changes; left untouched")
+			return pullResult{}, fmt.Errorf("could not stash local changes; left untouched")
 		}
 		dirty = true
 	}
@@ -361,16 +322,16 @@ func pullRepo(ctx context.Context, repo, remote, branch string) (string, error) 
 		_, _ = git(cleanupCtx, repo, "merge", "--abort")
 		if dirty {
 			if restoreOut, restoreErr := git(cleanupCtx, repo, "stash", "pop"); restoreErr != nil {
-				return "", errors.Join(
+				return pullResult{}, errors.Join(
 					fmt.Errorf("merge failed: %s", firstLine(mergeOut)),
 					fmt.Errorf("could not restore local changes; backup remains in git stash: %s", firstLine(restoreOut)),
 				)
 			}
 		}
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return pullResult{}, err
 		}
-		return "", fmt.Errorf("merge failed; local work restored (%s)", firstLine(mergeOut))
+		return pullResult{}, fmt.Errorf("merge failed; local work restored (%s)", firstLine(mergeOut))
 	}
 
 	if dirty {
@@ -378,19 +339,22 @@ func pullRepo(ctx context.Context, repo, remote, branch string) (string, error) 
 			// Merge landed, but reapplying local changes hit conflicts: git
 			// left conflict markers in the tree AND retained the stash as a
 			// backup. This is not a successful pull: flag it for manual repair.
-			return "", fmt.Errorf("merge completed but local changes could not be restored; resolve the working tree and use the backup retained in git stash: %s", firstLine(restoreOut))
+			return pullResult{}, fmt.Errorf("merge completed but local changes could not be restored; resolve the working tree and use the backup retained in git stash: %s", firstLine(restoreOut))
 		}
 	}
 
 	after, err := git(ctx, repo, "rev-parse", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("resolve updated HEAD: %s", firstLine(after))
+		return pullResult{}, fmt.Errorf("resolve updated HEAD: %s", firstLine(after))
 	}
 	after = strings.TrimSpace(after)
 	if after == before {
-		return "already up to date", nil
+		return pullResult{kind: pullResultUnchanged, message: "already up to date"}, nil
 	}
-	return fmt.Sprintf("updated %s..%s", short(before), short(after)), nil
+	return pullResult{
+		kind:    pullResultUpdated,
+		message: fmt.Sprintf("updated %s..%s", short(before), short(after)),
+	}, nil
 }
 
 // git runs a git command in repo and returns combined output.
