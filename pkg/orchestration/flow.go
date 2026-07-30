@@ -1757,13 +1757,18 @@ func (flow *Flow) WithExcludedDependencies(services []string) {
 	flow.excludedDependencyServices = services
 }
 
-func (flow *Flow) WithRunProfile(profile ResolvedRunProfile) error {
+// WithRunProfile applies an already-resolved run profile (the canonical,
+// validated exclusions produced by resources.Workspace.ResolveRunProfile) to a
+// run flow. Profiles only trim local run composition, so this rejects any other
+// flow mode. The excluded dependency references are canonical module/service
+// uniques, matching what architecture.ExcludeServices keys on.
+func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
 	if flow == nil || flow.world == nil || flow.world.Mode != RunMode {
 		return fmt.Errorf("run profiles can only be applied to run flows")
 	}
-	flow.excludedDependencyServices = append([]string(nil), profile.ExcludedDependencies...)
-	flow.world.excludedWorkspaceConfigurations = make(map[string]bool, len(profile.ExcludedWorkspaceConfigurations))
-	for _, configuration := range profile.ExcludedWorkspaceConfigurations {
+	flow.excludedDependencyServices = append([]string(nil), profile.ExcludeDependencies...)
+	flow.world.excludedWorkspaceConfigurations = make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
+	for _, configuration := range profile.ExcludeWorkspaceConfigurations {
 		flow.world.excludedWorkspaceConfigurations[configuration] = true
 	}
 	return nil

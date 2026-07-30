@@ -661,7 +661,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	}
 	flow.WithOverrides(overrides)
 	flow.WithRemotes(remoteServices)
-	resolvedProfile, err := orchestration.ResolveRunProfile(ctx, workspace, profile, excludeDependencies)
+	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

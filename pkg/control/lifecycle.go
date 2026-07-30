@@ -148,7 +148,7 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 	}
 	flows := p.host.Flows()
 	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(workspace *resources.Workspace, f *orchestration.Flow) error {
-		profile, err := orchestration.ResolveRunProfile(ctx, workspace, req.Profile, req.Exclude)
+		profile, err := workspace.ResolveRunProfile(ctx, req.Profile, resources.RunProfile{ExcludeDependencies: req.Exclude})
 		if err != nil {
 			return err
 		}
