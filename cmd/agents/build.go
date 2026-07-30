@@ -175,6 +175,9 @@ func BuildAllAgents(ctx context.Context, root string, opts BuildOptions) error {
 }
 
 func BuildAgents(ctx context.Context, root string, dirs []string, opts BuildOptions) error {
+	if len(dirs) == 0 {
+		return nil
+	}
 	dirs = append([]string(nil), dirs...)
 	sort.Strings(dirs)
 	return buildAgents(ctx, root, dirs, buildOptions{skipAudit: opts.SkipAudit, failOnVuln: opts.FailOnVuln, jobs: opts.Jobs, nativeOnly: opts.NativeOnly})

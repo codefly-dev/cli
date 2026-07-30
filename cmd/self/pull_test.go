@@ -2,10 +2,12 @@ package self
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +89,8 @@ func TestDiscoverCanonicalPluginRepos(t *testing.T) {
 	}
 
 	initRepoWithRemote(t, root, "sdk-go", "git@github.com:codefly-dev/sdk-go.git")
+	initRepoWithRemote(t, root, "service-without-origin", "")
+	markPlugin(t, root, "service-without-origin")
 	if err := os.MkdirAll(filepath.Join(root, "service-not-a-repo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +122,34 @@ func TestDiscoverCanonicalPluginRepos(t *testing.T) {
 	}
 	if !reflect.DeepEqual(skipped, wantSkipped) {
 		t.Fatalf("skipped plugins = %#v, want %#v", skipped, wantSkipped)
+	}
+}
+
+func TestDiscoverCanonicalPluginReposReturnsOriginLookupErrors(t *testing.T) {
+	root := t.TempDir()
+	initRepoWithRemote(t, root, "service-postgres", "git@github.com:codefly-dev/service-postgres.git")
+	markPlugin(t, root, "service-postgres")
+	if err := os.WriteFile(filepath.Join(root, "service-postgres", ".git", "config"), []byte("[invalid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := discoverCanonicalPluginRepos(context.Background(), root); err == nil {
+		t.Fatal("discoverCanonicalPluginRepos unexpectedly ignored an origin lookup failure")
+	} else if !strings.Contains(err.Error(), "service-postgres") {
+		t.Fatalf("discoverCanonicalPluginRepos error = %v, want checkout name", err)
+	}
+}
+
+func TestDiscoverCanonicalPluginReposReturnsCancellation(t *testing.T) {
+	root := t.TempDir()
+	initRepoWithRemote(t, root, "service-postgres", "git@github.com:codefly-dev/service-postgres.git")
+	markPlugin(t, root, "service-postgres")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := discoverCanonicalPluginRepos(ctx, root)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("discoverCanonicalPluginRepos cancellation error = %v, want context.Canceled", err)
 	}
 }
 

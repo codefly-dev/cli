@@ -235,8 +235,11 @@ func discoverCanonicalPluginRepos(ctx context.Context, root string) ([]repoTarge
 		if err != nil || manifest.IsDir() {
 			continue
 		}
-		out, err := git(ctx, dir, "remote", "get-url", "origin")
+		out, found, err := originRemoteURL(ctx, dir)
 		if err != nil {
+			return nil, nil, err
+		}
+		if !found {
 			continue
 		}
 		originRepository := remoteRepositoryName(out)
@@ -247,6 +250,39 @@ func discoverCanonicalPluginRepos(ctx context.Context, root string) ([]repoTarge
 		plugins = append(plugins, repoTarget{label: name, path: dir})
 	}
 	return plugins, skipped, nil
+}
+
+func originRemoteURL(ctx context.Context, dir string) (string, bool, error) {
+	remotes, err := git(ctx, dir, "remote")
+	if err != nil {
+		return "", false, gitOperationError(ctx, fmt.Sprintf("list Git remotes for %s", dir), remotes, err)
+	}
+	found := false
+	for _, remote := range strings.Fields(remotes) {
+		if remote == "origin" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", false, nil
+	}
+
+	out, err := git(ctx, dir, "remote", "get-url", "origin")
+	if err != nil {
+		return "", false, gitOperationError(ctx, fmt.Sprintf("resolve origin URL for %s", dir), out, err)
+	}
+	return out, true, nil
+}
+
+func gitOperationError(ctx context.Context, action, output string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if detail := firstLine(output); detail != "" {
+		return fmt.Errorf("%s: %w: %s", action, err, detail)
+	}
+	return fmt.Errorf("%s: %w", action, err)
 }
 
 func remoteRepositoryName(remote string) string {

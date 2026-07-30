@@ -211,6 +211,18 @@ func TestBuildAgentsUsesOnlySelectedDirectoriesInSortedOrder(t *testing.T) {
 	}
 }
 
+func TestBuildAgentsEmptySelectionIsNoop(t *testing.T) {
+	if err := BuildAgents(context.Background(), t.TempDir(), nil, BuildOptions{SkipAudit: true}); err != nil {
+		t.Fatalf("BuildAgents empty selection: %v", err)
+	}
+}
+
+func TestBuildAllAgentsRequiresDiscoveredAgent(t *testing.T) {
+	if err := BuildAllAgents(context.Background(), t.TempDir(), BuildOptions{SkipAudit: true}); err == nil {
+		t.Fatal("BuildAllAgents unexpectedly accepted an empty root")
+	}
+}
+
 func TestEnsureSourcePackagerBootstrapsExactGoAgent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CODEFLY_HOME", home)
