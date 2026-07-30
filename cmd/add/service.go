@@ -99,9 +99,13 @@ func addService(ctx context.Context, name string, agentInput string) error {
 		return nil
 	}
 
+	agentProto, err := agent.Proto()
+	if err != nil {
+		return w.Wrapf(err, "cannot resolve agent %s", agent.Identifier())
+	}
 	input := &actionsservice.AddService{
 		Name:  svcWithMod.Name,
-		Agent: agent.Proto(),
+		Agent: agentProto,
 	}
 
 	addDescription, err := models.ConfirmE(ctx, "Do you want to add a short description?", false)

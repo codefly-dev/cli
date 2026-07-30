@@ -26,7 +26,9 @@ func TestProbeGitHubAssetReportsMissingArtifact(t *testing.T) {
 	defer server.Close()
 
 	restore := githubAssetURL
-	githubAssetURL = func(*resources.Agent) string { return server.URL + "/service-redis_0.0.74_linux_amd64.tar.gz" }
+	githubAssetURL = func(*resources.Agent) (string, error) {
+		return server.URL + "/service-redis_0.0.74_linux_amd64.tar.gz", nil
+	}
 	defer func() { githubAssetURL = restore }()
 
 	probe := probeGitHubAsset(context.Background(), testAgent())
@@ -48,7 +50,7 @@ func TestProbeGitHubAssetReportsPublishedArtifact(t *testing.T) {
 	defer server.Close()
 
 	restore := githubAssetURL
-	githubAssetURL = func(*resources.Agent) string { return server.URL + "/asset.tar.gz" }
+	githubAssetURL = func(*resources.Agent) (string, error) { return server.URL + "/asset.tar.gz", nil }
 	defer func() { githubAssetURL = restore }()
 
 	probe := probeGitHubAsset(context.Background(), testAgent())
@@ -98,7 +100,7 @@ func TestProbeAgentArtifactCombinesSources(t *testing.T) {
 	defer github.Close()
 
 	restore := githubAssetURL
-	githubAssetURL = func(*resources.Agent) string { return github.URL + "/asset.tar.gz" }
+	githubAssetURL = func(*resources.Agent) (string, error) { return github.URL + "/asset.tar.gz", nil }
 	defer func() { githubAssetURL = restore }()
 	t.Setenv("AGENT_REGISTRY", "")
 

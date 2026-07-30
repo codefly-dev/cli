@@ -302,7 +302,11 @@ func TestGithubSourceMatchesManagerDownloadURL(t *testing.T) {
 		{Kind: resources.ServiceAgent, Publisher: "acme.co.uk", Name: "multi.part", Version: "1.2.3"},
 	} {
 		owner, repo := githubSource(agent)
-		u, err := url.Parse(manager.DownloadURL(agent))
+		downloadURL, err := manager.DownloadURL(agent)
+		if err != nil {
+			t.Fatalf("resolve download URL: %v", err)
+		}
+		u, err := url.Parse(downloadURL)
 		if err != nil {
 			t.Fatalf("parse download URL: %v", err)
 		}

@@ -135,7 +135,12 @@ func probeAgentArtifact(ctx context.Context, agent *resources.Agent) agentArtifa
 }
 
 func probeGitHubAsset(ctx context.Context, agent *resources.Agent) agentSourceProbe {
-	url := githubAssetURL(agent)
+	url, err := githubAssetURL(agent)
+	if err != nil {
+		// The agent's kind no longer resolves, so there is no asset name to
+		// probe or even to label the probe with.
+		return agentSourceProbe{label: "GitHub release asset", detail: err.Error()}
+	}
 	probe := agentSourceProbe{label: "GitHub release asset " + path.Base(url)}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {

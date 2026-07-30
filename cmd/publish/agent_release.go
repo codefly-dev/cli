@@ -319,7 +319,11 @@ func verifyReleaseAssets(ctx context.Context, publisher, name, version string, a
 		url := loaderDownloadURL(publisher, name, version, asset.platform)
 		if asset.platform.os == runtime.GOOS && asset.platform.arch == runtime.GOARCH {
 			agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: publisher, Name: name, Version: version}
-			if resolver := manager.DownloadURL(agent); resolver != url {
+			resolver, err := manager.DownloadURL(agent)
+			if err != nil {
+				return fmt.Errorf("cannot resolve install URL for %s/%s@%s: %w", publisher, name, version, err)
+			}
+			if resolver != url {
 				return fmt.Errorf("uploaded asset URL %s does not match install resolver %s", url, resolver)
 			}
 		}
