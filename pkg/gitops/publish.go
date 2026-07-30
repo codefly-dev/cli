@@ -1452,8 +1452,19 @@ func gitCommandBytes(ctx context.Context, dir string, args ...string) ([]byte, e
 }
 
 func command(ctx context.Context, dir, name string, args ...string) (string, error) {
+	return commandWithEnvironment(ctx, dir, nil, name, args...)
+}
+
+func commandWithEnvironment(
+	ctx context.Context,
+	dir string,
+	environment []string,
+	name string,
+	args ...string,
+) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	cmd.Env = environment
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

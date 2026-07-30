@@ -139,6 +139,25 @@ func TestArgoRepositoryUsesWorkspaceFetchURLForLocalPromotion(t *testing.T) {
 	}
 }
 
+func TestArgoRepositoryRejectsProductionFetchRepositoryMismatch(t *testing.T) {
+	config := &repositoryConfig{
+		RepoURL:      "git@github.com:codefly-dev/manifests.git",
+		FetchRepoURL: "https://github.com/codefly-dev/other-manifests.git",
+	}
+	if _, err := argoRepository(config); err == nil ||
+		!strings.Contains(err.Error(), "must identify the publication repository") {
+		t.Fatalf("mismatched fetch repository error = %v", err)
+	}
+	config.FetchRepoURL = "https://github.com/codefly-dev/manifests.git"
+	repository, err := argoRepository(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != config.FetchRepoURL {
+		t.Fatalf("Argo repository = %q", repository)
+	}
+}
+
 func TestModuleBundleRejectsArgoTransportResources(t *testing.T) {
 	root := t.TempDir()
 	application := `apiVersion: argoproj.io/v1alpha1
@@ -252,6 +271,11 @@ func TestPublishComposesTransportNeutralModuleBundleIntoArgoPromotion(t *testing
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspaceWithAgent(t, remote)
 	configureSSHSigning(t)
+	t.Setenv("GITHUB_TOKEN", "must-not-reach-module-agent")
+	t.Setenv("AWS_ACCESS_KEY_ID", "must-not-reach-module-agent")
+	t.Setenv("KUBECONFIG", "/must/not/reach/module-agent")
+	t.Setenv("PULUMI_ACCESS_TOKEN", "must-not-reach-module-agent")
+	t.Setenv("SSH_AUTH_SOCK", "/must/not/reach/module-agent.sock")
 
 	home := t.TempDir()
 	t.Setenv(resources.CodeflyHomeEnv, home)
@@ -267,6 +291,14 @@ func TestPublishComposesTransportNeutralModuleBundleIntoArgoPromotion(t *testing
 	}
 	generator := `#!/bin/sh
 set -eu
+if grep -Eq 'gitops:|repo-url:|fetch-repo-url:|branch:' "$PWD/workspace.codefly.yaml"; then
+  echo "module agent received GitOps authority" >&2
+  exit 90
+fi
+if [ -n "${GITHUB_TOKEN-}${AWS_ACCESS_KEY_ID-}${KUBECONFIG-}${PULUMI_ACCESS_TOKEN-}${GIT_CONFIG_COUNT-}${SSH_AUTH_SOCK-}${CODEFLY_HOME-}" ]; then
+  echo "module agent inherited host credentials or configuration" >&2
+  exit 91
+fi
 module_dir="$1"
 destination="$module_dir/deployment/kustomize"
 mkdir -p "$destination/overlays/production/resources"
