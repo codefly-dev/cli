@@ -309,9 +309,14 @@ func validateInventoryKubernetesOutput(service string, output *KubernetesOutputI
 		output.ContractVersion != coreservices.KubernetesManifestContractVersion {
 		return fmt.Errorf("service %s has incompatible Kubernetes output evidence", service)
 	}
+	if output.Validation == nil {
+		return fmt.Errorf("service %s has no promotable Kubernetes validation evidence", service)
+	}
 	passed := builderv0.KubernetesManifestValidation_STATUS_PASSED.String()
+	notRun := builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String()
+	serverSideValidation := output.Validation.ServerSideValidation
 	if output.Validation.StaticValidation != passed ||
-		output.Validation.ServerSideValidation != passed ||
+		(serverSideValidation != passed && serverSideValidation != notRun) ||
 		!output.Validation.Promotable ||
 		output.Validation.Violations == nil ||
 		len(output.Validation.Violations) != 0 {

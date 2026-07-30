@@ -112,6 +112,46 @@ func TestInventoryKubernetesOutputPreservesPromotableEvidence(t *testing.T) {
 	}
 }
 
+func TestValidateInventoryKubernetesOutputAcceptsRenderOnlyValidation(t *testing.T) {
+	output := &KubernetesOutputInventory{
+		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String(),
+		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+		Validation: &KubernetesValidationInventory{
+			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
+			Promotable:           true,
+			Violations:           []string{},
+		},
+	}
+
+	if err := validateInventoryKubernetesOutput("accounts", output); err != nil {
+		t.Fatalf("render-only validation rejected: %v", err)
+	}
+}
+
+func TestValidateInventoryKubernetesOutputRejectsFailedOrMissingValidation(t *testing.T) {
+	output := &KubernetesOutputInventory{
+		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String(),
+		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+		Validation: &KubernetesValidationInventory{
+			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_FAILED.String(),
+			Promotable:           true,
+			Violations:           []string{},
+		},
+	}
+
+	if err := validateInventoryKubernetesOutput("accounts", output); err == nil {
+		t.Fatal("failed server-side validation was accepted")
+	}
+	output.Validation = nil
+	if err := validateInventoryKubernetesOutput("accounts", output); err == nil {
+		t.Fatal("missing validation evidence was accepted")
+	}
+}
+
 func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "deployments", "modules", "users")
 	output := &InventoryKubernetesOutput{
