@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/daemon"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
@@ -45,6 +46,7 @@ processes — and tells you how to fix each one.`,
 			checkDaemon,
 			checkStrayAgents,
 			checkStaleSockets,
+			checkGitOpsFetchRemotes,
 		}
 
 		anyFail := false
@@ -288,6 +290,42 @@ func checkStaleSockets(_ context.Context) checkResult {
 	}
 	r.status = statusOK
 	r.detail = "none"
+	return r
+}
+
+// checkGitOpsFetchRemotes sweeps every container the GitOps fetch-remote
+// lifecycle owns and reports the drift each one leaks — wildcard host bindings,
+// a mutable (non-digest) image, an expired certificate, or a stopped remote.
+// Docker is optional here, so an unreachable daemon is not a failure.
+func checkGitOpsFetchRemotes(ctx context.Context) checkResult {
+	r := checkResult{name: "gitops fetch remotes"}
+	findings, count, err := gitops.AuditFetchRemotes(ctx, time.Now())
+	if err != nil {
+		r.status = statusOK
+		r.detail = "skipped (docker not reachable)"
+		return r
+	}
+	if count == 0 {
+		r.status = statusOK
+		r.detail = "none present"
+		return r
+	}
+	if len(findings) == 0 {
+		r.status = statusOK
+		r.detail = fmt.Sprintf("%d remote(s) healthy", count)
+		return r
+	}
+	messages := make([]string, 0, len(findings))
+	worst := statusWarn
+	for _, finding := range findings {
+		messages = append(messages, finding.Message)
+		if finding.Severity == "fail" {
+			worst = statusFail
+		}
+	}
+	r.status = worst
+	r.detail = strings.Join(messages, "; ")
+	r.fix = "recreate the remote with `codefly deploy gitops remote up <module>` or remove it with `codefly deploy gitops remote down`"
 	return r
 }
 
