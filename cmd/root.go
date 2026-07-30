@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	configcmd "github.com/codefly-dev/cli/cmd/config"
 	"github.com/codefly-dev/cli/cmd/endpoint"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
@@ -294,6 +295,11 @@ func init() {
 
 	// Resolve a single endpoint to bare host:port (script-friendly).
 	RootCmd.AddCommand(endpoint.Cmd)
+
+	// Provision the configuration files Codefly reads. Configuration is
+	// Codefly's format, so writing it is a Codefly operation — consumers must
+	// not hand-assemble configurations/<profile>/*.env themselves.
+	RootCmd.AddCommand(configcmd.Cmd)
 
 	// Static help plus optional workspace-aware AI guidance.
 	RootCmd.AddCommand(ExplainCmd)
