@@ -257,6 +257,9 @@ func buildCLICross(ctx context.Context, srcDir, output, goos, goarch string) err
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("go build: %w", err)
 	}
 	cli.Info("Built in %s", time.Since(start).Round(time.Millisecond))
@@ -290,6 +293,9 @@ func buildCLI(ctx context.Context, srcDir, output string) error {
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("go build: %w", err)
 	}
 

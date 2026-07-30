@@ -2,9 +2,11 @@ package self
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -118,14 +120,26 @@ func TestBuildCLICancellationPreservesExistingOutput(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := buildCLI(ctx, t.TempDir(), output); err == nil {
-		t.Fatal("buildCLI unexpectedly succeeded with a cancelled context")
+	if err := buildCLI(ctx, t.TempDir(), output); !errors.Is(err, context.Canceled) {
+		t.Fatalf("buildCLI cancellation error = %v, want context.Canceled", err)
+	} else if strings.Count(err.Error(), context.Canceled.Error()) != 1 {
+		t.Fatalf("buildCLI cancellation error = %q, want one cancellation", err)
 	}
-	contents, err := os.ReadFile(output)
-	if err != nil {
+	if contents, err := os.ReadFile(output); err != nil {
 		t.Fatal(err)
-	}
-	if string(contents) != "existing" {
+	} else if string(contents) != "existing" {
 		t.Fatalf("existing output changed after cancelled build: %q", contents)
+	}
+}
+
+func TestBuildCLICrossReturnsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := buildCLICross(ctx, t.TempDir(), filepath.Join(t.TempDir(), "codefly"), "linux", "amd64")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("buildCLICross cancellation error = %v, want context.Canceled", err)
+	}
+	if strings.Count(err.Error(), context.Canceled.Error()) != 1 {
+		t.Fatalf("buildCLICross cancellation error = %q, want one cancellation", err)
 	}
 }

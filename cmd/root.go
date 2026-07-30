@@ -21,8 +21,10 @@ import (
 
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
-	Use:   "codefly",
-	Short: "Build, run, test, and deploy services in a Codefly workspace",
+	Use:           "codefly",
+	Short:         "Build, run, test, and deploy services in a Codefly workspace",
+	SilenceErrors: true,
+	SilenceUsage:  true,
 	Long: `Codefly turns service development operations into consistent, agent-backed workflows.
 
 Use it to create workspace resources, run and test services locally, build
@@ -113,6 +115,29 @@ func rejectUnknownSubcommand(command *cobra.Command, args []string) error {
 func IsMachineReadableError(err error) bool {
 	var marker interface{ MachineReadable() bool }
 	return errors.As(err, &marker) && marker.MachineReadable()
+}
+
+// IsCancellationError reports a graceful interruption initiated by the
+// operator. The process boundary suppresses ordinary failure rendering for
+// this case: the terminal already echoed Ctrl+C, and usage/error/log hints do
+// not help the operator recover.
+func IsCancellationError(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+// ShouldRenderError reports whether the process boundary should emit the
+// human-readable error chain. Cancellation is already visible as Ctrl+C, and
+// machine-readable commands own their complete output.
+func ShouldRenderError(err error) bool {
+	return !IsCancellationError(err) && !IsMachineReadableError(err)
+}
+
+// ExitCode returns the conventional process status for a command error.
+func ExitCode(err error) int {
+	if IsCancellationError(err) {
+		return 130
+	}
+	return 1
 }
 
 // applyRootOptions runs after Cobra has parsed the selected command and all of

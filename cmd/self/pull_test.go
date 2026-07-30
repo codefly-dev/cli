@@ -188,3 +188,25 @@ func TestPullRepoSkipsFeatureBranchBeforeFetch(t *testing.T) {
 		t.Fatalf("pullRepo message = %q, want %q", result.message, want)
 	}
 }
+
+func TestPullRepoReturnsCancellationOnce(t *testing.T) {
+	root := t.TempDir()
+	initRepoWithRemote(t, root, "service-go", "file:///definitely/missing/service-go.git")
+	repo := filepath.Join(root, "service-go")
+
+	checkout := exec.Command("git", "checkout", "-q", "-b", "main")
+	checkout.Dir = repo
+	if out, err := checkout.CombinedOutput(); err != nil {
+		t.Fatalf("create main branch: %v\n%s", err, out)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := pullRepo(ctx, repo, "origin", "main")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("pullRepo cancellation error = %v, want context.Canceled", err)
+	}
+	if strings.Count(err.Error(), context.Canceled.Error()) != 1 {
+		t.Fatalf("pullRepo cancellation error = %q, want one cancellation", err)
+	}
+}

@@ -15,10 +15,10 @@ import (
 
 func main() {
 	if err := cmd.Execute(); err != nil {
-		if !cmd.IsMachineReadableError(err) {
+		if cmd.ShouldRenderError(err) {
 			cli.ErrorChain(err, "cannot execute command")
 		}
 		cli.Done()
-		os.Exit(1)
+		os.Exit(cmd.ExitCode(err))
 	}
 }
