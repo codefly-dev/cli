@@ -16,6 +16,36 @@
 # is released.
 
 suppressions:
+  - id: GO-2026-5932
+    module: golang.org/x/crypto
+    reason: |
+      x/crypto/openpgp is deprecated-by-design and has no fixed version
+      (Fixed: N/A). The CLI's own reach through go-github/v37 was removed
+      by upgrading to go-github/v89, which no longer imports openpgp. The
+      only remaining reach is core's releaseupdate package → its
+      go-selfupdate dependency, which uses openpgp to verify GPG-signed
+      release artifacts during `codefly` self-update — an intended,
+      signature-verification code path, not spurious. That module is
+      pinned via codefly-dev/core and cannot be migrated from this repo.
+      Follow-up: core migrates releaseupdate/go-selfupdate off
+      x/crypto/openpgp; re-review at the staleness deadline and drop this
+      entry once that lands.
+    reviewed: 2026-07-30
+
+  - id: GO-2026-5668
+    module: github.com/docker/docker
+    reason: |
+      Docker `docker cp` symlink-swap race that can create arbitrary empty
+      files on the host. The vulnerable path is the copy-to/from-container
+      archive extraction; the CLI never calls CopyToContainer /
+      CopyFromContainer (grep-verified) — it only uses the client for
+      Container{Create,Start,Stop,Inspect,...}, image pulls, and log
+      stream demux (stdcopy). Verified via govulncheck traces: every
+      reachable trace is a client call or package-init chain in the shared
+      module graph, none reach the copy/archive code.
+      Upstream fix: pending Moby release (no CVE-fixed version yet).
+    reviewed: 2026-07-30
+
   - id: GO-2026-4887
     module: github.com/docker/docker
     reason: |
@@ -25,7 +55,7 @@ suppressions:
       via govulncheck traces: none reach plugins/authorization code —
       they are all package-init chains in the shared module graph.
       Upstream fix: pending Moby release (no CVE-fixed version yet).
-    reviewed: 2026-06-16
+    reviewed: 2026-07-30
 
   - id: GO-2026-4883
     module: github.com/docker/docker
@@ -34,4 +64,4 @@ suppressions:
       validation; we never install Docker plugins via the API. Verified
       unreachable — no trace path reaches pkg/authorization/ code.
       Upstream fix: pending Moby release.
-    reviewed: 2026-06-16
+    reviewed: 2026-07-30

@@ -17,7 +17,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/resources"
-	"github.com/google/go-github/v37/github"
+	"github.com/google/go-github/v89/github"
 	"github.com/spf13/cobra"
 )
 
@@ -440,11 +440,14 @@ func githubSource(agent *resources.Agent) (owner, repo string) {
 // requests fast, and the unauthenticated 60/hour limit turns this diagnostic
 // flaky exactly when a workspace has many pins to check.
 func newGitHubClient() *github.Client {
-	token := githubToken()
-	if token == "" {
-		return github.NewClient(nil)
+	// NewClient only errors on enterprise-URL configuration, which we never
+	// pass, so the default/auth-token options here cannot fail.
+	if token := githubToken(); token != "" {
+		client, _ := github.NewClient(github.WithAuthToken(token))
+		return client
 	}
-	return github.NewClient(&http.Client{Transport: &tokenTransport{token: token}})
+	client, _ := github.NewClient()
+	return client
 }
 
 // githubToken resolves a GitHub token from GITHUB_TOKEN/GH_TOKEN, falling back
@@ -464,16 +467,6 @@ func githubToken() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
-}
-
-type tokenTransport struct {
-	token string
-}
-
-func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", "Bearer "+t.token)
-	return http.DefaultTransport.RoundTrip(clone)
 }
 
 func localCacheVersions(ctx context.Context, agent *resources.Agent) []string {

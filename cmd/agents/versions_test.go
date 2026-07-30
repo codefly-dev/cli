@@ -197,15 +197,15 @@ func TestLocalCacheVersionsScansAgentDir(t *testing.T) {
 	}
 }
 
-func TestTokenTransportAddsAuthorization(t *testing.T) {
+func TestNewGitHubClientAddsAuthorization(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "secret")
 	var got string
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		got = r.Header.Get("Authorization")
 	}))
 	defer server.Close()
 
-	client := &http.Client{Transport: &tokenTransport{token: "secret"}}
-	resp, err := client.Get(server.URL)
+	resp, err := newGitHubClient().Client().Get(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
