@@ -1016,42 +1016,46 @@ func copyTree(source, destination string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(destination, relative)
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s: symbolic links are not allowed", relative)
-		}
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%s: non-regular files are not allowed", relative)
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		input, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
-		if err != nil {
-			input.Close()
-			return err
-		}
-		writer := bufio.NewWriter(output)
-		_, copyErr := io.Copy(writer, input)
-		inputErr := input.Close()
-		flushErr := writer.Flush()
-		closeErr := output.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if inputErr != nil {
-			return inputErr
-		}
-		if flushErr != nil {
-			return flushErr
-		}
-		return closeErr
+		return copyTreeEntry(destination, path, relative, info)
 	})
+}
+
+func copyTreeEntry(destination, path, relative string, info os.FileInfo) error {
+	target := filepath.Join(destination, relative)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s: symbolic links are not allowed", relative)
+	}
+	if info.IsDir() {
+		return os.MkdirAll(target, info.Mode().Perm())
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: non-regular files are not allowed", relative)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	input, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		input.Close()
+		return err
+	}
+	writer := bufio.NewWriter(output)
+	_, copyErr := io.Copy(writer, input)
+	inputErr := input.Close()
+	flushErr := writer.Flush()
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if inputErr != nil {
+		return inputErr
+	}
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
 }

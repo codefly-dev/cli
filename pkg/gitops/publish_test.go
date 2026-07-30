@@ -466,6 +466,36 @@ EOF
 	}
 }
 
+func TestCopyModuleInputTreeExcludesTransientBuildOutput(t *testing.T) {
+	source := t.TempDir()
+	destination := filepath.Join(t.TempDir(), "module")
+	topology := filepath.Join(source, "deployment", "topology.bindings.codefly.yaml")
+	if err := os.MkdirAll(filepath.Dir(topology), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(topology, []byte("version: v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nextModules := filepath.Join(source, "services", "frontend", "code", ".next", "node_modules")
+	if err := os.MkdirAll(nextModules, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(nextModules, "transient-package")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyModuleInputTree(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(destination, "deployment", "topology.bindings.codefly.yaml"))
+	if err != nil || string(data) != "version: v1\n" {
+		t.Fatalf("module contract was not staged: data=%q error=%v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "services", "frontend", "code", ".next")); !os.IsNotExist(err) {
+		t.Fatalf("transient Next.js output was staged: %v", err)
+	}
+}
+
 func TestPublishRetriesPRAndReceiptForExistingSignedBranchCommit(t *testing.T) {
 	ctx := context.Background()
 	remote := createBareRepository(t)

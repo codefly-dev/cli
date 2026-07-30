@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
@@ -56,7 +57,7 @@ func renderModuleBundle(
 		return fmt.Errorf("module %q is outside the workspace", module.Name)
 	}
 	stagedModule := filepath.Join(stage, relativeModule)
-	if err := copyTree(module.Dir(), stagedModule); err != nil {
+	if err := copyModuleInputTree(module.Dir(), stagedModule); err != nil {
 		return fmt.Errorf("stage module bundle input: %w", err)
 	}
 	workspaceData, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
@@ -87,6 +88,35 @@ func renderModuleBundle(
 		return fmt.Errorf("copy selected module bundle: %w", err)
 	}
 	return nil
+}
+
+var moduleInputPrunedDirectories = map[string]struct{}{
+	".cache": {}, ".codefly": {}, ".git": {}, ".next": {}, ".turbo": {},
+	"__pycache__": {}, "build": {}, "coverage": {}, "dist": {}, "node_modules": {},
+	"playwright-report": {}, "test-results": {}, "vendor": {},
+}
+
+func copyModuleInputTree(source, destination string) error {
+	return filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		if relative != "." {
+			for _, part := range strings.Split(filepath.ToSlash(relative), "/") {
+				if _, excluded := moduleInputPrunedDirectories[part]; excluded {
+					if info.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+			}
+		}
+		return copyTreeEntry(destination, path, relative, info)
+	})
 }
 
 func loadSelectedModuleBundle(
