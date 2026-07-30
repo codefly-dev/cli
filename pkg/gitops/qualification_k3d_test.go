@@ -274,6 +274,109 @@ exit 2
 	}
 }
 
+// TestLocalFetchRemoteLifecycle proves the CLI-owned read-only fetch remote on a
+// disposable k3d network: host loopback exposure, private reachability of the
+// exact reviewed revision over container DNS + TLS with declarative CA trust, no
+// leaked private key, and a validated teardown that preserves repository data.
+func TestLocalFetchRemoteLifecycle(t *testing.T) {
+	if os.Getenv("CODEFLY_GITOPS_K3D_QUALIFY") != "1" {
+		t.Skip("set CODEFLY_GITOPS_K3D_QUALIFY=1 to run the disposable k3d fetch-remote qualification")
+	}
+	for _, binary := range []string{"docker", "k3d", "git"} {
+		if _, err := exec.LookPath(binary); err != nil {
+			t.Fatalf("%s is required: %v", binary, err)
+		}
+	}
+
+	source := createBareRepository(t)
+	revision := runExternal(t, "", nil, "git", "--git-dir", source, "rev-parse", "refs/heads/main")
+
+	cluster := "codefly-remote-" + fmt.Sprintf("%x", time.Now().UnixNano())
+	runExternal(t, "", nil, "k3d", "cluster", "create", cluster,
+		"--servers", "1", "--agents", "0", "--wait", "--timeout", "2m",
+		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
+	t.Cleanup(func() {
+		command := exec.Command("k3d", "cluster", "delete", cluster)
+		_ = command.Run()
+	})
+
+	// Pin the runtime image by the digest actually pulled — a floating tag is a
+	// mutable image the lifecycle refuses.
+	runExternal(t, "", nil, "docker", "pull", "nginx:1.27.3-alpine")
+	digest := runExternal(t, "", nil, "docker", "inspect", "--format", "{{index .RepoDigests 0}}", "nginx:1.27.3-alpine")
+	t.Setenv("CODEFLY_GITOPS_REMOTE_IMAGE", digest)
+
+	spec, err := NewRemoteSpec(&RemoteConfig{
+		WorkspaceRoot:  t.TempDir(),
+		Owner:          "qualify",
+		Workspace:      "payments",
+		Environment:    "local",
+		Cluster:        cluster,
+		RepositorySlug: "codefly-test/manifests",
+		SourceRepo:     "file://" + source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &FetchRemote{Spec: spec}
+	t.Cleanup(func() { _ = remote.Down(context.Background()) })
+
+	status, err := remote.Up(context.Background(), revision)
+	if err != nil {
+		t.Fatalf("fetch remote up: %v", err)
+	}
+	if len(status.Findings) != 0 {
+		t.Fatalf("fresh fetch remote reported drift: %+v", status.Findings)
+	}
+	for _, binding := range status.State.PortBindings {
+		if isWildcardHost(binding.HostIP) {
+			t.Fatalf("host binding is not loopback-only: %+v", binding)
+		}
+	}
+	if !strings.Contains(status.State.Image, "@sha256:") {
+		t.Fatalf("runtime image is not digest-pinned: %s", status.State.Image)
+	}
+	if status.State.Labels[labelRole] != remoteRole || status.State.Labels[labelOwner] != "qualify" {
+		t.Fatalf("ownership labels missing: %+v", status.State.Labels)
+	}
+
+	// Private reachability: a sibling on the k3d network fetches the exact
+	// revision over container DNS + TLS, trusting only the generated CA. No host
+	// port is involved.
+	clone := runExternal(t, "", nil, "docker", "run", "--rm", "--network", spec.Network,
+		"--volume", filepath.Join(spec.TLSDir(), "ca.crt")+":/ca.crt:ro",
+		"alpine:3.22.1", "sh", "-c",
+		"apk add --no-cache git >/dev/null 2>&1 && GIT_SSL_CAINFO=/ca.crt git clone --quiet https://"+spec.DNSName+"/repo.git /tmp/clone && git -C /tmp/clone cat-file -t "+revision)
+	if clone != "commit" {
+		t.Fatalf("private Argo-style fetch did not resolve the reviewed revision: %q", clone)
+	}
+
+	// Zero leaked credentials: the private key is owner-only on the host and is
+	// never mirrored into the repository the remote serves.
+	keyInfo, err := os.Stat(filepath.Join(spec.TLSDir(), "server.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keyInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("server key mode = %v, want 0600", keyInfo.Mode().Perm())
+	}
+	served := runExternal(t, "", nil, "git", "--git-dir", spec.RepoDir(), "log", "--all", "-p")
+	if strings.Contains(served, "PRIVATE KEY") {
+		t.Fatalf("served repository leaks a private key")
+	}
+
+	// Validated teardown preserves repository data.
+	if err := remote.Down(context.Background()); err != nil {
+		t.Fatalf("fetch remote down: %v", err)
+	}
+	if out, err := exec.Command("docker", "inspect", spec.ContainerName).CombinedOutput(); err == nil {
+		t.Fatalf("container survived teardown: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(spec.RepoDir(), "HEAD")); err != nil {
+		t.Fatalf("teardown did not preserve the mirror: %v", err)
+	}
+}
+
 func renderMindShapedFixture(t *testing.T, root, environment string) {
 	t.Helper()
 	services := append([]string(nil), mindShapedServices...)

@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -236,6 +237,146 @@ var gitOpsRollbackCmd = &cobra.Command{
 	},
 }
 
+var gitOpsRemoteCmd = &cobra.Command{
+	Use:   "remote",
+	Short: "Own the environment-scoped local read-only fetch remote Argo fetches from",
+}
+
+var gitOpsRemotePlanCmd = &cobra.Command{
+	Use:   "plan [module]",
+	Short: "Inspect the fetch remote that would serve the reviewed revision",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(_ *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		remote, revision, err := loadFetchRemote(ctx, args, true)
+		if err != nil {
+			return err
+		}
+		plan := remote.Plan(revision)
+		printRemotePlan(&plan)
+		return nil
+	},
+}
+
+var gitOpsRemoteUpCmd = &cobra.Command{
+	Use:   "up [module]",
+	Short: "Create or refresh the read-only fetch remote for the reviewed revision",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(_ *cobra.Command, args []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		remote, revision, err := loadFetchRemote(ctx, args, true)
+		if err != nil {
+			return err
+		}
+		status, err := remote.Up(ctx, revision)
+		if err != nil {
+			return err
+		}
+		cli.Info("Fetch remote %s is serving %s", status.State.Name, status.Revision)
+		cli.Info("Argo repository %s", status.ArgoRepository)
+		cli.Info("Repository CA %s", status.CACertPath)
+		printRemoteFindings(status.Findings)
+		return nil
+	},
+}
+
+var gitOpsRemoteStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Validate the fetch remote against its exact ownership and network identity",
+	Args:  cobra.NoArgs,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		remote, _, err := loadFetchRemote(ctx, nil, false)
+		if err != nil {
+			return err
+		}
+		status, err := remote.Status(ctx, "")
+		if err != nil {
+			return err
+		}
+		cli.Info("Fetch remote %s", status.Spec.ContainerName)
+		cli.Info("Argo repository %s", status.ArgoRepository)
+		if status.Revision != "" {
+			cli.Info("Reviewed revision %s", status.Revision)
+		}
+		printRemoteFindings(status.Findings)
+		return nil
+	},
+}
+
+var gitOpsRemoteDownCmd = &cobra.Command{
+	Use:   "down",
+	Short: "Tear down the fetch remote after re-validating ownership, preserving repository data",
+	Args:  cobra.NoArgs,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		remote, _, err := loadFetchRemote(ctx, nil, false)
+		if err != nil {
+			return err
+		}
+		if !gitOpsYes && !models.Confirm(ctx, "Tear down the local fetch remote (repository data is preserved)?", false) {
+			return fmt.Errorf("teardown not confirmed")
+		}
+		if err := remote.Down(ctx); err != nil {
+			return err
+		}
+		cli.Info("Fetch remote %s removed", remote.Spec.ContainerName)
+		return nil
+	},
+}
+
+func loadFetchRemote(ctx context.Context, args []string, requireRevision bool) (*gitops.FetchRemote, string, error) {
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	remote, err := gitops.NewFetchRemote(workspace, gitOpsEnv)
+	if err != nil {
+		return nil, "", err
+	}
+	if !requireRevision {
+		return remote, "", nil
+	}
+	if len(args) == 0 {
+		return nil, "", fmt.Errorf("a module is required to locate the reviewed revision to serve")
+	}
+	publication, err := gitops.LoadPublishResult(workspace.Dir(), args[0], gitOpsEnv)
+	if err != nil {
+		return nil, "", err
+	}
+	return remote, publication.SnapshotRevision, nil
+}
+
+func printRemotePlan(plan *gitops.RemotePlan) {
+	cli.Info("Container %s", plan.ContainerName)
+	cli.Info("Image %s", plan.Image)
+	cli.Info("Network %s", plan.Network)
+	cli.Info("Host verification %s", plan.HostBinding)
+	cli.Info("Argo repository %s", plan.ArgoRepository)
+	cli.Info("Mirror source %s", plan.SourceRepo)
+	if plan.Revision != "" {
+		cli.Info("Reviewed revision %s", plan.Revision)
+	}
+	cli.Info("Certificate validity %s", plan.CertValidity)
+	for _, mount := range plan.Mounts {
+		cli.Info("  mount %s", mount)
+	}
+}
+
+func printRemoteFindings(findings []gitops.RemoteFinding) {
+	if len(findings) == 0 {
+		cli.Info("No drift detected")
+		return
+	}
+	for _, finding := range findings {
+		cli.Warning("[%s] %s", finding.Severity, finding.Message)
+	}
+}
+
 func publishRequest(module string) gitops.PublishRequest {
 	return gitops.PublishRequest{
 		Module: module, Environment: gitOpsEnv,
@@ -302,4 +443,11 @@ func init() {
 	_ = gitOpsObserveCmd.MarkFlagRequired("app-project")
 	_ = gitOpsObserveCmd.MarkFlagRequired("application")
 	_ = gitOpsRollbackCmd.MarkFlagRequired("to-revision")
+
+	GitOpsCmd.AddCommand(gitOpsRemoteCmd)
+	gitOpsRemoteCmd.AddCommand(gitOpsRemotePlanCmd, gitOpsRemoteUpCmd, gitOpsRemoteStatusCmd, gitOpsRemoteDownCmd)
+	for _, command := range []*cobra.Command{gitOpsRemotePlanCmd, gitOpsRemoteUpCmd, gitOpsRemoteStatusCmd, gitOpsRemoteDownCmd} {
+		command.Flags().StringVar(&gitOpsEnv, "env", "local", "Environment whose fetch remote to manage")
+	}
+	gitOpsRemoteDownCmd.Flags().BoolVarP(&gitOpsYes, "yes", "y", false, "Tear down without an interactive confirmation")
 }

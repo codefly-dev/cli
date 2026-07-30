@@ -227,12 +227,30 @@ session; observation uses the active authenticated `argocd` context. Rollback
 refuses a target revision unless a prior Healthy reviewed evidence receipt
 links that revision.
 
-Maintainers can run the disposable local qualification (k3d, an in-network Git
-daemon, and pinned Argo CD) with:
+Locally there is no reachable Git host for Argo to fetch from, so the CLI owns a
+reproducible read-only fetch remote on the private k3d network:
+
+```bash
+codefly deploy gitops remote plan payments --env local
+codefly deploy gitops remote up payments --env local
+codefly deploy gitops remote status --env local
+codefly deploy gitops remote down --env local
+```
+
+It serves an exact reviewed revision from a read-only mirror over TLS, binds any
+host verification port to IPv4 loopback only, pins its image by digest, stamps
+exact ownership labels, and refuses teardown when ownership or network identity
+drifts. See [gitops-fetch-remote.md](gitops-fetch-remote.md) for the developer
+and recovery workflow. `codefly doctor` audits any remote it finds.
+
+Maintainers can run the disposable local qualifications (k3d, an in-network Git
+remote, and pinned Argo CD) with:
 
 ```bash
 CODEFLY_GITOPS_K3D_QUALIFY=1 \
   go test ./pkg/gitops -run TestLocalK3dDisposableGitQualification -v -count=1
+CODEFLY_GITOPS_K3D_QUALIFY=1 \
+  go test ./pkg/gitops -run TestLocalFetchRemoteLifecycle -v -count=1
 ```
 
 ### `codefly deploy init`
