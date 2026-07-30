@@ -160,8 +160,7 @@ func init() {
 	PullCmd.Flags().String("remote", "origin", "Remote to pull from")
 }
 
-// repoTarget is one repository to pull: an absolute path plus a short label
-// for display (e.g. "core" or "service-go-grpc").
+// repoTarget is a repository path plus its short display label.
 type repoTarget struct {
 	label string
 	path  string
@@ -187,7 +186,7 @@ var pullFoundationRepos = []string{"cli", "core", "llm"}
 // agent.codefly.yaml. Requiring the checkout directory to match the origin
 // repository name excludes task-specific clones and duplicate worktrees.
 func pullTargets(ctx context.Context, root string) ([]string, error) {
-	entries, err := os.ReadDir(root)
+	plugins, _, err := discoverCanonicalPluginRepos(ctx, root)
 	if err != nil {
 		return nil, err
 	}
@@ -198,13 +197,8 @@ func pullTargets(ctx context.Context, root string) ([]string, error) {
 			selected[name] = struct{}{}
 		}
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if isCanonicalPluginRepo(ctx, filepath.Join(root, e.Name()), e.Name()) {
-			selected[e.Name()] = struct{}{}
-		}
+	for _, plugin := range plugins {
+		selected[plugin.label] = struct{}{}
 	}
 
 	names := make([]string, 0, len(selected))
@@ -215,19 +209,80 @@ func pullTargets(ctx context.Context, root string) ([]string, error) {
 	return names, nil
 }
 
-func isCanonicalPluginRepo(ctx context.Context, dir, name string) bool {
-	if !isGitRepo(dir) {
-		return false
+type skippedPluginCheckout struct {
+	name             string
+	originRepository string
+}
+
+func discoverCanonicalPluginRepos(ctx context.Context, root string) ([]repoTarget, []skippedPluginCheckout, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, nil, err
 	}
-	manifest, err := os.Stat(filepath.Join(dir, "agent.codefly.yaml"))
-	if err != nil || manifest.IsDir() {
-		return false
+
+	var plugins []repoTarget
+	var skipped []skippedPluginCheckout
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		dir := filepath.Join(root, name)
+		if !isGitRepo(dir) {
+			continue
+		}
+		manifest, err := os.Stat(filepath.Join(dir, "agent.codefly.yaml"))
+		if err != nil || manifest.IsDir() {
+			continue
+		}
+		out, found, err := originRemoteURL(ctx, dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !found {
+			continue
+		}
+		originRepository := remoteRepositoryName(out)
+		if originRepository != name {
+			skipped = append(skipped, skippedPluginCheckout{name: name, originRepository: originRepository})
+			continue
+		}
+		plugins = append(plugins, repoTarget{label: name, path: dir})
 	}
+	return plugins, skipped, nil
+}
+
+func originRemoteURL(ctx context.Context, dir string) (string, bool, error) {
+	remotes, err := git(ctx, dir, "remote")
+	if err != nil {
+		return "", false, gitOperationError(ctx, fmt.Sprintf("list Git remotes for %s", dir), remotes, err)
+	}
+	found := false
+	for _, remote := range strings.Fields(remotes) {
+		if remote == "origin" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", false, nil
+	}
+
 	out, err := git(ctx, dir, "remote", "get-url", "origin")
 	if err != nil {
-		return false
+		return "", false, gitOperationError(ctx, fmt.Sprintf("resolve origin URL for %s", dir), out, err)
 	}
-	return remoteRepositoryName(out) == name
+	return out, true, nil
+}
+
+func gitOperationError(ctx context.Context, action, output string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if detail := firstLine(output); detail != "" {
+		return fmt.Errorf("%s: %w: %s", action, err, detail)
+	}
+	return fmt.Errorf("%s: %w", action, err)
 }
 
 func remoteRepositoryName(remote string) string {

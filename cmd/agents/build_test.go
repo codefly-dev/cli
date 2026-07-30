@@ -182,6 +182,47 @@ func TestBuildAllAgentsReturnsMalformedManifestError(t *testing.T) {
 	}
 }
 
+func TestBuildAgentsUsesOnlySelectedDirectoriesInSortedOrder(t *testing.T) {
+	root := t.TempDir()
+	var selected []string
+	for _, name := range []string{"z-plugin", "a-plugin", "unselected-plugin"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), "name: [\n")
+		if name != "unselected-plugin" {
+			selected = append(selected, dir)
+		}
+	}
+
+	err := BuildAgents(context.Background(), root, selected, BuildOptions{SkipAudit: true})
+	if err == nil {
+		t.Fatal("BuildAgents unexpectedly accepted malformed manifests")
+	}
+	message := err.Error()
+	aPath := filepath.Join(root, "a-plugin", "agent.codefly.yaml")
+	zPath := filepath.Join(root, "z-plugin", "agent.codefly.yaml")
+	if aIndex, zIndex := strings.Index(message, aPath), strings.Index(message, zPath); aIndex < 0 || zIndex < 0 || aIndex > zIndex {
+		t.Fatalf("BuildAgents error is not sorted by directory: %v", err)
+	}
+	if strings.Contains(message, "unselected-plugin") {
+		t.Fatalf("BuildAgents inspected an unselected directory: %v", err)
+	}
+}
+
+func TestBuildAgentsEmptySelectionIsNoop(t *testing.T) {
+	if err := BuildAgents(context.Background(), t.TempDir(), nil, BuildOptions{SkipAudit: true}); err != nil {
+		t.Fatalf("BuildAgents empty selection: %v", err)
+	}
+}
+
+func TestBuildAllAgentsRequiresDiscoveredAgent(t *testing.T) {
+	if err := BuildAllAgents(context.Background(), t.TempDir(), BuildOptions{SkipAudit: true}); err == nil {
+		t.Fatal("BuildAllAgents unexpectedly accepted an empty root")
+	}
+}
+
 func TestEnsureSourcePackagerBootstrapsExactGoAgent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CODEFLY_HOME", home)

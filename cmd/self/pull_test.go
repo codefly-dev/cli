@@ -2,10 +2,12 @@ package self
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +66,90 @@ func TestPullTargetsIncludesFoundationAndCanonicalPluginsOnly(t *testing.T) {
 	want := []string{"cli", "core", "llm", "service-go", "third-party-plugin"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("pullTargets = %v, want %v", names, want)
+	}
+}
+
+func TestDiscoverCanonicalPluginRepos(t *testing.T) {
+	root := t.TempDir()
+
+	for _, repo := range []struct {
+		name   string
+		origin string
+	}{
+		{name: "service-postgres-docker-retry", origin: "git@github.com:codefly-dev/service-postgres.git"},
+		{name: "toolbox-docker", origin: "git@github.com:codefly-dev/toolbox-docker.git"},
+		{name: "module-saas-starter-onboarding-library-v2", origin: "https://github.com/codefly-dev/module-saas-starter.git"},
+		{name: "application-flux", origin: "https://github.com/codefly-dev/application-flux.git"},
+		{name: "service-postgres", origin: "https://github.com/codefly-dev/service-postgres.git"},
+		{name: "module-saas-starter-onboarding-library", origin: "git@github.com:codefly-dev/module-saas-starter.git"},
+		{name: "module-saas-starter", origin: "git@github.com:codefly-dev/module-saas-starter.git"},
+	} {
+		initRepoWithRemote(t, root, repo.name, repo.origin)
+		markPlugin(t, root, repo.name)
+	}
+
+	initRepoWithRemote(t, root, "sdk-go", "git@github.com:codefly-dev/sdk-go.git")
+	initRepoWithRemote(t, root, "service-without-origin", "")
+	markPlugin(t, root, "service-without-origin")
+	if err := os.MkdirAll(filepath.Join(root, "service-not-a-repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	markPlugin(t, root, "service-not-a-repo")
+
+	plugins, skipped, err := discoverCanonicalPluginRepos(context.Background(), root)
+	if err != nil {
+		t.Fatalf("discoverCanonicalPluginRepos: %v", err)
+	}
+
+	var names []string
+	for _, plugin := range plugins {
+		names = append(names, plugin.label)
+	}
+	wantNames := []string{
+		"application-flux",
+		"module-saas-starter",
+		"service-postgres",
+		"toolbox-docker",
+	}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("canonical plugins = %v, want %v", names, wantNames)
+	}
+
+	wantSkipped := []skippedPluginCheckout{
+		{name: "module-saas-starter-onboarding-library", originRepository: "module-saas-starter"},
+		{name: "module-saas-starter-onboarding-library-v2", originRepository: "module-saas-starter"},
+		{name: "service-postgres-docker-retry", originRepository: "service-postgres"},
+	}
+	if !reflect.DeepEqual(skipped, wantSkipped) {
+		t.Fatalf("skipped plugins = %#v, want %#v", skipped, wantSkipped)
+	}
+}
+
+func TestDiscoverCanonicalPluginReposReturnsOriginLookupErrors(t *testing.T) {
+	root := t.TempDir()
+	initRepoWithRemote(t, root, "service-postgres", "git@github.com:codefly-dev/service-postgres.git")
+	markPlugin(t, root, "service-postgres")
+	if err := os.WriteFile(filepath.Join(root, "service-postgres", ".git", "config"), []byte("[invalid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := discoverCanonicalPluginRepos(context.Background(), root); err == nil {
+		t.Fatal("discoverCanonicalPluginRepos unexpectedly ignored an origin lookup failure")
+	} else if !strings.Contains(err.Error(), "service-postgres") {
+		t.Fatalf("discoverCanonicalPluginRepos error = %v, want checkout name", err)
+	}
+}
+
+func TestDiscoverCanonicalPluginReposReturnsCancellation(t *testing.T) {
+	root := t.TempDir()
+	initRepoWithRemote(t, root, "service-postgres", "git@github.com:codefly-dev/service-postgres.git")
+	markPlugin(t, root, "service-postgres")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := discoverCanonicalPluginRepos(ctx, root)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("discoverCanonicalPluginRepos cancellation error = %v, want context.Canceled", err)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -168,11 +169,18 @@ type BuildOptions struct {
 	NativeOnly bool
 }
 
-// BuildAllAgents builds every agent under root. It is the exported entry point
-// for `codefly self build --with-agents`, so one command rebuilds the CLI and
-// all agents together. root is typically <monorepo>/agents/services.
+// BuildAllAgents builds every agent under root.
 func BuildAllAgents(ctx context.Context, root string, opts BuildOptions) error {
 	return buildAllAgents(ctx, root, buildOptions{skipAudit: opts.SkipAudit, failOnVuln: opts.FailOnVuln, jobs: opts.Jobs, nativeOnly: opts.NativeOnly})
+}
+
+func BuildAgents(ctx context.Context, root string, dirs []string, opts BuildOptions) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	dirs = append([]string(nil), dirs...)
+	sort.Strings(dirs)
+	return buildAgents(ctx, root, dirs, buildOptions{skipAudit: opts.SkipAudit, failOnVuln: opts.FailOnVuln, jobs: opts.Jobs, nativeOnly: opts.NativeOnly})
 }
 
 func init() {
@@ -196,18 +204,26 @@ type quarantinedAgent struct {
 // quarantine: true (not yet migrated to the new style). Quarantined agents are
 // reported so a bulk rebuild is honest about what it did and didn't touch.
 func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
-	var agents []string
-	var quarantined []quarantinedAgent
-	var discoveryFailures []error
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return fmt.Errorf("read directory %s: %w", root, err)
 	}
+	dirs := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		dir := filepath.Join(root, e.Name())
+		dirs = append(dirs, filepath.Join(root, e.Name()))
+	}
+	return buildAgents(ctx, root, dirs, opts)
+}
+
+func buildAgents(ctx context.Context, root string, dirs []string, opts buildOptions) error {
+	var agents []string
+	var quarantined []quarantinedAgent
+	var discoveryFailures []error
+	for _, dir := range dirs {
+		name := filepath.Base(dir)
 		yamlPath := filepath.Join(dir, "agent.codefly.yaml")
 		data, rerr := os.ReadFile(yamlPath)
 		if rerr != nil {
@@ -222,12 +238,12 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 			// buildable list — that could build an agent meant to be
 			// quarantined (whose quarantine flag we just failed to read). Skip
 			// it loudly so a broken manifest is visible, not built.
-			cli.Info("  ⚠ skipping %s — unreadable agent.codefly.yaml: %v", e.Name(), uerr)
+			cli.Info("  ⚠ skipping %s — unreadable agent.codefly.yaml: %v", name, uerr)
 			discoveryFailures = append(discoveryFailures, fmt.Errorf("parse %s: %w", yamlPath, uerr))
 			continue
 		}
 		if ag.Quarantine {
-			quarantined = append(quarantined, quarantinedAgent{name: e.Name(), reason: ag.QuarantineReason})
+			quarantined = append(quarantined, quarantinedAgent{name: name, reason: ag.QuarantineReason})
 			continue
 		}
 		agents = append(agents, dir)

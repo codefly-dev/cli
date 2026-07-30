@@ -107,9 +107,9 @@ Agents whose manifest sets `quarantine: true` are skipped by `--all`; build them
 explicitly with `--dir` to work on the migration.
 
 > **Flat checkout note:** `codefly self build --with-agents` rebuilds the CLI and
-> all agents in one step, but it expects the agents under an `agents/services/`
-> subdirectory. With repos cloned flat (side by side), use
-> `codefly agent build --all --dir <workspace>` instead.
+> every canonical agent cloned alongside it. A checkout is canonical when its
+> directory name matches its origin repository; duplicate and task-specific
+> checkouts are reported and skipped.
 
 > **Version drift:** an agent only builds against local `core` HEAD if it has been
 > migrated to the current core API.

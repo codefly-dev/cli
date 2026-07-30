@@ -36,9 +36,11 @@ directory: it looks for the cli module (the directory whose go.mod is
 codefly.dev monorepo the build picks up local core/ and wool/ changes
 automatically via go.work.
 
-With --with-agents, after the CLI is installed it also rebuilds every agent
-repository in the Codefly workspace (the same set as ` + "`codefly agent build --all`" + `).
+With --with-agents, after the CLI is installed it also rebuilds every canonical
+agent repository in the Codefly workspace.
 Agent repositories are discovered by their top-level agent.codefly.yaml.
+Only canonical checkouts whose directory name matches their origin repository
+are built; duplicate and task-specific checkouts are reported and skipped.
 This is the ONE command to pick up local changes to both the CLI and the
 agents in a single step. The per-agent govulncheck audit is skipped during
 the bulk build (it adds minutes); pass --audit-agents to run it.
@@ -151,12 +153,21 @@ Examples:
 			if aerr != nil {
 				return fmt.Errorf("cannot locate agents to build (--with-agents): %w", aerr)
 			}
-			cli.Info("Building all agents in %s", agentsDir)
+			plugins, skipped, derr := discoverCanonicalPluginRepos(ctx, agentsDir)
+			if derr != nil {
+				return fmt.Errorf("cannot discover canonical agents: %w", derr)
+			}
+			reportSkippedPluginCheckouts(skipped)
+			agentDirs := make([]string, 0, len(plugins))
+			for _, plugin := range plugins {
+				agentDirs = append(agentDirs, plugin.path)
+			}
+			cli.Info("Building %d canonical agents in %s", len(agentDirs), agentsDir)
 			// Skip the per-agent govulncheck audit by default: `self build
 			// --with-agents` is a fast "rebuild to pick up local changes" loop,
 			// and auditing every agent adds minutes (each runs govulncheck
 			// against the vuln DB). Opt in with --audit-agents when you want it.
-			if berr := agents.BuildAllAgents(ctx, agentsDir, agents.BuildOptions{SkipAudit: !auditAgents, NativeOnly: nativeOnly, Jobs: jobs}); berr != nil {
+			if berr := agents.BuildAgents(ctx, agentsDir, agentDirs, agents.BuildOptions{SkipAudit: !auditAgents, NativeOnly: nativeOnly, Jobs: jobs}); berr != nil {
 				return fmt.Errorf("agent build failed: %w", berr)
 			}
 		}
@@ -164,10 +175,18 @@ Examples:
 	},
 }
 
+func reportSkippedPluginCheckouts(skipped []skippedPluginCheckout) {
+	if len(skipped) == 0 {
+		return
+	}
+	cli.Header(2, "Skipping %d duplicate or task-specific plugin checkout(s):", len(skipped))
+	for _, checkout := range skipped {
+		cli.Warning("  - %s (origin repository: %s)", checkout.name, checkout.originRepository)
+	}
+}
+
 // resolveAgentRoot finds the flat Codefly workspace containing the CLI and
-// sibling agent repositories. An agent repository is identified by a
-// top-level agent.codefly.yaml, which is the same boundary consumed by
-// agent build --all.
+// sibling agent repositories.
 func resolveAgentRoot(cliSrcDir string) (string, error) {
 	for d := cliSrcDir; ; {
 		entries, err := os.ReadDir(d)
@@ -194,7 +213,7 @@ func resolveAgentRoot(cliSrcDir string) (string, error) {
 func init() {
 	BuildCmd.Flags().String("dir", "", "CLI source directory (default: auto-detect from current directory)")
 	BuildCmd.Flags().String("output", "", "Install path (default: the running codefly binary; for --os/--arch: bin/<os>/codefly)")
-	BuildCmd.Flags().Bool("with-agents", false, "After rebuilding the CLI, also rebuild every agent repository in the Codefly workspace")
+	BuildCmd.Flags().Bool("with-agents", false, "After rebuilding the CLI, also rebuild every canonical agent repository in the Codefly workspace")
 	BuildCmd.Flags().Bool("audit-agents", false, "Run the govulncheck audit on each agent during --with-agents (slow; off by default)")
 	BuildCmd.Flags().Bool("native-only", false, "With --with-agents: build only host-platform agent binaries; skip the Linux/amd64 container cross-build (local dev fast path)")
 	BuildCmd.Flags().IntP("jobs", "j", 0, "With --with-agents: max agents to build in parallel (default: number of CPUs)")
