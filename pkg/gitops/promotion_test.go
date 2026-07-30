@@ -131,27 +131,30 @@ func TestCoordinatorDrivesFakeProducerThroughPublishAndObserve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Signed || result.Commit == "" {
+	if !result.Signed || result.SnapshotRevision == "" || result.Commit == "" {
 		t.Fatalf("promotion is not signed and revision-bound: %+v", result)
+	}
+	if result.SnapshotRevision == result.Commit {
+		t.Fatalf("service snapshot and signed promotion commit are not distinct: %+v", result)
 	}
 
 	installFakeArgo(t, argoProjectJSON(result.Repository), argoApplicationJSON(
 		"payments-api", result.Repository,
 		filepath.ToSlash(filepath.Join(result.Path, "services", "api", "overlays", "local")),
-		result.Commit, "Healthy", "Succeeded",
+		result.SnapshotRevision, "Healthy", "Succeeded",
 	))
 	observed, err := coordinator.Observe(ctx, &ObserveRequest{
 		WorkspaceRoot: workspace.Dir(), Module: "payments", Environment: "local",
 		AppProject: "payments", Applications: []string{"payments-api"},
 		Repository: result.Repository, Path: result.Path,
-		Revision: result.Commit, Commit: result.Commit, Tree: result.Tree,
+		Revision: result.SnapshotRevision, Commit: result.Commit, Tree: result.Tree,
 		RenderDigest: result.RenderDigest, PullRequest: result.PullRequest, Local: true,
 		Timeout: time.Second, PollInterval: time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.Evidence.ArgoRevision != result.Commit || observed.Evidence.Health != "Healthy" {
+	if observed.Evidence.ArgoRevision != result.SnapshotRevision || observed.Evidence.Health != "Healthy" {
 		t.Fatalf("reconciliation evidence = %+v", observed.Evidence)
 	}
 	if observed.Evidence.RenderDigest != rendered.Inventory.Digest {
