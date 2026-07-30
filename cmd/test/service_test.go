@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"testing"
+
+	"github.com/codefly-dev/core/resources"
 )
 
 func TestServiceCommandReturnsErrors(t *testing.T) {
@@ -45,5 +47,18 @@ func TestBuildTestRequestCopiesSlices(t *testing.T) {
 func TestStopNilFlowIsSafe(t *testing.T) {
 	if err := stopService(context.Background(), nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSelectedTestFixtureUsesEnvironmentAndAllowsOverride(t *testing.T) {
+	environment := &resources.Environment{Fixture: "dev-admin"}
+	if got := selectedTestFixture(environment, ""); got != "dev-admin" {
+		t.Fatalf("selected fixture = %q, want environment fixture", got)
+	}
+	if got := selectedTestFixture(environment, "custom"); got != "custom" {
+		t.Fatalf("selected fixture = %q, want explicit override", got)
+	}
+	if got := selectedTestFixture(nil, ""); got != "" {
+		t.Fatalf("selected fixture without environment = %q, want empty", got)
 	}
 }

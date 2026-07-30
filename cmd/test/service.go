@@ -178,6 +178,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTestRequest(request)
+	flow.WithFixture(selectedTestFixture(env, testFixture))
 
 	// Return the flow even when init fails: InitManagers spawns agents
 	// incrementally (and Load can fail after they're live), so a partial failure
@@ -193,6 +194,16 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return flow, w.Wrap(err)
 	}
 	return flow, nil
+}
+
+func selectedTestFixture(environment *resources.Environment, override string) string {
+	if override != "" {
+		return override
+	}
+	if environment == nil {
+		return ""
+	}
+	return environment.Fixture
 }
 
 func testService(ctx context.Context, flow *orchestration.Flow) error {
@@ -238,6 +249,7 @@ func buildTestRequest(extraArgs []string) *runtimev0.TestRequest {
 func init() {
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
 	ServiceCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")
+	ServiceCmd.Flags().StringVar(&testFixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY)")
