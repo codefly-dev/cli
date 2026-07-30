@@ -22,14 +22,13 @@ jobs:
           - bootstrap-audit
           - control-integration
           - coverage
-          - lint
           - race
     steps:
       - name: checkout
         uses: actions/checkout@v5
 
       - name: Set up Go
-        if: matrix.gate == 'coverage' || matrix.gate == 'race' || matrix.gate == 'lint'
+        if: matrix.gate == 'coverage' || matrix.gate == 'race'
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -70,16 +69,6 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           codefly audit go --dir .
-      # Loads the v2 .golangci.yaml. Pinned to match the version documented in
-      # the Makefile (`make lint`). only-new-issues gates PRs on newly
-      # introduced findings so the pre-existing backlog does not block work
-      # while the standard is enforced going forward.
-      - name: golangci-lint
-        if: matrix.gate == 'lint'
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.12.2
-          only-new-issues: true
 
       - name: Test with coverage
         if: matrix.gate == 'coverage'
@@ -103,3 +92,31 @@ jobs:
       - name: Run the in-process dependency proof
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestRunExcludeRootStartsRealDependencyInProcess$' ./pkg/control -v
+
+  # golangci-lint runs as its own job, not a quality gate, for two reasons:
+  # only-new-issues has a well-defined baseline only against a pull-request base
+  # branch (on push there is no diff to gate against), and a cold-cache
+  # whole-repository analysis needs more headroom than the 5-minute quality
+  # budget. Pinned to match the version documented in the Makefile (`make
+  # lint`). only-new-issues gates the PR on newly introduced findings so the
+  # pre-existing backlog does not block work while the standard is enforced.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          only-new-issues: true

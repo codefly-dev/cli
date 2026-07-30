@@ -1,7 +1,9 @@
 version: "2"
 
 run:
-  timeout: 5m
+  # A cold-cache analysis of the whole repository is slower than a single test
+  # gate; keep this in step with the lint job's timeout in go.yml.
+  timeout: 10m
 
 linters:
   enable:
@@ -28,6 +30,9 @@ linters:
         - hugeParam
   exclusions:
     generated: lax
+    # These presets reconstruct golangci-lint v1's default exclusion set, which
+    # was active in the old config (exclude-use-default defaulted to true and
+    # was never disabled). They preserve prior behavior, not broaden it.
     presets:
       - comments
       - common-false-positives
