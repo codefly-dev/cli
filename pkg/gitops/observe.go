@@ -609,7 +609,7 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 			strings.Join(strings.Fields(changedServices), ", "),
 		)
 	}
-	if _, err := gitCommand(ctx, repo, "checkout", "--quiet", request.Commit, "--", targetPath); err != nil {
+	if err := checkoutPublishedPath(ctx, repo, request.Commit, targetPath); err != nil {
 		return Inventory{}, fmt.Errorf("checkout published path %s at %s: %w", targetPath, request.Commit, err)
 	}
 	target := filepath.Join(repo, filepath.FromSlash(targetPath))
@@ -623,7 +623,7 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	if inventory.Digest != request.RenderDigest {
 		return Inventory{}, fmt.Errorf("reconciled Git tree digest is %s, expected %s", inventory.Digest, request.RenderDigest)
 	}
-	if _, err := gitCommand(ctx, repo, "checkout", "--quiet", request.Revision, "--", targetPath); err != nil {
+	if err := checkoutPublishedPath(ctx, repo, request.Revision, targetPath); err != nil {
 		return Inventory{}, fmt.Errorf("checkout service snapshot %s at %s: %w", targetPath, request.Revision, err)
 	}
 	if err := ValidateServiceSnapshot(target); err != nil {
@@ -643,6 +643,15 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 		return Inventory{}, fmt.Errorf("immutable service snapshot identity differs from the reviewed publication")
 	}
 	return inventory, nil
+}
+
+func checkoutPublishedPath(ctx context.Context, repo, revision, targetPath string) error {
+	target := filepath.Join(repo, filepath.FromSlash(targetPath))
+	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	_, err := gitCommand(ctx, repo, "checkout", "--quiet", revision, "--", targetPath)
+	return err
 }
 
 func loadClusterIdentity(ctx context.Context, cluster string) (string, error) {

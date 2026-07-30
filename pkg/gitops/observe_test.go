@@ -193,6 +193,53 @@ func TestObserveRejectsSignedPublicationWithDifferentServiceBytes(t *testing.T) 
 	}
 }
 
+func TestCheckoutPublishedPathRemovesFilesAbsentFromRevision(t *testing.T) {
+	remote := createBareRepository(t)
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	targetPath := "deployments/modules/users"
+	service := filepath.Join(work, filepath.FromSlash(targetPath), "services", "accounts", "deployment.yaml")
+	if err := os.MkdirAll(filepath.Dir(service), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service, []byte(pinnedDeployment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", targetPath)
+	gitRun(t, work, "commit", "-m", "service snapshot")
+	snapshot := gitOutput(t, work, "rev-parse", "HEAD^{commit}")
+
+	bootstrap := filepath.Join(work, filepath.FromSlash(targetPath), "bootstrap", "project.yaml")
+	if err := os.MkdirAll(filepath.Dir(bootstrap), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bootstrap, []byte("kind: AppProject\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", targetPath)
+	gitRun(t, work, "commit", "-m", "publication bootstrap")
+	publication := gitOutput(t, work, "rev-parse", "HEAD^{commit}")
+
+	checkout := t.TempDir()
+	gitRun(t, "", "clone", "--no-checkout", remote, checkout)
+	gitRun(t, checkout, "fetch", work, publication)
+	if err := checkoutPublishedPath(context.Background(), checkout, publication, targetPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(checkout, filepath.FromSlash(targetPath), "bootstrap", "project.yaml")); err != nil {
+		t.Fatalf("publication bootstrap: %v", err)
+	}
+	if err := checkoutPublishedPath(context.Background(), checkout, snapshot, targetPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(checkout, filepath.FromSlash(targetPath), "bootstrap")); !os.IsNotExist(err) {
+		t.Fatalf("bootstrap survived exact snapshot checkout: %v", err)
+	}
+}
+
 func TestObserveRechecksHealthyApplicationsUntilOneStableSweep(t *testing.T) {
 	request := observedPublication(t)
 	bin := t.TempDir()
