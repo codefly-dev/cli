@@ -67,6 +67,60 @@ func TestPullTargetsIncludesFoundationAndCanonicalPluginsOnly(t *testing.T) {
 	}
 }
 
+func TestDiscoverCanonicalPluginRepos(t *testing.T) {
+	root := t.TempDir()
+
+	for _, repo := range []struct {
+		name   string
+		origin string
+	}{
+		{name: "service-postgres-docker-retry", origin: "git@github.com:codefly-dev/service-postgres.git"},
+		{name: "toolbox-docker", origin: "git@github.com:codefly-dev/toolbox-docker.git"},
+		{name: "module-saas-starter-onboarding-library-v2", origin: "https://github.com/codefly-dev/module-saas-starter.git"},
+		{name: "application-flux", origin: "https://github.com/codefly-dev/application-flux.git"},
+		{name: "service-postgres", origin: "https://github.com/codefly-dev/service-postgres.git"},
+		{name: "module-saas-starter-onboarding-library", origin: "git@github.com:codefly-dev/module-saas-starter.git"},
+		{name: "module-saas-starter", origin: "git@github.com:codefly-dev/module-saas-starter.git"},
+	} {
+		initRepoWithRemote(t, root, repo.name, repo.origin)
+		markPlugin(t, root, repo.name)
+	}
+
+	initRepoWithRemote(t, root, "sdk-go", "git@github.com:codefly-dev/sdk-go.git")
+	if err := os.MkdirAll(filepath.Join(root, "service-not-a-repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	markPlugin(t, root, "service-not-a-repo")
+
+	plugins, skipped, err := discoverCanonicalPluginRepos(context.Background(), root)
+	if err != nil {
+		t.Fatalf("discoverCanonicalPluginRepos: %v", err)
+	}
+
+	var names []string
+	for _, plugin := range plugins {
+		names = append(names, plugin.label)
+	}
+	wantNames := []string{
+		"application-flux",
+		"module-saas-starter",
+		"service-postgres",
+		"toolbox-docker",
+	}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("canonical plugins = %v, want %v", names, wantNames)
+	}
+
+	wantSkipped := []skippedPluginCheckout{
+		{name: "module-saas-starter-onboarding-library", originRepository: "module-saas-starter"},
+		{name: "module-saas-starter-onboarding-library-v2", originRepository: "module-saas-starter"},
+		{name: "service-postgres-docker-retry", originRepository: "service-postgres"},
+	}
+	if !reflect.DeepEqual(skipped, wantSkipped) {
+		t.Fatalf("skipped plugins = %#v, want %#v", skipped, wantSkipped)
+	}
+}
+
 func TestRemoteRepositoryName(t *testing.T) {
 	for remote, want := range map[string]string{
 		"git@github.com:codefly-dev/service-go.git":      "service-go",

@@ -4,8 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -63,6 +66,31 @@ func TestResolveAgentRootRejectsWorkspaceWithoutAgents(t *testing.T) {
 	}
 	if _, err := resolveAgentRoot(cliDir); err == nil {
 		t.Fatal("resolveAgentRoot unexpectedly accepted a workspace without agents")
+	}
+}
+
+func TestReportSkippedPluginCheckouts(t *testing.T) {
+	skipped := []skippedPluginCheckout{
+		{name: "module-saas-starter-onboarding-library", originRepository: "module-saas-starter"},
+		{name: "service-postgres-docker-retry", originRepository: "service-postgres"},
+	}
+	var got []string
+	cli.SetOutputSink(func(_ wool.Loglevel, message string) {
+		got = append(got, message)
+	})
+	t.Cleanup(func() {
+		cli.SetOutputSink(nil)
+	})
+
+	reportSkippedPluginCheckouts(skipped)
+
+	want := []string{
+		"Skipping 2 duplicate or task-specific plugin checkout(s):",
+		"  - module-saas-starter-onboarding-library (origin repository: module-saas-starter)",
+		"  - service-postgres-docker-retry (origin repository: service-postgres)",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("skip output = %q, want %q", got, want)
 	}
 }
 
