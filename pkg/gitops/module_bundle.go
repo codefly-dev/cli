@@ -60,14 +60,18 @@ func renderModuleBundle(
 	if err := copyModuleInputTree(module.Dir(), stagedModule); err != nil {
 		return fmt.Errorf("stage module bundle input: %w", err)
 	}
-	workspaceData, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
+	moduleWorkspaceData, err := encodeTransportNeutralModuleWorkspace(workspace)
 	if err != nil {
+		return fmt.Errorf("prepare transport-neutral module workspace: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, resources.WorkspaceConfigurationName), moduleWorkspaceData, 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(stage, resources.WorkspaceConfigurationName), workspaceData, 0o600); err != nil {
-		return err
+	moduleEnvironment, err := transportNeutralModuleEnvironment(stage)
+	if err != nil {
+		return fmt.Errorf("prepare transport-neutral module environment: %w", err)
 	}
-	if _, err := command(ctx, stage, binary, stagedModule, module.Name); err != nil {
+	if _, err := commandWithEnvironment(ctx, stage, moduleEnvironment, binary, stagedModule, module.Name); err != nil {
 		return fmt.Errorf("generate transport-neutral module bundle: %w", err)
 	}
 
@@ -120,6 +124,88 @@ func copyModuleInputTree(source, destination string) error {
 		}
 		return copyTreeEntry(destination, path, relative, info)
 	})
+}
+
+type transportNeutralModuleWorkspace struct {
+	Name         string                                 `yaml:"name"`
+	Environments []transportNeutralWorkspaceEnvironment `yaml:"environments"`
+}
+
+type transportNeutralWorkspaceEnvironment struct {
+	Name                 string                                         `yaml:"name"`
+	Description          string                                         `yaml:"description,omitempty"`
+	NamingScope          string                                         `yaml:"naming-scope,omitempty"`
+	Fixture              string                                         `yaml:"fixture,omitempty"`
+	ConfigurationProfile string                                         `yaml:"configuration-profile,omitempty"`
+	Cluster              *transportNeutralModuleCluster                 `yaml:"cluster,omitempty"`
+	Namespace            string                                         `yaml:"namespace,omitempty"`
+	Ingress              []resources.EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
+	ManagedServices      map[string]resources.EnvironmentManagedService `yaml:"managed-services,omitempty"`
+}
+
+type transportNeutralModuleCluster struct {
+	Kind string `yaml:"kind,omitempty"`
+}
+
+func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace) ([]byte, error) {
+	input := transportNeutralModuleWorkspace{
+		Name:         workspace.Name,
+		Environments: make([]transportNeutralWorkspaceEnvironment, 0, len(workspace.Environments)),
+	}
+	for _, environment := range workspace.Environments {
+		if environment == nil {
+			return nil, fmt.Errorf("workspace contains an empty environment")
+		}
+		projected := transportNeutralWorkspaceEnvironment{
+			Name:                 environment.Name,
+			Description:          environment.Description,
+			NamingScope:          environment.NamingScope,
+			Fixture:              environment.Fixture,
+			ConfigurationProfile: environment.ConfigurationProfile,
+			Namespace:            environment.Namespace,
+			Ingress:              environment.Ingress,
+			ManagedServices:      environment.ManagedServices,
+		}
+		if environment.Cluster != nil {
+			projected.Cluster = &transportNeutralModuleCluster{Kind: environment.Cluster.Kind}
+		}
+		input.Environments = append(input.Environments, projected)
+	}
+	return yaml.Marshal(input)
+}
+
+func transportNeutralModuleEnvironment(stage string) ([]string, error) {
+	home := filepath.Join(stage, ".codefly-module-home")
+	temp := filepath.Join(stage, ".codefly-module-tmp")
+	for _, directory := range []string{home, temp} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	environment := make([]string, 0, 13)
+	for _, key := range []string{
+		"PATH",
+		"LANG",
+		"LC_ALL",
+		"LC_CTYPE",
+		"TZ",
+		"SYSTEMROOT",
+		"WINDIR",
+		"COMSPEC",
+		"PATHEXT",
+	} {
+		if value, found := os.LookupEnv(key); found {
+			environment = append(environment, key+"="+value)
+		}
+	}
+	return append(
+		environment,
+		"HOME="+home,
+		"USERPROFILE="+home,
+		"TMPDIR="+temp,
+		"TMP="+temp,
+		"TEMP="+temp,
+	), nil
 }
 
 func loadSelectedModuleBundle(

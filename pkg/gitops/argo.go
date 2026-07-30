@@ -171,6 +171,15 @@ func argoRepository(config *repositoryConfig) (string, error) {
 		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(parsed.Host, "*") {
 			return "", fmt.Errorf("environment gitops.fetch-repo-url contains unsafe authority")
 		}
+		if !strings.HasPrefix(strings.TrimSpace(config.RepoURL), "file://") {
+			matches, matchErr := repositoriesMatch(config.RepoURL, fetch)
+			if matchErr != nil {
+				return "", fmt.Errorf("environment gitops.fetch-repo-url: %w", matchErr)
+			}
+			if !matches {
+				return "", fmt.Errorf("environment gitops.fetch-repo-url must identify the publication repository")
+			}
+		}
 		repository = parsed.String()
 	}
 	if strings.HasPrefix(repository, "file://") {
