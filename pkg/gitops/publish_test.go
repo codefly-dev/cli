@@ -125,7 +125,7 @@ func TestArgoRepositoryUsesWorkspaceFetchURLForLocalPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := argoRepository(config)
+	repository, err := argoRepository(config, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestArgoRepositoryUsesWorkspaceFetchURLForLocalPromotion(t *testing.T) {
 	}
 
 	config.FetchRepoURL = ""
-	if _, err := argoRepository(config); err == nil || !strings.Contains(err.Error(), "fetch-repo-url") {
+	if _, err := argoRepository(config, ""); err == nil || !strings.Contains(err.Error(), "fetch-repo-url") {
 		t.Fatalf("missing local fetch repository error = %v", err)
 	}
 }
@@ -144,17 +144,81 @@ func TestArgoRepositoryRejectsProductionFetchRepositoryMismatch(t *testing.T) {
 		RepoURL:      "git@github.com:codefly-dev/manifests.git",
 		FetchRepoURL: "https://github.com/codefly-dev/other-manifests.git",
 	}
-	if _, err := argoRepository(config); err == nil ||
+	if _, err := argoRepository(config, ""); err == nil ||
 		!strings.Contains(err.Error(), "must identify the publication repository") {
 		t.Fatalf("mismatched fetch repository error = %v", err)
 	}
 	config.FetchRepoURL = "https://github.com/codefly-dev/manifests.git"
-	repository, err := argoRepository(config)
+	repository, err := argoRepository(config, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if repository != config.FetchRepoURL {
 		t.Fatalf("Argo repository = %q", repository)
+	}
+}
+
+func TestArgoRepositoryAcceptsLocalK3dFetchRemoteWithPortableRepoURL(t *testing.T) {
+	workspace := loadGitopsWorkspaceLocalFetchRemote(t, "https://github.com/codefly-dev/manifests.git")
+	remote, err := NewFetchRemote(workspace, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := remote.Spec.DNSName
+	fetch := "https://" + host + "/repo.git"
+
+	config := &repositoryConfig{
+		RepoURL:      "https://github.com/codefly-dev/manifests.git",
+		FetchRepoURL: fetch,
+	}
+
+	repository, err := argoRepository(config, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != fetch {
+		t.Fatalf("Argo repository = %q", repository)
+	}
+
+	// Without the derived host gate, the container DNS is not the publication
+	// repository and must be rejected — the gate is what makes it acceptable.
+	if _, err := argoRepository(config, ""); err == nil ||
+		!strings.Contains(err.Error(), "fetch-repo-url") {
+		t.Fatalf("ungated fetch remote error = %v", err)
+	}
+	if _, err := argoRepository(config, "codefly-gitops-remote-production-deadbeef"); err == nil ||
+		!strings.Contains(err.Error(), "fetch-repo-url") {
+		t.Fatalf("wrong-host fetch remote error = %v", err)
+	}
+}
+
+func TestLocalFetchRemoteHostGatesOnPortablePublication(t *testing.T) {
+	workspace := loadGitopsWorkspaceLocalFetchRemote(t, "https://github.com/codefly-dev/manifests.git")
+	remote, err := NewFetchRemote(workspace, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	config := &repositoryConfig{
+		RepoURL:      "https://github.com/codefly-dev/manifests.git",
+		FetchRepoURL: "https://" + remote.Spec.DNSName + "/repo.git",
+	}
+
+	host, err := localFetchRemoteHost(workspace, &PublishRequest{Environment: "production", Local: true}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != remote.Spec.DNSName {
+		t.Fatalf("local fetch host = %q, want %q", host, remote.Spec.DNSName)
+	}
+
+	// A remote publication never consults the local fetch remote.
+	host, err = localFetchRemoteHost(workspace, &PublishRequest{Environment: "production", Local: false}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "" {
+		t.Fatalf("remote publication local fetch host = %q, want empty", host)
 	}
 }
 
@@ -253,6 +317,7 @@ spec:
 		inventory,
 		"production",
 		revision,
+		"",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -933,6 +998,37 @@ gitops:
   path: environments
   branch: main
 `, serviceReferences.String(), remote)
+	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return workspace
+}
+
+// loadGitopsWorkspaceLocalFetchRemote builds a workspace that keeps a portable,
+// committable repo-url while promoting locally through the managed k3d fetch
+// remote: the env declares a k3d cluster.context so NewFetchRemote can derive
+// the container DNS.
+func loadGitopsWorkspaceLocalFetchRemote(t *testing.T, repoURL string) *resources.Workspace {
+	t.Helper()
+	root := t.TempDir()
+	config := fmt.Sprintf(`name: payments
+layout: flat
+services:
+  - name: api
+environments:
+  - name: production
+    cluster:
+      kind: k3d
+      context: k3d-payments
+gitops:
+  repo-url: %s
+  path: environments
+  branch: main
+`, repoURL)
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
