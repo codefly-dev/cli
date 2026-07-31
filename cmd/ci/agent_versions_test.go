@@ -59,6 +59,30 @@ func TestProbeGitHubAssetReportsPublishedArtifact(t *testing.T) {
 	}
 }
 
+func TestProbeGitHubAssetReportsUnresolvableKind(t *testing.T) {
+	// An agent whose kind has no registration cannot yield an asset URL. The
+	// real githubAssetURL (manager.DownloadURL) must surface that as a failed
+	// probe with the resolution error, not silently pass an empty URL through
+	// to an HTTP request.
+	agent := &resources.Agent{
+		Kind:      resources.AgentKind("codefly:not-a-real-kind"),
+		Publisher: "codefly.dev",
+		Name:      "redis",
+		Version:   "0.0.74",
+	}
+
+	probe := probeGitHubAsset(context.Background(), agent)
+	if probe.downloadable {
+		t.Fatal("unresolvable agent kind reported as downloadable")
+	}
+	if !strings.Contains(probe.detail, "not-a-real-kind") {
+		t.Fatalf("detail = %q, want the kind-resolution error", probe.detail)
+	}
+	if probe.label != "GitHub release asset" {
+		t.Fatalf("label = %q, want the unadorned fallback label", probe.label)
+	}
+}
+
 func TestProbeOCIManifestNotConfigured(t *testing.T) {
 	t.Setenv("AGENT_REGISTRY", "")
 	probe := probeOCIManifest(context.Background(), testAgent())

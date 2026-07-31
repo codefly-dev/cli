@@ -320,6 +320,25 @@ func TestGithubSourceMatchesManagerDownloadURL(t *testing.T) {
 	}
 }
 
+// TestManagerDownloadURLFailsForUnknownKind pins the fallible contract this CLI
+// relies on: an agent whose kind has no registration must yield an error, never
+// a plausible-looking but empty/wrong URL that call sites would probe blindly.
+func TestManagerDownloadURLFailsForUnknownKind(t *testing.T) {
+	agent := &resources.Agent{
+		Kind:      resources.AgentKind("codefly:not-a-real-kind"),
+		Publisher: "codefly.dev",
+		Name:      "redis",
+		Version:   "0.0.74",
+	}
+	got, err := manager.DownloadURL(agent)
+	if err == nil {
+		t.Fatalf("DownloadURL(unknown kind) = %q, want error", got)
+	}
+	if got != "" {
+		t.Fatalf("DownloadURL(unknown kind) returned URL %q alongside error", got)
+	}
+}
+
 func TestFetchOCITagsListsRegistryVersions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v2/agents/codefly.dev/redis/tags/list" {
