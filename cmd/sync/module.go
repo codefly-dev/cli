@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -350,19 +351,29 @@ func printModuleSyncPlan(module string, plan integrity.BaseSyncPlan, applying bo
 	output.Info("  unchanged=%d create=%d update=%d remove=%d omitted=%d allowed=%d", len(plan.Unchanged), len(plan.Create), len(plan.Update), len(plan.Remove), len(plan.Omitted), len(plan.Allowed))
 	output.Info("  resolve-upstream=%d already-reconciled=%d", len(plan.ResolveUpstream), len(plan.ReconciledUpstream))
 	output.Info("  modified=%d collisions=%d stale-modified=%d released=%d", len(plan.Modified), len(plan.Collisions), len(plan.StaleModified), len(plan.Released))
-	groups := []struct {
-		label string
-		paths []string
-	}{
+	printPathGroups([]pathGroup{
 		{"CREATE", plan.Create}, {"UPDATE", plan.Update}, {"REMOVE", plan.Remove},
 		{"RELEASED TO OVERLAY OWNERSHIP", plan.Released},
 		{"RESOLVE FROM UPSTREAM", plan.ResolveUpstream},
 		{"ALREADY RECONCILED FROM UPSTREAM", plan.ReconciledUpstream},
-		{"INVALID SOURCE PATHS", plan.SourceInvalid}, {"INVALID TARGET PATHS", plan.TargetInvalid},
+	})
+	for _, line := range sourceInvalidReport(plan.SourceInvalid) {
+		output.Info("  %s", line)
+	}
+	printPathGroups([]pathGroup{
+		{"INVALID TARGET PATHS", plan.TargetInvalid},
 		{"MODIFIED BASE", plan.Modified}, {"OVERLAY COLLISIONS", plan.Collisions},
 		{"MODIFIED UPSTREAM DELETIONS", plan.StaleModified}, {"MISSING REQUIRED OVERLAYS", plan.MissingRequiredAdditions},
 		{"INVALID REQUIRED OVERLAYS", plan.InvalidRequiredAdditions},
-	}
+	})
+}
+
+type pathGroup struct {
+	label string
+	paths []string
+}
+
+func printPathGroups(groups []pathGroup) {
 	for _, group := range groups {
 		if len(group.paths) == 0 {
 			continue
@@ -370,6 +381,80 @@ func printModuleSyncPlan(module string, plan integrity.BaseSyncPlan, applying bo
 		sort.Strings(group.paths)
 		output.Info("  %s (%d): %s", group.label, len(group.paths), strings.Join(group.paths, ", "))
 	}
+}
+
+// sourceInvalidReport explains why each source-owned path was rejected. The
+// reasons fold into one blocker count but have different remedies, so each is
+// reported separately with the action the operator can actually take. Groups
+// are driven by the reasons actually present, with known reasons ordered first
+// and any unrecognized reason still surfaced, so a newly added classification
+// can never be silently dropped from the plan output.
+func sourceInvalidReport(entries []integrity.InvalidSource) []string {
+	byReason := map[integrity.SourceInvalidReason][]integrity.InvalidSource{}
+	for _, entry := range entries {
+		byReason[entry.Reason] = append(byReason[entry.Reason], entry)
+	}
+	ordered := make([]integrity.SourceInvalidReason, 0, 3+len(byReason))
+	ordered = append(ordered, integrity.SourceDigestMismatch, integrity.SourceUnreadable, integrity.SourceUnsafePath)
+	var unknown []integrity.SourceInvalidReason
+	for reason := range byReason {
+		if !slices.Contains(ordered, reason) {
+			unknown = append(unknown, reason)
+		}
+	}
+	slices.Sort(unknown)
+	ordered = append(ordered, unknown...)
+
+	var lines []string
+	for _, reason := range ordered {
+		matched := byReason[reason]
+		if len(matched) == 0 {
+			continue
+		}
+		sort.Slice(matched, func(i, j int) bool { return matched[i].Path < matched[j].Path })
+		lines = append(lines, fmt.Sprintf("%s (%d):", sourceInvalidHeading(reason), len(matched)))
+		for _, entry := range matched {
+			lines = append(lines, "  "+entry.Path)
+			if reason == integrity.SourceDigestMismatch {
+				lines = append(lines, fmt.Sprintf("    manifest %s  actual %s", shortDigest(entry.ManifestDigest), shortDigest(entry.ActualDigest)))
+			}
+		}
+		lines = append(lines, "  -> "+sourceInvalidRemedy(reason))
+	}
+	return lines
+}
+
+func sourceInvalidHeading(reason integrity.SourceInvalidReason) string {
+	switch reason {
+	case integrity.SourceDigestMismatch:
+		return "INVALID SOURCE (digest mismatch, upstream manifest is stale)"
+	case integrity.SourceUnreadable:
+		return "INVALID SOURCE (missing or unreadable source file)"
+	case integrity.SourceUnsafePath:
+		return "INVALID SOURCE (unsafe path)"
+	default:
+		return fmt.Sprintf("INVALID SOURCE (%s)", reason)
+	}
+}
+
+func sourceInvalidRemedy(reason integrity.SourceInvalidReason) string {
+	switch reason {
+	case integrity.SourceDigestMismatch:
+		return "report to the base repository and pin to a working tag; this is not resolvable in the consumer"
+	case integrity.SourceUnreadable:
+		return "the upstream checkout is incomplete; re-pin to a working tag or report to the base repository"
+	case integrity.SourceUnsafePath:
+		return "the upstream manifest lists a path that escapes the module; report to the base repository"
+	default:
+		return "report to the base repository"
+	}
+}
+
+func shortDigest(digest string) string {
+	if len(digest) <= 8 {
+		return digest
+	}
+	return digest[:8] + "..."
 }
 
 func withoutPath(paths []string, excluded string) []string {

@@ -14,6 +14,28 @@ import (
 
 const baseManifestRelativePath = "tools/base-manifest.json"
 
+// SourceInvalidReason distinguishes the three failures that all block a base
+// sync but demand different remedies: a malformed manifest path, a missing or
+// unreadable source file, and a source file whose content no longer matches the
+// upstream manifest (a stale upstream release the consumer cannot fix).
+type SourceInvalidReason string
+
+const (
+	SourceUnsafePath     SourceInvalidReason = "unsafe-path"
+	SourceUnreadable     SourceInvalidReason = "unreadable"
+	SourceDigestMismatch SourceInvalidReason = "digest-mismatch"
+)
+
+// InvalidSource is a source-owned path that cannot be applied, tagged with the
+// reason it was rejected. For a digest mismatch it also carries the manifest
+// and on-disk digests so the operator can see expected versus actual.
+type InvalidSource struct {
+	Path           string
+	Reason         SourceInvalidReason
+	ManifestDigest string
+	ActualDigest   string
+}
+
 // BaseSyncPlan classifies every path before a composed module is changed.
 // Source files are immutable base ownership; target-only files are product
 // overlays and are deliberately absent from this plan.
@@ -37,7 +59,7 @@ type BaseSyncPlan struct {
 	ResolveUpstream    []string
 	ReconciledUpstream []string
 	StaleModified      []string
-	SourceInvalid      []string
+	SourceInvalid      []InvalidSource
 	TargetInvalid      []string
 
 	MissingRequiredAdditions []string
@@ -48,18 +70,18 @@ type BaseSyncPlan struct {
 
 func (plan BaseSyncPlan) Applicable() error {
 	var blockers []string
-	add := func(label string, paths []string) {
-		if len(paths) > 0 {
-			blockers = append(blockers, fmt.Sprintf("%s=%d", label, len(paths)))
+	add := func(label string, count int) {
+		if count > 0 {
+			blockers = append(blockers, fmt.Sprintf("%s=%d", label, count))
 		}
 	}
-	add("invalid-source", plan.SourceInvalid)
-	add("invalid-target", plan.TargetInvalid)
-	add("modified-base", plan.Modified)
-	add("overlay-collisions", plan.Collisions)
-	add("modified-upstream-deletions", plan.StaleModified)
-	add("missing-required-overlays", plan.MissingRequiredAdditions)
-	add("invalid-required-overlays", plan.InvalidRequiredAdditions)
+	add("invalid-source", len(plan.SourceInvalid))
+	add("invalid-target", len(plan.TargetInvalid))
+	add("modified-base", len(plan.Modified))
+	add("overlay-collisions", len(plan.Collisions))
+	add("modified-upstream-deletions", len(plan.StaleModified))
+	add("missing-required-overlays", len(plan.MissingRequiredAdditions))
+	add("invalid-required-overlays", len(plan.InvalidRequiredAdditions))
 	if len(blockers) == 0 {
 		return nil
 	}
@@ -101,8 +123,12 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	sourceInvalid := make(map[string]bool)
 	targetInvalid := make(map[string]bool)
 	for _, relative := range sortedManifestPaths(sourceManifest) {
-		if !safeModulePath(sourceRoot, relative, true) {
-			plan.SourceInvalid = append(plan.SourceInvalid, relative)
+		switch inspectModulePath(sourceRoot, relative, true) {
+		case modulePathMissing:
+			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{Path: relative, Reason: SourceUnreadable})
+			sourceInvalid[relative] = true
+		case modulePathUnsafe:
+			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{Path: relative, Reason: SourceUnsafePath})
 			sourceInvalid[relative] = true
 		}
 		if !safeModulePath(targetRoot, relative, false) {
@@ -132,8 +158,17 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 		source := filepath.Join(sourceRoot, filepath.FromSlash(relative))
 		target := filepath.Join(targetRoot, filepath.FromSlash(relative))
 		sourceDigest, digestErr := sha256File(source)
-		if digestErr != nil || sourceDigest != sourceManifest.Files[relative] {
-			plan.SourceInvalid = append(plan.SourceInvalid, relative)
+		if digestErr != nil {
+			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{Path: relative, Reason: SourceUnreadable})
+			continue
+		}
+		if sourceDigest != sourceManifest.Files[relative] {
+			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{
+				Path:           relative,
+				Reason:         SourceDigestMismatch,
+				ManifestDigest: sourceManifest.Files[relative],
+				ActualDigest:   sourceDigest,
+			})
 			continue
 		}
 		targetDigest, targetErr := sha256File(target)
@@ -468,13 +503,26 @@ func atomicCopyFile(source, target string) error {
 	return os.Rename(temporaryPath, target)
 }
 
-// safeModulePath rejects path traversal and symlink components. A canonical
-// manifest is data from outside the consumer trust boundary; it must never be
-// able to read, replace, or remove a path outside the selected module.
-func safeModulePath(root, relative string, requireExistingFile bool) bool {
+// modulePathStatus separates a structurally unsafe manifest path from one that
+// is safe but simply absent from a checkout. The two are indistinguishable to a
+// boolean predicate yet demand different operator remedies.
+type modulePathStatus int
+
+const (
+	modulePathSafe modulePathStatus = iota
+	modulePathMissing
+	modulePathUnsafe
+)
+
+// inspectModulePath walks a canonical manifest path under root, rejecting path
+// traversal and symlink components. A canonical manifest is data from outside
+// the consumer trust boundary; it must never be able to read, replace, or
+// remove a path outside the selected module. requireRegularFile additionally
+// demands that an existing final component be a regular file.
+func inspectModulePath(root, relative string, requireRegularFile bool) modulePathStatus {
 	clean, ok := canonicalModulePath(relative)
 	if !ok {
-		return false
+		return modulePathUnsafe
 	}
 	current := root
 	parts := strings.Split(clean, string(filepath.Separator))
@@ -482,19 +530,32 @@ func safeModulePath(root, relative string, requireExistingFile bool) bool {
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if os.IsNotExist(err) {
-			return !requireExistingFile
+			return modulePathMissing
 		}
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
-			return false
+			return modulePathUnsafe
 		}
 		if index < len(parts)-1 && !info.IsDir() {
-			return false
+			return modulePathUnsafe
 		}
-		if index == len(parts)-1 && requireExistingFile && !info.Mode().IsRegular() {
-			return false
+		if index == len(parts)-1 && requireRegularFile && !info.Mode().IsRegular() {
+			return modulePathUnsafe
 		}
 	}
-	return true
+	return modulePathSafe
+}
+
+// safeModulePath reports whether a manifest path may be operated on. A missing
+// path is safe only when the caller does not require the file to already exist.
+func safeModulePath(root, relative string, requireExistingFile bool) bool {
+	switch inspectModulePath(root, relative, requireExistingFile) {
+	case modulePathSafe:
+		return true
+	case modulePathMissing:
+		return !requireExistingFile
+	default:
+		return false
+	}
 }
 
 func canonicalModulePath(relative string) (string, bool) {

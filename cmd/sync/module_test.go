@@ -7,8 +7,57 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	output "github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/integrity"
+	"github.com/codefly-dev/core/wool"
 )
+
+func TestModuleSyncPlanOrdersInvalidSourceBeforeOtherConflicts(t *testing.T) {
+	var lines []string
+	output.SetOutputSink(func(_ wool.Loglevel, msg string) { lines = append(lines, msg) })
+	defer output.SetOutputSink(nil)
+
+	printModuleSyncPlan("app", integrity.BaseSyncPlan{
+		SourceRoot:    "/src",
+		SourceInvalid: []integrity.InvalidSource{{Path: "a.go", Reason: integrity.SourceUnsafePath}},
+		TargetInvalid: []string{"b.go"},
+		Modified:      []string{"c.go"},
+	}, false, nil)
+
+	joined := strings.Join(lines, "\n")
+	source := strings.Index(joined, "INVALID SOURCE")
+	target := strings.Index(joined, "INVALID TARGET")
+	modified := strings.Index(joined, "MODIFIED BASE")
+	if source < 0 || target < 0 || modified < 0 {
+		t.Fatalf("plan is missing a conflict section:\n%s", joined)
+	}
+	if source > target || source > modified {
+		t.Fatalf("INVALID SOURCE must precede other conflict sections:\n%s", joined)
+	}
+}
+
+func TestSourceInvalidReportSurfacesEveryReasonWithDigests(t *testing.T) {
+	report := sourceInvalidReport([]integrity.InvalidSource{
+		{Path: "z.go", Reason: integrity.SourceInvalidReason("future-reason")},
+		{Path: "a.go", Reason: integrity.SourceDigestMismatch, ManifestDigest: "1111222233", ActualDigest: "aaaabbbbcc"},
+	})
+	joined := strings.Join(report, "\n")
+
+	if !strings.Contains(joined, "manifest 11112222...  actual aaaabbbb...") {
+		t.Fatalf("digest mismatch did not print expected vs actual:\n%s", joined)
+	}
+	// An unrecognized reason still counts toward the blocker, so it must be
+	// surfaced rather than silently dropped from the operator's plan.
+	if !strings.Contains(joined, "future-reason") || !strings.Contains(joined, "z.go") {
+		t.Fatalf("unrecognized reason was dropped:\n%s", joined)
+	}
+	if strings.Index(joined, "a.go") > strings.Index(joined, "z.go") {
+		t.Fatalf("known reasons should be ordered before unknown ones:\n%s", joined)
+	}
+}
 
 func TestModuleCommandIsPreviewFirstAndRejectsAmbiguousArguments(t *testing.T) {
 	if ModuleCmd.RunE == nil || ModuleCmd.Run != nil {
