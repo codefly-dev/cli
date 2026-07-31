@@ -1,0 +1,16 @@
+{
+  "forwarded": {
+    "$.id": "acct_0001",
+    "$.metadata.public": "safe-adjacent"
+  },
+  "suppressed_presence": [
+    "$.metadata.internal"
+  ],
+  "captures": [
+    {
+      "selector": "$.secret",
+      "captured": true,
+      "sink_reference": "capture://bind/account.create/$.secret"
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+schema_version: codefly.provider-manifest/v0
+protocol_version: codefly.provider/v0
+state_schema_versions: [1]
+agent:
+  kind: codefly:provider
+  publisher: codefly.dev
+  name: conformance
+  version: 1.0.0
+default_deletion_policy: retain
+permissions:
+  required:
+    - id: account-create
+      action: account.manage
+      resource: "provider:conformance/${workspace}/${environment}/${binding}/account"
+      resource_type: account
+      reason: Reconcile the declared account.
+      risk: high
+      credential_purpose: management
+  optional:
+    - id: account-observe
+      action: account.observe
+      resource: "provider:conformance/${workspace}/${environment}/${binding}/account"
+      resource_type: account
+      reason: Observe the declared account.
+      risk: low
+      credential_purpose: management
+    - id: account-delete
+      action: account.delete
+      resource: "provider:conformance/${workspace}/${environment}/${binding}/account"
+      resource_type: account
+      reason: Delete the declared account.
+      risk: critical
+      credential_purpose: management
+resource_types:
+  - id: account
+    actions: [create, update, replace, delete, import, manual, blocked, no-op, project-output, observe]
+    import_identity: [account_id]
+    supports_replace: true
+    supports_delete: true
+requests:
+  - id: account.observe
+    permissions: [account-observe]
+    resource_type: account
+    action: observe
+    origin_rule: api
+    operation: observe
+    method: GET
+    path_template: /v1/accounts/{account_id}
+    remote_id_parameters: [account_id]
+    allowed_query_fields: [expand]
+    request_byte_budget: 4096
+    response_byte_budget: 65536
+    read_only: true
+    response_schema: account
+    credential_purposes: [management]
+  - id: account.create
+    permissions: [account-create]
+    resource_type: account
+    action: create
+    origin_rule: api
+    operation: create
+    method: POST
+    path_template: /v1/accounts
+    remote_id_parameters: []
+    allowed_body_fields: [name, enabled]
+    ownership_body_fields: [name]
+    request_byte_budget: 8192
+    response_byte_budget: 65536
+    read_only: false
+    response_schema: account
+    credential_purposes: [management]
+  - id: account.delete
+    permissions: [account-delete]
+    resource_type: account
+    action: delete
+    origin_rule: api
+    operation: delete
+    method: DELETE
+    path_template: /v1/accounts/{account_id}
+    remote_id_parameters: [account_id]
+    request_byte_budget: 4096
+    response_byte_budget: 65536
+    read_only: false
+    response_schema: deleted
+    credential_purposes: [management]
+origin_rules:
+  - id: api
+    defaults: [http://localhost:8080]
+    schemes: [http]
+    host_patterns: [localhost]
+    ports: [8080]
+    binding_override: within-rule
+    private_network_classes: [loopback]
+credential_purposes:
+  - id: management
+    minimum_scope: Manage only the bound account.
+    permitted_consumer: management
+  - id: runtime
+    minimum_scope: Use the bound runtime account.
+    permitted_consumer: runtime
+response_schemas:
+  - id: account
+    fields:
+      - selector: {version: v1, path: "$.id"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$.metadata.public"}
+        disposition: FORWARD_SAFE
+      - selector: {version: v1, path: "$.secret"}
+        disposition: CAPTURE_TO_SINK
+        purpose: runtime
+      - selector: {version: v1, path: "$.metadata.internal"}
+        disposition: SUPPRESS_REPORT_PRESENCE
+  - id: deleted
+    fields:
+      - selector: {version: v1, path: "$.deleted"}
+        disposition: FORWARD_SAFE
+sandbox:
+  network: deny
+state:
+  schema_versions: [1]
+  import_identity: true
+  replace: true
+  delete: true
+  stepwise_upgrade: true
+diagnostic_namespace: provider.conformance.
