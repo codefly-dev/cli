@@ -209,8 +209,36 @@ func TestBaseSyncRejectsManifestTraversalBeforeMutation(t *testing.T) {
 	if err == nil {
 		t.Fatal("manifest traversal unexpectedly applied")
 	}
-	if !reflect.DeepEqual(plan.SourceInvalid, []string{"../outside.txt"}) {
-		t.Fatalf("source invalid = %v", plan.SourceInvalid)
+	if !reflect.DeepEqual(plan.SourceInvalid, []InvalidSource{{Path: "../outside.txt", Reason: SourceUnsafePath}}) {
+		t.Fatalf("source invalid = %#v", plan.SourceInvalid)
+	}
+}
+
+func TestBaseSyncClassifiesStaleUpstreamManifestAsDigestMismatch(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "owned.txt"), "actual upstream content")
+	writeTestFile(t, filepath.Join(target, "owned.txt"), "consumer content")
+	staleDigest := digestOf(t, "content the manifest still claims")
+	writeTestJSON(t, filepath.Join(source, "tools", "base-manifest.json"), baseManifest{
+		Files: map[string]string{"owned.txt": staleDigest},
+	})
+	writeManifest(t, target, "owned.txt")
+
+	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Applicable(); err == nil {
+		t.Fatal("stale upstream manifest did not block the sync")
+	}
+	want := []InvalidSource{{
+		Path:           "owned.txt",
+		Reason:         SourceDigestMismatch,
+		ManifestDigest: staleDigest,
+		ActualDigest:   digestOf(t, "actual upstream content"),
+	}}
+	if !reflect.DeepEqual(plan.SourceInvalid, want) {
+		t.Fatalf("source invalid = %#v, want %#v", plan.SourceInvalid, want)
 	}
 }
 

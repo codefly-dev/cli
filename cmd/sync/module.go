@@ -358,7 +358,7 @@ func printModuleSyncPlan(module string, plan integrity.BaseSyncPlan, applying bo
 		{"RELEASED TO OVERLAY OWNERSHIP", plan.Released},
 		{"RESOLVE FROM UPSTREAM", plan.ResolveUpstream},
 		{"ALREADY RECONCILED FROM UPSTREAM", plan.ReconciledUpstream},
-		{"INVALID SOURCE PATHS", plan.SourceInvalid}, {"INVALID TARGET PATHS", plan.TargetInvalid},
+		{"INVALID TARGET PATHS", plan.TargetInvalid},
 		{"MODIFIED BASE", plan.Modified}, {"OVERLAY COLLISIONS", plan.Collisions},
 		{"MODIFIED UPSTREAM DELETIONS", plan.StaleModified}, {"MISSING REQUIRED OVERLAYS", plan.MissingRequiredAdditions},
 		{"INVALID REQUIRED OVERLAYS", plan.InvalidRequiredAdditions},
@@ -370,6 +370,50 @@ func printModuleSyncPlan(module string, plan integrity.BaseSyncPlan, applying bo
 		sort.Strings(group.paths)
 		output.Info("  %s (%d): %s", group.label, len(group.paths), strings.Join(group.paths, ", "))
 	}
+	printInvalidSource(plan.SourceInvalid)
+}
+
+// printInvalidSource explains why each source-owned path was rejected. The
+// three reasons fold into one blocker count but have different remedies, so
+// each is reported separately with the action the operator can actually take.
+func printInvalidSource(entries []integrity.InvalidSource) {
+	byReason := map[integrity.SourceInvalidReason][]integrity.InvalidSource{}
+	for _, entry := range entries {
+		byReason[entry.Reason] = append(byReason[entry.Reason], entry)
+	}
+	for _, group := range []struct {
+		reason  integrity.SourceInvalidReason
+		heading string
+		remedy  string
+	}{
+		{integrity.SourceDigestMismatch, "INVALID SOURCE (digest mismatch, upstream manifest is stale)",
+			"report to the base repository and pin to a working tag; this is not resolvable in the consumer"},
+		{integrity.SourceUnreadable, "INVALID SOURCE (missing or unreadable source file)",
+			"the upstream checkout is incomplete; re-pin to a working tag or report to the base repository"},
+		{integrity.SourceUnsafePath, "INVALID SOURCE (unsafe path)",
+			"the upstream manifest lists a path that escapes the module; report to the base repository"},
+	} {
+		matched := byReason[group.reason]
+		if len(matched) == 0 {
+			continue
+		}
+		sort.Slice(matched, func(i, j int) bool { return matched[i].Path < matched[j].Path })
+		output.Info("  %s (%d):", group.heading, len(matched))
+		for _, entry := range matched {
+			output.Info("    %s", entry.Path)
+			if group.reason == integrity.SourceDigestMismatch {
+				output.Info("      manifest %s  actual %s", shortDigest(entry.ManifestDigest), shortDigest(entry.ActualDigest))
+			}
+		}
+		output.Info("    -> %s", group.remedy)
+	}
+}
+
+func shortDigest(digest string) string {
+	if len(digest) <= 8 {
+		return digest
+	}
+	return digest[:8] + "..."
 }
 
 func withoutPath(paths []string, excluded string) []string {

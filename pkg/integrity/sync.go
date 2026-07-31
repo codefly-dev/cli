@@ -14,6 +14,28 @@ import (
 
 const baseManifestRelativePath = "tools/base-manifest.json"
 
+// SourceInvalidReason distinguishes the three failures that all block a base
+// sync but demand different remedies: a malformed manifest path, a missing or
+// unreadable source file, and a source file whose content no longer matches the
+// upstream manifest (a stale upstream release the consumer cannot fix).
+type SourceInvalidReason string
+
+const (
+	SourceUnsafePath     SourceInvalidReason = "unsafe-path"
+	SourceUnreadable     SourceInvalidReason = "unreadable"
+	SourceDigestMismatch SourceInvalidReason = "digest-mismatch"
+)
+
+// InvalidSource is a source-owned path that cannot be applied, tagged with the
+// reason it was rejected. For a digest mismatch it also carries the manifest
+// and on-disk digests so the operator can see expected versus actual.
+type InvalidSource struct {
+	Path           string
+	Reason         SourceInvalidReason
+	ManifestDigest string
+	ActualDigest   string
+}
+
 // BaseSyncPlan classifies every path before a composed module is changed.
 // Source files are immutable base ownership; target-only files are product
 // overlays and are deliberately absent from this plan.
@@ -37,7 +59,7 @@ type BaseSyncPlan struct {
 	ResolveUpstream    []string
 	ReconciledUpstream []string
 	StaleModified      []string
-	SourceInvalid      []string
+	SourceInvalid      []InvalidSource
 	TargetInvalid      []string
 
 	MissingRequiredAdditions []string
@@ -48,18 +70,18 @@ type BaseSyncPlan struct {
 
 func (plan BaseSyncPlan) Applicable() error {
 	var blockers []string
-	add := func(label string, paths []string) {
-		if len(paths) > 0 {
-			blockers = append(blockers, fmt.Sprintf("%s=%d", label, len(paths)))
+	add := func(label string, count int) {
+		if count > 0 {
+			blockers = append(blockers, fmt.Sprintf("%s=%d", label, count))
 		}
 	}
-	add("invalid-source", plan.SourceInvalid)
-	add("invalid-target", plan.TargetInvalid)
-	add("modified-base", plan.Modified)
-	add("overlay-collisions", plan.Collisions)
-	add("modified-upstream-deletions", plan.StaleModified)
-	add("missing-required-overlays", plan.MissingRequiredAdditions)
-	add("invalid-required-overlays", plan.InvalidRequiredAdditions)
+	add("invalid-source", len(plan.SourceInvalid))
+	add("invalid-target", len(plan.TargetInvalid))
+	add("modified-base", len(plan.Modified))
+	add("overlay-collisions", len(plan.Collisions))
+	add("modified-upstream-deletions", len(plan.StaleModified))
+	add("missing-required-overlays", len(plan.MissingRequiredAdditions))
+	add("invalid-required-overlays", len(plan.InvalidRequiredAdditions))
 	if len(blockers) == 0 {
 		return nil
 	}
@@ -102,7 +124,7 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	targetInvalid := make(map[string]bool)
 	for _, relative := range sortedManifestPaths(sourceManifest) {
 		if !safeModulePath(sourceRoot, relative, true) {
-			plan.SourceInvalid = append(plan.SourceInvalid, relative)
+			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{Path: relative, Reason: SourceUnsafePath})
 			sourceInvalid[relative] = true
 		}
 		if !safeModulePath(targetRoot, relative, false) {
@@ -132,8 +154,17 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 		source := filepath.Join(sourceRoot, filepath.FromSlash(relative))
 		target := filepath.Join(targetRoot, filepath.FromSlash(relative))
 		sourceDigest, digestErr := sha256File(source)
-		if digestErr != nil || sourceDigest != sourceManifest.Files[relative] {
-			plan.SourceInvalid = append(plan.SourceInvalid, relative)
+		if digestErr != nil {
+			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{Path: relative, Reason: SourceUnreadable})
+			continue
+		}
+		if sourceDigest != sourceManifest.Files[relative] {
+			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{
+				Path:           relative,
+				Reason:         SourceDigestMismatch,
+				ManifestDigest: sourceManifest.Files[relative],
+				ActualDigest:   sourceDigest,
+			})
 			continue
 		}
 		targetDigest, targetErr := sha256File(target)
