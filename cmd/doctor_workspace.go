@@ -13,8 +13,10 @@ import (
 	"strings"
 	"time"
 
+	hostprovider "github.com/codefly-dev/cli/pkg/provider"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/provider/configuration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
 	"github.com/spf13/cobra"
@@ -114,6 +116,8 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	if env == nil {
 		return report
 	}
+
+	checkProviderBindings(ctx, ws, env, report)
 
 	resolvers, unavailable := checkSecretProviders(env, report)
 
@@ -217,6 +221,42 @@ func checkEnvironment(ws *resources.Workspace, name string, report *workspaceRea
 		report.add("", "environment", "ok", fmt.Sprintf("%s (implicit — not declared in %s)", env.Name, resources.WorkspaceConfigurationName), "")
 	}
 	return env
+}
+
+// checkProviderBindings validates external provider bindings declared for the
+// environment in provider-bindings.codefly.yaml. It is bounded and offline: it
+// parses the document and validates each binding's identity, mode, secrets
+// hygiene, output contract, and endpoint references. It never starts a provider
+// agent or reaches the network. A missing document is fine — providers are
+// opt-in; an unknown-schema document is reported so an old CLI does not silently
+// ignore newer bindings.
+func checkProviderBindings(ctx context.Context, ws *resources.Workspace, env *resources.Environment, report *workspaceReadinessReport) {
+	doc, present, err := hostprovider.LoadDocument(ws.Dir())
+	if err != nil {
+		code := hostprovider.CodeBindingsUnreadable
+		if errors.Is(err, hostprovider.ErrUnknownSchema) {
+			code = hostprovider.CodeBindingsSchemaUnknown
+		}
+		report.add(code, "provider bindings", "fail", err.Error(), "fix or upgrade "+hostprovider.BindingsFileName)
+		return
+	}
+	if !present {
+		return
+	}
+
+	registry := configuration.NewRegistry()
+	for _, binding := range doc.ForEnvironment(env.Name) {
+		diagnostics := hostprovider.ValidateBinding(ctx, binding, registry)
+		if len(diagnostics) == 0 {
+			report.add("", "provider binding "+binding.Name, "ok",
+				fmt.Sprintf("%s → %s [%s]", binding.Name, binding.Provider, binding.Mode), "")
+			continue
+		}
+		for _, diagnostic := range diagnostics {
+			report.add(diagnostic.Code, "provider binding "+binding.Name, "fail", diagnostic.Message,
+				"correct the binding in "+hostprovider.BindingsFileName)
+		}
+	}
 }
 
 // checkSecretProviders validates the environment's declared secret backends
@@ -701,7 +741,9 @@ environment_not_found, service_not_found, configuration_directory_missing,
 configuration_missing, configuration_invalid, configuration_duplicate,
 provider_not_configured, provider_executable_missing,
 provider_authentication_required, provider_resolution_failed,
-plaintext_not_allowed, reference_scheme_unknown, timeout.`,
+plaintext_not_allowed, reference_scheme_unknown, timeout. External provider
+binding checks add external_provider.* codes (bindings_unreadable,
+bindings_schema_unknown, and the per-binding validation codes).`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		report := workspaceReadiness(cmd.Context(), workspaceReadinessOptions{
 			env:     doctorWorkspaceEnv,

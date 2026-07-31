@@ -11,6 +11,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	configcmd "github.com/codefly-dev/cli/cmd/config"
 	"github.com/codefly-dev/cli/cmd/endpoint"
+	providercmd "github.com/codefly-dev/cli/cmd/provider"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/resources"
@@ -134,9 +135,15 @@ func ShouldRenderError(err error) bool {
 }
 
 // ExitCode returns the conventional process status for a command error.
+// Commands may carry a stable, documented status by implementing ExitCode()
+// on their error (see pkg/provider for the provider command contract).
 func ExitCode(err error) int {
 	if IsCancellationError(err) {
 		return 130
+	}
+	var coded interface{ ExitCode() int }
+	if errors.As(err, &coded) {
+		return coded.ExitCode()
 	}
 	return 1
 }
@@ -300,6 +307,7 @@ func init() {
 	// Codefly's format, so writing it is a Codefly operation — consumers must
 	// not hand-assemble configurations/<profile>/*.env themselves.
 	RootCmd.AddCommand(configcmd.Cmd)
+	RootCmd.AddCommand(providercmd.Cmd)
 
 	// Static help plus optional workspace-aware AI guidance.
 	RootCmd.AddCommand(ExplainCmd)
