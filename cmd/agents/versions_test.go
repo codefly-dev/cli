@@ -302,7 +302,11 @@ func TestGithubSourceMatchesManagerDownloadURL(t *testing.T) {
 		{Kind: resources.ServiceAgent, Publisher: "acme.co.uk", Name: "multi.part", Version: "1.2.3"},
 	} {
 		owner, repo := githubSource(agent)
-		u, err := url.Parse(manager.DownloadURL(agent))
+		downloadURL, err := manager.DownloadURL(agent)
+		if err != nil {
+			t.Fatalf("resolve download URL: %v", err)
+		}
+		u, err := url.Parse(downloadURL)
 		if err != nil {
 			t.Fatalf("parse download URL: %v", err)
 		}
@@ -313,6 +317,25 @@ func TestGithubSourceMatchesManagerDownloadURL(t *testing.T) {
 		if parts[0] != owner || parts[1] != repo {
 			t.Fatalf("githubSource = %s/%s, download URL uses %s/%s", owner, repo, parts[0], parts[1])
 		}
+	}
+}
+
+// TestManagerDownloadURLFailsForUnknownKind pins the fallible contract this CLI
+// relies on: an agent whose kind has no registration must yield an error, never
+// a plausible-looking but empty/wrong URL that call sites would probe blindly.
+func TestManagerDownloadURLFailsForUnknownKind(t *testing.T) {
+	agent := &resources.Agent{
+		Kind:      resources.AgentKind("codefly:not-a-real-kind"),
+		Publisher: "codefly.dev",
+		Name:      "redis",
+		Version:   "0.0.74",
+	}
+	got, err := manager.DownloadURL(agent)
+	if err == nil {
+		t.Fatalf("DownloadURL(unknown kind) = %q, want error", got)
+	}
+	if got != "" {
+		t.Fatalf("DownloadURL(unknown kind) returned URL %q alongside error", got)
 	}
 }
 

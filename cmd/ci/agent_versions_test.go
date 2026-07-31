@@ -26,7 +26,9 @@ func TestProbeGitHubAssetReportsMissingArtifact(t *testing.T) {
 	defer server.Close()
 
 	restore := githubAssetURL
-	githubAssetURL = func(*resources.Agent) string { return server.URL + "/service-redis_0.0.74_linux_amd64.tar.gz" }
+	githubAssetURL = func(*resources.Agent) (string, error) {
+		return server.URL + "/service-redis_0.0.74_linux_amd64.tar.gz", nil
+	}
 	defer func() { githubAssetURL = restore }()
 
 	probe := probeGitHubAsset(context.Background(), testAgent())
@@ -48,12 +50,36 @@ func TestProbeGitHubAssetReportsPublishedArtifact(t *testing.T) {
 	defer server.Close()
 
 	restore := githubAssetURL
-	githubAssetURL = func(*resources.Agent) string { return server.URL + "/asset.tar.gz" }
+	githubAssetURL = func(*resources.Agent) (string, error) { return server.URL + "/asset.tar.gz", nil }
 	defer func() { githubAssetURL = restore }()
 
 	probe := probeGitHubAsset(context.Background(), testAgent())
 	if !probe.downloadable {
 		t.Fatalf("200 asset reported as not downloadable: %q", probe.detail)
+	}
+}
+
+func TestProbeGitHubAssetReportsUnresolvableKind(t *testing.T) {
+	// An agent whose kind has no registration cannot yield an asset URL. The
+	// real githubAssetURL (manager.DownloadURL) must surface that as a failed
+	// probe with the resolution error, not silently pass an empty URL through
+	// to an HTTP request.
+	agent := &resources.Agent{
+		Kind:      resources.AgentKind("codefly:not-a-real-kind"),
+		Publisher: "codefly.dev",
+		Name:      "redis",
+		Version:   "0.0.74",
+	}
+
+	probe := probeGitHubAsset(context.Background(), agent)
+	if probe.downloadable {
+		t.Fatal("unresolvable agent kind reported as downloadable")
+	}
+	if !strings.Contains(probe.detail, "not-a-real-kind") {
+		t.Fatalf("detail = %q, want the kind-resolution error", probe.detail)
+	}
+	if probe.label != "GitHub release asset" {
+		t.Fatalf("label = %q, want the unadorned fallback label", probe.label)
 	}
 }
 
@@ -98,7 +124,7 @@ func TestProbeAgentArtifactCombinesSources(t *testing.T) {
 	defer github.Close()
 
 	restore := githubAssetURL
-	githubAssetURL = func(*resources.Agent) string { return github.URL + "/asset.tar.gz" }
+	githubAssetURL = func(*resources.Agent) (string, error) { return github.URL + "/asset.tar.gz", nil }
 	defer func() { githubAssetURL = restore }()
 	t.Setenv("AGENT_REGISTRY", "")
 

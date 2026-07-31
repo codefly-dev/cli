@@ -25,7 +25,9 @@ func TestLoaderArchiveName_MatchesInstallResolver(t *testing.T) {
 	got := loaderDownloadURL("codefly.dev", "go", "0.0.16", host)
 
 	agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "go", Version: "0.0.16"}
-	require.Equal(t, manager.DownloadURL(agent), got,
+	resolver, err := manager.DownloadURL(agent)
+	require.NoError(t, err)
+	require.Equal(t, resolver, got,
 		"host-platform upload URL must match the install resolver byte-for-byte")
 }
 

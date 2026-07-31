@@ -74,7 +74,12 @@ func addModule(name string) error {
 		Name: name,
 	}
 	if agent != nil {
-		input.Agent = agent.Proto()
+		// Assign through input.Agent rather than a temporary: a `:=` here would
+		// shadow the enclosing err.
+		input.Agent, err = agent.Proto()
+		if err != nil {
+			return fmt.Errorf("cannot resolve agent %s: %w", agent.Identifier(), err)
+		}
 	}
 
 	action, err := actionsmodule.NewActionAddModule(ctx, input)
