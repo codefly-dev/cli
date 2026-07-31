@@ -129,6 +129,10 @@ func preparePublish(
 	if err != nil {
 		return nil, err
 	}
+	localFetchHost, err := localFetchRemoteHost(workspace, request, config)
+	if err != nil {
+		return nil, err
+	}
 	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", request.Module)
 	var inventory Inventory
 	if restoreRevision == "" {
@@ -189,6 +193,7 @@ func preparePublish(
 			config,
 			promotionBranch,
 			publishSnapshot,
+			localFetchHost,
 		)
 		if err != nil {
 			return fail(err)
@@ -341,6 +346,7 @@ func prepareServicePublication(
 	config *repositoryConfig,
 	promotionBranch string,
 	publishSnapshot bool,
+	localFetchHost string,
 ) (string, Inventory, error) {
 	snapshot, err := prepareServiceSnapshot(
 		ctx,
@@ -368,6 +374,7 @@ func prepareServicePublication(
 			renderedInventory,
 			environment,
 			snapshot.revision,
+			localFetchHost,
 		); err != nil {
 			return "", Inventory{}, err
 		}
@@ -1196,6 +1203,25 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 		return nil, "", "", "", fmt.Errorf("gitops.path: %w", err)
 	}
 	return &config, slug, baseBranch, pathRoot, nil
+}
+
+// localFetchRemoteHost returns the container-DNS host of the managed local k3d
+// fetch remote (#201) when the publication promotes locally against a portable,
+// non-file repo-url. Argo then fetches from that in-cluster host while repo-url
+// stays a committable github URL. It is empty for every other publication,
+// leaving the publication-repo match in force.
+func localFetchRemoteHost(workspace *resources.Workspace, request *PublishRequest, config *repositoryConfig) (string, error) {
+	if !request.Local || strings.TrimSpace(config.FetchRepoURL) == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(config.RepoURL), "file://") {
+		return "", nil
+	}
+	remote, err := NewFetchRemote(workspace, request.Environment)
+	if err != nil {
+		return "", fmt.Errorf("derive local fetch remote identity: %w", err)
+	}
+	return remote.Spec.DNSName, nil
 }
 
 func workspaceFetchRepository(workspace *resources.Workspace) string {

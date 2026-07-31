@@ -81,6 +81,7 @@ func generateArgoBootstrap(
 	inventory *Inventory,
 	environment string,
 	snapshotRevision string,
+	localFetchHost string,
 ) error {
 	if inventory.AppProject == "" {
 		return fmt.Errorf("Argo promotion requires an AppProject name")
@@ -88,7 +89,7 @@ func generateArgoBootstrap(
 	if inventory.Namespace == "" {
 		return fmt.Errorf("Argo promotion requires an exact destination namespace")
 	}
-	repository, err := argoRepository(config)
+	repository, err := argoRepository(config, localFetchHost)
 	if err != nil {
 		return err
 	}
@@ -158,7 +159,11 @@ func generateArgoBootstrap(
 	})
 }
 
-func argoRepository(config *repositoryConfig) (string, error) {
+// argoRepository derives the Argo Application repoURL. localFetchHost, when
+// non-empty, is the container DNS of the managed local k3d fetch remote; a fetch
+// URL on that host is the reachable in-cluster endpoint and is accepted without
+// matching the publication repo-url, so repo-url stays a portable github URL.
+func argoRepository(config *repositoryConfig, localFetchHost string) (string, error) {
 	repository := strings.TrimSpace(config.RepoURL)
 	if fetch := strings.TrimSpace(config.FetchRepoURL); fetch != "" {
 		parsed, err := url.Parse(fetch)
@@ -171,7 +176,8 @@ func argoRepository(config *repositoryConfig) (string, error) {
 		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(parsed.Host, "*") {
 			return "", fmt.Errorf("environment gitops.fetch-repo-url contains unsafe authority")
 		}
-		if !strings.HasPrefix(strings.TrimSpace(config.RepoURL), "file://") {
+		isLocalFetchRemote := localFetchHost != "" && parsed.Hostname() == localFetchHost
+		if !isLocalFetchRemote && !strings.HasPrefix(strings.TrimSpace(config.RepoURL), "file://") {
 			matches, matchErr := repositoriesMatch(config.RepoURL, fetch)
 			if matchErr != nil {
 				return "", fmt.Errorf("environment gitops.fetch-repo-url: %w", matchErr)
