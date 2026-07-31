@@ -123,7 +123,11 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	sourceInvalid := make(map[string]bool)
 	targetInvalid := make(map[string]bool)
 	for _, relative := range sortedManifestPaths(sourceManifest) {
-		if !safeModulePath(sourceRoot, relative, true) {
+		switch inspectModulePath(sourceRoot, relative, true) {
+		case modulePathMissing:
+			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{Path: relative, Reason: SourceUnreadable})
+			sourceInvalid[relative] = true
+		case modulePathUnsafe:
 			plan.SourceInvalid = append(plan.SourceInvalid, InvalidSource{Path: relative, Reason: SourceUnsafePath})
 			sourceInvalid[relative] = true
 		}
@@ -499,13 +503,26 @@ func atomicCopyFile(source, target string) error {
 	return os.Rename(temporaryPath, target)
 }
 
-// safeModulePath rejects path traversal and symlink components. A canonical
-// manifest is data from outside the consumer trust boundary; it must never be
-// able to read, replace, or remove a path outside the selected module.
-func safeModulePath(root, relative string, requireExistingFile bool) bool {
+// modulePathStatus separates a structurally unsafe manifest path from one that
+// is safe but simply absent from a checkout. The two are indistinguishable to a
+// boolean predicate yet demand different operator remedies.
+type modulePathStatus int
+
+const (
+	modulePathSafe modulePathStatus = iota
+	modulePathMissing
+	modulePathUnsafe
+)
+
+// inspectModulePath walks a canonical manifest path under root, rejecting path
+// traversal and symlink components. A canonical manifest is data from outside
+// the consumer trust boundary; it must never be able to read, replace, or
+// remove a path outside the selected module. requireRegularFile additionally
+// demands that an existing final component be a regular file.
+func inspectModulePath(root, relative string, requireRegularFile bool) modulePathStatus {
 	clean, ok := canonicalModulePath(relative)
 	if !ok {
-		return false
+		return modulePathUnsafe
 	}
 	current := root
 	parts := strings.Split(clean, string(filepath.Separator))
@@ -513,19 +530,32 @@ func safeModulePath(root, relative string, requireExistingFile bool) bool {
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if os.IsNotExist(err) {
-			return !requireExistingFile
+			return modulePathMissing
 		}
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
-			return false
+			return modulePathUnsafe
 		}
 		if index < len(parts)-1 && !info.IsDir() {
-			return false
+			return modulePathUnsafe
 		}
-		if index == len(parts)-1 && requireExistingFile && !info.Mode().IsRegular() {
-			return false
+		if index == len(parts)-1 && requireRegularFile && !info.Mode().IsRegular() {
+			return modulePathUnsafe
 		}
 	}
-	return true
+	return modulePathSafe
+}
+
+// safeModulePath reports whether a manifest path may be operated on. A missing
+// path is safe only when the caller does not require the file to already exist.
+func safeModulePath(root, relative string, requireExistingFile bool) bool {
+	switch inspectModulePath(root, relative, requireExistingFile) {
+	case modulePathSafe:
+		return true
+	case modulePathMissing:
+		return !requireExistingFile
+	default:
+		return false
+	}
 }
 
 func canonicalModulePath(relative string) (string, bool) {

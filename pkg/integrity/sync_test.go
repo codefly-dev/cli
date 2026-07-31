@@ -214,6 +214,29 @@ func TestBaseSyncRejectsManifestTraversalBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestBaseSyncClassifiesMissingSourceFileAsUnreadable(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(target, "gone.txt"), "consumer content")
+	// The source manifest lists gone.txt, but the file is absent from the
+	// checkout: a broken/partial upstream, not a path that escapes the module.
+	writeTestJSON(t, filepath.Join(source, "tools", "base-manifest.json"), baseManifest{
+		Files: map[string]string{"gone.txt": digestOf(t, "upstream content")},
+	})
+	writeManifest(t, target, "gone.txt")
+
+	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Applicable(); err == nil {
+		t.Fatal("missing source file did not block the sync")
+	}
+	want := []InvalidSource{{Path: "gone.txt", Reason: SourceUnreadable}}
+	if !reflect.DeepEqual(plan.SourceInvalid, want) {
+		t.Fatalf("source invalid = %#v, want %#v", plan.SourceInvalid, want)
+	}
+}
+
 func TestBaseSyncClassifiesStaleUpstreamManifestAsDigestMismatch(t *testing.T) {
 	source, target := syncFixture(t)
 	writeTestFile(t, filepath.Join(source, "owned.txt"), "actual upstream content")
