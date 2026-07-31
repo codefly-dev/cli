@@ -86,6 +86,34 @@ func TestFixtureRateLimitFault(t *testing.T) {
 	require.Equal(t, 0, f.ResourceCount(), "a rate-limited request records no effect")
 }
 
+func TestFixtureMalformedFault(t *testing.T) {
+	f := NewFixture()
+	defer f.Close()
+	f.InjectMalformed()
+
+	resp, body := postJSON(t, f.URL()+"/v1/accounts", nil, `{"name":"a"}`)
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	// Duplicate keys and a trailing comma: not decodable as a single object.
+	var decoded map[string]any
+	require.Error(t, json.Unmarshal(body, &decoded), "the malformed fault must not decode cleanly")
+	require.Equal(t, 0, f.ResourceCount(), "a faulted request records no effect")
+}
+
+// TestFixtureFaultAppliesToReadRequest is the regression guard for the fault
+// boundary: an injected fault is served by the next request to any endpoint,
+// including a read, not only a mutating create.
+func TestFixtureFaultAppliesToReadRequest(t *testing.T) {
+	f := NewFixture()
+	defer f.Close()
+	f.InjectRateLimited()
+
+	resp, _ := get(t, f.URL()+"/v1/account")
+
+	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	require.Equal(t, "2", resp.Header.Get("Retry-After"))
+}
+
 func TestFixtureRedirectFaultIsNotFollowed(t *testing.T) {
 	f := NewFixture()
 	defer f.Close()

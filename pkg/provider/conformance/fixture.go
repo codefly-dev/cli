@@ -55,15 +55,7 @@ type RecordedRequest struct {
 	BodyKeys   []string `json:"body_keys,omitempty"`
 }
 
-// account is one in-memory resource. Ownership metadata is reported to the host;
-// the secret is a poison value the response policy must capture.
-type account struct {
-	id      string
-	name    string
-	ownedBy string
-}
-
-// faults holds one-shot fault injections consumed by the next matching request.
+// faults holds one-shot fault injections consumed by the next received request.
 type faults struct {
 	rateLimited bool
 	malformed   bool
@@ -77,7 +69,7 @@ type Fixture struct {
 
 	mu       sync.Mutex
 	seq      int
-	accounts map[string]*account
+	accounts map[string]string // resource id -> owning principal
 	nextID   int
 	idem     map[string]string
 	requests []RecordedRequest
@@ -89,7 +81,7 @@ type Fixture struct {
 // SSRF guard, credential injection) is exercised end to end.
 func NewFixture() *Fixture {
 	f := &Fixture{
-		accounts: make(map[string]*account),
+		accounts: make(map[string]string),
 		idem:     make(map[string]string),
 		nextID:   1,
 	}
@@ -121,16 +113,17 @@ func (f *Fixture) Seed(owner string) string {
 	return f.insertLocked(owner)
 }
 
-// InjectRateLimited makes the next mutating request answer 429 with retry-after
-// and rate metadata, without recording an effect.
+// InjectRateLimited makes the next received request answer 429 with retry-after
+// and rate metadata, without recording an effect. The fault is consumed by the
+// next request to any resource endpoint, regardless of method.
 func (f *Fixture) InjectRateLimited() { f.setFault(func(x *faults) { x.rateLimited = true }) }
 
-// InjectMalformed makes the next request answer with a duplicate-key, malformed
-// JSON body so response decoding is exercised against hostile input.
+// InjectMalformed makes the next received request answer with a duplicate-key,
+// malformed JSON body so response decoding is exercised against hostile input.
 func (f *Fixture) InjectMalformed() { f.setFault(func(x *faults) { x.malformed = true }) }
 
-// InjectRedirect makes the next request answer 302 to the collection, so the
-// host's no-follow-redirect stance is exercised.
+// InjectRedirect makes the next received request answer 302 to the collection,
+// so the host's no-follow-redirect stance is exercised.
 func (f *Fixture) InjectRedirect() { f.setFault(func(x *faults) { x.redirect = true }) }
 
 // Requests returns the safe projection of every request received so far.
@@ -162,7 +155,7 @@ func (f *Fixture) ResourceCount() int {
 func (f *Fixture) Reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.accounts = make(map[string]*account)
+	f.accounts = make(map[string]string)
 	f.idem = make(map[string]string)
 	f.requests = nil
 	f.faults = faults{}
@@ -179,7 +172,7 @@ func (f *Fixture) setFault(mutate func(*faults)) {
 func (f *Fixture) insertLocked(owner string) string {
 	id := fmt.Sprintf("acct_%04d", f.nextID)
 	f.nextID++
-	f.accounts[id] = &account{id: id, name: id, ownedBy: owner}
+	f.accounts[id] = owner
 	return id
 }
 
@@ -221,6 +214,9 @@ func (f *Fixture) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	requestID, stamp := f.record(r)
+	if f.consumeFaults(w, requestID) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", requestID)
 	w.Header().Set("X-Timestamp", stamp.Format(time.RFC3339))
@@ -231,6 +227,9 @@ func (f *Fixture) handleCollection(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	requestID, stamp := f.record(r)
+	if f.consumeFaults(w, requestID) {
+		return
+	}
 	switch r.Method {
 	case http.MethodPost:
 		f.createLocked(w, r, requestID, stamp)
@@ -245,6 +244,9 @@ func (f *Fixture) handleResource(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	requestID, stamp := f.record(r)
+	if f.consumeFaults(w, requestID) {
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
 	switch r.Method {
 	case http.MethodGet:
@@ -268,9 +270,6 @@ func (f *Fixture) handleResource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *Fixture) createLocked(w http.ResponseWriter, r *http.Request, requestID string, stamp time.Time) {
-	if f.consumeFaults(w, requestID) {
-		return
-	}
 	// Idempotent POST: the same key replays the first response and records no new
 	// effect. A missing key is non-idempotent and always creates.
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
@@ -369,8 +368,8 @@ func (f *Fixture) handleInspectResources(w http.ResponseWriter, _ *http.Request)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ids := make([]string, 0, len(f.accounts))
-	for id, a := range f.accounts {
-		ids = append(ids, id+":"+a.ownedBy)
+	for id, owner := range f.accounts {
+		ids = append(ids, id+":"+owner)
 	}
 	sort.Strings(ids)
 	writeJSON(w, map[string]any{"resources": ids, "count": len(ids)})

@@ -236,6 +236,65 @@ func TestBrokerCassetteReplayServesWithoutNetwork(t *testing.T) {
 	assertNoPoison(t, encoded)
 }
 
+// TestBrokerObserveCapturesReadPathSecret proves a secret in a read (GET)
+// response is captured to the sink and never forwarded, exercising the fixture's
+// retrieve path end to end through the real broker.
+func TestBrokerObserveCapturesReadPathSecret(t *testing.T) {
+	h := newBrokerHarness(t)
+	seeded := h.fixture.Seed("codefly")
+	require.Equal(t, brokerRemoteID, seeded)
+
+	observe := h.observeRequest(t, seeded)
+	// The observe request is anchored by a create-typed action whose prospective
+	// id matches the retrieved resource, mirroring the core broker test recipe.
+	session := h.session(t, createAction(t, observe), false)
+
+	handle := h.mint(t, observe, providerv0.HTTPMethod_HTTP_METHOD_GET)
+	response, err := session.Execute(context.Background(), h.execute(handle, observe))
+	require.NoError(t, err)
+
+	require.Equal(t, providerv0.DeliveryState_DELIVERY_STATE_RESPONSE_RECEIVED, response.GetDelivery())
+	require.Equal(t, uint32(http.StatusOK), response.GetStatusCode())
+
+	require.Equal(t, []string{PoisonSecret}, h.sink.stored)
+	require.Equal(t, map[string]string{
+		"$.id":              seeded,
+		"$.metadata.public": "safe-adjacent",
+	}, forwardedBySelector(response))
+
+	encoded, err := json.Marshal(response)
+	require.NoError(t, err)
+	assertNoPoison(t, encoded)
+	require.NotContains(t, string(encoded), poisonCredential)
+	require.Equal(t, 1, h.fixture.RequestCount())
+}
+
+// TestBrokerDeleteRemovesOwnedResource proves a delete of an owned resource
+// reaches the fixture, forwards only the safe deletion marker, and removes the
+// resource.
+func TestBrokerDeleteRemovesOwnedResource(t *testing.T) {
+	h := newBrokerHarness(t)
+	seeded := h.fixture.Seed("codefly")
+	require.Equal(t, 1, h.fixture.ResourceCount())
+
+	del := h.deleteRequest(t, seeded)
+	session := h.session(t, deleteAction(t, seeded, del), false)
+
+	handle := h.mint(t, del, providerv0.HTTPMethod_HTTP_METHOD_DELETE)
+	response, err := session.Execute(context.Background(), h.execute(handle, del))
+	require.NoError(t, err)
+
+	require.Equal(t, providerv0.DeliveryState_DELIVERY_STATE_RESPONSE_RECEIVED, response.GetDelivery())
+	require.Equal(t, uint32(http.StatusOK), response.GetStatusCode())
+
+	require.Len(t, response.GetForwarded(), 1)
+	require.Equal(t, "$.deleted", response.GetForwarded()[0].GetSelector())
+	require.True(t, response.GetForwarded()[0].GetValue().GetBoolValue())
+
+	require.Equal(t, 0, h.fixture.ResourceCount(), "the owned resource was destroyed")
+	require.Equal(t, 1, h.fixture.RequestCount())
+}
+
 func (h *brokerHarness) createRequest(t *testing.T) *providerv0.PlannedRequest {
 	t.Helper()
 	request := &providerv0.PlannedRequest{
@@ -263,6 +322,54 @@ func createAction(t *testing.T, requests ...*providerv0.PlannedRequest) *provide
 		ProspectiveRemoteId: brokerRemoteID,
 		Ownership:           providerv0.Ownership_OWNERSHIP_OWNED,
 		Requests:            requests,
+	}
+	require.NoError(t, canonical.ValidatePlanAction(action))
+	return action
+}
+
+func (h *brokerHarness) observeRequest(t *testing.T, accountID string) *providerv0.PlannedRequest {
+	t.Helper()
+	request := &providerv0.PlannedRequest{
+		RequestDescriptorId:     "account.observe",
+		RequestDescriptorDigest: descriptorDigest(t, h.manifest, "account.observe"),
+		Method:                  providerv0.HTTPMethod_HTTP_METHOD_GET,
+		AdmittedOriginDigest:    h.admitted.GetAdmissionDigest(),
+		PathParameters:          map[string]*providerv0.PublicValue{"account_id": pubString(accountID)},
+		CredentialPurposes:      []providerv0.CredentialPurpose{providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT},
+		ResponsePolicyDigest:    fakeDigest("account-response-policy"),
+	}
+	bound, err := canonical.BindPlannedRequestDigest(request)
+	require.NoError(t, err)
+	return bound
+}
+
+func (h *brokerHarness) deleteRequest(t *testing.T, accountID string) *providerv0.PlannedRequest {
+	t.Helper()
+	request := &providerv0.PlannedRequest{
+		RequestDescriptorId:     "account.delete",
+		RequestDescriptorDigest: descriptorDigest(t, h.manifest, "account.delete"),
+		Method:                  providerv0.HTTPMethod_HTTP_METHOD_DELETE,
+		AdmittedOriginDigest:    h.admitted.GetAdmissionDigest(),
+		PathParameters:          map[string]*providerv0.PublicValue{"account_id": pubString(accountID)},
+		CredentialPurposes:      []providerv0.CredentialPurpose{providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT},
+		ResponsePolicyDigest:    fakeDigest("deleted-response-policy"),
+		IdempotencyKey:          "idem-1",
+	}
+	bound, err := canonical.BindPlannedRequestDigest(request)
+	require.NoError(t, err)
+	return bound
+}
+
+func deleteAction(t *testing.T, remoteID string, requests ...*providerv0.PlannedRequest) *providerv0.PlanAction {
+	t.Helper()
+	action := &providerv0.PlanAction{
+		ActionId:       "a1",
+		Position:       0,
+		Type:           providerv0.ActionType_ACTION_TYPE_DELETE,
+		ResourceType:   "account",
+		RemoteIdentity: &providerv0.RemoteIdentity{Provider: "conformance", ResourceType: "account", RemoteId: remoteID},
+		Ownership:      providerv0.Ownership_OWNERSHIP_OWNED,
+		Requests:       requests,
 	}
 	require.NoError(t, canonical.ValidatePlanAction(action))
 	return action
