@@ -38,11 +38,11 @@ func TestResultFailSetsInvalidAndKeepsStrongerStatus(t *testing.T) {
 
 func TestCommandErrorCarriesExitCodeAndMachineFlag(t *testing.T) {
 	err := &commandError{status: StatusPolicyDenied, emitted: true}
-	require.Equal(t, 3, err.ExitCode())
+	require.Equal(t, 3, err.CommandExitCode())
 	require.True(t, err.MachineReadable())
 
 	human := &commandError{status: StatusInvalid}
-	require.Equal(t, 1, human.ExitCode())
+	require.Equal(t, 1, human.CommandExitCode())
 	require.False(t, human.MachineReadable())
 }
 

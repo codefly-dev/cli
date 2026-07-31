@@ -155,7 +155,7 @@ func (b *Binding) View(valid bool) BindingView {
 		Provider:       b.Provider,
 		Mode:           string(b.Mode),
 		DeletionPolicy: string(b.EffectiveDeletionPolicy()),
-		Endpoints:      b.Endpoints,
+		Endpoints:      append([]string(nil), b.Endpoints...),
 		Valid:          valid,
 	}
 	if b.Output != nil {

@@ -16,12 +16,11 @@ var destroyCmd = &cobra.Command{
 Only resources the binding owns or has explicitly adopted are deleted, and only
 when the binding declares deletion-policy: delete-owned. The default retain
 policy never deletes remote resources.`,
-	RunE: run(func(ctx context.Context, args []string) error {
-		return gatedCommand(ctx, "destroy", envFlag, args[0])
+	RunE: run(func(ctx context.Context, cmd *cobra.Command, args []string) error {
+		return gatedCommand(ctx, "destroy", envOf(cmd), args[0], jsonOf(cmd))
 	}),
 }
 
 func init() {
-	destroyCmd.Flags().StringVar(&envFlag, "env", "local", "Environment the binding belongs to")
-	destroyCmd.Flags().BoolVar(&jsonFlag, "json", false, "Print a machine-readable report to stdout")
+	addEnvJSONFlags(destroyCmd, "Environment the binding belongs to")
 }

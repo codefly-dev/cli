@@ -64,6 +64,9 @@ func TestValidateBinding_Findings(t *testing.T) {
 		{"malformed secret reference", func(b *Binding) {
 			b.Input = map[string]string{"token": "secret://has spaces/bad"}
 		}, CodeInvalidSecretRef},
+		{"malformed uppercase-scheme reference is still validated", func(b *Binding) {
+			b.Input = map[string]string{"token": "SECRET://has spaces/bad"}
+		}, CodeInvalidSecretRef},
 		{"undeclared output contract", func(b *Binding) {
 			b.Output = &Output{Contract: "acme.dev/configuration/unknown@9"}
 		}, CodeUndeclaredContract},
@@ -80,6 +83,15 @@ func TestValidateBinding_Findings(t *testing.T) {
 			require.Contains(t, got, tc.wantOne, "expected %s among findings, got %v", tc.wantOne, got)
 		})
 	}
+}
+
+func TestValidateBinding_AcceptsValidUppercaseSchemeReference(t *testing.T) {
+	registry := configuration.NewRegistry()
+	binding := validBinding()
+	binding.Input = map[string]string{"token": "SECRET://vault/api-token"}
+	got := codes(ValidateBinding(context.Background(), binding, registry))
+	require.NotContains(t, got, CodeInvalidSecretRef, "a canonical uppercase-scheme reference is valid")
+	require.NotContains(t, got, CodeSecretInPublicInput, "a reference must not be treated as a public literal")
 }
 
 func TestValidateBinding_AcceptsSemanticEndpointForms(t *testing.T) {

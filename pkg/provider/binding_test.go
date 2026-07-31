@@ -83,3 +83,17 @@ func TestBindingView_RedactsInputValues(t *testing.T) {
 	require.NotContains(t, view.InputKeys, "secret://stripe/api-token")
 	require.NotContains(t, view.InputKeys, "acme-live-account")
 }
+
+// The view must be an independent copy: mutating the source binding after
+// building a view must not change the already-produced view.
+func TestBindingView_EndpointsAreCopied(t *testing.T) {
+	binding := &Binding{
+		Name:      "billing",
+		Provider:  "acme/stripe:1.2.3",
+		Mode:      ModeManaged,
+		Endpoints: []string{"billing/accounts/rest"},
+	}
+	view := binding.View(true)
+	binding.Endpoints[0] = "mutated/after/view"
+	require.Equal(t, "billing/accounts/rest", view.Endpoints[0], "the view must not alias the binding's slice")
+}

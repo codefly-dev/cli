@@ -121,8 +121,12 @@ func validateSemanticEndpoint(reference string) error {
 }
 
 func hasReferenceScheme(value string) bool {
+	// URL schemes are case-insensitive (net/url lowercases them), so match the
+	// prefix case-insensitively — otherwise a SECRET://… value would skip
+	// opaque-reference validation and be accepted as a public literal.
+	lower := strings.ToLower(value)
 	for _, scheme := range referenceSchemes {
-		if strings.HasPrefix(value, scheme) {
+		if strings.HasPrefix(lower, scheme) {
 			return true
 		}
 	}

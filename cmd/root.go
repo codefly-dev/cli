@@ -135,15 +135,18 @@ func ShouldRenderError(err error) bool {
 }
 
 // ExitCode returns the conventional process status for a command error.
-// Commands may carry a stable, documented status by implementing ExitCode()
-// on their error (see pkg/provider for the provider command contract).
+// Commands may carry a stable, documented status by implementing
+// CommandExitCode() on their error (see pkg/provider for the provider command
+// contract). The method name is deliberately distinctive: a bare ExitCode()
+// would also match os/exec.ExitError (promoted from os.ProcessState), which
+// would leak a wrapped subprocess's exit code into unrelated commands.
 func ExitCode(err error) int {
 	if IsCancellationError(err) {
 		return 130
 	}
-	var coded interface{ ExitCode() int }
+	var coded interface{ CommandExitCode() int }
 	if errors.As(err, &coded) {
-		return coded.ExitCode()
+		return coded.CommandExitCode()
 	}
 	return 1
 }

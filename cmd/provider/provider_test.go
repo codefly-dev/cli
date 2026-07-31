@@ -33,3 +33,16 @@ func TestEnvAndJSONFlagsPresent(t *testing.T) {
 func TestPlanRejectsConflictingModes(t *testing.T) {
 	require.Error(t, errMutuallyExclusive("--validate-only", "--refresh-only"))
 }
+
+// Each subcommand owns its own env/json flags. With the earlier shared package
+// globals, parsing one command's --json would have been observed by every other
+// command in the same process; here it must not leak.
+func TestFlagsAreScopedPerCommand(t *testing.T) {
+	require.NoError(t, listCmd.ParseFlags([]string{"--schema", "--json", "--env", "staging"}))
+	require.True(t, jsonOf(listCmd))
+	require.Equal(t, "staging", envOf(listCmd))
+
+	require.False(t, jsonOf(doctorCmd), "doctor must not observe list's --json")
+	require.Equal(t, "local", envOf(doctorCmd), "doctor must keep its own --env default")
+	require.False(t, jsonOf(setupCmd), "setup must not observe list's --json")
+}

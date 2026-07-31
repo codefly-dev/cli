@@ -117,6 +117,10 @@ func (r *Result) renderHuman() {
 // commandError carries a stable process exit code for a provider command
 // outcome. When emitted is set, the command already printed a complete
 // machine-readable payload and the process boundary must not append prose.
+//
+// The exit-code accessor is named CommandExitCode, not ExitCode, so the
+// process boundary's errors.As match cannot accidentally bind to
+// os/exec.ExitError (which promotes ExitCode() from os.ProcessState).
 type commandError struct {
 	status  Status
 	emitted bool
@@ -125,5 +129,5 @@ type commandError struct {
 
 func (e *commandError) Error() string         { return e.err.Error() }
 func (e *commandError) Unwrap() error         { return e.err }
-func (e *commandError) ExitCode() int         { return e.status.ExitCode() }
+func (e *commandError) CommandExitCode() int  { return e.status.ExitCode() }
 func (e *commandError) MachineReadable() bool { return e.emitted }

@@ -26,15 +26,31 @@ func errImportIdentity() error {
 	return errors.New("import requires an exact resource TYPE and REMOTE_ID")
 }
 
-// Shared flags across the group. Each subcommand wires the ones it accepts.
-var (
-	envFlag  string
-	jsonFlag bool
-)
-
 // registry holds the declared configuration output contracts. It is stateless
 // and safe to share across commands.
 var registry = configuration.NewRegistry()
+
+// addEnvJSONFlags registers the two flags every binding-scoped command accepts.
+// Flags are read back through the command inside RunE (envOf/jsonOf) rather than
+// bound to package globals, so no mutable state is shared between commands.
+func addEnvJSONFlags(cmd *cobra.Command, envUsage string) {
+	cmd.Flags().String("env", "local", envUsage)
+	addJSONFlag(cmd)
+}
+
+func addJSONFlag(cmd *cobra.Command) {
+	cmd.Flags().Bool("json", false, "Print a machine-readable report to stdout")
+}
+
+func envOf(cmd *cobra.Command) string {
+	value, _ := cmd.Flags().GetString("env")
+	return value
+}
+
+func jsonOf(cmd *cobra.Command) bool {
+	value, _ := cmd.Flags().GetBool("json")
+	return value
+}
 
 // session is the loaded workspace context a provider command operates on.
 type session struct {
@@ -42,6 +58,7 @@ type session struct {
 	env      *resources.Environment
 	document *hostprovider.Document
 	result   *hostprovider.Result
+	jsonOut  bool
 	failed   bool
 }
 
@@ -49,7 +66,7 @@ type session struct {
 // bindings document. A missing workspace or undeclared environment is a fatal
 // usage error. A malformed or unknown-schema document is not fatal: it is
 // recorded on the result, which the caller emits.
-func loadSession(ctx context.Context, command, envName string) (*session, error) {
+func loadSession(ctx context.Context, command, envName string, jsonOut bool) (*session, error) {
 	ws, err := common.LoadWorkspace(ctx)
 	if err != nil {
 		return nil, err
@@ -59,7 +76,7 @@ func loadSession(ctx context.Context, command, envName string) (*session, error)
 		return nil, err
 	}
 
-	s := &session{ctx: ctx, env: env, result: hostprovider.NewResult(command, env.Name)}
+	s := &session{ctx: ctx, env: env, jsonOut: jsonOut, result: hostprovider.NewResult(command, env.Name)}
 
 	doc, _, err := hostprovider.LoadDocument(ws.Dir())
 	if err != nil {
@@ -73,6 +90,11 @@ func loadSession(ctx context.Context, command, envName string) (*session, error)
 	}
 	s.document = doc
 	return s, nil
+}
+
+// emit renders the session result in the selected output mode.
+func (s *session) emit() error {
+	return s.result.Emit(s.jsonOut)
 }
 
 // binding resolves a named binding within the session's environment, failing
@@ -113,33 +135,34 @@ func (s *session) gate(binding *hostprovider.Binding, command string) error {
 	default:
 		s.result.Fail(hostprovider.CodeCoordinatorUnavailable, "the host coordinator required to %s binding %q is not available in this build", command, binding.Name)
 	}
-	return s.result.Emit(jsonFlag)
+	return s.emit()
 }
 
 // gatedCommand is the full flow for a coordinator-dependent command that
 // operates on a single named binding: load, resolve, validate, and fail closed.
-func gatedCommand(ctx context.Context, command, envName, bindingName string) error {
-	s, err := loadSession(ctx, command, envName)
+func gatedCommand(ctx context.Context, command, envName, bindingName string, jsonOut bool) error {
+	s, err := loadSession(ctx, command, envName, jsonOut)
 	if err != nil {
 		return err
 	}
 	if s.failed {
-		return s.result.Emit(jsonFlag)
+		return s.emit()
 	}
 	binding, ok := s.binding(bindingName)
 	if !ok {
-		return s.result.Emit(jsonFlag)
+		return s.emit()
 	}
 	return s.gate(binding, command)
 }
 
 // run is the standard RunE preamble: open a wool context, run the update check,
-// and delegate to the command body.
-func run(body func(ctx context.Context, args []string) error) func(*cobra.Command, []string) error {
-	return func(_ *cobra.Command, args []string) error {
+// and delegate to the command body with the invoked command in hand so it can
+// read its own flags.
+func run(body func(ctx context.Context, cmd *cobra.Command, args []string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		cli.Init()
-		return body(ctx, args)
+		return body(ctx, cmd, args)
 	}
 }

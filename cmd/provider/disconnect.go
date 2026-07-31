@@ -11,12 +11,11 @@ var disconnectCmd = &cobra.Command{
 	Short:        "Stop managing a binding without deleting its remote resources",
 	SilenceUsage: true,
 	Args:         cobra.ExactArgs(1),
-	RunE: run(func(ctx context.Context, args []string) error {
-		return gatedCommand(ctx, "disconnect", envFlag, args[0])
+	RunE: run(func(ctx context.Context, cmd *cobra.Command, args []string) error {
+		return gatedCommand(ctx, "disconnect", envOf(cmd), args[0], jsonOf(cmd))
 	}),
 }
 
 func init() {
-	disconnectCmd.Flags().StringVar(&envFlag, "env", "local", "Environment the binding belongs to")
-	disconnectCmd.Flags().BoolVar(&jsonFlag, "json", false, "Print a machine-readable report to stdout")
+	addEnvJSONFlags(disconnectCmd, "Environment the binding belongs to")
 }
