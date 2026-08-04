@@ -46,7 +46,7 @@ func TestSelectPluginCoversFixerLanguages(t *testing.T) {
 		{marker: "go.mod", name: "go"},
 		{marker: "pyproject.toml", name: "python"},
 		{marker: "uv.lock", name: "python"},
-		{marker: "setup.py", name: "python"},
+		{marker: pythonSetupMarker, name: "python"},
 		{marker: "setup.cfg", name: "python"},
 		{marker: "package.json", name: "nextjs"},
 		{marker: "Cargo.toml", name: "rust"},
@@ -71,7 +71,7 @@ func TestSelectPluginCoversFixerLanguages(t *testing.T) {
 
 func TestSelectPluginPrefersPythonPackageOverFrontendManifest(t *testing.T) {
 	dir := t.TempDir()
-	for _, marker := range []string{"setup.py", "package.json"} {
+	for _, marker := range []string{pythonSetupMarker, "package.json"} {
 		if err := os.WriteFile(filepath.Join(dir, marker), []byte("marker"), 0o644); err != nil {
 			t.Fatal(err)
 		}

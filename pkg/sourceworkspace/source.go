@@ -21,6 +21,7 @@ const (
 	NextJSPluginVersion        = "0.0.114"
 	RustPluginVersion          = "0.0.18"
 	SwiftPluginVersion         = "0.0.13"
+	pythonSetupMarker          = "setup.py"
 )
 
 // Prepared is a loaded ephemeral workspace containing one source resource.
@@ -51,7 +52,7 @@ func SelectPlugin(sourceDir string) (*resources.Agent, error) {
 		{marker: "go.mod", name: "go", version: GenericGoPluginVersion},
 		{marker: "pyproject.toml", name: "python", version: GenericPythonPluginVersion},
 		{marker: "uv.lock", name: "python", version: GenericPythonPluginVersion},
-		{marker: "setup.py", name: "python", version: GenericPythonPluginVersion},
+		{marker: pythonSetupMarker, name: "python", version: GenericPythonPluginVersion},
 		{marker: "setup.cfg", name: "python", version: GenericPythonPluginVersion},
 		{marker: "package.json", name: "nextjs", version: NextJSPluginVersion},
 		{marker: "Cargo.toml", name: "rust", version: RustPluginVersion},
