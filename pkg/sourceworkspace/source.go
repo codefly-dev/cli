@@ -51,6 +51,8 @@ func SelectPlugin(sourceDir string) (*resources.Agent, error) {
 		{marker: "go.mod", name: "go", version: GenericGoPluginVersion},
 		{marker: "pyproject.toml", name: "python", version: GenericPythonPluginVersion},
 		{marker: "uv.lock", name: "python", version: GenericPythonPluginVersion},
+		{marker: "setup.py", name: "python", version: GenericPythonPluginVersion},
+		{marker: "setup.cfg", name: "python", version: GenericPythonPluginVersion},
 		{marker: "package.json", name: "nextjs", version: NextJSPluginVersion},
 		{marker: "Cargo.toml", name: "rust", version: RustPluginVersion},
 		{marker: "Package.swift", name: "swift", version: SwiftPluginVersion},

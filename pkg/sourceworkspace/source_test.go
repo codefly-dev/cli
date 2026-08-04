@@ -45,12 +45,15 @@ func TestSelectPluginCoversFixerLanguages(t *testing.T) {
 	}{
 		{marker: "go.mod", name: "go"},
 		{marker: "pyproject.toml", name: "python"},
+		{marker: "uv.lock", name: "python"},
+		{marker: "setup.py", name: "python"},
+		{marker: "setup.cfg", name: "python"},
 		{marker: "package.json", name: "nextjs"},
 		{marker: "Cargo.toml", name: "rust"},
 		{marker: "Package.swift", name: "swift"},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(test.marker, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, test.marker), []byte("marker"), 0o644); err != nil {
 				t.Fatal(err)
@@ -63,6 +66,22 @@ func TestSelectPluginCoversFixerLanguages(t *testing.T) {
 				t.Fatalf("plugin = %+v", plugin)
 			}
 		})
+	}
+}
+
+func TestSelectPluginPrefersPythonPackageOverFrontendManifest(t *testing.T) {
+	dir := t.TempDir()
+	for _, marker := range []string{"setup.py", "package.json"} {
+		if err := os.WriteFile(filepath.Join(dir, marker), []byte("marker"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plugin, err := SelectPlugin(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plugin.Name != "python" {
+		t.Fatalf("plugin = %s, want python", plugin.Name)
 	}
 }
 
