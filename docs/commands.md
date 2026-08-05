@@ -112,7 +112,7 @@ codefly run service api --runtime-context nix     # Use nix runtime context
 codefly run service api --service-path ./my-svc   # Override service path
 codefly run service api --fixture seed            # Use a named fixture
 codefly run service api --remote backend/db:staging  # Use remote dependency
-codefly run service api --output-env .env         # Write endpoint env vars to file
+codefly run service api --output-env .env         # Write the full owner-only SDK/runtime env
 codefly run service web --output-env .env --output-env-service backend/api
 codefly run service api --exclude-root            # Only run dependencies, not the service itself
 codefly run service api --profile local           # Use a named workspace run profile
@@ -130,11 +130,11 @@ codefly run service api --with-server             # Run with web companion UI
 | `--profile` | Select a named run profile from `workspace.codefly.yaml` |
 | `--exclude-dependency` | Exclude optional dependency services from this run. Repeatable; accepts `module/service` or an unambiguous service name. |
 | `--service-path` | Override the path to the service directory |
-| `--runtime-context` | Runtime context (e.g., `nix`, `docker`) |
+| `--runtime-context` | Runtime context (`native`, `nix`, `container`, or `free`; `free` picks each agent's first advertised backend) |
 | `--fixture` | Named fixture for test data |
 | `--remote` | Use a remote service instead of local (format: `module/service:environment`) |
 | `--silent` | Suppress output for named services |
-| `--output-env` | Write the root service's runtime environment variables to an owner-only file |
+| `--output-env` | Write the root service's full SDK/runtime environment (including configured secrets and dependency connections) to an owner-only file |
 | `--output-env-service` | Export a specific running service (`module/service`) instead of the root |
 | `--load-only` | Stop after Load phase |
 | `--init-only` | Stop after Init phase |

@@ -315,27 +315,30 @@ func (d DockerStatus) where() string {
 }
 
 // resolveDockerFallback finalizes the runtime context for every service still
-// on "free" (codefly picks the backend). With Docker reachable the Docker path
-// stands. With Docker unreachable, each service is resolved against its plugin's
-// PREFERENCE-ORDERED SupportedBackends: the first non-Docker backend that is
-// actually available in this environment wins (LOCAL if the toolchain is
-// present, NIX if nix is installed). A service whose only viable backend is
-// Docker stops the run early with an actionable error — instead of the old
-// silent, global nix switch that failed deep in startup.
+// on "free" (codefly picks the backend). Each service is resolved against its
+// plugin's PREFERENCE-ORDERED SupportedBackends, which is already filtered to
+// what is available on this host. This keeps the CLI as the source of truth for
+// the chosen backend and ensures every later boundary—including configuration
+// filtering and environment export—sees the concrete runtime rather than the
+// unresolved "free" hint.
+//
+// When Docker is known to be unavailable, Docker entries are excluded. A
+// service whose only viable backend is Docker then triggers auto-start or an
+// actionable error instead of failing deep in startup.
 func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.resolveDockerFallback")
-	if flow.hub == nil || !flow.dockerProbed || flow.docker.Running {
+	if flow.hub == nil {
 		return nil
 	}
 
 	// Phase 1 — classify every "free" service WITHOUT mutating it yet. The plugin
 	// already filtered SupportedBackends to what is installed on THIS host, in
 	// preference order (LOCAL > NIX > DOCKER), so trust it (single source of
-	// truth). Docker is unreachable here, so a service's fallback is the first
-	// non-Docker backend it advertises; "" means it can only run under Docker.
+	// truth). When Docker was probed and is unreachable, skip Docker; otherwise
+	// it remains a selectable backend. An empty choice means no backend can run.
 	type resolution struct {
 		runner *Runner
-		chosen string // RuntimeContextNative / RuntimeContextNix, or "" = needs Docker
+		chosen string // native, nix, container, or "" when no backend can run
 	}
 	var resolutions []resolution
 	needsDocker := false
@@ -358,7 +361,9 @@ func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 			case agentv0.Backend_NIX:
 				chosen = resources.RuntimeContextNix
 			case agentv0.Backend_DOCKER:
-				// Docker is down in this path; not selectable.
+				if !flow.dockerProbed || flow.docker.Running {
+					chosen = resources.RuntimeContextContainer
+				}
 			}
 			if chosen != "" {
 				break
@@ -372,22 +377,22 @@ func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 
 	// If a service can ONLY run under Docker, try to start the engine before
 	// falling back/blocking — much better UX than erroring when OrbStack/Docker
-	// Desktop is merely stopped. On success every "free" service is left as-is
-	// and resolves against the now-running engine.
-	if needsDocker && flow.startDocker {
+	// Desktop is merely stopped. Re-resolve after a successful start so every
+	// service receives its concrete backend.
+	if needsDocker && flow.dockerProbed && !flow.docker.Running && flow.startDocker {
 		started, name, derr := dockerstart.EnsureRunning(ctx, flow.docker.Context)
 		if derr == nil {
 			if started {
 				w.Info(fmt.Sprintf("Started the Docker engine via %s.", name))
 			}
 			flow.docker.Running = true
-			return nil
+			return flow.resolveDockerFallback(ctx)
 		}
 		w.Debug("could not auto-start Docker", wool.ErrField(derr))
 	}
 
-	// Phase 2 — Docker is still unreachable: apply the fallbacks and collect the
-	// services that can only run under Docker.
+	// Phase 2 — apply concrete selections and collect services with no viable
+	// backend. Explicit runtime contexts were excluded above and remain intact.
 	var fellBack, nixFallbacks, blocked []string
 	for _, r := range resolutions {
 		switch r.chosen {
@@ -395,15 +400,22 @@ func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 			blocked = append(blocked, r.runner.Unique())
 		case resources.RuntimeContextNix:
 			r.runner.WithRuntimeContext(r.chosen)
-			fellBack = append(fellBack, r.runner.Unique()+" → nix")
-			nixFallbacks = append(nixFallbacks, r.runner.Unique())
+			if flow.dockerProbed && !flow.docker.Running {
+				fellBack = append(fellBack, r.runner.Unique()+" → nix")
+				nixFallbacks = append(nixFallbacks, r.runner.Unique())
+			}
 		default:
 			r.runner.WithRuntimeContext(r.chosen)
-			fellBack = append(fellBack, r.runner.Unique()+" → native")
+			if flow.dockerProbed && !flow.docker.Running {
+				fellBack = append(fellBack, r.runner.Unique()+" → native")
+			}
 		}
 	}
 
 	if len(blocked) > 0 {
+		if !flow.dockerProbed || flow.docker.Running {
+			return w.NewError("cannot run: no runtime backend available for %s. The agent advertised no executable backend for this environment.", strings.Join(blocked, ", "))
+		}
 		// No runtime backend is available for these services: Docker is down and
 		// the plugin advertises no Docker-free backend installed on this host
 		// (its native toolchain is missing AND nix is not installed) — or it

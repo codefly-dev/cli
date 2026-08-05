@@ -540,7 +540,8 @@ func isTerminal() bool {
 
 // defaultRuntimeContext seeds the --runtime-context flag default from
 // CODEFLY__RUNTIME_CONTEXT when set (so dependency stacks spawned by the SDK
-// inherit it), otherwise "free" (codefly auto-picks Docker-or-nix at run time).
+// inherit it), otherwise "free" (codefly picks the first backend advertised
+// as available by each service agent at run time).
 func defaultRuntimeContext() string {
 	if rc := strings.TrimSpace(os.Getenv("CODEFLY__RUNTIME_CONTEXT")); rc != "" {
 		return rc
@@ -647,9 +648,9 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTemporaryPorts(temporaryPorts)
-	// Only the "free" default lets codefly pick Docker-or-nix, so only then do
-	// we probe Docker (which shells out to the docker CLI). An explicit context
-	// is honored as-is and needs no probe.
+	// Only the "free" default lets codefly pick an advertised backend, so only
+	// then do we probe Docker (which shells out to the docker CLI). An explicit
+	// context is honored as-is and needs no probe.
 	if runtimeContext == resources.RuntimeContextFree {
 		flow.WithStartDocker(startDocker)
 		flow.WithDockerStatus(probeDocker(ctx))
@@ -774,12 +775,12 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
-	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free auto-picks Docker-or-nix)")
+	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free picks the first advertised backend)")
 	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope (for testing encapsulation)")
 	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed temporary ports for this flow (advanced; intended for SDK-managed tests)")
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
-	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's runtime environment variables to an owner-only file")
+	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
 	ServiceCmd.Flags().StringVar(&outputEnvService, "output-env-service", "", "Service whose runtime environment to export (module/service; defaults to the root service)")
 	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
