@@ -476,7 +476,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		if dependencyErr != nil {
 			return nil, w.Wrapf(dependencyErr, "cannot load dependency configurations for output environment")
 		}
-		if err := AppendServiceProcessConfigurationsToFile(
+		err = AppendServiceProcessConfigurationsToFile(
 			ctx,
 			runner.outputEnv,
 			runtimeContext,
@@ -484,7 +484,8 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			nil,
 			dependencyConfigurations,
 			nil,
-		); err != nil {
+		)
+		if err != nil {
 			return nil, w.Wrapf(err, "cannot write dependency configurations to output environment")
 		}
 		if err := AppendRuntimeEnvironmentToFile(
