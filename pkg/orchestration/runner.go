@@ -352,7 +352,15 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	if runner.outputEnv != "" {
-		err = AppendEnvironmentVariablesToFile(ctx, runner.outputEnv, resp.RuntimeConfigurations)
+		err = AppendServiceProcessConfigurationsToFile(
+			ctx,
+			runner.outputEnv,
+			runtimeContext,
+			conf,
+			workspaceConfigurations,
+			dependenciesConfigurations,
+			resp.RuntimeConfigurations,
+		)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot write environment variables to file")
 		}
@@ -460,6 +468,26 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		)
 		endpointMappings = append(endpointMappings, runner.networkMappings...)
 		endpointMappings = append(endpointMappings, dependenciesNetworkMappings...)
+		// Dependency agents publish connection configurations during their Init.
+		// Refresh them at Start, after the dependency barrier, because the target's
+		// own Init may have observed the shared configuration state before a
+		// concurrently initialized dependency exposed its runtime values.
+		dependencyConfigurations, dependencyErr := runner.world.SharedState.GetDependentConfigurationsFor(ctx, runner.instance.Identity)
+		if dependencyErr != nil {
+			return nil, w.Wrapf(dependencyErr, "cannot load dependency configurations for output environment")
+		}
+		err = AppendServiceProcessConfigurationsToFile(
+			ctx,
+			runner.outputEnv,
+			runtimeContext,
+			nil,
+			nil,
+			dependencyConfigurations,
+			nil,
+		)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot write dependency configurations to output environment")
+		}
 		if err := AppendRuntimeEnvironmentToFile(
 			ctx,
 			runner.outputEnv,
@@ -916,8 +944,8 @@ func (runner *Runner) WithRuntimeContext(runtimeContext string) {
 }
 
 // SupportsBackend reports whether the agent advertises the given execution
-// backend among its SupportedBackends. The CLI uses this to resolve the runtime
-// context — e.g. gating the free→nix fallback when Docker is unavailable.
+// backend among its SupportedBackends. The CLI uses this capability set to
+// resolve the concrete runtime for a service launched with the "free" hint.
 func (runner *Runner) SupportsBackend(backend agentv0.Backend_Type) bool {
 	if runner == nil || runner.instance == nil || runner.instance.Info == nil {
 		return false
@@ -1007,6 +1035,43 @@ func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, conf
 		return w.Wrapf(err, "cannot get environment variables")
 	}
 	return appendEnvironmentVariablesToFile(ctx, filePath, allEnvs)
+}
+
+// AppendServiceProcessConfigurationsToFile exports the full configuration
+// environment admitted to a service's Init request, plus configurations the
+// agent produced during Init. This mirrors the service-agent process boundary:
+// own and workspace configurations are admitted directly, dependency and
+// runtime configurations are filtered to the selected backend. The output is
+// owner-only because these inputs intentionally include provider credentials
+// and dependency connection secrets.
+func AppendServiceProcessConfigurationsToFile(
+	ctx context.Context,
+	filePath string,
+	runtimeContext *basev0.RuntimeContext,
+	serviceConfiguration *basev0.Configuration,
+	workspaceConfigurations []*basev0.Configuration,
+	dependencyConfigurations []*basev0.Configuration,
+	runtimeConfigurations []*basev0.Configuration,
+) error {
+	w := wool.Get(ctx).In("resources.AppendServiceProcessConfigurationsToFile", wool.Field("filePath", filePath))
+	manager := resources.NewEnvironmentVariableManager()
+	if err := manager.AddConfigurations(ctx, serviceConfiguration); err != nil {
+		return w.Wrapf(err, "cannot add service configuration")
+	}
+	if err := manager.AddConfigurations(ctx, workspaceConfigurations...); err != nil {
+		return w.Wrapf(err, "cannot add workspace configurations")
+	}
+	if err := manager.AddConfigurations(ctx, resources.FilterConfigurations(dependencyConfigurations, runtimeContext)...); err != nil {
+		return w.Wrapf(err, "cannot add dependency configurations")
+	}
+	if err := manager.AddConfigurations(ctx, resources.FilterConfigurations(runtimeConfigurations, runtimeContext)...); err != nil {
+		return w.Wrapf(err, "cannot add runtime configurations")
+	}
+	environments, err := manager.All()
+	if err != nil {
+		return w.Wrapf(err, "cannot get service process environment variables")
+	}
+	return appendEnvironmentVariablesToFile(ctx, filePath, environments)
 }
 
 // AppendRuntimeEnvironmentToFile exports the identity and endpoint

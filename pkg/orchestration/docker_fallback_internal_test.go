@@ -7,7 +7,6 @@ import (
 
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
-	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/services"
 )
 
@@ -27,15 +26,27 @@ func flowWith(docker DockerStatus, managers ...IManager) *Flow {
 	return &Flow{docker: docker, dockerProbed: true, hub: &Hub{managers: managers}}
 }
 
-func TestResolveDockerFallback_DockerRunning_LeavesContextsUntouched(t *testing.T) {
-	m := fakeManager("infra", "postgres", resources.RuntimeContextFree)
+func TestResolveDockerFallback_DockerRunning_SelectsFirstAdvertisedBackend(t *testing.T) {
+	m := fakeManager("mind", "mind", resources.RuntimeContextFree, agentv0.Backend_LOCAL, agentv0.Backend_NIX, agentv0.Backend_DOCKER)
 	flow := flowWith(DockerStatus{Running: true}, m)
 
 	if err := flow.resolveDockerFallback(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := m.Runner.runtimeContext; got != resources.RuntimeContextFree {
-		t.Fatalf("runtime context = %q, want it left as %q", got, resources.RuntimeContextFree)
+	if got := m.Runner.runtimeContext; got != resources.RuntimeContextNative {
+		t.Fatalf("runtime context = %q, want %q", got, resources.RuntimeContextNative)
+	}
+}
+
+func TestResolveDockerFallback_DockerRunning_SelectsContainerWhenOnlyBackend(t *testing.T) {
+	m := fakeManager("infra", "postgres", resources.RuntimeContextFree, agentv0.Backend_DOCKER)
+	flow := flowWith(DockerStatus{Running: true}, m)
+
+	if err := flow.resolveDockerFallback(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := m.Runner.runtimeContext; got != resources.RuntimeContextContainer {
+		t.Fatalf("runtime context = %q, want %q", got, resources.RuntimeContextContainer)
 	}
 }
 
@@ -57,18 +68,17 @@ func TestResolveDockerFallback_DockerDown_DockerOnlyServiceStops(t *testing.T) {
 	}
 }
 
-func TestResolveDockerFallback_Unprobed_IsNoOp(t *testing.T) {
-	// test/build/deploy/sync flows never supply a docker status; the fallback
-	// must stay disabled and leave "free" services untouched (their prior
-	// behavior), even though DockerStatus.Running defaults to false.
-	m := fakeManager("infra", "postgres", resources.RuntimeContextFree)
+func TestResolveDockerFallback_Unprobed_StillResolvesFirstBackend(t *testing.T) {
+	// Test/build/deploy/sync flows do not probe Docker, but their downstream
+	// boundaries still require a concrete context rather than the "free" hint.
+	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_NIX, agentv0.Backend_DOCKER)
 	flow := &Flow{hub: &Hub{managers: []IManager{m}}} // dockerProbed == false
 
 	if err := flow.resolveDockerFallback(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := m.Runner.runtimeContext; got != resources.RuntimeContextFree {
-		t.Fatalf("runtime context = %q, want it left as %q", got, resources.RuntimeContextFree)
+	if got := m.Runner.runtimeContext; got != resources.RuntimeContextNix {
+		t.Fatalf("runtime context = %q, want %q", got, resources.RuntimeContextNix)
 	}
 }
 
@@ -86,10 +96,8 @@ func TestResolveDockerFallback_DockerDown_ExplicitContextHonored(t *testing.T) {
 }
 
 func TestResolveDockerFallback_DockerDown_NixServiceFallsBack(t *testing.T) {
-	if !(runnersbase.CheckNixInstalled() && runnersbase.IsNixSupported()) {
-		t.Skip("nix not available on this machine")
-	}
-	// A nix-capable service falls back to nix rather than stopping the run.
+	// SupportedBackends is already filtered by the agent, so the orchestrator
+	// must trust an advertised Nix backend without probing the host again.
 	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_NIX)
 	flow := flowWith(DockerStatus{Running: false}, m)
 
