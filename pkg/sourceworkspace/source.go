@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	GenericGoPluginVersion     = "0.0.18"
+	GenericGoPluginVersion     = "0.0.19"
 	GenericPythonPluginVersion = "0.0.16"
 	NextJSPluginVersion        = "0.0.114"
 	RustPluginVersion          = "0.0.18"
