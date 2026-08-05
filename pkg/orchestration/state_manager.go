@@ -131,7 +131,11 @@ func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *re
 	s.mu.RLock()
 	var endpoints []*basev0.Endpoint
 	for _, req := range service.ServiceDependencies {
-		endpoints = append(endpoints, s.endpoints[req.Unique()]...)
+		for _, endpoint := range s.endpoints[req.Unique()] {
+			if endpoint == nil || dependencyConsumesEndpoint(req, endpoint.GetName()) {
+				endpoints = append(endpoints, endpoint)
+			}
+		}
 	}
 	s.mu.RUnlock()
 	w.Debug("got dependencies endpoints", wool.Field("endpoints", resources.MakeManyEndpointSummary(endpoints)))
@@ -164,11 +168,30 @@ func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, servi
 	s.mu.RLock()
 	var mappings []*basev0.NetworkMapping
 	for _, req := range service.ServiceDependencies {
-		mappings = append(mappings, s.networkMappings[req.Unique()]...)
+		for _, mapping := range s.networkMappings[req.Unique()] {
+			if mapping == nil || mapping.GetEndpoint() == nil || dependencyConsumesEndpoint(req, mapping.GetEndpoint().GetName()) {
+				mappings = append(mappings, mapping)
+			}
+		}
 	}
 	s.mu.RUnlock()
 	w.Debug("got network mappings", wool.Field("mappings", resources.MakeManyNetworkMappingSummary(mappings)))
 	return mappings, nil
+}
+
+// dependencyConsumesEndpoint keeps the runtime capability set faithful to the
+// service manifest. An empty endpoint list is the current contract for all
+// producer endpoints; an explicit list grants only those named capabilities.
+func dependencyConsumesEndpoint(dependency *resources.ServiceDependency, endpointName string) bool {
+	if len(dependency.Endpoints) == 0 {
+		return true
+	}
+	for _, endpoint := range dependency.Endpoints {
+		if endpoint.Name == endpointName {
+			return true
+		}
+	}
+	return false
 }
 
 // RecordNetworkMappings records the network mappings for the given service
