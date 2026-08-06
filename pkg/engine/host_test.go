@@ -1,12 +1,21 @@
 package engine
 
 import (
+	"bufio"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	"github.com/codefly-dev/core/resources"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -16,6 +25,76 @@ type inertManagedFlow struct{}
 func (*inertManagedFlow) Stop() error              { return nil }
 func (*inertManagedFlow) Shutdown() error          { return nil }
 func (*inertManagedFlow) AgentCacheKeys() []string { return nil }
+
+const workspaceHostOrphanHelper = "CODEFLY_TEST_WORKSPACE_HOST_ORPHAN_HELPER"
+
+func TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners(t *testing.T) {
+	switch os.Getenv(workspaceHostOrphanHelper) {
+	case "owner":
+		command := exec.Command(os.Args[0], "-test.run=^TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners$")
+		command.Env = append(os.Environ(), workspaceHostOrphanHelper+"=agent")
+		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := command.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "start orphan agent: %v\n", err)
+			os.Exit(2)
+		}
+		pid := command.Process.Pid
+		if err := runnersbase.WritePgidFile(pid, os.TempDir(), []string{os.Args[0]}); err != nil {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			fmt.Fprintf(os.Stderr, "track orphan agent: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Println(pid)
+		os.Exit(0)
+	case "agent":
+		for {
+			time.Sleep(time.Second)
+		}
+	}
+
+	owner := exec.Command(os.Args[0], "-test.run=^TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners$")
+	owner.Env = append(os.Environ(), workspaceHostOrphanHelper+"=owner")
+	stdout, err := owner.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.Stderr = os.Stderr
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read orphan pid: %v", err)
+	}
+	if err := owner.Wait(); err != nil {
+		t.Fatalf("orphan owner: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || pid <= 1 {
+		t.Fatalf("orphan pid %q: %v", line, err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = runnersbase.RemovePgidFile(pid)
+	})
+	if err := syscall.Kill(-pid, 0); err != nil {
+		t.Fatalf("orphan process group %d was not alive before recovery: %v", pid, err)
+	}
+
+	host, err := NewWorkspaceHost(Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("WorkspaceHost did not reap orphan process group %d", pid)
+}
 
 func TestWorkspaceHostRequiresExplicitRoot(t *testing.T) {
 	if _, err := NewWorkspaceHost(Config{}); err == nil {

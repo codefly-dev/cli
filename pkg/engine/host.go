@@ -6,6 +6,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/codefly-dev/cli/pkg/toolbox"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 )
 
 // Config configures a WorkspaceHost.
@@ -44,6 +46,13 @@ func NewWorkspaceHost(cfg Config) (*WorkspaceHost, error) {
 	root := strings.TrimSpace(cfg.Root)
 	if root == "" {
 		return nil, fmt.Errorf("workspace host root is required")
+	}
+	// RECOVERY BOUNDARY: WorkspaceHost is the shared process-owning entry point
+	// for the CLI, MCP, Gateway gRPC, and Mind's in-process Gateway. Reap PGIDs
+	// left by dead owners here so every front door self-heals after a crash; the
+	// reaper preserves groups whose owning process is still alive.
+	if err := runnersbase.ReapStaleProcessGroups(context.Background()); err != nil {
+		return nil, fmt.Errorf("reap stale workspace processes: %w", err)
 	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
