@@ -206,3 +206,38 @@ func TestPrepareCarriesExactGoWorkspaceAcrossEphemeralSymlink(t *testing.T) {
 		t.Fatalf("normalized replacements = %+v, want %q", parsed.Replace, physicalReplacement)
 	}
 }
+
+// An absolute workspace member may already equal its physical normalized path.
+// modfile.SetUse retains that existing entry and appends the requested entry,
+// producing a go.work that Go rejects as "appears multiple times in workspace".
+// Local agent builds hit this when go.work named a worktree outside its root.
+func TestWriteNormalizedGoWorkspaceDoesNotDuplicateAbsolutePhysicalUse(t *testing.T) {
+	root := t.TempDir()
+	module := filepath.Join(root, "module")
+	if err := os.MkdirAll(module, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workFile := filepath.Join(root, "go.work")
+	if err := os.WriteFile(workFile, []byte("go 1.25\n\nuse "+filepath.ToSlash(module)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "normalized.work")
+	if err := writeNormalizedGoWorkspace(workFile, destination); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := modfile.ParseWork(destination, payload, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	physicalModule, err := filepath.EvalSymlinks(module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Use) != 1 || parsed.Use[0].Path != filepath.ToSlash(physicalModule) {
+		t.Fatalf("normalized uses = %+v, want one physical module %q\n%s", parsed.Use, physicalModule, payload)
+	}
+}

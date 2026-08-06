@@ -291,14 +291,33 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 	}
 	sourceDirectory := filepath.Dir(source)
 	uses := make([]*modfile.Use, 0, len(workspace.Use))
+	seenUses := make(map[string]struct{}, len(workspace.Use))
 	for _, use := range workspace.Use {
 		physical, err := physicalWorkspacePath(sourceDirectory, use.Path)
 		if err != nil {
 			return fmt.Errorf("resolve use %s: %w", use.Path, err)
 		}
-		uses = append(uses, &modfile.Use{Path: filepath.ToSlash(physical), ModulePath: use.ModulePath})
+		normalized := filepath.ToSlash(physical)
+		if _, duplicate := seenUses[normalized]; duplicate {
+			continue
+		}
+		seenUses[normalized] = struct{}{}
+		uses = append(uses, &modfile.Use{Path: normalized, ModulePath: use.ModulePath})
 	}
-	workspace.SetUse(uses)
+	// modfile.SetUse appends every requested path after retaining already
+	// matching entries. When an existing use is already an absolute physical
+	// path, that produces the same module twice and Go rejects the generated
+	// workspace. Remove the source entries first, then add the canonical set.
+	for _, use := range append([]*modfile.Use(nil), workspace.Use...) {
+		if err := workspace.DropUse(use.Path); err != nil {
+			return err
+		}
+	}
+	for _, use := range uses {
+		if err := workspace.AddUse(use.Path, use.ModulePath); err != nil {
+			return err
+		}
+	}
 
 	type localReplacement struct {
 		oldPath, oldVersion, newPath string
