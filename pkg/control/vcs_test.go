@@ -44,6 +44,9 @@ func TestGitStatusCleanThenDirty(t *testing.T) {
 	if status.Branch != "main" {
 		t.Errorf("branch = %q, want main", status.Branch)
 	}
+	if resolved, err := filepath.EvalSymlinks(dir); err != nil || status.RepositoryRoot != resolved {
+		t.Errorf("repository root = %q, want %q (resolve error: %v)", status.RepositoryRoot, resolved, err)
+	}
 	if status.Dirty {
 		t.Errorf("repo should be clean after commit, got Changed=%v", status.Changed)
 	}
@@ -79,6 +82,22 @@ func TestGitStatusCleanThenDirty(t *testing.T) {
 	}
 	if !fileOK {
 		t.Errorf("Files = %+v, want an entry for new.txt", status.Files)
+	}
+}
+
+func TestGitStatusReportsContainingRepositoryRootFromNestedDirectory(t *testing.T) {
+	dir := initGitRepo(t)
+	nested := filepath.Join(dir, "services", "api")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := New().GitStatus(t.Context(), nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err != nil || status.RepositoryRoot != resolved {
+		t.Fatalf("repository root = %q, want %q (resolve error: %v)", status.RepositoryRoot, resolved, err)
 	}
 }
 

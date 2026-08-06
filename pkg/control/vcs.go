@@ -58,6 +58,10 @@ func (p *planeImpl) GitStatus(ctx context.Context, dir string) (GitStatus, error
 // dir, shared by the workspace-scoped planeImpl methods and service-scoped
 // callers (see scope.go).
 func gitStatusAt(ctx context.Context, repo string) (GitStatus, error) {
+	repositoryRoot, err := git(ctx, repo, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return GitStatus{}, err
+	}
 	branch, err := git(ctx, repo, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return GitStatus{}, err
@@ -66,7 +70,7 @@ func gitStatusAt(ctx context.Context, repo string) (GitStatus, error) {
 	if err != nil {
 		return GitStatus{}, err
 	}
-	status := GitStatus{Branch: branch}
+	status := GitStatus{Branch: branch, RepositoryRoot: repositoryRoot}
 	for _, line := range strings.Split(porcelain, "\n") {
 		if len(line) < 4 {
 			continue

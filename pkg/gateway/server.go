@@ -1911,7 +1911,9 @@ func (s *Server) GitStatus(ctx context.Context, _ *gatewayv1.GitStatusRequest) (
 			Path: f.Path, Status: gitStatusString(f.Code), Staged: f.Staged,
 		})
 	}
-	return &gatewayv1.GitStatusResponse{Files: files, Branch: st.Branch}, nil
+	return &gatewayv1.GitStatusResponse{
+		Files: files, Branch: st.Branch, RepositoryRoot: st.RepositoryRoot,
+	}, nil
 }
 
 func (s *Server) GitDiff(ctx context.Context, req *gatewayv1.GitDiffRequest) (*gatewayv1.GitDiffResponse, error) {

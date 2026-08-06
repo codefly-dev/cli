@@ -262,12 +262,13 @@ type FixResult struct {
 
 // GitStatus is a repo's working-tree state.
 type GitStatus struct {
-	Branch  string
-	Dirty   bool
-	Ahead   int
-	Behind  int
-	Changed []string        // paths with any change (convenience)
-	Files   []GitFileStatus // per-file detail
+	Branch         string
+	RepositoryRoot string // canonical absolute root of the containing Git worktree
+	Dirty          bool
+	Ahead          int
+	Behind         int
+	Changed        []string        // paths with any change (convenience)
+	Files          []GitFileStatus // per-file detail
 }
 
 // GitFileStatus is one changed file's porcelain status.
