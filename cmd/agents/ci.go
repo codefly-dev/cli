@@ -252,7 +252,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 			return err
 		}
 		log := &agentLogger{}
-		result := compileAgent(ctx, options.dir, log, options.nativeOnly)
+		result := compileAgent(ctx, options.dir, log, options.nativeOnly, true)
 		state.build = result
 		if result.err != nil {
 			diagnostics := strings.TrimSpace(strings.Join(log.lines, "\n"))
@@ -474,6 +474,20 @@ func validateAgentSource(ctx context.Context, dir, sourceHome string) error {
 }
 
 func agentCIChildEnvironment(codeflyHome string, additional ...string) []string {
+	return agentChildEnvironment(codeflyHome, "off", additional...)
+}
+
+// agentBuildChildEnvironment binds local builds to the exact workspace that
+// contains the source module. An empty path means the checkout is standalone;
+// it must not inherit an unrelated parent workspace from the operator shell.
+func agentBuildChildEnvironment(codeflyHome, goWorkFile string, additional ...string) []string {
+	if strings.TrimSpace(goWorkFile) == "" {
+		goWorkFile = "off"
+	}
+	return agentChildEnvironment(codeflyHome, goWorkFile, additional...)
+}
+
+func agentChildEnvironment(codeflyHome, goWorkFile string, additional ...string) []string {
 	overrideOrder := []string{}
 	overrides := map[string]string{}
 	setOverride := func(name, value string) {
@@ -489,10 +503,7 @@ func agentCIChildEnvironment(codeflyHome string, additional ...string) []string 
 			setOverride(name, value)
 		}
 	}
-	// Agent CI and release packaging must prove the repository builds from its
-	// published module graph. A parent or developer-local go.work can otherwise
-	// make the release succeed locally and fail for every downstream consumer.
-	setOverride("GOWORK", "off")
+	setOverride("GOWORK", goWorkFile)
 
 	environment := make([]string, 0, len(os.Environ())+len(overrides))
 	for _, entry := range os.Environ() {

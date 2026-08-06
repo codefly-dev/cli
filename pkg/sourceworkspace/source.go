@@ -30,7 +30,12 @@ type Prepared struct {
 	Module    *resources.Module
 	Service   *resources.Service
 	Dir       string
-	cleanup   func() error
+	// GoWorkFile is the absolute, ephemeral workspace file normalized from the
+	// original Go checkout. Callers executing from the attached source must pass
+	// it explicitly because the Go tool does not discover workspaces through a
+	// symlinked working directory.
+	GoWorkFile string
+	cleanup    func() error
 }
 
 // Close removes the ephemeral resource declaration without touching source.
@@ -180,8 +185,15 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 		return nil, fmt.Errorf("write source workspace: %w", err)
 	}
 	spec := map[string]any{"source-dir": "code"}
+	goWorkFile := ""
 	if plugin.Name == "go" {
-		spec["with-workspace"] = goWorkspaceIncludes(absoluteSource)
+		if sourceGoWorkFile := goWorkspaceFile(absoluteSource); sourceGoWorkFile != "" {
+			goWorkFile = filepath.Join(workspaceDir, "go.work")
+			if err := writeNormalizedGoWorkspace(sourceGoWorkFile, goWorkFile); err != nil {
+				return nil, fmt.Errorf("prepare Go workspace: %w", err)
+			}
+		}
+		spec["with-workspace"] = goWorkFile != ""
 	}
 	service := &resources.Service{
 		Name:    "source",
@@ -212,32 +224,41 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 
 	failed = false
 	return &Prepared{
-		Workspace: loaded,
-		Module:    module,
-		Service:   loadedService,
-		Dir:       workspaceDir,
-		cleanup:   func() error { return os.RemoveAll(temporary) },
+		Workspace:  loaded,
+		Module:     module,
+		Service:    loadedService,
+		Dir:        workspaceDir,
+		GoWorkFile: goWorkFile,
+		cleanup:    func() error { return os.RemoveAll(temporary) },
 	}, nil
 }
 
 func goWorkspaceIncludes(sourceDir string) bool {
+	return goWorkspaceFile(sourceDir) != ""
+}
+
+func goWorkspaceFile(sourceDir string) string {
 	workFile := nearestFile(sourceDir, "go.work")
 	if workFile == "" {
-		return false
+		return ""
 	}
 	data, err := os.ReadFile(workFile)
 	if err != nil {
-		return false
+		return ""
 	}
 	parsed, err := modfile.ParseWork(workFile, data, nil)
 	if err != nil {
-		return false
+		return ""
+	}
+	workPhysical, err := filepath.EvalSymlinks(workFile)
+	if err != nil {
+		workPhysical = filepath.Clean(workFile)
 	}
 	sourcePhysical, err := filepath.EvalSymlinks(sourceDir)
 	if err != nil {
 		sourcePhysical = filepath.Clean(sourceDir)
 	}
-	workDir := filepath.Dir(workFile)
+	workDir := filepath.Dir(workPhysical)
 	for _, use := range parsed.Use {
 		moduleDir := use.Path
 		if !filepath.IsAbs(moduleDir) {
@@ -248,10 +269,80 @@ func goWorkspaceIncludes(sourceDir string) bool {
 			modulePhysical = filepath.Clean(moduleDir)
 		}
 		if modulePhysical == sourcePhysical {
-			return true
+			return workPhysical
 		}
 	}
-	return false
+	return ""
+}
+
+// writeNormalizedGoWorkspace copies the governing workspace into the
+// ephemeral source resource while resolving filesystem members and local
+// replacements to physical paths. This prevents host aliases such as
+// /tmp→/private/tmp and the attachment symlink from changing Go's module
+// identity. The developer's workspace remains untouched.
+func writeNormalizedGoWorkspace(source, destination string) error {
+	payload, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	workspace, err := modfile.ParseWork(source, payload, nil)
+	if err != nil {
+		return err
+	}
+	sourceDirectory := filepath.Dir(source)
+	uses := make([]*modfile.Use, 0, len(workspace.Use))
+	for _, use := range workspace.Use {
+		physical, err := physicalWorkspacePath(sourceDirectory, use.Path)
+		if err != nil {
+			return fmt.Errorf("resolve use %s: %w", use.Path, err)
+		}
+		uses = append(uses, &modfile.Use{Path: filepath.ToSlash(physical), ModulePath: use.ModulePath})
+	}
+	workspace.SetUse(uses)
+
+	type localReplacement struct {
+		oldPath, oldVersion, newPath string
+	}
+	var replacements []localReplacement
+	for _, replacement := range workspace.Replace {
+		if replacement.New.Version != "" {
+			continue
+		}
+		physical, err := physicalWorkspacePath(sourceDirectory, replacement.New.Path)
+		if err != nil {
+			return fmt.Errorf("resolve replacement %s: %w", replacement.New.Path, err)
+		}
+		replacements = append(replacements, localReplacement{
+			oldPath: replacement.Old.Path, oldVersion: replacement.Old.Version,
+			newPath: filepath.ToSlash(physical),
+		})
+	}
+	for _, replacement := range replacements {
+		if err := workspace.DropReplace(replacement.oldPath, replacement.oldVersion); err != nil {
+			return err
+		}
+		if err := workspace.AddReplace(replacement.oldPath, replacement.oldVersion, replacement.newPath, ""); err != nil {
+			return err
+		}
+	}
+	workspace.Cleanup()
+	workspace.SortBlocks()
+	if err := os.WriteFile(destination, modfile.Format(workspace.Syntax), 0o644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func physicalWorkspacePath(base, value string) (string, error) {
+	path := filepath.FromSlash(value)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(base, path)
+	}
+	physical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return physical, nil
 }
 
 func nearestFile(start, name string) string {
