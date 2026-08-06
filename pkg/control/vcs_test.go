@@ -2,6 +2,9 @@ package control
 
 import (
 	"context"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -343,6 +346,78 @@ func TestGitTagRejectsOptionLikeName(t *testing.T) {
 	// it as an invalid tag name behind the `--` guard rather than acting on it.
 	if _, err := plane.GitTag(ctx, GitTagRequest{Dir: dir, Name: "-d", Message: "boom"}); err == nil {
 		t.Fatal("expected an option-like tag name to be rejected")
+	}
+}
+
+func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
+	source := initGitRepo(t)
+	serverRoot := t.TempDir()
+	bare := filepath.Join(serverRoot, "repository.git")
+	runGit(t, serverRoot, "clone", "--bare", "--", source, bare)
+	runGit(t, bare, "update-server-info")
+
+	server := httptest.NewTLSServer(http.FileServer(http.Dir(serverRoot)))
+	defer server.Close()
+	certificatePath := filepath.Join(t.TempDir(), "server.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(certificatePath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_SSL_CAINFO", certificatePath)
+
+	// Reproduce the observed customer failure: a developer-global insteadOf
+	// rule silently changes the declared HTTPS transport before Git connects.
+	// The public capability must ignore it without mutating the user's config.
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	maliciousRewrite := "[url \"file:///definitely-not-the-public-repository/\"]\n\tinsteadOf = " + server.URL + "/\n"
+	if err := os.WriteFile(globalConfig, []byte(maliciousRewrite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+
+	revision, err := git(t.Context(), source, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	request := MaterializeRepositorySnapshotRequest{
+		Dir:               root,
+		RepositoryURL:     server.URL + "/repository.git",
+		CacheDirectory:    "cache/repository",
+		Revision:          revision,
+		FetchIdentity:     "public-isolation-test",
+		SnapshotDirectory: "worktrees/repository/lease",
+		RemoteAccess:      RepositoryRemoteAccessPublicHTTPS,
+	}
+	result, err := New().MaterializeRepositorySnapshot(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Revision != revision || result.SnapshotDirectory != "worktrees/repository/lease" {
+		t.Fatalf("materialized snapshot = %+v, want revision %s", result, revision)
+	}
+	retried, err := New().MaterializeRepositorySnapshot(t.Context(), request)
+	if err != nil || retried != result {
+		t.Fatalf("retried materialization = %+v, want %+v (error = %v)", retried, result, err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, result.SnapshotDirectory, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "hello\n" {
+		t.Fatalf("snapshot README = %q", body)
+	}
+	release := ReleaseRepositorySnapshotRequest{
+		Dir: root, CacheDirectory: "cache/repository", SnapshotDirectory: result.SnapshotDirectory,
+	}
+	if err := New().ReleaseRepositorySnapshot(t.Context(), release); err != nil {
+		t.Fatal(err)
+	}
+	if err := New().ReleaseRepositorySnapshot(t.Context(), release); err != nil {
+		t.Fatalf("retry release: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, result.SnapshotDirectory)); !os.IsNotExist(err) {
+		t.Fatalf("released snapshot still exists (stat error = %v)", err)
 	}
 }
 

@@ -377,6 +377,48 @@ type GitRevertRequest struct {
 	Revision string
 }
 
+// RepositoryRemoteAccess identifies the configuration and credential
+// authority Codefly may use while resolving a repository snapshot.
+type RepositoryRemoteAccess string
+
+const (
+	// RepositoryRemoteAccessPublicHTTPS isolates a credential-free HTTPS
+	// source from every ambient Git rewrite, helper, prompt, and SSH agent.
+	RepositoryRemoteAccessPublicHTTPS RepositoryRemoteAccess = "public-https"
+	// RepositoryRemoteAccessConfigured explicitly uses the Codefly runtime's
+	// configured Git and SSH environment for an authenticated source.
+	RepositoryRemoteAccessConfigured RepositoryRemoteAccess = "configured"
+	// RepositoryRemoteAccessLocalFile permits a file:// remote for deterministic
+	// local infrastructure qualification.
+	RepositoryRemoteAccessLocalFile RepositoryRemoteAccess = "local-file"
+)
+
+// MaterializeRepositorySnapshotRequest resolves one remote revision into a
+// detached worktree below Dir. CacheDirectory and SnapshotDirectory are
+// Gateway-relative and FetchIdentity names a temporary private ref.
+type MaterializeRepositorySnapshotRequest struct {
+	Dir               string
+	RepositoryURL     string
+	CacheDirectory    string
+	Revision          string
+	FetchIdentity     string
+	SnapshotDirectory string
+	RemoteAccess      RepositoryRemoteAccess
+}
+
+// MaterializedRepositorySnapshot is the immutable lease returned by Codefly.
+type MaterializedRepositorySnapshot struct {
+	Revision          string
+	SnapshotDirectory string
+}
+
+// ReleaseRepositorySnapshotRequest releases one detached worktree lease.
+type ReleaseRepositorySnapshotRequest struct {
+	Dir               string
+	CacheDirectory    string
+	SnapshotDirectory string
+}
+
 // --- Dependencies ---
 
 // Dependency is a language package a service depends on (a Go module, npm

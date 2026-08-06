@@ -2201,6 +2201,84 @@ func (s *Server) GitRevert(ctx context.Context, req *gatewayv1.GitRevertRequest)
 	}, nil
 }
 
+// MaterializeRepositorySnapshot delegates the complete clone/fetch/worktree
+// transaction to Codefly's typed VCS control plane. The access enum is the
+// authority boundary that prevents public sources from inheriting host Git
+// rewrites or credentials.
+func (s *Server) MaterializeRepositorySnapshot(
+	ctx context.Context,
+	req *gatewayv1.MaterializeRepositorySnapshotRequest,
+) (*gatewayv1.MaterializeRepositorySnapshotResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "repository snapshot materialization request is required")
+	}
+	cacheDirectory, err := cleanGatewayPath(req.GetCacheDirectory())
+	if err != nil || cacheDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository cache directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	snapshotDirectory, err := cleanGatewayPath(req.GetSnapshotDirectory())
+	if err != nil || snapshotDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository snapshot directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	access := control.RepositoryRemoteAccess("")
+	switch req.GetRemoteAccess() {
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_PUBLIC_HTTPS:
+		access = control.RepositoryRemoteAccessPublicHTTPS
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_CONFIGURED:
+		access = control.RepositoryRemoteAccessConfigured
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_LOCAL_FILE:
+		access = control.RepositoryRemoteAccessLocalFile
+	default:
+		return nil, status.Error(codes.InvalidArgument, "repository remote access is required")
+	}
+	result, err := s.controlScope().MaterializeRepositorySnapshot(ctx, control.MaterializeRepositorySnapshotRequest{
+		RepositoryURL: req.GetRepositoryUrl(), CacheDirectory: cacheDirectory,
+		Revision: req.GetRevision(), FetchIdentity: req.GetFetchIdentity(),
+		SnapshotDirectory: snapshotDirectory, RemoteAccess: access,
+	})
+	if err != nil {
+		return &gatewayv1.MaterializeRepositorySnapshotResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.MaterializeRepositorySnapshotResponse{
+		Success: true, Revision: result.Revision, SnapshotDirectory: result.SnapshotDirectory,
+	}, nil
+}
+
+func (s *Server) ReleaseRepositorySnapshot(
+	ctx context.Context,
+	req *gatewayv1.ReleaseRepositorySnapshotRequest,
+) (*gatewayv1.ReleaseRepositorySnapshotResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "repository snapshot release request is required")
+	}
+	cacheDirectory, err := cleanGatewayPath(req.GetCacheDirectory())
+	if err != nil || cacheDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository cache directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	snapshotDirectory, err := cleanGatewayPath(req.GetSnapshotDirectory())
+	if err != nil || snapshotDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository snapshot directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.controlScope().ReleaseRepositorySnapshot(ctx, control.ReleaseRepositorySnapshotRequest{
+		CacheDirectory: cacheDirectory, SnapshotDirectory: snapshotDirectory,
+	}); err != nil {
+		return &gatewayv1.ReleaseRepositorySnapshotResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.ReleaseRepositorySnapshotResponse{Success: true}, nil
+}
+
 func (s *Server) Release(ctx context.Context, req *gatewayv1.ReleaseRequest) (*gatewayv1.ReleaseResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "release request is required")
