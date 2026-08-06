@@ -41,6 +41,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
@@ -165,6 +166,13 @@ type serviceExecution interface {
 	Test(context.Context, *runtimev0.TestRequest) (*runtimev0.TestResponse, error)
 	Lint(context.Context, *runtimev0.LintRequest) (*runtimev0.LintResponse, error)
 	ListCommands(context.Context, *agentv0.ListCommandsRequest) (*agentv0.ListCommandsResponse, error)
+}
+
+// serviceConfigurator is an optional mutation surface kept separate from the
+// common execution interface. Existing read/test-only execution behaviors do
+// not pretend to support plugin-owned configuration.
+type serviceConfigurator interface {
+	Configure(context.Context, *builderv0.ConfigureRequest) (*builderv0.ConfigureResponse, error)
 }
 
 // MindYAML mirrors the mind.yaml config structure.
@@ -1387,6 +1395,36 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 		},
 	})
 	return response, nil
+}
+
+// ConfigureService forwards typed configuration to the owning plugin's
+// Builder.Configure RPC. The gateway neither interprets dotted paths nor
+// writes project files; the plugin validates and persists its own schema.
+func (s *Server) ConfigureService(ctx context.Context, req *gatewayv1.ConfigureServiceRequest) (*gatewayv1.ConfigureServiceResponse, error) {
+	requestedService := ""
+	if req != nil {
+		requestedService = req.GetService()
+	}
+	if err := s.validateService(requestedService); err != nil {
+		return nil, err
+	}
+	service, err := s.executionServiceBehavior()
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "plugin unavailable: %v", err)
+	}
+	configurator, ok := service.(serviceConfigurator)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "service plugin does not expose configuration")
+	}
+	configureReq := &builderv0.ConfigureRequest{}
+	if req != nil {
+		configureReq.Changes = req.GetChanges()
+	}
+	response, err := configurator.Configure(ctx, configureReq)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "plugin configure RPC failed: %v", err)
+	}
+	return &gatewayv1.ConfigureServiceResponse{Response: response}, nil
 }
 
 func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gatewayv1.FormatResponse, error) {
