@@ -2250,6 +2250,43 @@ func (s *Server) MaterializeRepositorySnapshot(
 	}, nil
 }
 
+func (s *Server) PrepareRepositoryCheckout(
+	ctx context.Context,
+	req *gatewayv1.PrepareRepositoryCheckoutRequest,
+) (*gatewayv1.PrepareRepositoryCheckoutResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "repository checkout preparation request is required")
+	}
+	cacheDirectory, err := cleanGatewayPath(req.GetCacheDirectory())
+	if err != nil || cacheDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository cache directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	access := control.RepositoryRemoteAccess("")
+	switch req.GetRemoteAccess() {
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_PUBLIC_HTTPS:
+		access = control.RepositoryRemoteAccessPublicHTTPS
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_CONFIGURED:
+		access = control.RepositoryRemoteAccessConfigured
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_LOCAL_FILE:
+		access = control.RepositoryRemoteAccessLocalFile
+	default:
+		return nil, status.Error(codes.InvalidArgument, "repository remote access is required")
+	}
+	result, err := s.controlScope().PrepareRepositoryCheckout(ctx, control.PrepareRepositoryCheckoutRequest{
+		RepositoryURL: req.GetRepositoryUrl(), CacheDirectory: cacheDirectory,
+		Revision: req.GetRevision(), FetchIdentity: req.GetFetchIdentity(), RemoteAccess: access,
+	})
+	if err != nil {
+		return &gatewayv1.PrepareRepositoryCheckoutResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.PrepareRepositoryCheckoutResponse{
+		Success: true, Revision: result.Revision, DefaultBranch: result.DefaultBranch,
+	}, nil
+}
+
 func (s *Server) ReleaseRepositorySnapshot(
 	ctx context.Context,
 	req *gatewayv1.ReleaseRepositorySnapshotRequest,

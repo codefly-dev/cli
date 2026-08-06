@@ -412,6 +412,24 @@ type MaterializedRepositorySnapshot struct {
 	SnapshotDirectory string
 }
 
+// PrepareRepositoryCheckoutRequest resolves and cleans one mutable repository
+// checkout below Dir through the same explicit remote-access boundary.
+type PrepareRepositoryCheckoutRequest struct {
+	Dir            string
+	RepositoryURL  string
+	CacheDirectory string
+	Revision       string
+	FetchIdentity  string
+	RemoteAccess   RepositoryRemoteAccess
+}
+
+// PreparedRepositoryCheckout is the exact mutable checkout state Codefly
+// observed after preparation.
+type PreparedRepositoryCheckout struct {
+	Revision      string
+	DefaultBranch string
+}
+
 // ReleaseRepositorySnapshotRequest releases one detached worktree lease.
 type ReleaseRepositorySnapshotRequest struct {
 	Dir               string

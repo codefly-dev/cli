@@ -419,6 +419,41 @@ func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, result.SnapshotDirectory)); !os.IsNotExist(err) {
 		t.Fatalf("released snapshot still exists (stat error = %v)", err)
 	}
+	checkoutRequest := PrepareRepositoryCheckoutRequest{
+		Dir: root, RepositoryURL: request.RepositoryURL, CacheDirectory: "mutable/repository",
+		Revision: revision, FetchIdentity: "public-checkout-test", RemoteAccess: RepositoryRemoteAccessPublicHTTPS,
+	}
+	checkout, err := New().PrepareRepositoryCheckout(t.Context(), checkoutRequest)
+	if err != nil || checkout.Revision != revision || checkout.DefaultBranch != "main" {
+		t.Fatalf("prepared checkout = %+v, want revision %s on main (error = %v)", checkout, revision, err)
+	}
+	junk := filepath.Join(root, checkoutRequest.CacheDirectory, "generated.tmp")
+	if err := os.WriteFile(junk, []byte("remove me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), checkoutRequest); err != nil {
+		t.Fatalf("retry mutable checkout: %v", err)
+	}
+	if _, err := os.Stat(junk); !os.IsNotExist(err) {
+		t.Fatalf("prepared checkout retained generated file (stat error = %v)", err)
+	}
+	corruptRequest := checkoutRequest
+	corruptRequest.CacheDirectory = "interrupted/repository"
+	corruptRequest.FetchIdentity = "public-interrupted-checkout-test"
+	corruptPath := filepath.Join(root, corruptRequest.CacheDirectory)
+	if err := os.MkdirAll(corruptPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(corruptPath, "partial-clone.tmp"), []byte("interrupted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := New().PrepareRepositoryCheckout(t.Context(), corruptRequest)
+	if err != nil || recovered.Revision != revision {
+		t.Fatalf("recovered interrupted checkout = %+v, want revision %s (error = %v)", recovered, revision, err)
+	}
+	if _, err := os.Stat(filepath.Join(corruptPath, "partial-clone.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("recovered checkout retained interrupted clone bytes (stat error = %v)", err)
+	}
 }
 
 func writeCommit(t *testing.T, plane Plane, ctx context.Context, dir, name, content, message string) GitCommit {

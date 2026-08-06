@@ -43,6 +43,7 @@ type ServiceScope interface {
 	GitMerge(ctx context.Context, req GitMergeRequest) (GitAct, error)
 	GitRevert(ctx context.Context, req GitRevertRequest) (GitAct, error)
 	MaterializeRepositorySnapshot(ctx context.Context, req MaterializeRepositorySnapshotRequest) (MaterializedRepositorySnapshot, error)
+	PrepareRepositoryCheckout(ctx context.Context, req PrepareRepositoryCheckoutRequest) (PreparedRepositoryCheckout, error)
 	ReleaseRepositorySnapshot(ctx context.Context, req ReleaseRepositorySnapshotRequest) error
 
 	// Lifecycle / checks / commands (this service; any Service on the request is
@@ -192,6 +193,14 @@ func (s *serviceScope) MaterializeRepositorySnapshot(
 ) (MaterializedRepositorySnapshot, error) {
 	req.Dir = s.dir
 	return s.plane.MaterializeRepositorySnapshot(ctx, req)
+}
+
+func (s *serviceScope) PrepareRepositoryCheckout(
+	ctx context.Context,
+	req PrepareRepositoryCheckoutRequest,
+) (PreparedRepositoryCheckout, error) {
+	req.Dir = s.dir
+	return s.plane.PrepareRepositoryCheckout(ctx, req)
 }
 
 func (s *serviceScope) ReleaseRepositorySnapshot(ctx context.Context, req ReleaseRepositorySnapshotRequest) error {

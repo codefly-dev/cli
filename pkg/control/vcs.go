@@ -471,12 +471,7 @@ func materializeRepositorySnapshotAt(
 	root string,
 	req MaterializeRepositorySnapshotRequest,
 ) (MaterializedRepositorySnapshot, error) {
-	repositoryURL := strings.TrimSpace(req.RepositoryURL)
-	environment, err := repositoryRemoteEnvironment(req.RemoteAccess, repositoryURL)
-	if err != nil {
-		return MaterializedRepositorySnapshot{}, err
-	}
-	cacheDirectory, err := validateRepositoryRelativeDirectory("cache directory", req.CacheDirectory)
+	prepared, err := prepareRepositoryRevisionAt(ctx, root, req.RepositoryURL, req.CacheDirectory, req.Revision, req.FetchIdentity, req.RemoteAccess)
 	if err != nil {
 		return MaterializedRepositorySnapshot{}, err
 	}
@@ -484,41 +479,100 @@ func materializeRepositorySnapshotAt(
 	if err != nil {
 		return MaterializedRepositorySnapshot{}, err
 	}
-	if repositoryDirectoriesOverlap(cacheDirectory, snapshotDirectory) {
+	if repositoryDirectoriesOverlap(prepared.cacheDirectory, snapshotDirectory) {
 		return MaterializedRepositorySnapshot{}, fmt.Errorf("repository cache and snapshot directories must not overlap")
 	}
-	revision := strings.TrimSpace(req.Revision)
+	snapshotPath := filepath.Join(root, snapshotDirectory)
+	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o700); err != nil {
+		return MaterializedRepositorySnapshot{}, fmt.Errorf("prepare repository snapshot parent: %w", err)
+	}
+	if _, err := gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "worktree", "prune"); err != nil {
+		return MaterializedRepositorySnapshot{}, fmt.Errorf("prune repository snapshots before materialization: %w", err)
+	}
+	registered, err := repositoryWorktreeRegistered(ctx, prepared.cachePath, snapshotPath, prepared.environment)
+	if err != nil {
+		return MaterializedRepositorySnapshot{}, err
+	}
+	if registered {
+		existingRevision, err := gitWithEnvironment(ctx, snapshotPath, prepared.environment, "rev-parse", "HEAD^{commit}")
+		if err != nil {
+			return MaterializedRepositorySnapshot{}, fmt.Errorf("resolve existing repository snapshot: %w", err)
+		}
+		if existingRevision != prepared.revision {
+			return MaterializedRepositorySnapshot{}, fmt.Errorf("repository snapshot already resolves %s, want %s", existingRevision, prepared.revision)
+		}
+		return MaterializedRepositorySnapshot{Revision: prepared.revision, SnapshotDirectory: snapshotDirectory}, nil
+	}
+	if _, err := gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "worktree", "add", "--detach", snapshotPath, prepared.revision); err != nil {
+		return MaterializedRepositorySnapshot{}, fmt.Errorf("create repository snapshot: %w", err)
+	}
+	return MaterializedRepositorySnapshot{Revision: prepared.revision, SnapshotDirectory: snapshotDirectory}, nil
+}
+
+type preparedRepositoryRevision struct {
+	cacheDirectory string
+	cachePath      string
+	revision       string
+	defaultBranch  string
+	environment    []string
+}
+
+func prepareRepositoryRevisionAt(
+	ctx context.Context,
+	root, requestedURL, requestedCacheDirectory, requestedRevision, requestedFetchIdentity string,
+	access RepositoryRemoteAccess,
+) (preparedRepositoryRevision, error) {
+	repositoryURL := strings.TrimSpace(requestedURL)
+	environment, err := repositoryRemoteEnvironment(access, repositoryURL)
+	if err != nil {
+		return preparedRepositoryRevision{}, err
+	}
+	cacheDirectory, err := validateRepositoryRelativeDirectory("cache directory", requestedCacheDirectory)
+	if err != nil {
+		return preparedRepositoryRevision{}, err
+	}
+	revision := strings.TrimSpace(requestedRevision)
 	if revision == "" {
 		revision = "HEAD"
 	}
 	if err := validateRevision(revision); err != nil {
-		return MaterializedRepositorySnapshot{}, err
+		return preparedRepositoryRevision{}, err
 	}
-	fetchIdentity := strings.TrimSpace(req.FetchIdentity)
+	fetchIdentity := strings.TrimSpace(requestedFetchIdentity)
 	if !isRepositoryIdentity(fetchIdentity) {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("repository fetch identity %q is not a stable token", fetchIdentity)
+		return preparedRepositoryRevision{}, fmt.Errorf("repository fetch identity %q is not a stable token", fetchIdentity)
 	}
-
 	cachePath := filepath.Join(root, cacheDirectory)
 	if _, err := gitWithEnvironment(ctx, cachePath, environment, "rev-parse", "--git-dir"); err != nil {
+		// The cache directory is a Codefly-owned projection named explicitly by
+		// the caller. A cancelled clone or terminated process can leave a
+		// non-repository directory behind; remove that incomplete projection and
+		// retry the canonical clone instead of wedging every later session.
+		if statErr := removeIncompleteRepositoryCache(cachePath); statErr != nil {
+			return preparedRepositoryRevision{}, statErr
+		}
 		if _, err := gitWithEnvironment(ctx, root, environment, "clone", "--", repositoryURL, cacheDirectory); err != nil {
-			return MaterializedRepositorySnapshot{}, fmt.Errorf("clone repository: %w", err)
+			return preparedRepositoryRevision{}, fmt.Errorf("clone repository: %w", err)
 		}
 	}
 	configuredURL, err := gitWithEnvironment(ctx, cachePath, environment, "remote", "get-url", "origin")
 	if err != nil {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("resolve repository origin: %w", err)
+		return preparedRepositoryRevision{}, fmt.Errorf("resolve repository origin: %w", err)
 	}
 	if configuredURL != repositoryURL {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("repository cache origin %q does not match requested source", configuredURL)
+		return preparedRepositoryRevision{}, fmt.Errorf("repository cache origin %q does not match requested source", configuredURL)
+	}
+	defaultBranch := ""
+	if advertised, branchErr := gitWithEnvironment(ctx, cachePath, environment, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); branchErr == nil {
+		defaultBranch = strings.TrimPrefix(advertised, "origin/")
 	}
 	shallow, err := gitWithEnvironment(ctx, cachePath, environment, "rev-parse", "--is-shallow-repository")
 	if err != nil {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("inspect repository depth: %w", err)
+		return preparedRepositoryRevision{}, fmt.Errorf("inspect repository depth: %w", err)
 	}
 	if shallow == "true" {
 		if _, err := gitWithEnvironment(ctx, cachePath, environment, "fetch", "--unshallow", "origin"); err != nil {
-			return MaterializedRepositorySnapshot{}, fmt.Errorf("unshallow repository: %w", err)
+			return preparedRepositoryRevision{}, fmt.Errorf("unshallow repository: %w", err)
 		}
 	}
 
@@ -533,7 +587,7 @@ func materializeRepositorySnapshotAt(
 		"origin",
 		revision+":"+temporaryRef,
 	); err != nil {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("fetch repository revision: %w", err)
+		return preparedRepositoryRevision{}, fmt.Errorf("fetch repository revision: %w", err)
 	}
 	cleanupTemporaryRef := func() error {
 		_, cleanupErr := gitWithEnvironment(ctx, cachePath, environment, "update-ref", "-d", temporaryRef)
@@ -541,47 +595,62 @@ func materializeRepositorySnapshotAt(
 	}
 	resolved, err := gitWithEnvironment(ctx, cachePath, environment, "rev-parse", "--verify", temporaryRef+"^{commit}")
 	if err != nil {
-		return MaterializedRepositorySnapshot{}, errors.Join(fmt.Errorf("resolve repository revision: %w", err), cleanupTemporaryRef())
+		return preparedRepositoryRevision{}, errors.Join(fmt.Errorf("resolve repository revision: %w", err), cleanupTemporaryRef())
 	}
 	if !isHexRevision(resolved) {
-		return MaterializedRepositorySnapshot{}, errors.Join(fmt.Errorf("resolved repository revision %q is not a full object ID", resolved), cleanupTemporaryRef())
+		return preparedRepositoryRevision{}, errors.Join(fmt.Errorf("resolved repository revision %q is not a full object ID", resolved), cleanupTemporaryRef())
 	}
 	const durableHeadRef = "refs/heads/mind/materialized"
 	if _, err := gitWithEnvironment(ctx, cachePath, environment, "update-ref", durableHeadRef, resolved); err != nil {
-		return MaterializedRepositorySnapshot{}, errors.Join(fmt.Errorf("publish repository cache head: %w", err), cleanupTemporaryRef())
+		return preparedRepositoryRevision{}, errors.Join(fmt.Errorf("publish repository cache head: %w", err), cleanupTemporaryRef())
 	}
 	if _, err := gitWithEnvironment(ctx, cachePath, environment, "symbolic-ref", "HEAD", durableHeadRef); err != nil {
-		return MaterializedRepositorySnapshot{}, errors.Join(fmt.Errorf("select repository cache head: %w", err), cleanupTemporaryRef())
+		return preparedRepositoryRevision{}, errors.Join(fmt.Errorf("select repository cache head: %w", err), cleanupTemporaryRef())
 	}
 	if err := cleanupTemporaryRef(); err != nil {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("release repository fetch ref: %w", err)
+		return preparedRepositoryRevision{}, fmt.Errorf("release repository fetch ref: %w", err)
 	}
+	return preparedRepositoryRevision{
+		cacheDirectory: cacheDirectory, cachePath: cachePath, revision: resolved,
+		defaultBranch: defaultBranch, environment: environment,
+	}, nil
+}
 
-	snapshotPath := filepath.Join(root, snapshotDirectory)
-	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o700); err != nil {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("prepare repository snapshot parent: %w", err)
+func removeIncompleteRepositoryCache(cachePath string) error {
+	_, err := os.Lstat(cachePath)
+	switch {
+	case os.IsNotExist(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("inspect incomplete repository cache: %w", err)
 	}
-	if _, err := gitWithEnvironment(ctx, cachePath, environment, "worktree", "prune"); err != nil {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("prune repository snapshots before materialization: %w", err)
+	if err := os.RemoveAll(cachePath); err != nil {
+		return fmt.Errorf("remove incomplete repository cache: %w", err)
 	}
-	registered, err := repositoryWorktreeRegistered(ctx, cachePath, snapshotPath, environment)
+	return nil
+}
+
+// PrepareRepositoryCheckout resolves one revision through the typed remote
+// boundary, then resets the cache worktree to a clean mutable checkout.
+func (p *planeImpl) PrepareRepositoryCheckout(
+	ctx context.Context,
+	req PrepareRepositoryCheckoutRequest,
+) (PreparedRepositoryCheckout, error) {
+	root, err := p.gitDir(ctx, req.Dir)
 	if err != nil {
-		return MaterializedRepositorySnapshot{}, err
+		return PreparedRepositoryCheckout{}, err
 	}
-	if registered {
-		existingRevision, err := gitWithEnvironment(ctx, snapshotPath, environment, "rev-parse", "HEAD^{commit}")
-		if err != nil {
-			return MaterializedRepositorySnapshot{}, fmt.Errorf("resolve existing repository snapshot: %w", err)
-		}
-		if existingRevision != resolved {
-			return MaterializedRepositorySnapshot{}, fmt.Errorf("repository snapshot already resolves %s, want %s", existingRevision, resolved)
-		}
-		return MaterializedRepositorySnapshot{Revision: resolved, SnapshotDirectory: snapshotDirectory}, nil
+	prepared, err := prepareRepositoryRevisionAt(ctx, root, req.RepositoryURL, req.CacheDirectory, req.Revision, req.FetchIdentity, req.RemoteAccess)
+	if err != nil {
+		return PreparedRepositoryCheckout{}, err
 	}
-	if _, err := gitWithEnvironment(ctx, cachePath, environment, "worktree", "add", "--detach", snapshotPath, resolved); err != nil {
-		return MaterializedRepositorySnapshot{}, fmt.Errorf("create repository snapshot: %w", err)
+	if _, err := gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "checkout", "--force", "--detach", prepared.revision); err != nil {
+		return PreparedRepositoryCheckout{}, fmt.Errorf("checkout repository revision: %w", err)
 	}
-	return MaterializedRepositorySnapshot{Revision: resolved, SnapshotDirectory: snapshotDirectory}, nil
+	if _, err := gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "clean", "-ffdx"); err != nil {
+		return PreparedRepositoryCheckout{}, fmt.Errorf("clean repository checkout: %w", err)
+	}
+	return PreparedRepositoryCheckout{Revision: prepared.revision, DefaultBranch: prepared.defaultBranch}, nil
 }
 
 // ReleaseRepositorySnapshot removes a detached worktree and its administrative
