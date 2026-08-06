@@ -78,7 +78,7 @@ func DetectFormulaAgent(command []string) string {
 	case "cargo", "rustc":
 		return fmt.Sprintf("rust:%s", sourceworkspace.RustPluginVersion)
 	case "npm", "npx", "node", "pnpm", "yarn":
-		return fmt.Sprintf("nextjs:%s", sourceworkspace.NextJSPluginVersion)
+		return fmt.Sprintf("nextjs:%s", sourceworkspace.NodePluginVersion)
 	case "swift":
 		return fmt.Sprintf("swift:%s", sourceworkspace.SwiftPluginVersion)
 	default:

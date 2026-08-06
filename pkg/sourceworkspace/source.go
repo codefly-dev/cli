@@ -18,10 +18,13 @@ import (
 const (
 	GenericGoPluginVersion     = "0.0.19"
 	GenericPythonPluginVersion = "0.0.16"
-	NextJSPluginVersion        = "0.0.114"
-	RustPluginVersion          = "0.0.18"
-	SwiftPluginVersion         = "0.0.13"
-	pythonSetupMarker          = "setup.py"
+	// NodePluginVersion is published under the historical nextjs agent name,
+	// but owns generic Node.js/TypeScript validation as well as Next.js-specific
+	// lifecycle behavior selected from the package manifest.
+	NodePluginVersion  = "0.0.124"
+	RustPluginVersion  = "0.0.18"
+	SwiftPluginVersion = "0.0.13"
+	pythonSetupMarker  = "setup.py"
 )
 
 // Prepared is a loaded ephemeral workspace containing one source resource.
@@ -59,7 +62,7 @@ func SelectPlugin(sourceDir string) (*resources.Agent, error) {
 		{marker: "uv.lock", name: "python", version: GenericPythonPluginVersion},
 		{marker: pythonSetupMarker, name: "python", version: GenericPythonPluginVersion},
 		{marker: "setup.cfg", name: "python", version: GenericPythonPluginVersion},
-		{marker: "package.json", name: "nextjs", version: NextJSPluginVersion},
+		{marker: "package.json", name: "nextjs", version: NodePluginVersion},
 		{marker: "Cargo.toml", name: "rust", version: RustPluginVersion},
 		{marker: "Package.swift", name: "swift", version: SwiftPluginVersion},
 	}
@@ -98,7 +101,7 @@ func SelectPlugin(sourceDir string) (*resources.Agent, error) {
 		case ".swift":
 			name, version = "swift", SwiftPluginVersion
 		case ".js", ".jsx", ".ts", ".tsx":
-			name, version = "nextjs", NextJSPluginVersion
+			name, version = "nextjs", NodePluginVersion
 		}
 		if name != "" {
 			selected = &resources.Agent{
