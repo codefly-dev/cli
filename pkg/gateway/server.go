@@ -135,6 +135,11 @@ type Server struct {
 
 	serviceMu       sync.Mutex
 	serviceBehavior serviceExecution
+	// codeUnitServices caches exact source-boundary behaviors separately from
+	// the legacy root service. Each entry owns its own plugin selection and
+	// working directory; heterogeneous repositories must never share the first
+	// detected root agent.
+	codeUnitServices map[string]serviceExecution
 
 	// terminals holds the PTY-backed interactive shells running in this gateway
 	// (the gateway IS inside the execution box, so the PTY lives here).
@@ -237,6 +242,7 @@ func NewServer(cfg Config) (*Server, error) {
 		tlsConfig:           tlsConfig,
 		host:                host,
 		ownsHost:            ownsHost,
+		codeUnitServices:    make(map[string]serviceExecution),
 		preparedMutations:   make(map[string]*storedPreparedMutation),
 		terminals:           newTerminalManager(),
 		executionRecorder:   cfg.ExecutionRecorder,
@@ -1316,18 +1322,32 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	if req != nil && req.GetRuntimeRequest() != nil {
 		runtimeReq = req.GetRuntimeRequest()
 	}
-	service, err := s.executionServiceBehavior()
-	if err != nil && s.mindYAML == nil {
-		if formula := runtimeReq.GetFormula(); formula != nil {
-			if agentName := engine.DetectFormulaAgent(formula.GetCommand()); agentName != "" {
-				service, err = s.executionServiceBehaviorWithAgent(agentName)
+	codeUnits, err := s.normalizeCodeUnitTargets(req.GetCodeUnits())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid code-unit targets: %v", err)
+	}
+	var service serviceExecution
+	if len(codeUnits) == 0 {
+		service, err = s.executionServiceBehavior()
+		if err != nil && s.mindYAML == nil {
+			if formula := runtimeReq.GetFormula(); formula != nil {
+				if agentName := engine.DetectFormulaAgent(formula.GetCommand()); agentName != "" {
+					service, err = s.executionServiceBehaviorWithAgent(agentName)
+				}
 			}
 		}
+		if err != nil {
+			return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
+		}
 	}
-	if err != nil {
-		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
+	selectionContract := proto.Message(runtimeReq)
+	if len(codeUnits) > 0 {
+		// The target set is part of the governed operation. Hashing only the
+		// runtime selector would allow a retry to substitute different unit
+		// boundaries under the same execution authority.
+		selectionContract = req
 	}
-	selectionSHA256, err := deterministicProtoSHA256(runtimeReq)
+	selectionSHA256, err := deterministicProtoSHA256(selectionContract)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "encode test selection: %v", err)
 	}
@@ -1344,11 +1364,17 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	if err != nil {
 		return nil, err
 	}
-	// ARCHITECTURE: The gateway is a typed transport boundary, not a test
-	// planner. Forward the runtime request exactly so structured selections and
-	// their acknowledgement identity reach the language plugin unchanged.
+	// ARCHITECTURE: The gateway routes typed code-unit boundaries; language
+	// plugins still own native execution. Structured selections and their
+	// acknowledgement identity reach the selected plugin unchanged apart from
+	// a repository-relative path becoming relative to its owning unit root.
 	effectStarted := time.Now()
-	resp, err := service.Test(ctx, runtimeReq)
+	var resp *runtimev0.TestResponse
+	if len(codeUnits) > 0 {
+		resp, err = s.testCodeUnits(ctx, runtimeReq, codeUnits)
+	} else {
+		resp, err = service.Test(ctx, runtimeReq)
+	}
 	if err != nil {
 		finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
 			Stage: executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
