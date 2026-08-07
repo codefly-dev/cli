@@ -34,6 +34,14 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # The production source-workspace regression runs the released Python
+      # plugin on a fresh Linux host. Provision its declared uv runtime in the
+      # ordinary test lanes so the proof exercises real tests instead of an
+      # environment-blocked agent response.
+      - name: Set up uv
+        if: matrix.gate == 'coverage' || matrix.gate == 'race'
+        uses: astral-sh/setup-uv@v9.0.0
+
       # Restore before the bootstrap action: that action compiles the CLI, so
       # restoring afterward would make its cache permanently ineffective.
       # Cache only compiled artifacts. Caching GOMODCACHE alongside a Go
