@@ -20,5 +20,7 @@ cask="$(
 	gh api repos/codefly-dev/homebrew-cli/contents/Casks/codefly.rb --jq .content |
 		base64 --decode
 )"
+version="${RELEASE_TAG#v}"
 printf '%s\n' "$cask" | grep -F 'cask "codefly"'
-printf '%s\n' "$cask" | grep -F "releases/download/$RELEASE_TAG/"
+printf '%s\n' "$cask" | grep -F "version \"$version\""
+printf '%s\n' "$cask" | grep -F 'releases/download/v#{version}/'

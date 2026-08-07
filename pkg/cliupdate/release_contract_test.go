@@ -183,10 +183,10 @@ func TestHomebrewVerificationRequiresStableCaskTag(t *testing.T) {
 		)
 		return command.Run()
 	}
-	if err := run("cask \"codefly\"\nurl \"https://github.com/codefly-dev/cli/releases/download/v1.2.3/codefly.tar.gz\"\n"); err != nil {
+	if err := run("cask \"codefly\"\nversion \"1.2.3\"\nurl \"https://github.com/codefly-dev/cli/releases/download/v#{version}/codefly_#{version}.tar.gz\"\n"); err != nil {
 		t.Fatalf("matching stable cask was rejected: %v", err)
 	}
-	if err := run("cask \"codefly\"\nurl \"https://github.com/codefly-dev/cli/releases/download/v1.2.2/codefly.tar.gz\"\n"); err == nil {
+	if err := run("cask \"codefly\"\nversion \"1.2.2\"\nurl \"https://github.com/codefly-dev/cli/releases/download/v#{version}/codefly_#{version}.tar.gz\"\n"); err == nil {
 		t.Fatal("stale stable cask was accepted")
 	}
 }
