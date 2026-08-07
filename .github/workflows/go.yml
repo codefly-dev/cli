@@ -40,7 +40,7 @@ jobs:
       # environment-blocked agent response.
       - name: Set up uv
         if: matrix.gate == 'coverage' || matrix.gate == 'race'
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
 
       # Restore before the bootstrap action: that action compiles the CLI, so
       # restoring afterward would make its cache permanently ineffective.
