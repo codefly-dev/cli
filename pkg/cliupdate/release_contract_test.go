@@ -119,8 +119,20 @@ func TestGoReleaserNotarizesPublishedMacOSBinaries(t *testing.T) {
 		t.Fatalf("macOS notarization configurations = %d, want 1", len(configuration.Notarize.MacOS))
 	}
 	notarization := configuration.Notarize.MacOS[0]
-	if strings.TrimSpace(notarization.Enabled) != "{{ not .IsSnapshot }}" ||
-		len(notarization.IDs) != 1 || notarization.IDs[0] != "codefly" ||
+	enabled := strings.TrimSpace(notarization.Enabled)
+	for _, required := range []string{
+		"not .IsSnapshot",
+		"MACOS_SIGN_P12",
+		"MACOS_SIGN_PASSWORD",
+		"MACOS_NOTARY_ISSUER_ID",
+		"MACOS_NOTARY_KEY_ID",
+		"MACOS_NOTARY_KEY",
+	} {
+		if !strings.Contains(enabled, required) {
+			t.Fatalf("macOS notarization enabled condition does not require %s: %q", required, enabled)
+		}
+	}
+	if len(notarization.IDs) != 1 || notarization.IDs[0] != "codefly" ||
 		!strings.Contains(notarization.Sign.Certificate, "MACOS_SIGN_P12") ||
 		!strings.Contains(notarization.Sign.Password, "MACOS_SIGN_PASSWORD") ||
 		!strings.Contains(notarization.Notarize.IssuerID, "MACOS_NOTARY_ISSUER_ID") ||
