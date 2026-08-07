@@ -24,7 +24,11 @@ builds:
 
 notarize:
   macos:
-    - enabled: "{{ not .IsSnapshot }}"
+    # Signing is an optional release capability. Repositories without the
+    # complete Apple credential set must still publish unsigned archives;
+    # enabling notarization with partial credentials only defers the failure
+    # until after qualification and all cross-platform builds have succeeded.
+    - enabled: '{{ and (not .IsSnapshot) (ne .Env.MACOS_SIGN_P12 "") (ne .Env.MACOS_SIGN_PASSWORD "") (ne .Env.MACOS_NOTARY_ISSUER_ID "") (ne .Env.MACOS_NOTARY_KEY_ID "") (ne .Env.MACOS_NOTARY_KEY "") }}'
       ids:
         - codefly
       sign:
