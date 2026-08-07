@@ -2,6 +2,8 @@ package engine
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -94,6 +96,29 @@ func TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners(t *testing.T) 
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("WorkspaceHost did not reap orphan process group %d", pid)
+}
+
+func TestWorkspaceHostConstructionSurvivesReaperFailure(t *testing.T) {
+	// Reaping leaked process groups is a best-effort self-heal, not a
+	// construction precondition. A reaper that errors (signal permission, an
+	// unusual runs directory, a race with a concurrent host) must not stop the
+	// host — and therefore the whole front door — from starting.
+	original := reapStaleProcessGroups
+	t.Cleanup(func() { reapStaleProcessGroups = original })
+	reapStaleProcessGroups = func(context.Context) error {
+		return errors.New("simulated reaper failure")
+	}
+
+	var logs bytes.Buffer
+	host, err := NewWorkspaceHost(Config{Root: t.TempDir(), LogWriter: &logs})
+	if err != nil {
+		t.Fatalf("host construction must survive a reaper failure, got: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+
+	if !strings.Contains(logs.String(), "reap stale workspace processes") {
+		t.Fatalf("expected a best-effort reaper warning on the log sink, got %q", logs.String())
+	}
 }
 
 func TestWorkspaceHostRequiresExplicitRoot(t *testing.T) {

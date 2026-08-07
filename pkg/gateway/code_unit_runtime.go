@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codefly-dev/cli/pkg/engine"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -575,7 +576,27 @@ func appendBoundedCodeUnitOutput(output *strings.Builder, target normalizedCodeU
 	section := fmt.Sprintf("[%s @ %s]\n%s\n", target.id, target.path, body)
 	remaining := maxCodeUnitAggregateOutputSize - output.Len()
 	if len(section) > remaining {
-		section = section[:remaining]
+		section = truncateToUTF8Boundary(section, remaining)
 	}
 	output.WriteString(section)
+}
+
+// truncateToUTF8Boundary returns the longest prefix of s no longer than limit
+// bytes that ends on a UTF-8 rune boundary. The aggregate Output is a proto3
+// string field, which must be valid UTF-8: a plain byte-boundary cut can split
+// a multibyte rune, and the resulting TestResponse then fails to marshal —
+// turning a bounded-output safeguard into a hard RPC error.
+func truncateToUTF8Boundary(s string, limit int) string {
+	if limit >= len(s) {
+		return s
+	}
+	truncated := s[:limit]
+	for len(truncated) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(truncated); r == utf8.RuneError && size <= 1 {
+			truncated = truncated[:len(truncated)-1]
+			continue
+		}
+		break
+	}
+	return truncated
 }

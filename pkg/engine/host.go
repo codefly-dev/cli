@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,6 +17,12 @@ import (
 	"github.com/codefly-dev/cli/pkg/toolbox"
 	runnersbase "github.com/codefly-dev/core/runners/base"
 )
+
+// reapStaleProcessGroups self-heals process groups leaked by dead owners. It is
+// a package variable so tests can drive its failure path; production binds the
+// real reaper. Reaping is best-effort (see NewWorkspaceHost), never a
+// construction precondition.
+var reapStaleProcessGroups = runnersbase.ReapStaleProcessGroups
 
 // Config configures a WorkspaceHost.
 type Config struct {
@@ -51,8 +58,12 @@ func NewWorkspaceHost(cfg Config) (*WorkspaceHost, error) {
 	// for the CLI, MCP, Gateway gRPC, and Mind's in-process Gateway. Reap PGIDs
 	// left by dead owners here so every front door self-heals after a crash; the
 	// reaper preserves groups whose owning process is still alive.
-	if err := runnersbase.ReapStaleProcessGroups(context.Background()); err != nil {
-		return nil, fmt.Errorf("reap stale workspace processes: %w", err)
+	//
+	// Reaping is best-effort: a failure (signal permission, an unusual runs
+	// directory, a race with a concurrent host) must not stop every front door
+	// from starting. Surface it and continue rather than failing construction.
+	if err := reapStaleProcessGroups(context.Background()); err != nil {
+		logHostWarning(cfg.LogWriter, fmt.Sprintf("could not reap stale workspace processes: %v", err))
 	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
@@ -77,6 +88,15 @@ func NewWorkspaceHost(cfg Config) (*WorkspaceHost, error) {
 		flows:      NewFlowManager(),
 		tools:      toolbox.NewRegistry(),
 	}, nil
+}
+
+// logHostWarning surfaces a non-fatal host warning to the configured log sink,
+// falling back to stderr so a best-effort failure is never silently swallowed.
+func logHostWarning(w io.Writer, message string) {
+	if w == nil {
+		w = os.Stderr
+	}
+	fmt.Fprintf(w, "codefly workspace host: %s\n", message)
 }
 
 // Root returns the immutable absolute root owned by this host.

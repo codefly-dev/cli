@@ -164,6 +164,54 @@ func TestAppendServiceProcessConfigurationsToFileIncludesSecretsAndFiltersDepend
 	}
 }
 
+// TestServiceProcessOutputEnvWritesDependencyConfigsOncePerRun locks the
+// Init/Start source partitioning the runner relies on. The runner writes its
+// own, workspace, and runtime configurations at Init (final then) and writes
+// dependency configurations once at Start (after the dependency barrier). A
+// dependency configuration must appear exactly once in the owner-only file:
+// including it at Init too — as the runner originally did — duplicated every
+// dependency secret. This mirrors the two writer calls the runner makes.
+func TestServiceProcessOutputEnvWritesDependencyConfigsOncePerRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.env")
+	native := resources.NewRuntimeContextNative()
+	configuration := func(origin, name, key, value string) *basev0.Configuration {
+		return &basev0.Configuration{
+			Origin: origin, RuntimeContext: native,
+			Infos: []*basev0.ConfigurationInformation{{
+				Name: name,
+				ConfigurationValues: []*basev0.ConfigurationValue{{
+					Key: key, Value: value, Secret: true,
+				}},
+			}},
+		}
+	}
+	own := configuration("mind/mind", "llm", "openai_api_key", "provider-token")
+	runtime := configuration("mind/mind", "runtime", "session_id", "session-123")
+	dependency := configuration("infra/postgres", "postgres", "read-write-connection", "postgres://runtime")
+
+	// Init phase: own + runtime only, NO dependency configurations.
+	if err := AppendServiceProcessConfigurationsToFile(
+		context.Background(), path, native, own, nil, nil, []*basev0.Configuration{runtime},
+	); err != nil {
+		t.Fatal(err)
+	}
+	// Start phase: refreshed dependency configurations only.
+	if err := AppendServiceProcessConfigurationsToFile(
+		context.Background(), path, native, nil, nil, []*basev0.Configuration{dependency}, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const dependencyKey = "CODEFLY__SERVICE_SECRET_CONFIGURATION__INFRA__POSTGRES__POSTGRES__READ_WRITE_CONNECTION="
+	if got := strings.Count(string(body), dependencyKey); got != 1 {
+		t.Fatalf("dependency connection written %d times, want exactly once; keys=%v", got, environmentKeys(string(body)))
+	}
+}
+
 func environmentKeys(body string) []string {
 	lines := strings.Split(strings.TrimSpace(body), "\n")
 	keys := make([]string, 0, len(lines))

@@ -467,3 +467,71 @@ func writeCommit(t *testing.T, plane Plane, ctx context.Context, dir, name, cont
 	}
 	return commit
 }
+
+// TestRemoveIncompleteRepositoryCacheRefusesGitRepository proves the cache
+// recovery never deletes a real repository. rev-parse can fail for reasons
+// other than "not a repository" (a broken environment, a missing git binary);
+// the recovery must fail loudly rather than nuke an owned checkout, while still
+// cleaning up a genuinely non-repository directory left by an interrupted clone.
+func TestRemoveIncompleteRepositoryCacheRefusesGitRepository(t *testing.T) {
+	repo := initGitRepo(t)
+	if err := removeIncompleteRepositoryCache(repo); err == nil {
+		t.Fatal("expected removal to be refused for a real git repository")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("real repository metadata was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "README.md")); err != nil {
+		t.Fatalf("real repository content was removed: %v", err)
+	}
+
+	junk := t.TempDir()
+	if err := os.WriteFile(filepath.Join(junk, "partial-clone.tmp"), []byte("interrupted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIncompleteRepositoryCache(junk); err != nil {
+		t.Fatalf("expected a non-repository directory to be removable: %v", err)
+	}
+	if _, err := os.Stat(junk); !os.IsNotExist(err) {
+		t.Fatalf("non-repository cache was not removed (stat err = %v)", err)
+	}
+}
+
+// TestPrepareRepositoryCheckoutCancelledContextPreservesCache proves a
+// cancelled context — whose rev-parse failure looks identical to "not a
+// repository" — never deletes a valid cache and returns the context error.
+func TestPrepareRepositoryCheckoutCancelledContextPreservesCache(t *testing.T) {
+	source := initGitRepo(t)
+	serverRoot := t.TempDir()
+	bare := filepath.Join(serverRoot, "repository.git")
+	runGit(t, serverRoot, "clone", "--bare", "--", source, bare)
+
+	root := t.TempDir()
+	request := PrepareRepositoryCheckoutRequest{
+		Dir:            root,
+		RepositoryURL:  "file://" + bare,
+		CacheDirectory: "cache/repository",
+		FetchIdentity:  "cancelled-context-test",
+		RemoteAccess:   RepositoryRemoteAccessLocalFile,
+	}
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(root, "cache", "repository")
+	if _, err := os.Stat(filepath.Join(cachePath, ".git")); err != nil {
+		t.Fatalf("cache was not populated: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New().PrepareRepositoryCheckout(ctx, request)
+	if err == nil {
+		t.Fatal("expected a context error from a cancelled checkout")
+	}
+	if _, statErr := os.Stat(filepath.Join(cachePath, ".git")); statErr != nil {
+		t.Fatalf("cancelled checkout deleted the valid cache: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(cachePath, "README.md")); statErr != nil {
+		t.Fatalf("cancelled checkout deleted cache content: %v", statErr)
+	}
+}

@@ -544,10 +544,18 @@ func prepareRepositoryRevisionAt(
 	}
 	cachePath := filepath.Join(root, cacheDirectory)
 	if _, err := gitWithEnvironment(ctx, cachePath, environment, "rev-parse", "--git-dir"); err != nil {
+		// rev-parse can fail for reasons other than "not a repository" — a
+		// cancelled context or a missing/broken git binary among them. Treating
+		// those as "incomplete projection" would delete a perfectly good cache.
+		// Never remove anything when the context is already done.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return preparedRepositoryRevision{}, ctxErr
+		}
 		// The cache directory is a Codefly-owned projection named explicitly by
 		// the caller. A cancelled clone or terminated process can leave a
 		// non-repository directory behind; remove that incomplete projection and
 		// retry the canonical clone instead of wedging every later session.
+		// removeIncompleteRepositoryCache refuses to delete a real repository.
 		if statErr := removeIncompleteRepositoryCache(cachePath); statErr != nil {
 			return preparedRepositoryRevision{}, statErr
 		}
@@ -617,17 +625,38 @@ func prepareRepositoryRevisionAt(
 }
 
 func removeIncompleteRepositoryCache(cachePath string) error {
-	_, err := os.Lstat(cachePath)
+	info, err := os.Lstat(cachePath)
 	switch {
 	case os.IsNotExist(err):
 		return nil
 	case err != nil:
 		return fmt.Errorf("inspect incomplete repository cache: %w", err)
 	}
+	// Only remove a directory that is NOT already a Git repository. If Git
+	// metadata is present, rev-parse failed for a reason other than a missing
+	// repository (a broken environment, or a corrupt-but-owned checkout), and
+	// deleting a real cache would be destructive. Fail loudly instead.
+	if info.IsDir() && repositoryCacheHasGitMetadata(cachePath) {
+		return fmt.Errorf("repository cache %q looks like a Git repository but could not be inspected; refusing to remove it", cachePath)
+	}
 	if err := os.RemoveAll(cachePath); err != nil {
 		return fmt.Errorf("remove incomplete repository cache: %w", err)
 	}
 	return nil
+}
+
+// repositoryCacheHasGitMetadata reports whether cachePath already holds a Git
+// repository, using a filesystem probe rather than a git command (which can
+// itself fail for the same environmental reasons that made rev-parse fail). It
+// recognizes both a non-bare clone (a .git entry) and a bare repository (HEAD
+// alongside an objects directory).
+func repositoryCacheHasGitMetadata(cachePath string) bool {
+	if _, err := os.Lstat(filepath.Join(cachePath, ".git")); err == nil {
+		return true
+	}
+	_, headErr := os.Lstat(filepath.Join(cachePath, "HEAD"))
+	_, objectsErr := os.Lstat(filepath.Join(cachePath, "objects"))
+	return headErr == nil && objectsErr == nil
 }
 
 // PrepareRepositoryCheckout resolves one revision through the typed remote

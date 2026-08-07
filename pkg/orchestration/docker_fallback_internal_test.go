@@ -82,6 +82,34 @@ func TestResolveDockerFallback_Unprobed_StillResolvesFirstBackend(t *testing.T) 
 	}
 }
 
+func TestResolveDockerFallback_AgentWithoutAdvertisedBackends_LeftOnFree(t *testing.T) {
+	// An agent that advertises no backends carries no capability information.
+	// Rather than hard-failing the run (a regression for agents predating
+	// SupportedBackends), the service is left on "free" for downstream to
+	// handle — in every flow shape: docker up, docker down, and unprobed.
+	for _, tc := range []struct {
+		name string
+		flow func(*Manager) *Flow
+	}{
+		{"docker running", func(m *Manager) *Flow { return flowWith(DockerStatus{Running: true}, m) }},
+		{"docker down", func(m *Manager) *Flow {
+			return flowWith(DockerStatus{Running: false, Context: "orbstack"}, m)
+		}},
+		{"unprobed", func(m *Manager) *Flow { return &Flow{hub: &Hub{managers: []IManager{m}}} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := fakeManager("infra", "postgres", resources.RuntimeContextFree)
+			flow := tc.flow(m)
+			if err := flow.resolveDockerFallback(context.Background()); err != nil {
+				t.Fatalf("unexpected error for backend-less agent: %v", err)
+			}
+			if got := m.Runner.runtimeContext; got != resources.RuntimeContextFree {
+				t.Fatalf("runtime context = %q, want it left as %q", got, resources.RuntimeContextFree)
+			}
+		})
+	}
+}
+
 func TestResolveDockerFallback_DockerDown_ExplicitContextHonored(t *testing.T) {
 	// An explicit non-free context is never auto-resolved, even with Docker down.
 	m := fakeManager("svc", "api", resources.RuntimeContextNative)
