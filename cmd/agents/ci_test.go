@@ -68,6 +68,39 @@ func TestAgentCIChildEnvironmentDisablesParentGoWorkspace(t *testing.T) {
 	}
 }
 
+func TestAgentBuildChildEnvironmentBindsDetectedGoWorkspace(t *testing.T) {
+	t.Setenv("GOWORK", "/parent/go.work")
+
+	environment := agentBuildChildEnvironment(
+		"/local/codefly-home",
+		"/checkout/go.work",
+		"GOWORK=/caller/go.work",
+	)
+
+	values := map[string][]string{}
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[name] = append(values[name], value)
+		}
+	}
+	if got := values["GOWORK"]; !reflect.DeepEqual(got, []string{"/checkout/go.work"}) {
+		t.Fatalf("GOWORK = %v, want detected source workspace only", got)
+	}
+}
+
+func TestAgentBuildChildEnvironmentDisablesUnrelatedWorkspaceForStandaloneSource(t *testing.T) {
+	t.Setenv("GOWORK", "/parent/go.work")
+	environment := agentBuildChildEnvironment("/local/codefly-home", "")
+
+	for _, entry := range environment {
+		if entry == "GOWORK=off" {
+			return
+		}
+	}
+	t.Fatalf("environment omitted GOWORK=off: %v", environment)
+}
+
 func TestAgentConformanceGateRecordsAuditWithoutDuplicatingReleasePolicy(t *testing.T) {
 	arguments := agentConformanceGateArguments()
 	if !slices.Contains(arguments, "--fail-on-vuln=false") {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/codefly-dev/core/agents/manager"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/network"
@@ -46,7 +47,10 @@ type AgentSession struct {
 	connection *manager.AgentConn
 	code       codev0.CodeClient
 	agentAPI   agentv0.AgentClient
+	builder    builderv0.BuilderClient
 	runtime    runtimev0.RuntimeClient
+	builderMu  sync.Mutex
+	builderOK  bool
 	closeOnce  sync.Once
 }
 
@@ -156,6 +160,7 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 		connection: connection,
 		code:       codev0.NewCodeClient(connection.GRPCConn()),
 		agentAPI:   agentv0.NewAgentClient(connection.GRPCConn()),
+		builder:    builderv0.NewBuilderClient(connection.GRPCConn()),
 		runtime:    runtimev0.NewRuntimeClient(connection.GRPCConn()),
 	}
 	if err := initializeRuntime(loadCtx, session); err != nil {
@@ -174,6 +179,32 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 	s.mu.Unlock()
 	go s.monitor(session)
 	return session, nil
+}
+
+// initializeBuilder lazily loads the builder half of the already-running
+// service agent. Ordinary read/test traffic never pays this lifecycle cost;
+// configuration calls use the same plugin process and service identity as the
+// runtime, so a persisted formula is immediately visible to the next test.
+func initializeBuilder(ctx context.Context, session *AgentSession) error {
+	if session == nil || session.builder == nil || session.descriptor == nil {
+		return fmt.Errorf("builder client is unavailable")
+	}
+	session.builderMu.Lock()
+	defer session.builderMu.Unlock()
+	if session.builderOK {
+		return nil
+	}
+	response, err := session.builder.Load(ctx, &builderv0.LoadRequest{
+		Identity: session.descriptor.identity,
+	})
+	if err != nil {
+		return fmt.Errorf("builder Load: %w", err)
+	}
+	if response == nil || response.GetState().GetState() != builderv0.LoadStatus_READY {
+		return fmt.Errorf("builder Load did not become ready: %s", response.GetState().GetMessage())
+	}
+	session.builderOK = true
+	return nil
 }
 
 func initializeRuntime(ctx context.Context, session *AgentSession) error {

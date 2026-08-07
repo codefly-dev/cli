@@ -262,12 +262,13 @@ type FixResult struct {
 
 // GitStatus is a repo's working-tree state.
 type GitStatus struct {
-	Branch  string
-	Dirty   bool
-	Ahead   int
-	Behind  int
-	Changed []string        // paths with any change (convenience)
-	Files   []GitFileStatus // per-file detail
+	Branch         string
+	RepositoryRoot string // canonical absolute root of the containing Git worktree
+	Dirty          bool
+	Ahead          int
+	Behind         int
+	Changed        []string        // paths with any change (convenience)
+	Files          []GitFileStatus // per-file detail
 }
 
 // GitFileStatus is one changed file's porcelain status.
@@ -374,6 +375,66 @@ type GitMergeRequest struct {
 type GitRevertRequest struct {
 	Dir      string
 	Revision string
+}
+
+// RepositoryRemoteAccess identifies the configuration and credential
+// authority Codefly may use while resolving a repository snapshot.
+type RepositoryRemoteAccess string
+
+const (
+	// RepositoryRemoteAccessPublicHTTPS isolates a credential-free HTTPS
+	// source from every ambient Git rewrite, helper, prompt, and SSH agent.
+	RepositoryRemoteAccessPublicHTTPS RepositoryRemoteAccess = "public-https"
+	// RepositoryRemoteAccessConfigured explicitly uses the Codefly runtime's
+	// configured Git and SSH environment for an authenticated source.
+	RepositoryRemoteAccessConfigured RepositoryRemoteAccess = "configured"
+	// RepositoryRemoteAccessLocalFile permits a file:// remote for deterministic
+	// local infrastructure qualification.
+	RepositoryRemoteAccessLocalFile RepositoryRemoteAccess = "local-file"
+)
+
+// MaterializeRepositorySnapshotRequest resolves one remote revision into a
+// detached worktree below Dir. CacheDirectory and SnapshotDirectory are
+// Gateway-relative and FetchIdentity names a temporary private ref.
+type MaterializeRepositorySnapshotRequest struct {
+	Dir               string
+	RepositoryURL     string
+	CacheDirectory    string
+	Revision          string
+	FetchIdentity     string
+	SnapshotDirectory string
+	RemoteAccess      RepositoryRemoteAccess
+}
+
+// MaterializedRepositorySnapshot is the immutable lease returned by Codefly.
+type MaterializedRepositorySnapshot struct {
+	Revision          string
+	SnapshotDirectory string
+}
+
+// PrepareRepositoryCheckoutRequest resolves and cleans one mutable repository
+// checkout below Dir through the same explicit remote-access boundary.
+type PrepareRepositoryCheckoutRequest struct {
+	Dir            string
+	RepositoryURL  string
+	CacheDirectory string
+	Revision       string
+	FetchIdentity  string
+	RemoteAccess   RepositoryRemoteAccess
+}
+
+// PreparedRepositoryCheckout is the exact mutable checkout state Codefly
+// observed after preparation.
+type PreparedRepositoryCheckout struct {
+	Revision      string
+	DefaultBranch string
+}
+
+// ReleaseRepositorySnapshotRequest releases one detached worktree lease.
+type ReleaseRepositorySnapshotRequest struct {
+	Dir               string
+	CacheDirectory    string
+	SnapshotDirectory string
 }
 
 // --- Dependencies ---

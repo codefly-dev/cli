@@ -352,13 +352,19 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	if runner.outputEnv != "" {
+		// Dependency configurations are intentionally omitted here: they are not
+		// final until the dependency barrier and are written once at Start from
+		// the refreshed shared state. Writing them at Init too would duplicate
+		// every dependency secret in the owner-only file (and record stale
+		// pre-barrier values). Own, workspace, and this service's own runtime
+		// configurations are final at Init, so they are written now.
 		err = AppendServiceProcessConfigurationsToFile(
 			ctx,
 			runner.outputEnv,
 			runtimeContext,
 			conf,
 			workspaceConfigurations,
-			dependenciesConfigurations,
+			nil,
 			resp.RuntimeConfigurations,
 		)
 		if err != nil {
@@ -469,9 +475,10 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		endpointMappings = append(endpointMappings, runner.networkMappings...)
 		endpointMappings = append(endpointMappings, dependenciesNetworkMappings...)
 		// Dependency agents publish connection configurations during their Init.
-		// Refresh them at Start, after the dependency barrier, because the target's
-		// own Init may have observed the shared configuration state before a
-		// concurrently initialized dependency exposed its runtime values.
+		// Start is the single point that writes them to the output environment,
+		// after the dependency barrier: the target's own Init may have observed
+		// the shared configuration state before a concurrently initialized
+		// dependency exposed its runtime values, so only here are they complete.
 		dependencyConfigurations, dependencyErr := runner.world.SharedState.GetDependentConfigurationsFor(ctx, runner.instance.Identity)
 		if dependencyErr != nil {
 			return nil, w.Wrapf(dependencyErr, "cannot load dependency configurations for output environment")

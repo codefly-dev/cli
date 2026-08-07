@@ -353,8 +353,18 @@ func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 		if runner.runtimeContext != resources.RuntimeContextFree {
 			continue
 		}
+		backends := runner.SupportedBackends()
+		// An agent that advertises NO backends gives us no capability information
+		// to resolve "free" against. Blocking it here would regress every agent
+		// that predates SupportedBackends (or simply leaves it unset), which ran
+		// fine on the unresolved "free" hint. Leave it untouched; a genuinely
+		// unrunnable agent fails later with its own diagnostic. Only agents that
+		// advertise backends but none currently selectable are "blocked".
+		if len(backends) == 0 {
+			continue
+		}
 		chosen := ""
-		for _, backend := range runner.SupportedBackends() {
+		for _, backend := range backends {
 			switch backend {
 			case agentv0.Backend_LOCAL:
 				chosen = resources.RuntimeContextNative

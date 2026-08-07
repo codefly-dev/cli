@@ -41,6 +41,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
@@ -134,6 +135,11 @@ type Server struct {
 
 	serviceMu       sync.Mutex
 	serviceBehavior serviceExecution
+	// codeUnitServices caches exact source-boundary behaviors separately from
+	// the legacy root service. Each entry owns its own plugin selection and
+	// working directory; heterogeneous repositories must never share the first
+	// detected root agent.
+	codeUnitServices map[string]serviceExecution
 
 	// terminals holds the PTY-backed interactive shells running in this gateway
 	// (the gateway IS inside the execution box, so the PTY lives here).
@@ -165,6 +171,13 @@ type serviceExecution interface {
 	Test(context.Context, *runtimev0.TestRequest) (*runtimev0.TestResponse, error)
 	Lint(context.Context, *runtimev0.LintRequest) (*runtimev0.LintResponse, error)
 	ListCommands(context.Context, *agentv0.ListCommandsRequest) (*agentv0.ListCommandsResponse, error)
+}
+
+// serviceConfigurator is an optional mutation surface kept separate from the
+// common execution interface. Existing read/test-only execution behaviors do
+// not pretend to support plugin-owned configuration.
+type serviceConfigurator interface {
+	Configure(context.Context, *builderv0.ConfigureRequest) (*builderv0.ConfigureResponse, error)
 }
 
 // MindYAML mirrors the mind.yaml config structure.
@@ -229,6 +242,7 @@ func NewServer(cfg Config) (*Server, error) {
 		tlsConfig:           tlsConfig,
 		host:                host,
 		ownsHost:            ownsHost,
+		codeUnitServices:    make(map[string]serviceExecution),
 		preparedMutations:   make(map[string]*storedPreparedMutation),
 		terminals:           newTerminalManager(),
 		executionRecorder:   cfg.ExecutionRecorder,
@@ -1308,18 +1322,32 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	if req != nil && req.GetRuntimeRequest() != nil {
 		runtimeReq = req.GetRuntimeRequest()
 	}
-	service, err := s.executionServiceBehavior()
-	if err != nil && s.mindYAML == nil {
-		if formula := runtimeReq.GetFormula(); formula != nil {
-			if agentName := engine.DetectFormulaAgent(formula.GetCommand()); agentName != "" {
-				service, err = s.executionServiceBehaviorWithAgent(agentName)
+	codeUnits, err := s.normalizeCodeUnitTargets(req.GetCodeUnits())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid code-unit targets: %v", err)
+	}
+	var service serviceExecution
+	if len(codeUnits) == 0 {
+		service, err = s.executionServiceBehavior()
+		if err != nil && s.mindYAML == nil {
+			if formula := runtimeReq.GetFormula(); formula != nil {
+				if agentName := engine.DetectFormulaAgent(formula.GetCommand()); agentName != "" {
+					service, err = s.executionServiceBehaviorWithAgent(agentName)
+				}
 			}
 		}
+		if err != nil {
+			return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
+		}
 	}
-	if err != nil {
-		return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
+	selectionContract := proto.Message(runtimeReq)
+	if len(codeUnits) > 0 {
+		// The target set is part of the governed operation. Hashing only the
+		// runtime selector would allow a retry to substitute different unit
+		// boundaries under the same execution authority.
+		selectionContract = req
 	}
-	selectionSHA256, err := deterministicProtoSHA256(runtimeReq)
+	selectionSHA256, err := deterministicProtoSHA256(selectionContract)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "encode test selection: %v", err)
 	}
@@ -1336,11 +1364,17 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	if err != nil {
 		return nil, err
 	}
-	// ARCHITECTURE: The gateway is a typed transport boundary, not a test
-	// planner. Forward the runtime request exactly so structured selections and
-	// their acknowledgement identity reach the language plugin unchanged.
+	// ARCHITECTURE: The gateway routes typed code-unit boundaries; language
+	// plugins still own native execution. Structured selections and their
+	// acknowledgement identity reach the selected plugin unchanged apart from
+	// a repository-relative path becoming relative to its owning unit root.
 	effectStarted := time.Now()
-	resp, err := service.Test(ctx, runtimeReq)
+	var resp *runtimev0.TestResponse
+	if len(codeUnits) > 0 {
+		resp, err = s.testCodeUnits(ctx, runtimeReq, codeUnits)
+	} else {
+		resp, err = service.Test(ctx, runtimeReq)
+	}
 	if err != nil {
 		finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
 			Stage: executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
@@ -1387,6 +1421,36 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 		},
 	})
 	return response, nil
+}
+
+// ConfigureService forwards typed configuration to the owning plugin's
+// Builder.Configure RPC. The gateway neither interprets dotted paths nor
+// writes project files; the plugin validates and persists its own schema.
+func (s *Server) ConfigureService(ctx context.Context, req *gatewayv1.ConfigureServiceRequest) (*gatewayv1.ConfigureServiceResponse, error) {
+	requestedService := ""
+	if req != nil {
+		requestedService = req.GetService()
+	}
+	if err := s.validateService(requestedService); err != nil {
+		return nil, err
+	}
+	service, err := s.executionServiceBehavior()
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "plugin unavailable: %v", err)
+	}
+	configurator, ok := service.(serviceConfigurator)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "service plugin does not expose configuration")
+	}
+	configureReq := &builderv0.ConfigureRequest{}
+	if req != nil {
+		configureReq.Changes = req.GetChanges()
+	}
+	response, err := configurator.Configure(ctx, configureReq)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "plugin configure RPC failed: %v", err)
+	}
+	return &gatewayv1.ConfigureServiceResponse{Response: response}, nil
 }
 
 func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gatewayv1.FormatResponse, error) {
@@ -1911,7 +1975,9 @@ func (s *Server) GitStatus(ctx context.Context, _ *gatewayv1.GitStatusRequest) (
 			Path: f.Path, Status: gitStatusString(f.Code), Staged: f.Staged,
 		})
 	}
-	return &gatewayv1.GitStatusResponse{Files: files, Branch: st.Branch}, nil
+	return &gatewayv1.GitStatusResponse{
+		Files: files, Branch: st.Branch, RepositoryRoot: st.RepositoryRoot,
+	}, nil
 }
 
 func (s *Server) GitDiff(ctx context.Context, req *gatewayv1.GitDiffRequest) (*gatewayv1.GitDiffResponse, error) {
@@ -2133,6 +2199,121 @@ func (s *Server) GitRevert(ctx context.Context, req *gatewayv1.GitRevertRequest)
 		Success: true, RevertedRevision: result.Target, Revision: result.Revision,
 		Act: gitActReceipt("git.revert.applied", result.Target, result.Revision),
 	}, nil
+}
+
+// MaterializeRepositorySnapshot delegates the complete clone/fetch/worktree
+// transaction to Codefly's typed VCS control plane. The access enum is the
+// authority boundary that prevents public sources from inheriting host Git
+// rewrites or credentials.
+func (s *Server) MaterializeRepositorySnapshot(
+	ctx context.Context,
+	req *gatewayv1.MaterializeRepositorySnapshotRequest,
+) (*gatewayv1.MaterializeRepositorySnapshotResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "repository snapshot materialization request is required")
+	}
+	cacheDirectory, err := cleanGatewayPath(req.GetCacheDirectory())
+	if err != nil || cacheDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository cache directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	snapshotDirectory, err := cleanGatewayPath(req.GetSnapshotDirectory())
+	if err != nil || snapshotDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository snapshot directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	access := control.RepositoryRemoteAccess("")
+	switch req.GetRemoteAccess() {
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_PUBLIC_HTTPS:
+		access = control.RepositoryRemoteAccessPublicHTTPS
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_CONFIGURED:
+		access = control.RepositoryRemoteAccessConfigured
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_LOCAL_FILE:
+		access = control.RepositoryRemoteAccessLocalFile
+	default:
+		return nil, status.Error(codes.InvalidArgument, "repository remote access is required")
+	}
+	result, err := s.controlScope().MaterializeRepositorySnapshot(ctx, control.MaterializeRepositorySnapshotRequest{
+		RepositoryURL: req.GetRepositoryUrl(), CacheDirectory: cacheDirectory,
+		Revision: req.GetRevision(), FetchIdentity: req.GetFetchIdentity(),
+		SnapshotDirectory: snapshotDirectory, RemoteAccess: access,
+	})
+	if err != nil {
+		return &gatewayv1.MaterializeRepositorySnapshotResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.MaterializeRepositorySnapshotResponse{
+		Success: true, Revision: result.Revision, SnapshotDirectory: result.SnapshotDirectory,
+	}, nil
+}
+
+func (s *Server) PrepareRepositoryCheckout(
+	ctx context.Context,
+	req *gatewayv1.PrepareRepositoryCheckoutRequest,
+) (*gatewayv1.PrepareRepositoryCheckoutResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "repository checkout preparation request is required")
+	}
+	cacheDirectory, err := cleanGatewayPath(req.GetCacheDirectory())
+	if err != nil || cacheDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository cache directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	access := control.RepositoryRemoteAccess("")
+	switch req.GetRemoteAccess() {
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_PUBLIC_HTTPS:
+		access = control.RepositoryRemoteAccessPublicHTTPS
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_CONFIGURED:
+		access = control.RepositoryRemoteAccessConfigured
+	case gatewayv1.RepositoryRemoteAccess_REPOSITORY_REMOTE_ACCESS_LOCAL_FILE:
+		access = control.RepositoryRemoteAccessLocalFile
+	default:
+		return nil, status.Error(codes.InvalidArgument, "repository remote access is required")
+	}
+	result, err := s.controlScope().PrepareRepositoryCheckout(ctx, control.PrepareRepositoryCheckoutRequest{
+		RepositoryURL: req.GetRepositoryUrl(), CacheDirectory: cacheDirectory,
+		Revision: req.GetRevision(), FetchIdentity: req.GetFetchIdentity(), RemoteAccess: access,
+	})
+	if err != nil {
+		return &gatewayv1.PrepareRepositoryCheckoutResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.PrepareRepositoryCheckoutResponse{
+		Success: true, Revision: result.Revision, DefaultBranch: result.DefaultBranch,
+	}, nil
+}
+
+func (s *Server) ReleaseRepositorySnapshot(
+	ctx context.Context,
+	req *gatewayv1.ReleaseRepositorySnapshotRequest,
+) (*gatewayv1.ReleaseRepositorySnapshotResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "repository snapshot release request is required")
+	}
+	cacheDirectory, err := cleanGatewayPath(req.GetCacheDirectory())
+	if err != nil || cacheDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository cache directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	snapshotDirectory, err := cleanGatewayPath(req.GetSnapshotDirectory())
+	if err != nil || snapshotDirectory == "" {
+		if err == nil {
+			err = fmt.Errorf("repository snapshot directory is required")
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.controlScope().ReleaseRepositorySnapshot(ctx, control.ReleaseRepositorySnapshotRequest{
+		CacheDirectory: cacheDirectory, SnapshotDirectory: snapshotDirectory,
+	}); err != nil {
+		return &gatewayv1.ReleaseRepositorySnapshotResponse{Success: false, Error: err.Error()}, nil
+	}
+	return &gatewayv1.ReleaseRepositorySnapshotResponse{Success: true}, nil
 }
 
 func (s *Server) Release(ctx context.Context, req *gatewayv1.ReleaseRequest) (*gatewayv1.ReleaseResponse, error) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"google.golang.org/grpc/codes"
@@ -96,6 +97,22 @@ func (s *Service) Test(ctx context.Context, request *runtimev0.TestRequest) (*ru
 			Run:    run,
 		}, nil
 	}
+	return response, err
+}
+
+// Configure invokes the service agent's builder configuration behavior. The
+// call is not transport-retried: an unavailable response may have persisted
+// the change, so replaying it would make APPEND operations ambiguous.
+func (s *Service) Configure(ctx context.Context, request *builderv0.ConfigureRequest) (*builderv0.ConfigureResponse, error) {
+	var response *builderv0.ConfigureResponse
+	err := s.withSession(ctx, "builder.Configure", false, func(session *AgentSession) error {
+		if err := initializeBuilder(ctx, session); err != nil {
+			return err
+		}
+		var err error
+		response, err = session.builder.Configure(ctx, request)
+		return err
+	})
 	return response, err
 }
 

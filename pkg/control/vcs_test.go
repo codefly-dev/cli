@@ -2,6 +2,9 @@ package control
 
 import (
 	"context"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +47,9 @@ func TestGitStatusCleanThenDirty(t *testing.T) {
 	if status.Branch != "main" {
 		t.Errorf("branch = %q, want main", status.Branch)
 	}
+	if resolved, err := filepath.EvalSymlinks(dir); err != nil || status.RepositoryRoot != resolved {
+		t.Errorf("repository root = %q, want %q (resolve error: %v)", status.RepositoryRoot, resolved, err)
+	}
 	if status.Dirty {
 		t.Errorf("repo should be clean after commit, got Changed=%v", status.Changed)
 	}
@@ -79,6 +85,22 @@ func TestGitStatusCleanThenDirty(t *testing.T) {
 	}
 	if !fileOK {
 		t.Errorf("Files = %+v, want an entry for new.txt", status.Files)
+	}
+}
+
+func TestGitStatusReportsContainingRepositoryRootFromNestedDirectory(t *testing.T) {
+	dir := initGitRepo(t)
+	nested := filepath.Join(dir, "services", "api")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := New().GitStatus(t.Context(), nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err != nil || status.RepositoryRoot != resolved {
+		t.Fatalf("repository root = %q, want %q (resolve error: %v)", status.RepositoryRoot, resolved, err)
 	}
 }
 
@@ -327,6 +349,113 @@ func TestGitTagRejectsOptionLikeName(t *testing.T) {
 	}
 }
 
+func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
+	source := initGitRepo(t)
+	serverRoot := t.TempDir()
+	bare := filepath.Join(serverRoot, "repository.git")
+	runGit(t, serverRoot, "clone", "--bare", "--", source, bare)
+	runGit(t, bare, "update-server-info")
+
+	server := httptest.NewTLSServer(http.FileServer(http.Dir(serverRoot)))
+	defer server.Close()
+	certificatePath := filepath.Join(t.TempDir(), "server.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(certificatePath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_SSL_CAINFO", certificatePath)
+
+	// Reproduce the observed customer failure: a developer-global insteadOf
+	// rule silently changes the declared HTTPS transport before Git connects.
+	// The public capability must ignore it without mutating the user's config.
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	maliciousRewrite := "[url \"file:///definitely-not-the-public-repository/\"]\n\tinsteadOf = " + server.URL + "/\n"
+	if err := os.WriteFile(globalConfig, []byte(maliciousRewrite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+
+	revision, err := git(t.Context(), source, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	request := MaterializeRepositorySnapshotRequest{
+		Dir:               root,
+		RepositoryURL:     server.URL + "/repository.git",
+		CacheDirectory:    "cache/repository",
+		Revision:          revision,
+		FetchIdentity:     "public-isolation-test",
+		SnapshotDirectory: "worktrees/repository/lease",
+		RemoteAccess:      RepositoryRemoteAccessPublicHTTPS,
+	}
+	result, err := New().MaterializeRepositorySnapshot(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Revision != revision || result.SnapshotDirectory != "worktrees/repository/lease" {
+		t.Fatalf("materialized snapshot = %+v, want revision %s", result, revision)
+	}
+	retried, err := New().MaterializeRepositorySnapshot(t.Context(), request)
+	if err != nil || retried != result {
+		t.Fatalf("retried materialization = %+v, want %+v (error = %v)", retried, result, err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, result.SnapshotDirectory, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "hello\n" {
+		t.Fatalf("snapshot README = %q", body)
+	}
+	release := ReleaseRepositorySnapshotRequest{
+		Dir: root, CacheDirectory: "cache/repository", SnapshotDirectory: result.SnapshotDirectory,
+	}
+	if err := New().ReleaseRepositorySnapshot(t.Context(), release); err != nil {
+		t.Fatal(err)
+	}
+	if err := New().ReleaseRepositorySnapshot(t.Context(), release); err != nil {
+		t.Fatalf("retry release: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, result.SnapshotDirectory)); !os.IsNotExist(err) {
+		t.Fatalf("released snapshot still exists (stat error = %v)", err)
+	}
+	checkoutRequest := PrepareRepositoryCheckoutRequest{
+		Dir: root, RepositoryURL: request.RepositoryURL, CacheDirectory: "mutable/repository",
+		Revision: revision, FetchIdentity: "public-checkout-test", RemoteAccess: RepositoryRemoteAccessPublicHTTPS,
+	}
+	checkout, err := New().PrepareRepositoryCheckout(t.Context(), checkoutRequest)
+	if err != nil || checkout.Revision != revision || checkout.DefaultBranch != "main" {
+		t.Fatalf("prepared checkout = %+v, want revision %s on main (error = %v)", checkout, revision, err)
+	}
+	junk := filepath.Join(root, checkoutRequest.CacheDirectory, "generated.tmp")
+	if err := os.WriteFile(junk, []byte("remove me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), checkoutRequest); err != nil {
+		t.Fatalf("retry mutable checkout: %v", err)
+	}
+	if _, err := os.Stat(junk); !os.IsNotExist(err) {
+		t.Fatalf("prepared checkout retained generated file (stat error = %v)", err)
+	}
+	corruptRequest := checkoutRequest
+	corruptRequest.CacheDirectory = "interrupted/repository"
+	corruptRequest.FetchIdentity = "public-interrupted-checkout-test"
+	corruptPath := filepath.Join(root, corruptRequest.CacheDirectory)
+	if err := os.MkdirAll(corruptPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(corruptPath, "partial-clone.tmp"), []byte("interrupted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := New().PrepareRepositoryCheckout(t.Context(), corruptRequest)
+	if err != nil || recovered.Revision != revision {
+		t.Fatalf("recovered interrupted checkout = %+v, want revision %s (error = %v)", recovered, revision, err)
+	}
+	if _, err := os.Stat(filepath.Join(corruptPath, "partial-clone.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("recovered checkout retained interrupted clone bytes (stat error = %v)", err)
+	}
+}
+
 func writeCommit(t *testing.T, plane Plane, ctx context.Context, dir, name, content, message string) GitCommit {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
@@ -337,4 +466,72 @@ func writeCommit(t *testing.T, plane Plane, ctx context.Context, dir, name, cont
 		t.Fatal(err)
 	}
 	return commit
+}
+
+// TestRemoveIncompleteRepositoryCacheRefusesGitRepository proves the cache
+// recovery never deletes a real repository. rev-parse can fail for reasons
+// other than "not a repository" (a broken environment, a missing git binary);
+// the recovery must fail loudly rather than nuke an owned checkout, while still
+// cleaning up a genuinely non-repository directory left by an interrupted clone.
+func TestRemoveIncompleteRepositoryCacheRefusesGitRepository(t *testing.T) {
+	repo := initGitRepo(t)
+	if err := removeIncompleteRepositoryCache(repo); err == nil {
+		t.Fatal("expected removal to be refused for a real git repository")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("real repository metadata was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "README.md")); err != nil {
+		t.Fatalf("real repository content was removed: %v", err)
+	}
+
+	junk := t.TempDir()
+	if err := os.WriteFile(filepath.Join(junk, "partial-clone.tmp"), []byte("interrupted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeIncompleteRepositoryCache(junk); err != nil {
+		t.Fatalf("expected a non-repository directory to be removable: %v", err)
+	}
+	if _, err := os.Stat(junk); !os.IsNotExist(err) {
+		t.Fatalf("non-repository cache was not removed (stat err = %v)", err)
+	}
+}
+
+// TestPrepareRepositoryCheckoutCancelledContextPreservesCache proves a
+// cancelled context — whose rev-parse failure looks identical to "not a
+// repository" — never deletes a valid cache and returns the context error.
+func TestPrepareRepositoryCheckoutCancelledContextPreservesCache(t *testing.T) {
+	source := initGitRepo(t)
+	serverRoot := t.TempDir()
+	bare := filepath.Join(serverRoot, "repository.git")
+	runGit(t, serverRoot, "clone", "--bare", "--", source, bare)
+
+	root := t.TempDir()
+	request := PrepareRepositoryCheckoutRequest{
+		Dir:            root,
+		RepositoryURL:  "file://" + bare,
+		CacheDirectory: "cache/repository",
+		FetchIdentity:  "cancelled-context-test",
+		RemoteAccess:   RepositoryRemoteAccessLocalFile,
+	}
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(root, "cache", "repository")
+	if _, err := os.Stat(filepath.Join(cachePath, ".git")); err != nil {
+		t.Fatalf("cache was not populated: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New().PrepareRepositoryCheckout(ctx, request)
+	if err == nil {
+		t.Fatal("expected a context error from a cancelled checkout")
+	}
+	if _, statErr := os.Stat(filepath.Join(cachePath, ".git")); statErr != nil {
+		t.Fatalf("cancelled checkout deleted the valid cache: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(cachePath, "README.md")); statErr != nil {
+		t.Fatalf("cancelled checkout deleted cache content: %v", statErr)
+	}
 }

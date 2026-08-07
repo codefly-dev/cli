@@ -311,7 +311,7 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 		}
 		g.Go(func() error {
 			log := &agentLogger{}
-			res := compileAgent(groupCtx, agents[i], log, opts.nativeOnly)
+			res := compileAgent(groupCtx, agents[i], log, opts.nativeOnly, false)
 			results[i] = res
 			n := completed.Add(1)
 			if res.err != nil {
@@ -458,7 +458,7 @@ func (r *agentBuildResult) summary() string {
 }
 
 func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
-	res := compileAgent(ctx, dir, &agentLogger{direct: true}, opts.nativeOnly)
+	res := compileAgent(ctx, dir, &agentLogger{direct: true}, opts.nativeOnly, false)
 	if res.err != nil {
 		return res.err
 	}
@@ -472,8 +472,9 @@ func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
 // artifacts. It never selects a language command and never runs audit; callers
 // apply release policy to the separate Builder.Audit response. The returned
 // result always carries the outcome. When nativeOnly is set the container
-// target is omitted.
-func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly bool) *agentBuildResult {
+// target is omitted. standaloneModuleGraph is reserved for CI/release proof;
+// local builds bind the exact go.work detected for the source checkout.
+func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly, standaloneModuleGraph bool) *agentBuildResult {
 	res := &agentBuildResult{label: filepath.Base(dir), dir: dir}
 	if err := ctx.Err(); err != nil {
 		res.err = err
@@ -564,7 +565,11 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly 
 	started := time.Now()
 	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Dir = prepared.Dir
-	command.Env = agentCIChildEnvironment(resolveSourcePluginHome(), "CI=1", "CODEFLY_COLOR=never")
+	goWorkFile := prepared.GoWorkFile
+	if standaloneModuleGraph {
+		goWorkFile = "off"
+	}
+	command.Env = agentBuildChildEnvironment(resolveSourcePluginHome(), goWorkFile, "CI=1", "CODEFLY_COLOR=never")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		res.err = fmt.Errorf("plugin-owned agent packaging: %w\n%s", err, boundedAgentCIOutput(output))

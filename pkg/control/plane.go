@@ -138,6 +138,9 @@ type VCS interface {
 	GitTag(ctx context.Context, req GitTagRequest) (GitAct, error)
 	GitMerge(ctx context.Context, req GitMergeRequest) (GitAct, error)
 	GitRevert(ctx context.Context, req GitRevertRequest) (GitAct, error)
+	MaterializeRepositorySnapshot(ctx context.Context, req MaterializeRepositorySnapshotRequest) (MaterializedRepositorySnapshot, error)
+	PrepareRepositoryCheckout(ctx context.Context, req PrepareRepositoryCheckoutRequest) (PreparedRepositoryCheckout, error)
+	ReleaseRepositorySnapshot(ctx context.Context, req ReleaseRepositorySnapshotRequest) error
 }
 
 // DependencyManager inspects and edits a service's declared dependencies.

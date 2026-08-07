@@ -1065,6 +1065,9 @@ func TestGitStatus(t *testing.T) {
 	if resp.Branch == "" {
 		t.Error("expected a branch name")
 	}
+	if resolved, err := filepath.EvalSymlinks(dir); err != nil || resp.RepositoryRoot != resolved {
+		t.Errorf("repository root = %q, want %q (resolve error: %v)", resp.RepositoryRoot, resolved, err)
+	}
 	if len(resp.Files) < 2 {
 		t.Fatalf("expected at least 2 file statuses, got %d", len(resp.Files))
 	}

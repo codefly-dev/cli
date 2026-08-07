@@ -24,6 +24,10 @@ type ServiceTarget struct {
 	// Agent is an optional service-agent identifier (for example
 	// "go-generic:latest"). If empty, the service manifest selects the agent.
 	Agent string
+	// ForceSource binds Root as an exact source checkout even when an enclosing
+	// Codefly service manifest exists. Code-unit dispatch uses this so a nested
+	// unit cannot silently widen to its parent service boundary.
+	ForceSource bool
 }
 
 type serviceDescriptor struct {
@@ -99,6 +103,12 @@ func canonicalPath(path string) (string, os.FileInfo, error) {
 }
 
 func resolveServiceDescriptor(ctx context.Context, target ServiceTarget) (*serviceDescriptor, error) {
+	if target.ForceSource {
+		if target.Agent == "" {
+			return nil, fmt.Errorf("forced source target requires an explicit agent")
+		}
+		return prepareSourceDescriptor(ctx, target)
+	}
 	workspaceDir, err := parentResourceDir(target.Root, resources.WorkspaceConfigurationName)
 	if err != nil {
 		if target.Agent != "" {
