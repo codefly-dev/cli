@@ -96,6 +96,67 @@ func TestReleaseWorkflowRequiresMacOSPublisherCredentials(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowBuildsWithCGOCrossToolchain(t *testing.T) {
+	var workflow releaseWorkflow
+	readRepositoryYAML(t, ".github/workflows/release.yaml", &workflow)
+
+	release := workflow.Jobs["release"]
+	steps := map[string]releaseWorkflowStep{}
+	for _, step := range release.Steps {
+		steps[step.Name] = step
+	}
+	for _, name := range []string{"Qualify the clean tag", "Publish the immutable release and Homebrew cask"} {
+		step := steps[name]
+		if !strings.Contains(step.Run, "ghcr.io/goreleaser/goreleaser-cross:v1.26.4") ||
+			!strings.Contains(step.Run, "docker run --rm") ||
+			strings.TrimSpace(step.Env["SYFT_PATH"]) == "" {
+			t.Fatalf("%s does not run the CGO-capable release toolchain with Syft: %#v", name, step)
+		}
+	}
+}
+
+func TestGoReleaserBuildsEveryPublishedTargetWithCGO(t *testing.T) {
+	var configuration struct {
+		Builds []struct {
+			ID     string   `yaml:"id"`
+			Env    []string `yaml:"env"`
+			GoOS   []string `yaml:"goos"`
+			GoArch []string `yaml:"goarch"`
+		} `yaml:"builds"`
+	}
+	readRepositoryYAML(t, ".goreleaser.yaml", &configuration)
+
+	expected := map[string]struct {
+		goos string
+		arch string
+		cc   string
+		cxx  string
+	}{
+		"darwin-amd64": {goos: "darwin", arch: "amd64", cc: "CC=o64-clang", cxx: "CXX=o64-clang++"},
+		"darwin-arm64": {goos: "darwin", arch: "arm64", cc: "CC=oa64-clang", cxx: "CXX=oa64-clang++"},
+		"linux-amd64":  {goos: "linux", arch: "amd64", cc: "CC=x86_64-linux-gnu-gcc", cxx: "CXX=x86_64-linux-gnu-g++"},
+		"linux-arm64":  {goos: "linux", arch: "arm64", cc: "CC=aarch64-linux-gnu-gcc", cxx: "CXX=aarch64-linux-gnu-g++"},
+	}
+	if len(configuration.Builds) != len(expected) {
+		t.Fatalf("release builds = %d, want %d", len(configuration.Builds), len(expected))
+	}
+	for _, build := range configuration.Builds {
+		want, found := expected[build.ID]
+		if !found {
+			t.Fatalf("unexpected release build %q", build.ID)
+		}
+		if len(build.GoOS) != 1 || build.GoOS[0] != want.goos || len(build.GoArch) != 1 || build.GoArch[0] != want.arch {
+			t.Fatalf("release build %q target = %v/%v, want %s/%s", build.ID, build.GoOS, build.GoArch, want.goos, want.arch)
+		}
+		environment := strings.Join(build.Env, "\n")
+		for _, required := range []string{"CGO_ENABLED=1", want.cc, want.cxx} {
+			if !strings.Contains(environment, required) {
+				t.Fatalf("release build %q environment does not require %q: %v", build.ID, required, build.Env)
+			}
+		}
+	}
+}
+
 func TestGoReleaserNotarizesPublishedMacOSBinaries(t *testing.T) {
 	var configuration struct {
 		Notarize struct {
@@ -132,7 +193,7 @@ func TestGoReleaserNotarizesPublishedMacOSBinaries(t *testing.T) {
 			t.Fatalf("macOS notarization enabled condition does not require %s: %q", required, enabled)
 		}
 	}
-	if len(notarization.IDs) != 1 || notarization.IDs[0] != "codefly" ||
+	if strings.Join(notarization.IDs, ",") != "darwin-amd64,darwin-arm64" ||
 		!strings.Contains(notarization.Sign.Certificate, "MACOS_SIGN_P12") ||
 		!strings.Contains(notarization.Sign.Password, "MACOS_SIGN_PASSWORD") ||
 		!strings.Contains(notarization.Notarize.IssuerID, "MACOS_NOTARY_ISSUER_ID") ||
