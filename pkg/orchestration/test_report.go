@@ -41,7 +41,14 @@ func summarizeTestResponse(resp *runtimev0.TestResponse) string {
 		summary += fmt.Sprintf(" (%d total)", total)
 	}
 	if resp != nil {
-		if failure := resp.GetStatus().GetFailure(); failure != nil {
+		// The additive TestRunResult is preferred, but released agents may
+		// still carry their typed terminal cause only on the legacy status.
+		status := resp.GetStatus() //nolint:staticcheck // compatibility at the agent protocol boundary
+		failure := resp.GetResult().GetFailure()
+		if failure == nil {
+			failure = status.GetFailure()
+		}
+		if failure != nil {
 			detail := failure.GetCode().String()
 			if message := strings.TrimSpace(failure.GetMessage()); message != "" {
 				detail += ": " + message
@@ -49,7 +56,7 @@ func summarizeTestResponse(resp *runtimev0.TestResponse) string {
 			summary += ": " + detail
 		} else if r := resp.GetResult(); r != nil && r.GetMessage() != "" {
 			summary += ": " + r.GetMessage()
-		} else if message := strings.TrimSpace(resp.GetStatus().GetMessage()); message != "" {
+		} else if message := strings.TrimSpace(status.GetMessage()); message != "" {
 			summary += ": " + message
 		}
 	}

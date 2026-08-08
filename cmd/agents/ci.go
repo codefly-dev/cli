@@ -34,6 +34,7 @@ import (
 const (
 	agentCIReportSchemaVersion = 1
 	agentCIReportFilename      = "report.json"
+	serviceAgentKind           = "codefly:service"
 
 	// conformanceModeGeneratedService scaffolds a brand-new service through
 	// Builder.Create before running the workspace gate. It is the default.
@@ -267,10 +268,10 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 			}
 			return result.err
 		}
-		if state.manifest.Kind != "codefly:service" {
+		if state.manifest.Kind != serviceAgentKind {
 			return nil
 		}
-		info, err := loadBuiltAgentInformation(ctx, state.manifest)
+		info, err := loadBuiltAgentInformation(ctx, &state.manifest)
 		if err != nil {
 			return err
 		}
@@ -328,7 +329,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 // a real agent process/gRPC boundary, not manifest inference: an unreadable
 // embedded guide or malformed advertisement fails qualification before
 // conformance routing can make a false assumption.
-func loadBuiltAgentInformation(ctx context.Context, manifest agentYAML) (*agentv0.AgentInformation, error) {
+func loadBuiltAgentInformation(ctx context.Context, manifest *agentYAML) (*agentv0.AgentInformation, error) {
 	agent := &resources.Agent{
 		Kind:      resources.ServiceAgent,
 		Publisher: manifest.Publisher,
@@ -476,7 +477,7 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 		}
 		return manifest, nil
 	}
-	if manifest.Kind != "codefly:service" {
+	if manifest.Kind != serviceAgentKind {
 		return agentYAML{}, fmt.Errorf("agent conformance currently requires kind codefly:service, got %s", manifest.Kind)
 	}
 	mode := conformanceMode(manifest)
