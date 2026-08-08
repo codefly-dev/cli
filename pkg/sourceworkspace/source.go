@@ -21,7 +21,7 @@ const (
 	// NodePluginVersion is published under the historical nextjs agent name,
 	// but owns generic Node.js/TypeScript validation as well as Next.js-specific
 	// lifecycle behavior selected from the package manifest.
-	NodePluginVersion  = "0.0.125"
+	NodePluginVersion  = "0.0.126"
 	RustPluginVersion  = "0.0.18"
 	SwiftPluginVersion = "0.0.13"
 	pythonSetupMarker  = "setup.py"
