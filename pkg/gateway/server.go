@@ -1262,6 +1262,38 @@ func (s *Server) GetProjectInfo(ctx context.Context, _ *gatewayv1.GetProjectInfo
 	}, nil
 }
 
+// DiscoverCodeUnits serves Codefly's language-neutral structural inventory
+// directly from the rooted source behavior. Discovery must not first select or
+// launch a language plugin: the inventory is what downstream consumers use to
+// choose a runtime for each independently routable boundary.
+func (s *Server) DiscoverCodeUnits(ctx context.Context, req *gatewayv1.DiscoverCodeUnitsRequest) (*gatewayv1.DiscoverCodeUnitsResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	response, err := s.sourceExecute(ctx, &codev0.CodeRequest{
+		Operation: &codev0.CodeRequest_DiscoverCodeUnits{
+			DiscoverCodeUnits: &codev0.DiscoverCodeUnitsRequest{},
+		},
+	})
+	if err != nil {
+		return &gatewayv1.DiscoverCodeUnitsResponse{Error: gatewayErrorMessage(s.serviceRoot(), err)}, nil
+	}
+	discovered := response.GetDiscoverCodeUnits()
+	if discovered == nil {
+		return &gatewayv1.DiscoverCodeUnitsResponse{Error: codeFailureMessage(response)}, nil
+	}
+	units := make([]*gatewayv1.CodeUnitInfo, 0, len(discovered.GetCodeUnits()))
+	for _, unit := range discovered.GetCodeUnits() {
+		units = append(units, &gatewayv1.CodeUnitInfo{
+			Path: unit.GetPath(), Name: unit.GetName(), PrimaryLanguage: unit.GetPrimaryLanguage(),
+			Languages:     append([]string(nil), unit.GetLanguages()...),
+			ManifestPaths: append([]string(nil), unit.GetManifestPaths()...),
+			RuntimeAgent:  unit.GetRuntimeAgent(),
+		})
+	}
+	return &gatewayv1.DiscoverCodeUnitsResponse{CodeUnits: units, Error: codeFailureMessage(response)}, nil
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Gateway-direct RPCs — handled locally, not proxied to plugins.
 // ═══════════════════════════════════════════════════════════════
