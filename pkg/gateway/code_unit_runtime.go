@@ -102,28 +102,27 @@ func canonicalCodeUnitPath(value string) (string, error) {
 	return strings.TrimPrefix(clean, "./"), nil
 }
 
-// executionServiceBehaviorForCodeUnit binds an exact source root. It never
-// reuses the legacy root behavior: that cache is precisely what made a
-// heterogeneous project run every unit through the first detected plugin.
-func (s *Server) executionServiceBehaviorForCodeUnit(target normalizedCodeUnitTarget, request *runtimev0.TestRequest) (serviceExecution, error) {
-	key := target.id + "\x00" + target.path
-	s.serviceMu.Lock()
-	defer s.serviceMu.Unlock()
-	if service := s.codeUnitServices[key]; service != nil {
-		return service, nil
-	}
+// serviceBehaviorForCodeUnit binds an exact source root. It never reuses the
+// root behavior: that cache is precisely what made a heterogeneous project
+// route every unit through the first detected plugin. agentOverride is typed
+// Codefly policy (for example a runtime formula), never a native command.
+func (s *Server) serviceBehaviorForCodeUnit(target normalizedCodeUnitTarget, agentOverride string) (serviceExecution, error) {
 	if s.host == nil {
 		return nil, fmt.Errorf("workspace host is unavailable")
 	}
 	agentName, err := engine.DetectSourceAgent(target.root)
-	if err != nil && request != nil && request.GetFormula() != nil {
-		agentName = engine.DetectFormulaAgent(request.GetFormula().GetCommand())
-		if agentName != "" {
-			err = nil
-		}
+	if strings.TrimSpace(agentOverride) != "" {
+		agentName = strings.TrimSpace(agentOverride)
+		err = nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("detect runtime plugin at code unit %q (%s): %w", target.id, target.path, err)
+		return nil, fmt.Errorf("detect agent at code unit %q (%s): %w", target.id, target.path, err)
+	}
+	key := target.id + "\x00" + target.path + "\x00" + agentName
+	s.serviceMu.Lock()
+	defer s.serviceMu.Unlock()
+	if service := s.codeUnitServices[key]; service != nil {
+		return service, nil
 	}
 	service, err := s.host.Service(engine.ServiceTarget{
 		Root:        target.root,
@@ -138,6 +137,14 @@ func (s *Server) executionServiceBehaviorForCodeUnit(target normalizedCodeUnitTa
 	}
 	s.codeUnitServices[key] = service
 	return service, nil
+}
+
+func (s *Server) executionServiceBehaviorForCodeUnit(target normalizedCodeUnitTarget, request *runtimev0.TestRequest) (serviceExecution, error) {
+	agentOverride := ""
+	if request != nil && request.GetFormula() != nil {
+		agentOverride = engine.DetectFormulaAgent(request.GetFormula().GetCommand())
+	}
+	return s.serviceBehaviorForCodeUnit(target, agentOverride)
 }
 
 func (s *Server) testCodeUnits(ctx context.Context, request *runtimev0.TestRequest, targets []normalizedCodeUnitTarget) (*runtimev0.TestResponse, error) {

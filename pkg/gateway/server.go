@@ -38,6 +38,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
 	codecore "github.com/codefly-dev/core/code"
+	"github.com/codefly-dev/core/failures"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
@@ -1256,28 +1257,104 @@ func (s *Server) RemoveDependency(ctx context.Context, req *gatewayv1.RemoveDepe
 
 // ─── Project Analysis ────────────────────────────────────────
 
-func (s *Server) GetProjectInfo(ctx context.Context, _ *gatewayv1.GetProjectInfoRequest) (*gatewayv1.GetProjectInfoResponse, error) {
-	resp, err := s.proxyExecute(ctx, &codev0.CodeRequest{
+func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectInfoRequest) (*gatewayv1.GetProjectInfoResponse, error) {
+	requestedService := ""
+	if req != nil {
+		requestedService = req.GetService()
+	}
+	if err := s.validateService(requestedService); err != nil {
+		return nil, err
+	}
+	execute := s.proxyExecute
+	var inspected *normalizedCodeUnitTarget
+	if req != nil && req.GetCodeUnit() != nil {
+		targets, err := s.normalizeCodeUnitTargets([]*gatewayv1.CodeUnitTarget{req.GetCodeUnit()})
+		if err != nil {
+			return &gatewayv1.GetProjectInfoResponse{Failure: failures.New(basev0.FailureCode_FAILURE_CODE_INVALID_ARGUMENT, "gateway.get-project-info", err.Error())}, nil
+		}
+		target := targets[0]
+		inspected = &target
+		service, err := s.serviceBehaviorForCodeUnit(target, "")
+		if err != nil {
+			return &gatewayv1.GetProjectInfoResponse{
+				CodeUnit: cloneCodeUnitTarget(req.GetCodeUnit()),
+				Failure:  gatewayProjectInfoFailure(err),
+			}, nil
+		}
+		execute = service.ExecuteCode
+	}
+	resp, err := execute(ctx, &codev0.CodeRequest{
 		Operation: &codev0.CodeRequest_GetProjectInfo{GetProjectInfo: &codev0.GetProjectInfoRequest{}},
 	})
 	if err != nil {
-		return &gatewayv1.GetProjectInfoResponse{Error: err.Error()}, nil
+		response := &gatewayv1.GetProjectInfoResponse{Failure: gatewayProjectInfoFailure(err)}
+		if inspected != nil {
+			response.CodeUnit = &gatewayv1.CodeUnitTarget{Id: inspected.id, Path: inspected.path}
+		}
+		return response, nil
 	}
 	pi := resp.GetGetProjectInfo()
+	if pi == nil {
+		response := &gatewayv1.GetProjectInfoResponse{
+			Failure: failures.Ensure(resp.GetFailure(), basev0.FailureCode_FAILURE_CODE_INTERNAL, "gateway.get-project-info", "agent returned no project-info result"),
+		}
+		if inspected != nil {
+			response.CodeUnit = &gatewayv1.CodeUnitTarget{Id: inspected.id, Path: inspected.path}
+		}
+		return response, nil
+	}
 	var pkgs []*gatewayv1.PackageInfo
 	for _, p := range pi.GetPackages() {
+		relativePath := p.GetRelativePath()
+		if inspected != nil {
+			relativePath = rebaseCodeUnitFile(inspected.path, relativePath)
+		}
 		pkgs = append(pkgs, &gatewayv1.PackageInfo{
-			Name: p.Name, RelativePath: p.RelativePath, Files: p.Files, Imports: p.Imports, Doc: p.Doc,
+			Name: p.Name, RelativePath: relativePath, Files: append([]string(nil), p.Files...), Imports: append([]string(nil), p.Imports...), Doc: p.Doc,
 		})
 	}
 	var deps []*gatewayv1.Dependency
 	for _, d := range pi.GetDependencies() {
 		deps = append(deps, &gatewayv1.Dependency{Name: d.Name, Version: d.Version, Direct: d.Direct})
 	}
-	return &gatewayv1.GetProjectInfoResponse{
+	sourceFiles := make([]*gatewayv1.SourceFileInfo, 0, len(pi.GetSourceFiles()))
+	for _, file := range pi.GetSourceFiles() {
+		filePath := file.GetPath()
+		if inspected != nil {
+			filePath = rebaseCodeUnitFile(inspected.path, filePath)
+		}
+		sourceFiles = append(sourceFiles, &gatewayv1.SourceFileInfo{Path: filePath, Imports: append([]string(nil), file.GetImports()...)})
+	}
+	fileHashes := make(map[string]string, len(pi.GetFileHashes()))
+	for file, digest := range pi.GetFileHashes() {
+		if inspected != nil {
+			file = rebaseCodeUnitFile(inspected.path, file)
+		}
+		fileHashes[file] = digest
+	}
+	response := &gatewayv1.GetProjectInfoResponse{
 		Module: pi.GetModule(), Language: pi.GetLanguage(), LanguageVersion: pi.GetLanguageVersion(),
-		Packages: pkgs, Dependencies: deps, FileHashes: pi.GetFileHashes(), Error: codeFailureMessage(resp),
-	}, nil
+		Packages: pkgs, Dependencies: deps, FileHashes: fileHashes, SourceFiles: sourceFiles,
+		Failure: failures.Clone(resp.GetFailure()),
+	}
+	if inspected != nil {
+		response.CodeUnit = &gatewayv1.CodeUnitTarget{Id: inspected.id, Path: inspected.path}
+	}
+	return response, nil
+}
+
+func cloneCodeUnitTarget(target *gatewayv1.CodeUnitTarget) *gatewayv1.CodeUnitTarget {
+	if target == nil {
+		return nil
+	}
+	return &gatewayv1.CodeUnitTarget{Id: target.GetId(), Path: target.GetPath()}
+}
+
+func gatewayProjectInfoFailure(err error) *basev0.Failure {
+	if failure, ok := failures.Extract(err); ok {
+		return failures.Clone(failure)
+	}
+	return failures.FromError("gateway.get-project-info", err)
 }
 
 // DiscoverCodeUnits serves Codefly's language-neutral structural inventory
