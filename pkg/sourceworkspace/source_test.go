@@ -52,6 +52,8 @@ func TestSelectPluginCoversFixerLanguages(t *testing.T) {
 		{marker: "uv.lock", name: "python"},
 		{marker: pythonSetupMarker, name: "python"},
 		{marker: "setup.cfg", name: "python"},
+		{marker: "requirements.in", name: "python"},
+		{marker: "requirements.txt", name: "python"},
 		{marker: "package.json", name: "nextjs"},
 		{marker: "Cargo.toml", name: "rust"},
 		{marker: "Package.swift", name: "swift"},
