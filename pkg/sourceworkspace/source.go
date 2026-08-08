@@ -18,6 +18,7 @@ import (
 const (
 	GenericGoPluginVersion     = "0.0.20"
 	GenericPythonPluginVersion = "0.0.24"
+	GenericPluginVersion       = "0.0.15"
 	// NodePluginVersion is published under the historical nextjs agent name,
 	// but owns generic Node.js/TypeScript validation as well as Next.js-specific
 	// lifecycle behavior selected from the package manifest.
@@ -118,7 +119,15 @@ func SelectPlugin(sourceDir string) (*resources.Agent, error) {
 	if selected != nil {
 		return selected, nil
 	}
-	return nil, fmt.Errorf("no Codefly source plugin is registered for %s", sourceDir)
+	// The generic agent is the language-neutral fallback. It owns baseline
+	// Code and Tooling capabilities and reports language runtime operations as
+	// typed unsupported results; it never guesses a native command. This keeps
+	// every valid source tree routable without growing a language registry in
+	// adapters such as Mind.
+	return &resources.Agent{
+		Kind: resources.ServiceAgent, Publisher: "codefly.dev",
+		Name: "generic", Version: GenericPluginVersion,
+	}, nil
 }
 
 func skipDetectionDir(name string) bool {

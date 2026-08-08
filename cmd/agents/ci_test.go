@@ -16,6 +16,7 @@ import (
 	"github.com/codefly-dev/core/failures"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -108,6 +109,21 @@ func TestAgentConformanceGateRecordsAuditWithoutDuplicatingReleasePolicy(t *test
 	}
 	if !slices.Contains(arguments, "--all") || !slices.Contains(arguments, "--local-agents") {
 		t.Fatalf("conformance arguments = %v, want full gate against local agent", arguments)
+	}
+}
+
+func TestAgentAdvertisesCapabilityUsesInstalledAgentContract(t *testing.T) {
+	info := &agentv0.AgentInformation{Capabilities: []*agentv0.Capability{
+		{Type: agentv0.Capability_RUNTIME},
+	}}
+	if !agentAdvertisesCapability(info, agentv0.Capability_RUNTIME) {
+		t.Fatal("runtime capability was not recognized")
+	}
+	if agentAdvertisesCapability(info, agentv0.Capability_BUILDER) {
+		t.Fatal("absent Builder capability was invented")
+	}
+	if agentAdvertisesCapability(nil, agentv0.Capability_BUILDER) {
+		t.Fatal("nil advertisement reported Builder support")
 	}
 }
 

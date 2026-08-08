@@ -41,8 +41,16 @@ func summarizeTestResponse(resp *runtimev0.TestResponse) string {
 		summary += fmt.Sprintf(" (%d total)", total)
 	}
 	if resp != nil {
-		if r := resp.GetResult(); r != nil && r.GetMessage() != "" {
+		if failure := resp.GetStatus().GetFailure(); failure != nil {
+			detail := failure.GetCode().String()
+			if message := strings.TrimSpace(failure.GetMessage()); message != "" {
+				detail += ": " + message
+			}
+			summary += ": " + detail
+		} else if r := resp.GetResult(); r != nil && r.GetMessage() != "" {
 			summary += ": " + r.GetMessage()
+		} else if message := strings.TrimSpace(resp.GetStatus().GetMessage()); message != "" {
+			summary += ": " + message
 		}
 	}
 	return summary
