@@ -21,6 +21,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	"github.com/codefly-dev/core/failures"
 	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -33,6 +34,7 @@ import (
 const (
 	agentCIReportSchemaVersion = 1
 	agentCIReportFilename      = "report.json"
+	serviceAgentKind           = "codefly:service"
 
 	// conformanceModeGeneratedService scaffolds a brand-new service through
 	// Builder.Create before running the workspace gate. It is the default.
@@ -176,12 +178,17 @@ type agentCIState struct {
 	sourceHome   string
 	conformance  string
 	workspaceRaw []byte
+	// conformanceApplicable is derived from the installed agent's advertised
+	// capabilities. Generated-service conformance requires Builder; attach-source
+	// conformance does not. It defaults true until the built binary is inspected.
+	conformanceApplicable bool
 }
 
 func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIReport, error) {
 	started := time.Now().UTC()
 	state := &agentCIState{
-		started: started,
+		started:               started,
+		conformanceApplicable: true,
 		report: &civ0.AgentCIReport{
 			SchemaVersion: uint32(agentCIReportSchemaVersion),
 			Command:       "codefly agent ci",
@@ -261,6 +268,17 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 			}
 			return result.err
 		}
+		if state.manifest.Kind != serviceAgentKind {
+			return nil
+		}
+		info, err := loadBuiltAgentInformation(ctx, &state.manifest)
+		if err != nil {
+			return err
+		}
+		if conformanceMode(state.manifest) == conformanceModeGeneratedService && !agentAdvertisesCapability(info, agentv0.Capability_BUILDER) {
+			state.conformanceApplicable = false
+			state.report.Options.ConformanceEnabled = false
+		}
 		return nil
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
@@ -272,7 +290,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
-	if options.skipConformance {
+	if options.skipConformance || !state.conformanceApplicable {
 		state.skipStage("conformance")
 	} else if err := runStage("conformance", func() error {
 		workspaceReport, conformanceDir, err := runAgentConformance(ctx, state.temporary, state.agentHome, options.dir, state.manifest)
@@ -304,6 +322,41 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return finalizeAgentCI(state, err), err
 	}
 	return finalizeAgentCI(state, nil), nil
+}
+
+// loadBuiltAgentInformation validates the installed binary produced by the
+// build stage and returns its authoritative capability advertisement. This is
+// a real agent process/gRPC boundary, not manifest inference: an unreadable
+// embedded guide or malformed advertisement fails qualification before
+// conformance routing can make a false assumption.
+func loadBuiltAgentInformation(ctx context.Context, manifest *agentYAML) (*agentv0.AgentInformation, error) {
+	agent := &resources.Agent{
+		Kind:      resources.ServiceAgent,
+		Publisher: manifest.Publisher,
+		Name:      manifest.Name,
+		Version:   manifest.Version,
+	}
+	loaded, err := services.LoadAgent(ctx, agent, "agent-ci-capabilities:"+agent.Unique())
+	if err != nil {
+		return nil, fmt.Errorf("load built agent capability advertisement: %w", err)
+	}
+	info, err := loaded.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("read built agent capability advertisement: %w", err)
+	}
+	return info, nil
+}
+
+func agentAdvertisesCapability(info *agentv0.AgentInformation, capability agentv0.Capability_Type) bool {
+	if info == nil {
+		return false
+	}
+	for _, advertised := range info.GetCapabilities() {
+		if advertised.GetType() == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func (state *agentCIState) runStage(name string, action func() error) error {
@@ -424,7 +477,7 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 		}
 		return manifest, nil
 	}
-	if manifest.Kind != "codefly:service" {
+	if manifest.Kind != serviceAgentKind {
 		return agentYAML{}, fmt.Errorf("agent conformance currently requires kind codefly:service, got %s", manifest.Kind)
 	}
 	mode := conformanceMode(manifest)

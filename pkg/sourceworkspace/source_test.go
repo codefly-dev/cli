@@ -109,6 +109,35 @@ func TestSelectPluginUsesMarkerlessSourceEvidence(t *testing.T) {
 	}
 }
 
+func TestSelectPluginFallsBackToGenericWithoutInterpretingUnknownLanguages(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+	}{
+		{name: "empty source tree"},
+		{name: "unknown build manifest", file: "pom.xml"},
+		{name: "unknown project declaration", file: "Cart.csproj"},
+		{name: "unknown source extension", file: "main.zig"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if test.file != "" {
+				if err := os.WriteFile(filepath.Join(dir, test.file), []byte("source evidence\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plugin, err := SelectPlugin(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plugin.Publisher != "codefly.dev" || plugin.Name != "generic" || plugin.Version != GenericPluginVersion {
+				t.Fatalf("plugin = %+v, want pinned language-neutral fallback", plugin)
+			}
+		})
+	}
+}
+
 func TestPrepareWithAgentDoesNotRequireLanguageMarkers(t *testing.T) {
 	source := t.TempDir()
 	prepared, err := PrepareWithAgent(context.Background(), source, &resources.Agent{
