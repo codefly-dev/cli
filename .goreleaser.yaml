@@ -3,16 +3,74 @@ version: 2
 project_name: codefly
 
 builds:
-  - id: codefly
+  # ARCHITECTURE: Core's authoritative source inspection uses real
+  # tree-sitter grammars. CLI releases therefore require CGO and the
+  # platform compilers supplied by goreleaser/goreleaser-cross; disabling
+  # CGO would make the production Gateway impossible to ship.
+  - id: darwin-amd64
     main: ./cmd/codefly
     binary: codefly
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
+      - CC=o64-clang
+      - CXX=o64-clang++
     goos:
       - darwin
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.version={{ .Version }}
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.commit={{ .Commit }}
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.buildDate={{ .Date }}
+  - id: darwin-arm64
+    main: ./cmd/codefly
+    binary: codefly
+    env:
+      - CGO_ENABLED=1
+      - CC=oa64-clang
+      - CXX=oa64-clang++
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.version={{ .Version }}
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.commit={{ .Commit }}
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.buildDate={{ .Date }}
+  - id: linux-amd64
+    main: ./cmd/codefly
+    binary: codefly
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-linux-gnu-gcc
+      - CXX=x86_64-linux-gnu-g++
+    goos:
       - linux
     goarch:
       - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.version={{ .Version }}
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.commit={{ .Commit }}
+      - -X github.com/codefly-dev/cli/pkg/cliupdate.buildDate={{ .Date }}
+  - id: linux-arm64
+    main: ./cmd/codefly
+    binary: codefly
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+      - CXX=aarch64-linux-gnu-g++
+    goos:
+      - linux
+    goarch:
       - arm64
     flags:
       - -trimpath
@@ -30,7 +88,8 @@ notarize:
     # until after qualification and all cross-platform builds have succeeded.
     - enabled: '{{ and (not .IsSnapshot) (ne .Env.MACOS_SIGN_P12 "") (ne .Env.MACOS_SIGN_PASSWORD "") (ne .Env.MACOS_NOTARY_ISSUER_ID "") (ne .Env.MACOS_NOTARY_KEY_ID "") (ne .Env.MACOS_NOTARY_KEY "") }}'
       ids:
-        - codefly
+        - darwin-amd64
+        - darwin-arm64
       sign:
         certificate: "{{ .Env.MACOS_SIGN_P12 }}"
         password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
@@ -44,7 +103,10 @@ notarize:
 archives:
   - id: codefly
     ids:
-      - codefly
+      - darwin-amd64
+      - darwin-arm64
+      - linux-amd64
+      - linux-arm64
     formats:
       - tar.gz
     name_template: "codefly_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
