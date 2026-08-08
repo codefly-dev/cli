@@ -135,6 +135,11 @@ type Server struct {
 
 	serviceMu       sync.Mutex
 	serviceBehavior serviceExecution
+	// rootAgentServices isolates explicit formula routing from the source-derived
+	// root behavior. A markerless workspace may bind the generic agent first;
+	// that cache must never capture a later request carrying typed language
+	// evidence.
+	rootAgentServices map[string]serviceExecution
 	// codeUnitServices caches exact source-boundary behaviors separately from
 	// the legacy root service. Each entry owns its own plugin selection and
 	// working directory; heterogeneous repositories must never share the first
@@ -242,6 +247,7 @@ func NewServer(cfg Config) (*Server, error) {
 		tlsConfig:           tlsConfig,
 		host:                host,
 		ownsHost:            ownsHost,
+		rootAgentServices:   make(map[string]serviceExecution),
 		codeUnitServices:    make(map[string]serviceExecution),
 		preparedMutations:   make(map[string]*storedPreparedMutation),
 		terminals:           newTerminalManager(),
@@ -394,7 +400,7 @@ func (s *Server) executionServiceBehavior() (serviceExecution, error) {
 func (s *Server) executionServiceBehaviorWithAgent(agentOverride string) (serviceExecution, error) {
 	s.serviceMu.Lock()
 	defer s.serviceMu.Unlock()
-	if s.serviceBehavior != nil {
+	if agentOverride == "" && s.serviceBehavior != nil {
 		return s.serviceBehavior, nil
 	}
 	if s.host == nil {
@@ -414,6 +420,11 @@ func (s *Server) executionServiceBehaviorWithAgent(agentOverride string) (servic
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 	}
+	if agentOverride != "" && s.mindYAML == nil {
+		if service := s.rootAgentServices[agentName]; service != nil {
+			return service, nil
+		}
+	}
 	service, err := s.host.Service(engine.ServiceTarget{
 		Name:  name,
 		Root:  s.cfg.WorkDir,
@@ -422,7 +433,14 @@ func (s *Server) executionServiceBehaviorWithAgent(agentOverride string) (servic
 	if err != nil {
 		return nil, fmt.Errorf("bind gateway service: %w", err)
 	}
-	s.serviceBehavior = service
+	if agentOverride != "" && s.mindYAML == nil {
+		if s.rootAgentServices == nil {
+			s.rootAgentServices = make(map[string]serviceExecution)
+		}
+		s.rootAgentServices[agentName] = service
+	} else {
+		s.serviceBehavior = service
+	}
 	return service, nil
 }
 
@@ -1360,13 +1378,16 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	}
 	var service serviceExecution
 	if len(codeUnits) == 0 {
-		service, err = s.executionServiceBehavior()
-		if err != nil && s.mindYAML == nil {
+		agentOverride := ""
+		if s.mindYAML == nil {
 			if formula := runtimeReq.GetFormula(); formula != nil {
-				if agentName := engine.DetectFormulaAgent(formula.GetCommand()); agentName != "" {
-					service, err = s.executionServiceBehaviorWithAgent(agentName)
-				}
+				agentOverride = engine.DetectFormulaAgent(formula.GetCommand())
 			}
+		}
+		if agentOverride != "" {
+			service, err = s.executionServiceBehaviorWithAgent(agentOverride)
+		} else {
+			service, err = s.executionServiceBehavior()
 		}
 		if err != nil {
 			return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
