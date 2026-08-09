@@ -9,6 +9,7 @@ import (
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -54,6 +55,19 @@ func (s *Service) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) 
 	err := s.withSession(ctx, "code.Execute", codeRequestRetrySafe(request), func(session *AgentSession) error {
 		var err error
 		response, err = session.code.Execute(ctx, request)
+		return err
+	})
+	return response, err
+}
+
+// GetSemanticIndex invokes the production agent's Tooling boundary. Project
+// bytes and parser selection remain inside the agent; callers receive only the
+// shared body-free semantic contract.
+func (s *Service) GetSemanticIndex(ctx context.Context, request *toolingv0.GetSemanticIndexRequest) (*toolingv0.GetSemanticIndexResponse, error) {
+	var response *toolingv0.GetSemanticIndexResponse
+	err := s.withSession(ctx, "tooling.GetSemanticIndex", true, func(session *AgentSession) error {
+		var err error
+		response, err = session.tooling.GetSemanticIndex(ctx, request)
 		return err
 	})
 	return response, err

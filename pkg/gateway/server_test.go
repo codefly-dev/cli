@@ -32,6 +32,7 @@ import (
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	codefly "github.com/codefly-dev/sdk-go"
 	"google.golang.org/grpc"
@@ -62,10 +63,18 @@ type mockServiceExecution struct {
 	code    codev0.CodeClient
 	runtime runtimev0.RuntimeClient
 	agent   agentv0.AgentClient
+	tooling toolingv0.ToolingClient
 }
 
 func (m *mockServiceExecution) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
 	return m.code.Execute(ctx, request)
+}
+
+func (m *mockServiceExecution) GetSemanticIndex(ctx context.Context, request *toolingv0.GetSemanticIndexRequest) (*toolingv0.GetSemanticIndexResponse, error) {
+	if m.tooling == nil {
+		return nil, fmt.Errorf("GetSemanticIndex not configured")
+	}
+	return m.tooling.GetSemanticIndex(ctx, request)
 }
 
 func (m *mockServiceExecution) Build(ctx context.Context, request *runtimev0.BuildRequest) (*runtimev0.BuildResponse, error) {

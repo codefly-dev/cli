@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codefly-dev/cli/pkg/engine"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	selectioncontract "github.com/codefly-dev/core/runners/testselection"
@@ -418,6 +419,44 @@ func rebaseCodeUnitFile(unitPath, file string) string {
 		return file
 	}
 	return path.Join(unitPath, clean)
+}
+
+// rebaseCodeUnitSemanticIndex converts the agent-root-relative path contract
+// into the repository-relative Gateway contract without changing analyzer
+// facts or semantic identities.
+func rebaseCodeUnitSemanticIndex(unitPath string, index *basev0.SemanticIndex) *basev0.SemanticIndex {
+	if index == nil {
+		return nil
+	}
+	result, ok := proto.Clone(index).(*basev0.SemanticIndex)
+	if !ok {
+		return nil
+	}
+	for _, file := range result.GetFiles() {
+		file.Path = rebaseCodeUnitFile(unitPath, file.GetPath())
+	}
+	for _, symbol := range result.GetSymbols() {
+		rebaseSemanticLocation(unitPath, symbol.GetLocation())
+		for _, use := range symbol.GetCalls() {
+			rebaseSemanticLocation(unitPath, use.GetLocation())
+		}
+		for _, use := range symbol.GetReferences() {
+			rebaseSemanticLocation(unitPath, use.GetLocation())
+		}
+	}
+	for _, issue := range result.GetIssues() {
+		if strings.TrimSpace(issue.GetPath()) != "" {
+			issue.Path = rebaseCodeUnitFile(unitPath, issue.GetPath())
+		}
+	}
+	return result
+}
+
+func rebaseSemanticLocation(unitPath string, location *basev0.SemanticLocation) {
+	if location == nil || strings.TrimSpace(location.GetPath()) == "" {
+		return
+	}
+	location.Path = rebaseCodeUnitFile(unitPath, location.GetPath())
 }
 
 func aggregateCodeUnitTestResponses(request *runtimev0.TestRequest, results []codeUnitTestResult) *runtimev0.TestResponse {

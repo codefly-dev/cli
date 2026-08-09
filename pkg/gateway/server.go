@@ -45,6 +45,7 @@ import (
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
 	"github.com/codefly-dev/core/wool"
@@ -173,6 +174,7 @@ type Server struct {
 // Gateway adapter. engine.Service is the production implementation.
 type serviceExecution interface {
 	ExecuteCode(context.Context, *codev0.CodeRequest) (*codev0.CodeResponse, error)
+	GetSemanticIndex(context.Context, *toolingv0.GetSemanticIndexRequest) (*toolingv0.GetSemanticIndexResponse, error)
 	Build(context.Context, *runtimev0.BuildRequest) (*runtimev0.BuildResponse, error)
 	Test(context.Context, *runtimev0.TestRequest) (*runtimev0.TestResponse, error)
 	Lint(context.Context, *runtimev0.LintRequest) (*runtimev0.LintResponse, error)
@@ -1343,6 +1345,46 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 	return response, nil
 }
 
+// GetSemanticIndex binds one exact code-unit root and invokes the selected
+// production agent's Tooling service. The Gateway only rebases locations; it
+// never chooses a parser or interprets project syntax.
+func (s *Server) GetSemanticIndex(ctx context.Context, req *gatewayv1.GetSemanticIndexRequest) (*gatewayv1.GetSemanticIndexResponse, error) {
+	requestedService := ""
+	if req != nil {
+		requestedService = req.GetService()
+	}
+	if err := s.validateService(requestedService); err != nil {
+		return nil, err
+	}
+	if req == nil || req.GetCodeUnit() == nil {
+		return &gatewayv1.GetSemanticIndexResponse{Failure: failures.New(basev0.FailureCode_FAILURE_CODE_INVALID_ARGUMENT, "gateway.get-semantic-index", "code_unit is required")}, nil
+	}
+	targets, err := s.normalizeCodeUnitTargets([]*gatewayv1.CodeUnitTarget{req.GetCodeUnit()})
+	if err != nil {
+		return &gatewayv1.GetSemanticIndexResponse{CodeUnit: cloneCodeUnitTarget(req.GetCodeUnit()), Failure: failures.New(basev0.FailureCode_FAILURE_CODE_INVALID_ARGUMENT, "gateway.get-semantic-index", err.Error())}, nil
+	}
+	target := targets[0]
+	inspected := &gatewayv1.CodeUnitTarget{Id: target.id, Path: target.path}
+	service, err := s.serviceBehaviorForCodeUnit(target, "")
+	if err != nil {
+		return &gatewayv1.GetSemanticIndexResponse{CodeUnit: inspected, Failure: gatewaySemanticIndexFailure(err)}, nil
+	}
+	response, err := service.GetSemanticIndex(ctx, &toolingv0.GetSemanticIndexRequest{})
+	if err != nil {
+		return &gatewayv1.GetSemanticIndexResponse{CodeUnit: inspected, Failure: gatewaySemanticIndexFailure(err)}, nil
+	}
+	if response.GetIndex() == nil {
+		return &gatewayv1.GetSemanticIndexResponse{
+			CodeUnit: inspected,
+			Failure:  failures.Ensure(response.GetFailure(), basev0.FailureCode_FAILURE_CODE_INTERNAL, "gateway.get-semantic-index", "agent returned no semantic index"),
+		}, nil
+	}
+	return &gatewayv1.GetSemanticIndexResponse{
+		Index:   rebaseCodeUnitSemanticIndex(target.path, response.GetIndex()),
+		Failure: failures.Clone(response.GetFailure()), CodeUnit: inspected,
+	}, nil
+}
+
 func cloneCodeUnitTarget(target *gatewayv1.CodeUnitTarget) *gatewayv1.CodeUnitTarget {
 	if target == nil {
 		return nil
@@ -1355,6 +1397,13 @@ func gatewayProjectInfoFailure(err error) *basev0.Failure {
 		return failures.Clone(failure)
 	}
 	return failures.FromError("gateway.get-project-info", err)
+}
+
+func gatewaySemanticIndexFailure(err error) *basev0.Failure {
+	if failure, ok := failures.Extract(err); ok {
+		return failures.Clone(failure)
+	}
+	return failures.FromError("gateway.get-semantic-index", err)
 }
 
 // DiscoverCodeUnits serves Codefly's language-neutral structural inventory

@@ -5,9 +5,43 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestRebaseCodeUnitSemanticIndexPreservesFactsAndRebasesEveryPath(t *testing.T) {
+	original := &basev0.SemanticIndex{
+		State: basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_DEGRADED,
+		Files: []*basev0.SemanticFile{{Path: "src/main.go", ContentSha256: "abc"}},
+		Symbols: []*basev0.SemanticSymbol{{
+			QualifiedName: "demo.Main", Location: &basev0.SemanticLocation{Path: "src/main.go", StartLine: 3},
+			Calls:      []*basev0.SemanticUse{{Name: "Run", Location: &basev0.SemanticLocation{Path: "src/main.go", StartLine: 4}}},
+			References: []*basev0.SemanticUse{{Name: "Config", Location: &basev0.SemanticLocation{Path: "src/config.go", StartLine: 5}}},
+		}},
+		Issues: []*basev0.SemanticIssue{{Code: "parse_failed", Path: "src/broken.go"}, {Code: "unsupported_source"}},
+	}
+
+	rebased := rebaseCodeUnitSemanticIndex("services/api", original)
+	if got := rebased.GetFiles()[0].GetPath(); got != "services/api/src/main.go" {
+		t.Fatalf("file path = %q", got)
+	}
+	symbol := rebased.GetSymbols()[0]
+	if symbol.GetLocation().GetPath() != "services/api/src/main.go" ||
+		symbol.GetCalls()[0].GetLocation().GetPath() != "services/api/src/main.go" ||
+		symbol.GetReferences()[0].GetLocation().GetPath() != "services/api/src/config.go" {
+		t.Fatalf("semantic locations were not rebased: %#v", symbol)
+	}
+	if rebased.GetIssues()[0].GetPath() != "services/api/src/broken.go" || rebased.GetIssues()[1].GetPath() != "" {
+		t.Fatalf("issue paths = %#v", rebased.GetIssues())
+	}
+	if original.GetFiles()[0].GetPath() != "src/main.go" || original.GetSymbols()[0].GetLocation().GetPath() != "src/main.go" {
+		t.Fatal("rebasing mutated the agent response")
+	}
+	if rebased.GetState() != original.GetState() || rebased.GetFiles()[0].GetContentSha256() != "abc" {
+		t.Fatal("rebasing changed semantic facts")
+	}
+}
 
 // TestPackageSelectionForwardsPluginPackageIdentityUnchanged pins the contract
 // that a package selection routed to a unit is forwarded verbatim.

@@ -11,7 +11,7 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.2.75
+	github.com/codefly-dev/core v0.2.80
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.0
 	github.com/codefly-dev/sdk-go v0.1.58
@@ -166,6 +166,7 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/scagogogo/python-requirements-parser v0.0.0-20250717025652-6ca77234c827 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/shirou/gopsutil/v3 v3.24.5 // indirect
 	github.com/shoenig/go-m1cpu v0.2.1 // indirect
