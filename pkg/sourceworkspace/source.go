@@ -16,15 +16,15 @@ import (
 )
 
 const (
-	GenericGoPluginVersion     = "0.0.26"
-	GenericPythonPluginVersion = "0.0.30"
-	GenericPluginVersion       = "0.0.20"
+	GenericGoPluginVersion     = "0.0.27"
+	GenericPythonPluginVersion = "0.0.31"
+	GenericPluginVersion       = "0.0.21"
 	// NodePluginVersion is published under the historical nextjs agent name,
 	// but owns generic Node.js/TypeScript validation as well as Next.js-specific
 	// lifecycle behavior selected from the package manifest.
-	NodePluginVersion  = "0.0.133"
-	RustPluginVersion  = "0.0.22"
-	SwiftPluginVersion = "0.0.14"
+	NodePluginVersion  = "0.0.134"
+	RustPluginVersion  = "0.0.24"
+	SwiftPluginVersion = "0.0.16"
 	pythonSetupMarker  = "setup.py"
 )
 
