@@ -53,6 +53,8 @@ type AgentSession struct {
 	tooling    toolingv0.ToolingClient
 	builderMu  sync.Mutex
 	builderOK  bool
+	runtimeMu  sync.Mutex
+	runtimeOK  bool
 	closeOnce  sync.Once
 }
 
@@ -166,10 +168,6 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 		runtime:    runtimev0.NewRuntimeClient(connection.GRPCConn()),
 		tooling:    toolingv0.NewToolingClient(connection.GRPCConn()),
 	}
-	if err := initializeRuntime(loadCtx, session); err != nil {
-		connection.Close()
-		return nil, &agentInitializationError{err: fmt.Errorf("initialize agent %s runtime: %w", agentName, err)}
-	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -207,6 +205,30 @@ func initializeBuilder(ctx context.Context, session *AgentSession) error {
 		return fmt.Errorf("builder Load did not become ready: %s", response.GetState().GetMessage())
 	}
 	session.builderOK = true
+	return nil
+}
+
+// ensureRuntime lazily runs Runtime Load+Init on the already-running service
+// agent. Read-only Code/Tooling traffic never pays this lifecycle cost; the
+// first Build/Test/Lint/Stop initializes it and later calls reuse it. Failures
+// are returned as *agentInitializationError so Test can surface the typed
+// env-blocked response, and are not cached so a later call can retry once the
+// environment is ready.
+func ensureRuntime(ctx context.Context, session *AgentSession) error {
+	if session == nil || session.runtime == nil || session.descriptor == nil {
+		return fmt.Errorf("runtime client is unavailable")
+	}
+	session.runtimeMu.Lock()
+	defer session.runtimeMu.Unlock()
+	if session.runtimeOK {
+		return nil
+	}
+	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	if err := initializeRuntime(initCtx, session); err != nil {
+		return &agentInitializationError{err: fmt.Errorf("initialize agent %s runtime: %w", session.agent.Name, err)}
+	}
+	session.runtimeOK = true
 	return nil
 }
 

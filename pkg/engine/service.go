@@ -77,6 +77,9 @@ func (s *Service) GetSemanticIndex(ctx context.Context, request *toolingv0.GetSe
 func (s *Service) Build(ctx context.Context, request *runtimev0.BuildRequest) (*runtimev0.BuildResponse, error) {
 	var response *runtimev0.BuildResponse
 	err := s.withSession(ctx, "runtime.Build", true, func(session *AgentSession) error {
+		if err := ensureRuntime(ctx, session); err != nil {
+			return err
+		}
 		var err error
 		response, err = session.runtime.Build(ctx, request)
 		return err
@@ -88,6 +91,9 @@ func (s *Service) Build(ctx context.Context, request *runtimev0.BuildRequest) (*
 func (s *Service) Test(ctx context.Context, request *runtimev0.TestRequest) (*runtimev0.TestResponse, error) {
 	var response *runtimev0.TestResponse
 	err := s.withSession(ctx, "runtime.Test", true, func(session *AgentSession) error {
+		if err := ensureRuntime(ctx, session); err != nil {
+			return err
+		}
 		var err error
 		response, err = session.runtime.Test(ctx, request)
 		return err
@@ -134,6 +140,9 @@ func (s *Service) Configure(ctx context.Context, request *builderv0.ConfigureReq
 func (s *Service) Lint(ctx context.Context, request *runtimev0.LintRequest) (*runtimev0.LintResponse, error) {
 	var response *runtimev0.LintResponse
 	err := s.withSession(ctx, "runtime.Lint", true, func(session *AgentSession) error {
+		if err := ensureRuntime(ctx, session); err != nil {
+			return err
+		}
 		var err error
 		response, err = session.runtime.Lint(ctx, request)
 		return err
@@ -168,6 +177,9 @@ func (s *Service) RunCommand(ctx context.Context, request *agentv0.RunPluginComm
 func (s *Service) Stop(ctx context.Context, request *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
 	var response *runtimev0.StopResponse
 	err := s.withSession(ctx, "runtime.Stop", true, func(session *AgentSession) error {
+		if err := ensureRuntime(ctx, session); err != nil {
+			return err
+		}
 		var err error
 		response, err = session.runtime.Stop(ctx, request)
 		return err
