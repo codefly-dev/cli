@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 )
 
@@ -40,26 +41,30 @@ class Ads {}
 	t.Cleanup(func() { _ = server.Close() })
 
 	tests := []struct {
-		name         string
-		target       *gatewayv1.CodeUnitTarget
-		language     string
-		module       string
-		version      string
-		dependencies []string
-		sourcePath   string
-		imports      []string
+		name             string
+		target           *gatewayv1.CodeUnitTarget
+		language         string
+		module           string
+		version          string
+		dependencies     []string
+		sourcePath       string
+		imports          []string
+		semanticLanguage string
+		semanticSymbol   string
 	}{
 		{
 			name: "jvm", target: &gatewayv1.CodeUnitTarget{Id: "shop/ads", Path: "src/ads"},
 			language: "jvm", module: "example.ads", version: "21",
 			dependencies: []string{"io.grpc:grpc-protobuf@1.82.1"},
 			sourcePath:   "src/ads/src/main/java/example/Ads.java", imports: []string{"io.grpc.Server"},
+			semanticLanguage: "java", semanticSymbol: "Ads",
 		},
 		{
 			name: "dotnet", target: &gatewayv1.CodeUnitTarget{Id: "shop/cart", Path: "src/cart"},
 			language: "dotnet", module: "cartservice", version: "net10.0",
 			dependencies: []string{"Grpc.AspNetCore@2.80.0"},
 			sourcePath:   "src/cart/src/Program.cs", imports: []string{"Grpc.Core"},
+			semanticLanguage: "csharp", semanticSymbol: "Program",
 		},
 	}
 	for _, test := range tests {
@@ -89,6 +94,37 @@ class Ads {}
 			}
 			if _, ok := response.GetFileHashes()[test.sourcePath]; !ok {
 				t.Fatalf("repository-relative source hash %q missing from %+v", test.sourcePath, response.GetFileHashes())
+			}
+
+			semantic, err := server.GetSemanticIndex(t.Context(), &gatewayv1.GetSemanticIndexRequest{CodeUnit: test.target})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if semantic.GetFailure() != nil {
+				t.Fatalf("semantic-index failure = %+v", semantic.GetFailure())
+			}
+			if !reflect.DeepEqual(semantic.GetCodeUnit(), test.target) {
+				t.Fatalf("semantic code unit = %+v, want %+v", semantic.GetCodeUnit(), test.target)
+			}
+			index := semantic.GetIndex()
+			if index.GetState() != basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_COMPLETE ||
+				!reflect.DeepEqual(index.GetLanguages(), []string{test.semanticLanguage}) {
+				t.Fatalf("semantic coverage = state %s languages %v issues %+v", index.GetState(), index.GetLanguages(), index.GetIssues())
+			}
+			if index.GetAnalyzer() == "" || index.GetAnalyzerVersion() == "" {
+				t.Fatalf("semantic analyzer provenance is incomplete: %+v", index)
+			}
+			if len(index.GetFiles()) != 1 || index.GetFiles()[0].GetPath() != test.sourcePath {
+				t.Fatalf("semantic files = %+v, want repository-relative %q", index.GetFiles(), test.sourcePath)
+			}
+			foundSymbol := false
+			for _, symbol := range index.GetSymbols() {
+				if symbol.GetName() == test.semanticSymbol && symbol.GetLocation().GetPath() == test.sourcePath {
+					foundSymbol = true
+				}
+			}
+			if !foundSymbol {
+				t.Fatalf("semantic symbols = %+v, want %q in %q", index.GetSymbols(), test.semanticSymbol, test.sourcePath)
 			}
 		})
 	}
