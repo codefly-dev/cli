@@ -563,9 +563,9 @@ func prepareRepositoryRevisionAt(
 			return preparedRepositoryRevision{}, fmt.Errorf("clone repository: %w", err)
 		}
 	}
-	configuredURL, err := gitWithEnvironment(ctx, cachePath, environment, "remote", "get-url", "origin")
+	configuredURL, err := ensureRepositoryOrigin(ctx, cachePath, environment, repositoryURL)
 	if err != nil {
-		return preparedRepositoryRevision{}, fmt.Errorf("resolve repository origin: %w", err)
+		return preparedRepositoryRevision{}, err
 	}
 	if configuredURL != repositoryURL {
 		return preparedRepositoryRevision{}, fmt.Errorf("repository cache origin %q does not match requested source", configuredURL)
@@ -622,6 +622,34 @@ func prepareRepositoryRevisionAt(
 		cacheDirectory: cacheDirectory, cachePath: cachePath, revision: resolved,
 		defaultBranch: defaultBranch, environment: environment,
 	}, nil
+}
+
+// ensureRepositoryOrigin repairs only the absent-origin case in a Codefly-owned
+// cache projection. The request URL is authoritative when no origin exists;
+// an existing origin is returned unchanged so the caller can reject a source
+// mismatch instead of silently retargeting project state.
+func ensureRepositoryOrigin(ctx context.Context, cachePath string, environment []string, repositoryURL string) (string, error) {
+	remotes, err := gitWithEnvironment(ctx, cachePath, environment, "remote")
+	if err != nil {
+		return "", fmt.Errorf("list repository remotes: %w", err)
+	}
+	hasOrigin := false
+	for _, remote := range strings.Split(remotes, "\n") {
+		if strings.TrimSpace(remote) == "origin" {
+			hasOrigin = true
+			break
+		}
+	}
+	if !hasOrigin {
+		if _, addErr := gitWithEnvironment(ctx, cachePath, environment, "remote", "add", "origin", repositoryURL); addErr != nil {
+			return "", fmt.Errorf("repair missing repository origin: %w", addErr)
+		}
+	}
+	configuredURL, err := gitWithEnvironment(ctx, cachePath, environment, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("resolve repository origin: %w", err)
+	}
+	return configuredURL, nil
 }
 
 func removeIncompleteRepositoryCache(cachePath string) error {

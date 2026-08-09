@@ -456,6 +456,55 @@ func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
 	}
 }
 
+func TestPrepareRepositoryCheckoutRepairsMissingOrigin(t *testing.T) {
+	source := initGitRepo(t)
+	serverRoot := t.TempDir()
+	bare := filepath.Join(serverRoot, "repository.git")
+	runGit(t, serverRoot, "clone", "--bare", "--", source, bare)
+	revision, err := git(t.Context(), source, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	request := PrepareRepositoryCheckoutRequest{
+		Dir: root, RepositoryURL: "file://" + bare, CacheDirectory: "cache/repository",
+		Revision: revision, FetchIdentity: "missing-origin-repair", RemoteAccess: RepositoryRemoteAccessLocalFile,
+	}
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(root, request.CacheDirectory)
+	runGit(t, cachePath, "remote", "remove", "origin")
+	junk := filepath.Join(cachePath, "generated.tmp")
+	if err := os.WriteFile(junk, []byte("remove me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := New().PrepareRepositoryCheckout(t.Context(), request)
+	if err != nil || repaired.Revision != revision {
+		t.Fatalf("repaired checkout = %+v, want revision %s (error = %v)", repaired, revision, err)
+	}
+	configuredURL, err := git(t.Context(), cachePath, "config", "--get", "remote.origin.url")
+	if err != nil {
+		t.Fatalf("read repaired origin: %v", err)
+	}
+	if configuredURL != request.RepositoryURL {
+		t.Fatalf("repaired origin = %q, want %q", configuredURL, request.RepositoryURL)
+	}
+	if _, err := os.Stat(junk); !os.IsNotExist(err) {
+		t.Fatalf("repaired checkout retained generated file (stat error = %v)", err)
+	}
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err != nil {
+		t.Fatalf("retry repaired checkout: %v", err)
+	}
+
+	runGit(t, cachePath, "remote", "set-url", "origin", "file://"+filepath.Join(serverRoot, "different.git"))
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err == nil || !strings.Contains(err.Error(), "does not match requested source") {
+		t.Fatalf("mismatched origin error = %v, want source mismatch", err)
+	}
+}
+
 func writeCommit(t *testing.T, plane Plane, ctx context.Context, dir, name, content, message string) GitCommit {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
