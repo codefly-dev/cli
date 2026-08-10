@@ -296,6 +296,11 @@ func TestCodeRetryOnlyReplaysReadOnlyOperations(t *testing.T) {
 	}) {
 		t.Fatal("ReadFile should be safe to retry")
 	}
+	if !codeRequestRetrySafe(&codev0.CodeRequest{
+		Operation: &codev0.CodeRequest_GetSourceManifest{GetSourceManifest: &codev0.GetSourceManifestRequest{}},
+	}) {
+		t.Fatal("GetSourceManifest should be safe to retry")
+	}
 	if codeRequestRetrySafe(&codev0.CodeRequest{
 		Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{Path: "README.md"}},
 	}) {
