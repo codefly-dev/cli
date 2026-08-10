@@ -141,6 +141,7 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 	var fixActions []string
 	var after []byte
 	var previewBeforeHash, previewAfterHash string
+	var previewBeforeSize, previewAfterSize uint64
 	if edit != nil {
 		path, err = cleanGatewayPath(edit.GetFile())
 		if err != nil || path == "" {
@@ -168,6 +169,7 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 		after = []byte(preview.GetContent())
 		strategy, fixActions = preview.GetStrategy(), append([]string(nil), preview.GetFixActions()...)
 		previewBeforeHash, previewAfterHash = preview.GetBeforeSha256(), preview.GetAfterSha256()
+		previewBeforeSize, previewAfterSize = preview.GetBeforeSizeBytes(), preview.GetAfterSizeBytes()
 	} else {
 		path, err = cleanGatewayPath(symbolPatch.GetFile())
 		if err != nil || path == "" {
@@ -203,6 +205,7 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 		after = []byte(preview.GetContent())
 		strategy, fixActions = preview.GetStrategy(), append([]string(nil), preview.GetFixActions()...)
 		previewBeforeHash, previewAfterHash = preview.GetBeforeSha256(), preview.GetAfterSha256()
+		previewBeforeSize, previewAfterSize = preview.GetBeforeSizeBytes(), preview.GetAfterSizeBytes()
 	}
 	current, err := s.fileOps().ReadFile(ctx, path)
 	if err != nil {
@@ -210,8 +213,8 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 	}
 	beforeHash := contentSHA256(current)
 	afterHash := contentSHA256(after)
-	if previewBeforeHash != beforeHash || previewAfterHash != afterHash {
-		return prepareFailure("language agent preview hashes do not match authoritative project bytes"), nil
+	if previewBeforeHash != beforeHash || previewAfterHash != afterHash || previewBeforeSize != uint64(len(current)) || previewAfterSize != uint64(len(after)) {
+		return prepareFailure("language agent preview identities do not match authoritative project bytes"), nil
 	}
 	prepared := &gatewayv1.PreparedMutation{
 		SchemaVersion:    preparedMutationSchemaVersion,
@@ -223,6 +226,7 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 		Files: []*gatewayv1.PreparedFileMutation{{
 			Path: path, Operation: gatewayv1.PreparedFileOperation_PREPARED_FILE_OPERATION_MODIFY,
 			BeforeSha256: beforeHash, AfterSha256: afterHash,
+			BeforeSizeBytes: uint64(len(current)), AfterSizeBytes: uint64(len(after)),
 			Strategy: strategy, FixActions: fixActions, SymbolId: symbolID,
 		}},
 		PreparedAt: timestamppb.Now(), ExpiresAt: timestamppb.New(time.Now().UTC().Add(preparedMutationLifetime)),
@@ -281,7 +285,7 @@ func (s *Server) ApplyPreparedMutation(ctx context.Context, req *gatewayv1.Apply
 		if err != nil {
 			return applyPreparedFailure(fmt.Sprintf("read prepared target %q: %v", file.GetPath(), err)), nil
 		}
-		if contentSHA256(current) != file.GetBeforeSha256() {
+		if contentSHA256(current) != file.GetBeforeSha256() || uint64(len(current)) != file.GetBeforeSizeBytes() {
 			return applyPreparedFailure(fmt.Sprintf("prepared target %q drifted after preparation", file.GetPath())), nil
 		}
 	}
@@ -296,7 +300,7 @@ func (s *Server) ApplyPreparedMutation(ctx context.Context, req *gatewayv1.Apply
 	}
 	for _, file := range prepared.GetFiles() {
 		after, ok := afterByPath[file.GetPath()]
-		if !ok || contentSHA256(after) != file.GetAfterSha256() {
+		if !ok || contentSHA256(after) != file.GetAfterSha256() || uint64(len(after)) != file.GetAfterSizeBytes() {
 			return applyPreparedFailure(fmt.Sprintf("prepared bytes for %q are unavailable or corrupted", file.GetPath())), nil
 		}
 		response, err := s.proxyExecute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{
@@ -314,6 +318,7 @@ func (s *Server) ApplyPreparedMutation(ctx context.Context, req *gatewayv1.Apply
 		applied = append(applied, &gatewayv1.AppliedFileMutation{
 			Path: file.GetPath(), Operation: file.GetOperation(),
 			BeforeSha256: file.GetBeforeSha256(), AfterSha256: file.GetAfterSha256(),
+			BeforeSizeBytes: file.GetBeforeSizeBytes(), AfterSizeBytes: file.GetAfterSizeBytes(),
 		})
 	}
 	s.deletePreparedMutation(prepared.GetPreparationId(), prepared.GetMutationDigest())
@@ -348,8 +353,8 @@ func (s *Server) storePreparedMutation(prepared *gatewayv1.PreparedMutation, aft
 	storedByteCount := 0
 	for _, file := range prepared.GetFiles() {
 		content, ok := afterByPath[file.GetPath()]
-		if !ok || contentSHA256(content) != file.GetAfterSha256() {
-			return fmt.Errorf("prepared bytes for %q do not match after_sha256", file.GetPath())
+		if !ok || contentSHA256(content) != file.GetAfterSha256() || uint64(len(content)) != file.GetAfterSizeBytes() {
+			return fmt.Errorf("prepared bytes for %q do not match the after identity", file.GetPath())
 		}
 		if len(content) > maxPreparedMutationBytes || storedByteCount > maxPreparedMutationBytes-len(content) {
 			return fmt.Errorf("prepared mutation exceeds the %d-byte retention limit", maxPreparedMutationBytes)

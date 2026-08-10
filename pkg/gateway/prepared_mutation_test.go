@@ -42,6 +42,10 @@ func TestPreparedMutationRequiresPinnedAuthorityAndAppliesSignedPermitOnce(t *te
 	if prepared.GetFiles()[0].ProtoReflect().Descriptor().Fields().ByName("after_content") != nil {
 		t.Fatal("prepared mutation RPC exposes project bytes")
 	}
+	fileIdentity := prepared.GetFiles()[0]
+	if fileIdentity.GetBeforeSizeBytes() != uint64(len("package service\n\nfunc Value() int { return 1 }\n")) || fileIdentity.GetAfterSizeBytes() != uint64(len("package service\n\nfunc Value() int { return 2 }\n")) {
+		t.Fatalf("prepared mutation sizes = before:%d after:%d", fileIdentity.GetBeforeSizeBytes(), fileIdentity.GetAfterSizeBytes())
+	}
 	if prepared.GetExpiresAt() == nil || !prepared.GetExpiresAt().AsTime().After(time.Now().UTC()) {
 		t.Fatalf("prepared mutation has no future expiry: %v", prepared.GetExpiresAt())
 	}
@@ -126,6 +130,9 @@ func TestPreparedSymbolPatchRetainsBytesAndRequiresExactSymbolFence(t *testing.T
 	prepared := preparedResponse.GetPrepared()
 	if len(prepared.GetFiles()) != 1 || prepared.GetFiles()[0].GetSymbolId() != "symbol-service-value" {
 		t.Fatalf("prepared symbol resource = %+v", prepared.GetFiles())
+	}
+	if prepared.GetFiles()[0].GetBeforeSizeBytes() != uint64(len(before)) || prepared.GetFiles()[0].GetAfterSizeBytes() != uint64(len("package service\n\nfunc Value() int { return 2 }\n")) {
+		t.Fatalf("prepared symbol sizes = before:%d after:%d", prepared.GetFiles()[0].GetBeforeSizeBytes(), prepared.GetFiles()[0].GetAfterSizeBytes())
 	}
 	unchanged, err := os.ReadFile(path)
 	if err != nil || string(unchanged) != before {
@@ -256,6 +263,7 @@ func TestPreparedMutationRetentionRejectsOversizedResults(t *testing.T) {
 		Files: []*gatewayv1.PreparedFileMutation{{
 			Path: "main.go", Operation: gatewayv1.PreparedFileOperation_PREPARED_FILE_OPERATION_MODIFY,
 			BeforeSha256: contentSHA256([]byte("before")), AfterSha256: contentSHA256(after),
+			BeforeSizeBytes: uint64(len("before")), AfterSizeBytes: uint64(len(after)),
 		}},
 		PreparedAt: timestamppb.New(now), ExpiresAt: timestamppb.New(now.Add(preparedMutationLifetime)),
 	}
