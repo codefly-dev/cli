@@ -6,15 +6,16 @@ import (
 	"testing"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 )
 
 // TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization exercises the real
-// production agent against malformed source. GetProjectInfo/GetSemanticIndex
-// must recover typed evidence without ever running Runtime Load/Init, and the
-// first runtime call must initialize it lazily.
+// production agent against malformed source. GetProjectInfo/GetSemanticIndex and
+// the agent-level command surface must run without ever triggering Runtime
+// Load/Init, and the first runtime call must initialize it lazily.
 func TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization(t *testing.T) {
 	root := t.TempDir()
 	writeSourceFile(t, root, "pyproject.toml", "[project]\nname = \"probe\"\nversion = \"0.0.0\"\n")
@@ -64,8 +65,17 @@ func TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization(t *testing.T) {
 		t.Fatalf("semantic recovery should report the parse failure, got %+v", index.GetIssues())
 	}
 
-	// The single decoupling invariant: read-only inspection started the agent
-	// but never ran Runtime Load/Init.
+	// Agent-level command discovery and execution are not part of the runtime
+	// lifecycle either; they must succeed against the started agent alone.
+	if _, err := service.ListCommands(ctx, &agentv0.ListCommandsRequest{}); err != nil {
+		t.Fatalf("ListCommands transport error: %v", err)
+	}
+	if _, err := service.RunCommand(ctx, &agentv0.RunPluginCommandRequest{Command: "bash", Args: []string{"echo", "ok"}}); err != nil {
+		t.Fatalf("RunCommand transport error: %v", err)
+	}
+
+	// The single decoupling invariant: read-only inspection and agent-level
+	// commands started the agent but never ran Runtime Load/Init.
 	session, err := service.supervisor.acquire(ctx, service.target)
 	if err != nil {
 		t.Fatalf("acquire session: %v", err)

@@ -288,6 +288,24 @@ func TestTransientAgentErrorsDoNotReplayInternalFailures(t *testing.T) {
 	if isTransientAgentError(status.Error(codes.Internal, "operation failed")) {
 		t.Fatal("Internal must not replay a potentially mutating operation")
 	}
+	// A runtime-initialization failure has its own typed handling and must never
+	// be transport-retried, even when its wrapped cause is Unavailable — a
+	// respawn would only repeat the lifecycle failure.
+	initErr := &agentInitializationError{err: fmt.Errorf("runtime Load: %w", status.Error(codes.Unavailable, "connection lost"))}
+	if isTransientAgentError(initErr) {
+		t.Fatal("runtime-initialization failures must not be transport-retried")
+	}
+}
+
+func TestEnsureRuntimeGuardsIncompleteSessions(t *testing.T) {
+	if err := ensureRuntime(t.Context(), nil); err == nil {
+		t.Fatal("ensureRuntime must reject a nil session")
+	}
+	// A session missing any field ensureRuntime dereferences (client, descriptor,
+	// agent) must fail cleanly rather than panic.
+	if err := ensureRuntime(t.Context(), &AgentSession{}); err == nil {
+		t.Fatal("ensureRuntime must reject a session without its runtime client")
+	}
 }
 
 func TestCodeRetryOnlyReplaysReadOnlyOperations(t *testing.T) {

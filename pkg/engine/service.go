@@ -45,8 +45,16 @@ func isTransientAgentError(err error) bool {
 	if err == nil {
 		return false
 	}
-	code := status.Code(err)
-	return code == codes.Unavailable
+	// Runtime-initialization failures carry their own typed handling (Test's
+	// env-blocked response) and are never transport-retried: evicting and
+	// respawning the agent would only repeat a lifecycle failure rather than
+	// recover a dropped connection. The wrapped cause can itself be Unavailable,
+	// so this exclusion must precede the code check.
+	var initializationError *agentInitializationError
+	if errors.As(err, &initializationError) {
+		return false
+	}
+	return status.Code(err) == codes.Unavailable
 }
 
 // ExecuteCode executes a typed Code leaf operation.
@@ -150,7 +158,10 @@ func (s *Service) Lint(ctx context.Context, request *runtimev0.LintRequest) (*ru
 	return response, err
 }
 
-// ListCommands returns commands advertised by the service agent.
+// ListCommands returns commands advertised by the service agent. Command
+// discovery is agent-level and intentionally skips the runtime lifecycle: the
+// registry is populated at agent startup, not by Runtime.Load, and callers such
+// as the gateway's ListAllCommands rely on it staying lazy.
 func (s *Service) ListCommands(ctx context.Context, request *agentv0.ListCommandsRequest) (*agentv0.ListCommandsResponse, error) {
 	var response *agentv0.ListCommandsResponse
 	err := s.withSession(ctx, "agent.ListCommands", true, func(session *AgentSession) error {
@@ -161,7 +172,10 @@ func (s *Service) ListCommands(ctx context.Context, request *agentv0.ListCommand
 	return response, err
 }
 
-// RunCommand invokes a command advertised by the service agent.
+// RunCommand invokes a command advertised by the service agent. Plugin commands
+// execute against the service directory, not the runtime environment, so they
+// intentionally skip the runtime lifecycle rather than coupling command
+// execution to toolchain readiness.
 func (s *Service) RunCommand(ctx context.Context, request *agentv0.RunPluginCommandRequest) (*agentv0.RunPluginCommandResponse, error) {
 	var response *agentv0.RunPluginCommandResponse
 	err := s.withSession(ctx, "agent.RunPluginCommand", false, func(session *AgentSession) error {

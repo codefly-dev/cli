@@ -215,7 +215,7 @@ func initializeBuilder(ctx context.Context, session *AgentSession) error {
 // env-blocked response, and are not cached so a later call can retry once the
 // environment is ready.
 func ensureRuntime(ctx context.Context, session *AgentSession) error {
-	if session == nil || session.runtime == nil || session.descriptor == nil {
+	if session == nil || session.runtime == nil || session.descriptor == nil || session.agent == nil {
 		return fmt.Errorf("runtime client is unavailable")
 	}
 	session.runtimeMu.Lock()
