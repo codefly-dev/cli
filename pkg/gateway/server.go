@@ -954,8 +954,8 @@ func (s *Server) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest)
 		return &gatewayv1.ApplyEditResponse{Success: false, Error: err.Error()}, nil
 	}
 	if req.GetDryRun() {
-		if err := validateOptionalExecutionContext(ctx); err != nil {
-			return nil, err
+		if contextErr := validateOptionalExecutionContext(ctx); contextErr != nil {
+			return nil, contextErr
 		}
 	} else {
 		operationInputSHA256, digestErr := deterministicProtoSHA256(&codev0.ApplyEditRequest{
