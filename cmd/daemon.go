@@ -12,7 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/daemon"
 	"github.com/codefly-dev/cli/pkg/gateway"
-	runnersbase "github.com/codefly-dev/core/runners/base"
+	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/spf13/cobra"
 )
 
@@ -356,7 +356,7 @@ Use --kill-orphans to clean up orphaned agent processes.`,
 			// orphan/zombie state this command exists to clean up.
 			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 			defer cancel()
-			if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
+			if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
 				return fmt.Errorf("cannot reap orphaned process groups: %w", err)
 			}
 			fmt.Println("Reaped orphaned agent process groups (live runs left untouched).")

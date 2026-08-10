@@ -53,6 +53,7 @@ func TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners(t *testing.T) 
 			time.Sleep(time.Second)
 		}
 	}
+	t.Setenv("HOME", t.TempDir())
 
 	owner := exec.Command(os.Args[0], "-test.run=^TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners$")
 	owner.Env = append(os.Environ(), workspaceHostOrphanHelper+"=owner")
