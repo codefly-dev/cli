@@ -31,8 +31,10 @@ func (p *planeImpl) gitDir(ctx context.Context, dir string) (string, error) {
 	return ws.Dir(), nil
 }
 
-// git runs a git subcommand in dir and returns trimmed stdout (stderr folded in
-// on failure for a useful error).
+// git runs a git subcommand in dir and removes only Git's trailing line ending
+// from stdout (stderr is folded in on failure for a useful error). Leading
+// whitespace is protocol data for commands such as `status --porcelain=v1`:
+// trimming it shifts the XY columns and corrupts the first changed path.
 func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return gitWithEnvironment(ctx, dir, nil, args...)
 }
@@ -53,7 +55,7 @@ func gitWithEnvironment(ctx context.Context, dir string, environment []string, a
 		}
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
 	}
-	return strings.TrimSpace(out.String()), nil
+	return strings.TrimRight(out.String(), "\r\n"), nil
 }
 
 // GitStatus reports branch, dirty state, changed files, and ahead/behind vs the
