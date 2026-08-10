@@ -244,6 +244,7 @@ func editingMock(t *testing.T, dir string) *mockCodeClient {
 		return &codev0.ApplyEditResponse{
 			Success: true, Content: content, Strategy: "exact", Changed: content != string(original), Wrote: !in.GetDryRun(),
 			BeforeSha256: hex.EncodeToString(beforeDigest[:]), AfterSha256: hex.EncodeToString(afterDigest[:]),
+			BeforeSizeBytes: uint64(len(original)), AfterSizeBytes: uint64(len(content)),
 		}, nil
 	}}
 }
@@ -615,6 +616,7 @@ func TestFix(t *testing.T) {
 				Content:      "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"hello\") }",
 				Actions:      []string{"goimports", "gofmt"},
 				BeforeSha256: "before", AfterSha256: "after",
+				BeforeSizeBytes: 12, AfterSizeBytes: 13,
 			}, nil
 		},
 	}
@@ -634,7 +636,7 @@ func TestFix(t *testing.T) {
 	if resp.Actions[0] != "goimports" {
 		t.Errorf("expected first action 'goimports', got %s", resp.Actions[0])
 	}
-	if !resp.GetChanged() || resp.GetWrote() || resp.GetBeforeSha256() != "before" || resp.GetAfterSha256() != "after" {
+	if !resp.GetChanged() || resp.GetWrote() || resp.GetBeforeSha256() != "before" || resp.GetAfterSha256() != "after" || resp.GetBeforeSizeBytes() != 12 || resp.GetAfterSizeBytes() != 13 {
 		t.Fatalf("gateway dropped fix evidence: %+v", resp)
 	}
 }
@@ -656,6 +658,9 @@ func TestApplyEdit(t *testing.T) {
 	}
 	if resp.Strategy != "exact" {
 		t.Errorf("expected strategy 'exact', got %s", resp.Strategy)
+	}
+	if resp.GetBeforeSizeBytes() != uint64(len("package main\n\nold code\n")) || resp.GetAfterSizeBytes() != uint64(len("package main\n\nnew code\n")) {
+		t.Fatalf("gateway dropped edit sizes: %+v", resp)
 	}
 	content, err := os.ReadFile(filepath.Join(dir, "main.go"))
 	if err != nil {

@@ -942,6 +942,7 @@ func (s *Server) Fix(ctx context.Context, req *gatewayv1.FixRequest) (*gatewayv1
 		Success: r.GetSuccess(), Content: r.GetContent(), Error: codeFailureMessage(resp), Actions: r.GetActions(),
 		Changed: r.GetChanged(), BeforeSha256: r.GetBeforeSha256(), AfterSha256: r.GetAfterSha256(),
 		Wrote: r.GetWrote(), Output: r.GetOutput(),
+		BeforeSizeBytes: r.GetBeforeSizeBytes(), AfterSizeBytes: r.GetAfterSizeBytes(),
 	}, nil
 }
 
@@ -1012,6 +1013,7 @@ func (s *Server) applyEdit(
 		Strategy: result.GetStrategy(), FixActions: result.GetFixActions(), Changed: result.GetChanged(),
 		BeforeSha256: result.GetBeforeSha256(), AfterSha256: result.GetAfterSha256(),
 		Wrote: result.GetWrote(), Output: result.GetOutput(),
+		BeforeSizeBytes: result.GetBeforeSizeBytes(), AfterSizeBytes: result.GetAfterSizeBytes(),
 	}, nil
 }
 
@@ -1058,6 +1060,7 @@ func (s *Server) applyEditWithReceipt(
 		Strategy: rawResult.GetStrategy(), FixActions: rawResult.GetFixActions(), Changed: rawResult.GetChanged(),
 		BeforeSha256: rawResult.GetBeforeSha256(), AfterSha256: rawResult.GetAfterSha256(),
 		Wrote: rawResult.GetWrote(), Output: rawResult.GetOutput(),
+		BeforeSizeBytes: rawResult.GetBeforeSizeBytes(), AfterSizeBytes: rawResult.GetAfterSizeBytes(),
 	}
 	stage := executionv1.ExecutionStage_EXECUTION_STAGE_FAILED
 	statusValue := "failed"
@@ -1160,6 +1163,7 @@ func gatewaySymbolPatchResponse(raw *codev0.CodeResponse) *gatewayv1.ApplySymbol
 		BeforeSha256: result.GetBeforeSha256(), AfterSha256: result.GetAfterSha256(),
 		DeclarationSha256: result.GetDeclarationSha256(), Wrote: result.GetWrote(), Output: result.GetOutput(),
 		Failure: failures.Clone(raw.GetFailure()), FailureReason: result.GetFailureReason(),
+		BeforeSizeBytes: result.GetBeforeSizeBytes(), AfterSizeBytes: result.GetAfterSizeBytes(),
 	}
 }
 
