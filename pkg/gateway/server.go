@@ -954,8 +954,8 @@ func (s *Server) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest)
 		return &gatewayv1.ApplyEditResponse{Success: false, Error: err.Error()}, nil
 	}
 	if req.GetDryRun() {
-		if err := validateOptionalExecutionContext(ctx); err != nil {
-			return nil, err
+		if contextErr := validateOptionalExecutionContext(ctx); contextErr != nil {
+			return nil, contextErr
 		}
 	} else {
 		operationInputSHA256, digestErr := deterministicProtoSHA256(&codev0.ApplyEditRequest{
@@ -1080,6 +1080,125 @@ func (s *Server) applyEditWithReceipt(
 		Result: &executionv1.ExecutionResultV1{
 			Status: statusValue, ErrorCode: errorCodeValue, DurationMs: durationMilliseconds(effectStarted),
 		},
+	})
+	return response, nil
+}
+
+// ApplySymbolPatch forwards one exact analyzer-qualified declaration mutation
+// to the owning Codefly agent. The Gateway response is source-free: complete
+// post-edit bytes remain inside Codefly even for dry-run preparation.
+func (s *Server) ApplySymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbolPatchRequest) (*gatewayv1.ApplySymbolPatchResponse, error) {
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	rel, err := cleanGatewayPath(req.GetFile())
+	if err != nil {
+		return &gatewayv1.ApplySymbolPatchResponse{Success: false, Error: err.Error()}, nil
+	}
+	if req.GetDryRun() {
+		if contextErr := validateOptionalExecutionContext(ctx); contextErr != nil {
+			return nil, contextErr
+		}
+	} else {
+		operationInputSHA256, digestErr := deterministicProtoSHA256(&codev0.ApplySymbolPatchRequest{
+			File: rel, QualifiedName: req.GetQualifiedName(), ExpectedDeclarationSha256: req.GetExpectedDeclarationSha256(),
+			NewSource: req.GetNewSource(), FixMode: req.GetFixMode(), DryRun: false,
+		})
+		if digestErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "encode apply-symbol-patch input: %v", digestErr)
+		}
+		var beforeSHA256 string
+		if content, readErr := s.fileOps().ReadFile(ctx, rel); readErr == nil {
+			digest := sha256.Sum256(content)
+			beforeSHA256 = hex.EncodeToString(digest[:])
+		}
+		attempt, _, beginErr := s.beginGovernedExecution(ctx, executionrecorder.BeginInput{
+			OperationKind:        "code.apply-symbol-patch",
+			OperationInputSHA256: operationInputSHA256,
+			Assurance:            executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
+			Target:               executionTarget(s.executionService(req.GetService())),
+			Resources: []*executionv1.ExecutionResourceV1{
+				pathExecutionResource(rel, beforeSHA256, "", false),
+			},
+		})
+		if beginErr != nil {
+			return nil, beginErr
+		}
+		if attempt != nil {
+			return s.applySymbolPatchWithReceipt(ctx, req, rel, beforeSHA256, attempt)
+		}
+	}
+	raw, err := s.executeSymbolPatch(ctx, req, rel)
+	if err != nil {
+		return &gatewayv1.ApplySymbolPatchResponse{Success: false, Error: err.Error()}, nil
+	}
+	return gatewaySymbolPatchResponse(raw), nil
+}
+
+func (s *Server) executeSymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbolPatchRequest, rel string) (*codev0.CodeResponse, error) {
+	execute := s.proxyExecute
+	if s.mindYAML == nil {
+		execute = s.sourceExecute
+	}
+	return execute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
+		File: rel, QualifiedName: req.GetQualifiedName(), ExpectedDeclarationSha256: req.GetExpectedDeclarationSha256(),
+		NewSource: req.GetNewSource(), FixMode: req.GetFixMode(), DryRun: req.GetDryRun(),
+	}}})
+}
+
+func gatewaySymbolPatchResponse(raw *codev0.CodeResponse) *gatewayv1.ApplySymbolPatchResponse {
+	if raw == nil {
+		return &gatewayv1.ApplySymbolPatchResponse{Success: false, Error: "Codefly agent returned no symbol-patch response"}
+	}
+	result := raw.GetApplySymbolPatch()
+	if result == nil {
+		return &gatewayv1.ApplySymbolPatchResponse{Success: false, Error: codeFailureMessage(raw), Failure: failures.Clone(raw.GetFailure())}
+	}
+	return &gatewayv1.ApplySymbolPatchResponse{
+		Success: result.GetSuccess(), Error: codeFailureMessage(raw), Strategy: result.GetStrategy(),
+		FixActions: append([]string(nil), result.GetFixActions()...), Changed: result.GetChanged(),
+		BeforeSha256: result.GetBeforeSha256(), AfterSha256: result.GetAfterSha256(),
+		DeclarationSha256: result.GetDeclarationSha256(), Wrote: result.GetWrote(), Output: result.GetOutput(),
+		Failure: failures.Clone(raw.GetFailure()), FailureReason: result.GetFailureReason(),
+	}
+}
+
+func (s *Server) applySymbolPatchWithReceipt(ctx context.Context, req *gatewayv1.ApplySymbolPatchRequest, rel, beforeSHA256 string, attempt *executionrecorder.Attempt) (*gatewayv1.ApplySymbolPatchResponse, error) {
+	effectStarted := time.Now()
+	raw, err := s.proxyExecute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
+		File: rel, QualifiedName: req.GetQualifiedName(), ExpectedDeclarationSha256: req.GetExpectedDeclarationSha256(),
+		NewSource: req.GetNewSource(), FixMode: req.GetFixMode(), DryRun: false,
+	}}})
+	if err != nil {
+		finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
+			Stage: executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
+			Resources: []*executionv1.ExecutionResourceV1{
+				pathExecutionResource(rel, beforeSHA256, "", false),
+			},
+			Result: &executionv1.ExecutionResultV1{Status: "uncertain", ErrorCode: errorCode("gateway-rpc-outcome-unknown"), DurationMs: durationMilliseconds(effectStarted)},
+		})
+		return &gatewayv1.ApplySymbolPatchResponse{Success: false, Error: err.Error()}, nil
+	}
+	response := gatewaySymbolPatchResponse(raw)
+	stage := executionv1.ExecutionStage_EXECUTION_STAGE_FAILED
+	statusValue := "failed"
+	errorCodeValue := (*string)(nil)
+	if response.GetSuccess() {
+		stage = executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED
+		statusValue = "succeeded"
+	} else if response.GetError() != "" {
+		errorCodeValue = errorCode("apply-symbol-patch-failed")
+	}
+	resultBefore := response.GetBeforeSha256()
+	if !canonicalSHA256(resultBefore) {
+		resultBefore = beforeSHA256
+	}
+	finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
+		Stage: stage,
+		Resources: []*executionv1.ExecutionResourceV1{
+			pathExecutionResource(rel, resultBefore, response.GetAfterSha256(), response.GetChanged()),
+		},
+		Result: &executionv1.ExecutionResultV1{Status: statusValue, ErrorCode: errorCodeValue, DurationMs: durationMilliseconds(effectStarted)},
 	})
 	return response, nil
 }

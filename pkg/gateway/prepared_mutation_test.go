@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,15 +12,10 @@ import (
 	"testing"
 	"time"
 
-	codecore "github.com/codefly-dev/core/code"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"github.com/codefly-dev/core/policy"
 	"github.com/google/uuid"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -104,6 +98,95 @@ func TestPreparedMutationRequiresPinnedAuthorityAndAppliesSignedPermitOnce(t *te
 	}
 	if string(afterApply) != "package service\n\nfunc Value() int { return 2 }\n" {
 		t.Fatalf("applied project bytes: %q", afterApply)
+	}
+}
+
+func TestPreparedSymbolPatchRetainsBytesAndRequiresExactSymbolFence(t *testing.T) {
+	server, privateKey, root := newPreparedMutationGateway(t)
+	path := filepath.Join(root, "pkg", "service.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := "package service\n\nfunc Value() int { return 1 }\n"
+	declaration := "func Value() int { return 1 }"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preparedResponse, err := server.PrepareMutation(t.Context(), &gatewayv1.PrepareMutationRequest{
+		Service: "app", WorkspaceVersion: "workspace-symbol-v1",
+		Mutation: &gatewayv1.PrepareMutationRequest_SymbolPatch{SymbolPatch: &gatewayv1.PrepareSymbolPatchMutation{
+			File: "pkg/service.go", SymbolId: "symbol-service-value", QualifiedName: "service.Value",
+			ExpectedDeclarationSha256: contentSHA256([]byte(declaration)),
+			NewSource:                 "func Value() int { return 2 }", FixMode: basev0.FixMode_FIX_MODE_NONE,
+		}},
+	})
+	if err != nil || !preparedResponse.GetSuccess() {
+		t.Fatalf("prepare symbol mutation: response=%+v err=%v", preparedResponse, err)
+	}
+	prepared := preparedResponse.GetPrepared()
+	if len(prepared.GetFiles()) != 1 || prepared.GetFiles()[0].GetSymbolId() != "symbol-service-value" {
+		t.Fatalf("prepared symbol resource = %+v", prepared.GetFiles())
+	}
+	unchanged, err := os.ReadFile(path)
+	if err != nil || string(unchanged) != before {
+		t.Fatalf("preparation changed source: content=%q err=%v", unchanged, err)
+	}
+	wrongFencePermit := signPreparedMutationPermitWithFence(t, privateKey, prepared, mutationPermitFence{
+		Kind: "file", Path: "pkg/service.go", FenceToken: 1,
+	}, time.Now().UTC().Add(-time.Second), time.Minute)
+	rejected, err := server.ApplyPreparedMutation(t.Context(), &gatewayv1.ApplyPreparedMutationRequest{
+		Service: "app", PreparationId: prepared.GetPreparationId(),
+		MutationDigest: prepared.GetMutationDigest(), MutationPermit: wrongFencePermit,
+	})
+	if err != nil || rejected.GetSuccess() || !strings.Contains(rejected.GetError(), "no exact fence") {
+		t.Fatalf("file fence authorized symbol mutation: response=%+v err=%v", rejected, err)
+	}
+	permit := signPreparedMutationPermit(t, privateKey, prepared, time.Now().UTC().Add(-time.Second), time.Minute)
+	applied, err := server.ApplyPreparedMutation(t.Context(), &gatewayv1.ApplyPreparedMutationRequest{
+		Service: "app", PreparationId: prepared.GetPreparationId(),
+		MutationDigest: prepared.GetMutationDigest(), MutationPermit: permit,
+	})
+	if err != nil || !applied.GetSuccess() {
+		t.Fatalf("apply prepared symbol mutation: response=%+v err=%v", applied, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != "package service\n\nfunc Value() int { return 2 }\n" {
+		t.Fatalf("applied source=%q err=%v", after, err)
+	}
+}
+
+func TestSymbolPatchRecoveryReasonSurvivesGatewayAndPreparation(t *testing.T) {
+	server, _, root := newPreparedMutationGateway(t)
+	path := filepath.Join(root, "pkg", "service.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	declaration := "func Value() int { return 1 }"
+	if err := os.WriteFile(path, []byte("package service\n\n"+declaration+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := &gatewayv1.ApplySymbolPatchRequest{
+		Service: "app", File: "pkg/service.go", QualifiedName: "service.Value",
+		ExpectedDeclarationSha256: strings.Repeat("0", 64),
+		NewSource:                 "func Value() int { return 2 }", DryRun: true,
+	}
+	direct, err := server.ApplySymbolPatch(t.Context(), request)
+	if err != nil || direct.GetSuccess() || direct.GetFailureReason() != basev0.SymbolPatchFailureReason_SYMBOL_PATCH_FAILURE_REASON_STALE_ANCHOR {
+		t.Fatalf("direct stale response=%+v err=%v", direct, err)
+	}
+	prepared, err := server.PrepareMutation(t.Context(), &gatewayv1.PrepareMutationRequest{
+		Service: "app", WorkspaceVersion: "workspace-stale-v1",
+		Mutation: &gatewayv1.PrepareMutationRequest_SymbolPatch{SymbolPatch: &gatewayv1.PrepareSymbolPatchMutation{
+			File: request.GetFile(), SymbolId: "symbol-service-value", QualifiedName: request.GetQualifiedName(),
+			ExpectedDeclarationSha256: request.GetExpectedDeclarationSha256(), NewSource: request.GetNewSource(),
+		}},
+	})
+	if err != nil || prepared.GetSuccess() || prepared.GetSymbolPatchFailureReason() != basev0.SymbolPatchFailureReason_SYMBOL_PATCH_FAILURE_REASON_STALE_ANCHOR {
+		t.Fatalf("prepared stale response=%+v err=%v", prepared, err)
+	}
+	unchanged, err := os.ReadFile(path)
+	if err != nil || string(unchanged) != "package service\n\n"+declaration+"\n" {
+		t.Fatalf("stale attempts changed project bytes: content=%q err=%v", unchanged, err)
 	}
 }
 
@@ -192,23 +275,7 @@ func newPreparedMutationGateway(t *testing.T) (*Server, ed25519.PrivateKey, stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.mindYAML = &MindYAML{Service: "app", Plugin: "generic"}
-
-	codeServer := codecore.NewDefaultCodeServer(root)
-	t.Cleanup(func() { _ = codeServer.Close() })
-	listener := bufconn.Listen(1 << 20)
-	grpcServer := grpc.NewServer()
-	codev0.RegisterCodeServer(grpcServer, codeServer)
-	go func() { _ = grpcServer.Serve(listener) }()
-	t.Cleanup(grpcServer.Stop)
-	connection, err := grpc.NewClient("passthrough:///real-code-agent", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
-		return listener.Dial()
-	}), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = connection.Close() })
-	server.serviceBehavior = &mockServiceExecution{code: codev0.NewCodeClient(connection)}
+	t.Cleanup(func() { _ = server.Close() })
 
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -225,13 +292,23 @@ func newPreparedMutationGateway(t *testing.T) (*Server, ed25519.PrivateKey, stri
 
 func signPreparedMutationPermit(t *testing.T, privateKey ed25519.PrivateKey, prepared *gatewayv1.PreparedMutation, issuedAt time.Time, ttl time.Duration) string {
 	t.Helper()
+	fence := mutationPermitFence{Kind: "file", Path: prepared.GetFiles()[0].GetPath(), FenceToken: 1}
+	if symbolID := prepared.GetFiles()[0].GetSymbolId(); symbolID != "" {
+		fence.Kind = "symbol"
+		fence.SymbolID = symbolID
+	}
+	return signPreparedMutationPermitWithFence(t, privateKey, prepared, fence, issuedAt, ttl)
+}
+
+func signPreparedMutationPermitWithFence(t *testing.T, privateKey ed25519.PrivateKey, prepared *gatewayv1.PreparedMutation, fence mutationPermitFence, issuedAt time.Time, ttl time.Duration) string {
+	t.Helper()
 	tenantID := uuid.NewString()
 	binding := mutationPermitBinding{
 		AuthorityID: prepared.GetAuthorityId(), WorkspaceID: prepared.GetWorkspaceId(), Service: prepared.GetService(),
 		TenantID: tenantID, PlanID: "plan-1", PlanRevision: 1,
 		PlanContentHash: contentSHA256([]byte("plan-1")), LeaseSetID: uuid.NewString(), OwnerAttemptID: "attempt-1",
 		WorkspaceVersion: prepared.GetWorkspaceVersion(),
-		Fences:           []mutationPermitFence{{Kind: "file", Path: prepared.GetFiles()[0].GetPath(), FenceToken: 1}},
+		Fences:           []mutationPermitFence{fence},
 	}
 	token, _, err := policy.MintEd25519(policy.MintInput{
 		Principal: &policy.Principal{ID: prepared.GetAuthorityId(), Kind: policy.KindService, OrgID: tenantID},
