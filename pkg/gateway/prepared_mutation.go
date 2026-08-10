@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/core/failures"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"github.com/codefly-dev/core/policy"
@@ -113,9 +114,9 @@ func (s *Server) ConfigureMutationAuthority(_ context.Context, req *gatewayv1.Co
 	return &gatewayv1.ConfigureMutationAuthorityResponse{AuthorityId: authorityID, WorkspaceId: workspaceID}, nil
 }
 
-// PrepareMutation resolves the first production slice—one ApplyEdit—through
-// the real language agent in dry-run mode. The resulting bytes and hashes are
-// sealed into an immutable protobuf; no write occurs in this RPC.
+// PrepareMutation resolves one typed text or symbol edit through the real
+// language agent in dry-run mode. The resulting bytes and hashes are sealed
+// into an immutable protobuf; no write occurs in this RPC.
 func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMutationRequest) (*gatewayv1.PrepareMutationResponse, error) {
 	if req == nil {
 		return prepareFailure("prepare mutation request is required"), nil
@@ -132,41 +133,84 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 	if service == "" || service != req.GetService() || workspaceVersion == "" || workspaceVersion != req.GetWorkspaceVersion() {
 		return prepareFailure("service and workspace_version are required and must be canonical"), nil
 	}
-	edit := req.GetApplyEdit()
-	if edit == nil {
-		return prepareFailure("only apply_edit preparation is currently supported"), nil
+	edit, symbolPatch := req.GetApplyEdit(), req.GetSymbolPatch()
+	if (edit == nil) == (symbolPatch == nil) {
+		return prepareFailure("exactly one apply_edit or symbol_patch mutation is required"), nil
 	}
-	path, err := cleanGatewayPath(edit.GetFile())
-	if err != nil || path == "" {
-		if err == nil {
-			err = errors.New("edit file is required")
+	var path, strategy, symbolID string
+	var fixActions []string
+	var after []byte
+	var previewBeforeHash, previewAfterHash string
+	if edit != nil {
+		path, err = cleanGatewayPath(edit.GetFile())
+		if err != nil || path == "" {
+			if err == nil {
+				err = errors.New("edit file is required")
+			}
+			return prepareFailure(err.Error()), nil
 		}
-		return prepareFailure(err.Error()), nil
-	}
-	if edit.GetFind() == "" {
-		return prepareFailure("apply_edit find text is required"), nil
-	}
-	preview, err := s.ApplyEdit(ctx, &gatewayv1.ApplyEditRequest{
-		Service: service, File: path, Find: edit.GetFind(), Replace: edit.GetReplace(),
-		FixMode: edit.GetFixMode(), DryRun: true,
-	})
-	if err != nil {
-		return prepareFailure(err.Error()), nil
-	}
-	if preview == nil || !preview.GetSuccess() {
-		return prepareFailure(preview.GetError()), nil
-	}
-	if preview.GetWrote() || !preview.GetChanged() {
-		return prepareFailure("prepared edit must change bytes without writing them"), nil
+		if edit.GetFind() == "" {
+			return prepareFailure("apply_edit find text is required"), nil
+		}
+		preview, previewErr := s.ApplyEdit(ctx, &gatewayv1.ApplyEditRequest{
+			Service: service, File: path, Find: edit.GetFind(), Replace: edit.GetReplace(),
+			FixMode: edit.GetFixMode(), DryRun: true,
+		})
+		if previewErr != nil {
+			return prepareFailure(previewErr.Error()), nil
+		}
+		if preview == nil || !preview.GetSuccess() {
+			return prepareFailure(preview.GetError()), nil
+		}
+		if preview.GetWrote() || !preview.GetChanged() {
+			return prepareFailure("prepared edit must change bytes without writing them"), nil
+		}
+		after = []byte(preview.GetContent())
+		strategy, fixActions = preview.GetStrategy(), append([]string(nil), preview.GetFixActions()...)
+		previewBeforeHash, previewAfterHash = preview.GetBeforeSha256(), preview.GetAfterSha256()
+	} else {
+		path, err = cleanGatewayPath(symbolPatch.GetFile())
+		if err != nil || path == "" {
+			if err == nil {
+				err = errors.New("symbol patch file is required")
+			}
+			return prepareFailure(err.Error()), nil
+		}
+		symbolID = strings.TrimSpace(symbolPatch.GetSymbolId())
+		qualifiedName := strings.TrimSpace(symbolPatch.GetQualifiedName())
+		if symbolID == "" || symbolID != symbolPatch.GetSymbolId() || qualifiedName == "" || qualifiedName != symbolPatch.GetQualifiedName() || !validSHA256(symbolPatch.GetExpectedDeclarationSha256()) {
+			return prepareFailure("symbol_patch symbol_id, qualified_name, and expected_declaration_sha256 are required and must be canonical"), nil
+		}
+		raw, previewErr := s.executeSymbolPatch(ctx, &gatewayv1.ApplySymbolPatchRequest{
+			Service: service, File: path, QualifiedName: qualifiedName,
+			ExpectedDeclarationSha256: symbolPatch.GetExpectedDeclarationSha256(),
+			NewSource:                 symbolPatch.GetNewSource(), FixMode: symbolPatch.GetFixMode(), DryRun: true,
+		}, path)
+		if previewErr != nil {
+			return prepareFailure(previewErr.Error()), nil
+		}
+		preview := raw.GetApplySymbolPatch()
+		if preview == nil || !preview.GetSuccess() {
+			projected := gatewaySymbolPatchResponse(raw)
+			return &gatewayv1.PrepareMutationResponse{
+				Success: false, Error: projected.GetError(), Failure: failures.Clone(projected.GetFailure()),
+				SymbolPatchFailureReason: projected.GetFailureReason(),
+			}, nil
+		}
+		if preview.GetWrote() || !preview.GetChanged() {
+			return prepareFailure("prepared symbol patch must change bytes without writing them"), nil
+		}
+		after = []byte(preview.GetContent())
+		strategy, fixActions = preview.GetStrategy(), append([]string(nil), preview.GetFixActions()...)
+		previewBeforeHash, previewAfterHash = preview.GetBeforeSha256(), preview.GetAfterSha256()
 	}
 	current, err := s.fileOps().ReadFile(ctx, path)
 	if err != nil {
 		return prepareFailure(fmt.Sprintf("read prepared target: %v", err)), nil
 	}
-	after := []byte(preview.GetContent())
 	beforeHash := contentSHA256(current)
 	afterHash := contentSHA256(after)
-	if preview.GetBeforeSha256() != beforeHash || preview.GetAfterSha256() != afterHash {
+	if previewBeforeHash != beforeHash || previewAfterHash != afterHash {
 		return prepareFailure("language agent preview hashes do not match authoritative project bytes"), nil
 	}
 	prepared := &gatewayv1.PreparedMutation{
@@ -179,7 +223,7 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 		Files: []*gatewayv1.PreparedFileMutation{{
 			Path: path, Operation: gatewayv1.PreparedFileOperation_PREPARED_FILE_OPERATION_MODIFY,
 			BeforeSha256: beforeHash, AfterSha256: afterHash,
-			Strategy: preview.GetStrategy(), FixActions: append([]string(nil), preview.GetFixActions()...),
+			Strategy: strategy, FixActions: fixActions, SymbolId: symbolID,
 		}},
 		PreparedAt: timestamppb.Now(), ExpiresAt: timestamppb.New(time.Now().UTC().Add(preparedMutationLifetime)),
 	}
@@ -423,6 +467,9 @@ func validatePreparedMutation(prepared *gatewayv1.PreparedMutation) error {
 	if !validSHA256(file.GetBeforeSha256()) || !validSHA256(file.GetAfterSha256()) || file.GetBeforeSha256() == file.GetAfterSha256() {
 		return errors.New("prepared mutation requires distinct lowercase SHA-256 before/after hashes")
 	}
+	if file.GetSymbolId() != strings.TrimSpace(file.GetSymbolId()) {
+		return errors.New("prepared mutation symbol_id must be canonical when present")
+	}
 	digest, err := computePreparedMutationDigest(prepared)
 	if err != nil {
 		return err
@@ -570,13 +617,15 @@ func permitCoversPreparedFiles(binding *mutationPermitBinding, files []*gatewayv
 	for _, file := range files {
 		covered := false
 		for _, fence := range binding.Fences {
-			if fence.Kind == "file" && fence.Path == file.GetPath() && fence.SymbolID == "" && fence.FenceToken > 0 {
+			fileFence := file.GetSymbolId() == "" && fence.Kind == "file" && fence.SymbolID == ""
+			symbolFence := file.GetSymbolId() != "" && fence.Kind == "symbol" && fence.SymbolID == file.GetSymbolId()
+			if fence.Path == file.GetPath() && fence.FenceToken > 0 && (fileFence || symbolFence) {
 				covered = true
 				break
 			}
 		}
 		if !covered {
-			return fmt.Errorf("mutation permit has no file fence for prepared target %q", file.GetPath())
+			return fmt.Errorf("mutation permit has no exact fence for prepared target %q symbol %q", file.GetPath(), file.GetSymbolId())
 		}
 	}
 	return nil
