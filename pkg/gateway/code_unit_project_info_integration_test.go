@@ -14,6 +14,9 @@ import (
 // source file crosses into the caller for local interpretation.
 func TestGatewayInspectsJVMAndDotNetCodeUnitsThroughGenericAgent(t *testing.T) {
 	root := t.TempDir()
+	writeCodeUnitFixture(t, root, "AGENTS.md", "# Rules\n\nUse the typed runtime capability.\n")
+	writeCodeUnitFixture(t, root, "src/ads/AGENTS.md", "# Conventions\n\nKeep ads guidance local.\n")
+	writeCodeUnitFixture(t, root, "src/cart/AGENTS.md", "# Conventions\n\nKeep cart guidance local.\n")
 	writeCodeUnitFixture(t, root, "src/ads/settings.gradle", "rootProject.name = 'adservice'\n")
 	writeCodeUnitFixture(t, root, "src/ads/build.gradle", `
 group = "example.ads"
@@ -51,6 +54,7 @@ class Ads {}
 		imports          []string
 		semanticLanguage string
 		semanticSymbol   string
+		instructionDocs  []string
 	}{
 		{
 			name: "jvm", target: &gatewayv1.CodeUnitTarget{Id: "shop/ads", Path: "src/ads"},
@@ -58,6 +62,7 @@ class Ads {}
 			dependencies: []string{"io.grpc:grpc-protobuf@1.82.1"},
 			sourcePath:   "src/ads/src/main/java/example/Ads.java", imports: []string{"io.grpc.Server"},
 			semanticLanguage: "java", semanticSymbol: "Ads",
+			instructionDocs: []string{"AGENTS.md", "src/ads/AGENTS.md"},
 		},
 		{
 			name: "dotnet", target: &gatewayv1.CodeUnitTarget{Id: "shop/cart", Path: "src/cart"},
@@ -65,6 +70,7 @@ class Ads {}
 			dependencies: []string{"Grpc.AspNetCore@2.80.0"},
 			sourcePath:   "src/cart/src/Program.cs", imports: []string{"Grpc.Core"},
 			semanticLanguage: "csharp", semanticSymbol: "Program",
+			instructionDocs: []string{"AGENTS.md", "src/cart/AGENTS.md"},
 		},
 	}
 	for _, test := range tests {
@@ -125,6 +131,28 @@ class Ads {}
 			}
 			if !foundSymbol {
 				t.Fatalf("semantic symbols = %+v, want %q in %q", index.GetSymbols(), test.semanticSymbol, test.sourcePath)
+			}
+
+			instructions, err := server.GetInstructionIndex(t.Context(), &gatewayv1.GetInstructionIndexRequest{CodeUnit: test.target})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if instructions.GetFailure() != nil {
+				t.Fatalf("instruction-index failure = %+v", instructions.GetFailure())
+			}
+			if !reflect.DeepEqual(instructions.GetCodeUnit(), test.target) {
+				t.Fatalf("instruction code unit = %+v, want %+v", instructions.GetCodeUnit(), test.target)
+			}
+			instructionIndex := instructions.GetIndex()
+			if instructionIndex.GetState() != basev0.InstructionIndexState_INSTRUCTION_INDEX_STATE_COMPLETE || instructionIndex.GetFingerprint() == "" {
+				t.Fatalf("instruction coverage = state %s fingerprint %q issues %+v", instructionIndex.GetState(), instructionIndex.GetFingerprint(), instructionIndex.GetIssues())
+			}
+			paths := make([]string, 0, len(instructionIndex.GetDocuments()))
+			for _, document := range instructionIndex.GetDocuments() {
+				paths = append(paths, document.GetPath())
+			}
+			if !reflect.DeepEqual(paths, test.instructionDocs) {
+				t.Fatalf("instruction documents = %v, want root cascade plus exact unit %v", paths, test.instructionDocs)
 			}
 		})
 	}
