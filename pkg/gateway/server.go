@@ -1607,16 +1607,38 @@ func (s *Server) DiscoverCodeUnits(ctx context.Context, req *gatewayv1.DiscoverC
 // composeStatusOutput surfaces a typed runtime status message alongside raw
 // agent output. Agents that already fold the actionable message into raw output
 // (as Generic does) would otherwise show it twice, so the message is only
-// prepended when the raw output does not already carry it.
+// prepended when the raw output does not already carry it as its own line(s).
 func composeStatusOutput(message, output string) string {
 	message = strings.TrimSpace(message)
-	if message == "" || strings.Contains(output, message) {
+	if message == "" || outputCarriesMessage(output, message) {
 		return output
 	}
 	if output == "" {
 		return message
 	}
 	return message + "\n" + output
+}
+
+// outputCarriesMessage reports whether message already appears in output as a
+// contiguous run of whole lines. Matching on whole (trimmed) lines rather than a
+// raw substring keeps a message that is merely a fragment of a larger, distinct
+// line — where the status context is genuinely additive — from being dropped.
+func outputCarriesMessage(output, message string) bool {
+	messageLines := strings.Split(message, "\n")
+	outputLines := strings.Split(output, "\n")
+	for start := 0; start+len(messageLines) <= len(outputLines); start++ {
+		matched := true
+		for offset, messageLine := range messageLines {
+			if strings.TrimSpace(outputLines[start+offset]) != strings.TrimSpace(messageLine) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gatewayv1.BuildResponse, error) {

@@ -610,6 +610,71 @@ func TestTestPreservesStructuredRuntimeFields(t *testing.T) {
 	}
 }
 
+func TestComposeStatusOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		output  string
+		want    string
+	}{
+		{
+			name:    "identical message and output surface once",
+			message: "build not available: generic agent has no language knowledge",
+			output:  "build not available: generic agent has no language knowledge",
+			want:    "build not available: generic agent has no language knowledge",
+		},
+		{
+			name:    "distinct message is prepended",
+			message: "build failed",
+			output:  "compiler: undefined symbol",
+			want:    "build failed\ncompiler: undefined symbol",
+		},
+		{
+			name:    "message present as a whole line among others is not repeated",
+			message: "build not available",
+			output:  "warming up\nbuild not available\ncleaning up",
+			want:    "warming up\nbuild not available\ncleaning up",
+		},
+		{
+			name:    "message that is only a fragment of a line is still prepended",
+			message: "check failed",
+			output:  "pre check failed post",
+			want:    "check failed\npre check failed post",
+		},
+		{
+			name:    "multi-line message present as consecutive lines is not repeated",
+			message: "build failed\nsee log for details",
+			output:  "build failed\nsee log for details",
+			want:    "build failed\nsee log for details",
+		},
+		{
+			name:    "empty message leaves output untouched",
+			message: "",
+			output:  "raw output",
+			want:    "raw output",
+		},
+		{
+			name:    "whitespace-only message leaves output untouched",
+			message: "  \n  ",
+			output:  "raw output",
+			want:    "raw output",
+		},
+		{
+			name:    "message with empty output surfaces the message alone",
+			message: "build failed",
+			output:  "",
+			want:    "build failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := composeStatusOutput(tt.message, tt.output); got != tt.want {
+				t.Fatalf("composeStatusOutput(%q, %q) = %q, want %q", tt.message, tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildDoesNotDuplicateStatusMessageInOutput(t *testing.T) {
 	const msg = "build not available: generic agent has no language knowledge"
 	rt := &mockRuntimeClient{
