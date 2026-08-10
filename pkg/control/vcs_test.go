@@ -88,6 +88,24 @@ func TestGitStatusCleanThenDirty(t *testing.T) {
 	}
 }
 
+func TestGitStatusPreservesLeadingPorcelainStatusColumn(t *testing.T) {
+	dir := initGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := New().GitStatus(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Files) != 1 {
+		t.Fatalf("files = %+v, want one modified file", status.Files)
+	}
+	if got := status.Files[0]; got.Path != "README.md" || got.Code != " M" || got.Staged {
+		t.Fatalf("modified file = %+v, want path README.md, code %q, staged false", got, " M")
+	}
+}
+
 func TestGitStatusReportsContainingRepositoryRootFromNestedDirectory(t *testing.T) {
 	dir := initGitRepo(t)
 	nested := filepath.Join(dir, "services", "api")
