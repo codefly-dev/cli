@@ -185,6 +185,7 @@ func codeRequestRetrySafe(request *codev0.CodeRequest) bool {
 	switch request.GetOperation().(type) {
 	case *codev0.CodeRequest_ListDependencies,
 		*codev0.CodeRequest_GetProjectInfo,
+		*codev0.CodeRequest_GetSourceManifest,
 		*codev0.CodeRequest_ReadFile,
 		*codev0.CodeRequest_ListFiles,
 		*codev0.CodeRequest_Search,

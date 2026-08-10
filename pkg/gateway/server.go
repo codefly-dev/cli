@@ -1385,6 +1385,36 @@ func (s *Server) GetSemanticIndex(ctx context.Context, req *gatewayv1.GetSemanti
 	}, nil
 }
 
+// GetSourceManifest invokes the language-neutral rooted Code behavior so every
+// workspace has the same body-free artifact inventory regardless of which
+// language agents are installed. The Gateway forwards typed identities only;
+// it never reads or reconstructs project bytes itself.
+func (s *Server) GetSourceManifest(ctx context.Context, req *gatewayv1.GetSourceManifestRequest) (*gatewayv1.GetSourceManifestResponse, error) {
+	requestedService, revision := "", ""
+	identityMode := basev0.SourceManifestIdentityMode_SOURCE_MANIFEST_IDENTITY_MODE_NATIVE
+	if req != nil {
+		requestedService = req.GetService()
+		revision = req.GetRevision()
+		identityMode = req.GetIdentityMode()
+	}
+	if err := s.validateService(requestedService); err != nil {
+		return nil, err
+	}
+	response, err := s.sourceExecute(ctx, &codev0.CodeRequest{
+		Operation: &codev0.CodeRequest_GetSourceManifest{GetSourceManifest: &codev0.GetSourceManifestRequest{Revision: revision, IdentityMode: identityMode}},
+	})
+	if err != nil {
+		return &gatewayv1.GetSourceManifestResponse{Failure: gatewaySourceManifestFailure(err)}, nil
+	}
+	value := response.GetGetSourceManifest()
+	if value == nil {
+		return &gatewayv1.GetSourceManifestResponse{
+			Failure: failures.Ensure(response.GetFailure(), basev0.FailureCode_FAILURE_CODE_INTERNAL, "gateway.get-source-manifest", "source behavior returned no manifest"),
+		}, nil
+	}
+	return &gatewayv1.GetSourceManifestResponse{Manifest: value, Failure: failures.Clone(response.GetFailure())}, nil
+}
+
 func cloneCodeUnitTarget(target *gatewayv1.CodeUnitTarget) *gatewayv1.CodeUnitTarget {
 	if target == nil {
 		return nil
@@ -1404,6 +1434,13 @@ func gatewaySemanticIndexFailure(err error) *basev0.Failure {
 		return failures.Clone(failure)
 	}
 	return failures.FromError("gateway.get-semantic-index", err)
+}
+
+func gatewaySourceManifestFailure(err error) *basev0.Failure {
+	if failure, ok := failures.Extract(err); ok {
+		return failures.Clone(failure)
+	}
+	return failures.FromError("gateway.get-source-manifest", err)
 }
 
 // DiscoverCodeUnits serves Codefly's language-neutral structural inventory
