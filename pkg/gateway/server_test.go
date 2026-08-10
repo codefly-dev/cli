@@ -648,6 +648,18 @@ func TestComposeStatusOutput(t *testing.T) {
 			want:    "build failed\nsee log for details",
 		},
 		{
+			name:    "message matching only an indented line is still prepended",
+			message: "build failed",
+			output:  "    build failed",
+			want:    "build failed\n    build failed",
+		},
+		{
+			name:    "message matching a line with trailing whitespace is not repeated",
+			message: "build failed",
+			output:  "build failed   ",
+			want:    "build failed   ",
+		},
+		{
 			name:    "empty message leaves output untouched",
 			message: "",
 			output:  "raw output",

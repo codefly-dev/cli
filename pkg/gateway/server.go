@@ -1620,16 +1620,18 @@ func composeStatusOutput(message, output string) string {
 }
 
 // outputCarriesMessage reports whether message already appears in output as a
-// contiguous run of whole lines. Matching on whole (trimmed) lines rather than a
-// raw substring keeps a message that is merely a fragment of a larger, distinct
-// line — where the status context is genuinely additive — from being dropped.
+// contiguous run of whole lines. Matching whole lines rather than a raw substring
+// keeps a message that is merely a fragment of a larger, distinct line — where
+// the status context is genuinely additive — from being dropped. Only trailing
+// whitespace is normalized: leading indentation is significant, so an indented
+// output line is treated as distinct from an unindented status message.
 func outputCarriesMessage(output, message string) bool {
 	messageLines := strings.Split(message, "\n")
 	outputLines := strings.Split(output, "\n")
 	for start := 0; start+len(messageLines) <= len(outputLines); start++ {
 		matched := true
 		for offset, messageLine := range messageLines {
-			if strings.TrimSpace(outputLines[start+offset]) != strings.TrimSpace(messageLine) {
+			if trimTrailingSpace(outputLines[start+offset]) != trimTrailingSpace(messageLine) {
 				matched = false
 				break
 			}
@@ -1639,6 +1641,10 @@ func outputCarriesMessage(output, message string) bool {
 		}
 	}
 	return false
+}
+
+func trimTrailingSpace(s string) string {
+	return strings.TrimRight(s, " \t\r\v\f")
 }
 
 func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gatewayv1.BuildResponse, error) {
