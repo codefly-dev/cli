@@ -1096,8 +1096,8 @@ func (s *Server) ApplySymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbo
 		return &gatewayv1.ApplySymbolPatchResponse{Success: false, Error: err.Error()}, nil
 	}
 	if req.GetDryRun() {
-		if err := validateOptionalExecutionContext(ctx); err != nil {
-			return nil, err
+		if contextErr := validateOptionalExecutionContext(ctx); contextErr != nil {
+			return nil, contextErr
 		}
 	} else {
 		operationInputSHA256, digestErr := deterministicProtoSHA256(&codev0.ApplySymbolPatchRequest{
