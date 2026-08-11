@@ -398,6 +398,10 @@ type GitRevertRequest struct {
 type RepositoryRemoteAccess string
 
 const (
+	// RepositorySnapshotStorageComponent identifies Codefly's conservative
+	// whole-tree demand for another equivalent repository worktree.
+	RepositorySnapshotStorageComponent = "repository-snapshot"
+
 	// RepositoryRemoteAccessPublicHTTPS isolates a credential-free HTTPS
 	// source from every ambient Git rewrite, helper, prompt, and SSH agent.
 	RepositoryRemoteAccessPublicHTTPS RepositoryRemoteAccess = "public-https"
@@ -424,8 +428,13 @@ type MaterializeRepositorySnapshotRequest struct {
 
 // MaterializedRepositorySnapshot is the immutable lease returned by Codefly.
 type MaterializedRepositorySnapshot struct {
-	Revision          string
+	// Revision is the immutable commit Codefly leased.
+	Revision string
+	// SnapshotDirectory is the validated Gateway-relative lease path.
 	SnapshotDirectory string
+	// EquivalentSnapshotBytes is the conservative whole-tree storage needed
+	// to lease another worktree for the same repository snapshot.
+	EquivalentSnapshotBytes uint64
 }
 
 // PrepareRepositoryCheckoutRequest resolves and cleans one mutable repository
