@@ -450,6 +450,50 @@ func TestEngine_Release_BeforeCommitFailure_RevertsAndPushesNothing(t *testing.T
 	require.Empty(t, strings.TrimSpace(string(out)), "working tree must be clean after abort")
 }
 
+func TestEngine_Release_CommitFailureRestoresIndexAndWorktree(t *testing.T) {
+	dir := t.TempDir()
+	origin := initBareGitRepo(t, dir)
+	target := writeManifest(t, dir, "version/info.codefly.yaml", "0.1.0")
+	require.NoError(t, addAndCommit(dir, target, "add manifest"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+
+	headBefore, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	require.NoError(t, err)
+	originBefore, err := exec.Command("git", "-C", origin, "rev-parse", "main").Output()
+	require.NoError(t, err)
+
+	// Explicit error injection: force the real git commit operation through an
+	// SSH signing key that does not exist. This exercises the production index,
+	// signing, and rollback path without replacing Git or the filesystem.
+	require.NoError(t, runGit(dir, "config", "commit.gpgsign", "true"))
+	require.NoError(t, runGit(dir, "config", "gpg.format", "ssh"))
+	require.NoError(t, runGit(dir, "config", "user.signingkey", filepath.Join(dir, "missing-signing-key")))
+
+	m, err := publish.Detect(dir)
+	require.NoError(t, err)
+	_, err = (&publish.Engine{Manifest: m, BumpType: "patch", WorkDir: dir}).Release(context.Background())
+	require.ErrorContains(t, err, "commit")
+
+	contents, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, "version: 0.1.0\n", string(contents))
+	status, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	require.NoError(t, err)
+	require.Empty(t, strings.TrimSpace(string(status)), "commit failure must leave index and worktree clean")
+	headAfter, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	require.NoError(t, err)
+	require.Equal(t, strings.TrimSpace(string(headBefore)), strings.TrimSpace(string(headAfter)))
+	originAfter, err := exec.Command("git", "-C", origin, "rev-parse", "main").Output()
+	require.NoError(t, err)
+	require.Equal(t, strings.TrimSpace(string(originBefore)), strings.TrimSpace(string(originAfter)))
+	localTags, err := exec.Command("git", "-C", dir, "tag", "-l").Output()
+	require.NoError(t, err)
+	require.Empty(t, strings.TrimSpace(string(localTags)))
+	remoteTags, err := exec.Command("git", "-C", origin, "tag", "-l").Output()
+	require.NoError(t, err)
+	require.Empty(t, strings.TrimSpace(string(remoteTags)))
+}
+
 // TestEngine_Release_AfterPushFailure_ReturnsLiveTag confirms the tag is
 // reported as shipped even when the post-push upload step fails — the tag
 // is live and must not be silently swallowed.
