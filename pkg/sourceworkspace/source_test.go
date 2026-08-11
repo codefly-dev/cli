@@ -272,3 +272,45 @@ func TestWriteNormalizedGoWorkspaceDoesNotDuplicateAbsolutePhysicalUse(t *testin
 		t.Fatalf("normalized uses = %+v, want one physical module %q\n%s", parsed.Use, physicalModule, payload)
 	}
 }
+
+func TestWriteNormalizedGoWorkspaceDropsUnavailableExternalPaths(t *testing.T) {
+	root := t.TempDir()
+	module := filepath.Join(root, "module")
+	if err := os.MkdirAll(module, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workFile := filepath.Join(root, "go.work")
+	if err := os.WriteFile(workFile, []byte(`go 1.25
+
+use (
+	./module
+	./missing-module
+)
+
+replace example.com/dependency => ./missing-replacement
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "normalized.work")
+	if err := writeNormalizedGoWorkspace(workFile, destination); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := modfile.ParseWork(destination, payload, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	physicalModule, err := filepath.EvalSymlinks(module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Use) != 1 || parsed.Use[0].Path != filepath.ToSlash(physicalModule) {
+		t.Fatalf("normalized uses = %+v, want available module %q\n%s", parsed.Use, physicalModule, payload)
+	}
+	if len(parsed.Replace) != 0 {
+		t.Fatalf("normalized replacements = %+v, want unavailable replacement omitted\n%s", parsed.Replace, payload)
+	}
+}
