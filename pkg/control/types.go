@@ -398,6 +398,10 @@ type GitRevertRequest struct {
 type RepositoryRemoteAccess string
 
 const (
+	// RepositorySnapshotStorageComponent identifies Codefly's conservative
+	// whole-tree demand for another equivalent repository worktree.
+	RepositorySnapshotStorageComponent = "repository-snapshot"
+
 	// RepositoryRemoteAccessPublicHTTPS isolates a credential-free HTTPS
 	// source from every ambient Git rewrite, helper, prompt, and SSH agent.
 	RepositoryRemoteAccessPublicHTTPS RepositoryRemoteAccess = "public-https"
