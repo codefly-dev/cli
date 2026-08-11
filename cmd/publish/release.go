@@ -130,8 +130,10 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 // Both the index and worktree are reset because gitCommit stages manifests
 // before signing; a signing or commit-hook failure must not leave them staged.
 func (e *Engine) restoreManifest(ctx context.Context) error {
-	args := []string{"restore", "--source=HEAD", "--staged", "--worktree", "--"}
-	for _, manifest := range e.manifests() {
+	manifests := e.manifests()
+	args := make([]string, 0, 5+len(manifests))
+	args = append(args, "restore", "--source=HEAD", "--staged", "--worktree", "--")
+	for _, manifest := range manifests {
 		args = append(args, manifest.Path)
 	}
 	if _, err := e.git(ctx, args...); err != nil {
