@@ -13,22 +13,32 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/wool"
+	"github.com/gofrs/flock"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
 const (
-	stateDirName   = "runs"
-	maxSweepPasses = 4
-	sigtermGrace   = 15 * time.Second
-	sigkillGrace   = 2 * time.Second
-	startTolerance = 2 * time.Second
+	stateDirName        = "runs"
+	registryLockName    = ".reaper.lock"
+	maxSweepPasses      = 4
+	recordReadAttempts  = 3
+	recordReadRetry     = 10 * time.Millisecond
+	dispositionFailed   = "failed"
+	dispositionReaped   = "reaped"
+	sigtermGrace        = 15 * time.Second
+	sigkillGrace        = 2 * time.Second
+	startTolerance      = 2 * time.Second
+	createTimePrecision = time.Millisecond
 )
 
+var errLeaderExited = errors.New("process-group leader exited")
+
 type record struct {
-	pgid    int
-	parent  int
-	started time.Time
-	command string
+	pgid      int
+	parent    int
+	started   time.Time
+	writtenAt time.Time
+	command   string
 }
 
 type leaderIdentity struct {
@@ -47,16 +57,34 @@ func ReapStaleProcessGroups(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	registryLock := flock.New(filepath.Join(dir, registryLockName))
+	locked, err := registryLock.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("lock process-group registry: %w", err)
+	}
+	if !locked {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("lock process-group registry: %w", err)
+		}
+		return errors.New("lock process-group registry: lock was not acquired")
+	}
+	defer func() {
+		_ = registryLock.Unlock()
+		_ = registryLock.Close()
+	}()
+
+	var sweepErr error
 	for range maxSweepPasses {
-		reaped, err := sweep(ctx, dir)
-		if err != nil {
-			return err
+		reaped, passErr := sweep(ctx, dir)
+		sweepErr = passErr
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, passErr)
 		}
 		if reaped == 0 {
-			return nil
+			return passErr
 		}
 	}
-	return nil
+	return sweepErr
 }
 
 func stateDir() (string, error) {
@@ -80,12 +108,16 @@ func sweep(ctx context.Context, dir string) (int, error) {
 	reaped := 0
 	var failures []error
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, err)
+			break
+		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".pgid") {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
 		disposition, err := reconcile(ctx, path)
-		if disposition == "reaped" {
+		if disposition == dispositionReaped {
 			reaped++
 		}
 		if err != nil {
@@ -99,14 +131,11 @@ func reconcile(ctx context.Context, path string) (string, error) {
 	w := wool.Get(ctx).In("processgroup.reconcile")
 	rec, err := readRecord(path)
 	if err != nil {
-		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return "", fmt.Errorf("remove invalid process-group record %s: %w", path, removeErr)
-		}
-		w.Warn("rejected process-group record",
+		w.Warn("could not reconcile process-group record",
 			wool.Field("record", path),
-			wool.Field("disposition", "rejected-invalid-record"),
+			wool.Field("disposition", "retained-invalid-record"),
 			wool.ErrField(err))
-		return "rejected", nil
+		return dispositionFailed, fmt.Errorf("read process-group record %s: %w", path, err)
 	}
 	fields := []*wool.LogField{
 		wool.Field("record", path),
@@ -124,47 +153,85 @@ func reconcile(ctx context.Context, path string) (string, error) {
 	}
 
 	leader, err := inspectLeader(rec.pgid)
-	if err != nil || !rec.matches(leader) {
+	if errors.Is(err, errLeaderExited) {
+		return reconcileLeaderless(ctx, path, &rec, fields)
+	}
+	if err != nil {
+		w.Warn("could not inspect process-group leader",
+			append(fields,
+				wool.Field("disposition", "retained-inspection-failure"),
+				wool.ErrField(err))...)
+		return dispositionFailed, fmt.Errorf("inspect process-group leader %d from record %s: %w", rec.pgid, path, err)
+	}
+	if leader.started.After(rec.writtenAt.Add(createTimePrecision)) {
 		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			return "", fmt.Errorf("remove rejected process-group record %s: %w", path, removeErr)
 		}
-		if err == nil {
-			err = errors.New("recorded start time or command does not match the process-group leader")
-		}
-		w.Warn("rejected process-group record without signaling group",
+		w.Warn("rejected process-group record for reused group without signaling group",
 			append(fields,
-				wool.Field("disposition", "rejected-identity-mismatch"),
-				wool.ErrField(err))...)
+				wool.Field("disposition", "rejected-reused-group"))...)
 		return "rejected", nil
 	}
-
-	if rec.parent > 1 && leader.parent == rec.parent && processAlive(rec.parent) {
-		w.Debug("reconciled process-group record", append(fields,
-			wool.Field("disposition", "preserved-live-owner"))...)
-		return "preserved", nil
-	}
-
-	w.Warn("reaping stale managed process group",
-		append(fields, wool.Field("disposition", "terminating-stale-owner"))...)
-	if err := terminateGroup(ctx, rec.pgid); err != nil {
-		w.Warn("failed to reap stale managed process group",
+	if !rec.matches(leader) {
+		err = errors.New("recorded start time or command does not match the process-group leader")
+		w.Warn("could not authenticate process-group record",
 			append(fields,
-				wool.Field("disposition", "reap-failed"),
+				wool.Field("disposition", "retained-identity-mismatch"),
 				wool.ErrField(err))...)
-		return "failed", fmt.Errorf("reap process group %d from record %s: %w", rec.pgid, path, err)
+		return dispositionFailed, fmt.Errorf("authenticate process-group leader %d from record %s: %w", rec.pgid, path, err)
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("remove reaped process-group record %s: %w", path, err)
+
+	if leader.parent == rec.parent {
+		ownerAlive, err := ownerPredatesRecord(&rec)
+		if err != nil {
+			w.Warn("could not inspect process-group owner",
+				append(fields,
+					wool.Field("disposition", "retained-owner-inspection-failure"),
+					wool.ErrField(err))...)
+			return dispositionFailed, fmt.Errorf("inspect process-group owner %d from record %s: %w", rec.parent, path, err)
+		}
+		if ownerAlive {
+			w.Debug("reconciled process-group record", append(fields,
+				wool.Field("disposition", "preserved-live-owner"))...)
+			return "preserved", nil
+		}
 	}
-	w.Info("reconciled stale managed process group",
-		append(fields, wool.Field("disposition", "reaped"))...)
-	return "reaped", nil
+
+	return reapGroup(ctx, path, &rec, fields)
 }
 
 func readRecord(path string) (record, error) {
+	var lastErr error
+	for attempt := range recordReadAttempts {
+		rec, err := readRecordOnce(path)
+		if err == nil {
+			return rec, nil
+		}
+		lastErr = err
+		if attempt == recordReadAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(recordReadRetry)
+		<-timer.C
+	}
+	return record{}, lastErr
+}
+
+func readRecordOnce(path string) (record, error) {
+	before, err := os.Stat(path)
+	if err != nil {
+		return record{}, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return record{}, err
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		return record{}, err
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		return record{}, errors.New("process-group record changed while being read")
 	}
 	values := make(map[string]string)
 	for line := range strings.SplitSeq(string(data), "\n") {
@@ -178,7 +245,11 @@ func readRecord(path string) (record, error) {
 		return record{}, errors.New("invalid pgid")
 	}
 	pgid := int(pgidValue)
-	parent, _ := strconv.Atoi(values["parent"])
+	parentValue, err := strconv.ParseInt(values["parent"], 10, 32)
+	if err != nil || parentValue <= 1 {
+		return record{}, errors.New("invalid parent")
+	}
+	parent := int(parentValue)
 	startedUnix, err := strconv.ParseInt(values["started"], 10, 64)
 	if err != nil || startedUnix <= 0 {
 		return record{}, errors.New("invalid start time")
@@ -188,10 +259,11 @@ func readRecord(path string) (record, error) {
 		return record{}, errors.New("invalid command summary")
 	}
 	return record{
-		pgid:    pgid,
-		parent:  parent,
-		started: time.Unix(startedUnix, 0),
-		command: command,
+		pgid:      pgid,
+		parent:    parent,
+		started:   time.Unix(startedUnix, 0),
+		writtenAt: after.ModTime(),
+		command:   command,
 	}, nil
 }
 
@@ -206,6 +278,9 @@ func recordedCommand(summary string) string {
 func inspectLeader(pgid int) (leaderIdentity, error) {
 	actualGroup, err := syscall.Getpgid(pgid)
 	if err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return leaderIdentity{}, errLeaderExited
+		}
 		return leaderIdentity{}, err
 	}
 	if actualGroup != pgid {
@@ -214,10 +289,16 @@ func inspectLeader(pgid int) (leaderIdentity, error) {
 	// #nosec G115 -- registry parsing rejects PGIDs outside the signed 32-bit process API.
 	proc, err := process.NewProcess(int32(pgid))
 	if err != nil {
+		if errors.Is(err, process.ErrorProcessNotRunning) {
+			return leaderIdentity{}, errLeaderExited
+		}
 		return leaderIdentity{}, err
 	}
 	startedMillis, err := proc.CreateTime()
 	if err != nil {
+		if errors.Is(err, process.ErrorProcessNotRunning) {
+			return leaderIdentity{}, errLeaderExited
+		}
 		return leaderIdentity{}, fmt.Errorf("inspect leader start time: %w", err)
 	}
 	parent, err := proc.Ppid()
@@ -244,17 +325,134 @@ func inspectLeader(pgid int) (leaderIdentity, error) {
 	}, nil
 }
 
-func (rec record) matches(leader leaderIdentity) bool {
+func reconcileLeaderless(ctx context.Context, path string, rec *record, fields []*wool.LogField) (string, error) {
+	w := wool.Get(ctx).In("processgroup.reconcile")
+	authenticated, err := groupPredatesRecord(rec)
+	if err != nil {
+		w.Warn("could not authenticate leaderless process group",
+			append(fields,
+				wool.Field("disposition", "retained-leaderless-inspection-failure"),
+				wool.ErrField(err))...)
+		return dispositionFailed, fmt.Errorf("authenticate leaderless process group %d from record %s: %w", rec.pgid, path, err)
+	}
+	if !authenticated {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return "", fmt.Errorf("remove rejected process-group record %s: %w", path, removeErr)
+		}
+		w.Warn("rejected process-group record for reused leaderless group without signaling group",
+			append(fields, wool.Field("disposition", "rejected-reused-leaderless-group"))...)
+		return "rejected", nil
+	}
+	ownerAlive, err := ownerPredatesRecord(rec)
+	if err != nil {
+		w.Warn("could not inspect process-group owner",
+			append(fields,
+				wool.Field("disposition", "retained-owner-inspection-failure"),
+				wool.ErrField(err))...)
+		return dispositionFailed, fmt.Errorf("inspect process-group owner %d from record %s: %w", rec.parent, path, err)
+	}
+	if ownerAlive {
+		w.Debug("reconciled process-group record", append(fields,
+			wool.Field("disposition", "preserved-live-owner-leaderless-group"))...)
+		return "preserved", nil
+	}
+	return reapGroup(ctx, path, rec, fields)
+}
+
+func groupPredatesRecord(rec *record) (bool, error) {
+	pids, err := process.Pids()
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, pid := range pids {
+		actualGroup, err := syscall.Getpgid(int(pid))
+		if errors.Is(err, syscall.ESRCH) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("inspect process %d group: %w", pid, err)
+		}
+		if actualGroup != rec.pgid {
+			continue
+		}
+		found = true
+		member, err := process.NewProcess(pid)
+		if err != nil {
+			if errors.Is(err, process.ErrorProcessNotRunning) {
+				continue
+			}
+			return false, fmt.Errorf("inspect process-group member %d: %w", pid, err)
+		}
+		startedMillis, err := member.CreateTime()
+		if err != nil {
+			if errors.Is(err, process.ErrorProcessNotRunning) {
+				continue
+			}
+			return false, fmt.Errorf("inspect process-group member %d start time: %w", pid, err)
+		}
+		if !time.UnixMilli(startedMillis).After(rec.writtenAt.Add(createTimePrecision)) {
+			return true, nil
+		}
+	}
+	if !found && groupAlive(rec.pgid) {
+		return false, errors.New("live process group had no inspectable members")
+	}
+	return false, nil
+}
+
+func ownerPredatesRecord(rec *record) (bool, error) {
+	// #nosec G115 -- registry parsing rejects parent PIDs outside the signed 32-bit process API.
+	alive, err := process.PidExists(int32(rec.parent))
+	if err != nil {
+		return false, err
+	}
+	if !alive {
+		return false, nil
+	}
+	// #nosec G115 -- registry parsing rejects parent PIDs outside the signed 32-bit process API.
+	owner, err := process.NewProcess(int32(rec.parent))
+	if err != nil {
+		if errors.Is(err, process.ErrorProcessNotRunning) {
+			return false, nil
+		}
+		return false, err
+	}
+	startedMillis, err := owner.CreateTime()
+	if err != nil {
+		if errors.Is(err, process.ErrorProcessNotRunning) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !time.UnixMilli(startedMillis).After(rec.writtenAt.Add(createTimePrecision)), nil
+}
+
+func reapGroup(ctx context.Context, path string, rec *record, fields []*wool.LogField) (string, error) {
+	w := wool.Get(ctx).In("processgroup.reconcile")
+	w.Warn("reaping stale managed process group",
+		append(fields, wool.Field("disposition", "terminating-stale-owner"))...)
+	if err := terminateGroup(ctx, rec.pgid); err != nil {
+		w.Warn("failed to reap stale managed process group",
+			append(fields,
+				wool.Field("disposition", "reap-failed"),
+				wool.ErrField(err))...)
+		return dispositionFailed, fmt.Errorf("reap process group %d from record %s: %w", rec.pgid, path, err)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return dispositionReaped, fmt.Errorf("remove reaped process-group record %s: %w", path, err)
+	}
+	w.Info("reconciled stale managed process group",
+		append(fields, wool.Field("disposition", dispositionReaped))...)
+	return dispositionReaped, nil
+}
+
+func (rec *record) matches(leader leaderIdentity) bool {
 	if difference := rec.started.Sub(leader.started); difference < -startTolerance || difference > startTolerance {
 		return false
 	}
 	_, ok := leader.commandNames[rec.command]
 	return ok
-}
-
-func processAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func groupAlive(pgid int) bool {
