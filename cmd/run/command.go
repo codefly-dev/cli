@@ -65,7 +65,33 @@ func runManagedCommand(argv []string) (returnErr error) {
 	ctx, stopSignals := common.SignalContext(ctx)
 	defer stopSignals()
 
-	options := []coresdk.OptionFunc{coresdk.WithTimeout(commandDependencyTimeout)}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve current Codefly executable: %w", err)
+	}
+	options := managedCommandDependencyOptions(executable)
+
+	dependencies, err := coresdk.WithDependencies(ctx, options...)
+	if err != nil {
+		return fmt.Errorf("start command dependencies: %w", err)
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		returnErr = errors.Join(returnErr, dependencies.Destroy(cleanupCtx))
+	}()
+
+	return executeManagedCommand(ctx, argv)
+}
+
+// managedCommandDependencyOptions binds nested dependency startup to the
+// invoking CLI release. The SDK remains the lifecycle owner, while PATH and a
+// caller environment cannot silently compose two different CLI versions.
+func managedCommandDependencyOptions(executable string) []coresdk.OptionFunc {
+	options := []coresdk.OptionFunc{
+		coresdk.WithTimeout(commandDependencyTimeout),
+		coresdk.WithCodeflyBinary(executable),
+	}
 	if commandNamingScope != "" {
 		options = append(options, coresdk.WithNamingScope(commandNamingScope))
 	}
@@ -82,17 +108,7 @@ func runManagedCommand(argv []string) (returnErr error) {
 		options = append(options, coresdk.WithExcludedDependencies(commandExcluded...))
 	}
 
-	dependencies, err := coresdk.WithDependencies(ctx, options...)
-	if err != nil {
-		return fmt.Errorf("start command dependencies: %w", err)
-	}
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		returnErr = errors.Join(returnErr, dependencies.Destroy(cleanupCtx))
-	}()
-
-	return executeManagedCommand(ctx, argv)
+	return options
 }
 
 // executeManagedCommand preserves the terminal streams and invokes argv

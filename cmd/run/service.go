@@ -107,7 +107,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	if servicePath != "" {
 		workspace, module, service, err = common.LoadWithServicePathOverrideE(ctx, servicePath)
 	} else {
-		workspace, module, service, err = common.LoadRequiredE(ctx, args)
+		workspace, module, service, err = loadRequiredServiceForRun(ctx, args, isHeadless)
 	}
 	if err != nil {
 		return fmt.Errorf("cannot load required service: %w", err)
@@ -513,6 +513,17 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("service %s stopped with an error: %w", serviceName, runErr)
 	}
 	return nil
+}
+
+// loadRequiredServiceForRun keeps terminal access aligned with the execution
+// mode selected at the command boundary. SDK, CI, and explicit headless runs
+// must fail on ambiguous workspace context instead of opening /dev/tty from a
+// background process group.
+func loadRequiredServiceForRun(ctx context.Context, args []string, isHeadless bool) (*resources.Workspace, *resources.Module, *resources.Service, error) {
+	if isHeadless {
+		return common.LoadRequiredNonInteractiveE(ctx, args)
+	}
+	return common.LoadRequiredE(ctx, args)
 }
 
 func shouldWaitForRun(loadOnly, initOnly bool) bool {
