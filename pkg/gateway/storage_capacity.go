@@ -7,13 +7,10 @@ package gateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
-	"syscall"
 	"unicode"
 
 	"github.com/codefly-dev/core/failures"
@@ -113,12 +110,6 @@ func canonicalStorageRequirements(req *gatewayv1.EvaluateStorageCapacityRequest)
 	return canonical, nil
 }
 
-type storageFilesystem struct {
-	authorityID    string
-	totalBytes     uint64
-	availableBytes uint64
-}
-
 func (s *Server) evaluateStorageRequirements(requirements []*basev0.StorageCapacityRequirement) ([]*basev0.StorageCapacityAdmission, error) {
 	admissions := make([]*basev0.StorageCapacityAdmission, 0, 2)
 	byAuthority := make(map[string]*basev0.StorageCapacityAdmission, 2)
@@ -127,27 +118,27 @@ func (s *Server) evaluateStorageRequirements(requirements []*basev0.StorageCapac
 		if err != nil {
 			return nil, err
 		}
-		filesystem, err := filesystemCapacity(root)
+		filesystem, err := resources.InspectStorageFilesystem(root)
 		if err != nil {
 			return nil, fmt.Errorf("inspect %s: %w", requirement.GetAuthorityKind(), err)
 		}
-		admission := byAuthority[filesystem.authorityID]
+		admission := byAuthority[filesystem.AuthorityID]
 		if admission == nil {
 			admission = &basev0.StorageCapacityAdmission{
-				AuthorityId: filesystem.authorityID, TotalBytes: filesystem.totalBytes, AvailableBytes: filesystem.availableBytes,
+				AuthorityId: filesystem.AuthorityID, TotalBytes: filesystem.TotalBytes, AvailableBytes: filesystem.AvailableBytes,
 			}
-			byAuthority[filesystem.authorityID] = admission
+			byAuthority[filesystem.AuthorityID] = admission
 			admissions = append(admissions, admission)
-		} else if filesystem.availableBytes < admission.AvailableBytes {
+		} else if filesystem.AvailableBytes < admission.AvailableBytes {
 			// Measurements for two logical roots on one live volume can differ by
 			// concurrent writes. The conservative reading governs admission.
-			admission.AvailableBytes = filesystem.availableBytes
+			admission.AvailableBytes = filesystem.AvailableBytes
 		}
 		if !containsStorageAuthorityKind(admission.AuthorityKinds, requirement.GetAuthorityKind()) {
 			admission.AuthorityKinds = append(admission.AuthorityKinds, requirement.GetAuthorityKind())
 		}
 		if math.MaxUint64-admission.RequiredBytes < requirement.GetBytes() {
-			return nil, fmt.Errorf("%w for authority %s", errStorageCapacityRequirementsOverflow, filesystem.authorityID)
+			return nil, fmt.Errorf("%w for authority %s", errStorageCapacityRequirementsOverflow, filesystem.AuthorityID)
 		}
 		admission.RequiredBytes += requirement.GetBytes()
 		admission.Requirements = append(admission.Requirements, requirement)
@@ -191,36 +182,4 @@ func validStorageRequirementComponent(component string) bool {
 		}
 	}
 	return true
-}
-
-func filesystemCapacity(root string) (storageFilesystem, error) {
-	var state syscall.Statfs_t
-	if err := syscall.Statfs(root, &state); err != nil {
-		return storageFilesystem{}, err
-	}
-	if state.Bsize <= 0 {
-		return storageFilesystem{}, fmt.Errorf("filesystem reported invalid block size %d", state.Bsize)
-	}
-	blockSize := uint64(state.Bsize)
-	totalBytes, ok := checkedStorageBytes(uint64(state.Blocks), blockSize)
-	if !ok {
-		return storageFilesystem{}, fmt.Errorf("filesystem total byte count overflows uint64")
-	}
-	availableBytes, ok := checkedStorageBytes(uint64(state.Bavail), blockSize)
-	if !ok {
-		return storageFilesystem{}, fmt.Errorf("filesystem available byte count overflows uint64")
-	}
-	identity := fmt.Sprintf("%v:%d", state.Fsid, totalBytes)
-	digest := sha256.Sum256([]byte(identity))
-	return storageFilesystem{
-		authorityID: "storage/sha256:" + hex.EncodeToString(digest[:8]),
-		totalBytes:  totalBytes, availableBytes: availableBytes,
-	}, nil
-}
-
-func checkedStorageBytes(blocks, blockSize uint64) (uint64, bool) {
-	if blockSize != 0 && blocks > math.MaxUint64/blockSize {
-		return 0, false
-	}
-	return blocks * blockSize, true
 }
