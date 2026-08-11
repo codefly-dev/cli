@@ -56,7 +56,9 @@ type mockCodeClient struct {
 }
 
 type mockRuntimeClient struct {
-	testFn func(ctx context.Context, in *runtimev0.TestRequest, opts ...grpc.CallOption) (*runtimev0.TestResponse, error)
+	testFn  func(ctx context.Context, in *runtimev0.TestRequest, opts ...grpc.CallOption) (*runtimev0.TestResponse, error)
+	buildFn func(ctx context.Context, in *runtimev0.BuildRequest, opts ...grpc.CallOption) (*runtimev0.BuildResponse, error)
+	lintFn  func(ctx context.Context, in *runtimev0.LintRequest, opts ...grpc.CallOption) (*runtimev0.LintResponse, error)
 }
 
 type mockServiceExecution struct {
@@ -172,8 +174,11 @@ func (m *mockRuntimeClient) Stop(context.Context, *runtimev0.StopRequest, ...grp
 func (m *mockRuntimeClient) Destroy(context.Context, *runtimev0.DestroyRequest, ...grpc.CallOption) (*runtimev0.DestroyResponse, error) {
 	return nil, fmt.Errorf("not exercised in mock")
 }
-func (m *mockRuntimeClient) Build(context.Context, *runtimev0.BuildRequest, ...grpc.CallOption) (*runtimev0.BuildResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock")
+func (m *mockRuntimeClient) Build(ctx context.Context, in *runtimev0.BuildRequest, opts ...grpc.CallOption) (*runtimev0.BuildResponse, error) {
+	if m.buildFn == nil {
+		return nil, fmt.Errorf("Build not configured")
+	}
+	return m.buildFn(ctx, in, opts...)
 }
 func (m *mockRuntimeClient) Test(ctx context.Context, in *runtimev0.TestRequest, opts ...grpc.CallOption) (*runtimev0.TestResponse, error) {
 	if m.testFn == nil {
@@ -181,8 +186,11 @@ func (m *mockRuntimeClient) Test(ctx context.Context, in *runtimev0.TestRequest,
 	}
 	return m.testFn(ctx, in, opts...)
 }
-func (m *mockRuntimeClient) Lint(context.Context, *runtimev0.LintRequest, ...grpc.CallOption) (*runtimev0.LintResponse, error) {
-	return nil, fmt.Errorf("not exercised in mock")
+func (m *mockRuntimeClient) Lint(ctx context.Context, in *runtimev0.LintRequest, opts ...grpc.CallOption) (*runtimev0.LintResponse, error) {
+	if m.lintFn == nil {
+		return nil, fmt.Errorf("Lint not configured")
+	}
+	return m.lintFn(ctx, in, opts...)
 }
 func (m *mockRuntimeClient) Information(context.Context, *runtimev0.InformationRequest, ...grpc.CallOption) (*runtimev0.InformationResponse, error) {
 	return nil, fmt.Errorf("not exercised in mock")
@@ -599,6 +607,151 @@ func TestTestPreservesStructuredRuntimeFields(t *testing.T) {
 	}
 	if len(resp.Failures) != 1 || resp.Failures[0] != "pkg.TestFails: want 1 got 2" {
 		t.Fatalf("Failures = %#v", resp.Failures)
+	}
+}
+
+func TestComposeStatusOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		output  string
+		want    string
+	}{
+		{
+			name:    "identical message and output surface once",
+			message: "build not available: generic agent has no language knowledge",
+			output:  "build not available: generic agent has no language knowledge",
+			want:    "build not available: generic agent has no language knowledge",
+		},
+		{
+			name:    "distinct message is prepended",
+			message: "build failed",
+			output:  "compiler: undefined symbol",
+			want:    "build failed\ncompiler: undefined symbol",
+		},
+		{
+			name:    "message present as a whole line among others is not repeated",
+			message: "build not available",
+			output:  "warming up\nbuild not available\ncleaning up",
+			want:    "warming up\nbuild not available\ncleaning up",
+		},
+		{
+			name:    "message that is only a fragment of a line is still prepended",
+			message: "check failed",
+			output:  "pre check failed post",
+			want:    "check failed\npre check failed post",
+		},
+		{
+			name:    "multi-line message present as consecutive lines is not repeated",
+			message: "build failed\nsee log for details",
+			output:  "build failed\nsee log for details",
+			want:    "build failed\nsee log for details",
+		},
+		{
+			name:    "message matching only an indented line is still prepended",
+			message: "build failed",
+			output:  "    build failed",
+			want:    "build failed\n    build failed",
+		},
+		{
+			name:    "message matching a line with trailing whitespace is not repeated",
+			message: "build failed",
+			output:  "build failed   ",
+			want:    "build failed   ",
+		},
+		{
+			name:    "empty message leaves output untouched",
+			message: "",
+			output:  "raw output",
+			want:    "raw output",
+		},
+		{
+			name:    "whitespace-only message leaves output untouched",
+			message: "  \n  ",
+			output:  "raw output",
+			want:    "raw output",
+		},
+		{
+			name:    "message with empty output surfaces the message alone",
+			message: "build failed",
+			output:  "",
+			want:    "build failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := composeStatusOutput(tt.message, tt.output); got != tt.want {
+				t.Fatalf("composeStatusOutput(%q, %q) = %q, want %q", tt.message, tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildDoesNotDuplicateStatusMessageInOutput(t *testing.T) {
+	const msg = "build not available: generic agent has no language knowledge"
+	rt := &mockRuntimeClient{
+		buildFn: func(_ context.Context, _ *runtimev0.BuildRequest, _ ...grpc.CallOption) (*runtimev0.BuildResponse, error) {
+			return &runtimev0.BuildResponse{
+				Output: msg,
+				Status: &runtimev0.BuildStatus{State: runtimev0.BuildStatus_ERROR, Message: msg},
+			}, nil
+		},
+	}
+	s := newTestServerWithRuntime(rt)
+
+	resp, err := s.Build(context.Background(), &gatewayv1.BuildRequest{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if resp.Success {
+		t.Fatal("Success = true, want false")
+	}
+	if resp.Output != msg {
+		t.Fatalf("Output = %q, want the message surfaced once", resp.Output)
+	}
+}
+
+func TestBuildPrependsDistinctStatusMessage(t *testing.T) {
+	rt := &mockRuntimeClient{
+		buildFn: func(_ context.Context, _ *runtimev0.BuildRequest, _ ...grpc.CallOption) (*runtimev0.BuildResponse, error) {
+			return &runtimev0.BuildResponse{
+				Output: "compiler: undefined symbol",
+				Status: &runtimev0.BuildStatus{State: runtimev0.BuildStatus_ERROR, Message: "build failed"},
+			}, nil
+		},
+	}
+	s := newTestServerWithRuntime(rt)
+
+	resp, err := s.Build(context.Background(), &gatewayv1.BuildRequest{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if resp.Output != "build failed\ncompiler: undefined symbol" {
+		t.Fatalf("Output = %q, want status context preserved ahead of native output", resp.Output)
+	}
+}
+
+func TestLintDoesNotDuplicateStatusMessageInOutput(t *testing.T) {
+	const msg = "lint not available: generic agent has no language knowledge"
+	rt := &mockRuntimeClient{
+		lintFn: func(_ context.Context, _ *runtimev0.LintRequest, _ ...grpc.CallOption) (*runtimev0.LintResponse, error) {
+			return &runtimev0.LintResponse{
+				Output: msg,
+				Status: &runtimev0.LintStatus{State: runtimev0.LintStatus_ERROR, Message: msg},
+			}, nil
+		},
+	}
+	s := newTestServerWithRuntime(rt)
+
+	resp, err := s.Lint(context.Background(), &gatewayv1.LintRequest{})
+	if err != nil {
+		t.Fatalf("Lint: %v", err)
+	}
+	if resp.Success {
+		t.Fatal("Success = true, want false")
+	}
+	if resp.Output != msg {
+		t.Fatalf("Output = %q, want the message surfaced once", resp.Output)
 	}
 }
 

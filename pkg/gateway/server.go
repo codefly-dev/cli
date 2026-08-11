@@ -1604,6 +1604,49 @@ func (s *Server) DiscoverCodeUnits(ctx context.Context, req *gatewayv1.DiscoverC
 
 // ─── Build / Lint / Test ─────────────────────────────────────
 
+// composeStatusOutput surfaces a typed runtime status message alongside raw
+// agent output. Agents that already fold the actionable message into raw output
+// (as Generic does) would otherwise show it twice, so the message is only
+// prepended when the raw output does not already carry it as its own line(s).
+func composeStatusOutput(message, output string) string {
+	message = strings.TrimSpace(message)
+	if message == "" || outputCarriesMessage(output, message) {
+		return output
+	}
+	if output == "" {
+		return message
+	}
+	return message + "\n" + output
+}
+
+// outputCarriesMessage reports whether message already appears in output as a
+// contiguous run of whole lines. Matching whole lines rather than a raw substring
+// keeps a message that is merely a fragment of a larger, distinct line — where
+// the status context is genuinely additive — from being dropped. Only trailing
+// whitespace is normalized: leading indentation is significant, so an indented
+// output line is treated as distinct from an unindented status message.
+func outputCarriesMessage(output, message string) bool {
+	messageLines := strings.Split(message, "\n")
+	outputLines := strings.Split(output, "\n")
+	for start := 0; start+len(messageLines) <= len(outputLines); start++ {
+		matched := true
+		for offset, messageLine := range messageLines {
+			if trimTrailingSpace(outputLines[start+offset]) != trimTrailingSpace(messageLine) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func trimTrailingSpace(s string) string {
+	return strings.TrimRight(s, " \t\r\v\f")
+}
+
 func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gatewayv1.BuildResponse, error) {
 	service, err := s.executionServiceBehavior()
 	if err != nil {
@@ -1616,7 +1659,7 @@ func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gateway
 	success := resp.Status != nil && resp.Status.State == runtimev0.BuildStatus_SUCCESS
 	output := resp.Output
 	if !success && resp.Status != nil {
-		output = resp.Status.Message + "\n" + output
+		output = composeStatusOutput(resp.Status.Message, output)
 	}
 	var buildErrors []*gatewayv1.BuildError
 	if !success {
@@ -1637,7 +1680,7 @@ func (s *Server) Lint(ctx context.Context, _ *gatewayv1.LintRequest) (*gatewayv1
 	success := resp.Status != nil && resp.Status.State == runtimev0.LintStatus_SUCCESS
 	output := resp.Output
 	if !success && resp.Status != nil {
-		output = resp.Status.Message + "\n" + output
+		output = composeStatusOutput(resp.Status.Message, output)
 	}
 	var lintErrors []*gatewayv1.BuildError
 	if !success {
