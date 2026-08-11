@@ -104,7 +104,11 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	}
 
 	if err := e.gitCommit(ctx, newTag); err != nil {
-		return "", fmt.Errorf("commit: %w", err)
+		commitErr := fmt.Errorf("commit: %w", err)
+		if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
+			return "", errors.Join(commitErr, restoreErr)
+		}
+		return "", commitErr
 	}
 	if err := e.gitTag(ctx, newTag); err != nil {
 		return "", fmt.Errorf("tag: %w", err)
@@ -121,11 +125,12 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	return newTag, nil
 }
 
-// restoreManifest reverts the working-tree version bump after an aborted
-// release. Pre-flight guaranteed a clean tree, so checking out the
-// manifest restores the previously committed version verbatim.
+// restoreManifest reverts every publisher-owned manifest after an aborted
+// release. Pre-flight guaranteed a clean tree, so restoring from HEAD is exact.
+// Both the index and worktree are reset because gitCommit stages manifests
+// before signing; a signing or commit-hook failure must not leave them staged.
 func (e *Engine) restoreManifest(ctx context.Context) error {
-	args := []string{"checkout", "--"}
+	args := []string{"restore", "--source=HEAD", "--staged", "--worktree", "--"}
 	for _, manifest := range e.manifests() {
 		args = append(args, manifest.Path)
 	}
