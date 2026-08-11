@@ -122,6 +122,50 @@ func TestGitStatusReportsContainingRepositoryRootFromNestedDirectory(t *testing.
 	}
 }
 
+func TestApplyPatchDryRunForwardAndReverse(t *testing.T) {
+	dir := initGitRepo(t)
+	patch := `diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-hello
++goodbye
+`
+	plane := New()
+	dryRun, err := plane.ApplyPatch(t.Context(), ApplyPatchRequest{Dir: dir, Patch: patch, DryRun: true})
+	if err != nil {
+		t.Fatalf("dry-run ApplyPatch: %v", err)
+	}
+	if dryRun.Changed || dryRun.Strategy != "git-apply" || len(dryRun.ChangedFiles) != 1 || dryRun.ChangedFiles[0] != "README.md" {
+		t.Fatalf("dry-run result = %+v", dryRun)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "README.md")); err != nil || string(data) != "hello\n" {
+		t.Fatalf("dry-run content = %q, err=%v", data, err)
+	}
+
+	applied, err := plane.ApplyPatch(t.Context(), ApplyPatchRequest{Dir: dir, Patch: patch})
+	if err != nil {
+		t.Fatalf("forward ApplyPatch: %v", err)
+	}
+	if !applied.Changed || applied.Strategy != "git-apply" {
+		t.Fatalf("forward result = %+v", applied)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "README.md")); err != nil || string(data) != "goodbye\n" {
+		t.Fatalf("forward content = %q, err=%v", data, err)
+	}
+
+	reversed, err := plane.ApplyPatch(t.Context(), ApplyPatchRequest{Dir: dir, Patch: patch, Reverse: true})
+	if err != nil {
+		t.Fatalf("reverse ApplyPatch: %v", err)
+	}
+	if !reversed.Changed || len(reversed.ChangedFiles) != 1 || reversed.ChangedFiles[0] != "README.md" {
+		t.Fatalf("reverse result = %+v", reversed)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "README.md")); err != nil || string(data) != "hello\n" {
+		t.Fatalf("reverse content = %q, err=%v", data, err)
+	}
+}
+
 func TestGitCommitAndLog(t *testing.T) {
 	dir := initGitRepo(t)
 	ctx := context.Background()

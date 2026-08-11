@@ -130,6 +130,7 @@ type SourceEditor interface {
 type VCS interface {
 	GitStatus(ctx context.Context, dir string) (GitStatus, error)
 	GitDiff(ctx context.Context, req GitDiffRequest) (string, error)
+	ApplyPatch(ctx context.Context, req ApplyPatchRequest) (ApplyPatchResult, error)
 	GitLog(ctx context.Context, req GitLogRequest) ([]GitCommit, error)
 	GitCommit(ctx context.Context, req GitCommitRequest) (GitCommit, error)
 	GitBranch(ctx context.Context, req GitBranchRequest) (GitAct, error)

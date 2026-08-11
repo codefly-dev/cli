@@ -40,10 +40,17 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func gitWithEnvironment(ctx context.Context, dir string, environment []string, args ...string) (string, error) {
+	return gitWithEnvironmentAndInput(ctx, dir, environment, nil, args...)
+}
+
+func gitWithEnvironmentAndInput(ctx context.Context, dir string, environment []string, input []byte, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	if environment != nil {
 		cmd.Env = environment
+	}
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
@@ -130,6 +137,102 @@ func gitDiffAt(ctx context.Context, repo string, req GitDiffRequest) (string, er
 		args = append(args, req.Paths...)
 	}
 	return git(ctx, repo, args...)
+}
+
+const (
+	maxUnifiedPatchBytes = 16 << 20
+	unifiedPatchStrategy = "git-apply"
+)
+
+// ApplyPatch keeps unified-diff parsing, path handling, and Git command
+// construction inside Codefly's VCS control plane. Callers supply mutation
+// intent and receive source-free evidence only.
+func (p *planeImpl) ApplyPatch(ctx context.Context, req ApplyPatchRequest) (ApplyPatchResult, error) {
+	repo, err := p.gitDir(ctx, req.Dir)
+	if err != nil {
+		return ApplyPatchResult{}, err
+	}
+	return applyPatchAt(ctx, repo, req)
+}
+
+func applyPatchAt(ctx context.Context, repo string, req ApplyPatchRequest) (ApplyPatchResult, error) {
+	patch := normalizeUnifiedPatch(req.Patch)
+	if len(patch) == 0 {
+		return ApplyPatchResult{}, fmt.Errorf("unified patch is required")
+	}
+	if len(patch) > maxUnifiedPatchBytes {
+		return ApplyPatchResult{}, fmt.Errorf("unified patch exceeds %d-byte limit", maxUnifiedPatchBytes)
+	}
+	args := []string{"apply", "--whitespace=nowarn"}
+	if req.Reverse {
+		args = append(args, "--reverse")
+	}
+	pathsOutput, err := gitWithEnvironmentAndInput(ctx, repo, nil, patch, append(args, "--numstat", "-z")...)
+	if err != nil {
+		return ApplyPatchResult{}, fmt.Errorf("inspect unified patch: %w", err)
+	}
+	paths, err := parsePatchNumstat(pathsOutput)
+	if err != nil {
+		return ApplyPatchResult{}, err
+	}
+	if _, err := gitWithEnvironmentAndInput(ctx, repo, nil, patch, append(args, "--check")...); err != nil {
+		return ApplyPatchResult{}, fmt.Errorf("check unified patch: %w", err)
+	}
+	result := ApplyPatchResult{ChangedFiles: paths, Strategy: unifiedPatchStrategy}
+	if req.DryRun {
+		return result, nil
+	}
+	if _, err := gitWithEnvironmentAndInput(ctx, repo, nil, patch, args...); err != nil {
+		return ApplyPatchResult{}, fmt.Errorf("apply unified patch: %w", err)
+	}
+	result.Changed = len(paths) > 0
+	return result, nil
+}
+
+func normalizeUnifiedPatch(patch string) []byte {
+	patch = strings.ReplaceAll(patch, "\r\n", "\n")
+	patch = strings.ReplaceAll(patch, "\r", "\n")
+	if strings.TrimSpace(patch) == "" {
+		return nil
+	}
+	if !strings.HasSuffix(patch, "\n") {
+		patch += "\n"
+	}
+	return []byte(patch)
+}
+
+func parsePatchNumstat(output string) ([]string, error) {
+	entries := strings.Split(output, "\x00")
+	paths := make([]string, 0, len(entries))
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if entry == "" {
+			continue
+		}
+		fields := strings.SplitN(entry, "\t", 3)
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("git apply returned malformed numstat evidence")
+		}
+		path := fields[2]
+		if path == "" {
+			// With -z, a rename/copy has an empty path in the header followed by
+			// old and new path records. The resulting file is the new identity.
+			if i+2 >= len(entries) || entries[i+1] == "" || entries[i+2] == "" {
+				return nil, fmt.Errorf("git apply returned incomplete rename evidence")
+			}
+			path = entries[i+2]
+			i += 2
+		}
+		cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+		if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || filepath.IsAbs(filepath.FromSlash(path)) {
+			return nil, fmt.Errorf("git apply returned unsafe changed path")
+		}
+		paths = append(paths, cleaned)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("unified patch declares no changed files")
+	}
+	return paths, nil
 }
 
 // GitLog returns up to req.Limit commits (default 20, capped at 1000).

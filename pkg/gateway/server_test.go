@@ -1260,6 +1260,40 @@ func TestGitStatus(t *testing.T) {
 	}
 }
 
+func TestApplyPatchUsesTypedControlPlane(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	run("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := &Server{cfg: Config{WorkDir: dir}, mindYAML: &MindYAML{Service: "test-svc", Plugin: "generic-go"}}
+	response, err := server.ApplyPatch(t.Context(), &gatewayv1.ApplyPatchRequest{Patch: `diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-before
++after
+`})
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	if !response.GetSuccess() || !response.GetChanged() || response.GetStrategy() != "git-apply" || len(response.GetChangedFiles()) != 1 || response.GetChangedFiles()[0] != "README.md" {
+		t.Fatalf("ApplyPatch response = %+v", response)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "README.md")); err != nil || string(data) != "after\n" {
+		t.Fatalf("patched content = %q, err=%v", data, err)
+	}
+}
+
 func TestRunCommand(t *testing.T) {
 	dir := t.TempDir()
 	s := newTestServerWithWorkDir(editingMock(t, dir), dir)

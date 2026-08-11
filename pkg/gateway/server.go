@@ -2395,6 +2395,27 @@ func (s *Server) GitDiff(ctx context.Context, req *gatewayv1.GitDiffRequest) (*g
 	return &gatewayv1.GitDiffResponse{Diff: diff}, nil
 }
 
+// ApplyPatch delegates complete unified-diff application to Codefly's VCS
+// control plane. The response deliberately contains no project file bodies or
+// raw command output.
+func (s *Server) ApplyPatch(ctx context.Context, req *gatewayv1.ApplyPatchRequest) (*gatewayv1.ApplyPatchResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "apply patch request is required")
+	}
+	if err := s.validateService(req.GetService()); err != nil {
+		return nil, err
+	}
+	result, err := s.controlScope().ApplyPatch(ctx, control.ApplyPatchRequest{
+		Patch: req.GetPatch(), Reverse: req.GetReverse(), DryRun: req.GetDryRun(),
+	})
+	if err != nil {
+		return &gatewayv1.ApplyPatchResponse{Success: false, Error: gatewayErrorMessage(s.serviceRoot(), err)}, nil
+	}
+	return &gatewayv1.ApplyPatchResponse{
+		Success: true, ChangedFiles: result.ChangedFiles, Changed: result.Changed, Strategy: result.Strategy,
+	}, nil
+}
+
 func gatewayErrorMessage(root string, err error) string {
 	if err == nil {
 		return ""

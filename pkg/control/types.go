@@ -285,6 +285,22 @@ type GitDiffRequest struct {
 	Paths  []string
 }
 
+// ApplyPatchRequest applies or reverses one complete unified diff. Patch
+// interpretation and the underlying VCS invocation remain inside Codefly.
+type ApplyPatchRequest struct {
+	Dir     string
+	Patch   string
+	Reverse bool
+	DryRun  bool
+}
+
+// ApplyPatchResult is source-free evidence of a validated or completed patch.
+type ApplyPatchResult struct {
+	ChangedFiles []string
+	Changed      bool
+	Strategy     string
+}
+
 // GitLogRequest selects commits.
 type GitLogRequest struct {
 	Dir   string
