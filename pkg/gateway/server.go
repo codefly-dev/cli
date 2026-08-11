@@ -47,6 +47,7 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
+	"github.com/codefly-dev/core/grpcconfig"
 	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
@@ -363,11 +364,12 @@ func (s *Server) Serve(ctx context.Context) error {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
-	serverOptions := []grpc.ServerOption{
+	serverOptions := grpcconfig.TypedMessageServerOptions()
+	serverOptions = append(serverOptions,
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(gatewayAuthUnaryInterceptor(s.cfg.Token), rpcLogInterceptor()),
 		grpc.StreamInterceptor(gatewayAuthStreamInterceptor(s.cfg.Token)),
-	}
+	)
 	if s.tlsConfig != nil {
 		serverOptions = append(serverOptions, grpc.Creds(credentials.NewTLS(s.tlsConfig.Clone())))
 	}
