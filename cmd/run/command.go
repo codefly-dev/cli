@@ -103,6 +103,8 @@ func executeManagedCommand(ctx context.Context, argv []string) error {
 	if len(argv) == 0 {
 		return errors.New("managed command argv is empty")
 	}
+	//nolint:gosec // G204/G702: this boundary intentionally executes the
+	// operator's explicit argv. No shell parses or expands it before execution.
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
