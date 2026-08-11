@@ -608,6 +608,49 @@ func TestRemoveIncompleteRepositoryCacheRefusesGitRepository(t *testing.T) {
 	}
 }
 
+// TestPrepareRepositoryCheckoutRepairsInterruptedCloneWithPartialGitMetadata
+// reproduces the on-disk state left when clone is interrupted after creating
+// .git scaffolding but before publishing HEAD. The next typed materialization
+// request must replace that incomplete cache and complete the real clone.
+func TestPrepareRepositoryCheckoutRepairsInterruptedCloneWithPartialGitMetadata(t *testing.T) {
+	source := initGitRepo(t)
+	serverRoot := t.TempDir()
+	bare := filepath.Join(serverRoot, "repository.git")
+	runGit(t, serverRoot, "clone", "--bare", "--", source, bare)
+
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "cache", "repository")
+	for _, directory := range []string{
+		filepath.Join(cachePath, ".git", "objects", "pack"),
+		filepath.Join(cachePath, ".git", "refs", "heads"),
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := PrepareRepositoryCheckoutRequest{
+		Dir:            root,
+		RepositoryURL:  "file://" + bare,
+		CacheDirectory: "cache/repository",
+		FetchIdentity:  "interrupted-clone-retry",
+		RemoteAccess:   RepositoryRemoteAccessLocalFile,
+	}
+	prepared, err := New().PrepareRepositoryCheckout(t.Context(), request)
+	if err != nil {
+		t.Fatalf("repair interrupted clone: %v", err)
+	}
+	if prepared.Revision == "" {
+		t.Fatal("repair returned an empty revision")
+	}
+	got, err := git(t.Context(), cachePath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != prepared.Revision {
+		t.Fatalf("repaired cache HEAD = %q, want %q", got, prepared.Revision)
+	}
+}
+
 // TestPrepareRepositoryCheckoutCancelledContextPreservesCache proves a
 // cancelled context — whose rev-parse failure looks identical to "not a
 // repository" — never deletes a valid cache and returns the context error.

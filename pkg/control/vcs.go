@@ -778,14 +778,22 @@ func removeIncompleteRepositoryCache(cachePath string) error {
 	return nil
 }
 
-// repositoryCacheHasGitMetadata reports whether cachePath already holds a Git
-// repository, using a filesystem probe rather than a git command (which can
-// itself fail for the same environmental reasons that made rev-parse fail). It
-// recognizes both a non-bare clone (a .git entry) and a bare repository (HEAD
-// alongside an objects directory).
+// repositoryCacheHasGitMetadata reports whether cachePath has the structural
+// metadata of a Git repository, using a filesystem probe rather than a git
+// command (which can itself fail for the same environmental reasons that made
+// rev-parse fail). An interrupted clone can create a .git directory and its
+// object scaffolding before publishing .git/HEAD; that is incomplete,
+// replaceable cache state rather than a repository that must be preserved.
+// A .git file may be a linked-worktree pointer, so preserve it conservatively.
+// Bare repositories are recognized by HEAD alongside an objects directory.
 func repositoryCacheHasGitMetadata(cachePath string) bool {
-	if _, err := os.Lstat(filepath.Join(cachePath, ".git")); err == nil {
-		return true
+	gitMetadata := filepath.Join(cachePath, ".git")
+	if info, err := os.Lstat(gitMetadata); err == nil {
+		if !info.IsDir() {
+			return true
+		}
+		_, headErr := os.Lstat(filepath.Join(gitMetadata, "HEAD"))
+		return headErr == nil
 	}
 	_, headErr := os.Lstat(filepath.Join(cachePath, "HEAD"))
 	_, objectsErr := os.Lstat(filepath.Join(cachePath, "objects"))
