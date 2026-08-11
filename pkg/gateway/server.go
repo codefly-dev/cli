@@ -2652,6 +2652,10 @@ func (s *Server) MaterializeRepositorySnapshot(
 	}
 	return &gatewayv1.MaterializeRepositorySnapshotResponse{
 		Success: true, Revision: result.Revision, SnapshotDirectory: result.SnapshotDirectory,
+		EquivalentSnapshotRequirement: &basev0.StorageCapacityRequirement{
+			Component: "repository-snapshot", Bytes: result.EquivalentSnapshotBytes,
+			AuthorityKind: basev0.StorageAuthorityKind_STORAGE_AUTHORITY_KIND_GATEWAY_ROOT,
+		},
 	}, nil
 }
 

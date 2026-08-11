@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/codefly-dev/core/resources"
 )
 
 // This file lifts the VCS group. Git is a generic operation with nothing
@@ -606,12 +609,48 @@ func materializeRepositorySnapshotAt(
 		if existingRevision != prepared.revision {
 			return MaterializedRepositorySnapshot{}, fmt.Errorf("repository snapshot already resolves %s, want %s", existingRevision, prepared.revision)
 		}
-		return MaterializedRepositorySnapshot{Revision: prepared.revision, SnapshotDirectory: snapshotDirectory}, nil
+		return inspectMaterializedRepositorySnapshot(ctx, snapshotPath, prepared.revision, snapshotDirectory)
 	}
 	if _, err := gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "worktree", "add", "--detach", snapshotPath, prepared.revision); err != nil {
 		return MaterializedRepositorySnapshot{}, fmt.Errorf("create repository snapshot: %w", err)
 	}
-	return MaterializedRepositorySnapshot{Revision: prepared.revision, SnapshotDirectory: snapshotDirectory}, nil
+	result, err := inspectMaterializedRepositorySnapshot(ctx, snapshotPath, prepared.revision, snapshotDirectory)
+	if err == nil {
+		return result, nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	_, removeErr := gitWithEnvironment(cleanupCtx, prepared.cachePath, prepared.environment, "worktree", "remove", "--force", snapshotPath)
+	_, pruneErr := gitWithEnvironment(cleanupCtx, prepared.cachePath, prepared.environment, "worktree", "prune")
+	return MaterializedRepositorySnapshot{}, errors.Join(
+		err,
+		wrapRepositorySnapshotCleanupError("remove unmeasured repository snapshot", removeErr),
+		wrapRepositorySnapshotCleanupError("prune unmeasured repository snapshot", pruneErr),
+	)
+}
+
+func inspectMaterializedRepositorySnapshot(
+	ctx context.Context,
+	snapshotPath, revision, snapshotDirectory string,
+) (MaterializedRepositorySnapshot, error) {
+	tree, err := resources.InspectStorageTree(ctx, snapshotPath)
+	if err != nil {
+		return MaterializedRepositorySnapshot{}, fmt.Errorf("measure repository snapshot storage: %w", err)
+	}
+	if tree.RequiredBytes == 0 || tree.EntryCount == 0 {
+		return MaterializedRepositorySnapshot{}, errors.New("measure repository snapshot storage: materialized tree is empty")
+	}
+	return MaterializedRepositorySnapshot{
+		Revision: revision, SnapshotDirectory: snapshotDirectory,
+		EquivalentSnapshotBytes: tree.RequiredBytes,
+	}, nil
+}
+
+func wrapRepositorySnapshotCleanupError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 type preparedRepositoryRevision struct {

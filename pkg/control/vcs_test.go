@@ -458,6 +458,9 @@ func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
 	if result.Revision != revision || result.SnapshotDirectory != "worktrees/repository/lease" {
 		t.Fatalf("materialized snapshot = %+v, want revision %s", result, revision)
 	}
+	if result.EquivalentSnapshotBytes == 0 {
+		t.Fatalf("materialized snapshot has no storage requirement: %+v", result)
+	}
 	retried, err := New().MaterializeRepositorySnapshot(t.Context(), request)
 	if err != nil || retried != result {
 		t.Fatalf("retried materialization = %+v, want %+v (error = %v)", retried, result, err)

@@ -424,8 +424,13 @@ type MaterializeRepositorySnapshotRequest struct {
 
 // MaterializedRepositorySnapshot is the immutable lease returned by Codefly.
 type MaterializedRepositorySnapshot struct {
-	Revision          string
+	// Revision is the immutable commit Codefly leased.
+	Revision string
+	// SnapshotDirectory is the validated Gateway-relative lease path.
 	SnapshotDirectory string
+	// EquivalentSnapshotBytes is the conservative whole-tree storage needed
+	// to lease another worktree for the same repository snapshot.
+	EquivalentSnapshotBytes uint64
 }
 
 // PrepareRepositoryCheckoutRequest resolves and cleans one mutable repository
