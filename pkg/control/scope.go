@@ -34,6 +34,7 @@ type ServiceScope interface {
 	// VCS (rooted at the service dir; any Dir on the request is ignored)
 	GitStatus(ctx context.Context) (GitStatus, error)
 	GitDiff(ctx context.Context, req GitDiffRequest) (string, error)
+	ApplyPatch(ctx context.Context, req ApplyPatchRequest) (ApplyPatchResult, error)
 	GitLog(ctx context.Context, req GitLogRequest) ([]GitCommit, error)
 	GitCommit(ctx context.Context, req GitCommitRequest) (GitCommit, error)
 	GitBranch(ctx context.Context, req GitBranchRequest) (GitAct, error)
@@ -153,6 +154,10 @@ func (s *serviceScope) GitStatus(ctx context.Context) (GitStatus, error) {
 
 func (s *serviceScope) GitDiff(ctx context.Context, req GitDiffRequest) (string, error) {
 	return gitDiffAt(ctx, s.dir, req)
+}
+
+func (s *serviceScope) ApplyPatch(ctx context.Context, req ApplyPatchRequest) (ApplyPatchResult, error) {
+	return applyPatchAt(ctx, s.dir, req)
 }
 
 func (s *serviceScope) GitLog(ctx context.Context, req GitLogRequest) ([]GitCommit, error) {
