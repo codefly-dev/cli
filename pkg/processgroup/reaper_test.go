@@ -17,6 +17,7 @@ import (
 	"time"
 
 	runnersbase "github.com/codefly-dev/core/runners/base"
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 const (
@@ -162,11 +163,15 @@ func TestReaperClearsVerifiedStaleListenerWhenOwnerPIDWasReused(t *testing.T) {
 func TestReaperRejectsRecordForUnrelatedReusedGroup(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	port := availablePort(t)
-	recordedAt := time.Now().Add(-time.Second)
 	pid, recordPath := spawnOrphanedListener(t, port)
 	defer cleanupGroup(pid, recordPath)
+	leader, err := inspectLeader(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordedAt := leader.started.Add(-time.Second)
 
-	rewriteRecordField(t, recordPath, "started", strconv.FormatInt(recordedAt.Unix(), 10))
+	rewriteRecordField(t, recordPath, "started", strconv.FormatInt(leader.started.Unix(), 10))
 	if err := os.Chtimes(recordPath, recordedAt, recordedAt); err != nil {
 		t.Fatal(err)
 	}
@@ -204,8 +209,9 @@ func TestReaperRejectsReusedLeaderlessGroup(t *testing.T) {
 	port := availablePort(t)
 	pid, recordPath := spawnLeaderlessListener(t, port)
 	defer cleanupGroup(pid, recordPath)
-	recordedAt := time.Now().Add(-time.Second)
-	rewriteRecordField(t, recordPath, "started", strconv.FormatInt(recordedAt.Unix(), 10))
+	memberStarted := processGroupMemberStart(t, pid)
+	recordedAt := memberStarted.Add(-time.Second)
+	rewriteRecordField(t, recordPath, "started", strconv.FormatInt(memberStarted.Unix(), 10))
 	if err := os.Chtimes(recordPath, recordedAt, recordedAt); err != nil {
 		t.Fatal(err)
 	}
@@ -502,6 +508,30 @@ func startListener(t *testing.T, port int, readyPath string) *exec.Cmd {
 	}
 	waitForFile(t, readyPath)
 	return command
+}
+
+func processGroupMemberStart(t *testing.T, pgid int) time.Time {
+	t.Helper()
+	pids, err := process.Pids()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pid := range pids {
+		actualGroup, err := syscall.Getpgid(int(pid))
+		if err != nil || actualGroup != pgid {
+			continue
+		}
+		member, err := process.NewProcess(pid)
+		if err != nil {
+			continue
+		}
+		startedMillis, err := member.CreateTime()
+		if err == nil {
+			return time.UnixMilli(startedMillis)
+		}
+	}
+	t.Fatalf("process group %d had no inspectable member", pgid)
+	return time.Time{}
 }
 
 func registryPath(t *testing.T, pid int) string {
