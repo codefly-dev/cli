@@ -6,7 +6,18 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
+	coresdk "github.com/codefly-dev/core/sdk"
 )
+
+func TestManagedCommandPinsDependencyRunnerToInvokingExecutable(t *testing.T) {
+	option := &coresdk.Option{}
+	for _, apply := range managedCommandDependencyOptions("/opt/codefly/releases/v0.1.104/codefly") {
+		apply(option)
+	}
+	if got := option.CodeflyBinary; got != "/opt/codefly/releases/v0.1.104/codefly" {
+		t.Fatalf("dependency runner = %q, want invoking executable", got)
+	}
+}
 
 func TestExecuteManagedCommandCarriesExplicitChildExitStatus(t *testing.T) {
 	err := executeManagedCommand(t.Context(), []string{
