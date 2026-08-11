@@ -3,11 +3,26 @@ package run
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
 	coresdk "github.com/codefly-dev/core/sdk"
 )
+
+func TestManagedCommandPreflightRejectsAmbiguousWorkspaceWithoutTerminalSelection(t *testing.T) {
+	t.Chdir("../../pkg/orchestration/testdata/module-layout")
+
+	err := preflightManagedCommandService(t.Context())
+	if err == nil {
+		t.Fatal("managed command accepted ambiguous workspace context")
+	}
+	for _, want := range []string{"multiple services found", "frontend", "gateway", "run from a service directory"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("managed command preflight error = %q, want %q", err, want)
+		}
+	}
+}
 
 func TestManagedCommandPinsDependencyRunnerToInvokingExecutable(t *testing.T) {
 	option := &coresdk.Option{}

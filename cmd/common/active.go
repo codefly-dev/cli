@@ -119,7 +119,7 @@ func autoResolveService(ctx context.Context, workspace *resources.Workspace, int
 				names = append(names, service.Name)
 			}
 			slices.Sort(names)
-			return nil, nil, fmt.Errorf("multiple services found (%s); pass the service name explicitly", strings.Join(names, ", "))
+			return nil, nil, fmt.Errorf("multiple services found (%s); pass the service name explicitly or run from a service directory", strings.Join(names, ", "))
 		}
 		entries := make([]*tui.Entry, len(services))
 		for i, svc := range services {

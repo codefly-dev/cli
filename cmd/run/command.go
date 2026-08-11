@@ -65,6 +65,16 @@ func runManagedCommand(argv []string) (returnErr error) {
 	ctx, stopSignals := common.SignalContext(ctx)
 	defer stopSignals()
 
+	// ARCHITECTURE: Resolve the service before the Core SDK creates its nested
+	// headless `run service` process. A managed command has no interactive
+	// service-selection phase: the current path (or a deterministic module
+	// entry/single-service workspace) must identify the service. Failing here
+	// preserves the actionable candidate list and, critically, prevents the
+	// background process group from ever opening /dev/tty.
+	if err := preflightManagedCommandService(ctx); err != nil {
+		return err
+	}
+
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve current Codefly executable: %w", err)
@@ -82,6 +92,13 @@ func runManagedCommand(argv []string) (returnErr error) {
 	}()
 
 	return executeManagedCommand(ctx, argv)
+}
+
+func preflightManagedCommandService(ctx context.Context) error {
+	if _, _, _, err := common.LoadRequiredNonInteractiveE(ctx, nil); err != nil {
+		return fmt.Errorf("resolve current service for managed command: %w", err)
+	}
+	return nil
 }
 
 // managedCommandDependencyOptions binds nested dependency startup to the
