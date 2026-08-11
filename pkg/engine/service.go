@@ -60,7 +60,17 @@ func isTransientAgentError(err error) bool {
 // ExecuteCode executes a typed Code leaf operation.
 func (s *Service) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
 	var response *codev0.CodeResponse
-	err := s.withSession(ctx, "code.Execute", codeRequestRetrySafe(request), func(session *AgentSession) error {
+	// Read-only Code inspection runs against the started agent alone. Mutating
+	// operations (write, apply-edit, shell) act on the runtime-managed workspace
+	// and need the runtime lifecycle like Build/Test/Lint/Stop, so they
+	// initialize it on first use.
+	readOnly := codeRequestRetrySafe(request)
+	err := s.withSession(ctx, "code.Execute", readOnly, func(session *AgentSession) error {
+		if !readOnly {
+			if err := ensureRuntime(ctx, session); err != nil {
+				return err
+			}
+		}
 		var err error
 		response, err = session.code.Execute(ctx, request)
 		return err

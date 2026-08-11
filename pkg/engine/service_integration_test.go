@@ -8,14 +8,13 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 )
 
 // TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization exercises the real
 // production agent against malformed source. GetProjectInfo/GetSemanticIndex and
 // the agent-level command surface must run without ever triggering Runtime
-// Load/Init, and the first runtime call must initialize it lazily.
+// Load/Init, while the first mutating Code operation initializes it lazily.
 func TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization(t *testing.T) {
 	root := t.TempDir()
 	writeSourceFile(t, root, "pyproject.toml", "[project]\nname = \"probe\"\nversion = \"0.0.0\"\n")
@@ -84,11 +83,22 @@ func TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization(t *testing.T) {
 		t.Fatal("read-only Code/Tooling calls must not initialize the runtime")
 	}
 
-	if _, err := service.Test(ctx, &runtimev0.TestRequest{}); err != nil {
-		t.Fatalf("Test transport error: %v", err)
+	// A mutating Code operation acts on the runtime-managed workspace, so it must
+	// initialize the runtime on first use and write through to real source.
+	write, err := service.ExecuteCode(ctx, &codev0.CodeRequest{
+		Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{Path: "note.txt", Content: "ok\n"}},
+	})
+	if err != nil {
+		t.Fatalf("WriteFile transport error: %v", err)
+	}
+	if !write.GetWriteFile().GetSuccess() {
+		t.Fatalf("WriteFile did not succeed: %+v", write)
 	}
 	if !session.runtimeOK {
-		t.Fatal("the first runtime call must initialize the runtime lazily")
+		t.Fatal("a mutating Code operation must initialize the runtime on first use")
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "note.txt")); err != nil || string(data) != "ok\n" {
+		t.Fatalf("mutating Code operation did not write through to source: data=%q err=%v", data, err)
 	}
 }
 
