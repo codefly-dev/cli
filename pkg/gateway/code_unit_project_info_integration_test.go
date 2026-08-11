@@ -4,7 +4,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 )
@@ -80,18 +79,8 @@ class Ads {}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if failure := response.GetFailure(); failure != nil {
-				// The generic agent binds its Code source directory during
-				// Runtime.Load. With read-only inspection decoupled from the
-				// runtime lifecycle (issue #269), a generic agent that has not yet
-				// adopted codefly-dev/mind#369 cannot resolve the code unit and
-				// reports it as an unknown language. Skip until a decoupled generic
-				// agent is published and pinned; the assertions below run unchanged
-				// once it is.
-				if failure.GetCode() == basev0.FailureCode_FAILURE_CODE_UNSUPPORTED_OPERATION && response.GetLanguage() == "unknown" {
-					t.Skipf("pinned generic agent %s binds Code inspection to Runtime.Load; runtime-decoupled inspection needs codefly-dev/mind#369", sourceworkspace.GenericPluginVersion)
-				}
-				t.Fatalf("project-info failure = %+v (language=%q hashes=%v)", failure, response.GetLanguage(), response.GetFileHashes())
+			if response.GetFailure() != nil {
+				t.Fatalf("project-info failure = %+v (language=%q hashes=%v)", response.GetFailure(), response.GetLanguage(), response.GetFileHashes())
 			}
 			if !reflect.DeepEqual(response.GetCodeUnit(), test.target) {
 				t.Fatalf("code unit = %+v, want %+v", response.GetCodeUnit(), test.target)
