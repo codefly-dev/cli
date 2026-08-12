@@ -2218,7 +2218,7 @@ func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandReques
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "run command request is required")
 	}
-	if err := validateUnstructuredUse(req.GetUnstructuredUse()); err != nil {
+	if err := ValidateUnstructuredUse(req.GetUnstructuredUse()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.validateService(req.GetService()); err != nil {
@@ -2276,7 +2276,11 @@ func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandReques
 	}, nil
 }
 
-func validateUnstructuredUse(use *gatewayv1.UnstructuredUse) error {
+// ValidateUnstructuredUse enforces the typed attribution required whenever a
+// Gateway consumer falls back from a domain capability to an arbitrary
+// command. Container and remote transports use the same contract as Server so
+// changing transports cannot weaken execution governance.
+func ValidateUnstructuredUse(use *gatewayv1.UnstructuredUse) error {
 	if use == nil {
 		return fmt.Errorf("unstructured_use attribution is required")
 	}

@@ -112,7 +112,7 @@ func (s *Server) OpenTerminal(_ context.Context, req *gatewayv1.OpenTerminalRequ
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "terminal request is required")
 	}
-	if err := validateUnstructuredUse(req.GetUnstructuredUse()); err != nil {
+	if err := ValidateUnstructuredUse(req.GetUnstructuredUse()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	shell := req.Shell
