@@ -33,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	publishcmd "github.com/codefly-dev/cli/cmd/publish"
 	"github.com/codefly-dev/cli/pkg/control"
@@ -2290,6 +2292,12 @@ func ValidateUnstructuredUse(use *gatewayv1.UnstructuredUse) error {
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("unstructured_use.%s is required", name)
+		}
+	}
+	for name, value := range map[string]string{"intent": use.GetIntent(), "why_no_tool": use.GetWhyNoTool()} {
+		value = strings.TrimSpace(value)
+		if utf8.RuneCountInString(value) < 4 || !strings.ContainsFunc(value, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) }) {
+			return fmt.Errorf("unstructured_use.%s must be a meaningful explanation", name)
 		}
 	}
 	if use.GetCommandClass() == gatewayv1.CommandClass_COMMAND_CLASS_UNSPECIFIED {

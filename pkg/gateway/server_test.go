@@ -1375,6 +1375,20 @@ func TestRunCommandRequiresEscapeHatchAttribution(t *testing.T) {
 	}
 }
 
+func TestValidateUnstructuredUseRejectsPlaceholderAttribution(t *testing.T) {
+	use := testUnstructuredUse()
+	use.Intent = "???"
+	use.WhyNoTool = "?"
+	if err := ValidateUnstructuredUse(use); err == nil {
+		t.Fatal("punctuation-only escape-hatch attribution accepted")
+	}
+	use.Intent = "inspect process state"
+	use.WhyNoTool = "no typed process-state capability is available"
+	if err := ValidateUnstructuredUse(use); err != nil {
+		t.Fatalf("meaningful escape-hatch attribution rejected: %v", err)
+	}
+}
+
 func TestListServices(t *testing.T) {
 	s := newTestServer(&mockCodeClient{})
 	resp, err := s.ListServices(context.Background(), &gatewayv1.ListServicesRequest{})

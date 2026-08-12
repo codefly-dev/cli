@@ -2,6 +2,7 @@ package dockerexec
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"path"
 	"strconv"
@@ -113,6 +114,9 @@ func (g *Gateway) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest
 	if err != nil || !read.GetExists() {
 		return &gatewayv1.ApplyEditResponse{Success: false, Error: "file not found"}, nil
 	}
+	if req.GetFind() == "" {
+		return &gatewayv1.ApplyEditResponse{Success: false, Error: "find text is required"}, nil
+	}
 	count := strings.Count(read.GetContent(), req.GetFind())
 	if count == 0 {
 		return &gatewayv1.ApplyEditResponse{Success: false, Error: "find text not present"}, nil
@@ -120,11 +124,30 @@ func (g *Gateway) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest
 	if count > 1 {
 		return &gatewayv1.ApplyEditResponse{Success: false, Error: fmt.Sprintf("find text appears %d times — narrow it", count)}, nil
 	}
-	updated := strings.Replace(read.GetContent(), req.GetFind(), req.GetReplace(), 1)
+	original := read.GetContent()
+	updated := strings.Replace(original, req.GetFind(), req.GetReplace(), 1)
+	response := &gatewayv1.ApplyEditResponse{
+		Success:         true,
+		Content:         updated,
+		Strategy:        "exact",
+		Changed:         updated != original,
+		BeforeSha256:    contentSHA256(original),
+		AfterSha256:     contentSHA256(updated),
+		BeforeSizeBytes: uint64(len(original)),
+		AfterSizeBytes:  uint64(len(updated)),
+	}
+	if !response.GetChanged() {
+		return response, nil
+	}
 	if err := g.write(ctx, req.GetFile(), updated); err != nil {
 		return &gatewayv1.ApplyEditResponse{Success: false, Error: err.Error()}, nil
 	}
-	return &gatewayv1.ApplyEditResponse{Success: true}, nil
+	response.Wrote = true
+	return response, nil
+}
+
+func contentSHA256(content string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 }
 
 // ListFiles uses the POSIX find + stat surface available in both BusyBox and
