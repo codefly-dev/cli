@@ -35,17 +35,11 @@ func TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners(t *testing.T) 
 	case "owner":
 		command := exec.Command(os.Args[0], "-test.run=^TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners$")
 		command.Env = append(os.Environ(), workspaceHostOrphanHelper+"=agent")
-		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		if err := command.Start(); err != nil {
+		if _, err := runnersbase.StartTrackedProcessGroup(command); err != nil {
 			fmt.Fprintf(os.Stderr, "start orphan agent: %v\n", err)
 			os.Exit(2)
 		}
 		pid := command.Process.Pid
-		if err := runnersbase.WritePgidFile(pid, os.TempDir(), []string{os.Args[0]}); err != nil {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			fmt.Fprintf(os.Stderr, "track orphan agent: %v\n", err)
-			os.Exit(2)
-		}
 		fmt.Println(pid)
 		os.Exit(0)
 	case "agent":
@@ -78,7 +72,7 @@ func TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners(t *testing.T) 
 	}
 	t.Cleanup(func() {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		_ = runnersbase.RemovePgidFile(pid)
+		_ = runnersbase.ReapStaleProcessGroups(context.Background())
 	})
 	if err := syscall.Kill(-pid, 0); err != nil {
 		t.Fatalf("orphan process group %d was not alive before recovery: %v", pid, err)

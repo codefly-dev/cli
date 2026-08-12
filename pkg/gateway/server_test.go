@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/executionattestor"
@@ -1012,6 +1013,10 @@ func TestDirectWorkspaceFileOperations(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "sub", "note.txt"), []byte("needle in text\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	wideLine := "wide " + strings.Repeat("é", 100)
+	if err := os.WriteFile(filepath.Join(dir, "wide.txt"), []byte(wideLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	s := newTestServerWithWorkDir(editingMock(t, dir), dir)
 
@@ -1075,6 +1080,26 @@ func TestDirectWorkspaceFileOperations(t *testing.T) {
 	}
 	if searchResp.TotalMatches < 2 {
 		t.Fatalf("Search TotalMatches = %d, want at least 2", searchResp.TotalMatches)
+	}
+
+	boundedSearchResp, err := s.Search(context.Background(), &gatewayv1.SearchRequest{
+		Service: "test-svc", Pattern: "wide", Literal: true, MaxResults: 10, MaxBytes: 65,
+	})
+	if err != nil {
+		t.Fatalf("bounded Search returned error: %v", err)
+	}
+	if !boundedSearchResp.GetTruncated() ||
+		boundedSearchResp.GetTruncationReason() != gatewayv1.SearchTruncationReason_SEARCH_TRUNCATION_REASON_MAX_BYTES ||
+		boundedSearchResp.GetReturnedTextBytes() != 65 {
+		t.Fatalf("bounded Search metadata = %+v", boundedSearchResp)
+	}
+	if len(boundedSearchResp.GetMatches()) != 1 {
+		t.Fatalf("bounded Search matches = %d, want 1", len(boundedSearchResp.GetMatches()))
+	}
+	boundedMatch := boundedSearchResp.GetMatches()[0]
+	if !boundedMatch.GetTextTruncated() || boundedMatch.GetOriginalTextBytes() != int64(len(wideLine)) ||
+		len(boundedMatch.GetText()) != 65 || !utf8.ValidString(boundedMatch.GetText()) {
+		t.Fatalf("bounded Search match = %+v", boundedMatch)
 	}
 
 	editResp, err := s.ApplyEdit(context.Background(), &gatewayv1.ApplyEditRequest{

@@ -1319,6 +1319,7 @@ func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gat
 		Extensions:      req.GetExtensions(),
 		Exclude:         req.GetExclude(),
 		MaxResults:      int(req.GetMaxResults()),
+		MaxBytes:        int(req.GetMaxBytes()),
 		ContextLines:    int(req.GetContextLines()),
 	})
 	if err != nil {
@@ -1327,16 +1328,34 @@ func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gat
 	matches := make([]*gatewayv1.SearchMatch, 0, len(result.Matches))
 	for _, m := range result.Matches {
 		matches = append(matches, &gatewayv1.SearchMatch{
-			File: filepath.ToSlash(m.File),
-			Line: int32(m.Line),
-			Text: m.Text,
+			File:              filepath.ToSlash(m.File),
+			Line:              int32(m.Line),
+			Text:              m.Text,
+			TextTruncated:     m.TextTruncated,
+			OriginalTextBytes: int64(m.OriginalTextBytes),
 		})
 	}
 	return &gatewayv1.SearchResponse{
-		Matches:      matches,
-		Truncated:    result.Truncated,
-		TotalMatches: int32(len(result.Matches)),
+		Matches:           matches,
+		Truncated:         result.Truncated,
+		TotalMatches:      int32(len(result.Matches)),
+		TruncationReason:  gatewaySearchTruncationReason(result.TruncationReason),
+		ReturnedTextBytes: int64(result.ReturnedTextBytes),
 	}, nil
+}
+
+// gatewaySearchTruncationReason preserves the typed result boundary across
+// the Core-to-Gateway transport. Consumers can then distinguish a broad query
+// from a small number of abnormally large generated or minified source lines.
+func gatewaySearchTruncationReason(reason codecore.SearchTruncationReason) gatewayv1.SearchTruncationReason {
+	switch reason {
+	case codecore.SearchTruncationMaxResults:
+		return gatewayv1.SearchTruncationReason_SEARCH_TRUNCATION_REASON_MAX_RESULTS
+	case codecore.SearchTruncationMaxBytes:
+		return gatewayv1.SearchTruncationReason_SEARCH_TRUNCATION_REASON_MAX_BYTES
+	default:
+		return gatewayv1.SearchTruncationReason_SEARCH_TRUNCATION_REASON_UNSPECIFIED
+	}
 }
 
 // ─── Dependencies (via plugin Execute) ───────────────────────
