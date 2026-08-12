@@ -14,15 +14,15 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/toolbox"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 )
 
 // reapStaleProcessGroups self-heals process groups leaked by dead owners. It is
 // a package variable so tests can drive its failure path; production binds the
 // real reaper. Reaping is best-effort (see NewWorkspaceHost), never a
 // construction precondition.
-var reapStaleProcessGroups = processgroup.ReapStaleProcessGroups
+var reapStaleProcessGroups = runnersbase.ReapStaleProcessGroups
 
 // Config configures a WorkspaceHost.
 type Config struct {

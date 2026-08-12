@@ -11,8 +11,8 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/core/agents/manager"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/wool"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -185,7 +185,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		} else {
 			w.Info("no stale agent sockets")
 		}
-		if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
+		if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
 			w.Warn("cannot reap stale process groups", wool.ErrField(err))
 			failures = append(failures, fmt.Errorf("reap stale process groups: %w", err))
 		} else {

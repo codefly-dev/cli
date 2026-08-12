@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -1319,6 +1320,7 @@ func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gat
 		Extensions:      req.GetExtensions(),
 		Exclude:         req.GetExclude(),
 		MaxResults:      int(req.GetMaxResults()),
+		MaxBytes:        int(req.GetMaxBytes()),
 		ContextLines:    int(req.GetContextLines()),
 	})
 	if err != nil {
@@ -1326,17 +1328,50 @@ func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gat
 	}
 	matches := make([]*gatewayv1.SearchMatch, 0, len(result.Matches))
 	for _, m := range result.Matches {
+		line, lineErr := gatewayInt32(m.Line, "search match line")
+		if lineErr != nil {
+			return nil, status.Error(codes.Internal, lineErr.Error())
+		}
 		matches = append(matches, &gatewayv1.SearchMatch{
-			File: filepath.ToSlash(m.File),
-			Line: int32(m.Line),
-			Text: m.Text,
+			File:              filepath.ToSlash(m.File),
+			Line:              line,
+			Text:              m.Text,
+			TextTruncated:     m.TextTruncated,
+			OriginalTextBytes: int64(m.OriginalTextBytes),
 		})
 	}
+	totalMatches, err := gatewayInt32(len(result.Matches), "search match count")
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 	return &gatewayv1.SearchResponse{
-		Matches:      matches,
-		Truncated:    result.Truncated,
-		TotalMatches: int32(len(result.Matches)),
+		Matches:           matches,
+		Truncated:         result.Truncated,
+		TotalMatches:      totalMatches,
+		TruncationReason:  gatewaySearchTruncationReason(result.TruncationReason),
+		ReturnedTextBytes: int64(result.ReturnedTextBytes),
 	}, nil
+}
+
+func gatewayInt32(value int, field string) (int32, error) {
+	if value < math.MinInt32 || value > math.MaxInt32 {
+		return 0, fmt.Errorf("%s %d exceeds the Gateway int32 contract", field, value)
+	}
+	return int32(value), nil
+}
+
+// gatewaySearchTruncationReason preserves the typed result boundary across
+// the Core-to-Gateway transport. Consumers can then distinguish a broad query
+// from a small number of abnormally large generated or minified source lines.
+func gatewaySearchTruncationReason(reason codecore.SearchTruncationReason) gatewayv1.SearchTruncationReason {
+	switch reason {
+	case codecore.SearchTruncationMaxResults:
+		return gatewayv1.SearchTruncationReason_SEARCH_TRUNCATION_REASON_MAX_RESULTS
+	case codecore.SearchTruncationMaxBytes:
+		return gatewayv1.SearchTruncationReason_SEARCH_TRUNCATION_REASON_MAX_BYTES
+	default:
+		return gatewayv1.SearchTruncationReason_SEARCH_TRUNCATION_REASON_UNSPECIFIED
+	}
 }
 
 // ─── Dependencies (via plugin Execute) ───────────────────────

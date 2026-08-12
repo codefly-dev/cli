@@ -16,9 +16,9 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
+	runnersbase "github.com/codefly-dev/core/runners/base"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
@@ -77,7 +77,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// (parent SIGKILL, terminal force-closed). Without this, zombie
 	// trees from a previous `codefly run` survive and hold ports,
 	// making the next run appear to fork-bomb or fail port binding.
-	if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
+	if err := runnersbase.ReapStaleProcessGroups(ctx); err != nil {
 		cli.Warning("stale process-group sweep failed: %v", err)
 	}
 	// SDK / test runs (`codefly run --cli-server`) spawn per-run dependency

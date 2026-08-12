@@ -11,20 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/codefly-dev/core/resources"
 	runnersbase "github.com/codefly-dev/core/runners/base"
 )
-
-// detachSysProcAttr returns the syscall attributes needed to detach a
-// spawned subprocess from the parent's process group so signals delivered
-// to the parent (e.g. MCP server shutdown) don't kill the child. Setpgid
-// is supported on unix; on other platforms this is a no-op returning nil.
-func detachSysProcAttr() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Setpgid: true}
-}
 
 // synchronizedBuffer is an io.Writer whose snapshots are safe while a child
 // process is still writing. bytes.Buffer itself cannot be read concurrently
@@ -355,31 +346,23 @@ func (s *Server) runService(ctx context.Context, args map[string]string) ([]Cont
 	// user via the complementary stop tool.
 	cmd := exec.Command("codefly", cmdArgs...)
 	cmd.Dir = path.Join(svc.Dir(), "code")
-	// Detach from the MCP server's lifetime — the service should outlive
-	// the tool call. Set a new process group so signals to MCP don't
-	// cascade into the spawned service.
-	cmd.SysProcAttr = detachSysProcAttr()
 	var outBuf synchronizedBuffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &outBuf
-	if err := cmd.Start(); err != nil {
+	// Start through Core's authenticated process-group boundary. It publishes
+	// the durable identity record before releasing the child, so a dead MCP
+	// owner can be recovered without ever signaling a reused PID/group.
+	group, err := runnersbase.StartTrackedProcessGroup(cmd)
+	if err != nil {
 		return []Content{TextContent(fmt.Sprintf("run failed to start: %v", err))}, nil
 	}
 	// Reap the subprocess in a background goroutine so it doesn't become
 	// a zombie if/when it exits. We don't wait — the caller just needs
 	// to know it's launched.
 	pid := cmd.Process.Pid
-	// Track the detached CLI's pgroup. If the MCP-hosting CLI dies
-	// ungracefully, the child codefly run subprocess would orphan
-	// otherwise — now the next CLI startup's sweep sees the file,
-	// detects the parent (this CLI) is dead, and reaps the subtree.
-	argv := append([]string{"codefly"}, cmdArgs...)
-	if perr := runnersbase.WritePgidFile(pid, cmd.Dir, argv); perr != nil {
-		_ = perr // best-effort; MCP handler returns regardless
-	}
 	go func() {
 		_ = cmd.Wait()
-		_ = runnersbase.RemovePgidFile(pid)
+		_ = group.RemoveIfDead()
 	}()
 
 	// Sample the initial output briefly so the caller gets a meaningful
