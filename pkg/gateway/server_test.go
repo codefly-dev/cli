@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"os"
@@ -1142,6 +1143,15 @@ func TestDirectWorkspaceFileOperations(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "nested", "moved.txt")); !os.IsNotExist(err) {
 		t.Fatalf("deleted file still exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestGatewayInt32RejectsValuesOutsideTransportContract(t *testing.T) {
+	if got, err := gatewayInt32(42, "value"); err != nil || got != 42 {
+		t.Fatalf("gatewayInt32(42) = (%d, %v)", got, err)
+	}
+	if _, err := gatewayInt32(int(math.MaxInt32)+1, "value"); err == nil {
+		t.Fatal("gatewayInt32 accepted a value above int32")
 	}
 }
 
