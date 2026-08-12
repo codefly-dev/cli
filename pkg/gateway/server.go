@@ -1328,9 +1328,9 @@ func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gat
 	}
 	matches := make([]*gatewayv1.SearchMatch, 0, len(result.Matches))
 	for _, m := range result.Matches {
-		line, err := gatewayInt32(m.Line, "search match line")
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
+		line, lineErr := gatewayInt32(m.Line, "search match line")
+		if lineErr != nil {
+			return nil, status.Error(codes.Internal, lineErr.Error())
 		}
 		matches = append(matches, &gatewayv1.SearchMatch{
 			File:              filepath.ToSlash(m.File),
