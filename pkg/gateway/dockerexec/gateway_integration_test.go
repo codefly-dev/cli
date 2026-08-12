@@ -84,8 +84,20 @@ func TestGatewayAlpineEndToEnd(t *testing.T) {
 	edit, err := gateway.ApplyEdit(ctx, &gatewayv1.ApplyEditRequest{
 		Service: "workspace", File: "greet.txt", Find: "hello world", Replace: "hello codefly",
 	})
-	if err != nil || !edit.GetSuccess() {
+	if err != nil || !edit.GetSuccess() || !edit.GetChanged() || !edit.GetWrote() {
 		t.Fatalf("ApplyEdit = %+v, %v", edit, err)
+	}
+	if edit.GetContent() != "hello codefly\n" || edit.GetStrategy() != "exact" ||
+		edit.GetBeforeSha256() != contentSHA256("hello world\n") || edit.GetAfterSha256() != contentSHA256("hello codefly\n") ||
+		edit.GetBeforeSizeBytes() != uint64(len("hello world\n")) || edit.GetAfterSizeBytes() != uint64(len("hello codefly\n")) {
+		t.Fatalf("ApplyEdit mutation receipt = %+v", edit)
+	}
+	noChange, err := gateway.ApplyEdit(ctx, &gatewayv1.ApplyEditRequest{
+		Service: "workspace", File: "greet.txt", Find: "hello codefly", Replace: "hello codefly",
+	})
+	if err != nil || !noChange.GetSuccess() || noChange.GetChanged() || noChange.GetWrote() ||
+		noChange.GetBeforeSha256() != noChange.GetAfterSha256() || noChange.GetBeforeSizeBytes() != noChange.GetAfterSizeBytes() {
+		t.Fatalf("no-change ApplyEdit mutation receipt = %+v, %v", noChange, err)
 	}
 
 	search, err := gateway.Search(ctx, &gatewayv1.SearchRequest{
