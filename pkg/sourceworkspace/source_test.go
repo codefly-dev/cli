@@ -44,19 +44,20 @@ func TestPrepareModelsGoCheckoutAsPluginSourceResource(t *testing.T) {
 
 func TestSelectPluginCoversFixerLanguages(t *testing.T) {
 	tests := []struct {
-		marker string
-		name   string
+		marker  string
+		name    string
+		version string
 	}{
-		{marker: "go.mod", name: "go"},
-		{marker: "pyproject.toml", name: "python"},
-		{marker: "uv.lock", name: "python"},
-		{marker: pythonSetupMarker, name: "python"},
-		{marker: "setup.cfg", name: "python"},
-		{marker: "requirements.in", name: "python"},
-		{marker: "requirements.txt", name: "python"},
-		{marker: "package.json", name: "nextjs"},
-		{marker: "Cargo.toml", name: "rust"},
-		{marker: "Package.swift", name: "swift"},
+		{marker: "go.mod", name: "go", version: GenericGoPluginVersion},
+		{marker: "pyproject.toml", name: "python", version: GenericPythonPluginVersion},
+		{marker: "uv.lock", name: "python", version: GenericPythonPluginVersion},
+		{marker: pythonSetupMarker, name: "python", version: GenericPythonPluginVersion},
+		{marker: "setup.cfg", name: "python", version: GenericPythonPluginVersion},
+		{marker: "requirements.in", name: "python", version: GenericPythonPluginVersion},
+		{marker: "requirements.txt", name: "python", version: GenericPythonPluginVersion},
+		{marker: "package.json", name: "nextjs", version: NodePluginVersion},
+		{marker: "Cargo.toml", name: "rust", version: RustPluginVersion},
+		{marker: "Package.swift", name: "swift", version: SwiftPluginVersion},
 	}
 	for _, test := range tests {
 		t.Run(test.marker, func(t *testing.T) {
@@ -68,8 +69,8 @@ func TestSelectPluginCoversFixerLanguages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if plugin.Name != test.name || plugin.Version == "" {
-				t.Fatalf("plugin = %+v", plugin)
+			if plugin.Name != test.name || plugin.Version != test.version {
+				t.Fatalf("plugin = %+v, want %s:%s", plugin, test.name, test.version)
 			}
 		})
 	}
