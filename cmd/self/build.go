@@ -186,9 +186,17 @@ func reportSkippedPluginCheckouts(skipped []skippedPluginCheckout) {
 }
 
 // resolveAgentRoot finds the flat Codefly workspace containing the CLI and
-// sibling agent repositories.
+// sibling agent repositories. Agent discovery is deliberately bounded to the
+// CLI directory and its immediate parent: walking to arbitrary ancestors can
+// capture an unrelated checkout from a shared temp/development root and build
+// agents outside the requested workspace.
 func resolveAgentRoot(cliSrcDir string) (string, error) {
-	for d := cliSrcDir; ; {
+	cliSrcDir = filepath.Clean(cliSrcDir)
+	candidates := []string{cliSrcDir}
+	if parent := filepath.Dir(cliSrcDir); parent != cliSrcDir {
+		candidates = append(candidates, parent)
+	}
+	for _, d := range candidates {
 		entries, err := os.ReadDir(d)
 		if err == nil {
 			for _, entry := range entries {
@@ -201,13 +209,8 @@ func resolveAgentRoot(cliSrcDir string) (string, error) {
 				}
 			}
 		}
-		parent := filepath.Dir(d)
-		if parent == d {
-			break
-		}
-		d = parent
 	}
-	return "", fmt.Errorf("no workspace with agent repositories found above %s", cliSrcDir)
+	return "", fmt.Errorf("no agent repositories found in CLI workspace %s or its parent", cliSrcDir)
 }
 
 func init() {

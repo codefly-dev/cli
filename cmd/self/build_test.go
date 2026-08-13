@@ -71,6 +71,25 @@ func TestResolveAgentRootRejectsWorkspaceWithoutAgents(t *testing.T) {
 	}
 }
 
+func TestResolveAgentRootDoesNotEscapeImmediateWorkspace(t *testing.T) {
+	outer := t.TempDir()
+	unrelatedAgent := filepath.Join(outer, "service-unrelated")
+	cliDir := filepath.Join(outer, "nested", "workspace", "cli")
+	if err := os.MkdirAll(unrelatedAgent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unrelatedAgent, "agent.codefly.yaml"), []byte("name: unrelated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := resolveAgentRoot(cliDir); err == nil {
+		t.Fatalf("resolveAgentRoot escaped the immediate workspace and selected %q", got)
+	}
+}
+
 func TestReportSkippedPluginCheckouts(t *testing.T) {
 	skipped := []skippedPluginCheckout{
 		{name: "module-saas-starter-onboarding-library", originRepository: "module-saas-starter"},
