@@ -48,9 +48,10 @@ class EnvironmentTest(unittest.TestCase):
 	t.Cleanup(func() { _ = server.Close() })
 
 	configured, err := server.ConfigureService(t.Context(), &gatewayv1.ConfigureServiceRequest{
-		Changes: []*builderv0.ConfigChange{{
-			Path: "test.env.RECOVERY_FLAG", Value: "enabled", Op: builderv0.ConfigChange_SET,
-		}},
+		Changes: []*builderv0.ConfigChange{
+			{Path: "test.env.RECOVERY_FLAG", Value: "enabled", Op: builderv0.ConfigChange_SET},
+			{Path: "test.provisioning.editable", Value: "false", Op: builderv0.ConfigChange_SET},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +62,24 @@ class EnvironmentTest(unittest.TestCase):
 	}
 	if !strings.Contains(response.GetEffectiveYaml(), "RECOVERY_FLAG: enabled") {
 		t.Fatalf("effective configuration omitted persisted environment: %s", response.GetEffectiveYaml())
+	}
+	reset, err := server.ConfigureService(t.Context(), &gatewayv1.ConfigureServiceRequest{
+		Changes: []*builderv0.ConfigChange{{
+			Path: "test.provisioning.editable", Op: builderv0.ConfigChange_UNSET,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetResponse := reset.GetResponse()
+	if resetResponse.GetState().GetState() != builderv0.ConfigureStatus_SUCCESS {
+		t.Fatalf("reset status = %s (%s)", resetResponse.GetState().GetState(), resetResponse.GetState().GetMessage())
+	}
+	if strings.Contains(resetResponse.GetEffectiveYaml(), "editable:") {
+		t.Fatalf("reset left the explicit editable override in place: %s", resetResponse.GetEffectiveYaml())
+	}
+	if !strings.Contains(resetResponse.GetEffectiveYaml(), "RECOVERY_FLAG: enabled") {
+		t.Fatalf("reset discarded an unrelated persisted setting: %s", resetResponse.GetEffectiveYaml())
 	}
 
 	tested, err := server.Test(t.Context(), &gatewayv1.TestRequest{RuntimeRequest: &runtimev0.TestRequest{
