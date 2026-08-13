@@ -20,6 +20,13 @@ import (
 	"google.golang.org/grpc/connectivity"
 )
 
+// agentStartupTimeout bounds loading a released agent process through the same
+// path used in production. A cold load may include platform binary resolution
+// and competes with other agent processes during heterogeneous workspace and
+// race-suite startup, so the handshake needs a larger budget than an already
+// running agent's runtime initialization.
+const agentStartupTimeout = 2 * time.Minute
+
 // AgentSupervisorConfig configures an AgentSupervisor.
 type AgentSupervisorConfig struct {
 	Root      string
@@ -139,7 +146,7 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 		return nil, fmt.Errorf("resolve agent %s version: %w", agentName, err)
 	}
 
-	loadCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	loadCtx, cancel := context.WithTimeout(ctx, agentStartupTimeout)
 	defer cancel()
 	workDir := target.Root
 	if descriptor.cleanup != nil && descriptor.service != nil {
