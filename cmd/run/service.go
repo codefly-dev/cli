@@ -95,8 +95,10 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// containers whose owning CLI is dead. Same semantics as the pgid
 	// sweep but for Docker-mode agents, which can't participate in
 	// pgid tracking (process groups are namespaced inside containers).
-	if err := dockerrun.ReapStaleContainers(ctx); err != nil {
-		cli.Warning("stale container sweep failed: %v", err)
+	if shouldSweepStaleContainers(runtimeContext) {
+		if err := dockerrun.ReapStaleContainers(ctx); err != nil {
+			cli.Warning("stale container sweep failed: %v", err)
+		}
 	}
 
 	var workspace *resources.Workspace
@@ -513,6 +515,13 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("service %s stopped with an error: %w", serviceName, runErr)
 	}
 	return nil
+}
+
+// shouldSweepStaleContainers keeps explicit Local/Nix runs independent of the
+// Docker control plane. A free run may select Docker and an explicit container
+// run requires it, so those startup paths retain orphan cleanup.
+func shouldSweepStaleContainers(selectedRuntime string) bool {
+	return selectedRuntime != resources.RuntimeContextNative && selectedRuntime != resources.RuntimeContextNix
 }
 
 // loadRequiredServiceForRun keeps terminal access aligned with the execution
