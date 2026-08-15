@@ -27,6 +27,7 @@ const (
 	helperChildPIDEnv = "CODEFLY_TEST_PROCESS_GROUP_CHILD_PID_FILE"
 	helperReadyEnv    = "CODEFLY_TEST_PROCESS_GROUP_READY_FILE"
 	helperReleaseEnv  = "CODEFLY_TEST_PROCESS_GROUP_RELEASE_FILE"
+	helperTermEnv     = "CODEFLY_TEST_PROCESS_GROUP_TERM_FILE"
 )
 
 func TestProcessGroupHelper(t *testing.T) {
@@ -37,6 +38,22 @@ func TestProcessGroupHelper(t *testing.T) {
 			helperRoleEnv+"=legacy-agent",
 			helperPortEnv+"="+os.Getenv(helperPortEnv),
 			helperChildPIDEnv+"="+os.Getenv(helperChildPIDEnv),
+			helperReadyEnv+"="+os.Getenv(helperReadyEnv))
+		command.Stdout = io.Discard
+		command.Stderr = io.Discard
+		if _, err := runnersbase.StartTrackedProcessGroup(command); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv(helperPIDEnv), []byte(strconv.Itoa(command.Process.Pid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		waitForFile(t, os.Getenv(helperReadyEnv))
+		select {}
+	case "authenticated-owner":
+		command := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
+		command.Env = append(os.Environ(),
+			helperRoleEnv+"=listener",
+			helperPortEnv+"="+os.Getenv(helperPortEnv),
 			helperReadyEnv+"="+os.Getenv(helperReadyEnv))
 		command.Stdout = io.Discard
 		command.Stderr = io.Discard
@@ -170,12 +187,31 @@ func TestProcessGroupHelper(t *testing.T) {
 		defer signal.Stop(stopping)
 		<-stopping
 	case "ignores-term":
-		signal.Ignore(syscall.SIGTERM)
-		defer signal.Reset(syscall.SIGTERM)
 		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		select {}
+		stopping := make(chan os.Signal, 1)
+		signal.Notify(stopping, syscall.SIGTERM)
+		defer signal.Stop(stopping)
+		for range stopping {
+			if path := os.Getenv(helperTermEnv); path != "" {
+				if err := os.WriteFile(path, []byte("term"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	case "delayed-term":
+		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stopping := make(chan os.Signal, 1)
+		signal.Notify(stopping, syscall.SIGTERM)
+		defer signal.Stop(stopping)
+		<-stopping
+		if err := os.WriteFile(os.Getenv(helperTermEnv), []byte("term"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		waitForFile(t, os.Getenv(helperReleaseEnv))
 	}
 }
 
@@ -227,6 +263,53 @@ func TestReaperCleansLegacyAgentProcessesAfterCurrentOwnerIsKilled(t *testing.T)
 	}
 	if _, err := os.Stat(legacyRecord); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("legacy child record still exists: %v", err)
+	}
+}
+
+func TestReaperCleansAuthenticatedRootRecordAfterOwnerIsKilled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	port := availablePort(t)
+	pidPath := filepath.Join(dir, "pid")
+	readyPath := filepath.Join(dir, "ready")
+	owner := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
+	owner.Env = append(os.Environ(),
+		helperRoleEnv+"=authenticated-owner",
+		helperPortEnv+"="+strconv.Itoa(port),
+		helperPIDEnv+"="+pidPath,
+		helperReadyEnv+"="+readyPath)
+	owner.Stdout = io.Discard
+	owner.Stderr = io.Discard
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, pidPath)
+	waitForFile(t, readyPath)
+	pid := readPID(t, pidPath)
+	currentRecord := filepath.Join(home, ".codefly", stateDirName, "authenticated-v1", fmt.Sprintf("%d.pgid", pid))
+	rootRecord := registryPath(t, pid)
+	if err := os.Rename(currentRecord, rootRecord); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = os.Remove(rootRecord)
+	})
+	if err := owner.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Wait(); err == nil {
+		t.Fatal("killed owner exited successfully")
+	}
+
+	assertPortHeld(t, port)
+	if err := ReapStaleProcessGroups(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertPortAvailable(t, port)
+	if _, err := os.Stat(rootRecord); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("authenticated root record still exists: %v", err)
 	}
 }
 
@@ -345,6 +428,23 @@ func TestReaperRetainsMalformedParentWithoutSignalingGroup(t *testing.T) {
 	}
 }
 
+func TestReaperConvergesWhenScannedRecordHasDisappeared(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir, err := stateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "disappeared.pgid")
+	if err := os.Symlink(filepath.Join(dir, "missing-record"), path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	if err := ReapStaleProcessGroups(context.Background()); err != nil {
+		t.Fatalf("reconcile disappeared record: %v", err)
+	}
+}
+
 func TestReaperWaitsForRecordWriteToFinish(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	port := availablePort(t)
@@ -384,6 +484,123 @@ func TestReaperWaitsForRecordWriteToFinish(t *testing.T) {
 	assertPortHeld(t, port)
 	if _, err := os.Stat(recordPath); err != nil {
 		t.Fatalf("record disappeared during concurrent write: %v", err)
+	}
+}
+
+func TestReaperDoesNotRemoveReplacementRecord(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	readyPath := filepath.Join(dir, "ready")
+	termPath := filepath.Join(dir, "term")
+	releasePath := filepath.Join(dir, "release")
+	command := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
+	command.Env = append(os.Environ(),
+		helperRoleEnv+"=delayed-term",
+		helperReadyEnv+"="+readyPath,
+		helperTermEnv+"="+termPath,
+		helperReleaseEnv+"="+releasePath)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := command.Process.Pid
+	recordPath := registryPath(t, pid)
+	if err := writeLegacyPgidFile(pid, os.TempDir(), []string{os.Args[0]}); err != nil {
+		t.Fatal(err)
+	}
+	rewriteRecordField(t, recordPath, "parent", "2147483647")
+	waitForFile(t, readyPath)
+	waited := make(chan error, 1)
+	go func() {
+		waited <- command.Wait()
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = os.Remove(recordPath)
+		select {
+		case <-waited:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	reaped := make(chan error, 1)
+	go func() {
+		reaped <- ReapStaleProcessGroups(context.Background())
+	}()
+	waitForFile(t, termPath)
+	replacementReadyPath := filepath.Join(dir, "replacement-ready")
+	replacement := startListener(t, availablePort(t), replacementReadyPath)
+	replacementPID := replacement.Process.Pid
+	replacementRecord := registryPath(t, replacementPID)
+	if err := writeLegacyPgidFile(replacementPID, os.TempDir(), []string{os.Args[0]}); err != nil {
+		t.Fatal(err)
+	}
+	replacementData, err := os.ReadFile(replacementRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(replacementRecord); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recordPath, replacementData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-replacementPID, syscall.SIGTERM)
+		_ = replacement.Wait()
+	})
+	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-reaped:
+		if err == nil || !strings.Contains(err.Error(), "record changed") {
+			t.Fatalf("reap with replacement record returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for reaper")
+	}
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("replacement record was removed: %v", err)
+	}
+	if !strings.Contains(string(data), fmt.Sprintf("pgid=%d", replacementPID)) {
+		t.Fatalf("replacement record was overwritten: %s", data)
+	}
+}
+
+func TestExpiredProcessSignalHandleDoesNotRetarget(t *testing.T) {
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	command := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
+	command.Env = append(os.Environ(),
+		helperRoleEnv+"=listener",
+		helperReadyEnv+"="+readyPath)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, readyPath)
+	identity, err := inspectProcessIdentity(command.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := openProcessSignalHandle(&identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Signal(syscall.SIGKILL); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("expired process handle signal = %v, want ESRCH", err)
 	}
 }
 
@@ -517,11 +734,72 @@ func TestTerminateGroupDoesNotForceKillAfterContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := terminateGroup(ctx, pid); !errors.Is(err, context.Canceled) {
+	if err := terminateGroup(ctx, &record{pgid: pid}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("terminate with canceled context returned %v", err)
 	}
 	if err := syscall.Kill(-pid, 0); err != nil {
 		t.Fatalf("canceled graceful shutdown force-killed the process group: %v", err)
+	}
+}
+
+func TestReaperCancellationWhileAnotherSweepIsRunning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	readyPath := filepath.Join(dir, "ready")
+	termPath := filepath.Join(dir, "term")
+	command := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
+	command.Env = append(os.Environ(),
+		helperRoleEnv+"=ignores-term",
+		helperReadyEnv+"="+readyPath,
+		helperTermEnv+"="+termPath)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := command.Process.Pid
+	recordPath := registryPath(t, pid)
+	if err := writeLegacyPgidFile(pid, os.TempDir(), []string{os.Args[0]}); err != nil {
+		t.Fatal(err)
+	}
+	rewriteRecordField(t, recordPath, "parent", "2147483647")
+	waitForFile(t, readyPath)
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = command.Wait()
+		_ = os.Remove(recordPath)
+	})
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstResult := make(chan error, 1)
+	go func() {
+		firstResult <- ReapStaleProcessGroups(firstCtx)
+	}()
+	waitForFile(t, termPath)
+
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	cancelSecond()
+	secondResult := make(chan error, 1)
+	go func() {
+		secondResult <- ReapStaleProcessGroups(secondCtx)
+	}()
+	select {
+	case err := <-secondResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled concurrent sweep returned %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		cancelFirst()
+		<-firstResult
+		t.Fatal("canceled concurrent sweep remained blocked on the active sweep")
+	}
+	cancelFirst()
+	if err := <-firstResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("active sweep after cancellation returned %v", err)
+	}
+	if err := syscall.Kill(-pid, 0); err != nil {
+		t.Fatalf("canceling the sweep killed the process group: %v", err)
 	}
 }
 
