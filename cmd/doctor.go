@@ -214,11 +214,19 @@ func checkModuleServiceCode(ctx context.Context) checkResult {
 		r.detail = "skipped (not in a workspace)"
 		return r
 	}
-	report, _ := integrity.VerifyBase(ctx, workspace)
+	report, verifyErr := integrity.VerifyBase(ctx, workspace)
+	inspectionErrors := make([]string, 0)
+	if verifyErr != nil && len(report.Modules) == 0 {
+		inspectionErrors = append(inspectionErrors, verifyErr.Error())
+	}
 	missingByService := map[string]int{}
 	modules := map[string]bool{}
 	for index := range report.Modules {
 		module := &report.Modules[index]
+		if module.Error != "" {
+			inspectionErrors = append(inspectionErrors, module.Module+": "+module.Error)
+			continue
+		}
 		for _, relative := range module.Missing {
 			parts := strings.Split(relative, "/")
 			if len(parts) < 4 || parts[0] != "services" || parts[1] == "" || parts[2] != "code" || parts[3] == "" {
@@ -227,6 +235,13 @@ func checkModuleServiceCode(ctx context.Context) checkResult {
 			missingByService[module.Module+"/"+parts[1]]++
 			modules[module.Module] = true
 		}
+	}
+	if len(inspectionErrors) > 0 {
+		sort.Strings(inspectionErrors)
+		r.status = statusFail
+		r.detail = "cannot inspect module-owned service code: " + strings.Join(inspectionErrors, "; ")
+		r.fix = "run `codefly verify` and repair the reported module manifest errors"
+		return r
 	}
 	if len(missingByService) == 0 {
 		r.status = statusOK
@@ -245,7 +260,14 @@ func checkModuleServiceCode(ctx context.Context) checkResult {
 	sort.Strings(moduleNames)
 	commands := make([]string, 0, len(moduleNames))
 	for _, module := range moduleNames {
-		commands = append(commands, fmt.Sprintf("`codefly sync module %s --restore-code`", module))
+		command := fmt.Sprintf("codefly sync module %s --restore-code", module)
+		loaded, loadErr := workspace.LoadModuleFromName(ctx, module)
+		if loadErr == nil && loaded.Agent == nil {
+			if _, statErr := os.Stat(filepath.Join(loaded.Dir(), "tools", "base-source.json")); os.IsNotExist(statErr) {
+				command += " --source REPOSITORY_URL --to vX.Y.Z --subdir module"
+			}
+		}
+		commands = append(commands, "`"+command+"`")
 	}
 	r.status = statusFail
 	r.detail = strings.Join(services, ", ")

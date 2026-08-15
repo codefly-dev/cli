@@ -306,9 +306,11 @@ codefly add application web                                    # Add an applicat
 codefly add application-dependency web --dependency=backend    # Add an application dependency
 ```
 
-Module-agent scaffolds record their immutable template repository, tag, and
-commit in `tools/base-source.json`. This pin lets module sync recover
-manifest-owned files without rerunning the scaffold.
+Module-agent scaffolds validate and record their immutable template repository,
+tag, and commit in `tools/base-source.json`. If the materialized service code
+does not match that source, add fails without leaving a partial module behind.
+The pin lets module sync recover manifest-owned files without rerunning the
+scaffold.
 
 **`add service` flags:**
 
@@ -347,9 +349,18 @@ codefly sync module saas --restore-code # Restore missing module-owned service c
 
 `sync module <name> --restore-code` restores only absent service files listed
 by the pinned base manifest. Existing base files and consumer-owned overlays
-are not changed. Scaffolds created before the source lock was introduced use
-the immutable module-agent version in `module.codefly.yaml` to create the lock
-on the first repair.
+are not changed. A legacy scaffold with neither a source lock nor a recorded
+agent can bootstrap the lock during repair by providing its original immutable
+source explicitly:
+
+```bash
+codefly sync module saas --restore-code \
+  --source https://github.com/codefly-dev/module-saas-starter.git \
+  --to v0.0.36 --subdir module
+```
+
+The source must match the service-code hashes already owned by the target base
+manifest; a newer or locally modified source is rejected.
 
 ### `codefly list`
 

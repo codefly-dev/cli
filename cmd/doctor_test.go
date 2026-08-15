@@ -35,7 +35,8 @@ services:
 	if result.status != statusFail {
 		t.Fatalf("status = %v, want FAIL: %#v", result.status, result)
 	}
-	if !strings.Contains(result.detail, "saas/accounts") || result.fix != "`codefly sync module saas --restore-code`" {
+	if !strings.Contains(result.detail, "saas/accounts") ||
+		result.fix != "`codefly sync module saas --restore-code --source REPOSITORY_URL --to vX.Y.Z --subdir module`" {
 		t.Fatalf("unexpected doctor result: %#v", result)
 	}
 
@@ -43,6 +44,32 @@ services:
 	result = checkModuleServiceCode(context.Background())
 	if result.status != statusOK {
 		t.Fatalf("restored code status = %v, want OK: %#v", result.status, result)
+	}
+}
+
+func TestDoctorFailsWhenModuleServiceCodeCannotBeInspected(t *testing.T) {
+	root := t.TempDir()
+	writeDoctorTestFile(t, filepath.Join(root, "workspace.codefly.yaml"), `name: doctor-test
+layout: modules
+modules:
+  - name: saas
+`)
+	writeDoctorTestFile(t, filepath.Join(root, "modules", "saas", "module.codefly.yaml"), `kind: module
+name: saas
+services:
+  - name: accounts
+`)
+	writeDoctorTestFile(t, filepath.Join(root, "modules", "saas", "tools", "base-manifest.json"), `{not-json`)
+	t.Chdir(root)
+
+	result := checkModuleServiceCode(context.Background())
+	if result.status != statusFail {
+		t.Fatalf("status = %v, want FAIL: %#v", result.status, result)
+	}
+	if !strings.Contains(result.detail, "cannot inspect module-owned service code") ||
+		!strings.Contains(result.detail, "invalid base-manifest.json") ||
+		!strings.Contains(result.fix, "codefly verify") {
+		t.Fatalf("unexpected doctor result: %#v", result)
 	}
 }
 

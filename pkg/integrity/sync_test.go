@@ -230,6 +230,51 @@ func TestRestoreMissingServiceCodePreservesExistingFilesAndOverlays(t *testing.T
 	}
 }
 
+func TestRestoreMissingServiceCodeRejectsSourceAheadOfTargetManifest(t *testing.T) {
+	source, target := syncFixture(t)
+	newPath := "services/kept/code/new.go"
+	writeTestFile(t, filepath.Join(source, newPath), "package kept\n")
+	writeManifest(t, source, newPath)
+	writeManifest(t, target)
+
+	if restored, err := RestoreMissingServiceCode(source, target); err == nil {
+		t.Fatalf("source from a newer manifest was accepted; restored = %v", restored)
+	}
+	if _, err := os.Stat(filepath.Join(target, newPath)); !os.IsNotExist(err) {
+		t.Fatalf("new-version path was injected into the target: %v", err)
+	}
+}
+
+func TestRestoreMissingServiceCodeRejectsChangedTargetOwnedBytes(t *testing.T) {
+	source, target := syncFixture(t)
+	codePath := "services/kept/code/main.go"
+	writeTestFile(t, filepath.Join(source, codePath), "package kept\n\nconst version = 2\n")
+	writeManifest(t, source, codePath)
+	writeTestJSON(t, filepath.Join(target, "tools", "base-manifest.json"), baseManifest{Files: map[string]string{
+		codePath: digestOf(t, "package kept\n\nconst version = 1\n"),
+	}})
+
+	if restored, err := RestoreMissingServiceCode(source, target); err == nil {
+		t.Fatalf("new-version bytes were accepted for target-owned code; restored = %v", restored)
+	}
+	if _, err := os.Stat(filepath.Join(target, codePath)); !os.IsNotExist(err) {
+		t.Fatalf("mismatched source bytes were restored: %v", err)
+	}
+}
+
+func TestAtomicCreateFileNeverReplacesAnExistingPath(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source.go")
+	target := filepath.Join(root, "target.go")
+	writeTestFile(t, source, "canonical")
+	writeTestFile(t, target, "created concurrently")
+
+	if err := atomicCreateFile(source, target); err == nil {
+		t.Fatal("create-only copy replaced an existing target")
+	}
+	assertFileContents(t, target, "created concurrently")
+}
+
 func TestBaseSyncRejectsManifestTraversalBeforeMutation(t *testing.T) {
 	source, target := syncFixture(t)
 	writeTestJSON(t, filepath.Join(source, "tools", "base-manifest.json"), baseManifest{
