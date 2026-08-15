@@ -2,15 +2,57 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
+	agentservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
+	coreservices "github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
+
+type restartRuntimeClient struct {
+	runtimev0.RuntimeClient
+	stopCalls int
+	stopErr   error
+
+	information      []*runtimev0.InformationResponse
+	informationCalls int
+}
+
+func (client *restartRuntimeClient) Stop(context.Context, *runtimev0.StopRequest, ...grpc.CallOption) (*runtimev0.StopResponse, error) {
+	client.stopCalls++
+	if client.stopErr != nil {
+		return nil, client.stopErr
+	}
+	return &runtimev0.StopResponse{Status: &runtimev0.StopStatus{State: runtimev0.StopStatus_SUCCESS}}, nil
+}
+
+func (client *restartRuntimeClient) Information(context.Context, *runtimev0.InformationRequest, ...grpc.CallOption) (*runtimev0.InformationResponse, error) {
+	if client.informationCalls >= len(client.information) {
+		return &runtimev0.InformationResponse{DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_NOOP}}, nil
+	}
+	response := client.information[client.informationCalls]
+	client.informationCalls++
+	return response, nil
+}
+
+func runnerWithRuntimeClient(client runtimev0.RuntimeClient) *Runner {
+	instance := &coreservices.Instance{
+		Identity: &resources.ServiceIdentity{Module: "backend", Name: "auth-sidecar"},
+	}
+	instance.Runtime = &coreservices.RuntimeInstance{
+		Instance: instance,
+		Runtime:  &agentservices.RuntimeAgent{RuntimeClient: client},
+	}
+	return &Runner{instance: instance, stopped: make(chan struct{}, 1)}
+}
 
 func nativeMapping(name string, port uint16) *basev0.NetworkMapping {
 	instance := resources.NewNetworkInstance("localhost", port)
@@ -82,4 +124,91 @@ func TestRestartActionType(t *testing.T) {
 	require.Equal(t, RuntimeInit, restartActionType(runtimev0.DesiredState_START))
 	require.Equal(t, RuntimeInit, restartActionType(runtimev0.DesiredState_INIT))
 	require.Equal(t, RuntimeLoad, restartActionType(runtimev0.DesiredState_LOAD))
+}
+
+func TestRestartSerializesEveryStartGeneration(t *testing.T) {
+	client := &restartRuntimeClient{}
+	runner := runnerWithRuntimeClient(client)
+	var actions []Action
+	var stopsBeforeCallback []int
+	runner.callback = func(_ context.Context, action Action) error {
+		actions = append(actions, action)
+		stopsBeforeCallback = append(stopsBeforeCallback, client.stopCalls)
+		return nil
+	}
+
+	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev0.DesiredState_INIT))
+	require.Empty(t, actions)
+	require.Zero(t, client.stopCalls)
+
+	runner.markStarted()
+	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev0.DesiredState_NOOP))
+	require.Len(t, actions, 1)
+
+	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev0.DesiredState_START))
+	require.Len(t, actions, 1)
+	require.Equal(t, 1, client.stopCalls)
+
+	runner.markStarted()
+	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev0.DesiredState_NOOP))
+	require.Equal(t, []Action{
+		{Service: "backend/auth-sidecar", Type: RuntimeInit},
+		{Service: "backend/auth-sidecar", Type: RuntimeInit},
+	}, actions)
+	require.Equal(t, []int{1, 2}, stopsBeforeCallback)
+}
+
+func TestRestartDoesNotStartReplacementWhenStopFails(t *testing.T) {
+	client := &restartRuntimeClient{stopErr: errors.New("runner still alive")}
+	runner := runnerWithRuntimeClient(client)
+	runner.markStarted()
+	callbackCalls := 0
+	runner.callback = func(context.Context, Action) error {
+		callbackCalls++
+		return nil
+	}
+
+	err := runner.handleDesiredState(context.Background(), runtimev0.DesiredState_START)
+
+	require.ErrorContains(t, err, "stop before restart")
+	require.ErrorContains(t, err, "runner still alive")
+	require.Equal(t, 1, client.stopCalls)
+	require.Zero(t, callbackCalls)
+}
+
+func TestFollowKeepsMonitoringAfterFastRestart(t *testing.T) {
+	client := &restartRuntimeClient{information: []*runtimev0.InformationResponse{
+		{
+			DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_START},
+			StartStatus:  &runtimev0.StartStatus{State: runtimev0.StartStatus_STARTED},
+		},
+		{
+			DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_NOOP},
+			StartStatus:  &runtimev0.StartStatus{State: runtimev0.StartStatus_ERROR, Message: "runner exited after restart"},
+		},
+	}}
+	runner := runnerWithRuntimeClient(client)
+	runner.markStarted()
+	callbackCalls := 0
+	runner.callback = func(context.Context, Action) error {
+		callbackCalls++
+		runner.markStarted()
+		return nil
+	}
+	failures := make(chan FlowFailure, 1)
+	runner.failureSink = func(unique, message string) {
+		failures <- FlowFailure{Service: unique, Message: message}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	require.NoError(t, runner.Follow(ctx))
+
+	select {
+	case failure := <-failures:
+		require.Equal(t, FlowFailure{Service: "backend/auth-sidecar", Message: "runner exited after restart"}, failure)
+		require.Equal(t, 1, callbackCalls)
+	case <-ctx.Done():
+		t.Fatal("runner death was not reported after restart")
+	}
 }

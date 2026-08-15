@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -50,11 +51,9 @@ type Flow struct {
 
 	hub *Hub
 
-	// failures fans in runner crashes from every Manager.Runner.Follow loop
-	// so the top-level `codefly run` command can break out of its <-ctx.Done()
-	// wait when a child service dies (instead of leaking the parent + plugins).
-	// Buffered so a single failure doesn't block the goroutine that posts it.
-	failures chan FlowFailure
+	failureMu   sync.Mutex
+	failure     *FlowFailure
+	startCancel context.CancelFunc
 
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
@@ -248,12 +247,6 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		SharedState:          stateManager,
 		ConfigurationManager: configurationManager,
-
-		// Buffer sized to accommodate the largest plausible dependency graph.
-		// With 8 we silently dropped failures under concurrent crash cascades
-		// (the review caught this); 256 covers realistic sizes while still
-		// bounded.
-		failures: make(chan FlowFailure, 256),
 
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
@@ -625,8 +618,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 	// Fix the callback
 	for _, manager := range flow.hub.managers {
 		manager.DoSetCallback(flow.playbook.Seed)
-		// Wire runner-level failures (post-start crashes) into the flow's
-		// failures channel so `codefly run` can break out of <-ctx.Done().
+		// Wire post-start crashes into the flow so Start cancels the playbook.
 		manager.DoSetFailureSink(flow.reportFailure)
 	}
 
@@ -650,7 +642,20 @@ func (flow *Flow) Start(ctx context.Context) error {
 		})
 	}
 
-	err := flow.playbook.Begin(ctx, Action{Type: RuntimeBegin, Service: resources.WithUnique(flow.originService).Unique()})
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	flow.beginStart(cancel)
+	defer flow.clearStart()
+
+	err := flow.playbook.Begin(runCtx, Action{Type: RuntimeBegin, Service: resources.WithUnique(flow.originService).Unique()})
+	failure, failed := flow.endStart()
+	if failed {
+		failureErr := w.Wrapf(failure, "service failed after start")
+		if err != nil {
+			return errors.Join(failureErr, w.Wrapf(err, "cannot stop start playbook"))
+		}
+		return failureErr
+	}
 	if err != nil {
 		return w.Wrapf(err, "cannot execute start playbook")
 	}
@@ -804,14 +809,17 @@ func (flow *Flow) Deploy(ctx context.Context) error {
 
 }
 
-// Failures returns a read-only channel of runner-level failures.
-// Top-level commands (`codefly run service ...`) should select on this
-// alongside ctx.Done() so an orphaned plugin tree triggers shutdown.
-func (flow *Flow) Failures() <-chan FlowFailure {
+// Failure returns the first runner-level failure observed by the flow.
+func (flow *Flow) Failure() (FlowFailure, bool) {
 	if flow == nil {
-		return nil
+		return FlowFailure{}, false
 	}
-	return flow.failures
+	flow.failureMu.Lock()
+	defer flow.failureMu.Unlock()
+	if flow.failure == nil {
+		return FlowFailure{}, false
+	}
+	return *flow.failure, true
 }
 
 // FailedService returns the service whose action failed the flow, the phase it
@@ -825,25 +833,46 @@ func (flow *Flow) FailedService() (string, ActionType, bool) {
 	return flow.playbook.FailedService()
 }
 
-// reportFailure is called by Manager/Runner when a follow loop detects
-// that a started service died. Non-blocking: drops on a full channel
-// because by then the receiver is already shutting things down.
 func (flow *Flow) reportFailure(unique, msg string) {
-	if flow == nil || flow.failures == nil {
+	if flow == nil {
 		return
 	}
-	select {
-	case flow.failures <- FlowFailure{Service: unique, Message: msg}:
-	default:
-		// Buffer saturated. This should never happen in practice (256 is
-		// well above any realistic concurrent failure count) but if it
-		// does, surface it so the operator knows a failure was dropped
-		// rather than silently swallowing it.
-		wool.Get(context.Background()).In("Flow.reportFailure").Warn(
-			"failure channel full — dropping",
-			wool.Field("service", unique),
-			wool.Field("message", msg))
+	flow.failureMu.Lock()
+	if flow.failure == nil {
+		failure := FlowFailure{Service: unique, Message: msg}
+		flow.failure = &failure
 	}
+	cancel := flow.startCancel
+	flow.failureMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (flow *Flow) beginStart(cancel context.CancelFunc) {
+	flow.failureMu.Lock()
+	flow.startCancel = cancel
+	failed := flow.failure != nil
+	flow.failureMu.Unlock()
+	if failed {
+		cancel()
+	}
+}
+
+func (flow *Flow) endStart() (FlowFailure, bool) {
+	flow.failureMu.Lock()
+	defer flow.failureMu.Unlock()
+	flow.startCancel = nil
+	if flow.failure == nil {
+		return FlowFailure{}, false
+	}
+	return *flow.failure, true
+}
+
+func (flow *Flow) clearStart() {
+	flow.failureMu.Lock()
+	flow.startCancel = nil
+	flow.failureMu.Unlock()
 }
 
 // ManagedServices returns the origin service name and the dependency service
