@@ -140,6 +140,29 @@ func TestLivenessTrackerResetsStreakOnRecovery(t *testing.T) {
 	require.False(t, tracker.observe(true, false))
 }
 
+func TestLivenessTrackerReArmsAfterRestartReset(t *testing.T) {
+	var tracker livenessTracker
+
+	// First incarnation becomes healthy.
+	require.False(t, tracker.observe(true, true))
+
+	// Follow zeroes the tracker while the service is not started (Stop during a
+	// hot-reload). The next incarnation's port lags the STARTED reply as it
+	// boots: a reset tracker must treat that unreachable window as a slow start,
+	// not inherit the previous incarnation's health and declare a crash.
+	tracker = livenessTracker{}
+	for i := 0; i < livenessFailureThreshold+2; i++ {
+		require.False(t, tracker.observe(true, false))
+	}
+
+	// Once the new incarnation is healthy, the tracker arms again as normal.
+	require.False(t, tracker.observe(true, true))
+	for i := 1; i < livenessFailureThreshold; i++ {
+		require.False(t, tracker.observe(true, false))
+	}
+	require.True(t, tracker.observe(true, false))
+}
+
 func TestStatusDiagnosticPreservesAgentMessage(t *testing.T) {
 	require.Equal(t, "compile failed on line 12", statusDiagnostic("  compile failed on line 12  ", "fallback"))
 	require.Equal(t, "fallback", statusDiagnostic("  ", "fallback"))

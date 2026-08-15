@@ -1008,6 +1008,13 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				// been healthy, a sustained connection-refused means the process
 				// died. Report it so `codefly run` fails loudly instead of
 				// leaving dependents in an unbounded connection-refused loop.
+				//
+				// Reset the tracker whenever the service is not started so each
+				// incarnation must re-establish health before it can be declared
+				// dead. Without this, a hot-reload (Stop → Init → Start) inherits
+				// the previous incarnation's everHealthy flag: the port lags the
+				// STARTED reply while the new process boots, and the stale flag
+				// turns that startup window into a spurious crash.
 				if runner.isStarted.Load() {
 					native, reachable := runner.nativeLiveness(ctx)
 					if liveness.observe(len(native) > 0, reachable) {
@@ -1020,6 +1027,8 @@ func (runner *Runner) Follow(ctx context.Context) error {
 						}
 						return
 					}
+				} else {
+					liveness = livenessTracker{}
 				}
 			}
 		}
