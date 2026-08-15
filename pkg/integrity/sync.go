@@ -397,6 +397,54 @@ func ApplyBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream 
 	return plan, nil
 }
 
+// RestoreMissingServiceCode recreates absent base-owned service code without
+// changing any existing base file, consumer overlay, or manifest.
+func RestoreMissingServiceCode(sourceRoot, targetRoot string) ([]string, error) {
+	plan, err := PlanBaseSync(sourceRoot, targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, invalid := range plan.SourceInvalid {
+		if isServiceCodePath(invalid.Path) {
+			return nil, fmt.Errorf("cannot restore invalid source path %s (%s)", invalid.Path, invalid.Reason)
+		}
+	}
+	for _, invalid := range plan.TargetInvalid {
+		if isServiceCodePath(invalid) {
+			return nil, fmt.Errorf("cannot restore unsafe target path %s", invalid)
+		}
+	}
+
+	manifest, err := readBaseManifest(filepath.Join(plan.SourceRoot, baseManifestRelativePath))
+	if err != nil {
+		return nil, fmt.Errorf("re-read source base manifest: %w", err)
+	}
+	restored := make([]string, 0, len(plan.Create))
+	for _, relative := range plan.Create {
+		if !isServiceCodePath(relative) {
+			continue
+		}
+		target := filepath.Join(plan.TargetRoot, filepath.FromSlash(relative))
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			return restored, fmt.Errorf("base path %s changed before restore; re-run the command", relative)
+		}
+		source := filepath.Join(plan.SourceRoot, filepath.FromSlash(relative))
+		if digest, digestErr := sha256File(source); digestErr != nil || digest != manifest.Files[relative] {
+			return restored, fmt.Errorf("source base path %s changed before restore", relative)
+		}
+		if err := atomicCopyFile(source, target); err != nil {
+			return restored, fmt.Errorf("restore base file %s: %w", relative, err)
+		}
+		restored = append(restored, relative)
+	}
+	return restored, nil
+}
+
+func isServiceCodePath(relative string) bool {
+	parts := strings.Split(relative, "/")
+	return len(parts) >= 4 && parts[0] == "services" && parts[1] != "" && parts[2] == "code" && parts[3] != ""
+}
+
 func readBaseManifest(path string) (baseManifest, error) {
 	payload, err := os.ReadFile(path)
 	if err != nil {

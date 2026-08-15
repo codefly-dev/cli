@@ -6,6 +6,7 @@ import (
 	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	modulesync "github.com/codefly-dev/cli/cmd/sync"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/actions/actions"
@@ -109,6 +110,9 @@ func addModule(name string) error {
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("module agent failed: %w", err)
+			}
+			if err := modulesync.PinModuleSource(ctx, mod, agent); err != nil {
+				return fmt.Errorf("pin module scaffold source: %w", err)
 			}
 			cli.Header(2, "Module agent scaffolded services for <%s>", name)
 		}

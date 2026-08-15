@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/daemon"
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/cli/pkg/integrity"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
@@ -42,6 +44,7 @@ processes — and tells you how to fix each one.`,
 			checkAgentsInstalled,
 			checkDocker,
 			checkDiskSpace,
+			checkModuleServiceCode,
 			checkProcLimit,
 			checkDaemon,
 			checkStrayAgents,
@@ -195,6 +198,58 @@ func checkDiskSpace(_ context.Context) checkResult {
 		r.status = statusOK
 		r.detail = fmt.Sprintf("%.0f GB free", freeGB)
 	}
+	return r
+}
+
+func checkModuleServiceCode(ctx context.Context) checkResult {
+	r := checkResult{name: "module service code"}
+	workspace, err := resources.FindWorkspaceUp(ctx)
+	if err != nil {
+		r.status = statusWarn
+		r.detail = "cannot inspect workspace: " + err.Error()
+		return r
+	}
+	if workspace == nil {
+		r.status = statusOK
+		r.detail = "skipped (not in a workspace)"
+		return r
+	}
+	report, _ := integrity.VerifyBase(ctx, workspace)
+	missingByService := map[string]int{}
+	modules := map[string]bool{}
+	for index := range report.Modules {
+		module := &report.Modules[index]
+		for _, relative := range module.Missing {
+			parts := strings.Split(relative, "/")
+			if len(parts) < 4 || parts[0] != "services" || parts[1] == "" || parts[2] != "code" || parts[3] == "" {
+				continue
+			}
+			missingByService[module.Module+"/"+parts[1]]++
+			modules[module.Module] = true
+		}
+	}
+	if len(missingByService) == 0 {
+		r.status = statusOK
+		r.detail = "all manifest-owned service code is present"
+		return r
+	}
+	services := make([]string, 0, len(missingByService))
+	for service, count := range missingByService {
+		services = append(services, fmt.Sprintf("%s (%d missing file(s))", service, count))
+	}
+	sort.Strings(services)
+	moduleNames := make([]string, 0, len(modules))
+	for module := range modules {
+		moduleNames = append(moduleNames, module)
+	}
+	sort.Strings(moduleNames)
+	commands := make([]string, 0, len(moduleNames))
+	for _, module := range moduleNames {
+		commands = append(commands, fmt.Sprintf("`codefly sync module %s --restore-code`", module))
+	}
+	r.status = statusFail
+	r.detail = strings.Join(services, ", ")
+	r.fix = strings.Join(commands, "; ")
 	return r
 }
 

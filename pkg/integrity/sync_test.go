@@ -198,6 +198,38 @@ func TestBaseSyncDoesNotInstallServicesOutsideConsumerComposition(t *testing.T) 
 	}
 }
 
+func TestRestoreMissingServiceCodePreservesExistingFilesAndOverlays(t *testing.T) {
+	source, target := syncFixture(t)
+	missingCode := "services/kept/code/main.go"
+	modifiedCode := "services/kept/code/custom.go"
+	missingNonCode := "docs/base.md"
+	writeTestFile(t, filepath.Join(source, missingCode), "package main\n")
+	writeTestFile(t, filepath.Join(source, modifiedCode), "package main\n\nconst canonical = true\n")
+	writeTestFile(t, filepath.Join(source, missingNonCode), "canonical docs\n")
+	writeManifest(t, source, missingCode, modifiedCode, missingNonCode)
+	writeTestFile(t, filepath.Join(target, modifiedCode), "package main\n\nconst consumerEdit = true\n")
+	writeTestFile(t, filepath.Join(target, "services/kept/overlays/local.yaml"), "consumer: true\n")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-manifest.json"), baseManifest{Files: map[string]string{
+		missingCode:    digestOf(t, "package main\n"),
+		modifiedCode:   digestOf(t, "package main\n\nconst canonical = true\n"),
+		missingNonCode: digestOf(t, "canonical docs\n"),
+	}})
+
+	restored, err := RestoreMissingServiceCode(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(restored, []string{missingCode}) {
+		t.Fatalf("restored = %v, want %s", restored, missingCode)
+	}
+	assertFileContents(t, filepath.Join(target, missingCode), "package main\n")
+	assertFileContents(t, filepath.Join(target, modifiedCode), "package main\n\nconst consumerEdit = true\n")
+	assertFileContents(t, filepath.Join(target, "services/kept/overlays/local.yaml"), "consumer: true\n")
+	if _, err := os.Stat(filepath.Join(target, missingNonCode)); !os.IsNotExist(err) {
+		t.Fatalf("non-code base file was restored: %v", err)
+	}
+}
+
 func TestBaseSyncRejectsManifestTraversalBeforeMutation(t *testing.T) {
 	source, target := syncFixture(t)
 	writeTestJSON(t, filepath.Join(source, "tools", "base-manifest.json"), baseManifest{

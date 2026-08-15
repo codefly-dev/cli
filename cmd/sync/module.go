@@ -41,6 +41,7 @@ type moduleSyncOptions struct {
 	Subdirectory   string
 	AcceptUpstream []string
 	Apply          bool
+	RestoreCode    bool
 }
 
 // ModuleCmd updates an immutable base underneath a product-owned overlay.
@@ -63,6 +64,10 @@ First pin a remote source:
 Future updates use the consumer-owned tools/base-source.json lock:
   codefly sync module saas --to v0.0.9
   codefly sync module saas --to v0.0.9 --apply
+
+Restore missing base-owned service source from the pinned version without
+changing existing files or consumer overlays:
+  codefly sync module saas --restore-code
 
 After reviewing a genuine conflict, explicitly select the immutable upstream
 version path by path. There is deliberately no accept-all option:
@@ -98,9 +103,13 @@ func init() {
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
 	ModuleCmd.Flags().StringArrayVar(&moduleSyncFlags.AcceptUpstream, "accept-upstream", nil, "replace one reviewed conflicting path with the immutable upstream version (repeatable)")
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.Apply, "apply", false, "apply the reviewed update; default is dry-run")
+	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.RestoreCode, "restore-code", false, "restore missing base-owned service code from the pinned module version")
 }
 
 func syncComposedModule(ctx context.Context, target *resources.Module, options moduleSyncOptions) error {
+	if options.RestoreCode {
+		return restoreComposedModuleCode(ctx, target, &options)
+	}
 	resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), options)
 	if err != nil {
 		return err
@@ -139,6 +148,92 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options m
 	}
 	output.Info("✓ module <%s> base updated; product overlays preserved", target.Name)
 	return nil
+}
+
+func restoreComposedModuleCode(ctx context.Context, target *resources.Module, options *moduleSyncOptions) error {
+	if strings.TrimSpace(options.Source) != "" || strings.TrimSpace(options.To) != "" ||
+		strings.TrimSpace(options.Subdirectory) != "" || len(options.AcceptUpstream) > 0 || options.Apply {
+		return fmt.Errorf("--restore-code uses the pinned %s source and cannot be combined with update flags", moduleSourceLockRelativePath)
+	}
+	resolved, cleanup, err := resolveRestoreModuleSource(ctx, target)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	restored, err := integrity.RestoreMissingServiceCode(resolved.Root, target.Dir())
+	if err != nil {
+		return err
+	}
+	if len(restored) == 0 {
+		output.Info("module <%s>: no missing base-owned service code", target.Name)
+		return nil
+	}
+	output.Info("✓ module <%s>: restored %d base-owned service code file(s)", target.Name, len(restored))
+	for _, relative := range restored {
+		output.Info("  RESTORED %s", relative)
+	}
+	output.Info("restart any active stack so services load the restored files")
+	return nil
+}
+
+func resolveRestoreModuleSource(ctx context.Context, target *resources.Module) (resolvedModuleSource, func(), error) {
+	lockPath := filepath.Join(target.Dir(), moduleSourceLockRelativePath)
+	if _, err := os.Stat(lockPath); err == nil || !os.IsNotExist(err) || target.Agent == nil {
+		return resolveModuleSource(ctx, target.Dir(), moduleSyncOptions{})
+	}
+	options, err := moduleAgentSource(target.Agent)
+	if err != nil {
+		return resolvedModuleSource{}, func() {}, err
+	}
+	resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), options)
+	if err != nil {
+		return resolvedModuleSource{}, cleanup, err
+	}
+	if resolved.Lock == nil {
+		cleanup()
+		return resolvedModuleSource{}, func() {}, fmt.Errorf("module agent source did not resolve to an immutable lock")
+	}
+	if err := writeModuleSourceLock(lockPath, *resolved.Lock); err != nil {
+		cleanup()
+		return resolvedModuleSource{}, func() {}, fmt.Errorf("write module source lock: %w", err)
+	}
+	return resolved, cleanup, nil
+}
+
+// PinModuleSource records the immutable repository revision used by a module
+// template agent so later sync and repair commands can recover the scaffold.
+func PinModuleSource(ctx context.Context, target *resources.Module, agent *resources.Agent) error {
+	options, err := moduleAgentSource(agent)
+	if err != nil {
+		return err
+	}
+	return pinModuleSource(ctx, target, options.Source, options.To)
+}
+
+func moduleAgentSource(agent *resources.Agent) (moduleSyncOptions, error) {
+	registration, err := resources.AgentKindRegistrationFor(agent.Kind)
+	if err != nil {
+		return moduleSyncOptions{}, err
+	}
+	repository := fmt.Sprintf(
+		"https://github.com/%s/%s.git",
+		strings.ReplaceAll(agent.Publisher, ".", "-"),
+		registration.GitHubRepository(agent.Name),
+	)
+	ref := "v" + strings.TrimPrefix(agent.Version, "v")
+	return moduleSyncOptions{Source: repository, To: ref}, nil
+}
+
+func pinModuleSource(ctx context.Context, target *resources.Module, repository, ref string) error {
+	resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), moduleSyncOptions{Source: repository, To: ref})
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if resolved.Lock == nil {
+		return fmt.Errorf("module source %s@%s did not resolve to an immutable lock", repository, ref)
+	}
+	return writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), *resolved.Lock)
 }
 
 type resolvedModuleSource struct {
