@@ -119,6 +119,9 @@ Commands are in `cmd/` with subcommands in `cmd/{command}/`.
 ## Build & Test
 
 ```bash
+# Bootstrap a fresh flat checkout from scratch (no codefly binary required)
+scripts/bootstrap.sh --dir ~/codefly.dev   # Clone every codefly-dev repo into the flat layout self pull/build expect
+
 # Build
 go build -o codefly .
 codefly self build                 # Build from source and install over the running binary (replaces the old install script)
