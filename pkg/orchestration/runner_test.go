@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	agentservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -20,6 +21,9 @@ type restartRuntimeClient struct {
 	runtimev0.RuntimeClient
 	stopCalls int
 	stopErr   error
+
+	information      []*runtimev0.InformationResponse
+	informationCalls int
 }
 
 func (client *restartRuntimeClient) Stop(context.Context, *runtimev0.StopRequest, ...grpc.CallOption) (*runtimev0.StopResponse, error) {
@@ -28,6 +32,15 @@ func (client *restartRuntimeClient) Stop(context.Context, *runtimev0.StopRequest
 		return nil, client.stopErr
 	}
 	return &runtimev0.StopResponse{Status: &runtimev0.StopStatus{State: runtimev0.StopStatus_SUCCESS}}, nil
+}
+
+func (client *restartRuntimeClient) Information(context.Context, *runtimev0.InformationRequest, ...grpc.CallOption) (*runtimev0.InformationResponse, error) {
+	if client.informationCalls >= len(client.information) {
+		return &runtimev0.InformationResponse{DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_NOOP}}, nil
+	}
+	response := client.information[client.informationCalls]
+	client.informationCalls++
+	return response, nil
 }
 
 func runnerWithRuntimeClient(client runtimev0.RuntimeClient) *Runner {
@@ -161,4 +174,41 @@ func TestRestartDoesNotStartReplacementWhenStopFails(t *testing.T) {
 	require.ErrorContains(t, err, "runner still alive")
 	require.Equal(t, 1, client.stopCalls)
 	require.Zero(t, callbackCalls)
+}
+
+func TestFollowKeepsMonitoringAfterFastRestart(t *testing.T) {
+	client := &restartRuntimeClient{information: []*runtimev0.InformationResponse{
+		{
+			DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_START},
+			StartStatus:  &runtimev0.StartStatus{State: runtimev0.StartStatus_STARTED},
+		},
+		{
+			DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_NOOP},
+			StartStatus:  &runtimev0.StartStatus{State: runtimev0.StartStatus_ERROR, Message: "runner exited after restart"},
+		},
+	}}
+	runner := runnerWithRuntimeClient(client)
+	runner.markStarted()
+	callbackCalls := 0
+	runner.callback = func(context.Context, Action) error {
+		callbackCalls++
+		runner.markStarted()
+		return nil
+	}
+	failures := make(chan FlowFailure, 1)
+	runner.failureSink = func(unique, message string) {
+		failures <- FlowFailure{Service: unique, Message: message}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	require.NoError(t, runner.Follow(ctx))
+
+	select {
+	case failure := <-failures:
+		require.Equal(t, FlowFailure{Service: "backend/auth-sidecar", Message: "runner exited after restart"}, failure)
+		require.Equal(t, 1, callbackCalls)
+	case <-ctx.Done():
+		t.Fatal("runner death was not reported after restart")
+	}
 }

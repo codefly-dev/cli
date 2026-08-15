@@ -584,12 +584,6 @@ func (runner *Runner) cancelRestarts() {
 	runner.restartMu.Unlock()
 }
 
-func (runner *Runner) restarting() bool {
-	runner.restartMu.Lock()
-	defer runner.restartMu.Unlock()
-	return runner.restartInFlight
-}
-
 // boundNativePorts returns "<port> (<endpoint>)" descriptions for each of the
 // runner's own native endpoint ports that another process is already listening
 // on. A successful TCP dial is the honest signal that the port is held: unlike
@@ -811,19 +805,6 @@ func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
 		return &OutputProperty{}, nil
 	}
 	runner.cancelRestarts()
-	return runner.stop(ctx)
-}
-
-func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
-	if runner == nil {
-		return &OutputProperty{}, nil
-	}
-	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance))
-	// Info-level so a user watching `codefly run service` shutdown
-	// sees WHICH service is being stopped, not just a silent hang.
-	w.Info(fmt.Sprintf("stopping %s", runner.Unique()))
-	start := time.Now()
-	runner.isStarted.Store(false)
 	// Non-blocking signal to Follow. A blocking goroutine-send here would
 	// leak if Follow had already exited via ctx.Done, and a second Stop
 	// call would try to send to a channel already saturated by the first.
@@ -832,6 +813,16 @@ func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
 	case <-ctx.Done():
 	default:
 	}
+	return runner.stop(ctx)
+}
+
+func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance))
+	// Info-level so a user watching `codefly run service` shutdown
+	// sees WHICH service is being stopped, not just a silent hang.
+	w.Info(fmt.Sprintf("stopping %s", runner.Unique()))
+	start := time.Now()
+	runner.isStarted.Store(false)
 	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
@@ -929,9 +920,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				// goroutine doesn't outlive its caller.
 				return
 			case <-runner.stopped:
-				if !runner.restarting() {
-					return
-				}
+				return
 			case <-ticker.C:
 				info, err := runner.instance.Runtime.Information(ctx, &runtimev0.InformationRequest{})
 				if err != nil {
