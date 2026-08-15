@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -51,8 +52,8 @@ type Flow struct {
 	hub *Hub
 
 	// failures fans in runner crashes from every Manager.Runner.Follow loop
-	// so the top-level `codefly run` command can break out of its <-ctx.Done()
-	// wait when a child service dies (instead of leaking the parent + plugins).
+	// so Flow.Start returns when a child service dies instead of leaking the
+	// parent and sibling plugins.
 	// Buffered so a single failure doesn't block the goroutine that posts it.
 	failures chan FlowFailure
 
@@ -650,11 +651,28 @@ func (flow *Flow) Start(ctx context.Context) error {
 		})
 	}
 
-	err := flow.playbook.Begin(ctx, Action{Type: RuntimeBegin, Service: resources.WithUnique(flow.originService).Unique()})
-	if err != nil {
-		return w.Wrapf(err, "cannot execute start playbook")
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		result <- flow.playbook.Begin(runCtx, Action{Type: RuntimeBegin, Service: resources.WithUnique(flow.originService).Unique()})
+	}()
+
+	select {
+	case err := <-result:
+		if err != nil {
+			return w.Wrapf(err, "cannot execute start playbook")
+		}
+		return nil
+	case failure := <-flow.failures:
+		cancel()
+		failureErr := w.Wrapf(failure, "service failed after start")
+		if playbookErr := <-result; playbookErr != nil {
+			return errors.Join(failureErr, w.Wrapf(playbookErr, "cannot stop start playbook"))
+		}
+		return failureErr
 	}
-	return nil
 }
 
 func (flow *Flow) Test(ctx context.Context) error {
@@ -805,8 +823,6 @@ func (flow *Flow) Deploy(ctx context.Context) error {
 }
 
 // Failures returns a read-only channel of runner-level failures.
-// Top-level commands (`codefly run service ...`) should select on this
-// alongside ctx.Done() so an orphaned plugin tree triggers shutdown.
 func (flow *Flow) Failures() <-chan FlowFailure {
 	if flow == nil {
 		return nil

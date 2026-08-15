@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -57,6 +58,10 @@ type Runner struct {
 	// next tick regardless of scheduler ordering.
 	isStarted atomic.Bool
 	restart   atomic.Bool
+	// started closes after the first successful Start so watcher events raised
+	// during initial Init cannot enqueue a concurrent second start.
+	started   chan struct{}
+	startOnce sync.Once
 
 	outputPropertyForLoad  *RunnerLoadManager
 	outputPropertyForInit  *RunnerInitManager
@@ -127,6 +132,7 @@ func NewRunner(ctx context.Context, instance *services.Instance, world *World) (
 		outputPropertyForTest:  NewRunnerTestManager(instance.Unique()),
 
 		stopped: make(chan struct{}, 1),
+		started: make(chan struct{}),
 	}
 	return runner, nil
 }
@@ -545,8 +551,27 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for start")
 	}
 
-	runner.isStarted.Store(true)
+	runner.markStarted()
 	return outputProperty, nil
+}
+
+func (runner *Runner) markStarted() {
+	runner.isStarted.Store(true)
+	runner.startOnce.Do(func() { close(runner.started) })
+}
+
+func (runner *Runner) waitForFirstStart(ctx context.Context) bool {
+	if runner.isStarted.Load() {
+		return true
+	}
+	select {
+	case <-runner.started:
+		return true
+	case <-runner.stopped:
+		return false
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // boundNativePorts returns "<port> (<endpoint>)" descriptions for each of the
@@ -604,7 +629,7 @@ func (runner *Runner) StartRemote(ctx context.Context) (*OutputProperty, error) 
 		return nil, w.Wrapf(err, "cannot process outputProperty for start")
 	}
 
-	runner.isStarted.Store(true)
+	runner.markStarted()
 	return outputProperty, nil
 }
 
@@ -881,13 +906,16 @@ func (runner *Runner) Follow(ctx context.Context) error {
 					if msg == "" {
 						msg = "runner exited"
 					}
-					w.Warn("runner died after start", wool.Field("message", msg))
+					w.Error("runner died after start", wool.Field("message", msg))
 					runner.failureSink(runner.Unique(), msg)
 					return
 				}
 
 				if info.DesiredState != nil && info.DesiredState.Stage != runtimev0.DesiredState_NOOP {
 					w.Debug("received a request to change SharedState", wool.Field("SharedState", info.DesiredState.Stage))
+					if !runner.waitForFirstStart(ctx) {
+						return
+					}
 					action := Action{Service: runner.Unique(), Type: restartActionType(info.DesiredState.Stage)}
 					if runner.callback == nil {
 						const message = "restart requested before the orchestration callback was initialized"

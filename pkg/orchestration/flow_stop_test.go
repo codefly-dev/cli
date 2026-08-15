@@ -3,8 +3,10 @@ package orchestration
 import (
 	"context"
 	"testing"
+	"time"
 
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
@@ -98,4 +100,46 @@ func TestFlowStopNilHubIsNoop(t *testing.T) {
 	var nilFlow *Flow
 	require.NoError(t, nilFlow.Stop())
 	require.NoError(t, nilFlow.Shutdown())
+}
+
+type blockingFailurePolicy struct {
+	started chan struct{}
+}
+
+func (p *blockingFailurePolicy) GetExecutor(context.Context, Action) (OutputProcessorFunc, error) {
+	return nil, nil
+}
+
+func (p *blockingFailurePolicy) Restrict(context.Context, string) error {
+	return nil
+}
+
+func (p *blockingFailurePolicy) Execute(ctx context.Context, _ Action) ([]Action, error) {
+	close(p.started)
+	<-ctx.Done()
+	return nil, nil
+}
+
+func TestFlowStartReturnsPostStartRunnerFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	service := &resources.Service{Name: "api"}
+	service.WithModule("backend")
+	policy := &blockingFailurePolicy{started: make(chan struct{})}
+	playbook, err := NewPlaybook(ctx, &World{})
+	require.NoError(t, err)
+	playbook.WithPolicy(policy)
+	flow := &Flow{
+		originService: service,
+		playbook:      playbook,
+		failures:      make(chan FlowFailure, 1),
+	}
+
+	result := make(chan error, 1)
+	go func() { result <- flow.Start(ctx) }()
+	<-policy.started
+	flow.reportFailure("backend/auth-sidecar", "runner exited")
+
+	require.ErrorContains(t, <-result, "service failed after start: backend/auth-sidecar: runner exited")
 }

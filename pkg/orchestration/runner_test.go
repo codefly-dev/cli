@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -82,4 +83,17 @@ func TestRestartActionType(t *testing.T) {
 	require.Equal(t, RuntimeInit, restartActionType(runtimev0.DesiredState_START))
 	require.Equal(t, RuntimeInit, restartActionType(runtimev0.DesiredState_INIT))
 	require.Equal(t, RuntimeLoad, restartActionType(runtimev0.DesiredState_LOAD))
+}
+
+func TestRestartWaitsForFirstSuccessfulStart(t *testing.T) {
+	runner := &Runner{started: make(chan struct{})}
+	ready := make(chan bool, 1)
+	go func() {
+		ready <- runner.waitForFirstStart(context.Background())
+	}()
+
+	require.Never(t, func() bool { return len(ready) > 0 }, 50*time.Millisecond, 5*time.Millisecond)
+
+	runner.markStarted()
+	require.True(t, <-ready)
 }

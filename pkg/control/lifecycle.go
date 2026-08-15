@@ -190,7 +190,7 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 }
 
 // waitReady blocks until the flow reports ready, the flow exits/fails, or ctx is
-// done — mirroring the readiness poll + failure select the run command uses.
+// done.
 func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan error) error {
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
@@ -203,8 +203,6 @@ func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan err
 				return fmt.Errorf("flow exited before becoming ready: %w", err)
 			}
 			return fmt.Errorf("flow stopped before becoming ready")
-		case f := <-flow.Failures():
-			return fmt.Errorf("service failure in %s: %s", f.Service, f.Message)
 		case <-ticker.C:
 			if flow.Ready(ctx) {
 				return nil

@@ -320,14 +320,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			// Keep running with CLI server
 		}
 
-		// Wait for SIGINT OR a runner-level failure (e.g. user binary
-		// os.Exit, plugin agent crash). Without the failure case we'd
-		// idle forever with dead children — the orphan-process bug.
-		select {
-		case <-ctx.Done():
-		case f := <-flow.Failures():
-			runErr = fmt.Errorf("service failure: %w", f)
-		}
+		<-ctx.Done()
 	} else {
 		// Interactive mode: TUI
 		logCh := tui.NewLogChannel()
@@ -483,9 +476,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			}
 			select {
 			case <-runCtx.Done():
-			case f := <-flow.Failures():
-				runErr = f
-				t.SendError(f)
 			case err := <-startErr:
 				// flow.Start returned on its own after readiness — already
 				// drained, so don't call drainStart (it would block).
