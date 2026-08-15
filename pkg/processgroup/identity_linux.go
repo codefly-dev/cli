@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,7 +41,7 @@ func inspectNativeProcess(pid int) (nativeProcessIdentity, error) {
 }
 
 func readLinuxProcessStat(pid int) (nativeProcessIdentity, error) {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	data, err := fs.ReadFile(os.DirFS("/proc"), strconv.Itoa(pid)+"/stat")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nativeProcessIdentity{}, errProcessNotFound
