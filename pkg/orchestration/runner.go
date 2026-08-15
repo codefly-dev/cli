@@ -575,6 +575,71 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 	return held
 }
 
+// nativeLiveness probes the runner's own native endpoints. native lists the
+// "<host> (<endpoint>)" descriptions of every native TCP endpoint the service
+// exposes; reachable reports whether at least one of them currently accepts a
+// connection. A started service whose native endpoint was reachable and then
+// stops accepting connections has had its managed process die underneath the
+// agent — precisely the connection-refused wedge (issue #380) this guards
+// against, since the agent process itself stays alive and never reports ERROR.
+func (runner *Runner) nativeLiveness(ctx context.Context) (native []string, reachable bool) {
+	for _, mapping := range runner.networkMappings {
+		if mapping == nil || mapping.Endpoint == nil {
+			continue
+		}
+		instance := resources.FilterNetworkInstance(ctx, mapping.Instances, resources.NewNativeNetworkAccess())
+		if instance == nil {
+			continue
+		}
+		native = append(native, fmt.Sprintf("%s (%s)", instance.Host, mapping.Endpoint.Name))
+		if reachable {
+			continue
+		}
+		conn, err := net.DialTimeout("tcp", instance.Host, 200*time.Millisecond)
+		if err != nil {
+			continue
+		}
+		_ = conn.Close()
+		reachable = true
+	}
+	return native, reachable
+}
+
+// livenessFailureThreshold is the number of consecutive 1s liveness probes a
+// started service's native endpoint must fail before Follow declares the
+// managed process dead. A small streak tolerates a transient blip while still
+// surfacing a real crash within a few seconds instead of leaving dependents in
+// an unbounded connection-refused loop.
+const livenessFailureThreshold = 3
+
+// livenessTracker turns a stream of per-tick liveness observations into a
+// death verdict. It only arms once the endpoint has been observed healthy, so
+// a service that is slow to open its listener right after Start is never
+// mistaken for a crash.
+type livenessTracker struct {
+	everHealthy bool
+	streak      int
+}
+
+// observe records one liveness probe and reports whether the managed process
+// should be declared dead. hasNative=false means there is nothing to probe, so
+// the tracker stays dormant (some services expose no native TCP endpoint).
+func (t *livenessTracker) observe(hasNative, reachable bool) bool {
+	switch {
+	case !hasNative:
+		return false
+	case reachable:
+		t.everHealthy = true
+		t.streak = 0
+		return false
+	case t.everHealthy:
+		t.streak++
+		return t.streak >= livenessFailureThreshold
+	default:
+		return false
+	}
+}
+
 func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
 	if runner.isStarted.Load() {
 		return nil
@@ -839,11 +904,14 @@ func restartActionType(stage runtimev0.DesiredState_Stage) ActionType {
 // Follow calls the agent for information and generate a channel of events for the service:
 // - Handle restart
 // - Detect runner death (StartStatus → ERROR) and report up via failureSink
+// - Detect a managed process that died underneath a still-live agent by probing
+//   the service's own native endpoint, and report that up via failureSink too
 func (runner *Runner) Follow(ctx context.Context) error {
 	w := wool.Get(ctx).In("service.Follow", wool.ThisField(runner.instance))
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
+		var liveness livenessTracker
 		for {
 			select {
 			case <-ctx.Done():
@@ -929,6 +997,26 @@ func (runner *Runner) Follow(ctx context.Context) error {
 						if runner.failureSink != nil {
 							runner.failureSink(runner.Unique(),
 								fmt.Sprintf("restart action failed: %v", err))
+						}
+						return
+					}
+				}
+
+				// A managed dependency (e.g. embedded Postgres) can exit while
+				// its agent stays alive and never reports StartStatus → ERROR.
+				// Probe the started service's own native endpoint: once it has
+				// been healthy, a sustained connection-refused means the process
+				// died. Report it so `codefly run` fails loudly instead of
+				// leaving dependents in an unbounded connection-refused loop.
+				if runner.isStarted.Load() {
+					native, reachable := runner.nativeLiveness(ctx)
+					if liveness.observe(len(native) > 0, reachable) {
+						endpoints := strings.Join(native, ", ")
+						w.Warn("managed process exited: native endpoint unreachable after start",
+							wool.Field("endpoints", endpoints))
+						if runner.failureSink != nil {
+							runner.failureSink(runner.Unique(),
+								fmt.Sprintf("managed process appears to have exited: native endpoint %s stopped accepting connections", endpoints))
 						}
 						return
 					}

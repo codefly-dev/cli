@@ -70,6 +70,76 @@ func TestInitialPortGuardRejectsFirstInitAndSkipsRunningService(t *testing.T) {
 	require.NoError(t, runner.checkInitialPortAvailability(context.Background()))
 }
 
+func TestNativeLivenessReportsReachability(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	up := ln.Addr().(*net.TCPAddr).Port
+
+	// A port nothing listens on.
+	downLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	down := downLn.Addr().(*net.TCPAddr).Port
+	require.NoError(t, downLn.Close())
+
+	// A dead endpoint alongside a live one is still reachable overall.
+	runner := &Runner{networkMappings: []*basev0.NetworkMapping{
+		nativeMapping("postgres", uint16(down)),
+		nativeMapping("grpc", uint16(up)),
+	}}
+	native, reachable := runner.nativeLiveness(context.Background())
+	require.Len(t, native, 2)
+	require.True(t, reachable)
+
+	// Every native endpoint down: has endpoints to probe, none reachable.
+	runner = &Runner{networkMappings: []*basev0.NetworkMapping{
+		nativeMapping("postgres", uint16(down)),
+	}}
+	native, reachable = runner.nativeLiveness(context.Background())
+	require.Len(t, native, 1)
+	require.False(t, reachable)
+
+	// No native endpoints at all: nothing to probe.
+	runner = &Runner{networkMappings: []*basev0.NetworkMapping{
+		nil,
+		{Endpoint: nil},
+	}}
+	native, _ = runner.nativeLiveness(context.Background())
+	require.Empty(t, native)
+}
+
+func TestLivenessTrackerDeclaresDeathOnlyAfterHealthyThenStreak(t *testing.T) {
+	var tracker livenessTracker
+
+	// Nothing to probe never arms the tracker.
+	require.False(t, tracker.observe(false, false))
+
+	// Unreachable before ever being healthy is a slow start, not a death.
+	for i := 0; i < livenessFailureThreshold+2; i++ {
+		require.False(t, tracker.observe(true, false))
+	}
+
+	// Once healthy, the failure streak must reach the threshold to declare death.
+	require.False(t, tracker.observe(true, true))
+	for i := 1; i < livenessFailureThreshold; i++ {
+		require.False(t, tracker.observe(true, false))
+	}
+	require.True(t, tracker.observe(true, false))
+}
+
+func TestLivenessTrackerResetsStreakOnRecovery(t *testing.T) {
+	var tracker livenessTracker
+
+	require.False(t, tracker.observe(true, true))
+	// A blip shorter than the threshold followed by recovery must not fire.
+	for i := 1; i < livenessFailureThreshold; i++ {
+		require.False(t, tracker.observe(true, false))
+	}
+	require.False(t, tracker.observe(true, true))
+	// After recovery the streak is clear, so a single miss does not fire.
+	require.False(t, tracker.observe(true, false))
+}
+
 func TestStatusDiagnosticPreservesAgentMessage(t *testing.T) {
 	require.Equal(t, "compile failed on line 12", statusDiagnostic("  compile failed on line 12  ", "fallback"))
 	require.Equal(t, "fallback", statusDiagnostic("  ", "fallback"))
