@@ -120,6 +120,20 @@ func (p *blockingFailurePolicy) Execute(ctx context.Context, _ Action) ([]Action
 	return nil, nil
 }
 
+type panicPolicy struct{}
+
+func (p *panicPolicy) GetExecutor(context.Context, Action) (OutputProcessorFunc, error) {
+	return nil, nil
+}
+
+func (p *panicPolicy) Restrict(context.Context, string) error {
+	return nil
+}
+
+func (p *panicPolicy) Execute(context.Context, Action) ([]Action, error) {
+	panic("playbook panic")
+}
+
 func TestFlowStartReturnsPostStartRunnerFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -133,13 +147,35 @@ func TestFlowStartReturnsPostStartRunnerFailure(t *testing.T) {
 	flow := &Flow{
 		originService: service,
 		playbook:      playbook,
-		failures:      make(chan FlowFailure, 1),
 	}
 
 	result := make(chan error, 1)
 	go func() { result <- flow.Start(ctx) }()
 	<-policy.started
 	flow.reportFailure("backend/auth-sidecar", "runner exited")
+	failure, ok := flow.Failure()
+	require.True(t, ok)
+	require.Equal(t, FlowFailure{Service: "backend/auth-sidecar", Message: "runner exited"}, failure)
 
 	require.ErrorContains(t, <-result, "service failed after start: backend/auth-sidecar: runner exited")
+	failure, ok = flow.Failure()
+	require.True(t, ok)
+	require.Equal(t, FlowFailure{Service: "backend/auth-sidecar", Message: "runner exited"}, failure)
+}
+
+func TestFlowStartPropagatesPlaybookPanicToCaller(t *testing.T) {
+	service := &resources.Service{Name: "api"}
+	service.WithModule("backend")
+	playbook, err := NewPlaybook(context.Background(), &World{})
+	require.NoError(t, err)
+	playbook.WithPolicy(&panicPolicy{})
+	flow := &Flow{originService: service, playbook: playbook}
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_ = flow.Start(context.Background())
+	}()
+
+	require.Equal(t, "playbook panic", recovered)
 }
