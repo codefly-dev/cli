@@ -296,6 +296,7 @@ Add resources to the workspace.
 
 ```bash
 codefly add module backend                                     # Add a module
+codefly add module saas --agent=saas-starter                   # Scaffold and pin a module template
 codefly add service api --agent=go-grpc                        # Add a service with an agent
 codefly add service-dependency api --dependency=backend/db     # Add a service dependency
 codefly add library utils                                      # Add a library
@@ -304,6 +305,12 @@ codefly add job db-migration --agent=go-grpc                   # Add a job
 codefly add application web                                    # Add an application
 codefly add application-dependency web --dependency=backend    # Add an application dependency
 ```
+
+Module-agent scaffolds validate and record their immutable template repository,
+tag, and commit in `tools/base-source.json`. If the materialized service code
+does not match that source, add fails without leaving a partial module behind.
+The pin lets module sync recover manifest-owned files without rerunning the
+scaffold.
 
 **`add service` flags:**
 
@@ -337,7 +344,23 @@ Synchronize service configurations with dependencies.
 ```bash
 codefly sync service api                # Sync a service with its dependencies
 codefly sync library-dependencies       # Sync library dependencies
+codefly sync module saas --restore-code # Restore missing module-owned service code
 ```
+
+`sync module <name> --restore-code` restores only absent service files listed
+by the pinned base manifest. Existing base files and consumer-owned overlays
+are not changed. A legacy scaffold with neither a source lock nor a recorded
+agent can bootstrap the lock during repair by providing its original immutable
+source explicitly:
+
+```bash
+codefly sync module saas --restore-code \
+  --source https://github.com/codefly-dev/module-saas-starter.git \
+  --to v0.0.36 --subdir module
+```
+
+The source must match the service-code hashes already owned by the target base
+manifest; a newer or locally modified source is rejected.
 
 ### `codefly list`
 
@@ -581,8 +604,10 @@ hit until Codefly adds restore/store outcomes.
 ### `codefly doctor`
 
 Run host-level health checks (Docker, codefly home, installed agents, disk,
-process limits, daemon state, stray agents, stale sockets) and print actionable
-fixes. Exits non-zero if any hard check fails.
+manifest-owned module service code, process limits, daemon state, stray agents,
+stale sockets) and print actionable fixes. Exits non-zero if any hard check
+fails. Missing module service code names the corresponding
+`codefly sync module <name> --restore-code` repair command.
 
 ### `codefly doctor workspace`
 

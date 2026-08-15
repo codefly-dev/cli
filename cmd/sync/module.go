@@ -41,6 +41,7 @@ type moduleSyncOptions struct {
 	Subdirectory   string
 	AcceptUpstream []string
 	Apply          bool
+	RestoreCode    bool
 }
 
 // ModuleCmd updates an immutable base underneath a product-owned overlay.
@@ -63,6 +64,14 @@ First pin a remote source:
 Future updates use the consumer-owned tools/base-source.json lock:
   codefly sync module saas --to v0.0.9
   codefly sync module saas --to v0.0.9 --apply
+
+Restore missing base-owned service source from the pinned version without
+changing existing files or consumer overlays:
+  codefly sync module saas --restore-code
+
+For a legacy scaffold with no source lock or recorded agent, provide its
+original immutable source once; repair records the lock after validating it:
+  codefly sync module saas --restore-code --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.36 --subdir module
 
 After reviewing a genuine conflict, explicitly select the immutable upstream
 version path by path. There is deliberately no accept-all option:
@@ -98,9 +107,13 @@ func init() {
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
 	ModuleCmd.Flags().StringArrayVar(&moduleSyncFlags.AcceptUpstream, "accept-upstream", nil, "replace one reviewed conflicting path with the immutable upstream version (repeatable)")
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.Apply, "apply", false, "apply the reviewed update; default is dry-run")
+	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.RestoreCode, "restore-code", false, "restore missing base-owned service code from the pinned module version")
 }
 
 func syncComposedModule(ctx context.Context, target *resources.Module, options moduleSyncOptions) error {
+	if options.RestoreCode {
+		return restoreComposedModuleCode(ctx, target, &options)
+	}
 	resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), options)
 	if err != nil {
 		return err
@@ -139,6 +152,137 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options m
 	}
 	output.Info("✓ module <%s> base updated; product overlays preserved", target.Name)
 	return nil
+}
+
+func restoreComposedModuleCode(ctx context.Context, target *resources.Module, options *moduleSyncOptions) error {
+	if len(options.AcceptUpstream) > 0 || options.Apply {
+		return fmt.Errorf("--restore-code cannot be combined with update or conflict-resolution flags")
+	}
+	resolved, writeLock, cleanup, err := resolveRestoreModuleSource(ctx, target, options)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if validationErr := integrity.ValidateServiceCodeSource(resolved.Root, target.Dir()); validationErr != nil {
+		return fmt.Errorf("validate pinned module source: %w", validationErr)
+	}
+	restored, err := integrity.RestoreMissingServiceCode(resolved.Root, target.Dir())
+	if err != nil {
+		return err
+	}
+	if writeLock {
+		if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), *resolved.Lock); err != nil {
+			return fmt.Errorf("write module source lock: %w", err)
+		}
+	}
+	if len(restored) == 0 {
+		output.Info("module <%s>: no missing base-owned service code", target.Name)
+		return nil
+	}
+	output.Info("✓ module <%s>: restored %d base-owned service code file(s)", target.Name, len(restored))
+	for _, relative := range restored {
+		output.Info("  RESTORED %s", relative)
+	}
+	output.Info("restart any active stack so services load the restored files")
+	return nil
+}
+
+func resolveRestoreModuleSource(ctx context.Context, target *resources.Module, options *moduleSyncOptions) (resolvedModuleSource, bool, func(), error) {
+	lockPath := filepath.Join(target.Dir(), moduleSourceLockRelativePath)
+	_, lockErr := os.Stat(lockPath)
+	lockPresent := lockErr == nil
+	if lockErr != nil && !os.IsNotExist(lockErr) {
+		return resolvedModuleSource{}, false, func() {}, fmt.Errorf("inspect %s: %w", moduleSourceLockRelativePath, lockErr)
+	}
+	explicitSource := strings.TrimSpace(options.Source) != "" || strings.TrimSpace(options.To) != "" || strings.TrimSpace(options.Subdirectory) != ""
+	if lockPresent {
+		if explicitSource {
+			return resolvedModuleSource{}, false, func() {}, fmt.Errorf("--restore-code uses the pinned %s source; source flags are only accepted when that lock is missing", moduleSourceLockRelativePath)
+		}
+		resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), moduleSyncOptions{})
+		return resolved, false, cleanup, err
+	}
+	if strings.TrimSpace(options.Source) == "" {
+		if explicitSource {
+			return resolvedModuleSource{}, false, func() {}, fmt.Errorf("--source is required when bootstrapping a missing %s", moduleSourceLockRelativePath)
+		}
+		if target.Agent == nil {
+			return resolvedModuleSource{}, false, func() {}, fmt.Errorf("module has no %s or recorded agent; rerun with --source, --to, and optional --subdir", moduleSourceLockRelativePath)
+		}
+		var err error
+		resolvedOptions, err := moduleAgentSource(target.Agent)
+		if err != nil {
+			return resolvedModuleSource{}, false, func() {}, err
+		}
+		options = &resolvedOptions
+	}
+	resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), *options)
+	if err != nil {
+		return resolvedModuleSource{}, false, cleanup, err
+	}
+	if resolved.Lock == nil {
+		cleanup()
+		return resolvedModuleSource{}, false, func() {}, fmt.Errorf("restore source must be an immutable semantic-version tag")
+	}
+	return resolved, true, cleanup, nil
+}
+
+// PreparedModuleSource is an immutable checkout resolved before a scaffold is
+// created. Pin validates that the checkout actually produced the service code.
+type PreparedModuleSource struct {
+	resolved resolvedModuleSource
+	cleanup  func()
+}
+
+func PrepareModuleSource(ctx context.Context, targetRoot string, agent *resources.Agent) (*PreparedModuleSource, error) {
+	options, err := moduleAgentSource(agent)
+	if err != nil {
+		return nil, err
+	}
+	return prepareModuleSource(ctx, targetRoot, &options)
+}
+
+func moduleAgentSource(agent *resources.Agent) (moduleSyncOptions, error) {
+	registration, err := resources.AgentKindRegistrationFor(agent.Kind)
+	if err != nil {
+		return moduleSyncOptions{}, err
+	}
+	repository := fmt.Sprintf(
+		"https://github.com/%s/%s.git",
+		strings.ReplaceAll(agent.Publisher, ".", "-"),
+		registration.GitHubRepository(agent.Name),
+	)
+	ref := "v" + strings.TrimPrefix(agent.Version, "v")
+	return moduleSyncOptions{Source: repository, To: ref}, nil
+}
+
+func prepareModuleSource(ctx context.Context, targetRoot string, options *moduleSyncOptions) (*PreparedModuleSource, error) {
+	resolved, cleanup, err := resolveModuleSource(ctx, targetRoot, *options)
+	if err != nil {
+		return nil, err
+	}
+	if resolved.Lock == nil {
+		cleanup()
+		return nil, fmt.Errorf("module source did not resolve to an immutable lock")
+	}
+	return &PreparedModuleSource{resolved: resolved, cleanup: cleanup}, nil
+}
+
+func (source *PreparedModuleSource) Close() {
+	if source != nil && source.cleanup != nil {
+		source.cleanup()
+		source.cleanup = nil
+	}
+}
+
+func (source *PreparedModuleSource) Pin(target *resources.Module) error {
+	if source == nil || source.resolved.Lock == nil {
+		return fmt.Errorf("module source is not prepared")
+	}
+	if err := integrity.ValidateServiceCodeSource(source.resolved.Root, target.Dir()); err != nil {
+		return err
+	}
+	return writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), *source.resolved.Lock)
 }
 
 type resolvedModuleSource struct {

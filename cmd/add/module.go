@@ -1,11 +1,13 @@
 package add
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	modulesync "github.com/codefly-dev/cli/cmd/sync"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/actions/actions"
@@ -32,7 +34,7 @@ var ModuleCmd = &cobra.Command{
 var moduleAgentInput string
 var moduleWithDefault bool
 
-func addModule(name string) error {
+func addModule(name string) (result error) {
 	ctx, done := common.NewContext()
 	defer done()
 
@@ -81,6 +83,15 @@ func addModule(name string) error {
 			return fmt.Errorf("cannot resolve agent %s: %w", agent.Identifier(), err)
 		}
 	}
+	var preparedSource *modulesync.PreparedModuleSource
+	if agent != nil {
+		targetRoot := workspace.ModulePath(ctx, &resources.ModuleReference{Name: name})
+		preparedSource, err = modulesync.PrepareModuleSource(ctx, targetRoot, agent)
+		if err != nil {
+			return fmt.Errorf("prepare module scaffold source: %w", err)
+		}
+		defer preparedSource.Close()
+	}
 
 	action, err := actionsmodule.NewActionAddModule(ctx, input)
 	if err != nil {
@@ -90,6 +101,20 @@ func addModule(name string) error {
 	if err != nil {
 		return fmt.Errorf("cannot add module: %w", err)
 	}
+	moduleAdded := true
+	moduleDir := workspace.ModulePath(ctx, &resources.ModuleReference{Name: name})
+	defer func() {
+		if result == nil || !moduleAdded {
+			return
+		}
+		if rollbackErr := workspace.DeleteModule(ctx, name); rollbackErr != nil {
+			result = errors.Join(result, fmt.Errorf("roll back module reference: %w", rollbackErr))
+			return
+		}
+		if rollbackErr := os.RemoveAll(moduleDir); rollbackErr != nil {
+			result = errors.Join(result, fmt.Errorf("roll back module directory: %w", rollbackErr))
+		}
+	}()
 
 	mod, err := actions.As[resources.Module](out)
 	if err != nil {
@@ -100,20 +125,23 @@ func addModule(name string) error {
 	if agent != nil {
 		binPath, err := agent.Path(ctx)
 		if err != nil {
-			w.Warn("cannot resolve module agent binary path", wool.ErrField(err))
-		} else {
-			w.Info("executing module agent", wool.Field("binary", binPath), wool.Field("dir", mod.Dir()))
-
-			cmd := exec.CommandContext(ctx, binPath, mod.Dir(), name)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("module agent failed: %w", err)
-			}
-			cli.Header(2, "Module agent scaffolded services for <%s>", name)
+			return fmt.Errorf("cannot resolve module agent binary path: %w", err)
 		}
+		w.Info("executing module agent", wool.Field("binary", binPath), wool.Field("dir", mod.Dir()))
+
+		cmd := exec.CommandContext(ctx, binPath, mod.Dir(), name)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("module agent failed: %w", err)
+		}
+		if err := preparedSource.Pin(mod); err != nil {
+			return fmt.Errorf("pin module scaffold source: %w", err)
+		}
+		cli.Header(2, "Module agent scaffolded services for <%s>", name)
 	}
 
+	moduleAdded = false
 	cli.Header(2, "Module <%s> added.", mod.Name)
 	return nil
 }

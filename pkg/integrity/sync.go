@@ -397,6 +397,134 @@ func ApplyBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream 
 	return plan, nil
 }
 
+// RestoreMissingServiceCode recreates absent base-owned service code without
+// changing any existing base file, consumer overlay, or manifest.
+func RestoreMissingServiceCode(sourceRoot, targetRoot string) ([]string, error) {
+	sourceRoot, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve source module: %w", err)
+	}
+	targetRoot, err = filepath.Abs(targetRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve target module: %w", err)
+	}
+	if sourceRoot == targetRoot {
+		return nil, fmt.Errorf("source and target module must differ")
+	}
+	if validationErr := ValidateServiceCodeSource(sourceRoot, targetRoot); validationErr != nil {
+		return nil, validationErr
+	}
+	targetManifest, err := readBaseManifest(filepath.Join(targetRoot, baseManifestRelativePath))
+	if err != nil {
+		return nil, fmt.Errorf("re-read target base manifest: %w", err)
+	}
+	allow, err := loadBaseIntegrityAllow(filepath.Join(targetRoot, "tools", "base-integrity-allow.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read target base integrity policy: %w", err)
+	}
+	composed, err := composedServiceNames(targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	restored := make([]string, 0)
+	for _, relative := range sortedManifestPaths(targetManifest) {
+		if !selectedServiceCodePath(relative, composed) {
+			continue
+		}
+		if _, allowed := allow.Divergences[relative]; allowed {
+			continue
+		}
+		target := filepath.Join(targetRoot, filepath.FromSlash(relative))
+		switch inspectModulePath(targetRoot, relative, true) {
+		case modulePathSafe:
+			continue
+		case modulePathUnsafe:
+			return restored, fmt.Errorf("cannot restore unsafe target path %s", relative)
+		}
+		source := filepath.Join(sourceRoot, filepath.FromSlash(relative))
+		if digest, digestErr := sha256File(source); digestErr != nil || digest != targetManifest.Files[relative] {
+			return restored, fmt.Errorf("source base path %s changed before restore", relative)
+		}
+		if err := atomicCreateFile(source, target); err != nil {
+			return restored, fmt.Errorf("restore base file %s: %w", relative, err)
+		}
+		restored = append(restored, relative)
+	}
+	return restored, nil
+}
+
+// ValidateServiceCodeSource proves that a source checkout is the exact origin
+// of the target manifest's owned service code. Generated scaffold metadata may
+// legitimately differ, so provenance is checked at the repair ownership boundary.
+func ValidateServiceCodeSource(sourceRoot, targetRoot string) error {
+	sourceManifest, err := readBaseManifest(filepath.Join(sourceRoot, baseManifestRelativePath))
+	if err != nil {
+		return fmt.Errorf("read source base manifest: %w", err)
+	}
+	targetManifest, err := readBaseManifest(filepath.Join(targetRoot, baseManifestRelativePath))
+	if err != nil {
+		return fmt.Errorf("read target base manifest: %w", err)
+	}
+	allow, err := loadBaseIntegrityAllow(filepath.Join(targetRoot, "tools", "base-integrity-allow.json"))
+	if err != nil {
+		return fmt.Errorf("read target base integrity policy: %w", err)
+	}
+	composed, err := composedServiceNames(targetRoot)
+	if err != nil {
+		return err
+	}
+
+	sourceCode := serviceCodeManifest(sourceManifest, composed, allow.Divergences)
+	targetCode := serviceCodeManifest(targetManifest, composed, allow.Divergences)
+	for _, relative := range sortedManifestPaths(baseManifest{Files: sourceCode}) {
+		if !safeModulePath(sourceRoot, relative, true) {
+			return fmt.Errorf("pinned source contains unsafe or missing service code path %s", relative)
+		}
+		digest, digestErr := sha256File(filepath.Join(sourceRoot, filepath.FromSlash(relative)))
+		if digestErr != nil || digest != sourceCode[relative] {
+			return fmt.Errorf("pinned source service code %s does not match its manifest", relative)
+		}
+		if targetCode[relative] != sourceCode[relative] {
+			return fmt.Errorf("pinned source does not match target-owned service code at %s", relative)
+		}
+	}
+	for _, relative := range sortedManifestPaths(baseManifest{Files: targetCode}) {
+		if sourceCode[relative] != targetCode[relative] {
+			return fmt.Errorf("pinned source does not match target-owned service code at %s", relative)
+		}
+		if !safeModulePath(targetRoot, relative, false) {
+			return fmt.Errorf("target manifest contains unsafe service code path %s", relative)
+		}
+	}
+	return nil
+}
+
+func serviceCodeManifest(manifest baseManifest, composed map[string]bool, allowed map[string]string) map[string]string {
+	files := make(map[string]string)
+	for relative, digest := range manifest.Files {
+		if !selectedServiceCodePath(relative, composed) {
+			continue
+		}
+		if _, ok := allowed[relative]; ok {
+			continue
+		}
+		files[relative] = digest
+	}
+	return files
+}
+
+func selectedServiceCodePath(relative string, composed map[string]bool) bool {
+	if !isServiceCodePath(relative) {
+		return false
+	}
+	return len(composed) == 0 || composed[serviceOf(relative)]
+}
+
+func isServiceCodePath(relative string) bool {
+	parts := strings.Split(relative, "/")
+	return len(parts) >= 4 && parts[0] == "services" && parts[1] != "" && parts[2] == "code" && parts[3] != ""
+}
+
 func readBaseManifest(path string) (baseManifest, error) {
 	payload, err := os.ReadFile(path)
 	if err != nil {
@@ -467,40 +595,62 @@ func validateRequiredAdditions(root string, required map[string]string) (missing
 	return missing, invalid
 }
 
-func atomicCopyFile(source, target string) error {
+func prepareAtomicCopy(source, target string) (string, func(), error) {
 	payload, err := os.ReadFile(source)
 	if err != nil {
-		return err
+		return "", func() {}, err
 	}
 	info, err := os.Stat(source)
 	if err != nil {
-		return err
+		return "", func() {}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
+		return "", func() {}, err
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(target), ".codefly-base-sync-*")
 	if err != nil {
-		return err
+		return "", func() {}, err
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	cleanup := func() { _ = os.Remove(temporaryPath) }
 	if err := temporary.Chmod(info.Mode().Perm()); err != nil {
 		_ = temporary.Close()
-		return err
+		cleanup()
+		return "", func() {}, err
 	}
 	if _, err := temporary.Write(payload); err != nil {
 		_ = temporary.Close()
-		return err
+		cleanup()
+		return "", func() {}, err
 	}
 	if err := temporary.Sync(); err != nil {
 		_ = temporary.Close()
-		return err
+		cleanup()
+		return "", func() {}, err
 	}
 	if err := temporary.Close(); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return temporaryPath, cleanup, nil
+}
+
+func atomicCopyFile(source, target string) error {
+	temporaryPath, cleanup, err := prepareAtomicCopy(source, target)
+	if err != nil {
 		return err
 	}
+	defer cleanup()
 	return os.Rename(temporaryPath, target)
+}
+
+func atomicCreateFile(source, target string) error {
+	temporaryPath, cleanup, err := prepareAtomicCopy(source, target)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	return os.Link(temporaryPath, target)
 }
 
 // modulePathStatus separates a structurally unsafe manifest path from one that
