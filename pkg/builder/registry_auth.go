@@ -119,8 +119,10 @@ func ecrLogin(ctx context.Context, registryURL string) error {
 // acrName extracts the registry name from an ACR registry URL of the
 // form <name>.azurecr.io[/<repo>...]. Returns the empty string when the
 // URL doesn't match the ACR shape; callers treat that as "not ACR; bail
-// rather than guess".
-var acrNameRe = regexp.MustCompile(`^([a-z0-9]+)\.azurecr\.io`)
+// rather than guess". The trailing boundary is required so a typo'd host
+// like <name>.azurecr.io.example.com is rejected here rather than
+// silently accepted and pushed to the wrong place at push time.
+var acrNameRe = regexp.MustCompile(`^([a-z0-9]+)\.azurecr\.io(?:[/:]|$)`)
 
 func acrName(registryURL string) string {
 	// Strip protocol if any so users can paste either form.
