@@ -544,6 +544,18 @@ func ValidateInventoryOnlyScaffold(sourceRoot, targetRoot string) error {
 		if service := serviceOf(relative); service != "" && len(composed) > 0 && !composed[service] {
 			continue
 		}
+		// Mirror PlanBaseSync's collision detection: re-hash the actual source
+		// file and skip any path whose source is unsafe, missing, or stale against
+		// its own manifest. Those are upstream problems the sync surfaces as an
+		// invalid source, not scaffold inconsistencies, so pin must not attribute
+		// them to the agent by comparing the target to a stale manifest digest.
+		if !safeModulePath(sourceRoot, relative, true) {
+			continue
+		}
+		sourceDigest, srcErr := sha256File(filepath.Join(sourceRoot, filepath.FromSlash(relative)))
+		if srcErr != nil || sourceDigest != sourceManifest.Files[relative] {
+			continue
+		}
 		if !safeModulePath(targetRoot, relative, false) {
 			continue
 		}
@@ -554,7 +566,7 @@ func ValidateInventoryOnlyScaffold(sourceRoot, targetRoot string) error {
 		if digestErr != nil {
 			return fmt.Errorf("hash scaffold base path %s: %w", relative, digestErr)
 		}
-		if targetDigest != sourceManifest.Files[relative] {
+		if targetDigest != sourceDigest {
 			return fmt.Errorf("module agent produced base-owned file %s without a base manifest; the scaffold is inconsistent and cannot be pinned", relative)
 		}
 	}

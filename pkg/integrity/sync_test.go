@@ -116,6 +116,20 @@ func TestValidateInventoryOnlyScaffold(t *testing.T) {
 	if err := ValidateInventoryOnlyScaffold(sameSource, sameTarget); err != nil {
 		t.Fatalf("identical base code rejected: %v", err)
 	}
+
+	// A stale source manifest (its recorded digest does not match the actual
+	// source file) is an upstream problem the sync surfaces as an invalid source,
+	// not a scaffold inconsistency. Pin must re-hash the real source rather than
+	// trust the stale digest, so it must not blame the agent here.
+	staleSource, staleTarget := syncFixture(t)
+	writeTestFile(t, filepath.Join(staleSource, "services", "kept", "code", "main.go"), "package upstream\n")
+	writeTestJSON(t, filepath.Join(staleSource, "tools", "base-manifest.json"), baseManifest{
+		Files: map[string]string{"services/kept/code/main.go": digestOf(t, "package stale\n")},
+	})
+	writeTestFile(t, filepath.Join(staleTarget, "services", "kept", "code", "main.go"), "package customized\n")
+	if err := ValidateInventoryOnlyScaffold(staleSource, staleTarget); err != nil {
+		t.Fatalf("stale source manifest misattributed to the scaffold: %v", err)
+	}
 }
 
 func TestBaseSyncRefusesModifiedBaseAndOverlayCollisionWithoutMutation(t *testing.T) {
