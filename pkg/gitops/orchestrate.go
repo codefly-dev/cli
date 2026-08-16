@@ -89,7 +89,7 @@ func renderModuleTree(
 		}
 		unitDir, _ := unitDirectory(UnitKindService)
 		for _, service := range services {
-			_, managed := env.ManagedServices[service.Name]
+			managedService, managed := env.ManagedServices[service.Name]
 			entry := InventoryUnit{
 				Kind:    UnitKindService,
 				Module:  module.Name,
@@ -101,6 +101,8 @@ func renderModuleTree(
 					filepath.Join(stage, unitDir, service.Name),
 					service.Name,
 					env.Name,
+					env.Namespace,
+					managedService.SecretReferences,
 				)
 				if err != nil {
 					return fmt.Errorf("select managed service %s bootstrap output: %w", service.Name, err)
