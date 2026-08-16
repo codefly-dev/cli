@@ -12,7 +12,24 @@ import (
 const (
 	externalSecretAPIVersion = "external-secrets.io/v1"
 	kindExternalSecret       = "ExternalSecret"
+	// secretRefreshInterval keeps the External Secrets Operator re-reading the
+	// remote store on a fixed cadence so a rotated vault value propagates into the
+	// in-cluster Secret. Omitting it lets the field default to "0" on some ESO
+	// installs, which syncs once and never refreshes — silently defeating rotation.
+	secretRefreshInterval = "1h"
+
+	kindSecretStore        = "SecretStore"
+	kindClusterSecretStore = "ClusterSecretStore"
 )
+
+// externalSecretStoreKinds are the only kinds an ExternalSecret's secretStoreRef
+// accepts. An environment declaration naming a backend type ("azure-keyvault")
+// instead of one of these renders a manifest that passes codefly's render checks
+// but is rejected by ESO admission after promotion, so it is caught here.
+var externalSecretStoreKinds = map[string]struct{}{
+	kindSecretStore:        {},
+	kindClusterSecretStore: {},
+}
 
 type externalSecret struct {
 	APIVersion string             `yaml:"apiVersion"`
@@ -27,9 +44,10 @@ type externalSecretMeta struct {
 }
 
 type externalSecretSpec struct {
-	SecretStoreRef externalSecretStoreRef `yaml:"secretStoreRef"`
-	Target         externalSecretTarget   `yaml:"target"`
-	Data           []externalSecretData   `yaml:"data"`
+	RefreshInterval string                 `yaml:"refreshInterval"`
+	SecretStoreRef  externalSecretStoreRef `yaml:"secretStoreRef"`
+	Target          externalSecretTarget   `yaml:"target"`
+	Data            []externalSecretData   `yaml:"data"`
 }
 
 type externalSecretStoreRef struct {
@@ -72,6 +90,9 @@ func managedSecretProjection(service, namespace string, refs []resources.Environ
 	if store.Name == "" || store.Kind == "" {
 		return nil, fmt.Errorf("managed service %q secret store requires both name and kind", service)
 	}
+	if _, ok := externalSecretStoreKinds[store.Kind]; !ok {
+		return nil, fmt.Errorf("managed service %q secret store kind %q must be SecretStore or ClusterSecretStore", service, store.Kind)
+	}
 	data := make([]externalSecretData, 0, len(refs))
 	for _, ref := range refs {
 		if ref.Name == "" || ref.RemoteKey == "" {
@@ -91,9 +112,10 @@ func managedSecretProjection(service, namespace string, refs []resources.Environ
 		Kind:       kindExternalSecret,
 		Metadata:   externalSecretMeta{Name: target, Namespace: namespace},
 		Spec: externalSecretSpec{
-			SecretStoreRef: externalSecretStoreRef{Name: store.Name, Kind: store.Kind},
-			Target:         externalSecretTarget{Name: target},
-			Data:           data,
+			RefreshInterval: secretRefreshInterval,
+			SecretStoreRef:  externalSecretStoreRef{Name: store.Name, Kind: store.Kind},
+			Target:          externalSecretTarget{Name: target},
+			Data:            data,
 		},
 	}, nil
 }

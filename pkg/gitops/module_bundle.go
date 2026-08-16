@@ -348,7 +348,13 @@ func validateTransportNeutralModuleBundle(root string) error {
 	})
 }
 
-func retainManagedBootstrap(
+// retainManagedBundle assembles a managed service's promotable bundle from the
+// two things a managed service contributes to the cluster: the bootstrap Jobs its
+// agent emitted (a one-shot handoff) and the ExternalSecret projection its
+// environment declares. It reports whether a bundle was produced; when the service
+// contributes neither, its rendered tree is removed and false is returned so the
+// caller records it as an unrendered managed unit.
+func retainManagedBundle(
 	root, service, environment, namespace string,
 	secretRefs []resources.EnvironmentManagedSecretReference,
 ) (bool, error) {

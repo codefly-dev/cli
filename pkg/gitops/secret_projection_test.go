@@ -37,6 +37,9 @@ func TestManagedSecretProjectionRendersExternalSecret(t *testing.T) {
 	if projection.Spec.Target.Name != "secret-workos" {
 		t.Fatalf("projection target = %+v", projection.Spec.Target)
 	}
+	if projection.Spec.RefreshInterval != secretRefreshInterval {
+		t.Fatalf("projection refreshInterval = %q, want %q", projection.Spec.RefreshInterval, secretRefreshInterval)
+	}
 	if len(projection.Spec.Data) != 2 {
 		t.Fatalf("projection data length = %d", len(projection.Spec.Data))
 	}
@@ -99,6 +102,11 @@ func TestManagedSecretProjectionRejectsInvalidDeclarations(t *testing.T) {
 			refs:      []resources.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod"}}},
 		},
 		{
+			name:      "backend type mistaken for store kind",
+			namespace: "payments",
+			refs:      []resources.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"}}},
+		},
+		{
 			name:      "diverging stores",
 			namespace: "payments",
 			refs: []resources.EnvironmentManagedSecretReference{
@@ -116,12 +124,12 @@ func TestManagedSecretProjectionRejectsInvalidDeclarations(t *testing.T) {
 	}
 }
 
-func TestRetainManagedBootstrapProjectsSecretsWithoutBootstrapJobs(t *testing.T) {
+func TestRetainManagedBundleProjectsSecretsWithoutBootstrapJobs(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "workos")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	retained, err := retainManagedBootstrap(root, "workos", "production", "payments", workosSecretReferences())
+	retained, err := retainManagedBundle(root, "workos", "production", "payments", workosSecretReferences())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +166,7 @@ func TestRetainManagedBootstrapProjectsSecretsWithoutBootstrapJobs(t *testing.T)
 	}
 }
 
-func TestRetainManagedBootstrapRemovesTreeWithoutJobsOrSecrets(t *testing.T) {
+func TestRetainManagedBundleRemovesTreeWithoutJobsOrSecrets(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "cache")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -166,7 +174,7 @@ func TestRetainManagedBootstrapRemovesTreeWithoutJobsOrSecrets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "stray.yaml"), []byte("apiVersion: v1\nkind: ConfigMap\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	retained, err := retainManagedBootstrap(root, "cache", "production", "payments", nil)
+	retained, err := retainManagedBundle(root, "cache", "production", "payments", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,5 +183,43 @@ func TestRetainManagedBootstrapRemovesTreeWithoutJobsOrSecrets(t *testing.T) {
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("managed tree survived: %v", err)
+	}
+}
+
+func promotableManagedOutput() *InventoryKubernetesOutput {
+	return &InventoryKubernetesOutput{
+		Kind:            "KUSTOMIZE",
+		Profile:         "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+		Validation: &InventoryKubernetesValidation{
+			StaticValidation: "STATUS_PASSED", ServerSideValidation: "STATUS_PASSED",
+			Promotable: true, Violations: []string{},
+		},
+	}
+}
+
+// A managed service that declares only secret references now flips to a bootstrap
+// unit (Path + Output set), so the inventory contract must accept that shape —
+// with the deployment evidence that renderModuleTree records from the flow — and
+// still reject it when that evidence is missing.
+func TestValidateInventoryUnitsGovernSecretsBearingManagedBootstrapUnit(t *testing.T) {
+	unit := InventoryUnit{
+		Kind: UnitKindService, Module: "payments", Name: "store",
+		Managed: true, Bootstrap: true,
+		Path:   filepath.ToSlash(filepath.Join("services", "store")),
+		Output: promotableManagedOutput(),
+	}
+	inventory := &Inventory{
+		SchemaVersion: SchemaVersion, Module: "payments",
+		OwnedPath: "environments/deployments/modules/payments",
+		Units:     []InventoryUnit{unit},
+	}
+	if err := validateInventoryUnits(inventory); err != nil {
+		t.Fatalf("secrets-bearing managed bootstrap unit rejected: %v", err)
+	}
+
+	inventory.Units[0].Output = nil
+	if err := validateInventoryUnits(inventory); err == nil {
+		t.Fatal("managed bootstrap unit without deployment evidence was accepted")
 	}
 }
