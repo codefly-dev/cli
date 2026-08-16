@@ -322,6 +322,51 @@ func TestModuleSourceLockRoundTripsAndLocalSourceIsAutoDetected(t *testing.T) {
 	}
 }
 
+func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
+	root := t.TempDir()
+	workspace := &resources.Workspace{Name: "consumer", Layout: resources.LayoutKindModules}
+	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = loadSyncTargetModule(context.Background(), loaded, "saas", false)
+	if err == nil {
+		t.Fatal("syncing a missing module without --create returned success")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "codefly add module saas") || !strings.Contains(message, "--create") {
+		t.Fatalf("error is not actionable: %v", err)
+	}
+}
+
+func TestSyncModuleCreateRegistersMissingModule(t *testing.T) {
+	root := t.TempDir()
+	workspace := &resources.Workspace{Name: "consumer", Layout: resources.LayoutKindModules}
+	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := loadSyncTargetModule(context.Background(), loaded, "saas", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if module.Name != "saas" {
+		t.Fatalf("registered module = %q, want saas", module.Name)
+	}
+	if !loaded.ExistsModule("saas") {
+		t.Fatal("module was not registered in the workspace")
+	}
+	if _, err := os.Stat(filepath.Join(module.Dir(), "module.codefly.yaml")); err != nil {
+		t.Fatalf("module directory was not scaffolded: %v", err)
+	}
+}
+
 func writeSyncTestFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

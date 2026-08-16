@@ -16,6 +16,8 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	output "github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/integrity"
+	"github.com/codefly-dev/core/actions/actions"
+	actionsmodule "github.com/codefly-dev/core/actions/module"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
@@ -57,9 +59,10 @@ collisions, missing required overlays, and modified upstream deletions fail
 closed. The manifest is committed last, so an interrupted update is safely
 resumable.
 
-First pin a remote source:
-  codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
-  codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
+First pin a remote source. Pass --create to register a brand-new module and
+populate it in a single command instead of running codefly add module first:
+  codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
+  codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
 
 Future updates use the consumer-owned tools/base-source.json lock:
   codefly sync module saas --to v0.0.9
@@ -91,17 +94,57 @@ Local paths are preview-only and never persisted in the portable source lock.`,
 		if err != nil {
 			return fmt.Errorf("load workspace: %w", err)
 		}
-		module, err := workspace.LoadModuleFromName(ctx, args[0])
+		module, err := loadSyncTargetModule(ctx, workspace, args[0], moduleSyncCreate)
 		if err != nil {
-			return fmt.Errorf("load target module %s: %w", args[0], err)
+			return err
 		}
 		return syncComposedModule(ctx, module, moduleSyncFlags)
 	},
 }
 
+// loadSyncTargetModule resolves the module to sync, registering an empty shell
+// first when --create is set and the module is not yet in the workspace. A
+// first-time consumer can then populate a new module in a single command
+// instead of running `codefly add module` beforehand.
+func loadSyncTargetModule(ctx context.Context, workspace *resources.Workspace, name string, create bool) (*resources.Module, error) {
+	module, err := workspace.LoadModuleFromName(ctx, name)
+	if err == nil {
+		return module, nil
+	}
+	if workspace.ExistsModule(name) {
+		return nil, fmt.Errorf("load target module %s: %w", name, err)
+	}
+	if !create {
+		return nil, fmt.Errorf("module <%s> is not registered in workspace <%s>; run `codefly add module %s` first, or rerun with --create to register and sync it in one step", name, workspace.Name, name)
+	}
+	if err := registerModule(ctx, workspace, name); err != nil {
+		return nil, err
+	}
+	module, err = workspace.LoadModuleFromName(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("load target module %s after --create: %w", name, err)
+	}
+	return module, nil
+}
+
+func registerModule(ctx context.Context, workspace *resources.Workspace, name string) error {
+	action, err := actionsmodule.NewActionAddModule(ctx, &actionsmodule.AddModule{Name: name})
+	if err != nil {
+		return fmt.Errorf("create add-module action: %w", err)
+	}
+	if _, err := actions.Run(ctx, action, &actions.Space{Workspace: workspace}); err != nil {
+		return fmt.Errorf("register module %s: %w", name, err)
+	}
+	output.Info("registered module <%s>", name)
+	return nil
+}
+
 var moduleSyncFlags moduleSyncOptions
 
+var moduleSyncCreate bool
+
 func init() {
+	ModuleCmd.Flags().BoolVar(&moduleSyncCreate, "create", false, "register the module if it does not exist yet, then sync it")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Source, "source", "", "canonical Git repository URL or local repository/module path")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.To, "to", "", "immutable semantic-version tag to resolve (for example v0.0.8)")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
