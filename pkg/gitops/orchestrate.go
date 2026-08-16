@@ -75,7 +75,8 @@ func renderModuleTree(
 				false,
 				sink,
 				func(_ *resources.Module, rendered *resources.Service) string {
-					return filepath.Join(stage, unitDirectory(UnitKindService), rendered.Name)
+					serviceDir, _ := unitDirectory(UnitKindService)
+					return filepath.Join(stage, serviceDir, rendered.Name)
 				},
 				func(rendered map[string]*builderv0.DeploymentOutput) {
 					for unique, output := range rendered {
@@ -86,7 +87,7 @@ func renderModuleTree(
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
 		}
-		unitDir := unitDirectory(UnitKindService)
+		unitDir, _ := unitDirectory(UnitKindService)
 		for _, service := range services {
 			_, managed := env.ManagedServices[service.Name]
 			entry := InventoryUnit{

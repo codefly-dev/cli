@@ -593,22 +593,6 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	if !strings.Contains(rawCommit, "\ngpgsig ") {
 		return Inventory{}, fmt.Errorf("publication commit %s is not signed", request.Commit)
 	}
-	snapshotPaths := []string{
-		filepath.ToSlash(filepath.Join(targetPath, "services")),
-		filepath.ToSlash(filepath.Join(targetPath, "module")),
-	}
-	args := []string{"diff", "--name-only", request.Revision, request.Commit, "--"}
-	args = append(args, snapshotPaths...)
-	changedServices, err := gitCommand(ctx, repo, args...)
-	if err != nil {
-		return Inventory{}, fmt.Errorf("compare reviewed service snapshot: %w", err)
-	}
-	if changedServices != "" {
-		return Inventory{}, fmt.Errorf(
-			"signed publication changes immutable service snapshot files: %s",
-			strings.Join(strings.Fields(changedServices), ", "),
-		)
-	}
 	if _, err := gitCommand(ctx, repo, "checkout", "--quiet", request.Commit, "--", targetPath); err != nil {
 		return Inventory{}, fmt.Errorf("checkout published path %s at %s: %w", targetPath, request.Commit, err)
 	}
@@ -622,6 +606,29 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	}
 	if inventory.Digest != request.RenderDigest {
 		return Inventory{}, fmt.Errorf("reconciled Git tree digest is %s, expected %s", inventory.Digest, request.RenderDigest)
+	}
+	// The immutable snapshot spans every unit directory plus the module bundle.
+	// Deriving it from the reconciled inventory keeps non-service kinds inside
+	// the immutability guarantee instead of a hardcoded services/module pair.
+	unitDirs, err := inventoryUnitDirectories(&inventory)
+	if err != nil {
+		return Inventory{}, err
+	}
+	snapshotPaths := make([]string, 0, len(unitDirs)+1)
+	for _, directory := range unitDirs {
+		snapshotPaths = append(snapshotPaths, filepath.ToSlash(filepath.Join(targetPath, directory)))
+	}
+	snapshotPaths = append(snapshotPaths, filepath.ToSlash(filepath.Join(targetPath, "module")))
+	args := append([]string{"diff", "--name-only", request.Revision, request.Commit, "--"}, snapshotPaths...)
+	changedServices, err := gitCommand(ctx, repo, args...)
+	if err != nil {
+		return Inventory{}, fmt.Errorf("compare reviewed service snapshot: %w", err)
+	}
+	if changedServices != "" {
+		return Inventory{}, fmt.Errorf(
+			"signed publication changes immutable service snapshot files: %s",
+			strings.Join(strings.Fields(changedServices), ", "),
+		)
 	}
 	if _, err := gitCommand(ctx, repo, "checkout", "--quiet", request.Revision, "--", targetPath); err != nil {
 		return Inventory{}, fmt.Errorf("checkout service snapshot %s at %s: %w", targetPath, request.Revision, err)

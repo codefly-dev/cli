@@ -18,14 +18,16 @@ const (
 const UnitKindService = "service"
 
 // unitDirectory maps an artifact kind to the render subdirectory that holds its
-// units. Generalizing the render path beyond services is a matter of adding a
-// case here rather than threading a new shape through the inventory.
-func unitDirectory(kind string) string {
+// units, reporting whether the kind is known. Generalizing the render path
+// beyond services is a matter of adding a case here rather than threading a new
+// shape through the inventory. The ok return keeps callers from ever joining an
+// empty segment for an unrecognized kind.
+func unitDirectory(kind string) (string, bool) {
 	switch kind {
 	case UnitKindService:
-		return "services"
+		return "services", true
 	default:
-		return ""
+		return "", false
 	}
 }
 
@@ -85,9 +87,14 @@ type RenderOptions struct {
 	Namespace   string
 	AppProject  string
 	Promotable  bool
-	OwnedPath   string
-	ModulePath  string
-	Units       []InventoryUnit
+	// CheckUnitDirectories asks validateTree to verify the on-disk unit
+	// directories against Units. It is an explicit intent flag rather than an
+	// inference from a populated field so the trigger and the data (Units)
+	// cannot silently disagree.
+	CheckUnitDirectories bool
+	OwnedPath            string
+	ModulePath           string
+	Units                []InventoryUnit
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {

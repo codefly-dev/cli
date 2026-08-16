@@ -16,6 +16,47 @@ import (
 
 var preparedPermit = mutationauthority.NewPreparedPermit()
 
+func TestInventoryUnitDirectoriesAreDistinctAndKindChecked(t *testing.T) {
+	dirs, err := inventoryUnitDirectories(&Inventory{Units: []InventoryUnit{
+		{Kind: UnitKindService, Name: "api", Path: "services/api"},
+		{Kind: UnitKindService, Name: "web", Path: "services/web"},
+		{Kind: UnitKindService, Name: "managed"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 1 || dirs[0] != "services" {
+		t.Fatalf("unit directories = %v, want [services]", dirs)
+	}
+	if _, err := inventoryUnitDirectories(&Inventory{Units: []InventoryUnit{
+		{Kind: "solution", Name: "checkout", Path: "solutions/checkout"},
+	}}); err == nil || !strings.Contains(err.Error(), "unknown kind") {
+		t.Fatalf("error = %v, want unknown kind rejection", err)
+	}
+}
+
+func TestRemovePublicationRemainderPreservesEveryUnitDirectory(t *testing.T) {
+	target := t.TempDir()
+	for _, name := range []string{"services", "solutions", "module", "bootstrap", "stray"} {
+		if err := os.MkdirAll(filepath.Join(target, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := removePublicationRemainder(target, []string{"services", "solutions"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, kept := range []string{"services", "solutions", "module"} {
+		if _, err := os.Stat(filepath.Join(target, kept)); err != nil {
+			t.Fatalf("directory %s was removed: %v", kept, err)
+		}
+	}
+	for _, removed := range []string{"bootstrap", "stray"} {
+		if _, err := os.Stat(filepath.Join(target, removed)); !os.IsNotExist(err) {
+			t.Fatalf("directory %s survived pruning: %v", removed, err)
+		}
+	}
+}
+
 func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	ctx := context.Background()
 	remote := createBareRepository(t)

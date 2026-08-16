@@ -152,6 +152,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: project, Promotable: promotable,
+		CheckUnitDirectories: inventory.Unit == "",
 	}
 	for _, unit := range inventory.Units {
 		if unit.Path != "" {
@@ -179,7 +180,11 @@ func ValidateServiceSnapshot(root string) error {
 	allowed := map[string]struct{}{InventoryFilename: {}, "module": {}}
 	rendered := renderedUnits(&inventory)
 	for _, unit := range rendered {
-		allowed[unitDirectory(unit.Kind)] = struct{}{}
+		directory, ok := unitDirectory(unit.Kind)
+		if !ok {
+			return fmt.Errorf("service snapshot unit %s has unknown kind %q", unit.Name, unit.Kind)
+		}
+		allowed[directory] = struct{}{}
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -278,8 +283,8 @@ func validateInventoryUnits(inventory *Inventory) error {
 		if unit.Name == "" || unit.Module != inventory.Module {
 			return fmt.Errorf("render inventory contains invalid unit graph entry %q/%q", unit.Module, unit.Name)
 		}
-		directory := unitDirectory(unit.Kind)
-		if directory == "" {
+		directory, ok := unitDirectory(unit.Kind)
+		if !ok {
 			return fmt.Errorf("render inventory unit %s has unknown kind %q", unit.Name, unit.Kind)
 		}
 		if previous != "" && unit.Name <= previous {
@@ -356,14 +361,8 @@ func validateInventory(inventory, actual *Inventory, label string) error {
 }
 
 func validateTree(root string, opts *RenderOptions) error {
-	if opts.Unit == "" && len(opts.UnitNames) > 0 {
-		var rendered []InventoryUnit
-		for _, unit := range opts.Units {
-			if unit.Path != "" {
-				rendered = append(rendered, unit)
-			}
-		}
-		if err := validateUnitDirectories(root, rendered, opts.Environment); err != nil {
+	if opts.Unit == "" && opts.CheckUnitDirectories {
+		if err := validateUnitDirectories(root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment); err != nil {
 			return err
 		}
 	}
@@ -443,8 +442,11 @@ func validateTree(root string, opts *RenderOptions) error {
 func validateUnitDirectories(root string, units []InventoryUnit, environment string) error {
 	byDirectory := make(map[string]map[string]struct{})
 	for _, unit := range units {
-		directory := unitDirectory(unit.Kind)
-		if _, ok := byDirectory[directory]; !ok {
+		directory, ok := unitDirectory(unit.Kind)
+		if !ok {
+			return fmt.Errorf("rendered unit %s has unknown kind %q", unit.Name, unit.Kind)
+		}
+		if _, exists := byDirectory[directory]; !exists {
 			byDirectory[directory] = make(map[string]struct{})
 		}
 		byDirectory[directory][unit.Name] = struct{}{}
@@ -967,11 +969,12 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		Units:      append([]InventoryUnit(nil), opts.Units...),
 	}
 	if len(inventory.Units) == 0 {
+		serviceDir, _ := unitDirectory(UnitKindService)
 		for _, name := range opts.UnitNames {
 			inventory.Units = append(inventory.Units, InventoryUnit{
 				Kind:   UnitKindService,
 				Module: opts.Module, Name: name,
-				Path: filepath.ToSlash(filepath.Join(unitDirectory(UnitKindService), name)),
+				Path: filepath.ToSlash(filepath.Join(serviceDir, name)),
 			})
 		}
 	}
