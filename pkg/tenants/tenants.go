@@ -10,6 +10,7 @@ package tenants
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,11 +26,15 @@ import (
 // ModelSchema is the accepted schemaVersion for a tenant model file.
 const ModelSchema = "codefly.dev/tenant-model/v1"
 
-// generatedMarker is dropped into every overlay this package writes so
-// regeneration can tell overlays it owns from hand-authored ones. Kustomize
-// only reads kustomization.yaml and the resources it references, so this file
-// is inert during a build.
-const generatedMarker = ".codefly-tenant-overlay"
+// overlayIndexFile records, at the deployment-tree root, which overlays this
+// package generated so regeneration can tell them from hand-authored ones. It
+// lives outside every overlays/<tenant>-<cloud>/ directory on purpose: the
+// overlay directory is the deployable unit a GitOps tool renders, and must
+// contain only its manifests, never generator bookkeeping.
+const (
+	overlayIndexFile   = ".codefly-tenant-overlays.json"
+	overlayIndexSchema = "codefly.dev/tenant-overlays/v1"
+)
 
 // The Kubernetes kinds whose per-tenant fields this package patches.
 const (
@@ -156,6 +161,10 @@ func Generate(root string, model *Model) (*Result, error) {
 	} else if !info.IsDir() {
 		return nil, fmt.Errorf("tenant model base %q is not a directory", model.Base)
 	}
+	owned, indexErr := loadOverlayIndex(root)
+	if indexErr != nil {
+		return nil, indexErr
+	}
 	desired := make(map[string]struct{}, len(model.Tenants))
 	result := &Result{Written: make([]string, 0, len(model.Tenants))}
 	for i := range model.Tenants {
@@ -165,7 +174,8 @@ func Generate(root string, model *Model) (*Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("locate base from overlay %q: %w", tenant.Overlay(), err)
 		}
-		if err = prepareOverlayDir(overlayDir, tenant.Overlay()); err != nil {
+		_, isOwned := owned[tenant.Overlay()]
+		if err = prepareOverlayDir(overlayDir, tenant.Overlay(), isOwned); err != nil {
 			return nil, err
 		}
 		document, err := renderOverlay(filepath.ToSlash(relBase), tenant)
@@ -175,29 +185,29 @@ func Generate(root string, model *Model) (*Result, error) {
 		if err = os.WriteFile(filepath.Join(overlayDir, "kustomization.yaml"), document, 0o644); err != nil { //nolint:gosec
 			return nil, fmt.Errorf("write overlay %q: %w", tenant.Overlay(), err)
 		}
-		if err = os.WriteFile(filepath.Join(overlayDir, generatedMarker), []byte(ModelSchema+"\n"), 0o644); err != nil { //nolint:gosec
-			return nil, fmt.Errorf("mark overlay %q: %w", tenant.Overlay(), err)
-		}
 		if err = verifyOverlay(overlayDir, tenant); err != nil {
 			return nil, err
 		}
 		desired[tenant.Overlay()] = struct{}{}
 		result.Written = append(result.Written, tenant.Overlay())
 	}
-	removed, err := reconcileOrphans(root, desired)
+	removed, err := reconcileOrphans(root, owned, desired)
 	if err != nil {
 		return nil, err
 	}
 	result.Removed = removed
 	sort.Strings(result.Written)
+	if err = writeOverlayIndex(root, result.Written); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
 // prepareOverlayDir readies a clean overlay directory. A directory this package
-// previously generated is cleared so no stale resources survive a regeneration.
-// A non-empty directory it did not generate is left intact and reported as an
-// error rather than silently overwritten.
-func prepareOverlayDir(dir, name string) error {
+// previously generated (owned) is cleared so no stale resources survive a
+// regeneration. A non-empty directory it did not generate is left intact and
+// reported as an error rather than silently overwritten.
+func prepareOverlayDir(dir, name string, owned bool) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -208,7 +218,7 @@ func prepareOverlayDir(dir, name string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("overlay path %q exists and is not a directory", name)
 	}
-	if !isGenerated(dir) {
+	if !owned {
 		empty, err := isEmptyDir(dir)
 		if err != nil {
 			return err
@@ -224,30 +234,25 @@ func prepareOverlayDir(dir, name string) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
-// reconcileOrphans removes overlay directories this package generated whose
-// tenant is no longer in the model. It never removes overlays it did not
-// generate (for example hand-authored environment overlays), which lack the
-// marker.
-func reconcileOrphans(root string, desired map[string]struct{}) ([]string, error) {
-	overlays := filepath.Join(root, "overlays")
-	entries, err := os.ReadDir(overlays)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read overlays: %w", err)
-	}
+// reconcileOrphans removes overlay directories this package previously generated
+// (recorded in the index) whose tenant the model no longer declares. Overlays
+// absent from the index — hand-authored environment overlays, for example — are
+// never touched.
+func reconcileOrphans(root string, owned, desired map[string]struct{}) ([]string, error) {
 	var removed []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
+	for name := range owned {
 		if _, keep := desired[name]; keep {
 			continue
 		}
-		dir := filepath.Join(overlays, name)
-		if !isGenerated(dir) {
+		dir := filepath.Join(root, "overlays", name)
+		info, err := os.Stat(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect stale overlay %q: %w", name, err)
+		}
+		if !info.IsDir() {
 			continue
 		}
 		if err := os.RemoveAll(dir); err != nil {
@@ -259,9 +264,50 @@ func reconcileOrphans(root string, desired map[string]struct{}) ([]string, error
 	return removed, nil
 }
 
-func isGenerated(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, generatedMarker))
-	return err == nil
+// loadOverlayIndex returns the set of overlays a previous run generated. A
+// missing index is an empty set; a present index with the wrong schema or
+// unreadable contents is an error so a corrupt index cannot silently strip
+// ownership and turn a regeneration into an overwrite of tracked overlays.
+func loadOverlayIndex(root string) (map[string]struct{}, error) {
+	data, err := os.ReadFile(filepath.Join(root, overlayIndexFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, fmt.Errorf("read overlay index: %w", err)
+	}
+	var index overlayIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, fmt.Errorf("decode overlay index: %w", err)
+	}
+	if index.SchemaVersion != overlayIndexSchema {
+		return nil, fmt.Errorf("unsupported overlay index schema %q, expected %q", index.SchemaVersion, overlayIndexSchema)
+	}
+	owned := make(map[string]struct{}, len(index.Overlays))
+	for _, name := range index.Overlays {
+		owned[name] = struct{}{}
+	}
+	return owned, nil
+}
+
+func writeOverlayIndex(root string, overlays []string) error {
+	index := overlayIndex{SchemaVersion: overlayIndexSchema, Overlays: overlays}
+	if index.Overlays == nil {
+		index.Overlays = []string{}
+	}
+	data, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode overlay index: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, overlayIndexFile), append(data, '\n'), 0o644); err != nil { //nolint:gosec
+		return fmt.Errorf("write overlay index: %w", err)
+	}
+	return nil
+}
+
+type overlayIndex struct {
+	SchemaVersion string   `json:"schemaVersion"`
+	Overlays      []string `json:"overlays"`
 }
 
 func isEmptyDir(dir string) (bool, error) {

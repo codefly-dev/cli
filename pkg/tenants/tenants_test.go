@@ -200,18 +200,47 @@ tenants:
 func TestGenerateClearsStaleFilesFromOwnedOverlay(t *testing.T) {
 	root := t.TempDir()
 	writeBase(t, root)
-	owned := filepath.Join(root, "overlays", "acme-aws")
-	if err := os.MkdirAll(filepath.Join(owned, "resources"), 0o755); err != nil {
+	modelPath := writeModel(t, root, `schema-version: codefly.dev/tenant-model/v1
+base: base
+tenants:
+  - name: acme
+    cloud: aws
+    host: acme.example.com
+`)
+	model, err := LoadModel(modelPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// Mark it generated and seed a stale resource from a prior run.
-	if err := os.WriteFile(filepath.Join(owned, generatedMarker), []byte(ModelSchema+"\n"), 0o644); err != nil {
+	// First generation establishes ownership via the index.
+	if _, err := Generate(root, model); err != nil {
 		t.Fatal(err)
 	}
-	staleResource := filepath.Join(owned, "resources", "old.yaml")
+	// Seed a stale resource from a prior run into the owned overlay.
+	staleResource := filepath.Join(root, "overlays", "acme-aws", "resources", "old.yaml")
+	if err := os.MkdirAll(filepath.Dir(staleResource), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(staleResource, []byte("stale: true\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := Generate(root, model); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staleResource); !os.IsNotExist(err) {
+		t.Errorf("stale resource survived regeneration: %v", err)
+	}
+	hosts, _ := buildOverlay(t, root, "acme-aws")
+	if len(hosts) != 1 || hosts[0] != "acme.example.com" {
+		t.Errorf("owned overlay not regenerated: hosts = %v", hosts)
+	}
+}
+
+// TestGenerateKeepsOverlayDirsFree proves generator bookkeeping never lands
+// inside a deployable overlay directory: the ownership index lives at the tree
+// root, and each overlay contains only its kustomization.yaml.
+func TestGenerateKeepsOverlayDirsFree(t *testing.T) {
+	root := t.TempDir()
+	writeBase(t, root)
 	modelPath := writeModel(t, root, `schema-version: codefly.dev/tenant-model/v1
 base: base
 tenants:
@@ -226,12 +255,19 @@ tenants:
 	if _, err := Generate(root, model); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(staleResource); !os.IsNotExist(err) {
-		t.Errorf("stale resource survived regeneration: %v", err)
+	entries, err := os.ReadDir(filepath.Join(root, "overlays", "acme-aws"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	hosts, _ := buildOverlay(t, root, "acme-aws")
-	if len(hosts) != 1 || hosts[0] != "acme.example.com" {
-		t.Errorf("owned overlay not regenerated: hosts = %v", hosts)
+	if len(entries) != 1 || entries[0].Name() != "kustomization.yaml" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("overlay directory holds %v, want only kustomization.yaml", names)
+	}
+	if _, err := os.Stat(filepath.Join(root, overlayIndexFile)); err != nil {
+		t.Errorf("overlay index not written at tree root: %v", err)
 	}
 }
 
