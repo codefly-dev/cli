@@ -20,7 +20,7 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Regenerate a service's dependency-derived configuration through its agent",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

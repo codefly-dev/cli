@@ -23,7 +23,7 @@ func TestModuleSyncPlanOrdersInvalidSourceBeforeOtherConflicts(t *testing.T) {
 	output.SetOutputSink(func(_ wool.Loglevel, msg string) { lines = append(lines, msg) })
 	defer output.SetOutputSink(nil)
 
-	printModuleSyncPlan("app", integrity.BaseSyncPlan{
+	printModuleSyncPlan("app", &integrity.BaseSyncPlan{
 		SourceRoot:    "/src",
 		SourceInvalid: []integrity.InvalidSource{{Path: "a.go", Reason: integrity.SourceUnsafePath}},
 		TargetInvalid: []string{"b.go"},
@@ -107,7 +107,7 @@ func TestRestoreCodeUsesPinnedSourceAndPreservesOverlay(t *testing.T) {
 	overlayPath := filepath.Join(targetRoot, "services", "api", "overlays", "local.yaml")
 	writeSyncTestFile(t, overlayPath, "consumer: true\n")
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
-	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), moduleSourceLock{
+	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), &moduleSourceLock{
 		Schema: moduleSourceLockSchema, Repository: remote, Ref: "v1.2.3",
 		Commit: runGit(t, repository, "rev-parse", "HEAD"), Subdirectory: "module",
 	}); err != nil {
@@ -117,7 +117,7 @@ func TestRestoreCodeUsesPinnedSourceAndPreservesOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syncComposedModule(context.Background(), target, moduleSyncOptions{RestoreCode: true}); err != nil {
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{RestoreCode: true}); err != nil {
 		t.Fatal(err)
 	}
 	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(codePath)), code)
@@ -151,7 +151,7 @@ func TestRestoreCodeBootstrapsLegacyModuleFromExplicitImmutableSource(t *testing
 		t.Fatal(err)
 	}
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
-	if err := syncComposedModule(context.Background(), target, moduleSyncOptions{
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
 		RestoreCode: true, Source: remote, To: "v1.2.3", Subdirectory: "module",
 	}); err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ func TestResolveModuleSourceRequiresGitTagAndPinsCommit(t *testing.T) {
 	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v1.2.4")
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
 
-	_, cleanup, err := resolveModuleSource(context.Background(), t.TempDir(), moduleSyncOptions{
+	_, cleanup, err := resolveModuleSource(context.Background(), t.TempDir(), &moduleSyncOptions{
 		Source: remote, To: "v1.2.3", Subdirectory: "module",
 	})
 	cleanup()
@@ -272,7 +272,7 @@ func TestResolveModuleSourceRequiresGitTagAndPinsCommit(t *testing.T) {
 		t.Fatal("semantic-version branch was accepted as an immutable tag")
 	}
 
-	resolved, cleanup, err := resolveModuleSource(context.Background(), t.TempDir(), moduleSyncOptions{
+	resolved, cleanup, err := resolveModuleSource(context.Background(), t.TempDir(), &moduleSyncOptions{
 		Source: remote, To: "v1.2.4", Subdirectory: "module",
 	})
 	defer cleanup()
@@ -310,7 +310,7 @@ func TestModuleSourceLockRoundTripsAndLocalSourceIsAutoDetected(t *testing.T) {
 		Schema: moduleSourceLockSchema, Repository: "https://example.invalid/starter.git",
 		Ref: "v1.2.3", Commit: "0123456789abcdef0123456789abcdef01234567", Subdirectory: "module",
 	}
-	if err := writeModuleSourceLock(path, want); err != nil {
+	if err := writeModuleSourceLock(path, &want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := readModuleSourceLock(path)
@@ -320,6 +320,179 @@ func TestModuleSourceLockRoundTripsAndLocalSourceIsAutoDetected(t *testing.T) {
 	if got != want {
 		t.Fatalf("lock = %#v, want %#v", got, want)
 	}
+}
+
+func newSyncTestWorkspace(t *testing.T) (*resources.Workspace, string) {
+	t.Helper()
+	root := t.TempDir()
+	workspace := &resources.Workspace{Name: "consumer", Layout: resources.LayoutKindModules}
+	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded, root
+}
+
+// localModuleSource writes a resolvable local module source. Local paths are
+// preview-only, so --create must reject them before mutating the workspace.
+func localModuleSource(t *testing.T) string {
+	t.Helper()
+	source := t.TempDir()
+	writeSyncTestFile(t, filepath.Join(source, "tools", "base-manifest.json"), `{"files":{}}`)
+	return source
+}
+
+func moduleSaasDir(t *testing.T, workspace *resources.Workspace) string {
+	t.Helper()
+	return workspace.ModulePath(context.Background(), &resources.ModuleReference{Name: "saas"})
+}
+
+// assertModuleAbsent fails if the module leaked into the in-memory workspace,
+// the persisted workspace file, or the filesystem.
+func assertModuleAbsent(t *testing.T, workspace *resources.Workspace, root string) {
+	t.Helper()
+	if workspace.ExistsModule("saas") {
+		t.Fatal("module leaked into the in-memory workspace")
+	}
+	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ExistsModule("saas") {
+		t.Fatal("module leaked into the persisted workspace file")
+	}
+	if _, err := os.Stat(moduleSaasDir(t, workspace)); !os.IsNotExist(err) {
+		t.Fatalf("module directory was left on disk: %v", err)
+	}
+}
+
+func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
+	loaded, _ := newSyncTestWorkspace(t)
+	_, _, err := resolveSyncTarget(context.Background(), loaded, "saas", false, &moduleSyncOptions{})
+	if err == nil {
+		t.Fatal("syncing a missing module without --create returned success")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "codefly add module saas") || !strings.Contains(message, "--create") {
+		t.Fatalf("error is not actionable: %v", err)
+	}
+}
+
+// A --create dry-run describes the initialization for a valid remote source and
+// returns without registering or scaffolding anything.
+func TestSyncModuleCreateDryRunDescribesWithoutRegistering(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	if err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
+		Source: "https://example.invalid/starter.git", To: "v0.0.8",
+	}); err != nil {
+		t.Fatalf("dry-run --create returned an error: %v", err)
+	}
+	assertModuleAbsent(t, loaded, root)
+}
+
+// Finding #1: a --create --apply that omits --to must fail its precondition
+// before any workspace mutation, never registering then rolling back.
+func TestSyncModuleCreateValidatesSourceBeforeRegistering(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
+		Source: "https://example.invalid/starter.git", Apply: true,
+	})
+	if err == nil {
+		t.Fatal("--create --apply without --to was accepted")
+	}
+	if !strings.Contains(err.Error(), "--to") {
+		t.Fatalf("error does not point at --to: %v", err)
+	}
+	assertModuleAbsent(t, loaded, root)
+}
+
+// A local source can never initialize a module, and must be rejected before
+// mutating the workspace.
+func TestSyncModuleCreateRejectsLocalSourceBeforeRegistering(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
+		Source: localModuleSource(t), To: "v1.0.0", Apply: true,
+	})
+	if err == nil {
+		t.Fatal("--create --apply with a local source was accepted")
+	}
+	if !strings.Contains(err.Error(), "preview-only") {
+		t.Fatalf("error does not explain the local-source rejection: %v", err)
+	}
+	assertModuleAbsent(t, loaded, root)
+}
+
+// The one-command first run: --create --apply initializes the module, seeds an
+// empty base manifest, and populates it from canonical.
+func TestSyncModuleCreatePopulatesNewModuleOnApply(t *testing.T) {
+	repository := t.TempDir()
+	runGit(t, repository, "init", "--quiet")
+	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
+	runGit(t, repository, "config", "user.name", "Module Sync Test")
+	sourceModule := filepath.Join(repository, "module")
+	code := "package main\n"
+	codePath := "services/api/code/main.go"
+	writeSyncTestFile(t, filepath.Join(sourceModule, "module.codefly.yaml"), "kind: module\nname: saas\nservices:\n  - name: api\n")
+	writeSyncTestFile(t, filepath.Join(sourceModule, codePath), code)
+	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
+		`{"files":{"`+codePath+`":"`+syncTestDigest(code)+`"}}`)
+	runGit(t, repository, "add", ".")
+	runGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")
+	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v1.0.0")
+	remote := (&url.URL{Scheme: "file", Path: repository}).String()
+
+	loaded, _ := newSyncTestWorkspace(t)
+	if err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
+		Source: remote, To: "v1.0.0", Subdirectory: "module", Apply: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.ExistsModule("saas") {
+		t.Fatal("module was not registered")
+	}
+	assertSyncTestFile(t, filepath.Join(moduleSaasDir(t, loaded), filepath.FromSlash(codePath)), code)
+	lock, err := readModuleSourceLock(filepath.Join(moduleSaasDir(t, loaded), moduleSourceLockRelativePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.Repository != remote || lock.Ref != "v1.0.0" {
+		t.Fatalf("lock = %#v", lock)
+	}
+}
+
+// An apply that passes preconditions, registers the module, but then fails
+// (here: the remote tag cannot be cloned) must not leave the module stranded.
+func TestSyncModuleCreateRollsBackWhenApplyFails(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	missingRemote := (&url.URL{Scheme: "file", Path: filepath.Join(t.TempDir(), "missing-repo.git")}).String()
+	err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
+		Source: missingRemote, To: "v1.0.0", Apply: true,
+	})
+	if err == nil {
+		t.Fatal("applying an unreachable remote unexpectedly succeeded")
+	}
+	assertModuleAbsent(t, loaded, root)
+}
+
+// Finding #4: rollback must clean a module directory that already holds
+// half-applied upstream files, not just an empty scaffold.
+func TestRollbackRemovesPopulatedModuleDir(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	module, err := registerModule(context.Background(), loaded, "saas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate files written by a partially-completed ApplyBaseSync.
+	writeSyncTestFile(t, filepath.Join(module.Dir(), "services", "api", "code", "main.go"), "package main\n")
+	writeSyncTestFile(t, filepath.Join(module.Dir(), moduleSourceLockRelativePath),
+		`{"schema":"codefly/base-source/v1","repository":"https://example.invalid/x.git","ref":"v1.0.0","commit":"0123456789abcdef0123456789abcdef01234567"}`)
+	if err := rollbackRegisteredModule(context.Background(), loaded, "saas"); err != nil {
+		t.Fatal(err)
+	}
+	assertModuleAbsent(t, loaded, root)
 }
 
 func writeSyncTestFile(t *testing.T, path, contents string) {

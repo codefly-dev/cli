@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,13 +17,16 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	output "github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/integrity"
+	"github.com/codefly-dev/core/actions/actions"
+	actionsmodule "github.com/codefly-dev/core/actions/module"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
 
 const (
-	moduleSourceLockRelativePath = "tools/base-source.json"
-	moduleSourceLockSchema       = "codefly/base-source/v1"
+	moduleSourceLockRelativePath   = "tools/base-source.json"
+	moduleSourceLockSchema         = "codefly/base-source/v1"
+	moduleBaseManifestRelativePath = "tools/base-manifest.json"
 )
 
 var fullGitCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -61,6 +65,13 @@ First pin a remote source:
   codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
   codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
 
+Initialize and populate a brand-new module in one step instead of running
+codefly add module first. A new module has no base manifest to plan against, so
+the dry-run describes the initialization without registering anything and the
+file-level plan appears only on --apply:
+  codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
+  codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
+
 Future updates use the consumer-owned tools/base-source.json lock:
   codefly sync module saas --to v0.0.9
   codefly sync module saas --to v0.0.9 --apply
@@ -91,17 +102,138 @@ Local paths are preview-only and never persisted in the portable source lock.`,
 		if err != nil {
 			return fmt.Errorf("load workspace: %w", err)
 		}
-		module, err := workspace.LoadModuleFromName(ctx, args[0])
-		if err != nil {
-			return fmt.Errorf("load target module %s: %w", args[0], err)
-		}
-		return syncComposedModule(ctx, module, moduleSyncFlags)
+		return runModuleSync(ctx, workspace, args[0], moduleSyncCreate, &moduleSyncFlags)
 	},
+}
+
+// runModuleSync resolves the target module and syncs it. When --create
+// registers a brand-new module as part of an apply, the registration is rolled
+// back if the sync itself fails so a failed run never leaves an empty module
+// stranded in the workspace.
+func runModuleSync(ctx context.Context, workspace *resources.Workspace, name string, create bool, options *moduleSyncOptions) error {
+	module, created, err := resolveSyncTarget(ctx, workspace, name, create, options)
+	if err != nil {
+		return err
+	}
+	if module == nil {
+		// --create dry-run described the intended initialization without
+		// registering anything; there is nothing to sync.
+		return nil
+	}
+	if err := syncComposedModule(ctx, module, options); err != nil {
+		if created {
+			return errors.Join(err, rollbackRegisteredModule(ctx, workspace, name))
+		}
+		return err
+	}
+	return nil
+}
+
+// resolveSyncTarget resolves the module to sync. When --create is set and the
+// module is not yet registered, the source is validated before any workspace
+// mutation, so a bad invocation never registers a module only to roll it back.
+// A dry-run describes the intended initialization and returns a nil module
+// (nothing to sync); an --apply initializes the module and returns it with
+// created=true so the caller can roll the registration back on failure.
+func resolveSyncTarget(ctx context.Context, workspace *resources.Workspace, name string, create bool, options *moduleSyncOptions) (*resources.Module, bool, error) {
+	module, err := workspace.LoadModuleFromName(ctx, name)
+	if err == nil {
+		return module, false, nil
+	}
+	if workspace.ExistsModule(name) {
+		return nil, false, fmt.Errorf("load target module %s: %w", name, err)
+	}
+	if !create {
+		var present []string
+		for _, ref := range workspace.Modules {
+			present = append(present, ref.Name)
+		}
+		return nil, false, fmt.Errorf("module <%s> is not registered in workspace <%s> (present: %v); run `codefly add module %s` first, or rerun with --create --apply to initialize and sync it in one step", name, workspace.Name, present, name)
+	}
+	if err = validateNewModuleSource(options); err != nil {
+		return nil, false, err
+	}
+	if !options.Apply {
+		output.Info("module <%s> is not registered; --create --apply will initialize it and populate it from %s@%s (the file-level plan is shown on --apply)",
+			name, strings.TrimSpace(options.Source), strings.TrimSpace(options.To))
+		return nil, false, nil
+	}
+	module, err = registerModule(ctx, workspace, name)
+	if err != nil {
+		return nil, false, err
+	}
+	return module, true, nil
+}
+
+// validateNewModuleSource checks the cheap preconditions for initializing a new
+// module before any workspace mutation. A new module has no source lock to fall
+// back on, so it must come from an immutable remote tag: local paths are
+// preview-only and cannot be applied.
+func validateNewModuleSource(options *moduleSyncOptions) error {
+	source := strings.TrimSpace(options.Source)
+	if source == "" {
+		return fmt.Errorf("--create requires --source to initialize a new module")
+	}
+	if info, statErr := os.Stat(source); statErr == nil && info.IsDir() {
+		return fmt.Errorf("--create requires an immutable remote source; local path %s is preview-only and cannot initialize a module", source)
+	}
+	to := strings.TrimSpace(options.To)
+	if to == "" {
+		return fmt.Errorf("--to is required to initialize a new module from a remote source")
+	}
+	if _, err := semver.NewVersion(strings.TrimPrefix(to, "v")); err != nil {
+		return fmt.Errorf("--to must be an immutable semantic-version tag: %w", err)
+	}
+	return nil
+}
+
+// registerModule initializes a new module and seeds an empty base manifest so
+// the very first sync sees the whole upstream base as new files to create.
+// Without the seed the base-sync engine fails closed on the missing manifest.
+func registerModule(ctx context.Context, workspace *resources.Workspace, name string) (*resources.Module, error) {
+	action, err := actionsmodule.NewActionAddModule(ctx, &actionsmodule.AddModule{Name: name})
+	if err != nil {
+		return nil, fmt.Errorf("create add-module action: %w", err)
+	}
+	if _, err = actions.Run(ctx, action, &actions.Space{Workspace: workspace}); err != nil {
+		return nil, fmt.Errorf("register module %s: %w", name, err)
+	}
+	module, err := workspace.LoadModuleFromName(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("load target module %s after --create: %w", name, err)
+	}
+	if err := seedEmptyBaseManifest(module.Dir()); err != nil {
+		return nil, fmt.Errorf("seed base manifest for %s: %w", name, err)
+	}
+	output.Info("registered module <%s>", name)
+	return module, nil
+}
+
+func seedEmptyBaseManifest(moduleDir string) error {
+	path := filepath.Join(moduleDir, moduleBaseManifestRelativePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("{\n  \"files\": {}\n}\n"), 0o600)
+}
+
+func rollbackRegisteredModule(ctx context.Context, workspace *resources.Workspace, name string) error {
+	moduleDir := workspace.ModulePath(ctx, &resources.ModuleReference{Name: name})
+	if err := workspace.DeleteModule(ctx, name); err != nil {
+		return fmt.Errorf("roll back module reference %s: %w", name, err)
+	}
+	if err := os.RemoveAll(moduleDir); err != nil {
+		return fmt.Errorf("roll back module directory %s: %w", name, err)
+	}
+	return nil
 }
 
 var moduleSyncFlags moduleSyncOptions
 
+var moduleSyncCreate bool
+
 func init() {
+	ModuleCmd.Flags().BoolVar(&moduleSyncCreate, "create", false, "initialize a new module from --source and populate it in one step (requires --apply)")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Source, "source", "", "canonical Git repository URL or local repository/module path")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.To, "to", "", "immutable semantic-version tag to resolve (for example v0.0.8)")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
@@ -110,9 +242,9 @@ func init() {
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.RestoreCode, "restore-code", false, "restore missing base-owned service code from the pinned module version")
 }
 
-func syncComposedModule(ctx context.Context, target *resources.Module, options moduleSyncOptions) error {
+func syncComposedModule(ctx context.Context, target *resources.Module, options *moduleSyncOptions) error {
 	if options.RestoreCode {
-		return restoreComposedModuleCode(ctx, target, &options)
+		return restoreComposedModuleCode(ctx, target, options)
 	}
 	resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), options)
 	if err != nil {
@@ -130,7 +262,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options m
 		// base-owned path is changed.
 		plan.MissingRequiredAdditions = withoutPath(plan.MissingRequiredAdditions, moduleSourceLockRelativePath)
 	}
-	printModuleSyncPlan(target.Name, plan, options.Apply, resolved.Lock)
+	printModuleSyncPlan(target.Name, &plan, options.Apply, resolved.Lock)
 	if err := plan.Applicable(); err != nil {
 		return err
 	}
@@ -144,7 +276,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options m
 	// Commit desired provenance first. If a later filesystem operation is
 	// interrupted, the default command resolves the intended source and safely
 	// resumes instead of silently reverting to the previous base.
-	if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), *resolved.Lock); err != nil {
+	if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), resolved.Lock); err != nil {
 		return fmt.Errorf("write module source lock: %w", err)
 	}
 	if _, err := integrity.ApplyBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream); err != nil {
@@ -171,7 +303,7 @@ func restoreComposedModuleCode(ctx context.Context, target *resources.Module, op
 		return err
 	}
 	if writeLock {
-		if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), *resolved.Lock); err != nil {
+		if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), resolved.Lock); err != nil {
 			return fmt.Errorf("write module source lock: %w", err)
 		}
 	}
@@ -199,7 +331,7 @@ func resolveRestoreModuleSource(ctx context.Context, target *resources.Module, o
 		if explicitSource {
 			return resolvedModuleSource{}, false, func() {}, fmt.Errorf("--restore-code uses the pinned %s source; source flags are only accepted when that lock is missing", moduleSourceLockRelativePath)
 		}
-		resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), moduleSyncOptions{})
+		resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), &moduleSyncOptions{})
 		return resolved, false, cleanup, err
 	}
 	if strings.TrimSpace(options.Source) == "" {
@@ -216,7 +348,7 @@ func resolveRestoreModuleSource(ctx context.Context, target *resources.Module, o
 		}
 		options = &resolvedOptions
 	}
-	resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), *options)
+	resolved, cleanup, err := resolveModuleSource(ctx, target.Dir(), options)
 	if err != nil {
 		return resolvedModuleSource{}, false, cleanup, err
 	}
@@ -257,7 +389,7 @@ func moduleAgentSource(agent *resources.Agent) (moduleSyncOptions, error) {
 }
 
 func prepareModuleSource(ctx context.Context, targetRoot string, options *moduleSyncOptions) (*PreparedModuleSource, error) {
-	resolved, cleanup, err := resolveModuleSource(ctx, targetRoot, *options)
+	resolved, cleanup, err := resolveModuleSource(ctx, targetRoot, options)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +414,7 @@ func (source *PreparedModuleSource) Pin(target *resources.Module) error {
 	if err := integrity.ValidateServiceCodeSource(source.resolved.Root, target.Dir()); err != nil {
 		return err
 	}
-	return writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), *source.resolved.Lock)
+	return writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), source.resolved.Lock)
 }
 
 type resolvedModuleSource struct {
@@ -290,7 +422,7 @@ type resolvedModuleSource struct {
 	Lock *moduleSourceLock
 }
 
-func resolveModuleSource(ctx context.Context, targetRoot string, options moduleSyncOptions) (resolvedModuleSource, func(), error) {
+func resolveModuleSource(ctx context.Context, targetRoot string, options *moduleSyncOptions) (resolvedModuleSource, func(), error) {
 	cleanup := func() {}
 	source := strings.TrimSpace(options.Source)
 	to := strings.TrimSpace(options.To)
@@ -330,18 +462,18 @@ func resolveModuleSource(ctx context.Context, targetRoot string, options moduleS
 		}
 	}
 
-	if info, err := os.Stat(source); err == nil && info.IsDir() {
-		root, err := locateModuleRoot(source, subdirectory)
-		if err != nil {
-			return resolvedModuleSource{}, cleanup, err
+	if info, statErr := os.Stat(source); statErr == nil && info.IsDir() {
+		root, rootErr := locateModuleRoot(source, subdirectory)
+		if rootErr != nil {
+			return resolvedModuleSource{}, cleanup, rootErr
 		}
 		return resolvedModuleSource{Root: root}, cleanup, nil
 	}
 	if to == "" {
 		return resolvedModuleSource{}, cleanup, fmt.Errorf("--to is required for a remote module source")
 	}
-	if _, err := semver.NewVersion(strings.TrimPrefix(to, "v")); err != nil {
-		return resolvedModuleSource{}, cleanup, fmt.Errorf("--to must be an immutable semantic-version tag: %w", err)
+	if _, verErr := semver.NewVersion(strings.TrimPrefix(to, "v")); verErr != nil {
+		return resolvedModuleSource{}, cleanup, fmt.Errorf("--to must be an immutable semantic-version tag: %w", verErr)
 	}
 
 	checkout, err := os.MkdirTemp("", "codefly-module-source-*")
@@ -350,13 +482,13 @@ func resolveModuleSource(ctx context.Context, targetRoot string, options moduleS
 	}
 	cleanup = func() { _ = os.RemoveAll(checkout) }
 	clone := exec.CommandContext(ctx, "git", "clone", "--quiet", "--depth", "1", "--branch", to, source, checkout)
-	if outputBytes, err := clone.CombinedOutput(); err != nil {
+	if outputBytes, cloneErr := clone.CombinedOutput(); cloneErr != nil {
 		cleanup()
-		return resolvedModuleSource{}, func() {}, fmt.Errorf("resolve module source %s@%s: %w: %s", source, to, err, strings.TrimSpace(string(outputBytes)))
+		return resolvedModuleSource{}, func() {}, fmt.Errorf("resolve module source %s@%s: %w: %s", source, to, cloneErr, strings.TrimSpace(string(outputBytes)))
 	}
 	tagRef := "refs/tags/" + to
 	verifyTag := exec.CommandContext(ctx, "git", "-C", checkout, "show-ref", "--verify", "--quiet", tagRef)
-	if err := verifyTag.Run(); err != nil {
+	if err = verifyTag.Run(); err != nil {
 		cleanup()
 		return resolvedModuleSource{}, func() {}, fmt.Errorf("module source ref %s is not a tag", to)
 	}
@@ -449,13 +581,13 @@ func readModuleSourceLock(path string) (moduleSourceLock, error) {
 	return lock, nil
 }
 
-func writeModuleSourceLock(path string, lock moduleSourceLock) error {
+func writeModuleSourceLock(path string, lock *moduleSourceLock) error {
 	payload, err := json.MarshalIndent(lock, "", "  ")
 	if err != nil {
 		return err
 	}
 	payload = append(payload, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err = os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".codefly-base-source-*")
@@ -481,7 +613,7 @@ func writeModuleSourceLock(path string, lock moduleSourceLock) error {
 	return os.Rename(temporaryPath, path)
 }
 
-func printModuleSyncPlan(module string, plan integrity.BaseSyncPlan, applying bool, lock *moduleSourceLock) {
+func printModuleSyncPlan(module string, plan *integrity.BaseSyncPlan, applying bool, lock *moduleSourceLock) {
 	mode := "dry-run"
 	if applying {
 		mode = "apply"
