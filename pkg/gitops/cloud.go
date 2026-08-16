@@ -9,43 +9,36 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const gatewayAPIGroup = "gateway.networking.k8s.io"
-
 // CloudProfile is codefly's cloud-aware translation for one cluster kind. The
-// storage-neutral base carries no storageClassName and routing is owned by the
-// mesh envelope, so the per-cloud slice reduces to the StorageClass the cloud's
-// CSI driver provisions plus the load-balancer annotations its gateway needs.
+// storage-neutral base carries no storageClassName, so the per-cloud slice
+// injects the StorageClass the cloud's CSI driver provisions.
+//
+// Storage must be modelled as a standalone PersistentVolumeClaim (the codefly
+// convention: a StatefulSet or Deployment mounts a separate PVC resource). The
+// component patches kind: PersistentVolumeClaim, so a StatefulSet that instead
+// declares inline spec.volumeClaimTemplates would not receive the class — that
+// shape is outside codefly's storage model and is not supported here.
 type CloudProfile struct {
-	Kind               string
-	StorageClass       string
-	GatewayAnnotations map[string]string
+	Kind         string
+	StorageClass string
 }
 
-// cloudProfiles is keyed by EnvironmentCluster.Kind. Only managed clouds appear:
-// local kinds (k3d, kind, minikube) run on the storage-neutral base with their
-// cluster-default StorageClass and get no cloud component.
+// cloudProfiles is keyed by EnvironmentCluster.Kind and holds the managed clouds
+// whose per-cloud slice differs from the storage-neutral base.
 var cloudProfiles = map[string]CloudProfile{
-	"eks": {
-		Kind:         "eks",
-		StorageClass: "gp3",
-		GatewayAnnotations: map[string]string{
-			"service.beta.kubernetes.io/aws-load-balancer-type": "external",
-		},
-	},
-	"gke": {
-		Kind:         "gke",
-		StorageClass: "premium-rwo",
-		GatewayAnnotations: map[string]string{
-			"networking.gke.io/load-balancer-type": "External",
-		},
-	},
-	"aks": {
-		Kind:         "aks",
-		StorageClass: "managed-csi",
-		GatewayAnnotations: map[string]string{
-			"service.beta.kubernetes.io/azure-load-balancer-internal": "false",
-		},
-	},
+	"eks": {Kind: "eks", StorageClass: "gp3"},
+	"gke": {Kind: "gke", StorageClass: "premium-rwo"},
+	"aks": {Kind: "aks", StorageClass: "managed-csi"},
+}
+
+// localClusterKinds are the cluster kinds that legitimately need no cloud
+// component: they run on the storage-neutral base with the cluster-default
+// StorageClass (local clusters) or manage storage outside codefly (external).
+var localClusterKinds = map[string]struct{}{
+	"k3d":      {},
+	"kind":     {},
+	"minikube": {},
+	"external": {},
 }
 
 // CloudProfileForKind returns the cloud profile for a cluster kind. The second
@@ -57,14 +50,20 @@ func CloudProfileForKind(kind string) (CloudProfile, bool) {
 
 // RenderCloudComponent writes the per-cloud kustomize component for the
 // environment's cluster kind under root and returns its root-relative slash
-// path. It returns an empty path when the cluster kind has no cloud slice.
+// path. It returns an empty path for cluster kinds that need no cloud component,
+// and an error for an unrecognized cluster kind so a typo cannot silently ship
+// storage-neutral manifests to a managed cloud.
 func RenderCloudComponent(root string, env *resources.Environment) (string, error) {
 	if env.Cluster == nil || env.Cluster.Kind == "" {
 		return "", fmt.Errorf("environment %q requires an explicit cluster kind to render a cloud component", env.Name)
 	}
-	profile, ok := CloudProfileForKind(env.Cluster.Kind)
+	kind := env.Cluster.Kind
+	profile, ok := CloudProfileForKind(kind)
 	if !ok {
-		return "", nil
+		if _, local := localClusterKinds[kind]; local {
+			return "", nil
+		}
+		return "", fmt.Errorf("environment %q has unrecognized cluster kind %q", env.Name, kind)
 	}
 	return writeCloudComponent(root, profile)
 }
@@ -75,22 +74,15 @@ func writeCloudComponent(root string, profile CloudProfile) (string, error) {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return "", fmt.Errorf("create cloud component directory: %w", err)
 	}
-	patches := []map[string]any{
-		{
-			"target": map[string]any{"kind": "PersistentVolumeClaim"},
-			"patch":  storageClassPatch(profile.StorageClass),
-		},
-	}
-	if len(profile.GatewayAnnotations) > 0 {
-		patches = append(patches, map[string]any{
-			"target": map[string]any{"group": gatewayAPIGroup, "kind": "Gateway"},
-			"patch":  gatewayAnnotationsPatch(profile.GatewayAnnotations),
-		})
-	}
 	component := map[string]any{
 		"apiVersion": "kustomize.config.k8s.io/v1alpha1",
 		"kind":       "Component",
-		"patches":    patches,
+		"patches": []map[string]any{
+			{
+				"target": map[string]any{"kind": "PersistentVolumeClaim"},
+				"patch":  storageClassPatch(profile.StorageClass),
+			},
+		},
 	}
 	data, err := yaml.Marshal(component)
 	if err != nil {
@@ -102,8 +94,8 @@ func writeCloudComponent(root string, profile CloudProfile) (string, error) {
 	return filepath.ToSlash(relative), nil
 }
 
-// The target selector matches every resource of the kind, so metadata.name in
-// these strategic-merge bodies is required by the parser but never used to match.
+// The target selector matches every PersistentVolumeClaim, so metadata.name in
+// the strategic-merge body is required by the parser but never used to match.
 const cloudPatchAnchorName = "cloud-profile"
 
 func storageClassPatch(class string) string {
@@ -113,25 +105,9 @@ func storageClassPatch(class string) string {
 		"metadata":   map[string]any{"name": cloudPatchAnchorName},
 		"spec":       map[string]any{"storageClassName": class},
 	}
-	return marshalPatch(patch)
-}
-
-func gatewayAnnotationsPatch(annotations map[string]string) string {
-	patch := map[string]any{
-		"apiVersion": gatewayAPIGroup + "/v1",
-		"kind":       "Gateway",
-		"metadata": map[string]any{
-			"name":        cloudPatchAnchorName,
-			"annotations": annotations,
-		},
-	}
-	return marshalPatch(patch)
-}
-
-func marshalPatch(patch map[string]any) string {
 	data, err := yaml.Marshal(patch)
 	if err != nil {
-		// The inputs are static maps of strings; marshalling cannot fail.
+		// The input is a static map of strings; marshalling cannot fail.
 		panic(fmt.Sprintf("encode cloud patch: %v", err))
 	}
 	return string(data)

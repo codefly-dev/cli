@@ -33,21 +33,37 @@ func TestCloudProfileForKind(t *testing.T) {
 		if expected.found {
 			require.Equal(t, kind, profile.Kind)
 			require.Equal(t, expected.storageClass, profile.StorageClass)
-			require.NotEmpty(t, profile.GatewayAnnotations)
 		}
 	}
 }
 
 func TestRenderCloudComponentSkipsLocalClusters(t *testing.T) {
-	root := t.TempDir()
-	relative, err := RenderCloudComponent(root, &resources.Environment{
-		Name:    "local",
-		Cluster: &resources.EnvironmentCluster{Kind: "k3d"},
-	})
-	require.NoError(t, err)
-	require.Empty(t, relative)
-	_, statErr := os.Stat(filepath.Join(root, "components"))
-	require.True(t, os.IsNotExist(statErr))
+	for _, kind := range []string{"k3d", "kind", "minikube", "external"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			relative, err := RenderCloudComponent(root, &resources.Environment{
+				Name:    "local",
+				Cluster: &resources.EnvironmentCluster{Kind: kind},
+			})
+			require.NoError(t, err)
+			require.Empty(t, relative)
+			_, statErr := os.Stat(filepath.Join(root, "components"))
+			require.True(t, os.IsNotExist(statErr))
+		})
+	}
+}
+
+func TestRenderCloudComponentRejectsUnknownKind(t *testing.T) {
+	// A typo or unlisted kind must error, not silently emit no component and
+	// ship storage-neutral manifests to a managed cloud.
+	for _, kind := range []string{"EKS", "aws", "gcp", "azure"} {
+		root := t.TempDir()
+		_, err := RenderCloudComponent(root, &resources.Environment{
+			Name:    "cloud",
+			Cluster: &resources.EnvironmentCluster{Kind: kind},
+		})
+		require.Error(t, err, "kind %q", kind)
+	}
 }
 
 func TestRenderCloudComponentRequiresClusterKind(t *testing.T) {
@@ -61,7 +77,7 @@ func TestRenderCloudComponentRequiresClusterKind(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestRenderCloudComponentAppliesStorageAndGateway(t *testing.T) {
+func TestRenderCloudComponentAppliesStorageClass(t *testing.T) {
 	for _, kind := range []string{"eks", "gke", "aks"} {
 		t.Run(kind, func(t *testing.T) {
 			profile, _ := CloudProfileForKind(kind)
@@ -74,31 +90,62 @@ func TestRenderCloudComponentAppliesStorageAndGateway(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, filepath.ToSlash(filepath.Join("components", "cloud", kind)), relative)
 
-			writeFile(t, filepath.Join(root, "overlay", "kustomization.yaml"), map[string]any{
-				"apiVersion": "kustomize.config.k8s.io/v1beta1",
-				"kind":       "Kustomization",
-				"resources":  []string{"../base"},
-				"components": []string{
-					filepath.ToSlash(filepath.Join("..", relative)),
-				},
-			})
-
-			manifests := buildKustomize(t, filepath.Join(root, "overlay"))
+			manifests := buildOverlayWithComponent(t, root, relative)
 			pvc := manifestByKind(t, manifests, "PersistentVolumeClaim")
-			gateway := manifestByKind(t, manifests, "Gateway")
-
 			spec, _ := pvc["spec"].(map[string]any)
 			require.Equal(t, profile.StorageClass, spec["storageClassName"])
-
-			metadata, _ := gateway["metadata"].(map[string]any)
-			annotations, _ := metadata["annotations"].(map[string]any)
-			// The base annotation survives the additive merge.
-			require.Equal(t, "keep", annotations["codefly.dev/base"])
-			for key, value := range profile.GatewayAnnotations {
-				require.Equal(t, value, annotations[key], "annotation %q", key)
-			}
 		})
 	}
+}
+
+// The codefly stateful pattern is a StatefulSet that mounts a standalone PVC
+// resource (not inline volumeClaimTemplates); confirm that PVC is patched.
+func TestRenderCloudComponentPatchesPVCMountedByStatefulSet(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "base", "kustomization.yaml"), map[string]any{
+		"apiVersion": "kustomize.config.k8s.io/v1beta1",
+		"kind":       "Kustomization",
+		"resources":  []string{"sts.yaml", "pvc.yaml"},
+	})
+	writeFile(t, filepath.Join(root, "base", "pvc.yaml"), map[string]any{
+		"apiVersion": "v1",
+		"kind":       "PersistentVolumeClaim",
+		"metadata":   map[string]any{"name": "data"},
+		"spec": map[string]any{
+			"accessModes": []string{"ReadWriteOnce"},
+			"resources":   map[string]any{"requests": map[string]any{"storage": "1Gi"}},
+		},
+	})
+	writeFile(t, filepath.Join(root, "base", "sts.yaml"), map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "StatefulSet",
+		"metadata":   map[string]any{"name": "db"},
+		"spec": map[string]any{
+			"serviceName": "db",
+			"selector":    map[string]any{"matchLabels": map[string]any{"app": "db"}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": map[string]any{"app": "db"}},
+				"spec": map[string]any{
+					"containers": []any{map[string]any{"name": "db", "image": "postgres"}},
+					"volumes": []any{map[string]any{
+						"name":                  "data",
+						"persistentVolumeClaim": map[string]any{"claimName": "data"},
+					}},
+				},
+			},
+		},
+	})
+
+	relative, err := RenderCloudComponent(root, &resources.Environment{
+		Name:    "cloud",
+		Cluster: &resources.EnvironmentCluster{Kind: "eks"},
+	})
+	require.NoError(t, err)
+
+	manifests := buildOverlayWithComponent(t, root, relative)
+	pvc := manifestByKind(t, manifests, "PersistentVolumeClaim")
+	spec, _ := pvc["spec"].(map[string]any)
+	require.Equal(t, "gp3", spec["storageClassName"])
 }
 
 func TestRenderCloudComponentLeavesBaseStorageNeutral(t *testing.T) {
@@ -116,7 +163,7 @@ func writeCloudFixture(t *testing.T) string {
 	writeFile(t, filepath.Join(root, "base", "kustomization.yaml"), map[string]any{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",
 		"kind":       "Kustomization",
-		"resources":  []string{"pvc.yaml", "gateway.yaml"},
+		"resources":  []string{"pvc.yaml"},
 	})
 	writeFile(t, filepath.Join(root, "base", "pvc.yaml"), map[string]any{
 		"apiVersion": "v1",
@@ -127,16 +174,20 @@ func writeCloudFixture(t *testing.T) string {
 			"resources":   map[string]any{"requests": map[string]any{"storage": "1Gi"}},
 		},
 	})
-	writeFile(t, filepath.Join(root, "base", "gateway.yaml"), map[string]any{
-		"apiVersion": gatewayAPIGroup + "/v1",
-		"kind":       "Gateway",
-		"metadata": map[string]any{
-			"name":        "edge",
-			"annotations": map[string]any{"codefly.dev/base": "keep"},
-		},
-		"spec": map[string]any{"gatewayClassName": "mesh"},
-	})
 	return root
+}
+
+func buildOverlayWithComponent(t *testing.T, root, componentRelative string) []map[string]any {
+	t.Helper()
+	writeFile(t, filepath.Join(root, "overlay", "kustomization.yaml"), map[string]any{
+		"apiVersion": "kustomize.config.k8s.io/v1beta1",
+		"kind":       "Kustomization",
+		"resources":  []string{"../base"},
+		"components": []string{
+			filepath.ToSlash(filepath.Join("..", componentRelative)),
+		},
+	})
+	return buildKustomize(t, filepath.Join(root, "overlay"))
 }
 
 func writeFile(t *testing.T, path string, value any) {
