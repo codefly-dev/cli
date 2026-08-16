@@ -43,6 +43,74 @@ func TestAddExistingModuleReturnsError(t *testing.T) {
 	}
 }
 
+func TestAddModuleKeepsInventoryOnlyAgentScaffoldForFirstSync(t *testing.T) {
+	repository := t.TempDir()
+	runAddTestGit(t, repository, "init", "--quiet")
+	runAddTestGit(t, repository, "config", "user.email", "add-module@example.invalid")
+	runAddTestGit(t, repository, "config", "user.name", "Add Module Test")
+	codePath := "services/api/code/main.go"
+	canonicalCode := "package canonical\n"
+	writeAddTestFile(t, filepath.Join(repository, "module", codePath), canonicalCode)
+	writeAddTestFile(t, filepath.Join(repository, "module", "tools", "base-manifest.json"),
+		`{"files":{"`+codePath+`":"`+addTestDigest(canonicalCode)+`"}}`)
+	runAddTestGit(t, repository, "add", ".")
+	runAddTestGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")
+	runAddTestGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v1.0.0")
+
+	root := t.TempDir()
+	workspace := &resources.Workspace{Name: "test", Layout: resources.LayoutKindModules}
+	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	home := t.TempDir()
+	t.Setenv(resources.CodeflyHomeEnv, home)
+	agent := &resources.Agent{Kind: resources.ModuleAgent, Publisher: "codefly.dev", Name: "fixture", Version: "1.0.0"}
+	agentPath, err := agent.Path(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nset -eu\n" +
+		"mkdir -p \"$1/services/api\"\n" +
+		"printf '%s' 'kind: module\nname: billing\nservices:\n  - name: api\n' > \"$1/module.codefly.yaml\"\n" +
+		"printf '%s' 'name: api\nversion: 0.0.0\nagent:\n  kind: codefly:service\n  name: fixture\n  publisher: codefly.dev\n  version: 1.0.0\nendpoints: []\n' > \"$1/services/api/service.codefly.yaml\"\n"
+	writeAddTestFile(t, agentPath, script)
+	if err := os.Chmod(agentPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	remote := (&url.URL{Scheme: "file", Path: repository}).String()
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "url."+remote+".insteadOf")
+	t.Setenv("GIT_CONFIG_VALUE_0", "https://github.com/codefly-dev/module-fixture.git")
+	previousAgent, previousDefault := moduleAgentInput, moduleWithDefault
+	moduleAgentInput, moduleWithDefault = "fixture:1.0.0", true
+	defer func() {
+		moduleAgentInput, moduleWithDefault = previousAgent, previousDefault
+	}()
+
+	if err := addModule("billing"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := resources.FindWorkspaceUp(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.ExistsModule("billing") {
+		t.Fatal("inventory-only scaffold was not registered")
+	}
+	moduleRoot := filepath.Join(root, "modules", "billing")
+	if _, err := os.Stat(filepath.Join(moduleRoot, codePath)); !os.IsNotExist(err) {
+		t.Fatalf("agent unexpectedly materialized base code: %v", err)
+	}
+	lock, err := os.ReadFile(filepath.Join(moduleRoot, "tools", "base-source.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(lock), `"ref": "v1.0.0"`) {
+		t.Fatalf("source lock = %s", lock)
+	}
+}
+
 func TestAddModuleRollsBackScaffoldWhoseBytesDoNotMatchPinnedSource(t *testing.T) {
 	repository := t.TempDir()
 	runAddTestGit(t, repository, "init", "--quiet")
