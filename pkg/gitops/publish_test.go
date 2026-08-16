@@ -362,13 +362,18 @@ spec:
 	); err != nil {
 		t.Fatal(err)
 	}
-	application, err := os.ReadFile(filepath.Join(root, "bootstrap", "applications", "payments-store.yaml"))
+	applicationSet, err := os.ReadFile(filepath.Join(root, "bootstrap", "applicationset.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(application), "targetRevision: "+revision) ||
-		!strings.Contains(string(application), "path: environments/deployments/modules/payments/services/store/overlays/production") {
-		t.Fatalf("managed bootstrap Application = %s", application)
+	if !strings.Contains(string(applicationSet), "kind: ApplicationSet") ||
+		!strings.Contains(string(applicationSet), "targetRevision: "+revision) ||
+		!strings.Contains(string(applicationSet), "overlay: environments/deployments/modules/payments/services/store/overlays/production") ||
+		!strings.Contains(string(applicationSet), "tenant: in-cluster") {
+		t.Fatalf("managed bootstrap ApplicationSet = %s", applicationSet)
+	}
+	if _, err := os.Stat(filepath.Join(root, "bootstrap", "tenants")); !os.IsNotExist(err) {
+		t.Fatalf("driver must not seed a tenant registry into the wiped bootstrap tree: %v", err)
 	}
 }
 
@@ -510,29 +515,24 @@ EOF
 		!strings.Contains(project, "kind: ExternalSecret") {
 		t.Fatalf("generated AppProject authority = %s", project)
 	}
-	application := gitOutput(
+	applicationSet := gitOutput(
 		t,
 		"",
 		"--git-dir",
 		remote,
 		"show",
-		result.Commit+":"+result.Path+"/bootstrap/applications/payments-api.yaml",
+		result.Commit+":"+result.Path+"/bootstrap/applicationset.yaml",
 	)
-	if !strings.Contains(application, "targetRevision: "+result.SnapshotRevision) ||
-		!strings.Contains(application, "path: environments/deployments/modules/payments/services/api/overlays/production") {
-		t.Fatalf("generated Application = %s", application)
-	}
-	moduleApplication := gitOutput(
-		t,
-		"",
-		"--git-dir",
-		remote,
-		"show",
-		result.Commit+":"+result.Path+"/bootstrap/applications/payments-resources.yaml",
-	)
-	if !strings.Contains(moduleApplication, "targetRevision: "+result.SnapshotRevision) ||
-		!strings.Contains(moduleApplication, "path: environments/deployments/modules/payments/module/overlays/production") {
-		t.Fatalf("generated module Application = %s", moduleApplication)
+	if !strings.Contains(applicationSet, "kind: ApplicationSet") ||
+		!strings.Contains(applicationSet, "targetRevision: "+result.SnapshotRevision) ||
+		!strings.Contains(applicationSet, "overlay: environments/deployments/modules/payments/services/api/overlays/production") ||
+		!strings.Contains(applicationSet, "overlay: environments/deployments/modules/payments/module/overlays/production") ||
+		// The tenant registry the generator discovers lives outside the module path,
+		// so re-publishing never wipes or prunes an operator's tenant.
+		!strings.Contains(applicationSet, "tenants/production/*/cluster.json") ||
+		strings.Contains(applicationSet, "environments/deployments/modules/payments/tenants") ||
+		!strings.Contains(applicationSet, "tenant: in-cluster") {
+		t.Fatalf("generated ApplicationSet = %s", applicationSet)
 	}
 	bootstrap := gitOutput(
 		t,
@@ -543,8 +543,7 @@ EOF
 		result.Commit+":"+result.Path+"/bootstrap/kustomization.yaml",
 	)
 	if !strings.Contains(bootstrap, "project.yaml") ||
-		!strings.Contains(bootstrap, "applications/payments-resources.yaml") ||
-		!strings.Contains(bootstrap, "applications/payments-api.yaml") {
+		!strings.Contains(bootstrap, "applicationset.yaml") {
 		t.Fatalf("generated Argo bootstrap = %s", bootstrap)
 	}
 }

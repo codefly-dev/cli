@@ -19,6 +19,21 @@ import (
 const (
 	argoNamespace   = "argocd"
 	inClusterServer = "https://kubernetes.default.svc"
+	tenantsDir      = "tenants"
+	defaultTenant   = "in-cluster"
+	// A stamped Application is named "<tenant>-<component>". Kubernetes caps object
+	// names at 63 chars, so the tenant is truncated to a fixed budget in the
+	// template and the component is bounded to the remainder — the two together can
+	// never exceed the limit regardless of the runtime tenant folder name.
+	tenantNameBudget    = 20
+	componentNameBudget = 63 - tenantNameBudget - 1
+
+	argoAPIVersion      = "argoproj.io/v1alpha1"
+	kustomizeAPIVersion = "kustomize.config.k8s.io/v1beta1"
+
+	kindApplication    = "Application"
+	kindApplicationSet = "ApplicationSet"
+	kindKustomization  = "Kustomization"
 )
 
 type argoResourceAuthority struct {
@@ -46,31 +61,110 @@ type argoDestination struct {
 	Server    string `yaml:"server"`
 }
 
-type argoApplicationManifest struct {
-	APIVersion string `yaml:"apiVersion"`
-	Kind       string `yaml:"kind"`
-	Metadata   struct {
-		Name        string            `yaml:"name"`
-		Namespace   string            `yaml:"namespace"`
-		Annotations map[string]string `yaml:"annotations"`
-		Finalizers  []string          `yaml:"finalizers"`
-	} `yaml:"metadata"`
-	Spec struct {
-		Project string `yaml:"project"`
-		Source  struct {
-			RepoURL        string `yaml:"repoURL"`
-			TargetRevision string `yaml:"targetRevision"`
-			Path           string `yaml:"path"`
-		} `yaml:"source"`
-		Destination argoDestination `yaml:"destination"`
-		SyncPolicy  struct {
-			Automated struct {
-				Prune    bool `yaml:"prune"`
-				SelfHeal bool `yaml:"selfHeal"`
-			} `yaml:"automated"`
-			SyncOptions []string `yaml:"syncOptions"`
-		} `yaml:"syncPolicy"`
-	} `yaml:"spec"`
+// argoBootstrapComponent is one promotable layer (the module resources layer or
+// a single service) that the ApplicationSet template stamps onto every tenant.
+type argoBootstrapComponent struct {
+	Component string
+	Overlay   string
+	Wave      string
+}
+
+type argoMetadata struct {
+	Name      string `yaml:"name"`
+	Namespace string `yaml:"namespace"`
+}
+
+type argoApplicationSetManifest struct {
+	APIVersion string                 `yaml:"apiVersion"`
+	Kind       string                 `yaml:"kind"`
+	Metadata   argoMetadata           `yaml:"metadata"`
+	Spec       argoApplicationSetSpec `yaml:"spec"`
+}
+
+type argoApplicationSetSpec struct {
+	GoTemplate        bool               `yaml:"goTemplate"`
+	GoTemplateOptions []string           `yaml:"goTemplateOptions"`
+	Generators        []argoSetGenerator `yaml:"generators"`
+	Template          argoAppTemplate    `yaml:"template"`
+}
+
+type argoSetGenerator struct {
+	Matrix argoMatrixGenerator `yaml:"matrix"`
+}
+
+type argoMatrixGenerator struct {
+	Generators []argoLeafGenerator `yaml:"generators"`
+}
+
+type argoLeafGenerator struct {
+	Git  *argoGitGenerator  `yaml:"git,omitempty"`
+	List *argoListGenerator `yaml:"list,omitempty"`
+}
+
+type argoGitGenerator struct {
+	RepoURL  string             `yaml:"repoURL"`
+	Revision string             `yaml:"revision"`
+	Files    []argoGitFileEntry `yaml:"files"`
+}
+
+type argoGitFileEntry struct {
+	Path string `yaml:"path"`
+}
+
+type argoListGenerator struct {
+	Elements []any `yaml:"elements"`
+}
+
+type argoTenantElement struct {
+	Tenant string `yaml:"tenant"`
+	Server string `yaml:"server"`
+}
+
+type argoComponentElement struct {
+	Component string `yaml:"component"`
+	Overlay   string `yaml:"overlay"`
+	Wave      string `yaml:"wave"`
+}
+
+type argoAppTemplate struct {
+	Metadata argoAppTemplateMetadata `yaml:"metadata"`
+	Spec     argoAppTemplateSpec     `yaml:"spec"`
+}
+
+type argoAppTemplateMetadata struct {
+	Name        string            `yaml:"name"`
+	Namespace   string            `yaml:"namespace"`
+	Annotations map[string]string `yaml:"annotations"`
+	Finalizers  []string          `yaml:"finalizers"`
+}
+
+type argoAppTemplateSpec struct {
+	Project     string          `yaml:"project"`
+	Source      argoAppSource   `yaml:"source"`
+	Destination argoDestination `yaml:"destination"`
+	SyncPolicy  argoSyncPolicy  `yaml:"syncPolicy"`
+}
+
+type argoAppSource struct {
+	RepoURL        string `yaml:"repoURL"`
+	TargetRevision string `yaml:"targetRevision"`
+	Path           string `yaml:"path"`
+}
+
+type argoSyncPolicy struct {
+	Automated   argoSyncAutomated `yaml:"automated"`
+	SyncOptions []string          `yaml:"syncOptions"`
+}
+
+type argoSyncAutomated struct {
+	Prune    bool `yaml:"prune"`
+	SelfHeal bool `yaml:"selfHeal"`
+}
+
+type kustomizationManifest struct {
+	APIVersion string   `yaml:"apiVersion"`
+	Kind       string   `yaml:"kind"`
+	Resources  []string `yaml:"resources"`
 }
 
 func generateArgoBootstrap(
@@ -113,49 +207,46 @@ func generateArgoBootstrap(
 		return err
 	}
 
-	applications := filepath.Join(bootstrap, "applications")
-	resources := []string{"project.yaml"}
+	var components []argoBootstrapComponent
 	if inventory.ModulePath != "" {
-		name := argoObjectName(inventory.Module, "resources")
-		sourcePath := filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment))
-		if err := writeArgoApplication(
-			filepath.Join(applications, name+".yaml"),
-			name,
-			inventory.AppProject,
-			repository,
-			snapshotRevision,
-			sourcePath,
-			project.Spec.Destinations[0].Namespace,
-			"-1",
-		); err != nil {
-			return err
-		}
-		resources = append(resources, filepath.ToSlash(filepath.Join("applications", name+".yaml")))
+		components = append(components, argoBootstrapComponent{
+			Component: argoBoundedName(componentNameBudget, inventory.Module, "resources"),
+			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment)),
+			Wave:      "-1",
+		})
 	}
 	for _, unit := range inventory.Units {
 		if unit.Path == "" {
 			continue
 		}
-		name := argoObjectName(inventory.Module, unit.Name)
-		sourcePath := filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment))
-		if err := writeArgoApplication(
-			filepath.Join(applications, name+".yaml"),
-			name,
-			inventory.AppProject,
-			repository,
-			snapshotRevision,
-			sourcePath,
-			project.Spec.Destinations[0].Namespace,
-			"0",
-		); err != nil {
-			return err
-		}
-		resources = append(resources, filepath.ToSlash(filepath.Join("applications", name+".yaml")))
+		components = append(components, argoBootstrapComponent{
+			Component: argoBoundedName(componentNameBudget, inventory.Module, unit.Name),
+			Overlay:   filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment)),
+			Wave:      "0",
+		})
 	}
-	return writeArgoYAML(filepath.Join(bootstrap, "kustomization.yaml"), map[string]any{
-		"apiVersion": "kustomize.config.k8s.io/v1beta1",
-		"kind":       "Kustomization",
-		"resources":  resources,
+
+	// The tenant registry is operator-owned content that lives outside every
+	// module's publication path, so the driver never wipes it and `git add -A` on
+	// the module path never stages its deletion — adding or removing a tenant is a
+	// deliberate operator commit, never a side effect of re-publishing a service.
+	registry := filepath.ToSlash(filepath.Join(tenantsDir, environment))
+	if err := writeArgoApplicationSet(
+		filepath.Join(bootstrap, "applicationset.yaml"),
+		argoObjectName(inventory.Module, environment),
+		inventory.AppProject,
+		repository,
+		snapshotRevision,
+		registry,
+		project.Spec.Destinations[0].Namespace,
+		components,
+	); err != nil {
+		return err
+	}
+	return writeArgoYAML(filepath.Join(bootstrap, "kustomization.yaml"), kustomizationManifest{
+		APIVersion: kustomizeAPIVersion,
+		Kind:       kindKustomization,
+		Resources:  []string{"project.yaml", "applicationset.yaml"},
 	})
 }
 
@@ -255,30 +346,78 @@ func sortedAuthority(values map[string]argoResourceAuthority) []argoResourceAuth
 	return result
 }
 
-func writeArgoApplication(
+// writeArgoApplicationSet emits a single ApplicationSet whose matrix generators
+// fan the promotable components (module resources + services) out over every
+// tenant. A built-in in-cluster tenant needs no repository state; every operator
+// tenant is discovered from the registry (registry/<tenant>/cluster.json) on the
+// mainline, so registering a tenant is adding a folder. The generators track HEAD
+// to pick up new tenants, while every Application source is pinned to the
+// immutable snapshot revision. The component overlay is carried under its own key
+// so it can never collide with the reserved `path` parameter the git generator
+// injects for the matched registry file.
+func writeArgoApplicationSet(
 	path string,
 	name string,
 	project string,
 	repository string,
 	revision string,
-	sourcePath string,
+	registry string,
 	namespace string,
-	wave string,
+	components []argoBootstrapComponent,
 ) error {
-	application := argoApplicationManifest{APIVersion: "argoproj.io/v1alpha1", Kind: "Application"}
-	application.Metadata.Name = name
-	application.Metadata.Namespace = argoNamespace
-	application.Metadata.Annotations = map[string]string{"argocd.argoproj.io/sync-wave": wave}
-	application.Metadata.Finalizers = []string{"resources-finalizer.argocd.argoproj.io"}
-	application.Spec.Project = project
-	application.Spec.Source.RepoURL = repository
-	application.Spec.Source.TargetRevision = revision
-	application.Spec.Source.Path = sourcePath
-	application.Spec.Destination = argoDestination{Namespace: namespace, Server: inClusterServer}
-	application.Spec.SyncPolicy.Automated.Prune = true
-	application.Spec.SyncPolicy.Automated.SelfHeal = true
-	application.Spec.SyncPolicy.SyncOptions = []string{"CreateNamespace=false", "PruneLast=true"}
-	return writeArgoYAML(path, application)
+	elements := make([]any, 0, len(components))
+	for _, component := range components {
+		elements = append(elements, argoComponentElement(component))
+	}
+	componentGenerator := func() argoLeafGenerator {
+		return argoLeafGenerator{List: &argoListGenerator{Elements: elements}}
+	}
+	inClusterFanOut := argoSetGenerator{Matrix: argoMatrixGenerator{Generators: []argoLeafGenerator{
+		{List: &argoListGenerator{Elements: []any{
+			argoTenantElement{Tenant: defaultTenant, Server: inClusterServer},
+		}}},
+		componentGenerator(),
+	}}}
+	registryFanOut := argoSetGenerator{Matrix: argoMatrixGenerator{Generators: []argoLeafGenerator{
+		{Git: &argoGitGenerator{
+			RepoURL:  repository,
+			Revision: "HEAD",
+			Files:    []argoGitFileEntry{{Path: registry + "/*/cluster.json"}},
+		}},
+		componentGenerator(),
+	}}}
+	applicationSet := argoApplicationSetManifest{
+		APIVersion: argoAPIVersion,
+		Kind:       kindApplicationSet,
+		Metadata:   argoMetadata{Name: name, Namespace: argoNamespace},
+		Spec: argoApplicationSetSpec{
+			GoTemplate:        true,
+			GoTemplateOptions: []string{"missingkey=error"},
+			Generators:        []argoSetGenerator{inClusterFanOut, registryFanOut},
+			Template: argoAppTemplate{
+				Metadata: argoAppTemplateMetadata{
+					Name:        fmt.Sprintf("{{ .tenant | trunc %d }}-{{ .component }}", tenantNameBudget),
+					Namespace:   argoNamespace,
+					Annotations: map[string]string{"argocd.argoproj.io/sync-wave": "{{ .wave }}"},
+					Finalizers:  []string{"resources-finalizer.argocd.argoproj.io"},
+				},
+				Spec: argoAppTemplateSpec{
+					Project: project,
+					Source: argoAppSource{
+						RepoURL:        repository,
+						TargetRevision: revision,
+						Path:           "{{ .overlay }}",
+					},
+					Destination: argoDestination{Namespace: namespace, Server: "{{ .server }}"},
+					SyncPolicy: argoSyncPolicy{
+						Automated:   argoSyncAutomated{Prune: true, SelfHeal: true},
+						SyncOptions: []string{"CreateNamespace=false", "PruneLast=true"},
+					},
+				},
+			},
+		},
+	}
+	return writeArgoYAML(path, applicationSet)
 }
 
 func writeArgoYAML(path string, value any) error {
@@ -293,10 +432,17 @@ func writeArgoYAML(path string, value any) error {
 }
 
 func argoObjectName(parts ...string) string {
+	return argoBoundedName(63, parts...)
+}
+
+// argoBoundedName joins parts into a DNS-safe name of at most limit characters,
+// hash-truncating with a stable 10-hex suffix when the join is too long so the
+// result stays unique.
+func argoBoundedName(limit int, parts ...string) string {
 	name := strings.Join(parts, "-")
-	if len(name) <= 63 {
+	if len(name) <= limit {
 		return name
 	}
 	sum := sha256.Sum256([]byte(name))
-	return strings.TrimRight(name[:52], "-") + "-" + hex.EncodeToString(sum[:])[:10]
+	return strings.TrimRight(name[:limit-11], "-") + "-" + hex.EncodeToString(sum[:])[:10]
 }

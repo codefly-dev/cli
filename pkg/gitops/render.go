@@ -379,20 +379,28 @@ func validateTree(root string, opts *RenderOptions) error {
 		if !utf8.Valid(data) {
 			return fmt.Errorf("%s is not UTF-8", relative)
 		}
-		if placeholderPattern.Match(data) {
+		extension := strings.ToLower(filepath.Ext(relative))
+		manifestFile := extension == yamlExtension || extension == ymlExtension || extension == jsonExtension
+		var decoded []manifest
+		var customization *kustomization
+		if manifestFile {
+			decoded, customization, err = decodeYAML(relative, data)
+			if err != nil {
+				return err
+			}
+		}
+		// The CLI-owned bootstrap ApplicationSet template legitimately carries Argo
+		// Go-template expressions ({{.tenant}}, {{.server}}, …); every other file —
+		// including any ApplicationSet outside the bootstrap path — is held to the
+		// no-unresolved-placeholder rule.
+		if placeholderPattern.Match(data) && !isBootstrapApplicationSet(relative, decoded) {
 			return fmt.Errorf("%s contains an unresolved placeholder", relative)
 		}
-		extension := strings.ToLower(filepath.Ext(relative))
-		if extension != ".yaml" && extension != ".yml" && extension != ".json" {
-			return nil
-		}
-		decoded, customization, err := decodeYAML(relative, data)
-		if err != nil {
-			return err
-		}
-		manifests = append(manifests, decoded...)
-		if customization != nil {
-			kustomizations = append(kustomizations, *customization)
+		if manifestFile {
+			manifests = append(manifests, decoded...)
+			if customization != nil {
+				kustomizations = append(kustomizations, *customization)
+			}
 		}
 		return nil
 	})
@@ -755,6 +763,9 @@ func selectProjectContract(manifests []manifest, selected string) (*projectContr
 }
 
 func validateManifest(item manifest, contract *projectContract, promotable bool) error {
+	if item.group == argoAPIGroup && item.kind == kindApplicationSet && isBootstrapApplicationSetPath(item.path) {
+		return validateApplicationSet(item, contract)
+	}
 	if item.kind == "Secret" {
 		if promotable {
 			return fmt.Errorf("secret resources are not allowed")
@@ -794,6 +805,97 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 		allowCredentialReference = externalSecretCredentialReference
 	}
 	return inspectValueAllowingReferences(item.value, nil, promotable, allowCredentialReference)
+}
+
+// bootstrapApplicationSetPath is the single tree location the promotion driver
+// writes its ApplicationSet to; only that file earns the placeholder exemption.
+const (
+	bootstrapDir                = "bootstrap"
+	bootstrapApplicationSetPath = bootstrapDir + "/applicationset.yaml"
+)
+
+// isBootstrapApplicationSet reports whether a decoded file is the CLI-owned
+// bootstrap ApplicationSet — identified by both its path and its exclusive
+// ApplicationSet content — whose Argo Go-template body is exempt from the codefly
+// placeholder rule. An ApplicationSet anywhere else is not exempt.
+func isBootstrapApplicationSet(relative string, manifests []manifest) bool {
+	if filepath.ToSlash(relative) != bootstrapApplicationSetPath {
+		return false
+	}
+	if len(manifests) == 0 {
+		return false
+	}
+	for _, item := range manifests {
+		if item.group != argoAPIGroup || item.kind != kindApplicationSet {
+			return false
+		}
+	}
+	return true
+}
+
+// isBootstrapApplicationSetPath reports whether a decoded manifest originates in
+// the CLI-owned top-level bootstrap directory — either the raw ApplicationSet file
+// or the Kustomize-rendered bootstrap output. Manifest paths carry a "kustomize:"
+// prefix and/or a #document suffix that are trimmed before the directory check, so
+// an ApplicationSet rendered from any other directory (e.g. a service overlay) is
+// not treated as CLI-owned.
+func isBootstrapApplicationSetPath(path string) bool {
+	clean := strings.TrimPrefix(filepath.ToSlash(strings.SplitN(path, "#", 2)[0]), "kustomize:")
+	return filepath.ToSlash(filepath.Dir(clean)) == bootstrapDir
+}
+
+// validateApplicationSet holds the bootstrap ApplicationSet to the same promotion
+// authority as the Applications it replaces — its template project must match the
+// selected AppProject and every concrete authority value stays credential-free,
+// wildcard-free, and safely schemed — while tolerating the Argo Go-template
+// expressions its generators resolve at stamp time.
+func validateApplicationSet(item manifest, contract *projectContract) error {
+	spec, _ := item.value["spec"].(map[string]any)
+	template, _ := spec["template"].(map[string]any)
+	templateSpec, _ := template["spec"].(map[string]any)
+	project, _ := templateSpec["project"].(string)
+	if contract != nil && project != contract.name {
+		return fmt.Errorf("ApplicationSet template project %q differs from selected AppProject %q", project, contract.name)
+	}
+	return inspectTemplatedValue(item.value, nil)
+}
+
+// inspectTemplatedValue applies the authority and credential guards of
+// inspectValueAllowingReferences while skipping strings that carry an Argo
+// Go-template expression, whose value is resolved per tenant outside the snapshot.
+func inspectTemplatedValue(value any, path []string) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			next := extendPath(path, key)
+			normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(key))
+			if isCredentialKey(normalized) && scalarHasValue(child) {
+				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
+			}
+			if err := inspectTemplatedValue(child, next); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for index, child := range typed {
+			if err := inspectTemplatedValue(child, extendPath(path, fmt.Sprintf("[%d]", index))); err != nil {
+				return err
+			}
+		}
+	case string:
+		if strings.Contains(typed, "{{") {
+			return nil
+		}
+		if isURLBearingPath(path) {
+			if err := validateURLValue(strings.Join(path, "."), typed); err != nil {
+				return err
+			}
+		}
+		if isAuthorityPath(path) && strings.Contains(typed, "*") {
+			return fmt.Errorf("%s contains wildcard authority", strings.Join(path, "."))
+		}
+	}
+	return nil
 }
 
 func isBuiltInAPIGroup(group string) bool {
