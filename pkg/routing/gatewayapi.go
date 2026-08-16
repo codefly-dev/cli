@@ -1,9 +1,6 @@
 package routing
 
-import (
-	"regexp"
-	"strings"
-)
+import "regexp"
 
 // gatewayAPIRenderer emits Kubernetes Gateway API routes (the current standard,
 // implemented by Istio when gatewayClassName is istio) plus, optionally, an
@@ -65,17 +62,7 @@ type httpRouteSpec struct {
 }
 
 type httpRouteRule struct {
-	Matches     []httpRouteMatch `yaml:"matches,omitempty"`
-	BackendRefs []backendRef     `yaml:"backendRefs"`
-}
-
-type httpRouteMatch struct {
-	Path httpPathMatch `yaml:"path"`
-}
-
-type httpPathMatch struct {
-	Type  string `yaml:"type"`
-	Value string `yaml:"value"`
+	BackendRefs []backendRef `yaml:"backendRefs"`
 }
 
 func (r gatewayAPIRenderer) Render(exposure Exposure) (string, error) {
@@ -103,8 +90,8 @@ func (r gatewayAPIRenderer) Render(exposure Exposure) (string, error) {
 				Metadata:   metadata,
 				Spec: grpcRouteSpec{
 					ParentRefs: []parentRef{parent},
-					Hostnames:  exposure.Hosts,
-					Rules:      []grpcRouteRule{{Matches: grpcMatches(exposure.Prefix), BackendRefs: []backendRef{backend}}},
+					Hostnames:  endpoint.Hosts,
+					Rules:      []grpcRouteRule{{Matches: grpcMatches(endpoint.Prefix), BackendRefs: []backendRef{backend}}},
 				},
 			})
 		} else {
@@ -114,8 +101,8 @@ func (r gatewayAPIRenderer) Render(exposure Exposure) (string, error) {
 				Metadata:   metadata,
 				Spec: httpRouteSpec{
 					ParentRefs: []parentRef{parent},
-					Hostnames:  exposure.Hosts,
-					Rules:      []httpRouteRule{{Matches: httpMatches(exposure.Prefix), BackendRefs: []backendRef{backend}}},
+					Hostnames:  endpoint.Hosts,
+					Rules:      []httpRouteRule{{BackendRefs: []backendRef{backend}}},
 				},
 			})
 		}
@@ -137,24 +124,16 @@ func (r gatewayAPIRenderer) Render(exposure Exposure) (string, error) {
 }
 
 // grpcMatches scopes a GRPCRoute to a proto package: the gRPC service portion
-// of the path (/<package>.<Service>/<Method>) must fall under the package. An
-// empty prefix means no scoping.
+// of the path (/<package>.<Service>/<Method>) must fall under the package. The
+// regex is fully anchored so the match cannot be satisfied by an unrelated
+// package that merely contains this one as a substring. An empty prefix means
+// no scoping.
 func grpcMatches(prefix string) []grpcRouteMatch {
 	if prefix == "" {
 		return nil
 	}
 	return []grpcRouteMatch{{Method: grpcMethodMatch{
 		Type:    "RegularExpression",
-		Service: regexp.QuoteMeta(prefix) + `\..*`,
-	}}}
-}
-
-func httpMatches(prefix string) []httpRouteMatch {
-	if prefix == "" {
-		return nil
-	}
-	return []httpRouteMatch{{Path: httpPathMatch{
-		Type:  "PathPrefix",
-		Value: "/" + strings.TrimPrefix(prefix, "/"),
+		Service: `^` + regexp.QuoteMeta(prefix) + `\..*$`,
 	}}}
 }

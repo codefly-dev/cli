@@ -42,14 +42,49 @@ func TestRenderValidatesExposure(t *testing.T) {
 	}
 }
 
+// An HTTP endpoint with no hosts would produce a route that matches every
+// hostname on the shared gateway; validation must refuse it rather than emit a
+// silent traffic hijack.
+func TestRenderRefusesCatchAllHTTPRoute(t *testing.T) {
+	exposure := validExposure()
+	exposure.Endpoints = []ExposedEndpoint{{Name: "http", API: "http", Port: 8080}}
+	for _, backend := range Backends() {
+		_, err := Render(backend, exposure)
+		if err == nil || !strings.Contains(err.Error(), "catch-all") {
+			t.Fatalf("%s: err = %v, want catch-all refusal", backend, err)
+		}
+	}
+}
+
+// A hostless gRPC endpoint is acceptable only when a proto-package prefix scopes
+// it; without the prefix it is a catch-all and must be refused.
+func TestRenderHostlessGRPCRequiresPrefix(t *testing.T) {
+	exposure := validExposure()
+	exposure.Endpoints = []ExposedEndpoint{{Name: "grpc", API: "grpc", Port: 9090}}
+	if _, err := Render("gateway-api", exposure); err == nil || !strings.Contains(err.Error(), "catch-all") {
+		t.Fatalf("hostless gRPC without prefix: err = %v", err)
+	}
+	exposure.Endpoints[0].Prefix = "acme.accounts.v1"
+	if _, err := Render("gateway-api", exposure); err != nil {
+		t.Fatalf("hostless gRPC with prefix should render: %v", err)
+	}
+}
+
+func TestRenderRejectsInvalidObjectName(t *testing.T) {
+	exposure := validExposure()
+	exposure.Endpoints = []ExposedEndpoint{{Name: "Admin_API", API: "grpc", Port: 9090, Hosts: []string{"api.acme.dev"}}}
+	_, err := Render("gateway-api", exposure)
+	if err == nil || !strings.Contains(err.Error(), "not a valid Kubernetes name") {
+		t.Fatalf("err = %v, want invalid-name refusal", err)
+	}
+}
+
 func TestGatewayAPIGRPCRoute(t *testing.T) {
 	exposure := Exposure{
 		Service:   "accounts",
 		Namespace: "acme",
-		Hosts:     []string{"api.acme.dev"},
-		Prefix:    "acme.accounts.v1",
 		Gateway:   GatewayRef{Name: "cf-gw"},
-		Endpoints: []ExposedEndpoint{{Name: "grpc", API: "grpc", Port: 9090}},
+		Endpoints: []ExposedEndpoint{{Name: "grpc", API: "grpc", Port: 9090, Hosts: []string{"api.acme.dev"}, Prefix: "acme.accounts.v1"}},
 	}
 	const want = `apiVersion: gateway.networking.k8s.io/v1
 kind: GRPCRoute
@@ -68,7 +103,7 @@ spec:
         - matches:
             - method:
                 type: RegularExpression
-                service: acme\.accounts\.v1\..*
+                service: ^acme\.accounts\.v1\..*$
           backendRefs:
             - name: accounts
               port: 9090
@@ -76,14 +111,14 @@ spec:
 	assertRender(t, "gateway-api", exposure, want)
 }
 
-// A public HTTP endpoint with no prefix and no ingress hosts routes the whole
-// gateway to the backend: no hostnames, no path match.
-func TestGatewayAPIHTTPRouteNoPrefixNoHosts(t *testing.T) {
+// A public HTTP endpoint is host-scoped: it routes its hosts to the backend
+// with no path match. The proto-package prefix is not applied to HTTP.
+func TestGatewayAPIHTTPRouteIsHostScoped(t *testing.T) {
 	exposure := Exposure{
 		Service:   "web",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw"},
-		Endpoints: []ExposedEndpoint{{Name: "http", API: "http", Port: 8080}},
+		Endpoints: []ExposedEndpoint{{Name: "http", API: "http", Port: 8080, Hosts: []string{"web.acme.dev"}, Prefix: "acme.accounts.v1"}},
 	}
 	const want = `apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -96,6 +131,8 @@ metadata:
 spec:
     parentRefs:
         - name: cf-gw
+    hostnames:
+        - web.acme.dev
     rules:
         - backendRefs:
             - name: web
@@ -110,7 +147,7 @@ func TestGatewayAPICrossNamespaceParentRef(t *testing.T) {
 		Service:   "web",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw", Namespace: "gateway-system"},
-		Endpoints: []ExposedEndpoint{{Name: "http", API: "http", Port: 8080}},
+		Endpoints: []ExposedEndpoint{{Name: "http", API: "http", Port: 8080, Hosts: []string{"web.acme.dev"}}},
 	}
 	out, err := Render("gateway-api", exposure)
 	if err != nil {
@@ -121,20 +158,42 @@ func TestGatewayAPICrossNamespaceParentRef(t *testing.T) {
 	}
 }
 
+// Each endpoint routes to its own port and object; a service with two distinct
+// APIs must not collapse onto the first route.
+func TestGatewayAPIMultipleEndpointsKeepDistinctPorts(t *testing.T) {
+	exposure := Exposure{
+		Service:   "accounts",
+		Namespace: "acme",
+		Gateway:   GatewayRef{Name: "cf-gw"},
+		Endpoints: []ExposedEndpoint{
+			{Name: "grpc", API: "grpc", Port: 9090, Hosts: []string{"api.acme.dev"}, Prefix: "acme.accounts.v1"},
+			{Name: "http", API: "http", Port: 7420, Hosts: []string{"api.acme.dev"}},
+		},
+	}
+	out, err := Render("gateway-api", exposure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "port: 9090") || !strings.Contains(out, "port: 7420") {
+		t.Fatalf("expected both distinct ports:\n%s", out)
+	}
+	if strings.Count(out, "kind: GRPCRoute") != 1 || strings.Count(out, "kind: HTTPRoute") != 1 {
+		t.Fatalf("expected one route object per endpoint:\n%s", out)
+	}
+}
+
 func TestIstioVirtualServiceWithMTLS(t *testing.T) {
 	exposure := Exposure{
 		Service:    "accounts",
 		Namespace:  "acme",
-		Hosts:      []string{"api.acme.dev"},
-		Prefix:     "acme.accounts.v1",
 		Gateway:    GatewayRef{Name: "cf-gw"},
-		Endpoints:  []ExposedEndpoint{{Name: "grpc", API: "grpc", Port: 9090}},
+		Endpoints:  []ExposedEndpoint{{Name: "grpc", API: "grpc", Port: 9090, Hosts: []string{"api.acme.dev"}, Prefix: "acme.accounts.v1"}},
 		EnableMTLS: true,
 	}
 	const want = `apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
-    name: accounts
+    name: accounts-grpc
     namespace: acme
     labels:
         app.kubernetes.io/managed-by: codefly
@@ -172,21 +231,28 @@ spec:
 	assertRender(t, "istio", exposure, want)
 }
 
-// With no ingress hosts the Istio backend falls back to a wildcard host, which
-// the VirtualService schema requires.
-func TestIstioVirtualServiceWildcardHost(t *testing.T) {
+// The legacy Istio backend must emit one VirtualService per endpoint so that
+// endpoints beyond the first stay routable (Istio stops at the first matching
+// http rule within a VirtualService).
+func TestIstioEmitsOneVirtualServicePerEndpoint(t *testing.T) {
 	exposure := Exposure{
-		Service:   "web",
+		Service:   "accounts",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw"},
-		Endpoints: []ExposedEndpoint{{Name: "http", API: "http", Port: 8080}},
+		Endpoints: []ExposedEndpoint{
+			{Name: "grpc", API: "grpc", Port: 9090, Hosts: []string{"api.acme.dev"}, Prefix: "acme.accounts.v1"},
+			{Name: "rest", API: "rest", Port: 8080, Hosts: []string{"rest.acme.dev"}},
+		},
 	}
 	out, err := Render("istio", exposure)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "hosts:\n        - '*'") {
-		t.Fatalf("expected wildcard host:\n%s", out)
+	if strings.Count(out, "kind: VirtualService") != 2 {
+		t.Fatalf("expected one VirtualService per endpoint:\n%s", out)
+	}
+	if !strings.Contains(out, "number: 9090") || !strings.Contains(out, "number: 8080") {
+		t.Fatalf("expected both endpoint ports routed:\n%s", out)
 	}
 }
 
@@ -195,7 +261,7 @@ func validExposure() Exposure {
 		Service:   "accounts",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw"},
-		Endpoints: []ExposedEndpoint{{Name: "grpc", API: "grpc", Port: 9090}},
+		Endpoints: []ExposedEndpoint{{Name: "grpc", API: "grpc", Port: 9090, Hosts: []string{"api.acme.dev"}, Prefix: "acme.accounts.v1"}},
 	}
 }
 

@@ -13,22 +13,35 @@ package routing
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/codefly-dev/core/standards"
 )
 
-// ExposedEndpoint is one public endpoint to route to a backend.
+// ExposedEndpoint is one public endpoint to route to a backend. Port, Hosts,
+// and Prefix are per-endpoint: the in-cluster port is endpoint-specific (a
+// named sibling does not share the canonical port), ingress binds hosts to a
+// specific endpoint, and only a gRPC endpoint carries a proto-package prefix.
 type ExposedEndpoint struct {
-	// Name is the endpoint name (used only to name generated objects).
+	// Name is the endpoint name (used to name generated objects).
 	Name string
 	// API is the codefly API kind (standards.GRPC/REST/HTTP/CONNECT).
 	API string
-	// Port is the in-cluster backend Service port. It is the canonical
-	// per-API port the network layer binds (standards.Port), so callers do
-	// not have to guess it.
+	// Port is the in-cluster backend Service port for THIS endpoint. It must
+	// be resolved with the same canonical-vs-named rule the network layer
+	// uses (see cmd/expose inClusterPorts / core network.GenerateNetworkMappings):
+	// only the canonical owner of a per-API port keeps standards.Port, so this
+	// is not simply standards.Port(API).
 	Port uint16
+	// Hosts are the external hostnames this endpoint answers for, taken from
+	// the ingress routes that name this endpoint (or a service-wide route).
+	Hosts []string
+	// Prefix is the gRPC proto package this endpoint serves, matched as
+	// "<prefix>.*". It scopes a GRPCRoute to the package and is ignored for
+	// HTTP endpoints (a proto package is not an HTTP path).
+	Prefix string
 }
 
 // GRPC reports whether the endpoint speaks gRPC (vs an HTTP transport).
@@ -43,14 +56,6 @@ type Exposure struct {
 	Service string
 	// Namespace is the environment namespace the service is deployed into.
 	Namespace string
-	// Hosts are the external hostnames the routes answer for, taken from the
-	// environment ingress intent (or overridden explicitly). Empty means the
-	// routes attach to every hostname the gateway listens on.
-	Hosts []string
-	// Prefix is the path-prefix contract for this surface: the proto package
-	// for gRPC (matched as "<prefix>.*") and the URL path prefix for HTTP.
-	// Empty means no prefix scoping (route the whole host to this backend).
-	Prefix string
 	// Gateway is the shared gateway the routes attach to.
 	Gateway GatewayRef
 	// Endpoints are the public endpoints to route.
@@ -101,6 +106,9 @@ func Render(backend string, exposure Exposure) (string, error) {
 	return renderer.Render(exposure)
 }
 
+// dns1123Subdomain matches a valid Kubernetes object name (RFC 1123 subdomain).
+var dns1123Subdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+
 func (e Exposure) validate() error {
 	if e.Service == "" {
 		return fmt.Errorf("exposure requires a service name")
@@ -113,6 +121,23 @@ func (e Exposure) validate() error {
 	}
 	if len(e.Endpoints) == 0 {
 		return fmt.Errorf("service %q has no public endpoints to expose", e.Service)
+	}
+	for _, endpoint := range e.Endpoints {
+		name := e.Service + "-" + endpoint.Name
+		if len(name) > 253 || !dns1123Subdomain.MatchString(name) {
+			return fmt.Errorf("generated route name %q is not a valid Kubernetes name (service %q, endpoint %q)", name, e.Service, endpoint.Name)
+		}
+		// A route with no hosts and no path scope matches every hostname on
+		// the shared gateway — a silent traffic hijack. A gRPC endpoint scoped
+		// to a proto package is method-bound, so hostless is acceptable there;
+		// anything else must name at least one host.
+		if len(endpoint.Hosts) == 0 && !(endpoint.GRPC() && endpoint.Prefix != "") {
+			hint := "declare ingress hosts or pass --host"
+			if endpoint.GRPC() {
+				hint = "declare ingress hosts, pass --host, or pass --prefix to scope by proto package"
+			}
+			return fmt.Errorf("endpoint %q of service %q has no ingress hosts and no path scope; refusing to emit a catch-all route (%s)", endpoint.Name, e.Service, hint)
+		}
 	}
 	return nil
 }

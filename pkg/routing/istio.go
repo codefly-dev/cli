@@ -1,11 +1,15 @@
 package routing
 
-import "strings"
-
 // istioRenderer emits the legacy networking.istio.io VirtualService envelope
 // (the saas-starter shape) plus, optionally, the same STRICT-mTLS policy. It
 // exists so a workspace already standardized on VirtualService keeps working;
 // new solutions should prefer the gateway-api backend.
+//
+// Each endpoint becomes its own VirtualService: Istio evaluates the http rules
+// within a VirtualService top to bottom and stops at the first match, so
+// collapsing several endpoints into one object would leave every rule after
+// the first unreachable. Separate objects (with their own hosts and, for gRPC,
+// a package uri prefix) keep every endpoint routable.
 type istioRenderer struct{}
 
 func (istioRenderer) Name() string { return "istio" }
@@ -50,41 +54,41 @@ type portNumber struct {
 }
 
 func (r istioRenderer) Render(exposure Exposure) (string, error) {
-	hosts := exposure.Hosts
-	if len(hosts) == 0 {
-		hosts = []string{"*"}
-	}
-
-	routes := make([]httpRouteEntry, 0, len(exposure.Endpoints))
+	var documents []string
 	for _, endpoint := range exposure.Endpoints {
-		routes = append(routes, httpRouteEntry{
-			Match: uriMatches(exposure.Prefix),
-			Route: []routeDestination{{Destination: destination{
-				Host: exposure.backendHost(),
-				Port: portNumber{Number: endpoint.Port},
-			}}},
+		hosts := endpoint.Hosts
+		if len(hosts) == 0 {
+			// validate() only permits hostless endpoints when they are a
+			// package-scoped gRPC route; a VirtualService still requires a
+			// hosts entry, so bind the package match to every host.
+			hosts = []string{"*"}
+		}
+		document, err := marshalDocument(virtualService{
+			APIVersion: "networking.istio.io/v1beta1",
+			Kind:       "VirtualService",
+			Metadata: objectMeta{
+				Name:      exposure.Service + "-" + endpoint.Name,
+				Namespace: exposure.Namespace,
+				Labels:    managedLabels(exposure.Service),
+			},
+			Spec: virtualServiceSpec{
+				Hosts:    hosts,
+				Gateways: []string{exposure.Gateway.istioReference(exposure.Namespace)},
+				HTTP: []httpRouteEntry{{
+					Match: uriMatches(endpoint.Prefix),
+					Route: []routeDestination{{Destination: destination{
+						Host: exposure.backendHost(),
+						Port: portNumber{Number: endpoint.Port},
+					}}},
+				}},
+			},
 		})
+		if err != nil {
+			return "", err
+		}
+		documents = append(documents, document)
 	}
 
-	document, err := marshalDocument(virtualService{
-		APIVersion: "networking.istio.io/v1beta1",
-		Kind:       "VirtualService",
-		Metadata: objectMeta{
-			Name:      exposure.Service,
-			Namespace: exposure.Namespace,
-			Labels:    managedLabels(exposure.Service),
-		},
-		Spec: virtualServiceSpec{
-			Hosts:    hosts,
-			Gateways: []string{exposure.Gateway.istioReference(exposure.Namespace)},
-			HTTP:     routes,
-		},
-	})
-	if err != nil {
-		return "", err
-	}
-
-	documents := []string{document}
 	if exposure.EnableMTLS {
 		peer, err := renderPeerAuthentication(exposure)
 		if err != nil {
@@ -95,11 +99,12 @@ func (r istioRenderer) Render(exposure Exposure) (string, error) {
 	return joinDocuments(documents), nil
 }
 
-// uriMatches scopes a route to the path prefix contract. gRPC method paths
-// (/<package>.<Service>/<Method>) and HTTP paths both fall under the prefix.
+// uriMatches scopes a gRPC route to its proto package
+// (/<package>.<Service>/<Method>). HTTP endpoints carry no proto package, so
+// they are host-scoped and match every path.
 func uriMatches(prefix string) []uriMatch {
 	if prefix == "" {
 		return nil
 	}
-	return []uriMatch{{URI: prefixMatch{Prefix: "/" + strings.TrimPrefix(prefix, "/")}}}
+	return []uriMatch{{URI: prefixMatch{Prefix: "/" + prefix}}}
 }
