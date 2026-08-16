@@ -17,6 +17,11 @@ const (
 // own render subdirectory in unitDirectory.
 const UnitKindService = "service"
 
+// moduleBundleDir is the render subdirectory holding the module-level bundle. It
+// sits beside the per-unit directories but is not itself a unit, so it is not
+// derived from unitDirectory.
+const moduleBundleDir = "module"
+
 // unitDirectory maps an artifact kind to the render subdirectory that holds its
 // units, reporting whether the kind is known. Generalizing the render path
 // beyond services is a matter of adding a case here rather than threading a new

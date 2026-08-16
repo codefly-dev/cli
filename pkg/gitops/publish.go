@@ -732,7 +732,7 @@ func serviceSnapshotBranch(module, environment string) string {
 }
 
 func removePublicationRemainder(target string, unitDirs []string) error {
-	keep := map[string]struct{}{"module": {}}
+	keep := map[string]struct{}{moduleBundleDir: {}}
 	for _, directory := range unitDirs {
 		keep[directory] = struct{}{}
 	}

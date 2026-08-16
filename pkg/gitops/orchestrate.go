@@ -123,11 +123,11 @@ func renderModuleTree(
 			return options.Units[i].Name < options.Units[j].Name
 		})
 		if module.Agent != nil {
-			modulePath := filepath.Join(stage, "module")
+			modulePath := filepath.Join(stage, moduleBundleDir)
 			if err := renderModuleBundle(ctx, workspace, module, env, modulePath, options.Units); err != nil {
 				return err
 			}
-			options.ModulePath = "module"
+			options.ModulePath = moduleBundleDir
 			return nil
 		}
 		if !includeBootstrap {
@@ -226,7 +226,8 @@ func copyEnvironmentBootstrap(source, environment, destination string) error {
 }
 
 func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
-	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, "services", module.Name, service.Name)
+	serviceDir, _ := unitDirectory(UnitKindService)
+	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, serviceDir, module.Name, service.Name)
 	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination,
 		Module:      module.Name,
@@ -251,8 +252,9 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 }
 
 func serviceRenderDestinations(root string) func(*resources.Module, *resources.Service) string {
+	serviceDir, _ := unitDirectory(UnitKindService)
 	return func(module *resources.Module, service *resources.Service) string {
-		return filepath.Join(root, "modules", module.Name, "services", service.Name)
+		return filepath.Join(root, "modules", module.Name, serviceDir, service.Name)
 	}
 }
 

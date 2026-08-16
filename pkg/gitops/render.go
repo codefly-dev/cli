@@ -177,7 +177,7 @@ func ValidateServiceSnapshot(root string) error {
 	if err := validateInventoryUnits(&inventory); err != nil {
 		return err
 	}
-	allowed := map[string]struct{}{InventoryFilename: {}, "module": {}}
+	allowed := map[string]struct{}{InventoryFilename: {}, moduleBundleDir: {}}
 	rendered := renderedUnits(&inventory)
 	for _, unit := range rendered {
 		directory, ok := unitDirectory(unit.Kind)

@@ -618,7 +618,7 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	for _, directory := range unitDirs {
 		snapshotPaths = append(snapshotPaths, filepath.ToSlash(filepath.Join(targetPath, directory)))
 	}
-	snapshotPaths = append(snapshotPaths, filepath.ToSlash(filepath.Join(targetPath, "module")))
+	snapshotPaths = append(snapshotPaths, filepath.ToSlash(filepath.Join(targetPath, moduleBundleDir)))
 	args := append([]string{"diff", "--name-only", request.Revision, request.Commit, "--"}, snapshotPaths...)
 	changedServices, err := gitCommand(ctx, repo, args...)
 	if err != nil {
