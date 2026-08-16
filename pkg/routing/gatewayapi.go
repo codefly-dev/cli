@@ -65,7 +65,7 @@ type httpRouteRule struct {
 	BackendRefs []backendRef `yaml:"backendRefs"`
 }
 
-func (r gatewayAPIRenderer) Render(exposure Exposure) (string, error) {
+func (r gatewayAPIRenderer) Render(exposure *Exposure) (string, error) {
 	parent := parentRef{Name: exposure.Gateway.Name}
 	if exposure.Gateway.Namespace != "" && exposure.Gateway.Namespace != exposure.Namespace {
 		parent.Namespace = exposure.Gateway.Namespace

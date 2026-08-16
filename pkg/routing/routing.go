@@ -45,7 +45,7 @@ type ExposedEndpoint struct {
 }
 
 // GRPC reports whether the endpoint speaks gRPC (vs an HTTP transport).
-func (e ExposedEndpoint) GRPC() bool {
+func (e *ExposedEndpoint) GRPC() bool {
 	return !standards.IsHTTPBasedAPI(e.API)
 }
 
@@ -76,7 +76,7 @@ type GatewayRef struct {
 type Renderer interface {
 	// Name is the stable identifier selected with --routing.
 	Name() string
-	Render(Exposure) (string, error)
+	Render(*Exposure) (string, error)
 }
 
 var renderers = map[string]Renderer{
@@ -95,7 +95,7 @@ func Backends() []string {
 }
 
 // Render selects a backend by name and renders the exposure.
-func Render(backend string, exposure Exposure) (string, error) {
+func Render(backend string, exposure *Exposure) (string, error) {
 	renderer, ok := renderers[backend]
 	if !ok {
 		return "", fmt.Errorf("unknown routing backend %q (valid: %s)", backend, strings.Join(Backends(), ", "))
@@ -109,7 +109,7 @@ func Render(backend string, exposure Exposure) (string, error) {
 // dns1123Subdomain matches a valid Kubernetes object name (RFC 1123 subdomain).
 var dns1123Subdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
 
-func (e Exposure) validate() error {
+func (e *Exposure) validate() error {
 	if e.Service == "" {
 		return fmt.Errorf("exposure requires a service name")
 	}
@@ -131,7 +131,7 @@ func (e Exposure) validate() error {
 		// the shared gateway — a silent traffic hijack. A gRPC endpoint scoped
 		// to a proto package is method-bound, so hostless is acceptable there;
 		// anything else must name at least one host.
-		if len(endpoint.Hosts) == 0 && !(endpoint.GRPC() && endpoint.Prefix != "") {
+		if len(endpoint.Hosts) == 0 && (!endpoint.GRPC() || endpoint.Prefix == "") {
 			hint := "declare ingress hosts or pass --host"
 			if endpoint.GRPC() {
 				hint = "declare ingress hosts, pass --host, or pass --prefix to scope by proto package"
@@ -150,7 +150,7 @@ func (g GatewayRef) istioReference(routeNamespace string) string {
 	return g.Name
 }
 
-func (e Exposure) backendHost() string {
+func (e *Exposure) backendHost() string {
 	return fmt.Sprintf("%s.%s.svc.cluster.local", e.Service, e.Namespace)
 }
 

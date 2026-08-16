@@ -53,7 +53,7 @@ type portNumber struct {
 	Number uint16 `yaml:"number"`
 }
 
-func (r istioRenderer) Render(exposure Exposure) (string, error) {
+func (r istioRenderer) Render(exposure *Exposure) (string, error) {
 	var documents []string
 	for _, endpoint := range exposure.Endpoints {
 		hosts := endpoint.Hosts

@@ -68,7 +68,7 @@ Examples:
 			return fmt.Errorf("codefly expose service: environment %q declares no namespace", env.Name)
 		}
 
-		exposure := routing.Exposure{
+		exposure := &routing.Exposure{
 			Service:    service.Name,
 			Namespace:  env.Namespace,
 			Gateway:    routing.GatewayRef{Name: gatewayName, Namespace: gatewayNamespace},
@@ -89,7 +89,7 @@ Examples:
 			return fmt.Errorf("codefly expose service: %w", err)
 		}
 		file := filepath.Join(output, fmt.Sprintf("%s.%s.routing.yaml", service.Name, env.Name))
-		if err := os.WriteFile(file, []byte(manifests), 0o644); err != nil {
+		if err := os.WriteFile(file, []byte(manifests), 0o600); err != nil {
 			return fmt.Errorf("codefly expose service: %w", err)
 		}
 		fmt.Fprintln(os.Stderr, file)

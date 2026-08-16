@@ -54,7 +54,7 @@ type mtlsSetting struct {
 	Mode string `yaml:"mode"`
 }
 
-func renderPeerAuthentication(exposure Exposure) (string, error) {
+func renderPeerAuthentication(exposure *Exposure) (string, error) {
 	object := peerAuthentication{
 		APIVersion: "security.istio.io/v1",
 		Kind:       "PeerAuthentication",

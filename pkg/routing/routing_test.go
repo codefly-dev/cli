@@ -34,7 +34,7 @@ func TestRenderValidatesExposure(t *testing.T) {
 	}
 	for want, mutate := range cases {
 		exposure := validExposure()
-		mutate(&exposure)
+		mutate(exposure)
 		_, err := Render("gateway-api", exposure)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("mutation %q: err = %v", want, err)
@@ -80,7 +80,7 @@ func TestRenderRejectsInvalidObjectName(t *testing.T) {
 }
 
 func TestGatewayAPIGRPCRoute(t *testing.T) {
-	exposure := Exposure{
+	exposure := &Exposure{
 		Service:   "accounts",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw"},
@@ -114,7 +114,7 @@ spec:
 // A public HTTP endpoint is host-scoped: it routes its hosts to the backend
 // with no path match. The proto-package prefix is not applied to HTTP.
 func TestGatewayAPIHTTPRouteIsHostScoped(t *testing.T) {
-	exposure := Exposure{
+	exposure := &Exposure{
 		Service:   "web",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw"},
@@ -143,7 +143,7 @@ spec:
 
 // A gateway in another namespace produces a cross-namespace parentRef.
 func TestGatewayAPICrossNamespaceParentRef(t *testing.T) {
-	exposure := Exposure{
+	exposure := &Exposure{
 		Service:   "web",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw", Namespace: "gateway-system"},
@@ -161,7 +161,7 @@ func TestGatewayAPICrossNamespaceParentRef(t *testing.T) {
 // Each endpoint routes to its own port and object; a service with two distinct
 // APIs must not collapse onto the first route.
 func TestGatewayAPIMultipleEndpointsKeepDistinctPorts(t *testing.T) {
-	exposure := Exposure{
+	exposure := &Exposure{
 		Service:   "accounts",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw"},
@@ -183,7 +183,7 @@ func TestGatewayAPIMultipleEndpointsKeepDistinctPorts(t *testing.T) {
 }
 
 func TestIstioVirtualServiceWithMTLS(t *testing.T) {
-	exposure := Exposure{
+	exposure := &Exposure{
 		Service:    "accounts",
 		Namespace:  "acme",
 		Gateway:    GatewayRef{Name: "cf-gw"},
@@ -235,7 +235,7 @@ spec:
 // endpoints beyond the first stay routable (Istio stops at the first matching
 // http rule within a VirtualService).
 func TestIstioEmitsOneVirtualServicePerEndpoint(t *testing.T) {
-	exposure := Exposure{
+	exposure := &Exposure{
 		Service:   "accounts",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw"},
@@ -256,8 +256,8 @@ func TestIstioEmitsOneVirtualServicePerEndpoint(t *testing.T) {
 	}
 }
 
-func validExposure() Exposure {
-	return Exposure{
+func validExposure() *Exposure {
+	return &Exposure{
 		Service:   "accounts",
 		Namespace: "acme",
 		Gateway:   GatewayRef{Name: "cf-gw"},
@@ -265,7 +265,7 @@ func validExposure() Exposure {
 	}
 }
 
-func assertRender(t *testing.T, backend string, exposure Exposure, want string) {
+func assertRender(t *testing.T, backend string, exposure *Exposure, want string) {
 	t.Helper()
 	got, err := Render(backend, exposure)
 	if err != nil {
