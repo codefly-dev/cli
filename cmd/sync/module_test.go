@@ -336,9 +336,8 @@ func newSyncTestWorkspace(t *testing.T) (*resources.Workspace, string) {
 	return loaded, root
 }
 
-// localModuleSource writes a resolvable but non-immutable module source. Applying
-// against it fails at the commit step because local sources cannot be pinned,
-// giving a deterministic post-registration failure with no network access.
+// localModuleSource writes a resolvable local module source. Local paths are
+// preview-only, so --create must reject them before mutating the workspace.
 func localModuleSource(t *testing.T) string {
 	t.Helper()
 	source := t.TempDir()
@@ -351,9 +350,28 @@ func moduleSaasDir(t *testing.T, workspace *resources.Workspace) string {
 	return workspace.ModulePath(context.Background(), &resources.ModuleReference{Name: "saas"})
 }
 
+// assertModuleAbsent fails if the module leaked into the in-memory workspace,
+// the persisted workspace file, or the filesystem.
+func assertModuleAbsent(t *testing.T, workspace *resources.Workspace, root string) {
+	t.Helper()
+	if workspace.ExistsModule("saas") {
+		t.Fatal("module leaked into the in-memory workspace")
+	}
+	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ExistsModule("saas") {
+		t.Fatal("module leaked into the persisted workspace file")
+	}
+	if _, err := os.Stat(moduleSaasDir(t, workspace)); !os.IsNotExist(err) {
+		t.Fatalf("module directory was left on disk: %v", err)
+	}
+}
+
 func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
 	loaded, _ := newSyncTestWorkspace(t)
-	_, _, err := resolveSyncTarget(context.Background(), loaded, "saas", false, false)
+	_, _, err := resolveSyncTarget(context.Background(), loaded, "saas", false, moduleSyncOptions{})
 	if err == nil {
 		t.Fatal("syncing a missing module without --create returned success")
 	}
@@ -363,31 +381,48 @@ func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
 	}
 }
 
-// --create initializes a new module, which is a mutation; without --apply it
-// must refuse rather than register anything, so a dry-run never mutates.
-func TestSyncModuleCreateWithoutApplyRefusesAndDoesNotRegister(t *testing.T) {
+// A --create dry-run describes the initialization for a valid remote source and
+// returns without registering or scaffolding anything.
+func TestSyncModuleCreateDryRunDescribesWithoutRegistering(t *testing.T) {
 	loaded, root := newSyncTestWorkspace(t)
-	source := localModuleSource(t)
-	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{Source: source})
+	if err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+		Source: "https://example.invalid/starter.git", To: "v0.0.8",
+	}); err != nil {
+		t.Fatalf("dry-run --create returned an error: %v", err)
+	}
+	assertModuleAbsent(t, loaded, root)
+}
+
+// Finding #1: a --create --apply that omits --to must fail its precondition
+// before any workspace mutation, never registering then rolling back.
+func TestSyncModuleCreateValidatesSourceBeforeRegistering(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+		Source: "https://example.invalid/starter.git", Apply: true,
+	})
 	if err == nil {
-		t.Fatal("--create without --apply was accepted")
+		t.Fatal("--create --apply without --to was accepted")
 	}
-	if !strings.Contains(err.Error(), "--apply") {
-		t.Fatalf("error does not point at --apply: %v", err)
+	if !strings.Contains(err.Error(), "--to") {
+		t.Fatalf("error does not point at --to: %v", err)
 	}
-	if loaded.ExistsModule("saas") {
-		t.Fatal("--create without --apply registered the module in memory")
+	assertModuleAbsent(t, loaded, root)
+}
+
+// A local source can never initialize a module, and must be rejected before
+// mutating the workspace.
+func TestSyncModuleCreateRejectsLocalSourceBeforeRegistering(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+		Source: localModuleSource(t), To: "v1.0.0", Apply: true,
+	})
+	if err == nil {
+		t.Fatal("--create --apply with a local source was accepted")
 	}
-	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
+	if !strings.Contains(err.Error(), "preview-only") {
+		t.Fatalf("error does not explain the local-source rejection: %v", err)
 	}
-	if reloaded.ExistsModule("saas") {
-		t.Fatal("--create without --apply persisted the module to the workspace file")
-	}
-	if _, err := os.Stat(moduleSaasDir(t, loaded)); !os.IsNotExist(err) {
-		t.Fatalf("--create without --apply scaffolded a module directory: %v", err)
-	}
+	assertModuleAbsent(t, loaded, root)
 }
 
 // The one-command first run: --create --apply initializes the module, seeds an
@@ -428,28 +463,36 @@ func TestSyncModuleCreatePopulatesNewModuleOnApply(t *testing.T) {
 	}
 }
 
-// An apply that registers a new module but then fails must not leave the module
-// stranded behind: registration is rolled back.
+// An apply that passes preconditions, registers the module, but then fails
+// (here: the remote tag cannot be cloned) must not leave the module stranded.
 func TestSyncModuleCreateRollsBackWhenApplyFails(t *testing.T) {
 	loaded, root := newSyncTestWorkspace(t)
-	source := localModuleSource(t)
-	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{Source: source, Apply: true})
+	missingRemote := (&url.URL{Scheme: "file", Path: filepath.Join(t.TempDir(), "missing-repo.git")}).String()
+	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+		Source: missingRemote, To: "v1.0.0", Apply: true,
+	})
 	if err == nil {
-		t.Fatal("applying a local (unpinnable) source unexpectedly succeeded")
+		t.Fatal("applying an unreachable remote unexpectedly succeeded")
 	}
-	if loaded.ExistsModule("saas") {
-		t.Fatal("failed apply left the module registered in the in-memory workspace")
-	}
-	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	assertModuleAbsent(t, loaded, root)
+}
+
+// Finding #4: rollback must clean a module directory that already holds
+// half-applied upstream files, not just an empty scaffold.
+func TestRollbackRemovesPopulatedModuleDir(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	module, err := registerModule(context.Background(), loaded, "saas")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.ExistsModule("saas") {
-		t.Fatal("failed apply left the module registered in the workspace file")
+	// Simulate files written by a partially-completed ApplyBaseSync.
+	writeSyncTestFile(t, filepath.Join(module.Dir(), "services", "api", "code", "main.go"), "package main\n")
+	writeSyncTestFile(t, filepath.Join(module.Dir(), moduleSourceLockRelativePath),
+		`{"schema":"codefly/base-source/v1","repository":"https://example.invalid/x.git","ref":"v1.0.0","commit":"0123456789abcdef0123456789abcdef01234567"}`)
+	if err := rollbackRegisteredModule(context.Background(), loaded, "saas"); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(moduleSaasDir(t, loaded)); !os.IsNotExist(err) {
-		t.Fatalf("failed apply left a module directory behind: %v", err)
-	}
+	assertModuleAbsent(t, loaded, root)
 }
 
 func writeSyncTestFile(t *testing.T, path, contents string) {

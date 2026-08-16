@@ -66,8 +66,10 @@ First pin a remote source:
   codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
 
 Initialize and populate a brand-new module in one step instead of running
-codefly add module first. Creating a module is a mutation with nothing to
-preview, so --create requires --apply:
+codefly add module first. A new module has no base manifest to plan against, so
+the dry-run describes the initialization without registering anything and the
+file-level plan appears only on --apply:
+  codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
   codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
 
 Future updates use the consumer-owned tools/base-source.json lock:
@@ -109,9 +111,14 @@ Local paths are preview-only and never persisted in the portable source lock.`,
 // back if the sync itself fails so a failed run never leaves an empty module
 // stranded in the workspace.
 func runModuleSync(ctx context.Context, workspace *resources.Workspace, name string, create bool, options moduleSyncOptions) error {
-	module, created, err := resolveSyncTarget(ctx, workspace, name, create, options.Apply)
+	module, created, err := resolveSyncTarget(ctx, workspace, name, create, options)
 	if err != nil {
 		return err
+	}
+	if module == nil {
+		// --create dry-run described the intended initialization without
+		// registering anything; there is nothing to sync.
+		return nil
 	}
 	if err := syncComposedModule(ctx, module, options); err != nil {
 		if created {
@@ -123,12 +130,12 @@ func runModuleSync(ctx context.Context, workspace *resources.Workspace, name str
 }
 
 // resolveSyncTarget resolves the module to sync. When --create is set and the
-// module is not yet registered, it initializes a new module and returns it with
+// module is not yet registered, the source is validated before any workspace
+// mutation, so a bad invocation never registers a module only to roll it back.
+// A dry-run describes the intended initialization and returns a nil module
+// (nothing to sync); an --apply initializes the module and returns it with
 // created=true so the caller can roll the registration back on failure.
-// Creating a module is a mutation with nothing to preview — the base-sync
-// engine cannot even plan against a target that has no base manifest yet — so
-// --create requires --apply and never runs during a dry-run.
-func resolveSyncTarget(ctx context.Context, workspace *resources.Workspace, name string, create, apply bool) (*resources.Module, bool, error) {
+func resolveSyncTarget(ctx context.Context, workspace *resources.Workspace, name string, create bool, options moduleSyncOptions) (*resources.Module, bool, error) {
 	module, err := workspace.LoadModuleFromName(ctx, name)
 	if err == nil {
 		return module, false, nil
@@ -143,14 +150,41 @@ func resolveSyncTarget(ctx context.Context, workspace *resources.Workspace, name
 		}
 		return nil, false, fmt.Errorf("module <%s> is not registered in workspace <%s> (present: %v); run `codefly add module %s` first, or rerun with --create --apply to initialize and sync it in one step", name, workspace.Name, present, name)
 	}
-	if !apply {
-		return nil, false, fmt.Errorf("--create initializes a new module <%s>, which is a mutation; combine it with --apply", name)
+	if err := validateNewModuleSource(options); err != nil {
+		return nil, false, err
+	}
+	if !options.Apply {
+		output.Info("module <%s> is not registered; --create --apply will initialize it and populate it from %s@%s (the file-level plan is shown on --apply)",
+			name, strings.TrimSpace(options.Source), strings.TrimSpace(options.To))
+		return nil, false, nil
 	}
 	module, err = registerModule(ctx, workspace, name)
 	if err != nil {
 		return nil, false, err
 	}
 	return module, true, nil
+}
+
+// validateNewModuleSource checks the cheap preconditions for initializing a new
+// module before any workspace mutation. A new module has no source lock to fall
+// back on, so it must come from an immutable remote tag: local paths are
+// preview-only and cannot be applied.
+func validateNewModuleSource(options moduleSyncOptions) error {
+	source := strings.TrimSpace(options.Source)
+	if source == "" {
+		return fmt.Errorf("--create requires --source to initialize a new module")
+	}
+	if info, statErr := os.Stat(source); statErr == nil && info.IsDir() {
+		return fmt.Errorf("--create requires an immutable remote source; local path %s is preview-only and cannot initialize a module", source)
+	}
+	to := strings.TrimSpace(options.To)
+	if to == "" {
+		return fmt.Errorf("--to is required to initialize a new module from a remote source")
+	}
+	if _, err := semver.NewVersion(strings.TrimPrefix(to, "v")); err != nil {
+		return fmt.Errorf("--to must be an immutable semantic-version tag: %w", err)
+	}
+	return nil
 }
 
 // registerModule initializes a new module and seeds an empty base manifest so
@@ -199,7 +233,7 @@ var moduleSyncFlags moduleSyncOptions
 var moduleSyncCreate bool
 
 func init() {
-	ModuleCmd.Flags().BoolVar(&moduleSyncCreate, "create", false, "register the module if it does not exist yet, then sync it")
+	ModuleCmd.Flags().BoolVar(&moduleSyncCreate, "create", false, "initialize a new module from --source and populate it in one step (requires --apply)")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Source, "source", "", "canonical Git repository URL or local repository/module path")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.To, "to", "", "immutable semantic-version tag to resolve (for example v0.0.8)")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
