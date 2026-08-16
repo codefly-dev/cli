@@ -322,7 +322,8 @@ func TestModuleSourceLockRoundTripsAndLocalSourceIsAutoDetected(t *testing.T) {
 	}
 }
 
-func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
+func newSyncTestWorkspace(t *testing.T) (*resources.Workspace, string) {
+	t.Helper()
 	root := t.TempDir()
 	workspace := &resources.Workspace{Name: "consumer", Layout: resources.LayoutKindModules}
 	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
@@ -332,7 +333,27 @@ func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = loadSyncTargetModule(context.Background(), loaded, "saas", false)
+	return loaded, root
+}
+
+// localModuleSource writes a resolvable but non-immutable module source. Applying
+// against it fails at the commit step because local sources cannot be pinned,
+// giving a deterministic post-registration failure with no network access.
+func localModuleSource(t *testing.T) string {
+	t.Helper()
+	source := t.TempDir()
+	writeSyncTestFile(t, filepath.Join(source, "tools", "base-manifest.json"), `{"files":{}}`)
+	return source
+}
+
+func moduleSaasDir(t *testing.T, workspace *resources.Workspace) string {
+	t.Helper()
+	return workspace.ModulePath(context.Background(), &resources.ModuleReference{Name: "saas"})
+}
+
+func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
+	loaded, _ := newSyncTestWorkspace(t)
+	_, _, err := resolveSyncTarget(context.Background(), loaded, "saas", false, false)
 	if err == nil {
 		t.Fatal("syncing a missing module without --create returned success")
 	}
@@ -342,28 +363,92 @@ func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
 	}
 }
 
-func TestSyncModuleCreateRegistersMissingModule(t *testing.T) {
-	root := t.TempDir()
-	workspace := &resources.Workspace{Name: "consumer", Layout: resources.LayoutKindModules}
-	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
-		t.Fatal(err)
+// --create initializes a new module, which is a mutation; without --apply it
+// must refuse rather than register anything, so a dry-run never mutates.
+func TestSyncModuleCreateWithoutApplyRefusesAndDoesNotRegister(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	source := localModuleSource(t)
+	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{Source: source})
+	if err == nil {
+		t.Fatal("--create without --apply was accepted")
 	}
-	loaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if !strings.Contains(err.Error(), "--apply") {
+		t.Fatalf("error does not point at --apply: %v", err)
+	}
+	if loaded.ExistsModule("saas") {
+		t.Fatal("--create without --apply registered the module in memory")
+	}
+	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	module, err := loadSyncTargetModule(context.Background(), loaded, "saas", true)
-	if err != nil {
-		t.Fatal(err)
+	if reloaded.ExistsModule("saas") {
+		t.Fatal("--create without --apply persisted the module to the workspace file")
 	}
-	if module.Name != "saas" {
-		t.Fatalf("registered module = %q, want saas", module.Name)
+	if _, err := os.Stat(moduleSaasDir(t, loaded)); !os.IsNotExist(err) {
+		t.Fatalf("--create without --apply scaffolded a module directory: %v", err)
+	}
+}
+
+// The one-command first run: --create --apply initializes the module, seeds an
+// empty base manifest, and populates it from canonical.
+func TestSyncModuleCreatePopulatesNewModuleOnApply(t *testing.T) {
+	repository := t.TempDir()
+	runGit(t, repository, "init", "--quiet")
+	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
+	runGit(t, repository, "config", "user.name", "Module Sync Test")
+	sourceModule := filepath.Join(repository, "module")
+	code := "package main\n"
+	codePath := "services/api/code/main.go"
+	writeSyncTestFile(t, filepath.Join(sourceModule, "module.codefly.yaml"), "kind: module\nname: saas\nservices:\n  - name: api\n")
+	writeSyncTestFile(t, filepath.Join(sourceModule, codePath), code)
+	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
+		`{"files":{"`+codePath+`":"`+syncTestDigest(code)+`"}}`)
+	runGit(t, repository, "add", ".")
+	runGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")
+	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v1.0.0")
+	remote := (&url.URL{Scheme: "file", Path: repository}).String()
+
+	loaded, _ := newSyncTestWorkspace(t)
+	if err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+		Source: remote, To: "v1.0.0", Subdirectory: "module", Apply: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if !loaded.ExistsModule("saas") {
-		t.Fatal("module was not registered in the workspace")
+		t.Fatal("module was not registered")
 	}
-	if _, err := os.Stat(filepath.Join(module.Dir(), "module.codefly.yaml")); err != nil {
-		t.Fatalf("module directory was not scaffolded: %v", err)
+	assertSyncTestFile(t, filepath.Join(moduleSaasDir(t, loaded), filepath.FromSlash(codePath)), code)
+	lock, err := readModuleSourceLock(filepath.Join(moduleSaasDir(t, loaded), moduleSourceLockRelativePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.Repository != remote || lock.Ref != "v1.0.0" {
+		t.Fatalf("lock = %#v", lock)
+	}
+}
+
+// An apply that registers a new module but then fails must not leave the module
+// stranded behind: registration is rolled back.
+func TestSyncModuleCreateRollsBackWhenApplyFails(t *testing.T) {
+	loaded, root := newSyncTestWorkspace(t)
+	source := localModuleSource(t)
+	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{Source: source, Apply: true})
+	if err == nil {
+		t.Fatal("applying a local (unpinnable) source unexpectedly succeeded")
+	}
+	if loaded.ExistsModule("saas") {
+		t.Fatal("failed apply left the module registered in the in-memory workspace")
+	}
+	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ExistsModule("saas") {
+		t.Fatal("failed apply left the module registered in the workspace file")
+	}
+	if _, err := os.Stat(moduleSaasDir(t, loaded)); !os.IsNotExist(err) {
+		t.Fatalf("failed apply left a module directory behind: %v", err)
 	}
 }
 

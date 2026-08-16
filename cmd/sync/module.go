@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,8 +24,9 @@ import (
 )
 
 const (
-	moduleSourceLockRelativePath = "tools/base-source.json"
-	moduleSourceLockSchema       = "codefly/base-source/v1"
+	moduleSourceLockRelativePath   = "tools/base-source.json"
+	moduleSourceLockSchema         = "codefly/base-source/v1"
+	moduleBaseManifestRelativePath = "tools/base-manifest.json"
 )
 
 var fullGitCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -59,9 +61,13 @@ collisions, missing required overlays, and modified upstream deletions fail
 closed. The manifest is committed last, so an interrupted update is safely
 resumable.
 
-First pin a remote source. Pass --create to register a brand-new module and
-populate it in a single command instead of running codefly add module first:
-  codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
+First pin a remote source:
+  codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
+  codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
+
+Initialize and populate a brand-new module in one step instead of running
+codefly add module first. Creating a module is a mutation with nothing to
+preview, so --create requires --apply:
   codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
 
 Future updates use the consumer-owned tools/base-source.json lock:
@@ -94,48 +100,97 @@ Local paths are preview-only and never persisted in the portable source lock.`,
 		if err != nil {
 			return fmt.Errorf("load workspace: %w", err)
 		}
-		module, err := loadSyncTargetModule(ctx, workspace, args[0], moduleSyncCreate)
-		if err != nil {
-			return err
-		}
-		return syncComposedModule(ctx, module, moduleSyncFlags)
+		return runModuleSync(ctx, workspace, args[0], moduleSyncCreate, moduleSyncFlags)
 	},
 }
 
-// loadSyncTargetModule resolves the module to sync, registering an empty shell
-// first when --create is set and the module is not yet in the workspace. A
-// first-time consumer can then populate a new module in a single command
-// instead of running `codefly add module` beforehand.
-func loadSyncTargetModule(ctx context.Context, workspace *resources.Workspace, name string, create bool) (*resources.Module, error) {
+// runModuleSync resolves the target module and syncs it. When --create
+// registers a brand-new module as part of an apply, the registration is rolled
+// back if the sync itself fails so a failed run never leaves an empty module
+// stranded in the workspace.
+func runModuleSync(ctx context.Context, workspace *resources.Workspace, name string, create bool, options moduleSyncOptions) error {
+	module, created, err := resolveSyncTarget(ctx, workspace, name, create, options.Apply)
+	if err != nil {
+		return err
+	}
+	if err := syncComposedModule(ctx, module, options); err != nil {
+		if created {
+			return errors.Join(err, rollbackRegisteredModule(ctx, workspace, name))
+		}
+		return err
+	}
+	return nil
+}
+
+// resolveSyncTarget resolves the module to sync. When --create is set and the
+// module is not yet registered, it initializes a new module and returns it with
+// created=true so the caller can roll the registration back on failure.
+// Creating a module is a mutation with nothing to preview — the base-sync
+// engine cannot even plan against a target that has no base manifest yet — so
+// --create requires --apply and never runs during a dry-run.
+func resolveSyncTarget(ctx context.Context, workspace *resources.Workspace, name string, create, apply bool) (*resources.Module, bool, error) {
 	module, err := workspace.LoadModuleFromName(ctx, name)
 	if err == nil {
-		return module, nil
+		return module, false, nil
 	}
 	if workspace.ExistsModule(name) {
-		return nil, fmt.Errorf("load target module %s: %w", name, err)
+		return nil, false, fmt.Errorf("load target module %s: %w", name, err)
 	}
 	if !create {
-		return nil, fmt.Errorf("module <%s> is not registered in workspace <%s>; run `codefly add module %s` first, or rerun with --create to register and sync it in one step", name, workspace.Name, name)
+		var present []string
+		for _, ref := range workspace.Modules {
+			present = append(present, ref.Name)
+		}
+		return nil, false, fmt.Errorf("module <%s> is not registered in workspace <%s> (present: %v); run `codefly add module %s` first, or rerun with --create --apply to initialize and sync it in one step", name, workspace.Name, present, name)
 	}
-	if err := registerModule(ctx, workspace, name); err != nil {
-		return nil, err
+	if !apply {
+		return nil, false, fmt.Errorf("--create initializes a new module <%s>, which is a mutation; combine it with --apply", name)
 	}
-	module, err = workspace.LoadModuleFromName(ctx, name)
+	module, err = registerModule(ctx, workspace, name)
+	if err != nil {
+		return nil, false, err
+	}
+	return module, true, nil
+}
+
+// registerModule initializes a new module and seeds an empty base manifest so
+// the very first sync sees the whole upstream base as new files to create.
+// Without the seed the base-sync engine fails closed on the missing manifest.
+func registerModule(ctx context.Context, workspace *resources.Workspace, name string) (*resources.Module, error) {
+	action, err := actionsmodule.NewActionAddModule(ctx, &actionsmodule.AddModule{Name: name})
+	if err != nil {
+		return nil, fmt.Errorf("create add-module action: %w", err)
+	}
+	if _, err := actions.Run(ctx, action, &actions.Space{Workspace: workspace}); err != nil {
+		return nil, fmt.Errorf("register module %s: %w", name, err)
+	}
+	module, err := workspace.LoadModuleFromName(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("load target module %s after --create: %w", name, err)
 	}
+	if err := seedEmptyBaseManifest(module.Dir()); err != nil {
+		return nil, fmt.Errorf("seed base manifest for %s: %w", name, err)
+	}
+	output.Info("registered module <%s>", name)
 	return module, nil
 }
 
-func registerModule(ctx context.Context, workspace *resources.Workspace, name string) error {
-	action, err := actionsmodule.NewActionAddModule(ctx, &actionsmodule.AddModule{Name: name})
-	if err != nil {
-		return fmt.Errorf("create add-module action: %w", err)
+func seedEmptyBaseManifest(moduleDir string) error {
+	path := filepath.Join(moduleDir, moduleBaseManifestRelativePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	if _, err := actions.Run(ctx, action, &actions.Space{Workspace: workspace}); err != nil {
-		return fmt.Errorf("register module %s: %w", name, err)
+	return os.WriteFile(path, []byte("{\n  \"files\": {}\n}\n"), 0o644)
+}
+
+func rollbackRegisteredModule(ctx context.Context, workspace *resources.Workspace, name string) error {
+	moduleDir := workspace.ModulePath(ctx, &resources.ModuleReference{Name: name})
+	if err := workspace.DeleteModule(ctx, name); err != nil {
+		return fmt.Errorf("roll back module reference %s: %w", name, err)
 	}
-	output.Info("registered module <%s>", name)
+	if err := os.RemoveAll(moduleDir); err != nil {
+		return fmt.Errorf("roll back module directory %s: %w", name, err)
+	}
 	return nil
 }
 
