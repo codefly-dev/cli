@@ -32,6 +32,8 @@ const (
 	httpsScheme   = "https"
 	sshScheme     = "ssh"
 	jsonExtension = ".json"
+	yamlExtension = ".yaml"
+	ymlExtension  = ".yml"
 )
 
 type preparedRepository struct {
@@ -834,22 +836,83 @@ func walkBootstrapApplications(root string, visit func(path, revision, sourcePat
 			return err
 		}
 		for _, item := range manifests {
-			if item.group != argoAPIGroup || item.kind != "Application" {
+			if item.group != argoAPIGroup {
 				continue
 			}
-			spec, _ := item.value["spec"].(map[string]any)
-			source, _ := spec["source"].(map[string]any)
-			revision, _ := source["targetRevision"].(string)
-			sourcePath, _ := source["path"].(string)
-			if !gitObjectPattern.MatchString(revision) {
-				return fmt.Errorf("bootstrap Application %s has non-immutable target revision %q", item.path, revision)
-			}
-			if err := visit(item.path, revision, sourcePath); err != nil {
-				return err
+			switch item.kind {
+			case kindApplication:
+				spec, _ := item.value["spec"].(map[string]any)
+				source, _ := spec["source"].(map[string]any)
+				revision, _ := source["targetRevision"].(string)
+				sourcePath, _ := source["path"].(string)
+				if !gitObjectPattern.MatchString(revision) {
+					return fmt.Errorf("bootstrap Application %s has non-immutable target revision %q", item.path, revision)
+				}
+				if err := visit(item.path, revision, sourcePath); err != nil {
+					return err
+				}
+			case kindApplicationSet:
+				if err := visitApplicationSet(item, visit); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
 	})
+}
+
+// visitApplicationSet reports the ApplicationSet as one bootstrap Application per
+// promotable component (module resources + services). Every stamped Application
+// shares the immutable snapshot revision pinned in the template source, so the
+// bootstrap revision and service-graph coverage checks read the ApplicationSet the
+// same way they read the per-service Applications it replaced.
+func visitApplicationSet(item manifest, visit func(path, revision, sourcePath string) error) error {
+	spec, _ := item.value["spec"].(map[string]any)
+	template, _ := spec["template"].(map[string]any)
+	templateSpec, _ := template["spec"].(map[string]any)
+	source, _ := templateSpec["source"].(map[string]any)
+	revision, _ := source["targetRevision"].(string)
+	if !gitObjectPattern.MatchString(revision) {
+		return fmt.Errorf("bootstrap ApplicationSet %s has non-immutable target revision %q", item.path, revision)
+	}
+	for _, sourcePath := range applicationSetComponentPaths(spec) {
+		if err := visit(item.path, revision, sourcePath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applicationSetComponentPaths returns each distinct component overlay the
+// ApplicationSet stamps. The overlay list generator is repeated once per tenant
+// matrix, so paths are de-duplicated to a single occurrence per overlay.
+func applicationSetComponentPaths(spec map[string]any) []string {
+	seen := map[string]struct{}{}
+	var paths []string
+	generators, _ := spec["generators"].([]any)
+	for _, raw := range generators {
+		generator, _ := raw.(map[string]any)
+		matrix, _ := generator["matrix"].(map[string]any)
+		inner, _ := matrix["generators"].([]any)
+		for _, rawInner := range inner {
+			nested, _ := rawInner.(map[string]any)
+			list, _ := nested["list"].(map[string]any)
+			elements, _ := list["elements"].([]any)
+			for _, rawElement := range elements {
+				element, _ := rawElement.(map[string]any)
+				overlay, ok := element["overlay"].(string)
+				if !ok || overlay == "" {
+					continue
+				}
+				if _, dup := seen[overlay]; dup {
+					continue
+				}
+				seen[overlay] = struct{}{}
+				paths = append(paths, overlay)
+			}
+		}
+	}
+	return paths
 }
 
 func validatePublishRequest(workspace *resources.Workspace, request *PublishRequest) error {
