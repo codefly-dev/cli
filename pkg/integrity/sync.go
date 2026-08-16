@@ -512,6 +512,55 @@ func ValidateServiceCodeSource(sourceRoot, targetRoot string) error {
 	return nil
 }
 
+// ValidateInventoryOnlyScaffold guards the manifest-less scaffold that
+// `add module --agent` pins. A conforming inventory-only agent generates
+// consumer inventory and no base code, leaving the first sync to populate the
+// whole base. This rejects a scaffold that instead materialized base-owned code
+// diverging from the pinned source without recording a base manifest: that
+// scaffold is inconsistent, because its first sync plans the missing manifest as
+// an empty base and the divergent file then surfaces as an unresolvable
+// collision with no manifest to explain it. Catching it here, at pin time, keeps
+// a broken module out of the workspace and keeps the sync-time "manifest was
+// lost" diagnosis accurate. No base code, or byte-identical base code, passes;
+// only a divergent copy is a contract violation.
+func ValidateInventoryOnlyScaffold(sourceRoot, targetRoot string) error {
+	sourceRoot, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return fmt.Errorf("resolve source module: %w", err)
+	}
+	targetRoot, err = filepath.Abs(targetRoot)
+	if err != nil {
+		return fmt.Errorf("resolve target module: %w", err)
+	}
+	sourceManifest, err := readBaseManifest(filepath.Join(sourceRoot, baseManifestRelativePath))
+	if err != nil {
+		return fmt.Errorf("read source base manifest: %w", err)
+	}
+	composed, err := composedServiceNames(targetRoot)
+	if err != nil {
+		return err
+	}
+	for _, relative := range sortedManifestPaths(sourceManifest) {
+		if service := serviceOf(relative); service != "" && len(composed) > 0 && !composed[service] {
+			continue
+		}
+		if !safeModulePath(targetRoot, relative, false) {
+			continue
+		}
+		targetDigest, digestErr := sha256File(filepath.Join(targetRoot, filepath.FromSlash(relative)))
+		if os.IsNotExist(digestErr) {
+			continue
+		}
+		if digestErr != nil {
+			return fmt.Errorf("hash scaffold base path %s: %w", relative, digestErr)
+		}
+		if targetDigest != sourceManifest.Files[relative] {
+			return fmt.Errorf("module agent produced base-owned file %s without a base manifest; the scaffold is inconsistent and cannot be pinned", relative)
+		}
+	}
+	return nil
+}
+
 func serviceCodeManifest(manifest baseManifest, composed map[string]bool, allowed map[string]string) map[string]string {
 	files := make(map[string]string)
 	for relative, digest := range manifest.Files {

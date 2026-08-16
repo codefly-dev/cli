@@ -422,7 +422,15 @@ func (source *PreparedModuleSource) Pin(target *resources.Module) error {
 		if validateErr := integrity.ValidateServiceCodeSource(source.resolved.Root, target.Dir()); validateErr != nil {
 			return validateErr
 		}
-	} else if !os.IsNotExist(err) {
+	} else if os.IsNotExist(err) {
+		// Inventory-only scaffold: there is no base manifest to validate service
+		// code against, but the scaffold must not carry base-owned code that
+		// diverges from the pinned source, or the first sync would fail closed on
+		// an inconsistent, manifest-less module.
+		if validateErr := integrity.ValidateInventoryOnlyScaffold(source.resolved.Root, target.Dir()); validateErr != nil {
+			return validateErr
+		}
+	} else {
 		return fmt.Errorf("inspect module scaffold base manifest: %w", err)
 	}
 	return writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), source.resolved.Lock)
