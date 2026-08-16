@@ -50,6 +50,46 @@ func TestBaseSyncPreservesOverlaysAndAppliesOnlyOwnedFiles(t *testing.T) {
 	}
 }
 
+func TestBaseSyncTreatsMissingTargetManifestAsFirstPopulate(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "services", "kept", "code", "main.go"), "package main\n")
+	writeManifest(t, source, "services/kept/code/main.go")
+
+	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.Create, []string{"services/kept/code/main.go"}) {
+		t.Fatalf("create = %v", plan.Create)
+	}
+	if _, err := ApplyBaseSync(source, target); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package main\n")
+	if _, err := readBaseManifest(filepath.Join(target, baseManifestRelativePath)); err != nil {
+		t.Fatalf("target manifest was not committed: %v", err)
+	}
+}
+
+// A composed module whose base manifest was lost must not be reinterpreted as a
+// fresh scaffold: without the manifest the plan cannot tell a user-modified base
+// file from an overlay collision, so it must fail closed rather than let
+// --accept-upstream overwrite the customized content.
+func TestBaseSyncFailsClosedWhenTargetManifestMissingButBaseFilesDiffer(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "services", "kept", "code", "main.go"), "package main // upstream\n")
+	writeManifest(t, source, "services/kept/code/main.go")
+	writeTestFile(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package main // heavily customized\n")
+
+	if _, err := PlanBaseSync(source, target); err == nil {
+		t.Fatal("plan against a missing manifest with conflicting base files was not refused")
+	}
+	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"services/kept/code/main.go"}); err == nil {
+		t.Fatal("--accept-upstream overwrote a base file whose provenance was erased")
+	}
+	assertFileContents(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package main // heavily customized\n")
+}
+
 func TestBaseSyncRefusesModifiedBaseAndOverlayCollisionWithoutMutation(t *testing.T) {
 	source, target := syncFixture(t)
 	writeTestFile(t, filepath.Join(source, "owned.txt"), "new owned")

@@ -105,7 +105,7 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	if err != nil {
 		return BaseSyncPlan{}, fmt.Errorf("read source base manifest: %w", err)
 	}
-	targetManifest, err := readBaseManifest(filepath.Join(targetRoot, baseManifestRelativePath))
+	targetManifest, targetManifestPresent, err := readTargetBaseManifest(filepath.Join(targetRoot, baseManifestRelativePath))
 	if err != nil {
 		return BaseSyncPlan{}, fmt.Errorf("read target base manifest: %w", err)
 	}
@@ -225,6 +225,19 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 		}
 	}
 
+	// A synthesized (missing) target manifest is only safe for a never-populated
+	// scaffold, where every base path is a create. If base-owned files already
+	// exist and differ from the pinned source, the manifest was lost from a
+	// composed module rather than absent from a fresh one: without it the plan
+	// cannot tell a user-modified base file from an overlay collision, so it
+	// would offer --accept-upstream on paths it should protect. Fail closed and
+	// point at the missing manifest instead.
+	if !targetManifestPresent && len(plan.Collisions) > 0 {
+		return BaseSyncPlan{}, fmt.Errorf(
+			"target base manifest %s is missing while %d base-owned file(s) already exist and differ from the pinned source (%s); this is a composed module whose manifest was lost, not a fresh scaffold. Restore %s from version control before syncing",
+			baseManifestRelativePath, len(plan.Collisions), strings.Join(plan.Collisions, ", "), baseManifestRelativePath)
+	}
+
 	return plan, nil
 }
 
@@ -302,7 +315,7 @@ func ApplyBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	if err != nil {
 		return plan, fmt.Errorf("re-read source base manifest: %w", err)
 	}
-	targetManifest, err := readBaseManifest(filepath.Join(plan.TargetRoot, baseManifestRelativePath))
+	targetManifest, _, err := readTargetBaseManifest(filepath.Join(plan.TargetRoot, baseManifestRelativePath))
 	if err != nil {
 		return plan, fmt.Errorf("re-read target base manifest: %w", err)
 	}
@@ -538,6 +551,20 @@ func readBaseManifest(path string) (baseManifest, error) {
 		return baseManifest{}, fmt.Errorf("manifest has no files map")
 	}
 	return manifest, nil
+}
+
+// readTargetBaseManifest reads the target's base manifest, reporting whether it
+// was actually present. A missing manifest is synthesized as an empty base so a
+// never-populated scaffold plans its whole upstream base as new files, but the
+// caller must know it was synthesized: a *composed* module whose manifest was
+// lost must not be treated as a fresh scaffold, because that erases the
+// base/overlay provenance the plan relies on to fail closed.
+func readTargetBaseManifest(path string) (baseManifest, bool, error) {
+	manifest, err := readBaseManifest(path)
+	if os.IsNotExist(err) {
+		return baseManifest{Files: map[string]string{}}, false, nil
+	}
+	return manifest, err == nil, err
 }
 
 func sortedManifestPaths(manifest baseManifest) []string {
