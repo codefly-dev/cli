@@ -144,7 +144,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	} else if inventory.AppProject != project {
 		return fmt.Errorf("render inventory AppProject %q differs from selected AppProject %q", inventory.AppProject, project)
 	}
-	if err := validateInventoryUnits(&inventory); err != nil {
+	if err = validateInventoryUnits(&inventory); err != nil {
 		return err
 	}
 	opts := &RenderOptions{
@@ -174,7 +174,7 @@ func ValidateServiceSnapshot(root string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateInventoryUnits(&inventory); err != nil {
+	if err = validateInventoryUnits(&inventory); err != nil {
 		return err
 	}
 	allowed := map[string]struct{}{InventoryFilename: {}, moduleBundleDir: {}}
@@ -195,7 +195,7 @@ func ValidateServiceSnapshot(root string) error {
 			return fmt.Errorf("service snapshot contains unexpected path %s", entry.Name())
 		}
 	}
-	if err := validateUnitDirectories(root, rendered, inventory.Environment); err != nil {
+	if err = validateUnitDirectories(root, rendered, inventory.Environment); err != nil {
 		return err
 	}
 	for _, unit := range rendered {
@@ -204,11 +204,11 @@ func ValidateServiceSnapshot(root string) error {
 			Environment: inventory.Environment, Namespace: inventory.Namespace,
 			AppProject: inventory.AppProject, Promotable: true,
 		}
-		if err := validateTree(filepath.Join(root, filepath.FromSlash(unit.Path)), opts); err != nil {
+		if err = validateTree(filepath.Join(root, filepath.FromSlash(unit.Path)), opts); err != nil {
 			return fmt.Errorf("validate unit %s: %w", unit.Name, err)
 		}
 	}
-	if err := validateSnapshotCoverage(&inventory); err != nil {
+	if err = validateSnapshotCoverage(&inventory); err != nil {
 		return err
 	}
 	names := make([]string, 0, len(rendered))

@@ -124,7 +124,7 @@ func renderModuleTree(
 		})
 		if module.Agent != nil {
 			modulePath := filepath.Join(stage, moduleBundleDir)
-			if err := renderModuleBundle(ctx, workspace, module, env, modulePath, options.Units); err != nil {
+			if err = renderModuleBundle(ctx, workspace, module, env, modulePath, options.Units); err != nil {
 				return err
 			}
 			options.ModulePath = moduleBundleDir

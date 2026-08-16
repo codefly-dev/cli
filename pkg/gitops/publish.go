@@ -399,7 +399,7 @@ func prepareServicePublication(
 		return "", Inventory{}, err
 	}
 	if module.Agent != nil {
-		if err := validateBootstrapUnits(
+		if err = validateBootstrapUnits(
 			filepath.Join(target, "bootstrap"),
 			targetPath,
 			renderedInventory,

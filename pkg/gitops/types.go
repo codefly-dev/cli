@@ -22,6 +22,9 @@ const UnitKindService = "service"
 // derived from unitDirectory.
 const moduleBundleDir = "module"
 
+// serviceUnitDir is the render subdirectory holding service units.
+const serviceUnitDir = "services"
+
 // unitDirectory maps an artifact kind to the render subdirectory that holds its
 // units, reporting whether the kind is known. Generalizing the render path
 // beyond services is a matter of adding a case here rather than threading a new
@@ -30,7 +33,7 @@ const moduleBundleDir = "module"
 func unitDirectory(kind string) (string, bool) {
 	switch kind {
 	case UnitKindService:
-		return "services", true
+		return serviceUnitDir, true
 	default:
 		return "", false
 	}
