@@ -59,14 +59,17 @@ Example:
 		if err != nil {
 			return err
 		}
-		written, err := tenants.Generate(root, model)
+		result, err := tenants.Generate(root, model)
 		if err != nil {
 			return err
 		}
-		for _, overlay := range written {
+		for _, overlay := range result.Written {
 			cli.Info("Generated overlays/%s", overlay)
 		}
-		cli.Header(1, "Generated %d tenant overlay(s)", len(written))
+		for _, overlay := range result.Removed {
+			cli.Warning("Removed stale overlays/%s (no longer in the tenant model)", overlay)
+		}
+		cli.Header(1, "Generated %d tenant overlay(s), removed %d stale", len(result.Written), len(result.Removed))
 		return nil
 	},
 }
