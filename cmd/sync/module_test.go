@@ -23,7 +23,7 @@ func TestModuleSyncPlanOrdersInvalidSourceBeforeOtherConflicts(t *testing.T) {
 	output.SetOutputSink(func(_ wool.Loglevel, msg string) { lines = append(lines, msg) })
 	defer output.SetOutputSink(nil)
 
-	printModuleSyncPlan("app", integrity.BaseSyncPlan{
+	printModuleSyncPlan("app", &integrity.BaseSyncPlan{
 		SourceRoot:    "/src",
 		SourceInvalid: []integrity.InvalidSource{{Path: "a.go", Reason: integrity.SourceUnsafePath}},
 		TargetInvalid: []string{"b.go"},
@@ -107,7 +107,7 @@ func TestRestoreCodeUsesPinnedSourceAndPreservesOverlay(t *testing.T) {
 	overlayPath := filepath.Join(targetRoot, "services", "api", "overlays", "local.yaml")
 	writeSyncTestFile(t, overlayPath, "consumer: true\n")
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
-	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), moduleSourceLock{
+	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), &moduleSourceLock{
 		Schema: moduleSourceLockSchema, Repository: remote, Ref: "v1.2.3",
 		Commit: runGit(t, repository, "rev-parse", "HEAD"), Subdirectory: "module",
 	}); err != nil {
@@ -117,7 +117,7 @@ func TestRestoreCodeUsesPinnedSourceAndPreservesOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := syncComposedModule(context.Background(), target, moduleSyncOptions{RestoreCode: true}); err != nil {
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{RestoreCode: true}); err != nil {
 		t.Fatal(err)
 	}
 	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(codePath)), code)
@@ -151,7 +151,7 @@ func TestRestoreCodeBootstrapsLegacyModuleFromExplicitImmutableSource(t *testing
 		t.Fatal(err)
 	}
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
-	if err := syncComposedModule(context.Background(), target, moduleSyncOptions{
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
 		RestoreCode: true, Source: remote, To: "v1.2.3", Subdirectory: "module",
 	}); err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ func TestResolveModuleSourceRequiresGitTagAndPinsCommit(t *testing.T) {
 	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v1.2.4")
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
 
-	_, cleanup, err := resolveModuleSource(context.Background(), t.TempDir(), moduleSyncOptions{
+	_, cleanup, err := resolveModuleSource(context.Background(), t.TempDir(), &moduleSyncOptions{
 		Source: remote, To: "v1.2.3", Subdirectory: "module",
 	})
 	cleanup()
@@ -272,7 +272,7 @@ func TestResolveModuleSourceRequiresGitTagAndPinsCommit(t *testing.T) {
 		t.Fatal("semantic-version branch was accepted as an immutable tag")
 	}
 
-	resolved, cleanup, err := resolveModuleSource(context.Background(), t.TempDir(), moduleSyncOptions{
+	resolved, cleanup, err := resolveModuleSource(context.Background(), t.TempDir(), &moduleSyncOptions{
 		Source: remote, To: "v1.2.4", Subdirectory: "module",
 	})
 	defer cleanup()
@@ -310,7 +310,7 @@ func TestModuleSourceLockRoundTripsAndLocalSourceIsAutoDetected(t *testing.T) {
 		Schema: moduleSourceLockSchema, Repository: "https://example.invalid/starter.git",
 		Ref: "v1.2.3", Commit: "0123456789abcdef0123456789abcdef01234567", Subdirectory: "module",
 	}
-	if err := writeModuleSourceLock(path, want); err != nil {
+	if err := writeModuleSourceLock(path, &want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := readModuleSourceLock(path)
@@ -371,7 +371,7 @@ func assertModuleAbsent(t *testing.T, workspace *resources.Workspace, root strin
 
 func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
 	loaded, _ := newSyncTestWorkspace(t)
-	_, _, err := resolveSyncTarget(context.Background(), loaded, "saas", false, moduleSyncOptions{})
+	_, _, err := resolveSyncTarget(context.Background(), loaded, "saas", false, &moduleSyncOptions{})
 	if err == nil {
 		t.Fatal("syncing a missing module without --create returned success")
 	}
@@ -385,7 +385,7 @@ func TestSyncModuleWithoutCreateReturnsActionableError(t *testing.T) {
 // returns without registering or scaffolding anything.
 func TestSyncModuleCreateDryRunDescribesWithoutRegistering(t *testing.T) {
 	loaded, root := newSyncTestWorkspace(t)
-	if err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+	if err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
 		Source: "https://example.invalid/starter.git", To: "v0.0.8",
 	}); err != nil {
 		t.Fatalf("dry-run --create returned an error: %v", err)
@@ -397,7 +397,7 @@ func TestSyncModuleCreateDryRunDescribesWithoutRegistering(t *testing.T) {
 // before any workspace mutation, never registering then rolling back.
 func TestSyncModuleCreateValidatesSourceBeforeRegistering(t *testing.T) {
 	loaded, root := newSyncTestWorkspace(t)
-	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+	err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
 		Source: "https://example.invalid/starter.git", Apply: true,
 	})
 	if err == nil {
@@ -413,7 +413,7 @@ func TestSyncModuleCreateValidatesSourceBeforeRegistering(t *testing.T) {
 // mutating the workspace.
 func TestSyncModuleCreateRejectsLocalSourceBeforeRegistering(t *testing.T) {
 	loaded, root := newSyncTestWorkspace(t)
-	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+	err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
 		Source: localModuleSource(t), To: "v1.0.0", Apply: true,
 	})
 	if err == nil {
@@ -445,7 +445,7 @@ func TestSyncModuleCreatePopulatesNewModuleOnApply(t *testing.T) {
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
 
 	loaded, _ := newSyncTestWorkspace(t)
-	if err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+	if err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
 		Source: remote, To: "v1.0.0", Subdirectory: "module", Apply: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -468,7 +468,7 @@ func TestSyncModuleCreatePopulatesNewModuleOnApply(t *testing.T) {
 func TestSyncModuleCreateRollsBackWhenApplyFails(t *testing.T) {
 	loaded, root := newSyncTestWorkspace(t)
 	missingRemote := (&url.URL{Scheme: "file", Path: filepath.Join(t.TempDir(), "missing-repo.git")}).String()
-	err := runModuleSync(context.Background(), loaded, "saas", true, moduleSyncOptions{
+	err := runModuleSync(context.Background(), loaded, "saas", true, &moduleSyncOptions{
 		Source: missingRemote, To: "v1.0.0", Apply: true,
 	})
 	if err == nil {

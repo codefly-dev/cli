@@ -34,7 +34,7 @@ Examples:
   codefly sync library-dependencies --service=api --module=backend --cleanup
 `,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		return syncLibraryDependencies()
 	},
 }
