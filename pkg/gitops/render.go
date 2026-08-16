@@ -144,18 +144,19 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	} else if inventory.AppProject != project {
 		return fmt.Errorf("render inventory AppProject %q differs from selected AppProject %q", inventory.AppProject, project)
 	}
-	if err := validateInventoryServiceGraph(&inventory); err != nil {
+	if err = validateInventoryUnits(&inventory); err != nil {
 		return err
 	}
 	opts := &RenderOptions{
-		Module: inventory.Module, Service: inventory.Service,
-		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, ServiceGraph: inventory.ServiceGraph,
+		Module: inventory.Module, Unit: inventory.Unit,
+		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: project, Promotable: promotable,
+		CheckUnitDirectories: inventory.Unit == "",
 	}
-	for _, service := range inventory.ServiceGraph {
-		if service.Path != "" {
-			opts.Services = append(opts.Services, service.Service)
+	for _, unit := range inventory.Units {
+		if unit.Path != "" {
+			opts.UnitNames = append(opts.UnitNames, unit.Name)
 		}
 	}
 	if err := validateTree(root, opts); err != nil {
@@ -173,44 +174,50 @@ func ValidateServiceSnapshot(root string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateInventoryServiceGraph(&inventory); err != nil {
+	if err = validateInventoryUnits(&inventory); err != nil {
 		return err
+	}
+	allowed := map[string]struct{}{InventoryFilename: {}, moduleBundleDir: {}}
+	rendered := renderedUnits(&inventory)
+	for _, unit := range rendered {
+		directory, ok := unitDirectory(unit.Kind)
+		if !ok {
+			return fmt.Errorf("service snapshot unit %s has unknown kind %q", unit.Name, unit.Kind)
+		}
+		allowed[directory] = struct{}{}
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() != InventoryFilename && entry.Name() != "services" && entry.Name() != "module" {
+		if _, ok := allowed[entry.Name()]; !ok {
 			return fmt.Errorf("service snapshot contains unexpected path %s", entry.Name())
 		}
 	}
-	services := filepath.Join(root, "services")
-	var names []string
-	for _, service := range inventory.ServiceGraph {
-		if service.Path != "" {
-			names = append(names, service.Service)
-		}
-	}
-	if err := validateServiceDirectories(root, names, inventory.Environment); err != nil {
+	if err = validateUnitDirectories(root, rendered, inventory.Environment); err != nil {
 		return err
 	}
-	for _, service := range names {
+	for _, unit := range rendered {
 		opts := &RenderOptions{
-			Module: inventory.Module, Service: service,
+			Module: inventory.Module, Unit: unit.Name,
 			Environment: inventory.Environment, Namespace: inventory.Namespace,
 			AppProject: inventory.AppProject, Promotable: true,
 		}
-		if err := validateTree(filepath.Join(services, service), opts); err != nil {
-			return fmt.Errorf("validate service %s: %w", service, err)
+		if err = validateTree(filepath.Join(root, filepath.FromSlash(unit.Path)), opts); err != nil {
+			return fmt.Errorf("validate unit %s: %w", unit.Name, err)
 		}
 	}
-	if err := validateServiceSnapshotCoverage(&inventory); err != nil {
+	if err = validateSnapshotCoverage(&inventory); err != nil {
 		return err
 	}
+	names := make([]string, 0, len(rendered))
+	for _, unit := range rendered {
+		names = append(names, unit.Name)
+	}
 	opts := &RenderOptions{
-		Module: inventory.Module, Services: names,
-		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, ServiceGraph: inventory.ServiceGraph,
+		Module: inventory.Module, UnitNames: names,
+		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: inventory.AppProject, Promotable: true,
 	}
@@ -221,14 +228,24 @@ func ValidateServiceSnapshot(root string) error {
 	return validateInventory(&inventory, &actual, "service snapshot")
 }
 
-func validateServiceSnapshotCoverage(inventory *Inventory) error {
+func renderedUnits(inventory *Inventory) []InventoryUnit {
+	rendered := make([]InventoryUnit, 0, len(inventory.Units))
+	for _, unit := range inventory.Units {
+		if unit.Path != "" {
+			rendered = append(rendered, unit)
+		}
+	}
+	return rendered
+}
+
+func validateSnapshotCoverage(inventory *Inventory) error {
 	covered := make(map[string]bool)
 	if inventory.ModulePath != "" {
 		covered[inventory.ModulePath] = false
 	}
-	for _, service := range inventory.ServiceGraph {
-		if service.Path != "" {
-			covered[service.Path] = false
+	for _, unit := range inventory.Units {
+		if unit.Path != "" {
+			covered[unit.Path] = false
 		}
 	}
 	for _, file := range inventory.Files {
@@ -254,46 +271,49 @@ func validateServiceSnapshotCoverage(inventory *Inventory) error {
 	return nil
 }
 
-func validateInventoryServiceGraph(inventory *Inventory) error {
-	if inventory.Service != "" {
-		if len(inventory.ServiceGraph) != 0 {
-			return fmt.Errorf("service render inventory must not contain a module service graph")
+func validateInventoryUnits(inventory *Inventory) error {
+	if inventory.Unit != "" {
+		if len(inventory.Units) != 0 {
+			return fmt.Errorf("standalone unit render inventory must not contain a module unit graph")
 		}
 		return nil
 	}
 	previous := ""
-	for _, service := range inventory.ServiceGraph {
-		if service.Service == "" || service.Module != inventory.Module {
-			return fmt.Errorf("render inventory contains invalid service graph entry %q/%q", service.Module, service.Service)
+	for _, unit := range inventory.Units {
+		if unit.Name == "" || unit.Module != inventory.Module {
+			return fmt.Errorf("render inventory contains invalid unit graph entry %q/%q", unit.Module, unit.Name)
 		}
-		if previous != "" && service.Service <= previous {
-			return fmt.Errorf("render inventory service graph is not strictly sorted")
+		directory, ok := unitDirectory(unit.Kind)
+		if !ok {
+			return fmt.Errorf("render inventory unit %s has unknown kind %q", unit.Name, unit.Kind)
 		}
-		previous = service.Service
-		if service.Managed {
-			if service.Bootstrap {
-				expectedPath := filepath.ToSlash(filepath.Join("services", service.Service))
-				if service.Path != expectedPath {
-					return fmt.Errorf("managed bootstrap service %s render path is %q, expected %q", service.Service, service.Path, expectedPath)
+		if previous != "" && unit.Name <= previous {
+			return fmt.Errorf("render inventory unit graph is not strictly sorted")
+		}
+		previous = unit.Name
+		expectedPath := filepath.ToSlash(filepath.Join(directory, unit.Name))
+		if unit.Managed {
+			if unit.Bootstrap {
+				if unit.Path != expectedPath {
+					return fmt.Errorf("managed bootstrap unit %s render path is %q, expected %q", unit.Name, unit.Path, expectedPath)
 				}
 				if inventory.OwnedPath != "" {
-					if err := validateInventoryKubernetesOutput(service.Service, service.Output); err != nil {
+					if err := validateInventoryKubernetesOutput(unit.Name, unit.Output); err != nil {
 						return err
 					}
 				}
-			} else if service.Path != "" || service.Output != nil {
-				return fmt.Errorf("managed service %s without bootstrap output must not contain a rendered path or output", service.Service)
+			} else if unit.Path != "" || unit.Output != nil {
+				return fmt.Errorf("managed unit %s without bootstrap output must not contain a rendered path or output", unit.Name)
 			}
 			continue
 		}
-		expectedPath := filepath.ToSlash(filepath.Join("services", service.Service))
-		if service.Path != expectedPath {
-			return fmt.Errorf("service %s render path is %q, expected %q", service.Service, service.Path, expectedPath)
+		if unit.Path != expectedPath {
+			return fmt.Errorf("unit %s render path is %q, expected %q", unit.Name, unit.Path, expectedPath)
 		}
 		if inventory.OwnedPath == "" {
 			continue
 		}
-		if err := validateInventoryKubernetesOutput(service.Service, service.Output); err != nil {
+		if err := validateInventoryKubernetesOutput(unit.Name, unit.Output); err != nil {
 			return err
 		}
 	}
@@ -341,8 +361,8 @@ func validateInventory(inventory, actual *Inventory, label string) error {
 }
 
 func validateTree(root string, opts *RenderOptions) error {
-	if opts.Service == "" && len(opts.Services) > 0 {
-		if err := validateServiceDirectories(root, opts.Services, opts.Environment); err != nil {
+	if opts.Unit == "" && opts.CheckUnitDirectories {
+		if err := validateUnitDirectories(root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment); err != nil {
 			return err
 		}
 	}
@@ -419,41 +439,59 @@ func validateTree(root string, opts *RenderOptions) error {
 	return nil
 }
 
-func validateServiceDirectories(root string, services []string, environment string) error {
-	serviceRoot := filepath.Join(root, "services")
-	entries, err := os.ReadDir(serviceRoot)
-	if err != nil {
-		return fmt.Errorf("read rendered service graph: %w", err)
-	}
-	expected := make(map[string]struct{}, len(services))
-	for _, service := range services {
-		expected[service] = struct{}{}
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			return fmt.Errorf("rendered service graph contains unexpected file %s", entry.Name())
+func validateUnitDirectories(root string, units []InventoryUnit, environment string) error {
+	byDirectory := make(map[string]map[string]struct{})
+	for _, unit := range units {
+		directory, ok := unitDirectory(unit.Kind)
+		if !ok {
+			return fmt.Errorf("rendered unit %s has unknown kind %q", unit.Name, unit.Kind)
 		}
-		if _, exists := expected[entry.Name()]; !exists {
-			return fmt.Errorf("rendered service graph contains unexpected service %s", entry.Name())
+		if _, exists := byDirectory[directory]; !exists {
+			byDirectory[directory] = make(map[string]struct{})
 		}
-		delete(expected, entry.Name())
+		byDirectory[directory][unit.Name] = struct{}{}
 	}
-	if len(expected) > 0 {
-		missing := make([]string, 0, len(expected))
-		for service := range expected {
-			missing = append(missing, service)
-		}
-		sort.Strings(missing)
-		return fmt.Errorf("rendered service graph is missing services %v", missing)
+	directories := make([]string, 0, len(byDirectory))
+	for directory := range byDirectory {
+		directories = append(directories, directory)
 	}
-	for _, service := range services {
-		overlay := filepath.Join(serviceRoot, service, "overlays", environment)
-		info, err := os.Stat(overlay)
+	sort.Strings(directories)
+	for _, directory := range directories {
+		unitRoot := filepath.Join(root, directory)
+		entries, err := os.ReadDir(unitRoot)
 		if err != nil {
-			return fmt.Errorf("service %s environment overlay %s: %w", service, environment, err)
+			return fmt.Errorf("read rendered unit graph: %w", err)
 		}
-		if !info.IsDir() {
-			return fmt.Errorf("service %s environment overlay %s is not a directory", service, environment)
+		expected := make(map[string]struct{}, len(byDirectory[directory]))
+		for name := range byDirectory[directory] {
+			expected[name] = struct{}{}
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				return fmt.Errorf("rendered unit graph contains unexpected file %s", entry.Name())
+			}
+			if _, exists := expected[entry.Name()]; !exists {
+				return fmt.Errorf("rendered unit graph contains unexpected unit %s", entry.Name())
+			}
+			delete(expected, entry.Name())
+		}
+		if len(expected) > 0 {
+			missing := make([]string, 0, len(expected))
+			for name := range expected {
+				missing = append(missing, name)
+			}
+			sort.Strings(missing)
+			return fmt.Errorf("rendered unit graph is missing units %v", missing)
+		}
+		for name := range byDirectory[directory] {
+			overlay := filepath.Join(unitRoot, name, "overlays", environment)
+			info, err := os.Stat(overlay)
+			if err != nil {
+				return fmt.Errorf("unit %s environment overlay %s: %w", name, environment, err)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("unit %s environment overlay %s is not a directory", name, environment)
+			}
 		}
 	}
 	return nil
@@ -925,20 +963,23 @@ func metadataString(value map[string]any, key string) string {
 func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
-		Module:        opts.Module, Service: opts.Service, Environment: opts.Environment,
+		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
-		ModulePath:   filepath.ToSlash(opts.ModulePath),
-		ServiceGraph: append([]InventoryService(nil), opts.ServiceGraph...),
+		ModulePath: filepath.ToSlash(opts.ModulePath),
+		Units:      append([]InventoryUnit(nil), opts.Units...),
 	}
-	if len(inventory.ServiceGraph) == 0 {
-		for _, service := range opts.Services {
-			inventory.ServiceGraph = append(inventory.ServiceGraph, InventoryService{
-				Module: opts.Module, Service: service, Path: filepath.ToSlash(filepath.Join("services", service)),
+	if len(inventory.Units) == 0 {
+		serviceDir, _ := unitDirectory(UnitKindService)
+		for _, name := range opts.UnitNames {
+			inventory.Units = append(inventory.Units, InventoryUnit{
+				Kind:   UnitKindService,
+				Module: opts.Module, Name: name,
+				Path: filepath.ToSlash(filepath.Join(serviceDir, name)),
 			})
 		}
 	}
-	sort.Slice(inventory.ServiceGraph, func(i, j int) bool {
-		return inventory.ServiceGraph[i].Service < inventory.ServiceGraph[j].Service
+	sort.Slice(inventory.Units, func(i, j int) bool {
+		return inventory.Units[i].Name < inventory.Units[j].Name
 	})
 	hash := sha256.New()
 	err := walkRegularFiles(root, func(path, relative string, info os.FileInfo) error {

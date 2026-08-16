@@ -166,13 +166,13 @@ func TestObserveRejectsSignedPublicationWithDifferentServiceBytes(t *testing.T) 
 		t.Fatal(err)
 	}
 	updated, err := buildInventory(target, &RenderOptions{
-		Module:       inventory.Module,
-		Services:     inventoryServiceNames(inventory.ServiceGraph),
-		OwnedPath:    inventory.OwnedPath,
-		ServiceGraph: inventory.ServiceGraph,
-		Environment:  inventory.Environment,
-		AppProject:   inventory.AppProject,
-		Promotable:   true,
+		Module:      inventory.Module,
+		UnitNames:   inventoryUnitNames(inventory.Units),
+		OwnedPath:   inventory.OwnedPath,
+		Units:       inventory.Units,
+		Environment: inventory.Environment,
+		AppProject:  inventory.AppProject,
+		Promotable:  true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -302,9 +302,9 @@ func observedPublication(t *testing.T) ObserveRequest {
 	workspace := loadGitopsWorkspace(t, remote)
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: destination, Module: "payments", Services: []string{"api"}, Environment: "local",
+		Destination: destination, Module: "payments", UnitNames: []string{"api"}, Environment: "local",
 		AppProject: "payments", OwnedPath: "environments/deployments/modules/payments",
-		ServiceGraph: promotableServiceGraph("payments", []string{"api"}), Promotable: true,
+		Units: promotableServiceGraph("payments", []string{"api"}), Promotable: true,
 	}, func(ctx context.Context, stage string) error {
 		service := filepath.Join(stage, "services", "api", "overlays", "local")
 		if err := os.MkdirAll(service, 0o755); err != nil {

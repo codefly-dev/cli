@@ -62,7 +62,7 @@ func (f fakeManifestProducer) Produce(ctx context.Context, request ProduceReques
 		OwnedPath: filepath.ToSlash(filepath.Join(
 			request.Workspace.Gitops.Path, "deployments", "modules", f.module,
 		)),
-		ServiceGraph: promotableServiceGraph(f.module, f.services),
+		Units: promotableServiceGraph(f.module, f.services),
 	}, func(_ context.Context, stage string) error {
 		for _, service := range f.services {
 			overlay := filepath.Join(stage, "services", service, "overlays", f.environment)

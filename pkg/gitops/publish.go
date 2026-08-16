@@ -265,36 +265,36 @@ func loadPublicationInventory(
 	if err != nil {
 		return Inventory{}, err
 	}
-	if inventory.Module != request.Module || inventory.Environment != request.Environment || inventory.Service != "" {
+	if inventory.Module != request.Module || inventory.Environment != request.Environment || inventory.Unit != "" {
 		return Inventory{}, fmt.Errorf(
-			"render inventory targets module %q environment %q service %q",
+			"render inventory targets module %q environment %q unit %q",
 			inventory.Module,
 			inventory.Environment,
-			inventory.Service,
+			inventory.Unit,
 		)
 	}
 	expectedOwnedPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules", request.Module))
 	if inventory.OwnedPath != expectedOwnedPath {
 		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
 	}
-	if err := validateModuleServiceGraph(
+	if err := validateModuleUnits(
 		ctx,
 		workspace,
 		request.Module,
 		request.Environment,
-		inventory.ServiceGraph,
+		inventory.Units,
 	); err != nil {
 		return Inventory{}, err
 	}
 	return inventory, nil
 }
 
-func validateModuleServiceGraph(
+func validateModuleUnits(
 	ctx context.Context,
 	workspace *resources.Workspace,
 	moduleName string,
 	environment string,
-	rendered []InventoryService,
+	rendered []InventoryUnit,
 ) error {
 	module, err := workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
@@ -311,23 +311,23 @@ func validateModuleServiceGraph(
 	}
 	sort.Strings(declared)
 	actual := make([]string, 0, len(rendered))
-	for _, service := range rendered {
-		if service.Module != moduleName {
-			return fmt.Errorf("rendered service %q belongs to module %q, expected %q", service.Service, service.Module, moduleName)
+	for _, unit := range rendered {
+		if unit.Module != moduleName {
+			return fmt.Errorf("rendered unit %q belongs to module %q, expected %q", unit.Name, unit.Module, moduleName)
 		}
-		_, expectedManaged := managed[service.Service]
-		if service.Managed != expectedManaged {
-			return fmt.Errorf("rendered service %q managed state differs from environment %q", service.Service, environment)
+		_, expectedManaged := managed[unit.Name]
+		if unit.Managed != expectedManaged {
+			return fmt.Errorf("rendered unit %q managed state differs from environment %q", unit.Name, environment)
 		}
-		actual = append(actual, service.Service)
+		actual = append(actual, unit.Name)
 	}
 	sort.Strings(actual)
 	if len(actual) != len(declared) {
-		return fmt.Errorf("rendered service graph %v differs from module service graph %v", actual, declared)
+		return fmt.Errorf("rendered unit graph %v differs from module service graph %v", actual, declared)
 	}
 	for index := range declared {
 		if actual[index] != declared[index] {
-			return fmt.Errorf("rendered service graph %v differs from module service graph %v", actual, declared)
+			return fmt.Errorf("rendered unit graph %v differs from module service graph %v", actual, declared)
 		}
 	}
 	return nil
@@ -362,7 +362,11 @@ func prepareServicePublication(
 	if err != nil {
 		return "", Inventory{}, err
 	}
-	if err := removePublicationRemainder(target); err != nil {
+	unitDirs, err := inventoryUnitDirectories(renderedInventory)
+	if err != nil {
+		return "", Inventory{}, err
+	}
+	if err = removePublicationRemainder(target, unitDirs); err != nil {
 		return "", Inventory{}, err
 	}
 	if module.Agent != nil {
@@ -388,14 +392,14 @@ func prepareServicePublication(
 			return "", Inventory{}, fmt.Errorf("inspect rendered bootstrap: %w", statErr)
 		}
 	}
-	if err := verifyServiceSnapshotBinding(ctx, repo, snapshot.revision, snapshot.servicePath); err != nil {
+	if err = verifyServiceSnapshotBinding(ctx, repo, snapshot.revision, snapshot.servicePaths); err != nil {
 		return "", Inventory{}, err
 	}
 	if err := validateBootstrapRevision(filepath.Join(target, "bootstrap"), snapshot.revision); err != nil {
 		return "", Inventory{}, err
 	}
 	if module.Agent != nil {
-		if err := validateBootstrapServiceGraph(
+		if err = validateBootstrapUnits(
 			filepath.Join(target, "bootstrap"),
 			targetPath,
 			renderedInventory,
@@ -406,15 +410,16 @@ func prepareServicePublication(
 	}
 
 	options := &RenderOptions{
-		Module:       renderedInventory.Module,
-		Services:     snapshot.services,
-		OwnedPath:    targetPath,
-		ModulePath:   renderedInventory.ModulePath,
-		ServiceGraph: renderedInventory.ServiceGraph,
-		Environment:  renderedInventory.Environment,
-		Namespace:    renderedInventory.Namespace,
-		AppProject:   renderedInventory.AppProject,
-		Promotable:   true,
+		Module:               renderedInventory.Module,
+		UnitNames:            snapshot.services,
+		OwnedPath:            targetPath,
+		ModulePath:           renderedInventory.ModulePath,
+		Units:                renderedInventory.Units,
+		Environment:          renderedInventory.Environment,
+		Namespace:            renderedInventory.Namespace,
+		AppProject:           renderedInventory.AppProject,
+		Promotable:           true,
+		CheckUnitDirectories: true,
 	}
 	if err := validateTree(target, options); err != nil {
 		return "", Inventory{}, fmt.Errorf("validate generated publication: %w", err)
@@ -433,9 +438,9 @@ func prepareServicePublication(
 }
 
 type serviceSnapshotPreparation struct {
-	revision    string
-	services    []string
-	servicePath string
+	revision     string
+	services     []string
+	servicePaths []string
 }
 
 func prepareServiceSnapshot(
@@ -449,13 +454,24 @@ func prepareServiceSnapshot(
 	environment string,
 	publishSnapshot bool,
 ) (serviceSnapshotPreparation, error) {
-	renderedServices := filepath.Join(rendered, "services")
-	if info, err := os.Stat(renderedServices); err != nil || !info.IsDir() {
-		return serviceSnapshotPreparation{}, fmt.Errorf("rendered module contains no service snapshot")
+	unitDirs, dirErr := inventoryUnitDirectories(renderedInventory)
+	if dirErr != nil {
+		return serviceSnapshotPreparation{}, dirErr
 	}
-	servicePath := filepath.ToSlash(filepath.Join(targetPath, "services"))
-	if err := replaceCloneTree(renderedServices, repo, servicePath); err != nil {
-		return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered services: %w", err)
+	if len(unitDirs) == 0 {
+		return serviceSnapshotPreparation{}, fmt.Errorf("rendered module contains no unit snapshot")
+	}
+	servicePaths := make([]string, 0, len(unitDirs))
+	for _, directory := range unitDirs {
+		renderedUnitDir := filepath.Join(rendered, directory)
+		if info, statErr := os.Stat(renderedUnitDir); statErr != nil || !info.IsDir() {
+			return serviceSnapshotPreparation{}, fmt.Errorf("rendered module contains no %s snapshot", directory)
+		}
+		unitPath := filepath.ToSlash(filepath.Join(targetPath, directory))
+		if err := replaceCloneTree(renderedUnitDir, repo, unitPath); err != nil {
+			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered %s: %w", directory, err)
+		}
+		servicePaths = append(servicePaths, unitPath)
 	}
 	if renderedInventory.ModulePath != "" {
 		renderedModule := filepath.Join(rendered, filepath.FromSlash(renderedInventory.ModulePath))
@@ -464,27 +480,27 @@ func prepareServiceSnapshot(
 			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered module resources: %w", err)
 		}
 	}
-	if _, err := gitCommand(ctx, repo, "add", "-A", "--", servicePath); err != nil {
+	if _, err := gitCommand(ctx, repo, append([]string{"add", "-A", "--"}, servicePaths...)...); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
 	existingSnapshot, err := existingServiceSnapshot(ctx, repo, module.Name, environment, filepath.Join(target, "bootstrap"))
 	if err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
-	if err := removePublicationRemainder(target); err != nil {
+	if err = removePublicationRemainder(target, unitDirs); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
-	serviceNames := inventoryServiceNames(renderedInventory.ServiceGraph)
+	serviceNames := inventoryUnitNames(renderedInventory.Units)
 	snapshotOptions := &RenderOptions{
-		Module:       renderedInventory.Module,
-		Services:     serviceNames,
-		OwnedPath:    targetPath,
-		ModulePath:   renderedInventory.ModulePath,
-		ServiceGraph: renderedInventory.ServiceGraph,
-		Environment:  renderedInventory.Environment,
-		Namespace:    renderedInventory.Namespace,
-		AppProject:   renderedInventory.AppProject,
-		Promotable:   true,
+		Module:      renderedInventory.Module,
+		UnitNames:   serviceNames,
+		OwnedPath:   targetPath,
+		ModulePath:  renderedInventory.ModulePath,
+		Units:       renderedInventory.Units,
+		Environment: renderedInventory.Environment,
+		Namespace:   renderedInventory.Namespace,
+		AppProject:  renderedInventory.AppProject,
+		Promotable:  true,
 	}
 	snapshotInventory, err := buildInventory(target, snapshotOptions)
 	if err != nil {
@@ -527,17 +543,17 @@ func prepareServiceSnapshot(
 		}
 	}
 	return serviceSnapshotPreparation{
-		revision:    snapshotRevision,
-		services:    serviceNames,
-		servicePath: servicePath,
+		revision:     snapshotRevision,
+		services:     serviceNames,
+		servicePaths: servicePaths,
 	}, nil
 }
 
-func verifyServiceSnapshotBinding(ctx context.Context, repo, snapshotRevision, servicePath string) error {
-	if _, err := gitCommand(ctx, repo, "add", "-A", "--", servicePath); err != nil {
+func verifyServiceSnapshotBinding(ctx context.Context, repo, snapshotRevision string, servicePaths []string) error {
+	if _, err := gitCommand(ctx, repo, append([]string{"add", "-A", "--"}, servicePaths...)...); err != nil {
 		return err
 	}
-	changed, err := stagedPathsSince(ctx, repo, snapshotRevision, servicePath)
+	changed, err := stagedPathsSince(ctx, repo, snapshotRevision, servicePaths...)
 	if err != nil {
 		return err
 	}
@@ -569,15 +585,40 @@ func canonicalInventory(inventory *Inventory) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-func inventoryServiceNames(graph []InventoryService) []string {
-	services := make([]string, 0, len(graph))
-	for _, service := range graph {
-		if service.Path != "" {
-			services = append(services, service.Service)
+func inventoryUnitNames(units []InventoryUnit) []string {
+	names := make([]string, 0, len(units))
+	for _, unit := range units {
+		if unit.Path != "" {
+			names = append(names, unit.Name)
 		}
 	}
-	sort.Strings(services)
-	return services
+	sort.Strings(names)
+	return names
+}
+
+// inventoryUnitDirectories returns the distinct, sorted render subdirectories
+// holding the inventory's rendered units. It replaces the hardcoded "services"
+// directory throughout the publication and observation paths so a new unit kind
+// (registered in unitDirectory) flows through staging, pruning, and the
+// immutability check without further edits.
+func inventoryUnitDirectories(inventory *Inventory) ([]string, error) {
+	seen := make(map[string]struct{})
+	for _, unit := range inventory.Units {
+		if unit.Path == "" {
+			continue
+		}
+		directory, ok := unitDirectory(unit.Kind)
+		if !ok {
+			return nil, fmt.Errorf("inventory unit %s has unknown kind %q", unit.Name, unit.Kind)
+		}
+		seen[directory] = struct{}{}
+	}
+	directories := make([]string, 0, len(seen))
+	for directory := range seen {
+		directories = append(directories, directory)
+	}
+	sort.Strings(directories)
+	return directories, nil
 }
 
 func existingServiceSnapshot(
@@ -690,13 +731,17 @@ func serviceSnapshotBranch(module, environment string) string {
 	return "codefly/snapshot-" + sanitizeRef(module) + "-" + sanitizeRef(environment)
 }
 
-func removePublicationRemainder(target string) error {
+func removePublicationRemainder(target string, unitDirs []string) error {
+	keep := map[string]struct{}{moduleBundleDir: {}}
+	for _, directory := range unitDirs {
+		keep[directory] = struct{}{}
+	}
 	entries, err := os.ReadDir(target)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() == "services" || entry.Name() == "module" {
+		if _, ok := keep[entry.Name()]; ok {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(target, entry.Name())); err != nil {
@@ -730,22 +775,22 @@ func validateBootstrapRevision(root, expected string) error {
 	})
 }
 
-func validateBootstrapServiceGraph(root, targetPath string, inventory *Inventory, environment string) error {
-	expected := make(map[string]struct{}, len(inventory.ServiceGraph)+1)
+func validateBootstrapUnits(root, targetPath string, inventory *Inventory, environment string) error {
+	expected := make(map[string]struct{}, len(inventory.Units)+1)
 	if inventory.ModulePath != "" {
 		path := filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment))
 		expected[path] = struct{}{}
 	}
-	for _, service := range inventory.ServiceGraph {
-		if service.Path == "" {
+	for _, unit := range inventory.Units {
+		if unit.Path == "" {
 			continue
 		}
-		path := filepath.ToSlash(filepath.Join(targetPath, service.Path, "overlays", environment))
+		path := filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment))
 		expected[path] = struct{}{}
 	}
 	err := walkBootstrapApplications(root, func(path, _ string, sourcePath string) error {
 		if _, exists := expected[sourcePath]; !exists {
-			return fmt.Errorf("bootstrap Application %s targets service path %q outside the rendered service graph", path, sourcePath)
+			return fmt.Errorf("bootstrap Application %s targets unit path %q outside the rendered unit graph", path, sourcePath)
 		}
 		delete(expected, sourcePath)
 		return nil

@@ -8,27 +8,55 @@ import (
 
 const (
 	InventoryFilename     = ".codefly-render.json"
-	SchemaVersion         = 3
+	SchemaVersion         = 4
 	EvidenceSchemaVersion = 1
 )
 
-type Inventory struct {
-	SchemaVersion int                `json:"schemaVersion"`
-	Module        string             `json:"module"`
-	Service       string             `json:"service,omitempty"`
-	Environment   string             `json:"environment"`
-	Namespace     string             `json:"namespace,omitempty"`
-	AppProject    string             `json:"appProject"`
-	OwnedPath     string             `json:"ownedPath"`
-	ModulePath    string             `json:"modulePath,omitempty"`
-	ServiceGraph  []InventoryService `json:"serviceGraph"`
-	Files         []InventoryFile    `json:"files"`
-	Digest        string             `json:"digest"`
+// UnitKindService is the artifact kind for a codefly service. It is the only
+// kind rendered today; new kinds (jobs, applications, solutions) register their
+// own render subdirectory in unitDirectory.
+const UnitKindService = "service"
+
+// moduleBundleDir is the render subdirectory holding the module-level bundle. It
+// sits beside the per-unit directories but is not itself a unit, so it is not
+// derived from unitDirectory.
+const moduleBundleDir = "module"
+
+// serviceUnitDir is the render subdirectory holding service units.
+const serviceUnitDir = "services"
+
+// unitDirectory maps an artifact kind to the render subdirectory that holds its
+// units, reporting whether the kind is known. Generalizing the render path
+// beyond services is a matter of adding a case here rather than threading a new
+// shape through the inventory. The ok return keeps callers from ever joining an
+// empty segment for an unrecognized kind.
+func unitDirectory(kind string) (string, bool) {
+	switch kind {
+	case UnitKindService:
+		return serviceUnitDir, true
+	default:
+		return "", false
+	}
 }
 
-type InventoryService struct {
+type Inventory struct {
+	SchemaVersion int             `json:"schemaVersion"`
+	Module        string          `json:"module"`
+	Unit          string          `json:"unit,omitempty"`
+	Environment   string          `json:"environment"`
+	Namespace     string          `json:"namespace,omitempty"`
+	AppProject    string          `json:"appProject"`
+	OwnedPath     string          `json:"ownedPath"`
+	ModulePath    string          `json:"modulePath,omitempty"`
+	Units         []InventoryUnit `json:"units"`
+	Files         []InventoryFile `json:"files"`
+	Digest        string          `json:"digest"`
+}
+
+type InventoryUnit struct {
+	Kind      string                     `json:"kind"`
 	Module    string                     `json:"module"`
-	Service   string                     `json:"service"`
+	Name      string                     `json:"name"`
 	Path      string                     `json:"path,omitempty"`
 	Managed   bool                       `json:"managed,omitempty"`
 	Bootstrap bool                       `json:"bootstrap,omitempty"`
@@ -59,17 +87,22 @@ type InventoryFile struct {
 }
 
 type RenderOptions struct {
-	Destination  string
-	Module       string
-	Service      string
-	Services     []string
-	Environment  string
-	Namespace    string
-	AppProject   string
-	Promotable   bool
-	OwnedPath    string
-	ModulePath   string
-	ServiceGraph []InventoryService
+	Destination string
+	Module      string
+	Unit        string
+	UnitNames   []string
+	Environment string
+	Namespace   string
+	AppProject  string
+	Promotable  bool
+	// CheckUnitDirectories asks validateTree to verify the on-disk unit
+	// directories against Units. It is an explicit intent flag rather than an
+	// inference from a populated field so the trigger and the data (Units)
+	// cannot silently disagree.
+	CheckUnitDirectories bool
+	OwnedPath            string
+	ModulePath           string
+	Units                []InventoryUnit
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {

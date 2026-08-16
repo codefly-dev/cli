@@ -384,20 +384,20 @@ func renderMindShapedFixture(t *testing.T, root, environment string) {
 	if environment == "aws" {
 		services = services[:0]
 		for index := range graph {
-			if _, managed := mindShapedAWSManagedServices[graph[index].Service]; managed {
+			if _, managed := mindShapedAWSManagedServices[graph[index].Name]; managed {
 				graph[index].Managed = true
 				graph[index].Path = ""
 				graph[index].Output = nil
 				continue
 			}
-			services = append(services, graph[index].Service)
+			services = append(services, graph[index].Name)
 		}
 	}
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: filepath.Join(root, "deployments", "modules", "payments"),
-		Module:      "payments", Services: services, Environment: environment,
+		Module:      "payments", UnitNames: services, Environment: environment,
 		AppProject: "payments", OwnedPath: "environments/deployments/modules/payments",
-		ServiceGraph: graph, Promotable: true,
+		Units: graph, Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		for _, service := range services {
 			overlay := filepath.Join(root, "services", service, "overlays", environment)

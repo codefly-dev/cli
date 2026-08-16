@@ -16,6 +16,47 @@ import (
 
 var preparedPermit = mutationauthority.NewPreparedPermit()
 
+func TestInventoryUnitDirectoriesAreDistinctAndKindChecked(t *testing.T) {
+	dirs, err := inventoryUnitDirectories(&Inventory{Units: []InventoryUnit{
+		{Kind: UnitKindService, Name: "api", Path: "services/api"},
+		{Kind: UnitKindService, Name: "web", Path: "services/web"},
+		{Kind: UnitKindService, Name: "managed"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) != 1 || dirs[0] != "services" {
+		t.Fatalf("unit directories = %v, want [services]", dirs)
+	}
+	if _, err := inventoryUnitDirectories(&Inventory{Units: []InventoryUnit{
+		{Kind: "solution", Name: "checkout", Path: "solutions/checkout"},
+	}}); err == nil || !strings.Contains(err.Error(), "unknown kind") {
+		t.Fatalf("error = %v, want unknown kind rejection", err)
+	}
+}
+
+func TestRemovePublicationRemainderPreservesEveryUnitDirectory(t *testing.T) {
+	target := t.TempDir()
+	for _, name := range []string{"services", "solutions", "module", "bootstrap", "stray"} {
+		if err := os.MkdirAll(filepath.Join(target, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := removePublicationRemainder(target, []string{"services", "solutions"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, kept := range []string{"services", "solutions", "module"} {
+		if _, err := os.Stat(filepath.Join(target, kept)); err != nil {
+			t.Fatalf("directory %s was removed: %v", kept, err)
+		}
+	}
+	for _, removed := range []string{"bootstrap", "stray"} {
+		if _, err := os.Stat(filepath.Join(target, removed)); !os.IsNotExist(err) {
+			t.Fatalf("directory %s survived pruning: %v", removed, err)
+		}
+	}
+}
+
 func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	ctx := context.Background()
 	remote := createBareRepository(t)
@@ -81,7 +122,7 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 		"show",
 		result.SnapshotRevision+":"+result.Path+"/"+InventoryFilename,
 	)
-	if !strings.Contains(serviceInventory, `"serviceGraph": [`) || !strings.Contains(serviceInventory, `"service": "api"`) {
+	if !strings.Contains(serviceInventory, `"units": [`) || !strings.Contains(serviceInventory, `"name": "api"`) {
 		t.Fatalf("immutable service inventory = %s", serviceInventory)
 	}
 	raw := gitOutput(t, "", "--git-dir", remote, "cat-file", "-p", result.Commit)
@@ -303,8 +344,8 @@ spec:
 		Environment:   "production",
 		Namespace:     "payments",
 		AppProject:    "payments-production",
-		ServiceGraph: []InventoryService{{
-			Module: "payments", Service: "store", Path: "services/store",
+		Units: []InventoryUnit{{
+			Kind: UnitKindService, Module: "payments", Name: "store", Path: "services/store",
 			Managed: true, Bootstrap: true,
 		}},
 	}
@@ -1088,10 +1129,10 @@ func renderPublishFixture(t *testing.T, root, module, environment, name string) 
 	t.Helper()
 	destination := filepath.Join(root, "deployments", "modules", module)
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: destination, Module: module, Services: []string{"api"},
-		OwnedPath:    filepath.ToSlash(filepath.Join("environments", "deployments", "modules", module)),
-		ServiceGraph: promotableServiceGraph(module, []string{"api"}),
-		Environment:  environment, Namespace: "payments", AppProject: "payments", Promotable: true,
+		Destination: destination, Module: module, UnitNames: []string{"api"},
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", module)),
+		Units:       promotableServiceGraph(module, []string{"api"}),
+		Environment: environment, Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, stage string) error {
 		return writePublishServiceFixture(stage, environment, name)
 	})
@@ -1114,11 +1155,11 @@ func renderPublishFixtureWithModuleAgent(t *testing.T, workspace *resources.Work
 	graph := promotableServiceGraph(moduleName, []string{"api"})
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", moduleName)
 	_, err = RenderOwnedTree(ctx, &RenderOptions{
-		Destination: destination, Module: moduleName, Services: []string{"api"},
-		OwnedPath:    filepath.ToSlash(filepath.Join("environments", "deployments", "modules", moduleName)),
-		ModulePath:   "module",
-		ServiceGraph: graph,
-		Environment:  environmentName, Namespace: environment.Namespace,
+		Destination: destination, Module: moduleName, UnitNames: []string{"api"},
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", moduleName)),
+		ModulePath:  "module",
+		Units:       graph,
+		Environment: environmentName, Namespace: environment.Namespace,
 		AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, stage string) error {
 		if err := writePublishServiceFixture(stage, environmentName, name); err != nil {
