@@ -75,7 +75,7 @@ func renderModuleTree(
 				false,
 				sink,
 				func(_ *resources.Module, rendered *resources.Service) string {
-					return filepath.Join(stage, "services", rendered.Name)
+					return filepath.Join(stage, unitDirectory(UnitKindService), rendered.Name)
 				},
 				func(rendered map[string]*builderv0.DeploymentOutput) {
 					for unique, output := range rendered {
@@ -86,16 +86,18 @@ func renderModuleTree(
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
 		}
+		unitDir := unitDirectory(UnitKindService)
 		for _, service := range services {
 			_, managed := env.ManagedServices[service.Name]
-			entry := InventoryService{
+			entry := InventoryUnit{
+				Kind:    UnitKindService,
 				Module:  module.Name,
-				Service: service.Name,
+				Name:    service.Name,
 				Managed: managed,
 			}
 			if managed {
 				bootstrap, err := retainManagedBootstrap(
-					filepath.Join(stage, "services", service.Name),
+					filepath.Join(stage, unitDir, service.Name),
 					service.Name,
 					env.Name,
 				)
@@ -103,25 +105,25 @@ func renderModuleTree(
 					return fmt.Errorf("select managed service %s bootstrap output: %w", service.Name, err)
 				}
 				if bootstrap {
-					entry.Path = filepath.ToSlash(filepath.Join("services", service.Name))
+					entry.Path = filepath.ToSlash(filepath.Join(unitDir, service.Name))
 					entry.Bootstrap = true
 					entry.Output = inventoryKubernetesOutput(outputs[resources.ServiceUnique(module.Name, service.Name)])
 				}
 			} else {
-				entry.Path = filepath.ToSlash(filepath.Join("services", service.Name))
+				entry.Path = filepath.ToSlash(filepath.Join(unitDir, service.Name))
 				entry.Output = inventoryKubernetesOutput(outputs[resources.ServiceUnique(module.Name, service.Name)])
 				if entry.Output == nil {
 					return fmt.Errorf("service %s returned no Kubernetes deployment evidence", service.Name)
 				}
 			}
-			options.ServiceGraph = append(options.ServiceGraph, entry)
+			options.Units = append(options.Units, entry)
 		}
-		sort.Slice(options.ServiceGraph, func(i, j int) bool {
-			return options.ServiceGraph[i].Service < options.ServiceGraph[j].Service
+		sort.Slice(options.Units, func(i, j int) bool {
+			return options.Units[i].Name < options.Units[j].Name
 		})
 		if module.Agent != nil {
 			modulePath := filepath.Join(stage, "module")
-			if err := renderModuleBundle(ctx, workspace, module, env, modulePath, options.ServiceGraph); err != nil {
+			if err := renderModuleBundle(ctx, workspace, module, env, modulePath, options.Units); err != nil {
 				return err
 			}
 			options.ModulePath = "module"
@@ -227,7 +229,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination,
 		Module:      module.Name,
-		Service:     service.Name,
+		Unit:        service.Name,
 		Environment: env.Name,
 		Namespace:   env.Namespace,
 		AppProject:  project,

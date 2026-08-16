@@ -40,7 +40,7 @@ func renderModuleBundle(
 	module *resources.Module,
 	environment *resources.Environment,
 	destination string,
-	graph []InventoryService,
+	graph []InventoryUnit,
 ) error {
 	binary, err := module.Agent.Path(ctx)
 	if err != nil {
@@ -212,7 +212,7 @@ func loadSelectedModuleBundle(
 	root string,
 	module string,
 	environment *resources.Environment,
-	graph []InventoryService,
+	graph []InventoryUnit,
 ) (moduleBundle, moduleBundleEnvironment, error) {
 	data, err := os.ReadFile(filepath.Join(root, "bundle.json"))
 	if err != nil {
@@ -273,9 +273,9 @@ func loadSelectedModuleBundle(
 	var expectedManaged []string
 	for _, service := range graph {
 		if service.Managed {
-			expectedManaged = append(expectedManaged, service.Service)
+			expectedManaged = append(expectedManaged, service.Name)
 		} else {
-			expectedServices = append(expectedServices, service.Service)
+			expectedServices = append(expectedServices, service.Name)
 		}
 	}
 	actualServices := append([]string(nil), selected.Services...)

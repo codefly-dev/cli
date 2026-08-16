@@ -108,15 +108,15 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 	if err != nil {
 		return ObserveResult{}, err
 	}
-	servicePaths := make(map[string]struct{}, len(inventory.ServiceGraph)+1)
+	servicePaths := make(map[string]struct{}, len(inventory.Units)+1)
 	if inventory.ModulePath != "" {
 		servicePaths[filepath.ToSlash(filepath.Join(request.Path, inventory.ModulePath, "overlays", request.Environment))] = struct{}{}
 	}
-	for _, service := range inventory.ServiceGraph {
-		if service.Path == "" {
+	for _, unit := range inventory.Units {
+		if unit.Path == "" {
 			continue
 		}
-		servicePaths[filepath.ToSlash(filepath.Join(request.Path, service.Path, "overlays", request.Environment))] = struct{}{}
+		servicePaths[filepath.ToSlash(filepath.Join(request.Path, unit.Path, "overlays", request.Environment))] = struct{}{}
 	}
 	review, err := observeReview(ctx, request.PullRequest, request.Commit, request.Repository, request.Local)
 	if err != nil {
@@ -639,7 +639,7 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 		snapshotInventory.AppProject != inventory.AppProject ||
 		snapshotInventory.OwnedPath != inventory.OwnedPath ||
 		snapshotInventory.ModulePath != inventory.ModulePath ||
-		!reflect.DeepEqual(snapshotInventory.ServiceGraph, inventory.ServiceGraph) {
+		!reflect.DeepEqual(snapshotInventory.Units, inventory.Units) {
 		return Inventory{}, fmt.Errorf("immutable service snapshot identity differs from the reviewed publication")
 	}
 	return inventory, nil

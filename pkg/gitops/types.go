@@ -8,27 +8,45 @@ import (
 
 const (
 	InventoryFilename     = ".codefly-render.json"
-	SchemaVersion         = 3
+	SchemaVersion         = 4
 	EvidenceSchemaVersion = 1
 )
 
-type Inventory struct {
-	SchemaVersion int                `json:"schemaVersion"`
-	Module        string             `json:"module"`
-	Service       string             `json:"service,omitempty"`
-	Environment   string             `json:"environment"`
-	Namespace     string             `json:"namespace,omitempty"`
-	AppProject    string             `json:"appProject"`
-	OwnedPath     string             `json:"ownedPath"`
-	ModulePath    string             `json:"modulePath,omitempty"`
-	ServiceGraph  []InventoryService `json:"serviceGraph"`
-	Files         []InventoryFile    `json:"files"`
-	Digest        string             `json:"digest"`
+// UnitKindService is the artifact kind for a codefly service. It is the only
+// kind rendered today; new kinds (jobs, applications, solutions) register their
+// own render subdirectory in unitDirectory.
+const UnitKindService = "service"
+
+// unitDirectory maps an artifact kind to the render subdirectory that holds its
+// units. Generalizing the render path beyond services is a matter of adding a
+// case here rather than threading a new shape through the inventory.
+func unitDirectory(kind string) string {
+	switch kind {
+	case UnitKindService:
+		return "services"
+	default:
+		return ""
+	}
 }
 
-type InventoryService struct {
+type Inventory struct {
+	SchemaVersion int             `json:"schemaVersion"`
+	Module        string          `json:"module"`
+	Unit          string          `json:"unit,omitempty"`
+	Environment   string          `json:"environment"`
+	Namespace     string          `json:"namespace,omitempty"`
+	AppProject    string          `json:"appProject"`
+	OwnedPath     string          `json:"ownedPath"`
+	ModulePath    string          `json:"modulePath,omitempty"`
+	Units         []InventoryUnit `json:"units"`
+	Files         []InventoryFile `json:"files"`
+	Digest        string          `json:"digest"`
+}
+
+type InventoryUnit struct {
+	Kind      string                     `json:"kind"`
 	Module    string                     `json:"module"`
-	Service   string                     `json:"service"`
+	Name      string                     `json:"name"`
 	Path      string                     `json:"path,omitempty"`
 	Managed   bool                       `json:"managed,omitempty"`
 	Bootstrap bool                       `json:"bootstrap,omitempty"`
@@ -59,17 +77,17 @@ type InventoryFile struct {
 }
 
 type RenderOptions struct {
-	Destination  string
-	Module       string
-	Service      string
-	Services     []string
-	Environment  string
-	Namespace    string
-	AppProject   string
-	Promotable   bool
-	OwnedPath    string
-	ModulePath   string
-	ServiceGraph []InventoryService
+	Destination string
+	Module      string
+	Unit        string
+	UnitNames   []string
+	Environment string
+	Namespace   string
+	AppProject  string
+	Promotable  bool
+	OwnedPath   string
+	ModulePath  string
+	Units       []InventoryUnit
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {

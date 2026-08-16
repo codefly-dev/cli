@@ -132,12 +132,12 @@ func generateArgoBootstrap(
 		}
 		resources = append(resources, filepath.ToSlash(filepath.Join("applications", name+".yaml")))
 	}
-	for _, service := range inventory.ServiceGraph {
-		if service.Path == "" {
+	for _, unit := range inventory.Units {
+		if unit.Path == "" {
 			continue
 		}
-		name := argoObjectName(inventory.Module, service.Service)
-		sourcePath := filepath.ToSlash(filepath.Join(targetPath, service.Path, "overlays", environment))
+		name := argoObjectName(inventory.Module, unit.Name)
+		sourcePath := filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment))
 		if err := writeArgoApplication(
 			filepath.Join(applications, name+".yaml"),
 			name,
@@ -202,9 +202,9 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 	if inventory.ModulePath != "" {
 		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.ModulePath), "overlays", environment))
 	}
-	for _, service := range inventory.ServiceGraph {
-		if service.Path != "" {
-			sources = append(sources, filepath.Join(target, filepath.FromSlash(service.Path), "overlays", environment))
+	for _, unit := range inventory.Units {
+		if unit.Path != "" {
+			sources = append(sources, filepath.Join(target, filepath.FromSlash(unit.Path), "overlays", environment))
 		}
 	}
 	cluster := make(map[string]argoResourceAuthority)

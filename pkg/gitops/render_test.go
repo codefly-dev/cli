@@ -22,11 +22,11 @@ spec:
           image: ghcr.io/codefly-dev/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `
 
-func promotableServiceGraph(module string, services []string) []InventoryService {
-	graph := make([]InventoryService, 0, len(services))
+func promotableServiceGraph(module string, services []string) []InventoryUnit {
+	graph := make([]InventoryUnit, 0, len(services))
 	for _, service := range services {
-		graph = append(graph, InventoryService{
-			Module: module, Service: service, Path: filepath.ToSlash(filepath.Join("services", service)),
+		graph = append(graph, InventoryUnit{
+			Kind: UnitKindService, Module: module, Name: service, Path: filepath.ToSlash(filepath.Join("services", service)),
 			Output: &KubernetesOutputInventory{
 				Kind: "KUSTOMIZE", Profile: "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
 				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
@@ -61,7 +61,7 @@ func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testin
 		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(pinnedDeployment), 0o644)
 	}
 	options := RenderOptions{
-		Destination: destination, Module: "payments", Services: []string{"api"},
+		Destination: destination, Module: "payments", UnitNames: []string{"api"},
 		Environment: "production", Promotable: true,
 	}
 	first, err := RenderOwnedTree(context.Background(), &options, render)
@@ -152,7 +152,7 @@ func TestValidateInventoryKubernetesOutputRejectsFailedOrMissingValidation(t *te
 	}
 }
 
-func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
+func TestRenderInventoryRecordsOwnedUnitGraph(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "deployments", "modules", "users")
 	output := &InventoryKubernetesOutput{
 		Kind:            "KUSTOMIZE",
@@ -173,9 +173,9 @@ func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
 		AppProject:  "mind-users-local",
 		Promotable:  true,
 		OwnedPath:   "deployments/modules/users",
-		ServiceGraph: []InventoryService{
-			{Module: "users", Service: "accounts", Path: "services/accounts", Output: output},
-			{Module: "users", Service: "store", Managed: true},
+		Units: []InventoryUnit{
+			{Kind: UnitKindService, Module: "users", Name: "accounts", Path: "services/accounts", Output: output},
+			{Kind: UnitKindService, Module: "users", Name: "store", Managed: true},
 		},
 	}, func(_ context.Context, root string) error {
 		service := filepath.Join(root, "services", "accounts")
@@ -194,9 +194,23 @@ func TestRenderInventoryRecordsOwnedServiceGraph(t *testing.T) {
 	}
 	if inventory.SchemaVersion != SchemaVersion || inventory.Namespace != "mind" ||
 		inventory.OwnedPath != "deployments/modules/users" ||
-		len(inventory.ServiceGraph) != 2 || inventory.ServiceGraph[0].Output == nil ||
-		!inventory.ServiceGraph[1].Managed {
+		len(inventory.Units) != 2 || inventory.Units[0].Output == nil ||
+		inventory.Units[0].Kind != UnitKindService || inventory.Units[1].Kind != UnitKindService ||
+		!inventory.Units[1].Managed {
 		t.Fatalf("inventory = %+v", inventory)
+	}
+}
+
+func TestValidateInventoryUnitsRejectsUnknownKind(t *testing.T) {
+	inventory := &Inventory{
+		Module: "users",
+		Units: []InventoryUnit{
+			{Kind: "solution", Module: "users", Name: "checkout", Path: "solutions/checkout"},
+		},
+	}
+	err := validateInventoryUnits(inventory)
+	if err == nil || !strings.Contains(err.Error(), "unknown kind") {
+		t.Fatalf("validateInventoryUnits error = %v, want unknown kind rejection", err)
 	}
 }
 
@@ -231,7 +245,7 @@ stringData:
 func TestPromotableRenderRejectsIdentifierOnlyKubernetesSecret(t *testing.T) {
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: filepath.Join(t.TempDir(), "owned"),
-		Module:      "payments", Service: "api", Environment: "production", Promotable: true,
+		Module:      "payments", Unit: "api", Environment: "production", Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		return os.WriteFile(filepath.Join(root, "secret.yaml"), []byte(`apiVersion: v1
 kind: Secret
