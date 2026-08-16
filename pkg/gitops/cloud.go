@@ -9,13 +9,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	clusterKindEKS      = "eks"
+	clusterKindGKE      = "gke"
+	clusterKindAKS      = "aks"
+	clusterKindK3D      = "k3d"
+	clusterKindKind     = "kind"
+	clusterKindMinikube = "minikube"
+	clusterKindExternal = "external"
+
+	pvcKind = "PersistentVolumeClaim"
+)
+
 // CloudProfile is codefly's cloud-aware translation for one cluster kind. The
 // storage-neutral base carries no storageClassName, so the per-cloud slice
 // injects the StorageClass the cloud's CSI driver provisions.
 //
 // Storage must be modelled as a standalone PersistentVolumeClaim (the codefly
 // convention: a StatefulSet or Deployment mounts a separate PVC resource). The
-// component patches kind: PersistentVolumeClaim, so a StatefulSet that instead
+// component patches PersistentVolumeClaim, so a StatefulSet that instead
 // declares inline spec.volumeClaimTemplates would not receive the class — that
 // shape is outside codefly's storage model and is not supported here.
 type CloudProfile struct {
@@ -26,26 +38,30 @@ type CloudProfile struct {
 // cloudProfiles is keyed by EnvironmentCluster.Kind and holds the managed clouds
 // whose per-cloud slice differs from the storage-neutral base.
 var cloudProfiles = map[string]CloudProfile{
-	"eks": {Kind: "eks", StorageClass: "gp3"},
-	"gke": {Kind: "gke", StorageClass: "premium-rwo"},
-	"aks": {Kind: "aks", StorageClass: "managed-csi"},
+	clusterKindEKS: {StorageClass: "gp3"},
+	clusterKindGKE: {StorageClass: "premium-rwo"},
+	clusterKindAKS: {StorageClass: "managed-csi"},
 }
 
 // localClusterKinds are the cluster kinds that legitimately need no cloud
 // component: they run on the storage-neutral base with the cluster-default
 // StorageClass (local clusters) or manage storage outside codefly (external).
 var localClusterKinds = map[string]struct{}{
-	"k3d":      {},
-	"kind":     {},
-	"minikube": {},
-	"external": {},
+	clusterKindK3D:      {},
+	clusterKindKind:     {},
+	clusterKindMinikube: {},
+	clusterKindExternal: {},
 }
 
 // CloudProfileForKind returns the cloud profile for a cluster kind. The second
 // result is false for cluster kinds that need no cloud component.
 func CloudProfileForKind(kind string) (CloudProfile, bool) {
 	profile, ok := cloudProfiles[kind]
-	return profile, ok
+	if !ok {
+		return CloudProfile{}, false
+	}
+	profile.Kind = kind
+	return profile, true
 }
 
 // RenderCloudComponent writes the per-cloud kustomize component for the
@@ -68,21 +84,47 @@ func RenderCloudComponent(root string, env *resources.Environment) (string, erro
 	return writeCloudComponent(root, profile)
 }
 
+type kustomizeComponent struct {
+	APIVersion string           `yaml:"apiVersion"`
+	Kind       string           `yaml:"kind"`
+	Patches    []kustomizePatch `yaml:"patches"`
+}
+
+type kustomizePatch struct {
+	Target kustomizePatchTarget `yaml:"target"`
+	Patch  string               `yaml:"patch"`
+}
+
+type kustomizePatchTarget struct {
+	Kind string `yaml:"kind"`
+}
+
+// The target selector matches every PersistentVolumeClaim, so metadata.name in
+// the strategic-merge body is required by the parser but never used to match.
+type persistentVolumeClaimPatch struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name string `yaml:"name"`
+	} `yaml:"metadata"`
+	Spec struct {
+		StorageClassName string `yaml:"storageClassName"`
+	} `yaml:"spec"`
+}
+
 func writeCloudComponent(root string, profile CloudProfile) (string, error) {
 	relative := filepath.Join("components", "cloud", profile.Kind)
 	directory := filepath.Join(root, relative)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return "", fmt.Errorf("create cloud component directory: %w", err)
 	}
-	component := map[string]any{
-		"apiVersion": "kustomize.config.k8s.io/v1alpha1",
-		"kind":       "Component",
-		"patches": []map[string]any{
-			{
-				"target": map[string]any{"kind": "PersistentVolumeClaim"},
-				"patch":  storageClassPatch(profile.StorageClass),
-			},
-		},
+	component := kustomizeComponent{
+		APIVersion: "kustomize.config.k8s.io/v1alpha1",
+		Kind:       "Component",
+		Patches: []kustomizePatch{{
+			Target: kustomizePatchTarget{Kind: pvcKind},
+			Patch:  storageClassPatch(profile.StorageClass),
+		}},
 	}
 	data, err := yaml.Marshal(component)
 	if err != nil {
@@ -94,20 +136,15 @@ func writeCloudComponent(root string, profile CloudProfile) (string, error) {
 	return filepath.ToSlash(relative), nil
 }
 
-// The target selector matches every PersistentVolumeClaim, so metadata.name in
-// the strategic-merge body is required by the parser but never used to match.
-const cloudPatchAnchorName = "cloud-profile"
-
 func storageClassPatch(class string) string {
-	patch := map[string]any{
-		"apiVersion": "v1",
-		"kind":       "PersistentVolumeClaim",
-		"metadata":   map[string]any{"name": cloudPatchAnchorName},
-		"spec":       map[string]any{"storageClassName": class},
-	}
+	var patch persistentVolumeClaimPatch
+	patch.APIVersion = "v1"
+	patch.Kind = pvcKind
+	patch.Metadata.Name = "cloud-profile"
+	patch.Spec.StorageClassName = class
 	data, err := yaml.Marshal(patch)
 	if err != nil {
-		// The input is a static map of strings; marshalling cannot fail.
+		// The input is a static value; marshalling cannot fail.
 		panic(fmt.Sprintf("encode cloud patch: %v", err))
 	}
 	return string(data)

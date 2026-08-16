@@ -91,7 +91,7 @@ func TestRenderCloudComponentAppliesStorageClass(t *testing.T) {
 			require.Equal(t, filepath.ToSlash(filepath.Join("components", "cloud", kind)), relative)
 
 			manifests := buildOverlayWithComponent(t, root, relative)
-			pvc := manifestByKind(t, manifests, "PersistentVolumeClaim")
+			pvc := manifestByKind(t, manifests, pvcKind)
 			spec, _ := pvc["spec"].(map[string]any)
 			require.Equal(t, profile.StorageClass, spec["storageClassName"])
 		})
@@ -109,7 +109,7 @@ func TestRenderCloudComponentPatchesPVCMountedByStatefulSet(t *testing.T) {
 	})
 	writeFile(t, filepath.Join(root, "base", "pvc.yaml"), map[string]any{
 		"apiVersion": "v1",
-		"kind":       "PersistentVolumeClaim",
+		"kind":       pvcKind,
 		"metadata":   map[string]any{"name": "data"},
 		"spec": map[string]any{
 			"accessModes": []string{"ReadWriteOnce"},
@@ -143,7 +143,7 @@ func TestRenderCloudComponentPatchesPVCMountedByStatefulSet(t *testing.T) {
 	require.NoError(t, err)
 
 	manifests := buildOverlayWithComponent(t, root, relative)
-	pvc := manifestByKind(t, manifests, "PersistentVolumeClaim")
+	pvc := manifestByKind(t, manifests, pvcKind)
 	spec, _ := pvc["spec"].(map[string]any)
 	require.Equal(t, "gp3", spec["storageClassName"])
 }
@@ -151,7 +151,7 @@ func TestRenderCloudComponentPatchesPVCMountedByStatefulSet(t *testing.T) {
 func TestRenderCloudComponentLeavesBaseStorageNeutral(t *testing.T) {
 	root := writeCloudFixture(t)
 	manifests := buildKustomize(t, filepath.Join(root, "base"))
-	pvc := manifestByKind(t, manifests, "PersistentVolumeClaim")
+	pvc := manifestByKind(t, manifests, pvcKind)
 	spec, _ := pvc["spec"].(map[string]any)
 	_, hasStorageClass := spec["storageClassName"]
 	require.False(t, hasStorageClass)
@@ -167,7 +167,7 @@ func writeCloudFixture(t *testing.T) string {
 	})
 	writeFile(t, filepath.Join(root, "base", "pvc.yaml"), map[string]any{
 		"apiVersion": "v1",
-		"kind":       "PersistentVolumeClaim",
+		"kind":       pvcKind,
 		"metadata":   map[string]any{"name": "data"},
 		"spec": map[string]any{
 			"accessModes": []string{"ReadWriteOnce"},
