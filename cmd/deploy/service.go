@@ -49,6 +49,7 @@ var ServiceCmd = &cobra.Command{
 			}
 			cli.Info("Rendered %s", result.Path)
 			cli.Info("Digest %s", result.Inventory.Digest)
+			printSizingReport(result.Sizing)
 			cli.Header(1, "Service render done!")
 			return nil
 		}

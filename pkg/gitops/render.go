@@ -89,6 +89,10 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := validateTree(owned, opts); err != nil {
 		return RenderResult{}, err
 	}
+	sizing, err := renderSizing(owned)
+	if err != nil {
+		return RenderResult{}, fmt.Errorf("compute render sizing: %w", err)
+	}
 	inventory, err := buildInventory(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -105,7 +109,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := replaceOwnedTree(owned, destination); err != nil {
 		return RenderResult{}, err
 	}
-	return RenderResult{Path: destination, Inventory: inventory}, nil
+	return RenderResult{Path: destination, Inventory: inventory, Sizing: sizing}, nil
 }
 
 func LoadInventory(root string) (Inventory, error) {
