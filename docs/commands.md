@@ -306,11 +306,12 @@ codefly add application web                                    # Add an applicat
 codefly add application-dependency web --dependency=backend    # Add an application dependency
 ```
 
-Module-agent scaffolds validate and record their immutable template repository,
-tag, and commit in `tools/base-source.json`. If the materialized service code
-does not match that source, add fails without leaving a partial module behind.
-The pin lets module sync recover manifest-owned files without rerunning the
-scaffold.
+Module-agent scaffolds record their immutable template repository, tag, and
+commit in `tools/base-source.json`. Scaffolds that include a base manifest must
+match the source's service code or add fails without leaving a partial module
+behind. Inventory-only scaffolds may omit the base manifest and service code;
+their first `sync module` treats the missing manifest as an empty base and
+populates the pinned source without rerunning the agent.
 
 **`add service` flags:**
 
@@ -344,8 +345,15 @@ Synchronize service configurations with dependencies.
 ```bash
 codefly sync service api                # Sync a service with its dependencies
 codefly sync library-dependencies       # Sync library dependencies
+codefly sync module saas                # Preview the first or next pinned base update
+codefly sync module saas --apply        # Apply the pinned base update
 codefly sync module saas --restore-code # Restore missing module-owned service code
 ```
+
+For agent-backed modules, run `codefly add module --agent ...` before the first
+sync so the agent can generate consumer-owned module and service inventory.
+`sync module --create` initializes and populates only the manifest-owned base;
+it does not run a module agent or generate that consumer inventory.
 
 `sync module <name> --restore-code` restores only absent service files listed
 by the pinned base manifest. Existing base files and consumer-owned overlays

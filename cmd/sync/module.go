@@ -65,10 +65,16 @@ First pin a remote source:
   codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
   codefly sync module saas --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
 
+An agent-generated module shell may contain consumer inventory but no base
+manifest yet. Its first sync is planned against an empty base and commits the
+upstream manifest last, like any later update.
+
 Initialize and populate a brand-new module in one step instead of running
 codefly add module first. A new module has no base manifest to plan against, so
 the dry-run describes the initialization without registering anything and the
-file-level plan appears only on --apply:
+file-level plan appears only on --apply. This does not run a module agent or
+generate consumer-owned module and service inventory; use add module --agent
+first when the source requires that inventory:
   codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module
   codefly sync module saas --create --source https://github.com/codefly-dev/module-saas-starter.git --to v0.0.8 --subdir module --apply
 
@@ -233,7 +239,7 @@ var moduleSyncFlags moduleSyncOptions
 var moduleSyncCreate bool
 
 func init() {
-	ModuleCmd.Flags().BoolVar(&moduleSyncCreate, "create", false, "initialize a new module from --source and populate it in one step (requires --apply)")
+	ModuleCmd.Flags().BoolVar(&moduleSyncCreate, "create", false, "initialize a new module base from --source without agent-generated consumer inventory")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Source, "source", "", "canonical Git repository URL or local repository/module path")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.To, "to", "", "immutable semantic-version tag to resolve (for example v0.0.8)")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
@@ -360,7 +366,7 @@ func resolveRestoreModuleSource(ctx context.Context, target *resources.Module, o
 }
 
 // PreparedModuleSource is an immutable checkout resolved before a scaffold is
-// created. Pin validates that the checkout actually produced the service code.
+// created. Pin validates any base ownership claimed by the scaffold.
 type PreparedModuleSource struct {
 	resolved resolvedModuleSource
 	cleanup  func()
@@ -411,8 +417,21 @@ func (source *PreparedModuleSource) Pin(target *resources.Module) error {
 	if source == nil || source.resolved.Lock == nil {
 		return fmt.Errorf("module source is not prepared")
 	}
-	if err := integrity.ValidateServiceCodeSource(source.resolved.Root, target.Dir()); err != nil {
-		return err
+	manifestPath := filepath.Join(target.Dir(), moduleBaseManifestRelativePath)
+	if _, err := os.Stat(manifestPath); err == nil {
+		if validateErr := integrity.ValidateServiceCodeSource(source.resolved.Root, target.Dir()); validateErr != nil {
+			return validateErr
+		}
+	} else if os.IsNotExist(err) {
+		// Inventory-only scaffold: there is no base manifest to validate service
+		// code against, but the scaffold must not carry base-owned code that
+		// diverges from the pinned source, or the first sync would fail closed on
+		// an inconsistent, manifest-less module.
+		if validateErr := integrity.ValidateInventoryOnlyScaffold(source.resolved.Root, target.Dir()); validateErr != nil {
+			return validateErr
+		}
+	} else {
+		return fmt.Errorf("inspect module scaffold base manifest: %w", err)
 	}
 	return writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), source.resolved.Lock)
 }

@@ -50,6 +50,88 @@ func TestBaseSyncPreservesOverlaysAndAppliesOnlyOwnedFiles(t *testing.T) {
 	}
 }
 
+func TestBaseSyncTreatsMissingTargetManifestAsFirstPopulate(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "services", "kept", "code", "main.go"), "package main\n")
+	writeManifest(t, source, "services/kept/code/main.go")
+
+	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.Create, []string{"services/kept/code/main.go"}) {
+		t.Fatalf("create = %v", plan.Create)
+	}
+	if _, err := ApplyBaseSync(source, target); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package main\n")
+	if _, err := readBaseManifest(filepath.Join(target, baseManifestRelativePath)); err != nil {
+		t.Fatalf("target manifest was not committed: %v", err)
+	}
+}
+
+// A composed module whose base manifest was lost must not be reinterpreted as a
+// fresh scaffold: without the manifest the plan cannot tell a user-modified base
+// file from an overlay collision, so it must fail closed rather than let
+// --accept-upstream overwrite the customized content.
+func TestBaseSyncFailsClosedWhenTargetManifestMissingButBaseFilesDiffer(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "services", "kept", "code", "main.go"), "package main // upstream\n")
+	writeManifest(t, source, "services/kept/code/main.go")
+	writeTestFile(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package main // heavily customized\n")
+
+	if _, err := PlanBaseSync(source, target); err == nil {
+		t.Fatal("plan against a missing manifest with conflicting base files was not refused")
+	}
+	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"services/kept/code/main.go"}); err == nil {
+		t.Fatal("--accept-upstream overwrote a base file whose provenance was erased")
+	}
+	assertFileContents(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package main // heavily customized\n")
+}
+
+func TestValidateInventoryOnlyScaffold(t *testing.T) {
+	// Divergent base code with no manifest is a misbehaving agent's output.
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "services", "kept", "code", "main.go"), "package upstream\n")
+	writeManifest(t, source, "services/kept/code/main.go")
+	writeTestFile(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package customized\n")
+	if err := ValidateInventoryOnlyScaffold(source, target); err == nil {
+		t.Fatal("divergent base code without a manifest was accepted")
+	}
+
+	// The normal inventory-only scaffold has no base code and is accepted.
+	emptySource, emptyTarget := syncFixture(t)
+	writeTestFile(t, filepath.Join(emptySource, "services", "kept", "code", "main.go"), "package upstream\n")
+	writeManifest(t, emptySource, "services/kept/code/main.go")
+	if err := ValidateInventoryOnlyScaffold(emptySource, emptyTarget); err != nil {
+		t.Fatalf("empty inventory-only scaffold rejected: %v", err)
+	}
+
+	// Byte-identical base code is harmless (first sync adopts it) and accepted.
+	sameSource, sameTarget := syncFixture(t)
+	writeTestFile(t, filepath.Join(sameSource, "services", "kept", "code", "main.go"), "package upstream\n")
+	writeManifest(t, sameSource, "services/kept/code/main.go")
+	writeTestFile(t, filepath.Join(sameTarget, "services", "kept", "code", "main.go"), "package upstream\n")
+	if err := ValidateInventoryOnlyScaffold(sameSource, sameTarget); err != nil {
+		t.Fatalf("identical base code rejected: %v", err)
+	}
+
+	// A stale source manifest (its recorded digest does not match the actual
+	// source file) is an upstream problem the sync surfaces as an invalid source,
+	// not a scaffold inconsistency. Pin must re-hash the real source rather than
+	// trust the stale digest, so it must not blame the agent here.
+	staleSource, staleTarget := syncFixture(t)
+	writeTestFile(t, filepath.Join(staleSource, "services", "kept", "code", "main.go"), "package upstream\n")
+	writeTestJSON(t, filepath.Join(staleSource, "tools", "base-manifest.json"), baseManifest{
+		Files: map[string]string{"services/kept/code/main.go": digestOf(t, "package stale\n")},
+	})
+	writeTestFile(t, filepath.Join(staleTarget, "services", "kept", "code", "main.go"), "package customized\n")
+	if err := ValidateInventoryOnlyScaffold(staleSource, staleTarget); err != nil {
+		t.Fatalf("stale source manifest misattributed to the scaffold: %v", err)
+	}
+}
+
 func TestBaseSyncRefusesModifiedBaseAndOverlayCollisionWithoutMutation(t *testing.T) {
 	source, target := syncFixture(t)
 	writeTestFile(t, filepath.Join(source, "owned.txt"), "new owned")

@@ -105,7 +105,7 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	if err != nil {
 		return BaseSyncPlan{}, fmt.Errorf("read source base manifest: %w", err)
 	}
-	targetManifest, err := readBaseManifest(filepath.Join(targetRoot, baseManifestRelativePath))
+	targetManifest, targetManifestPresent, err := readTargetBaseManifest(filepath.Join(targetRoot, baseManifestRelativePath))
 	if err != nil {
 		return BaseSyncPlan{}, fmt.Errorf("read target base manifest: %w", err)
 	}
@@ -225,6 +225,19 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 		}
 	}
 
+	// A synthesized (missing) target manifest is only safe for a never-populated
+	// scaffold, where every base path is a create. If base-owned files already
+	// exist and differ from the pinned source, the manifest was lost from a
+	// composed module rather than absent from a fresh one: without it the plan
+	// cannot tell a user-modified base file from an overlay collision, so it
+	// would offer --accept-upstream on paths it should protect. Fail closed and
+	// point at the missing manifest instead.
+	if !targetManifestPresent && len(plan.Collisions) > 0 {
+		return BaseSyncPlan{}, fmt.Errorf(
+			"target base manifest %s is missing while %d base-owned file(s) already exist and differ from the pinned source (%s); this is a composed module whose manifest was lost, not a fresh scaffold. Restore %s from version control before syncing",
+			baseManifestRelativePath, len(plan.Collisions), strings.Join(plan.Collisions, ", "), baseManifestRelativePath)
+	}
+
 	return plan, nil
 }
 
@@ -302,7 +315,7 @@ func ApplyBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	if err != nil {
 		return plan, fmt.Errorf("re-read source base manifest: %w", err)
 	}
-	targetManifest, err := readBaseManifest(filepath.Join(plan.TargetRoot, baseManifestRelativePath))
+	targetManifest, _, err := readTargetBaseManifest(filepath.Join(plan.TargetRoot, baseManifestRelativePath))
 	if err != nil {
 		return plan, fmt.Errorf("re-read target base manifest: %w", err)
 	}
@@ -499,6 +512,67 @@ func ValidateServiceCodeSource(sourceRoot, targetRoot string) error {
 	return nil
 }
 
+// ValidateInventoryOnlyScaffold guards the manifest-less scaffold that
+// `add module --agent` pins. A conforming inventory-only agent generates
+// consumer inventory and no base code, leaving the first sync to populate the
+// whole base. This rejects a scaffold that instead materialized base-owned code
+// diverging from the pinned source without recording a base manifest: that
+// scaffold is inconsistent, because its first sync plans the missing manifest as
+// an empty base and the divergent file then surfaces as an unresolvable
+// collision with no manifest to explain it. Catching it here, at pin time, keeps
+// a broken module out of the workspace and keeps the sync-time "manifest was
+// lost" diagnosis accurate. No base code, or byte-identical base code, passes;
+// only a divergent copy is a contract violation.
+func ValidateInventoryOnlyScaffold(sourceRoot, targetRoot string) error {
+	sourceRoot, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return fmt.Errorf("resolve source module: %w", err)
+	}
+	targetRoot, err = filepath.Abs(targetRoot)
+	if err != nil {
+		return fmt.Errorf("resolve target module: %w", err)
+	}
+	sourceManifest, err := readBaseManifest(filepath.Join(sourceRoot, baseManifestRelativePath))
+	if err != nil {
+		return fmt.Errorf("read source base manifest: %w", err)
+	}
+	composed, err := composedServiceNames(targetRoot)
+	if err != nil {
+		return err
+	}
+	for _, relative := range sortedManifestPaths(sourceManifest) {
+		if service := serviceOf(relative); service != "" && len(composed) > 0 && !composed[service] {
+			continue
+		}
+		// Mirror PlanBaseSync's collision detection: re-hash the actual source
+		// file and skip any path whose source is unsafe, missing, or stale against
+		// its own manifest. Those are upstream problems the sync surfaces as an
+		// invalid source, not scaffold inconsistencies, so pin must not attribute
+		// them to the agent by comparing the target to a stale manifest digest.
+		if !safeModulePath(sourceRoot, relative, true) {
+			continue
+		}
+		sourceDigest, srcErr := sha256File(filepath.Join(sourceRoot, filepath.FromSlash(relative)))
+		if srcErr != nil || sourceDigest != sourceManifest.Files[relative] {
+			continue
+		}
+		if !safeModulePath(targetRoot, relative, false) {
+			continue
+		}
+		targetDigest, digestErr := sha256File(filepath.Join(targetRoot, filepath.FromSlash(relative)))
+		if os.IsNotExist(digestErr) {
+			continue
+		}
+		if digestErr != nil {
+			return fmt.Errorf("hash scaffold base path %s: %w", relative, digestErr)
+		}
+		if targetDigest != sourceDigest {
+			return fmt.Errorf("module agent produced base-owned file %s without a base manifest; the scaffold is inconsistent and cannot be pinned", relative)
+		}
+	}
+	return nil
+}
+
 func serviceCodeManifest(manifest baseManifest, composed map[string]bool, allowed map[string]string) map[string]string {
 	files := make(map[string]string)
 	for relative, digest := range manifest.Files {
@@ -538,6 +612,20 @@ func readBaseManifest(path string) (baseManifest, error) {
 		return baseManifest{}, fmt.Errorf("manifest has no files map")
 	}
 	return manifest, nil
+}
+
+// readTargetBaseManifest reads the target's base manifest, reporting whether it
+// was actually present. A missing manifest is synthesized as an empty base so a
+// never-populated scaffold plans its whole upstream base as new files, but the
+// caller must know it was synthesized: a *composed* module whose manifest was
+// lost must not be treated as a fresh scaffold, because that erases the
+// base/overlay provenance the plan relies on to fail closed.
+func readTargetBaseManifest(path string) (baseManifest, bool, error) {
+	manifest, err := readBaseManifest(path)
+	if os.IsNotExist(err) {
+		return baseManifest{Files: map[string]string{}}, false, nil
+	}
+	return manifest, err == nil, err
 }
 
 func sortedManifestPaths(manifest baseManifest) []string {
