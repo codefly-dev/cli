@@ -312,7 +312,7 @@ spec:
 	if err := os.WriteFile(filepath.Join(serviceRoot, "rendered.yaml"), []byte(rendered), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	retained, err := retainManagedBootstrap(serviceRoot, "store", "production")
+	retained, err := retainManagedBundle(serviceRoot, "store", "production", "payments", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -348,7 +348,16 @@ func validateTransportNeutralModuleBundle(root string) error {
 	})
 }
 
-func retainManagedBootstrap(root, service, environment string) (bool, error) {
+// retainManagedBundle assembles a managed service's promotable bundle from the
+// two things a managed service contributes to the cluster: the bootstrap Jobs its
+// agent emitted (a one-shot handoff) and the ExternalSecret projection its
+// environment declares. It reports whether a bundle was produced; when the service
+// contributes neither, its rendered tree is removed and false is returned so the
+// caller records it as an unrendered managed unit.
+func retainManagedBundle(
+	root, service, environment, namespace string,
+	secretRefs []resources.EnvironmentManagedSecretReference,
+) (bool, error) {
 	var jobs []map[string]any
 	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
 		extension := filepath.Ext(relative)
@@ -378,7 +387,11 @@ func retainManagedBootstrap(root, service, environment string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if len(jobs) == 0 {
+	projection, err := managedSecretProjection(service, namespace, secretRefs)
+	if err != nil {
+		return false, err
+	}
+	if len(jobs) == 0 && projection == nil {
 		if err := os.RemoveAll(root); err != nil {
 			return false, err
 		}
@@ -409,6 +422,18 @@ func retainManagedBootstrap(root, service, environment string) (bool, error) {
 			return false, err
 		}
 		resourcesList = append(resourcesList, name)
+	}
+	if projection != nil {
+		projected, marshalErr := yaml.Marshal(projection)
+		if marshalErr != nil {
+			return false, marshalErr
+		}
+		// The projection is an ExternalSecret — a reference to remote keys, never a
+		// secret value — so it stays a world-readable manifest like its siblings.
+		if writeErr := os.WriteFile(filepath.Join(base, "external-secret.yaml"), projected, 0o644); writeErr != nil { //nolint:gosec
+			return false, writeErr
+		}
+		resourcesList = append(resourcesList, "external-secret.yaml")
 	}
 	baseKustomization := map[string]any{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",
