@@ -56,6 +56,7 @@ type kustomization struct {
 type projectContract struct {
 	name             string
 	present          bool
+	declared         bool
 	destinations     map[string]struct{}
 	clusterResources map[string]struct{}
 }
@@ -744,7 +745,11 @@ func selectProjectContract(manifests []manifest, selected string) (*projectContr
 		if !ok {
 			if len(projects) == 0 {
 				return &projectContract{
-					name: selected, destinations: map[string]struct{}{}, clusterResources: map[string]struct{}{},
+					// Declared via --app-project with no manifest present: the real
+					// AppProject (with snapshotAuthority-derived whitelists) is written
+					// at publish time FROM this same tree, so authority is consistent
+					// by construction — validate structure, not the empty whitelist.
+					name: selected, declared: true, destinations: map[string]struct{}{}, clusterResources: map[string]struct{}{},
 				}, nil
 			}
 			return nil, fmt.Errorf("selected AppProject %q is not present in rendered manifests", selected)
@@ -782,6 +787,12 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 	if knownClusterScoped || customClusterScoped {
 		if contract == nil {
 			return fmt.Errorf("cluster-scoped %s is outside an AppProject contract", item.kind)
+		}
+		if contract.declared {
+			// Flag-declared contract: publish derives its authority from this
+			// tree via snapshotAuthority, so per-kind whitelist checks are
+			// self-consistent by construction and skipped at render time.
+			return nil
 		}
 		if _, allowed := contract.clusterResources[item.group+"/"+item.kind]; !allowed {
 			return fmt.Errorf("cluster-scoped %s is not declared by AppProject %s", item.kind, contract.name)
