@@ -1427,7 +1427,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		// the environment-only manager publishes it after dependency startup.
 		noOp := NoOpManager{service: flow.originService}
 		if flow.exportsExcludedOriginEnvironment() {
-			flow.hub.managers = append(flow.hub.managers, &EnvironmentOnlyManager{
+			flow.hub.managers = append(flow.hub.managers, &environmentOnlyManager{
 				NoOpManager: noOp,
 				export:      flow.exportExcludedOriginEnvironment,
 			})
