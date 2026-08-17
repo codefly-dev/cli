@@ -135,6 +135,73 @@ func TestBuildInventorySurfacesOCIOnlyVersion(t *testing.T) {
 	}
 }
 
+func TestVersionsBehindCountsNewerTags(t *testing.T) {
+	// The vault case from #410: pinned 0.0.15, repo main up to 0.0.22.
+	tags := []string{"0.0.15", "0.0.16", "0.0.20", "0.0.22"}
+	inv := buildInventory(redisAgent(), nil, tags, nil, nil, nil, false)
+
+	if got := inv.versionsBehind("0.0.15"); got != 3 {
+		t.Fatalf("versionsBehind(0.0.15) = %d, want 3", got)
+	}
+	if got := inv.versionsBehind("0.0.22"); got != 0 {
+		t.Fatalf("versionsBehind(0.0.22) = %d, want 0 (up to date)", got)
+	}
+}
+
+func TestVersionsBehindIgnoresUntaggedAndUnparseable(t *testing.T) {
+	// A newer version that exists only in the local cache (no tag) is not a
+	// release the pin is "behind" — only tagged versions count.
+	tags := []string{"0.0.15"}
+	local := []string{"0.0.30"}
+	inv := buildInventory(redisAgent(), nil, tags, local, nil, nil, false)
+
+	if got := inv.versionsBehind("0.0.15"); got != 0 {
+		t.Fatalf("versionsBehind ignoring untagged cache = %d, want 0", got)
+	}
+	if got := inv.versionsBehind("latest"); got != 0 {
+		t.Fatalf("versionsBehind(latest) = %d, want 0", got)
+	}
+	if got := inv.versionsBehind("not-semver"); got != 0 {
+		t.Fatalf("versionsBehind(not-semver) = %d, want 0", got)
+	}
+}
+
+func TestSummarizeWorkspaceAgentsReportsDrift(t *testing.T) {
+	restoreReleases, restoreTags, restoreOCI := fetchReleases, fetchTags, fetchOCITags
+	defer func() { fetchReleases, fetchTags, fetchOCITags = restoreReleases, restoreTags, restoreOCI }()
+
+	fetchReleases = func(_ context.Context, _ *resources.Agent) ([]releaseInfo, error) {
+		return []releaseInfo{{version: "0.0.22", platforms: []string{ciPlatform}}}, nil
+	}
+	fetchTags = func(_ context.Context, _ *resources.Agent) ([]string, error) {
+		return []string{"0.0.15", "0.0.16", "0.0.22"}, nil
+	}
+	fetchOCITags = func(_ context.Context, _ *resources.Agent) (bool, []string, error) {
+		return false, nil, nil
+	}
+
+	pins := []agentPin{
+		{module: "secrets", agent: &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "vault", Version: "0.0.15"}},
+	}
+
+	summaries := summarizeWorkspaceAgents(context.Background(), pins)
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %d, want 1", len(summaries))
+	}
+	if summaries[0].Behind != 2 {
+		t.Fatalf("vault behind = %d, want 2 (0.0.16 and 0.0.22)", summaries[0].Behind)
+	}
+}
+
+func TestBehindCell(t *testing.T) {
+	if got := behindCell(0); got != "-" {
+		t.Fatalf("behindCell(0) = %q, want -", got)
+	}
+	if got := behindCell(3); got != "3" {
+		t.Fatalf("behindCell(3) = %q, want 3", got)
+	}
+}
+
 func TestReleaseCellReflectsPlatforms(t *testing.T) {
 	cases := []struct {
 		name  string

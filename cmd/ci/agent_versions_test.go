@@ -2,11 +2,13 @@ package ci
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -16,6 +18,65 @@ func testAgent() *resources.Agent {
 		Publisher: "codefly.dev",
 		Name:      "redis",
 		Version:   "0.0.74",
+	}
+}
+
+func TestPinBehind(t *testing.T) {
+	cases := []struct {
+		pinned, latest string
+		want           bool
+	}{
+		{"0.0.15", "0.0.22", true},
+		{"0.0.22", "0.0.22", false},
+		{"0.0.23", "0.0.22", false},
+		{"v0.0.15", "v0.0.22", true},
+		{"not-semver", "0.0.22", false},
+		{"0.0.15", "not-semver", false},
+	}
+	for _, tc := range cases {
+		if got := pinBehind(tc.pinned, tc.latest); got != tc.want {
+			t.Fatalf("pinBehind(%q, %q) = %v, want %v", tc.pinned, tc.latest, got, tc.want)
+		}
+	}
+}
+
+func TestWarnStaleAgentPins(t *testing.T) {
+	restore := latestReleaseOf
+	defer func() { latestReleaseOf = restore }()
+
+	latestReleaseOf = func(_ context.Context, agent *resources.Agent) (string, error) {
+		switch agent.Name {
+		case "vault":
+			return "0.0.22", nil // pinned 0.0.15 → behind
+		case "redis":
+			return "0.0.74", nil // pinned 0.0.74 → current
+		default:
+			return "", errors.New("unreachable")
+		}
+	}
+
+	agents := []*resources.Agent{
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "vault", Version: "0.0.15"},
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "redis", Version: "0.0.74"},
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "latest-pin", Version: "latest"},
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "unreachable", Version: "0.0.1"},
+	}
+
+	cli.StartCapture()
+	warnStaleAgentPins(context.Background(), agents)
+	lines := cli.DrainCapture()
+
+	var warnings []string
+	for _, line := range lines {
+		if strings.Contains(line.Message, "behind its repo main") {
+			warnings = append(warnings, line.Message)
+		}
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("drift warnings = %d (%v), want exactly 1 (vault only)", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "vault") || !strings.Contains(warnings[0], "0.0.22") {
+		t.Fatalf("warning = %q, want it to name vault and latest release 0.0.22", warnings[0])
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blang/semver"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
@@ -22,6 +23,7 @@ var (
 	agentAlreadyLocal  = manager.Downloaded
 	githubAssetURL     = manager.DownloadURL
 	agentProbeClient   = &http.Client{Timeout: 20 * time.Second}
+	latestReleaseOf    = latestReleaseVersion
 )
 
 // agentSourceProbe is the outcome of resolving one agent against one source.
@@ -66,6 +68,8 @@ func validateAgentVersions(ctx context.Context, workspace *resources.Workspace, 
 	if err != nil {
 		return err
 	}
+
+	warnStaleAgentPins(ctx, agents)
 
 	var unpublished []agentArtifactStatus
 	for _, agent := range agents {
@@ -120,6 +124,56 @@ func collectPlanAgents(ctx context.Context, workspace *resources.Workspace, plan
 		agents = append(agents, &agent)
 	}
 	return agents, nil
+}
+
+// warnStaleAgentPins emits a non-fatal warning for every plan agent whose pin
+// trails its repo's latest published release — the "pinned agent is behind its
+// repo main" drift from #410. It never fails CI (an outdated-but-published pin
+// still resolves); it just surfaces the drift a run would otherwise carry
+// silently. The lookup is best-effort: a pin already at "latest", an agent kind
+// without GitHub release resolution, or an unreachable GitHub all resolve to
+// "no warning" rather than noise.
+func warnStaleAgentPins(ctx context.Context, agents []*resources.Agent) {
+	for _, agent := range agents {
+		if agent.Version == "latest" {
+			continue
+		}
+		latest, err := latestReleaseOf(ctx, agent)
+		if err != nil || latest == "" {
+			continue
+		}
+		if pinBehind(agent.Version, latest) {
+			cli.Warning("agent %s pinned %s is behind its repo main (latest release %s) — rebuild/release from main or bump the pin",
+				agent.Identifier(), agent.Version, latest)
+		}
+	}
+}
+
+// latestReleaseVersion resolves the repo's latest published release version
+// without mutating the caller's agent. It leans on core's own resolution so the
+// notion of "latest release" stays identical to what a real download would pin.
+func latestReleaseVersion(ctx context.Context, agent *resources.Agent) (string, error) {
+	probe := *agent
+	probe.Version = "latest"
+	if _, err := manager.PinToLatestRelease(ctx, &probe); err != nil {
+		return "", err
+	}
+	return probe.Version, nil
+}
+
+// pinBehind reports whether pinned is a strictly older semver than latest. A
+// version that doesn't parse yields false — an unparseable pin is not a drift
+// signal we can trust.
+func pinBehind(pinned, latest string) bool {
+	p, err := semver.Parse(strings.TrimPrefix(pinned, "v"))
+	if err != nil {
+		return false
+	}
+	l, err := semver.Parse(strings.TrimPrefix(latest, "v"))
+	if err != nil {
+		return false
+	}
+	return l.GT(p)
 }
 
 // probeAgentArtifact HEADs the GitHub release asset and, when configured, the
