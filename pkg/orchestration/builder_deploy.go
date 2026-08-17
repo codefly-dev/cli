@@ -70,6 +70,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
+	dependenciesNetworkMappings = withContainerReachableAsPublic(ctx, dependenciesNetworkMappings)
 
 	namespace, err := b.world.RemoteNetworkManager.GetNamespace(ctx, b.world.Env, b.world.Workspace, b.instance.Identity)
 	if err != nil {
@@ -164,6 +165,41 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot handle deployment")
 	}
 	return outputProperty, nil
+}
+
+// withContainerReachableAsPublic makes a dependency's in-cluster endpoint
+// resolvable by a consumer that injects the address using public access.
+//
+// On a non-local deploy an endpoint without an ingress (e.g. a module-visibility
+// vault) only materializes an in-cluster (Container) instance. A consuming
+// service's builder still requests the public access variant when wiring the
+// dependency address, so resolution fails with no public instance present. In
+// cluster the ClusterIP address is reachable regardless of access label, so
+// mirror the Container instance as a Public one. Mappings are cloned to avoid
+// mutating the shared state the producer recorded.
+func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.NetworkMapping) []*basev0.NetworkMapping {
+	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		if mapping == nil {
+			out = append(out, mapping)
+			continue
+		}
+		if resources.FilterNetworkInstance(ctx, mapping.Instances, resources.NewPublicNetworkAccess()) != nil {
+			out = append(out, mapping)
+			continue
+		}
+		container := resources.FilterNetworkInstance(ctx, mapping.Instances, resources.NewContainerNetworkAccess())
+		if container == nil {
+			out = append(out, mapping)
+			continue
+		}
+		clone := proto.Clone(mapping).(*basev0.NetworkMapping)
+		public := proto.Clone(container).(*basev0.NetworkInstance)
+		public.Access = resources.NewPublicNetworkAccess()
+		clone.Instances = append(clone.Instances, public)
+		out = append(out, clone)
+	}
+	return out
 }
 
 func kubernetesValidationTarget(ctx context.Context, environment *resources.Environment) (string, string, error) {
