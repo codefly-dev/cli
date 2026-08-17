@@ -19,6 +19,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
+	postgresipc "github.com/codefly-dev/core/runners/base"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
@@ -79,6 +80,13 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// making the next run appear to fork-bomb or fail port binding.
 	if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
 		cli.Warning("stale process-group sweep failed: %v", err)
+	}
+	// Native PostgreSQL can leave Darwin System V IPC resources behind when
+	// an owning process group is interrupted. Reap those runner-owned host
+	// resources before provisioning so leaked semaphores cannot poison every
+	// later dependency run on the machine.
+	if err := postgresipc.ReapOrphanedPostgresIPC(ctx); err != nil {
+		cli.Warning("stale PostgreSQL IPC sweep failed: %v", err)
 	}
 	// SDK / test runs (`codefly run --cli-server`) spawn per-run dependency
 	// containers under a unique naming scope that are never reused. Mark
