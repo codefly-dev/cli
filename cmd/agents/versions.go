@@ -89,6 +89,42 @@ func (inv inventory) versionResolvable(version string) bool {
 	return false
 }
 
+// versionsBehind counts the resolvable versions strictly newer than the given
+// pinned version — how many downloadable releases the pin trails its repo's
+// main line. It counts only resolvable versions (a GitHub-release asset or OCI
+// manifest is present), never bare tags: a newer tag that shipped no artifact
+// is not something the pin can be bumped to, so counting it would nag a pin
+// already at the latest usable version and, worse, point "bump the pin" at an
+// unresolvable version. A pin at 0.0.15 with 0.0.16..0.0.22 all published
+// reports 7. A version of "latest", or one that doesn't parse, has nothing to
+// compare against and reports 0.
+func versionsBehind(versions []versionEntry, version string) int {
+	if version == "latest" {
+		return 0
+	}
+	pinned, err := semver.Parse(strings.TrimPrefix(version, "v"))
+	if err != nil {
+		return 0
+	}
+	behind := 0
+	for _, entry := range versions {
+		if entry.Sources.resolvable() && entry.sem.GT(pinned) {
+			behind++
+		}
+	}
+	return behind
+}
+
+// LatestResolvableDrift reports, for a single agent, the newest resolvable
+// version published for its repo and how many resolvable versions the given pin
+// trails. It reuses the same release/tag/OCI sources and GitHub auth as
+// `agent list`, so every caller — including `codefly ci` — measures drift
+// against one identical reference.
+func LatestResolvableDrift(ctx context.Context, agent *resources.Agent, pinnedVersion string) (latestResolvable string, behind int) {
+	inv := collectInventory(ctx, agent, nil)
+	return inv.LatestResolvable, versionsBehind(inv.Versions, pinnedVersion)
+}
+
 var versionsJSON bool
 
 // VersionsCmd reports every known version of a single agent and whether each is
@@ -272,12 +308,15 @@ type agentPin struct {
 }
 
 type agentSummary struct {
-	Agent            string   `json:"agent"`
-	Pinned           string   `json:"pinned"`
-	PinnedResolvable bool     `json:"pinned_resolvable"`
-	LatestResolvable string   `json:"latest_resolvable"`
-	LatestTag        string   `json:"latest_tag"`
-	Modules          []string `json:"modules,omitempty"`
+	Agent            string `json:"agent"`
+	Pinned           string `json:"pinned"`
+	PinnedResolvable bool   `json:"pinned_resolvable"`
+	LatestResolvable string `json:"latest_resolvable"`
+	LatestTag        string `json:"latest_tag"`
+	// Behind is how many tagged releases newer than the pin exist — the
+	// "N versions behind main" drift the workspace should be warned about.
+	Behind  int      `json:"behind"`
+	Modules []string `json:"modules,omitempty"`
 }
 
 // workspacePins enumerates every service in the workspace and returns those
@@ -329,6 +368,7 @@ func summarizeWorkspaceAgents(ctx context.Context, pins []agentPin) []agentSumma
 				PinnedResolvable: inv.versionResolvable(agent.Version),
 				LatestResolvable: inv.LatestResolvable,
 				LatestTag:        inv.LatestTag,
+				Behind:           versionsBehind(inv.Versions, agent.Version),
 			}
 			rows[pinKey] = row
 			order = append(order, pinKey)
@@ -578,6 +618,9 @@ func renderInventory(inv inventory) {
 	}
 	for _, pin := range inv.Pinned {
 		fmt.Printf("pinned            -> %s (resolvable: %s)\n", pin, yesNo(inv.versionResolvable(pin)))
+		if behind := versionsBehind(inv.Versions, pin); behind > 0 {
+			fmt.Printf("  warning: %d version(s) behind its repo main (latest resolvable %s)\n", behind, dashIfEmpty(inv.LatestResolvable))
+		}
 	}
 }
 
@@ -587,18 +630,35 @@ func renderSummaries(summaries []agentSummary) {
 		return
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "AGENT\tPINNED\tRESOLVABLE\tLATEST-RESOLVABLE\tLATEST-TAG\tMODULES")
+	fmt.Fprintln(tw, "AGENT\tPINNED\tRESOLVABLE\tBEHIND\tLATEST-RESOLVABLE\tLATEST-TAG\tMODULES")
 	for _, summary := range summaries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			summary.Agent,
 			summary.Pinned,
 			yesNo(summary.PinnedResolvable),
+			behindCell(summary.Behind),
 			dashIfEmpty(summary.LatestResolvable),
 			dashIfEmpty(summary.LatestTag),
 			dashIfEmpty(strings.Join(summary.Modules, ", ")),
 		)
 	}
 	_ = tw.Flush()
+
+	for _, summary := range summaries {
+		if summary.Behind > 0 {
+			cli.Warning("%s pinned %s is %d version(s) behind its repo main (latest resolvable %s) — rebuild/release from main or bump the pin",
+				summary.Agent, summary.Pinned, summary.Behind, dashIfEmpty(summary.LatestResolvable))
+		}
+	}
+}
+
+// behindCell renders the drift column: "-" when the pin is current, otherwise
+// the count so a stale pin reads at a glance.
+func behindCell(behind int) string {
+	if behind == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d", behind)
 }
 
 func writeJSON(payload any) error {

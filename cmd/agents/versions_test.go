@@ -135,6 +135,112 @@ func TestBuildInventorySurfacesOCIOnlyVersion(t *testing.T) {
 	}
 }
 
+func TestVersionsBehindCountsResolvableNewer(t *testing.T) {
+	// The vault case from #410: pinned 0.0.15, repo main up to 0.0.22, every
+	// newer version published with a CI-platform asset.
+	releases := []releaseInfo{
+		{version: "0.0.16", platforms: []string{ciPlatform}},
+		{version: "0.0.20", platforms: []string{ciPlatform}},
+		{version: "0.0.22", platforms: []string{ciPlatform}},
+	}
+	tags := []string{"0.0.15", "0.0.16", "0.0.20", "0.0.22"}
+	inv := buildInventory(redisAgent(), releases, tags, nil, nil, nil, false)
+
+	if got := versionsBehind(inv.Versions, "0.0.15"); got != 3 {
+		t.Fatalf("versionsBehind(0.0.15) = %d, want 3", got)
+	}
+	if got := versionsBehind(inv.Versions, "0.0.22"); got != 0 {
+		t.Fatalf("versionsBehind(0.0.22) = %d, want 0 (up to date)", got)
+	}
+}
+
+func TestVersionsBehindIgnoresUnresolvableNewer(t *testing.T) {
+	// module-saas-starter#3: the newest tag (0.0.90) shipped no artifact, so a
+	// pin at the latest *resolvable* version (0.0.15) is not "behind" it —
+	// bumping to 0.0.90 would break, so it must not be counted. A newer version
+	// present only in the local cache is likewise not something to bump to.
+	releases := []releaseInfo{{version: "0.0.15", platforms: []string{ciPlatform}}}
+	tags := []string{"0.0.15", "0.0.90"}
+	local := []string{"0.0.30"}
+	inv := buildInventory(redisAgent(), releases, tags, local, nil, nil, false)
+
+	if got := versionsBehind(inv.Versions, "0.0.15"); got != 0 {
+		t.Fatalf("versionsBehind ignoring unresolvable newer = %d, want 0", got)
+	}
+	if got := versionsBehind(inv.Versions, "latest"); got != 0 {
+		t.Fatalf("versionsBehind(latest) = %d, want 0", got)
+	}
+	if got := versionsBehind(inv.Versions, "not-semver"); got != 0 {
+		t.Fatalf("versionsBehind(not-semver) = %d, want 0", got)
+	}
+}
+
+func TestSummarizeWorkspaceAgentsReportsDrift(t *testing.T) {
+	restoreReleases, restoreTags, restoreOCI := fetchReleases, fetchTags, fetchOCITags
+	defer func() { fetchReleases, fetchTags, fetchOCITags = restoreReleases, restoreTags, restoreOCI }()
+
+	fetchReleases = func(_ context.Context, _ *resources.Agent) ([]releaseInfo, error) {
+		return []releaseInfo{
+			{version: "0.0.16", platforms: []string{ciPlatform}},
+			{version: "0.0.22", platforms: []string{ciPlatform}},
+		}, nil
+	}
+	fetchTags = func(_ context.Context, _ *resources.Agent) ([]string, error) {
+		return []string{"0.0.15", "0.0.16", "0.0.22"}, nil
+	}
+	fetchOCITags = func(_ context.Context, _ *resources.Agent) (bool, []string, error) {
+		return false, nil, nil
+	}
+
+	pins := []agentPin{
+		{module: "secrets", agent: &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "vault", Version: "0.0.15"}},
+	}
+
+	summaries := summarizeWorkspaceAgents(context.Background(), pins)
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %d, want 1", len(summaries))
+	}
+	if summaries[0].Behind != 2 {
+		t.Fatalf("vault behind = %d, want 2 (resolvable 0.0.16 and 0.0.22)", summaries[0].Behind)
+	}
+	if summaries[0].LatestResolvable != "0.0.22" {
+		t.Fatalf("vault latest resolvable = %q, want 0.0.22", summaries[0].LatestResolvable)
+	}
+}
+
+func TestLatestResolvableDriftMatchesInventory(t *testing.T) {
+	restoreReleases, restoreTags, restoreOCI := fetchReleases, fetchTags, fetchOCITags
+	defer func() { fetchReleases, fetchTags, fetchOCITags = restoreReleases, restoreTags, restoreOCI }()
+
+	fetchReleases = func(_ context.Context, _ *resources.Agent) ([]releaseInfo, error) {
+		return []releaseInfo{{version: "0.0.22", platforms: []string{ciPlatform}}}, nil
+	}
+	fetchTags = func(_ context.Context, _ *resources.Agent) ([]string, error) {
+		// 0.0.90 is tagged but unpublished — must not count toward drift.
+		return []string{"0.0.15", "0.0.22", "0.0.90"}, nil
+	}
+	fetchOCITags = func(_ context.Context, _ *resources.Agent) (bool, []string, error) {
+		return false, nil, nil
+	}
+
+	latest, behind := LatestResolvableDrift(context.Background(), redisAgent(), "0.0.15")
+	if latest != "0.0.22" {
+		t.Fatalf("latest resolvable = %q, want 0.0.22 (not the unpublished 0.0.90 tag)", latest)
+	}
+	if behind != 1 {
+		t.Fatalf("behind = %d, want 1 (only resolvable 0.0.22)", behind)
+	}
+}
+
+func TestBehindCell(t *testing.T) {
+	if got := behindCell(0); got != "-" {
+		t.Fatalf("behindCell(0) = %q, want -", got)
+	}
+	if got := behindCell(3); got != "3" {
+		t.Fatalf("behindCell(3) = %q, want 3", got)
+	}
+}
+
 func TestReleaseCellReflectsPlatforms(t *testing.T) {
 	cases := []struct {
 		name  string

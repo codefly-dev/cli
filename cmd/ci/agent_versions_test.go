@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -16,6 +17,53 @@ func testAgent() *resources.Agent {
 		Publisher: "codefly.dev",
 		Name:      "redis",
 		Version:   "0.0.74",
+	}
+}
+
+func TestWarnStaleAgentPins(t *testing.T) {
+	restore := agentDrift
+	defer func() { agentDrift = restore }()
+
+	var latestPinChecked bool
+	agentDrift = func(_ context.Context, agent *resources.Agent, pinned string) (string, int) {
+		switch agent.Name {
+		case "vault":
+			return "0.0.22", 2 // pinned 0.0.15 → 2 resolvable versions behind
+		case "redis":
+			return "0.0.74", 0 // pinned 0.0.74 → current
+		case "latest-pin":
+			latestPinChecked = true // must never be reached
+			return "", 0
+		default:
+			return "", 0 // unreachable GitHub → best-effort silence
+		}
+	}
+
+	plan := []*resources.Agent{
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "vault", Version: "0.0.15"},
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "redis", Version: "0.0.74"},
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "latest-pin", Version: "latest"},
+		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "unreachable", Version: "0.0.1"},
+	}
+
+	cli.StartCapture()
+	warnStaleAgentPins(context.Background(), plan)
+	lines := cli.DrainCapture()
+
+	if latestPinChecked {
+		t.Fatal("a pin of \"latest\" must be skipped, not looked up")
+	}
+	var warnings []string
+	for _, line := range lines {
+		if strings.Contains(line.Message, "behind its repo main") {
+			warnings = append(warnings, line.Message)
+		}
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("drift warnings = %d (%v), want exactly 1 (vault only)", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "vault") || !strings.Contains(warnings[0], "2 version(s)") || !strings.Contains(warnings[0], "0.0.22") {
+		t.Fatalf("warning = %q, want it to name vault, the count, and latest resolvable 0.0.22", warnings[0])
 	}
 }
 
