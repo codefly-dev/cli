@@ -28,6 +28,17 @@ environments:
       registry:
           url: localhost:5001
           auth: ecr
+      service-secrets:
+          secret-store:
+              name: default-secrets
+              kind: ClusterSecretStore
+          services:
+              api:
+                  secret-store:
+                      name: api-secrets
+                      kind: SecretStore
+                  remote-keys:
+                      TOKEN: api/token
       secrets:
           - kind: 1password
             account: acme-dev
@@ -82,6 +93,9 @@ func TestSelectEnvironmentDeclaredLocalKeepsEveryField(t *testing.T) {
 	require.NotNil(t, env.Registry)
 	require.Equal(t, "localhost:5001", env.Registry.URL)
 	require.Equal(t, "ecr", env.Registry.Auth)
+	require.Equal(t, "default-secrets", env.ServiceSecrets.SecretStore.Name)
+	require.Equal(t, "api-secrets", env.ServiceSecrets.Services["api"].SecretStore.Name)
+	require.Equal(t, "api/token", env.ServiceSecrets.Services["api"].RemoteKeys["TOKEN"])
 	require.Len(t, env.Secrets, 1)
 	require.Equal(t, "1password", env.Secrets[0].Kind)
 	require.Equal(t, "acme-dev", env.Secrets[0].Account)
@@ -125,6 +139,11 @@ func TestSelectEnvironmentOverridesDoNotMutateWorkspace(t *testing.T) {
 	env.Namespace = "elsewhere"
 	env.Cluster.Kubeconfig = "/tmp/other"
 	env.Registry.URL = "example.com/other"
+	env.ServiceSecrets.SecretStore.Name = "other-default"
+	apiSecrets := env.ServiceSecrets.Services["api"]
+	apiSecrets.SecretStore.Name = "other-api"
+	apiSecrets.RemoteKeys["TOKEN"] = "other/token"
+	env.ServiceSecrets.Services["api"] = apiSecrets
 	env.Secrets[0].Account = "other-account"
 
 	declared := workspace.FindEnvironment(LocalEnvironmentName)
@@ -132,6 +151,9 @@ func TestSelectEnvironmentOverridesDoNotMutateWorkspace(t *testing.T) {
 	require.Equal(t, "apps", declared.Namespace)
 	require.Equal(t, "~/.kube/k3d.yaml", declared.Cluster.Kubeconfig)
 	require.Equal(t, "localhost:5001", declared.Registry.URL)
+	require.Equal(t, "default-secrets", declared.ServiceSecrets.SecretStore.Name)
+	require.Equal(t, "api-secrets", declared.ServiceSecrets.Services["api"].SecretStore.Name)
+	require.Equal(t, "api/token", declared.ServiceSecrets.Services["api"].RemoteKeys["TOKEN"])
 	require.Equal(t, "acme-dev", declared.Secrets[0].Account)
 
 	fresh, err := SelectEnvironment(workspace, LocalEnvironmentName)
@@ -175,7 +197,7 @@ func TestSelectEnvironmentConcurrentOverridesDoNotContaminate(t *testing.T) {
 func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 	deepCopied := map[string]bool{
 		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
-		"ManagedServices": true, "Secrets": true,
+		"ManagedServices": true, "ServiceSecrets": true, "Secrets": true,
 	}
 	typ := reflect.TypeOf(resources.Environment{})
 	for i := 0; i < typ.NumField(); i++ {
