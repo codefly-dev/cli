@@ -118,6 +118,15 @@ func renderModuleTree(
 				if entry.Output == nil {
 					return fmt.Errorf("service %s returned no Kubernetes deployment evidence", service.Name)
 				}
+				if _, projectErr := projectServiceSecrets(
+					filepath.Join(stage, unitDir, service.Name),
+					service.Name,
+					env.Name,
+					env.Namespace,
+					env.ServiceSecrets,
+				); projectErr != nil {
+					return fmt.Errorf("project service %s secrets: %w", service.Name, projectErr)
+				}
 			}
 			options.Units = append(options.Units, entry)
 		}
@@ -239,7 +248,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		AppProject:  project,
 		Promotable:  true,
 	}, func(ctx context.Context, stage string) error {
-		return renderServiceFlow(
+		if err := renderServiceFlow(
 			ctx,
 			workspace,
 			module,
@@ -249,8 +258,57 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 			sink,
 			serviceRenderDestinations(stage),
 			nil,
-		)
+		); err != nil {
+			return err
+		}
+		return projectRenderedServiceSecrets(stage, env)
 	})
+}
+
+// projectRenderedServiceSecrets projects the environment's service secret store
+// onto every service tree a single-service render produced — the origin service
+// and any in-graph dependencies it pulled in — so per-service promotion closes the
+// same secret-<service> gap as a full module render.
+func projectRenderedServiceSecrets(stage string, env *resources.Environment) error {
+	if env.ServiceSecrets == nil {
+		return nil
+	}
+	modulesRoot := filepath.Join(stage, "modules")
+	modules, err := os.ReadDir(modulesRoot)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, moduleEntry := range modules {
+		if !moduleEntry.IsDir() {
+			continue
+		}
+		servicesRoot := filepath.Join(modulesRoot, moduleEntry.Name(), serviceUnitDir)
+		serviceEntries, err := os.ReadDir(servicesRoot)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, serviceEntry := range serviceEntries {
+			if !serviceEntry.IsDir() {
+				continue
+			}
+			if _, err := projectServiceSecrets(
+				filepath.Join(servicesRoot, serviceEntry.Name()),
+				serviceEntry.Name(),
+				env.Name,
+				env.Namespace,
+				env.ServiceSecrets,
+			); err != nil {
+				return fmt.Errorf("project service %s secrets: %w", serviceEntry.Name(), err)
+			}
+		}
+	}
+	return nil
 }
 
 func serviceRenderDestinations(root string) func(*resources.Module, *resources.Service) string {
