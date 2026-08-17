@@ -126,7 +126,7 @@ codefly run service api --with-server             # Run with web companion UI
 | Flag | Description |
 |------|-------------|
 | `--standalone` | Don't start dependency services |
-| `--exclude-root` | Start dependencies only, skip the target service |
+| `--exclude-root` | Start dependencies only, skip the target service; when the root owns `--output-env`, compose its SDK environment without loading its agent or process |
 | `--profile` | Select a named run profile from `workspace.codefly.yaml` |
 | `--exclude-dependency` | Exclude optional dependency services from this run. Repeatable; accepts `module/service` or an unambiguous service name. |
 | `--service-path` | Override the path to the service directory |

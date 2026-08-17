@@ -253,6 +253,32 @@ type NoOpManager struct {
 	service *resources.Service
 }
 
+// environmentOnlyManager represents an excluded root whose process must not
+// start, while still materializing the SDK environment that process would
+// receive. Dependencies run through their real managers; the export callback
+// executes at the root's RuntimeStart barrier, after those dependencies have
+// published their final endpoints and runtime configurations.
+//
+// ARCHITECTURE: This is intentionally not a Runner. Creating a Runner loads the
+// root agent and eventually starts its user binary, defeating --exclude-root.
+// Embedding NoOpManager preserves the dependency playbook shape without
+// inventing an agent lifecycle for a process that is not allowed to exist.
+type environmentOnlyManager struct {
+	NoOpManager
+	export func(context.Context) error
+}
+
+// RunnerDoStart publishes the excluded root's environment at the same
+// dependency barrier where a real Runner would append final dependency state.
+func (manager environmentOnlyManager) RunnerDoStart(ctx context.Context) (*OutputProperty, error) {
+	if manager.export != nil {
+		if err := manager.export(ctx); err != nil {
+			return nil, fmt.Errorf("export excluded root environment: %w", err)
+		}
+	}
+	return OnInit(), nil
+}
+
 func (n NoOpManager) RunnerDoTest(ctx context.Context) (*OutputProperty, error) {
 	return nil, nil
 }

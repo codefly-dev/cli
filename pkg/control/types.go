@@ -158,6 +158,11 @@ type RunRequest struct {
 	// of itself.
 	ExcludeRoot bool
 	Headless    bool
+	// OutputEnv writes one selected service's owner-only SDK environment. When
+	// ExcludeRoot is true and the root is selected (the default), Codefly
+	// composes the root environment without loading its agent or process.
+	OutputEnv        string
+	OutputEnvService string
 }
 
 // RunHandle identifies a started flow so it can be observed/stopped.

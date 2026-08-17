@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,6 +242,7 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.profile, func(t *testing.T) {
 			root := writeRunDependencyWorkspace(t)
+			outputEnvironment := filepath.Join(t.TempDir(), "runtime.env")
 			plane, err := NewAt(root)
 			if err != nil {
 				t.Fatalf("NewAt: %v", err)
@@ -254,12 +256,16 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 			defer cancel()
 
+			// The profile and environment-export contract is backend-neutral. Nix
+			// keeps this real-agent proof reproducible without making an unrelated
+			// desktop Docker daemon a precondition for the control-plane suite.
 			if _, err := plane.Run(ctx, RunRequest{
 				Service:        "app/api",
 				Profile:        tt.profile,
-				RuntimeContext: resources.RuntimeContextContainer,
+				RuntimeContext: resources.RuntimeContextNix,
 				ExcludeRoot:    true,
 				Wait:           true,
+				OutputEnv:      outputEnvironment,
 			}); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -288,6 +294,33 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 			if got := workspaceConfigurationNames(configs); fmt.Sprint(got) != fmt.Sprint(tt.wantConfigurations) {
 				t.Fatalf("workspace configurations = %v, want %v", got, tt.wantConfigurations)
 			}
+
+			body, err := os.ReadFile(outputEnvironment)
+			if err != nil {
+				t.Fatalf("read excluded-root output environment: %v", err)
+			}
+			environment := string(body)
+			for _, expected := range []string{
+				"CODEFLY__MODULE=app\n",
+				"CODEFLY__SERVICE=api\n",
+				"CODEFLY__ENDPOINT__APP__REDIS__TCP__TCP=",
+				"CODEFLY__WORKSPACE_CONFIGURATION__LOCAL_AUTH__TOKEN=local\n",
+			} {
+				if !strings.Contains(environment, expected) {
+					t.Fatalf("excluded-root environment is missing %q; keys=%v", expected, outputEnvironmentKeys(environment))
+				}
+			}
+			if tt.profile == "local" && strings.Contains(environment, "MANAGED_AUTH") {
+				t.Fatalf("excluded workspace configuration leaked into output; keys=%v", outputEnvironmentKeys(environment))
+			}
+			info, err := os.Stat(outputEnvironment)
+			if err != nil {
+				t.Fatalf("stat excluded-root output environment: %v", err)
+			}
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Fatalf("excluded-root output environment mode = %o, want 600", got)
+			}
+
 			dsn := connectionStringFrom(configs)
 			if dsn == "" {
 				t.Fatalf("no dependency connection string in configurations: %+v", configs)
@@ -307,4 +340,14 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 			_ = conn.Close()
 		})
 	}
+}
+
+func outputEnvironmentKeys(body string) []string {
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	keys := make([]string, 0, len(lines))
+	for _, line := range lines {
+		key, _, _ := strings.Cut(line, "=")
+		keys = append(keys, key)
+	}
+	return keys
 }

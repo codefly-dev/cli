@@ -457,6 +457,18 @@ func (flow *Flow) Load(ctx context.Context) error {
 		}
 		identities = append(identities, id)
 	}
+	// An excluded root normally has no runtime manager and therefore is absent
+	// from flow.services. When its process environment is the requested output,
+	// its own and workspace configuration must still be admitted to the same
+	// configuration manager as a real Runner would use. This loads configuration
+	// authority only; it does not load the root agent or project process.
+	if flow.exportsExcludedOriginEnvironment() {
+		id, err := flow.originService.Identity()
+		if err != nil {
+			return w.Wrap(err)
+		}
+		identities = append(identities, id)
+	}
 	err := flow.ConfigurationManager.Restrict(ctx, identities)
 	if err != nil {
 		return w.Wrap(err)
@@ -1410,8 +1422,18 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		}
 		flow.hub.managers = append(flow.hub.managers, manager)
 	} else {
-		// We use a NoOP NewManager
-		flow.hub.managers = append(flow.hub.managers, &NoOpManager{service: flow.originService})
+		// Keep the origin in the playbook so dependency ordering remains exactly
+		// the same without loading its agent. If its SDK environment was requested,
+		// the environment-only manager publishes it after dependency startup.
+		noOp := NoOpManager{service: flow.originService}
+		if flow.exportsExcludedOriginEnvironment() {
+			flow.hub.managers = append(flow.hub.managers, &environmentOnlyManager{
+				NoOpManager: noOp,
+				export:      flow.exportExcludedOriginEnvironment,
+			})
+		} else {
+			flow.hub.managers = append(flow.hub.managers, &noOp)
+		}
 
 	}
 
@@ -1793,6 +1815,13 @@ func (flow *Flow) exportsRuntimeEnvironmentFor(service *resources.Service) bool 
 		target = resources.WithUnique(flow.originService).Unique()
 	}
 	return resources.WithUnique(service).Unique() == target
+}
+
+// exportsExcludedOriginEnvironment reports whether --exclude-root selected
+// the root as the sole owner of the output environment. The default output
+// target is the root, so an explicit --output-env-service is not required.
+func (flow *Flow) exportsExcludedOriginEnvironment() bool {
+	return flow != nil && flow.excludeRoot && flow.exportsRuntimeEnvironmentFor(flow.originService)
 }
 
 type Remote struct {
