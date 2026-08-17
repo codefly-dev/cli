@@ -175,7 +175,7 @@ func TestSelectEnvironmentConcurrentOverridesDoNotContaminate(t *testing.T) {
 func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 	deepCopied := map[string]bool{
 		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
-		"ManagedServices": true, "Secrets": true,
+		"ManagedServices": true, "Secrets": true, "ServiceSecrets": true,
 	}
 	typ := reflect.TypeOf(resources.Environment{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -193,6 +193,26 @@ func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 			t.Errorf("resources.Environment.%s (%s) is shared, not copied, by cloneEnvironment — extend the clone before concurrent flows can contaminate each other", field.Name, field.Type)
 		}
 	}
+}
+
+func TestCloneEnvironmentDeepCopiesServiceSecrets(t *testing.T) {
+	env := &resources.Environment{
+		Name: "prod",
+		ServiceSecrets: &resources.EnvironmentServiceSecrets{
+			SecretStore: resources.EnvironmentSecretStoreReference{Name: "kv", Kind: "ClusterSecretStore"},
+			Services: map[string]resources.EnvironmentServiceSecretMapping{
+				"accounts": {RemoteKeys: map[string]string{"client-secret": "workos/client-secret"}},
+			},
+		},
+	}
+	clone := cloneEnvironment(env)
+	clone.ServiceSecrets.SecretStore.Name = "other"
+	clone.ServiceSecrets.Services["accounts"] = resources.EnvironmentServiceSecretMapping{
+		RemoteKeys: map[string]string{"client-secret": "hijacked"},
+	}
+
+	require.Equal(t, "kv", env.ServiceSecrets.SecretStore.Name)
+	require.Equal(t, "workos/client-secret", env.ServiceSecrets.Services["accounts"].RemoteKeys["client-secret"])
 }
 
 func TestSelectEnvironmentIsEquivalentAcrossFlows(t *testing.T) {
