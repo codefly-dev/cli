@@ -205,8 +205,8 @@ func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.Netw
 			out = append(out, mapping)
 			continue
 		}
-		clone := proto.Clone(mapping).(*basev0.NetworkMapping)
-		public := proto.Clone(container).(*basev0.NetworkInstance)
+		clone := proto.CloneOf(mapping)
+		public := proto.CloneOf(container)
 		public.Access = resources.NewPublicNetworkAccess()
 		clone.Instances = append(clone.Instances, public)
 		out = append(out, clone)
