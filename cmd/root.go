@@ -297,6 +297,9 @@ func init() {
 	// Unified release: bump + commit + tag + push for any codefly repo.
 	RootCmd.AddCommand(PublishCmd)
 
+	// Check release status: versions, health, auto-create issues.
+	RootCmd.AddCommand(StatusCmd)
+
 	// Rebuild the codefly CLI itself from source.
 	RootCmd.AddCommand(SelfCmd)
 
