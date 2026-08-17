@@ -89,11 +89,15 @@ func (inv inventory) versionResolvable(version string) bool {
 	return false
 }
 
-// versionsBehind counts the tagged versions strictly newer than the given
-// pinned version — how many releases the pin trails its repo's main line. This
-// is the "pinned agent is N versions behind main" drift signal: a pin at 0.0.15
-// with 0.0.16..0.0.22 also tagged reports 7. A version of "latest", or one that
-// doesn't parse, has nothing to compare against and reports 0.
+// versionsBehind counts the resolvable versions strictly newer than the given
+// pinned version — how many downloadable releases the pin trails its repo's
+// main line. It counts only resolvable versions (a GitHub-release asset or OCI
+// manifest is present), never bare tags: a newer tag that shipped no artifact
+// is not something the pin can be bumped to, so counting it would nag a pin
+// already at the latest usable version and, worse, point "bump the pin" at an
+// unresolvable version. A pin at 0.0.15 with 0.0.16..0.0.22 all published
+// reports 7. A version of "latest", or one that doesn't parse, has nothing to
+// compare against and reports 0.
 func (inv inventory) versionsBehind(version string) int {
 	if version == "latest" {
 		return 0
@@ -104,11 +108,21 @@ func (inv inventory) versionsBehind(version string) int {
 	}
 	behind := 0
 	for _, entry := range inv.Versions {
-		if entry.Sources.Tag && entry.sem.GT(pinned) {
+		if entry.Sources.resolvable() && entry.sem.GT(pinned) {
 			behind++
 		}
 	}
 	return behind
+}
+
+// LatestResolvableDrift reports, for a single agent, the newest resolvable
+// version published for its repo and how many resolvable versions the given pin
+// trails. It reuses the same release/tag/OCI sources and GitHub auth as
+// `agent list`, so every caller — including `codefly ci` — measures drift
+// against one identical reference.
+func LatestResolvableDrift(ctx context.Context, agent *resources.Agent, pinnedVersion string) (latestResolvable string, behind int) {
+	inv := collectInventory(ctx, agent, nil)
+	return inv.LatestResolvable, inv.versionsBehind(pinnedVersion)
 }
 
 var versionsJSON bool
@@ -605,7 +619,7 @@ func renderInventory(inv inventory) {
 	for _, pin := range inv.Pinned {
 		fmt.Printf("pinned            -> %s (resolvable: %s)\n", pin, yesNo(inv.versionResolvable(pin)))
 		if behind := inv.versionsBehind(pin); behind > 0 {
-			fmt.Printf("  warning: %d version(s) behind its repo main (latest tag %s)\n", behind, dashIfEmpty(inv.LatestTag))
+			fmt.Printf("  warning: %d version(s) behind its repo main (latest resolvable %s)\n", behind, dashIfEmpty(inv.LatestResolvable))
 		}
 	}
 }
@@ -632,8 +646,8 @@ func renderSummaries(summaries []agentSummary) {
 
 	for _, summary := range summaries {
 		if summary.Behind > 0 {
-			cli.Warning("%s pinned %s is %d version(s) behind its repo main (latest tag %s) — rebuild/release from main or bump the pin",
-				summary.Agent, summary.Pinned, summary.Behind, dashIfEmpty(summary.LatestTag))
+			cli.Warning("%s pinned %s is %d version(s) behind its repo main (latest resolvable %s) — rebuild/release from main or bump the pin",
+				summary.Agent, summary.Pinned, summary.Behind, dashIfEmpty(summary.LatestResolvable))
 		}
 	}
 }

@@ -2,7 +2,6 @@ package ci
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,41 +20,26 @@ func testAgent() *resources.Agent {
 	}
 }
 
-func TestPinBehind(t *testing.T) {
-	cases := []struct {
-		pinned, latest string
-		want           bool
-	}{
-		{"0.0.15", "0.0.22", true},
-		{"0.0.22", "0.0.22", false},
-		{"0.0.23", "0.0.22", false},
-		{"v0.0.15", "v0.0.22", true},
-		{"not-semver", "0.0.22", false},
-		{"0.0.15", "not-semver", false},
-	}
-	for _, tc := range cases {
-		if got := pinBehind(tc.pinned, tc.latest); got != tc.want {
-			t.Fatalf("pinBehind(%q, %q) = %v, want %v", tc.pinned, tc.latest, got, tc.want)
-		}
-	}
-}
-
 func TestWarnStaleAgentPins(t *testing.T) {
-	restore := latestReleaseOf
-	defer func() { latestReleaseOf = restore }()
+	restore := agentDrift
+	defer func() { agentDrift = restore }()
 
-	latestReleaseOf = func(_ context.Context, agent *resources.Agent) (string, error) {
+	var latestPinChecked bool
+	agentDrift = func(_ context.Context, agent *resources.Agent, pinned string) (string, int) {
 		switch agent.Name {
 		case "vault":
-			return "0.0.22", nil // pinned 0.0.15 → behind
+			return "0.0.22", 2 // pinned 0.0.15 → 2 resolvable versions behind
 		case "redis":
-			return "0.0.74", nil // pinned 0.0.74 → current
+			return "0.0.74", 0 // pinned 0.0.74 → current
+		case "latest-pin":
+			latestPinChecked = true // must never be reached
+			return "", 0
 		default:
-			return "", errors.New("unreachable")
+			return "", 0 // unreachable GitHub → best-effort silence
 		}
 	}
 
-	agents := []*resources.Agent{
+	plan := []*resources.Agent{
 		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "vault", Version: "0.0.15"},
 		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "redis", Version: "0.0.74"},
 		{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "latest-pin", Version: "latest"},
@@ -63,9 +47,12 @@ func TestWarnStaleAgentPins(t *testing.T) {
 	}
 
 	cli.StartCapture()
-	warnStaleAgentPins(context.Background(), agents)
+	warnStaleAgentPins(context.Background(), plan)
 	lines := cli.DrainCapture()
 
+	if latestPinChecked {
+		t.Fatal("a pin of \"latest\" must be skipped, not looked up")
+	}
 	var warnings []string
 	for _, line := range lines {
 		if strings.Contains(line.Message, "behind its repo main") {
@@ -75,8 +62,8 @@ func TestWarnStaleAgentPins(t *testing.T) {
 	if len(warnings) != 1 {
 		t.Fatalf("drift warnings = %d (%v), want exactly 1 (vault only)", len(warnings), warnings)
 	}
-	if !strings.Contains(warnings[0], "vault") || !strings.Contains(warnings[0], "0.0.22") {
-		t.Fatalf("warning = %q, want it to name vault and latest release 0.0.22", warnings[0])
+	if !strings.Contains(warnings[0], "vault") || !strings.Contains(warnings[0], "2 version(s)") || !strings.Contains(warnings[0], "0.0.22") {
+		t.Fatalf("warning = %q, want it to name vault, the count, and latest resolvable 0.0.22", warnings[0])
 	}
 }
 
