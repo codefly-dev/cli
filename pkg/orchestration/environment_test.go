@@ -201,17 +201,25 @@ func TestCloneEnvironmentDeepCopiesServiceSecrets(t *testing.T) {
 		ServiceSecrets: &resources.EnvironmentServiceSecrets{
 			SecretStore: resources.EnvironmentSecretStoreReference{Name: "kv", Kind: "ClusterSecretStore"},
 			Services: map[string]resources.EnvironmentServiceSecretMapping{
-				"accounts": {RemoteKeys: map[string]string{"client-secret": "workos/client-secret"}},
+				"accounts": {
+					SecretStore: &resources.EnvironmentSecretStoreReference{Name: "accounts-vault", Kind: "SecretStore"},
+					RemoteKeys:  map[string]string{"client-secret": "workos/client-secret"},
+				},
 			},
 		},
 	}
 	clone := cloneEnvironment(env)
 	clone.ServiceSecrets.SecretStore.Name = "other"
+	// Mutate through the per-service store pointer: a shared pointer would leak
+	// this into the declaration the reflection canary cannot see (it only walks
+	// top-level Environment fields, not nested pointers).
+	clone.ServiceSecrets.Services["accounts"].SecretStore.Name = "hijacked-store"
 	clone.ServiceSecrets.Services["accounts"] = resources.EnvironmentServiceSecretMapping{
 		RemoteKeys: map[string]string{"client-secret": "hijacked"},
 	}
 
 	require.Equal(t, "kv", env.ServiceSecrets.SecretStore.Name)
+	require.Equal(t, "accounts-vault", env.ServiceSecrets.Services["accounts"].SecretStore.Name)
 	require.Equal(t, "workos/client-secret", env.ServiceSecrets.Services["accounts"].RemoteKeys["client-secret"])
 }
 

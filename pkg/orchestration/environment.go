@@ -89,6 +89,10 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 					}
 					mapping.RemoteKeys = remoteKeys
 				}
+				if mapping.SecretStore != nil {
+					store := *mapping.SecretStore
+					mapping.SecretStore = &store
+				}
 				secrets.Services[name] = mapping
 			}
 		}

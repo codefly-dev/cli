@@ -31,6 +31,9 @@ func renderModuleTree(
 	sink orchestration.OutputSink,
 	includeBootstrap bool,
 ) (RenderResult, error) {
+	if err := workspace.ValidateEnvironments(ctx); err != nil {
+		return RenderResult{}, err
+	}
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", module.Name)
 	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", module.Name))
 	gitopsPath := ""
@@ -237,6 +240,9 @@ func copyEnvironmentBootstrap(source, environment, destination string) error {
 }
 
 func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
+	if err := workspace.ValidateEnvironments(ctx); err != nil {
+		return RenderResult{}, err
+	}
 	serviceDir, _ := unitDirectory(UnitKindService)
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, serviceDir, module.Name, service.Name)
 	return RenderOwnedTree(ctx, &RenderOptions{

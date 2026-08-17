@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,6 +231,31 @@ func TestServiceSecretProjectionRendersNothingWithoutStoreOrKeys(t *testing.T) {
 	}
 }
 
+func TestServiceSecretProjectionHonorsPerServiceStore(t *testing.T) {
+	secrets := &resources.EnvironmentServiceSecrets{
+		SecretStore: resources.EnvironmentSecretStoreReference{Name: "env-default", Kind: "ClusterSecretStore"},
+		Services: map[string]resources.EnvironmentServiceSecretMapping{
+			"accounts": {SecretStore: &resources.EnvironmentSecretStoreReference{Name: "accounts-vault", Kind: "SecretStore"}},
+		},
+	}
+	projection, err := serviceSecretProjection("accounts", "payments", secrets, []string{"api-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Spec.SecretStoreRef.Name != "accounts-vault" || projection.Spec.SecretStoreRef.Kind != "SecretStore" {
+		t.Fatalf("per-service store override not honored: %+v", projection.Spec.SecretStoreRef)
+	}
+
+	// A service without an override still resolves through the environment store.
+	other, err := serviceSecretProjection("billing", "payments", secrets, []string{"api-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Spec.SecretStoreRef.Name != "env-default" {
+		t.Fatalf("service without override should use env store: %+v", other.Spec.SecretStoreRef)
+	}
+}
+
 func TestServiceSecretProjectionRejectsInvalidStore(t *testing.T) {
 	backendKind := &resources.EnvironmentServiceSecrets{
 		SecretStore: resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"},
@@ -357,6 +383,85 @@ func TestProjectServiceSecretsNoOpWithoutDeclaration(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "overlays", "production", "external-secret.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("external-secret.yaml was written without a declaration: %v", err)
+	}
+}
+
+// The renderers must invoke Workspace.ValidateEnvironments before doing any work,
+// so a service-secrets override naming an unknown service fails fast instead of
+// silently projecting the default <service>/<key> paths for a typo.
+func TestRenderServiceRejectsUnknownServiceSecretOverride(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		resources.WorkspaceConfigurationName: `name: platform
+layout: modules
+modules:
+  - name: web
+environments:
+  - name: prod
+    namespace: platform
+    service-secrets:
+      secret-store:
+        name: azure-keyvault-prod
+        kind: ClusterSecretStore
+      services:
+        ghost:
+          remote-keys:
+            client-secret: ghost/client-secret
+`,
+		filepath.Join("modules", "web", resources.ModuleConfigurationName): `kind: module
+name: web
+services:
+    - name: web
+`,
+		filepath.Join("modules", "web", "services", "web", resources.ServiceConfigurationName): `kind: service
+name: web
+version: 0.0.0
+agent:
+  kind: runtime::service
+  name: go-grpc
+  version: 0.0.1
+  publisher: codefly.ai
+`,
+	}
+	for rel, content := range files {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := workspace.FindEnvironment("prod")
+	if env == nil {
+		t.Fatal("prod environment did not load")
+	}
+	_, err = RenderService(ctx, workspace, &resources.Module{Name: "web"}, &resources.Service{Name: "web"}, env, "", false, nil)
+	if err == nil {
+		t.Fatal("expected RenderService to reject the unknown service-secrets override")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("error = %v, want it to name the unknown service", err)
+	}
+}
+
+func TestProjectServiceSecretsFailsClearlyWithoutOverlay(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	writeServiceTree(t, root, "production")
+	if err := os.RemoveAll(filepath.Join(root, "overlays")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := projectServiceSecrets(root, "accounts", "production", "payments", azureServiceSecrets())
+	if err == nil {
+		t.Fatal("expected an error when the environment overlay is missing")
+	}
+	if !strings.Contains(err.Error(), "overlay") {
+		t.Fatalf("error = %v, want it to name the missing overlay", err)
 	}
 }
 

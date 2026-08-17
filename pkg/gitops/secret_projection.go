@@ -116,10 +116,18 @@ func serviceSecretProjection(service, namespace string, secrets *resources.Envir
 	if secrets == nil || len(keys) == 0 {
 		return nil, nil
 	}
-	overrides := secrets.Services[service].RemoteKeys
+	mapping := secrets.Services[service]
+	// A service may resolve from a different store than the environment default,
+	// mirroring EnvironmentManagedSecretReference's per-reference store; without
+	// this the per-service secret-store declaration would load, validate, and then
+	// be silently projected against the environment-wide store.
+	store := secrets.SecretStore
+	if mapping.SecretStore != nil {
+		store = *mapping.SecretStore
+	}
 	data := make([]externalSecretData, 0, len(keys))
 	for _, key := range keys {
-		remoteKey := overrides[key]
+		remoteKey := mapping.RemoteKeys[key]
 		if remoteKey == "" {
 			remoteKey = service + "/" + key
 		}
@@ -128,7 +136,7 @@ func serviceSecretProjection(service, namespace string, secrets *resources.Envir
 			RemoteRef: externalSecretRemote{Key: remoteKey},
 		})
 	}
-	return externalSecretProjection(service, namespace, secrets.SecretStore, data)
+	return externalSecretProjection(service, namespace, store, data)
 }
 
 // externalSecretProjection assembles the ExternalSecret shared by the managed- and
@@ -183,6 +191,9 @@ func projectServiceSecrets(serviceRoot, service, environment, namespace string, 
 		return false, nil
 	}
 	overlay := filepath.Join(serviceRoot, "overlays", environment)
+	if info, statErr := os.Stat(overlay); statErr != nil || !info.IsDir() {
+		return false, fmt.Errorf("service %q references secret-%s but has no %q environment overlay to project it into", service, service, environment)
+	}
 	projected, err := yaml.Marshal(projection)
 	if err != nil {
 		return false, err
