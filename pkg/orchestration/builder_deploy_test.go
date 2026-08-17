@@ -209,6 +209,41 @@ func TestValidateDeploymentOutputAllowsOptionalNoDeploymentResponse(t *testing.T
 	), "plugin returned no Kubernetes deployment output")
 }
 
+func TestWithContainerReachableAsPublicMirrorsContainerOnlyEndpoint(t *testing.T) {
+	container := resources.NewHTTPNetworkInstance("saas-vault.saas.svc.cluster.local", 8080, false)
+	container.Access = resources.NewContainerNetworkAccess()
+	mappings := []*basev0.NetworkMapping{{
+		Endpoint:  &basev0.Endpoint{Module: "saas", Service: "vault", Name: "http", Api: "http", Visibility: resources.VisibilityModule},
+		Instances: []*basev0.NetworkInstance{container},
+	}}
+
+	got := withContainerReachableAsPublic(context.Background(), mappings)
+
+	require.Nil(t, resources.FilterNetworkInstance(context.Background(), mappings[0].Instances, resources.NewPublicNetworkAccess()),
+		"source mappings must not be mutated")
+	public := resources.FilterNetworkInstance(context.Background(), got[0].Instances, resources.NewPublicNetworkAccess())
+	require.NotNil(t, public)
+	require.Equal(t, container.GetAddress(), public.GetAddress())
+	require.Equal(t, container.GetHost(), public.GetHost())
+	require.Equal(t, container.GetPort(), public.GetPort())
+}
+
+func TestWithContainerReachableAsPublicLeavesEndpointsWithPublicUntouched(t *testing.T) {
+	public := resources.NewHTTPNetworkInstance("frontend.example.com", 443, true)
+	public.Access = resources.NewPublicNetworkAccess()
+	container := resources.NewHTTPNetworkInstance("frontend.saas.svc.cluster.local", 8080, false)
+	container.Access = resources.NewContainerNetworkAccess()
+	mappings := []*basev0.NetworkMapping{{
+		Endpoint:  &basev0.Endpoint{Module: "saas", Service: "frontend", Name: "http", Api: "http", Visibility: resources.VisibilityPublic},
+		Instances: []*basev0.NetworkInstance{public, container},
+	}}
+
+	got := withContainerReachableAsPublic(context.Background(), mappings)
+
+	require.Len(t, got[0].Instances, 2)
+	require.Same(t, mappings[0], got[0])
+}
+
 type requiredDeploymentOutputManager struct{}
 
 func (requiredDeploymentOutputManager) RequiresDeploymentOutput() bool {

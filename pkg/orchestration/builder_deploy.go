@@ -60,6 +60,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
+	networkMappings = withContainerReachableAsPublic(ctx, networkMappings)
 
 	err = b.world.SharedState.RecordNetworkMappings(ctx, b.instance.Service, networkMappings)
 	if err != nil {
@@ -164,6 +165,53 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot handle deployment")
 	}
 	return outputProperty, nil
+}
+
+// withContainerReachableAsPublic normalizes a service's remote network mappings
+// so an endpoint reachable only in-cluster still resolves for anyone that injects
+// the address using public access.
+//
+// On a non-local deploy an endpoint without an ingress (e.g. a module-visibility
+// vault) only materializes an in-cluster (Container) instance — unlike the
+// DNS-backed path, which already emits both a Public and a Container instance. A
+// builder requests the public access variant when wiring the address, so with no
+// public instance present resolution fails. In cluster the ClusterIP address is
+// reachable regardless of access label, so mirror the Container instance as a
+// Public one. This runs at generation time, before the mappings are recorded, so
+// the owning service's own deploy request and every downstream consumer see the
+// mirror from a single normalization point.
+//
+// The gate is the container/public instance shape, not endpoint visibility: the
+// access kind a consumer requests is decided by the out-of-process builder agent,
+// so gating on visibility here would guess that agent's behavior and risk
+// under-covering endpoints it also resolves as public. The added instance is only
+// ever matched by a caller that explicitly asks for public access.
+//
+// Mappings that need a mirror are cloned, so the input slice's instances are
+// never mutated.
+func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.NetworkMapping) []*basev0.NetworkMapping {
+	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		if mapping == nil {
+			out = append(out, mapping)
+			continue
+		}
+		if resources.FilterNetworkInstance(ctx, mapping.Instances, resources.NewPublicNetworkAccess()) != nil {
+			out = append(out, mapping)
+			continue
+		}
+		container := resources.FilterNetworkInstance(ctx, mapping.Instances, resources.NewContainerNetworkAccess())
+		if container == nil {
+			out = append(out, mapping)
+			continue
+		}
+		clone := proto.CloneOf(mapping)
+		public := proto.CloneOf(container)
+		public.Access = resources.NewPublicNetworkAccess()
+		clone.Instances = append(clone.Instances, public)
+		out = append(out, clone)
+	}
+	return out
 }
 
 func kubernetesValidationTarget(ctx context.Context, environment *resources.Environment) (string, string, error) {
