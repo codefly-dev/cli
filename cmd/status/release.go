@@ -100,17 +100,20 @@ func runRelease(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Critical (>50 versions behind): %d\n", critical)
 	fmt.Printf("Total agents scanned: %d\n", len(statuses))
 
-	if createIssues && critical > 0 {
-		fmt.Printf("\n==> Creating GitHub issues for critical agents...\n")
+	if createIssues {
+		fmt.Printf("\n==> Creating GitHub issues for agents with issues...\n")
+		issuesCreated := 0
 		for _, s := range statuses {
-			if s.Delta > 50 {
+			if s.Delta > 50 || len(s.Issues) > 0 {
 				if err := createAgentIssue(baseDir, s); err != nil {
 					fmt.Printf("⚠ Failed to create issue for %s: %v\n", s.Name, err)
 				} else {
 					fmt.Printf("✓ Created issue for %s\n", s.Name)
+					issuesCreated++
 				}
 			}
 		}
+		fmt.Printf("\n✓ Created %d issues\n", issuesCreated)
 	}
 
 	return nil
