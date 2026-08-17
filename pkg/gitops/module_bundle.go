@@ -91,6 +91,9 @@ func renderModuleBundle(
 	if err := copyEnvironmentBootstrap(root, environment.Name, destination); err != nil {
 		return fmt.Errorf("copy selected module bundle: %w", err)
 	}
+	if _, err := projectResourceQuota(destination, environment.Name, environment.Namespace, environment.ResourceQuota); err != nil {
+		return fmt.Errorf("project module namespace resource quota: %w", err)
+	}
 	if err := validateTransportNeutralModuleBundle(destination); err != nil {
 		return err
 	}

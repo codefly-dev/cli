@@ -130,6 +130,15 @@ func renderModuleTree(
 				); projectErr != nil {
 					return fmt.Errorf("project service %s secrets: %w", service.Name, projectErr)
 				}
+				if _, projectErr := projectServiceAutoscale(
+					filepath.Join(stage, unitDir, service.Name),
+					service.Name,
+					env.Name,
+					env.Namespace,
+					service.Autoscale,
+				); projectErr != nil {
+					return fmt.Errorf("project service %s autoscale: %w", service.Name, projectErr)
+				}
 			}
 			options.Units = append(options.Units, entry)
 		}
@@ -158,8 +167,12 @@ func renderModuleTree(
 		if !info.IsDir() {
 			return fmt.Errorf("module kustomize path is not a directory")
 		}
-		if err := copyEnvironmentBootstrap(static, env.Name, filepath.Join(stage, "bootstrap")); err != nil {
+		bootstrap := filepath.Join(stage, "bootstrap")
+		if err := copyEnvironmentBootstrap(static, env.Name, bootstrap); err != nil {
 			return fmt.Errorf("copy module environment bootstrap: %w", err)
+		}
+		if _, err := projectResourceQuota(bootstrap, env.Name, env.Namespace, env.ResourceQuota); err != nil {
+			return fmt.Errorf("project module namespace resource quota: %w", err)
 		}
 		return nil
 	})
@@ -267,7 +280,10 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		); err != nil {
 			return err
 		}
-		return projectRenderedServiceSecrets(stage, env)
+		if err := projectRenderedServiceSecrets(stage, env); err != nil {
+			return err
+		}
+		return projectRenderedServiceAutoscale(ctx, stage, workspace, env)
 	})
 }
 
