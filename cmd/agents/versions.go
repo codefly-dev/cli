@@ -98,7 +98,7 @@ func (inv inventory) versionResolvable(version string) bool {
 // unresolvable version. A pin at 0.0.15 with 0.0.16..0.0.22 all published
 // reports 7. A version of "latest", or one that doesn't parse, has nothing to
 // compare against and reports 0.
-func (inv inventory) versionsBehind(version string) int {
+func versionsBehind(versions []versionEntry, version string) int {
 	if version == "latest" {
 		return 0
 	}
@@ -107,7 +107,7 @@ func (inv inventory) versionsBehind(version string) int {
 		return 0
 	}
 	behind := 0
-	for _, entry := range inv.Versions {
+	for _, entry := range versions {
 		if entry.Sources.resolvable() && entry.sem.GT(pinned) {
 			behind++
 		}
@@ -122,7 +122,7 @@ func (inv inventory) versionsBehind(version string) int {
 // against one identical reference.
 func LatestResolvableDrift(ctx context.Context, agent *resources.Agent, pinnedVersion string) (latestResolvable string, behind int) {
 	inv := collectInventory(ctx, agent, nil)
-	return inv.LatestResolvable, inv.versionsBehind(pinnedVersion)
+	return inv.LatestResolvable, versionsBehind(inv.Versions, pinnedVersion)
 }
 
 var versionsJSON bool
@@ -368,7 +368,7 @@ func summarizeWorkspaceAgents(ctx context.Context, pins []agentPin) []agentSumma
 				PinnedResolvable: inv.versionResolvable(agent.Version),
 				LatestResolvable: inv.LatestResolvable,
 				LatestTag:        inv.LatestTag,
-				Behind:           inv.versionsBehind(agent.Version),
+				Behind:           versionsBehind(inv.Versions, agent.Version),
 			}
 			rows[pinKey] = row
 			order = append(order, pinKey)
@@ -618,7 +618,7 @@ func renderInventory(inv inventory) {
 	}
 	for _, pin := range inv.Pinned {
 		fmt.Printf("pinned            -> %s (resolvable: %s)\n", pin, yesNo(inv.versionResolvable(pin)))
-		if behind := inv.versionsBehind(pin); behind > 0 {
+		if behind := versionsBehind(inv.Versions, pin); behind > 0 {
 			fmt.Printf("  warning: %d version(s) behind its repo main (latest resolvable %s)\n", behind, dashIfEmpty(inv.LatestResolvable))
 		}
 	}

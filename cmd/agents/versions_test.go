@@ -146,10 +146,10 @@ func TestVersionsBehindCountsResolvableNewer(t *testing.T) {
 	tags := []string{"0.0.15", "0.0.16", "0.0.20", "0.0.22"}
 	inv := buildInventory(redisAgent(), releases, tags, nil, nil, nil, false)
 
-	if got := inv.versionsBehind("0.0.15"); got != 3 {
+	if got := versionsBehind(inv.Versions, "0.0.15"); got != 3 {
 		t.Fatalf("versionsBehind(0.0.15) = %d, want 3", got)
 	}
-	if got := inv.versionsBehind("0.0.22"); got != 0 {
+	if got := versionsBehind(inv.Versions, "0.0.22"); got != 0 {
 		t.Fatalf("versionsBehind(0.0.22) = %d, want 0 (up to date)", got)
 	}
 }
@@ -164,13 +164,13 @@ func TestVersionsBehindIgnoresUnresolvableNewer(t *testing.T) {
 	local := []string{"0.0.30"}
 	inv := buildInventory(redisAgent(), releases, tags, local, nil, nil, false)
 
-	if got := inv.versionsBehind("0.0.15"); got != 0 {
+	if got := versionsBehind(inv.Versions, "0.0.15"); got != 0 {
 		t.Fatalf("versionsBehind ignoring unresolvable newer = %d, want 0", got)
 	}
-	if got := inv.versionsBehind("latest"); got != 0 {
+	if got := versionsBehind(inv.Versions, "latest"); got != 0 {
 		t.Fatalf("versionsBehind(latest) = %d, want 0", got)
 	}
-	if got := inv.versionsBehind("not-semver"); got != 0 {
+	if got := versionsBehind(inv.Versions, "not-semver"); got != 0 {
 		t.Fatalf("versionsBehind(not-semver) = %d, want 0", got)
 	}
 }
