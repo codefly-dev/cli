@@ -158,6 +158,16 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}
+		f.WithOutputEnv(req.OutputEnv)
+		if req.OutputEnvService != "" {
+			if req.OutputEnv == "" {
+				return fmt.Errorf("output environment service requires an output environment path")
+			}
+			if _, err := f.ServiceFromUnique(req.OutputEnvService); err != nil {
+				return fmt.Errorf("select output environment service %q: %w", req.OutputEnvService, err)
+			}
+			f.WithOutputEnvService(req.OutputEnvService)
+		}
 		f.WithExcludeRoot(req.ExcludeRoot)
 		return nil
 	})

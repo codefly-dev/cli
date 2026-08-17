@@ -47,6 +47,26 @@ func TestEmptyOutputEnvironmentDisablesEveryExport(t *testing.T) {
 	}
 }
 
+func TestExcludedRootOwnsDefaultOutputEnvironmentWithoutRunning(t *testing.T) {
+	origin := outputEnvironmentTestService("saas", "frontend")
+	flow := &Flow{originService: origin}
+	flow.WithOutputEnv(filepath.Join(t.TempDir(), "runtime.env"))
+	flow.WithExcludeRoot(true)
+
+	if !flow.exportsExcludedOriginEnvironment() {
+		t.Fatal("excluded root should compose the default output environment")
+	}
+
+	dependency := outputEnvironmentTestService("platform", "warden")
+	flow.WithOutputEnvService("platform/warden")
+	if flow.exportsExcludedOriginEnvironment() {
+		t.Fatal("excluded root must not compose an explicitly selected dependency environment")
+	}
+	if !flow.exportsRuntimeEnvironmentFor(dependency) {
+		t.Fatal("selected dependency should remain the output environment owner")
+	}
+}
+
 func outputEnvironmentTestService(module, name string) *resources.Service {
 	service := &resources.Service{Name: name}
 	service.WithModule(module)
