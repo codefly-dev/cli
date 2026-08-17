@@ -387,28 +387,28 @@ func publishRequest(module string) gitops.PublishRequest {
 	}
 }
 
-// printSizingReport surfaces the render-time resource sizing: per-workload
-// requests and the reservation totals a target cell must schedule, plus a
-// warning for any workload that declares no requests or no limits.
+// printSizingReport surfaces the render-time resource sizing: the reservation
+// totals a target cell must schedule (per-replica amounts multiplied by replica
+// count), the per-replica sizing of each workload, and a warning for any
+// workload with a container missing CPU or memory requests or limits.
 func printSizingReport(report gitops.SizingReport) {
 	if len(report.Workloads) == 0 {
 		return
 	}
-	cli.Info("Sizing %d workloads: requests %s CPU / %s memory, limits %s CPU / %s memory",
+	cli.Info("Sizing %d workloads — total reserved: requests %s CPU / %s memory, limits %s CPU / %s memory",
 		len(report.Workloads),
 		report.TotalRequests.CPUString(), report.TotalRequests.MemoryString(),
 		report.TotalLimits.CPUString(), report.TotalLimits.MemoryString())
 	for _, workload := range report.Workloads {
-		cli.Info("  %s/%s x%d requests %s CPU / %s memory",
+		cli.Info("  %s/%s x%d — %s CPU / %s memory requested per replica",
 			workload.Kind, workload.Name, workload.Replicas,
 			workload.Requests.CPUString(), workload.Requests.MemoryString())
 	}
 	if report.WorkloadsMissingRequests > 0 {
-		cli.Warning("%d workload(s) declare no resource requests — the scheduler cannot reserve capacity for them",
-			report.WorkloadsMissingRequests)
+		cli.Warning("%d workload(s) have a container missing CPU or memory requests", report.WorkloadsMissingRequests)
 	}
 	if report.WorkloadsMissingLimits > 0 {
-		cli.Warning("%d workload(s) declare no resource limits", report.WorkloadsMissingLimits)
+		cli.Warning("%d workload(s) have a container missing CPU or memory limits", report.WorkloadsMissingLimits)
 	}
 }
 

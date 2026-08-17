@@ -42,6 +42,7 @@ func TestParseMemory(t *testing.T) {
 		{"1M", 1_000_000, true},
 		{"1G", 1_000_000_000, true},
 		{"1000000", 1_000_000, true},
+		{"2.3Mi", 2_411_725, true}, // 2.3*2^20 = 2411724.8, rounded not truncated
 		{"", 0, false},
 		{"nonsense", 0, false},
 	}
@@ -164,6 +165,107 @@ func TestComputeSizing(t *testing.T) {
 	if report.WorkloadsMissingLimits != 1 || report.WorkloadsMissingRequests != 0 {
 		t.Errorf("coverage counts = missingRequests %d, missingLimits %d",
 			report.WorkloadsMissingRequests, report.WorkloadsMissingLimits)
+	}
+}
+
+func sidecarContainer(cpu, memory string) map[string]any {
+	c := container(cpu, memory, cpu, memory)
+	c["restartPolicy"] = "Always"
+	return c
+}
+
+// TestComputeSizingIncludesInitContainersAndSidecars proves the reservation
+// counts native sidecars (restartable init containers), which run for the pod's
+// lifetime, and takes the scheduler's max against a plain init container's peak.
+// Summing regular containers alone under-reported — the dangerous direction.
+func TestComputeSizingIncludesInitContainersAndSidecars(t *testing.T) {
+	// Regular 100m/128Mi + sidecar 300m/256Mi run together = 400m/384Mi.
+	// A plain init container needs 200m/64Mi while the sidecar is already up:
+	// its peak is 200m+300m = 500m CPU, 64Mi+256Mi = 320Mi. The effective
+	// request is the max per resource: 500m CPU, 384Mi memory.
+	deployment := deploymentManifest("api", 3, []map[string]any{
+		container("100m", "128Mi", "", ""),
+	})
+	spec := deployment.value["spec"].(map[string]any)
+	template := spec["template"].(map[string]any)
+	pod := template["spec"].(map[string]any)
+	pod["initContainers"] = toAnySlice([]map[string]any{
+		sidecarContainer("300m", "256Mi"),
+		container("200m", "64Mi", "", ""),
+	})
+
+	report := computeSizing([]manifest{deployment})
+
+	if len(report.Workloads) != 1 {
+		t.Fatalf("workloads = %d, want 1", len(report.Workloads))
+	}
+	workload := report.Workloads[0]
+	if workload.Containers != 3 {
+		t.Errorf("containers = %d, want 3 (1 regular + 2 init)", workload.Containers)
+	}
+	if workload.Requests.MilliCPU != 500 || workload.Requests.MemoryBytes != 384<<20 {
+		t.Errorf("effective per-replica requests = %s CPU / %s memory, want 500m / 384Mi",
+			workload.Requests.CPUString(), workload.Requests.MemoryString())
+	}
+	// Reservation is per-replica × 3 replicas.
+	if report.TotalRequests.MilliCPU != 1500 || report.TotalRequests.MemoryBytes != 3*(384<<20) {
+		t.Errorf("total reserved requests = %s CPU / %s memory",
+			report.TotalRequests.CPUString(), report.TotalRequests.MemoryString())
+	}
+}
+
+// TestComputeSizingFlagsIncompleteButStillSumsIt proves a container that
+// declares only a memory request is flagged for coverage yet still contributes
+// its declared memory to the totals — the warning must not claim the workload
+// reserves nothing.
+func TestComputeSizingFlagsIncompleteButStillSumsIt(t *testing.T) {
+	deployment := deploymentManifest("cache", 1, []map[string]any{
+		container("", "256Mi", "", ""), // memory request only, no cpu
+	})
+
+	report := computeSizing([]manifest{deployment})
+
+	workload := report.Workloads[0]
+	if !workload.MissingRequests {
+		t.Errorf("memory-only request should be flagged incomplete: %+v", workload)
+	}
+	if workload.Requests.MemoryBytes != 256<<20 {
+		t.Errorf("declared memory must still be summed, got %s", workload.Requests.MemoryString())
+	}
+	if report.TotalRequests.MemoryBytes != 256<<20 {
+		t.Errorf("total memory = %s, want 256Mi", report.TotalRequests.MemoryString())
+	}
+}
+
+const unbuildableKustomization = `resources:
+  - deployment.yaml
+  - does-not-exist.yaml
+`
+
+// TestRenderNonPromotableSizingDoesNotFailRender proves the sizing pass no
+// longer holds veto power over a render: a non-promotable render whose
+// kustomization cannot be built by kustomize (a missing reference) still
+// succeeds, because sizing consumes validateTree's manifests rather than
+// re-building the tree on its own error path.
+func TestRenderNonPromotableSizingDoesNotFailRender(t *testing.T) {
+	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: filepath.Join(t.TempDir(), "owned"),
+		Module:      "payments", Environment: "production", Promotable: false,
+	}, func(_ context.Context, root string) error {
+		service := filepath.Join(root, "services", "api")
+		if err := os.MkdirAll(service, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(sizedDeployment), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(service, "kustomization.yaml"), []byte(unbuildableKustomization), 0o644)
+	})
+	if err != nil {
+		t.Fatalf("non-promotable render must not fail on sizing: %v", err)
+	}
+	if len(result.Sizing.Workloads) != 1 {
+		t.Fatalf("workloads = %d, want 1", len(result.Sizing.Workloads))
 	}
 }
 

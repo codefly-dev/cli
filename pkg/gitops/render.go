@@ -86,13 +86,11 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := generate(ctx, owned); err != nil {
 		return RenderResult{}, fmt.Errorf("generate staged manifests: %w", err)
 	}
-	if err := validateTree(owned, opts); err != nil {
+	manifests, err := validateTree(owned, opts)
+	if err != nil {
 		return RenderResult{}, err
 	}
-	sizing, err := renderSizing(owned)
-	if err != nil {
-		return RenderResult{}, fmt.Errorf("compute render sizing: %w", err)
-	}
+	sizing := computeSizing(manifests)
 	inventory, err := buildInventory(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -164,7 +162,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 			opts.UnitNames = append(opts.UnitNames, unit.Name)
 		}
 	}
-	if err := validateTree(root, opts); err != nil {
+	if _, err := validateTree(root, opts); err != nil {
 		return err
 	}
 	actual, err := buildInventory(root, opts)
@@ -209,7 +207,7 @@ func ValidateServiceSnapshot(root string) error {
 			Environment: inventory.Environment, Namespace: inventory.Namespace,
 			AppProject: inventory.AppProject, Promotable: true,
 		}
-		if err = validateTree(filepath.Join(root, filepath.FromSlash(unit.Path)), opts); err != nil {
+		if _, err = validateTree(filepath.Join(root, filepath.FromSlash(unit.Path)), opts); err != nil {
 			return fmt.Errorf("validate unit %s: %w", unit.Name, err)
 		}
 	}
@@ -365,10 +363,15 @@ func validateInventory(inventory, actual *Inventory, label string) error {
 	return nil
 }
 
-func validateTree(root string, opts *RenderOptions) error {
+// validateTree validates a rendered owned tree and returns its effective
+// manifest set — kustomize-built output for anything a kustomization covers,
+// raw manifests for everything else. The effective set is the single source of
+// truth callers reuse (e.g. sizing) instead of walking and building the tree a
+// second time.
+func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	if opts.Unit == "" && opts.CheckUnitDirectories {
 		if err := validateUnitDirectories(root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	var manifests []manifest
@@ -410,14 +413,14 @@ func validateTree(root string, opts *RenderOptions) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(manifests) == 0 && len(kustomizations) == 0 {
-		return fmt.Errorf("rendered tree contains no Kubernetes manifests")
+		return nil, fmt.Errorf("rendered tree contains no Kubernetes manifests")
 	}
 	contract, err := selectProjectContract(manifests, opts.AppProject)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if contract != nil && !contract.present && opts.ModulePath != "" && opts.Namespace != "" {
 		contract.destinations[opts.Namespace] = struct{}{}
@@ -425,31 +428,33 @@ func validateTree(root string, opts *RenderOptions) error {
 	}
 	for _, item := range manifests {
 		if err := validateManifest(item, contract, false); err != nil {
-			return fmt.Errorf("%s: %w", item.path, err)
+			return nil, fmt.Errorf("%s: %w", item.path, err)
 		}
 	}
 	if !opts.Promotable {
-		return nil
+		return manifests, nil
 	}
 	covered, effective, err := renderKustomizations(root, kustomizations)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, item := range effective {
 		if err := validateManifest(item, contract, true); err != nil {
-			return fmt.Errorf("%s: %w", item.path, err)
+			return nil, fmt.Errorf("%s: %w", item.path, err)
 		}
 	}
+	result := append([]manifest(nil), effective...)
 	for _, item := range manifests {
 		source := strings.SplitN(item.path, "#", 2)[0]
 		if covered[source] {
 			continue
 		}
 		if err := validateManifest(item, contract, true); err != nil {
-			return fmt.Errorf("%s: %w", item.path, err)
+			return nil, fmt.Errorf("%s: %w", item.path, err)
 		}
+		result = append(result, item)
 	}
-	return nil
+	return result, nil
 }
 
 func validateUnitDirectories(root string, units []InventoryUnit, environment string) error {

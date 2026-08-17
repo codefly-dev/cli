@@ -3,8 +3,6 @@ package gitops
 import (
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,9 +32,10 @@ func (a ResourceAmount) CPUString() string { return formatCPU(a.MilliCPU) }
 // MemoryString renders the amount as a Kubernetes memory quantity ("512Mi", "2Gi").
 func (a ResourceAmount) MemoryString() string { return formatMemory(a.MemoryBytes) }
 
-// WorkloadSizing is the summed sizing for one rendered workload. Requests and
-// Limits are per-replica totals across the workload's containers; the render
-// total multiplies them by Replicas, matching what the scheduler reserves.
+// WorkloadSizing is the effective per-replica sizing for one rendered workload.
+// Requests and Limits are the pod-level effective amounts (regular containers
+// plus restartable-init sidecars, maxed against init-container peaks — the same
+// arithmetic the scheduler uses); the render total multiplies them by Replicas.
 type WorkloadSizing struct {
 	Kind            string         `json:"kind"`
 	Namespace       string         `json:"namespace,omitempty"`
@@ -63,63 +62,11 @@ type SizingReport struct {
 	WorkloadsMissingLimits   int              `json:"workloadsMissingLimits"`
 }
 
-// renderSizing computes the sizing report for a rendered owned tree, counting
-// the effective (kustomize-built) workloads so base and overlay copies of the
-// same object are not summed twice.
-func renderSizing(root string) (SizingReport, error) {
-	manifests, err := effectiveManifests(root)
-	if err != nil {
-		return SizingReport{}, err
-	}
-	return computeSizing(manifests), nil
-}
-
-// effectiveManifests returns the deduplicated manifest set for a rendered tree:
-// kustomize-built output for anything a kustomization covers, raw manifests for
-// everything else. It mirrors the coverage bookkeeping validateTree relies on.
-func effectiveManifests(root string) ([]manifest, error) {
-	var manifests []manifest
-	var kustomizations []kustomization
-	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
-		if relative == InventoryFilename {
-			return nil
-		}
-		extension := strings.ToLower(filepath.Ext(relative))
-		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", relative, err)
-		}
-		decoded, customization, err := decodeYAML(relative, data)
-		if err != nil {
-			return err
-		}
-		manifests = append(manifests, decoded...)
-		if customization != nil {
-			kustomizations = append(kustomizations, *customization)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	covered, effective, err := renderKustomizations(root, kustomizations)
-	if err != nil {
-		return nil, err
-	}
-	result := append([]manifest(nil), effective...)
-	for _, item := range manifests {
-		source := strings.SplitN(item.path, "#", 2)[0]
-		if covered[source] {
-			continue
-		}
-		result = append(result, item)
-	}
-	return result, nil
-}
-
+// computeSizing sums the effective per-replica sizing of every pod-bearing
+// workload in an already-validated, deduplicated manifest set and rolls it up
+// into the render's reservation totals and coverage gaps. It is pure: the
+// manifests come from validateTree, so there is no I/O or error path here that
+// could fail an otherwise-valid render.
 func computeSizing(manifests []manifest) SizingReport {
 	var report SizingReport
 	for _, item := range manifests {
@@ -127,42 +74,26 @@ func computeSizing(manifests []manifest) SizingReport {
 		if !ok {
 			continue
 		}
-		containers := sliceField(spec, "containers")
-		if len(containers) == 0 {
+		regular := containerResourcesOf(sliceField(spec, "containers"))
+		inits := initContainerResourcesOf(sliceField(spec, "initContainers"))
+		if len(regular) == 0 && len(inits) == 0 {
 			continue
 		}
 		replicas := workloadReplicas(item)
 		workload := WorkloadSizing{
-			Kind:       item.kind,
-			Namespace:  metadataString(item.value, "namespace"),
-			Name:       metadataString(item.value, "name"),
-			Replicas:   replicas,
-			Containers: len(containers),
-		}
-		for _, raw := range containers {
-			container, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			resources := mapField(container, "resources")
-			requestCPU, requestMemory, hasRequests := amounts(resources, "requests")
-			limitCPU, limitMemory, hasLimits := amounts(resources, "limits")
-			workload.Requests.MilliCPU += requestCPU
-			workload.Requests.MemoryBytes += requestMemory
-			workload.Limits.MilliCPU += limitCPU
-			workload.Limits.MemoryBytes += limitMemory
-			if !hasRequests {
-				workload.MissingRequests = true
-			}
-			if !hasLimits {
-				workload.MissingLimits = true
-			}
+			Kind:            item.kind,
+			Namespace:       metadataString(item.value, "namespace"),
+			Name:            metadataString(item.value, "name"),
+			Replicas:        replicas,
+			Containers:      len(regular) + len(inits),
+			Requests:        effectiveAmount(regular, inits, func(c containerResources) ResourceAmount { return c.requests }),
+			Limits:          effectiveAmount(regular, inits, func(c containerResources) ResourceAmount { return c.limits }),
+			MissingRequests: anyIncomplete(regular, inits, func(c containerResources) bool { return c.requestsComplete }),
+			MissingLimits:   anyIncomplete(regular, inits, func(c containerResources) bool { return c.limitsComplete }),
 		}
 		report.Workloads = append(report.Workloads, workload)
-		report.TotalRequests.MilliCPU += workload.Requests.MilliCPU * int64(replicas)
-		report.TotalRequests.MemoryBytes += workload.Requests.MemoryBytes * int64(replicas)
-		report.TotalLimits.MilliCPU += workload.Limits.MilliCPU * int64(replicas)
-		report.TotalLimits.MemoryBytes += workload.Limits.MemoryBytes * int64(replicas)
+		report.TotalRequests = report.TotalRequests.add(workload.Requests.scale(replicas))
+		report.TotalLimits = report.TotalLimits.add(workload.Limits.scale(replicas))
 		if workload.MissingRequests {
 			report.WorkloadsMissingRequests++
 		}
@@ -177,6 +108,102 @@ func computeSizing(manifests []manifest) SizingReport {
 		return report.Workloads[i].Name < report.Workloads[j].Name
 	})
 	return report
+}
+
+// containerResources is the parsed sizing of one container.
+type containerResources struct {
+	requests         ResourceAmount
+	limits           ResourceAmount
+	requestsComplete bool
+	limitsComplete   bool
+	restartable      bool // init containers with restartPolicy: Always (native sidecars)
+}
+
+func containerResourcesOf(raw []any) []containerResources {
+	out := make([]containerResources, 0, len(raw))
+	for _, entry := range raw {
+		container, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		resources := mapField(container, "resources")
+		requestCPU, requestMemory, requestsComplete := amounts(resources, "requests")
+		limitCPU, limitMemory, limitsComplete := amounts(resources, "limits")
+		out = append(out, containerResources{
+			requests:         ResourceAmount{MilliCPU: requestCPU, MemoryBytes: requestMemory},
+			limits:           ResourceAmount{MilliCPU: limitCPU, MemoryBytes: limitMemory},
+			requestsComplete: requestsComplete,
+			limitsComplete:   limitsComplete,
+			restartable:      quantityString(container["restartPolicy"]) == "Always",
+		})
+	}
+	return out
+}
+
+func initContainerResourcesOf(raw []any) []containerResources {
+	return containerResourcesOf(raw)
+}
+
+// effectiveAmount reproduces the scheduler's pod-level request/limit arithmetic:
+// regular containers and restartable-init sidecars run for the pod's lifetime and
+// sum together, while a plain (non-restartable) init container's peak is its own
+// amount plus the sidecars already running when it executes. The result is the
+// max of the running sum and that init peak. Omitting sidecars — the earlier
+// bug — under-reported reservations, the dangerous direction for a capacity
+// report.
+func effectiveAmount(regular, inits []containerResources, pick func(containerResources) ResourceAmount) ResourceAmount {
+	var running ResourceAmount
+	for _, container := range regular {
+		running = running.add(pick(container))
+	}
+	var sidecarsRunning, initPeak ResourceAmount
+	for _, container := range inits {
+		amount := pick(container)
+		if container.restartable {
+			running = running.add(amount)
+			sidecarsRunning = sidecarsRunning.add(amount)
+			initPeak = initPeak.max(sidecarsRunning)
+		} else {
+			initPeak = initPeak.max(sidecarsRunning.add(amount))
+		}
+	}
+	return running.max(initPeak)
+}
+
+// anyIncomplete reports whether any container that holds a reservation for the
+// pod's lifetime — a regular container or a restartable-init sidecar — declared
+// an incomplete (missing CPU or memory) requests/limits block.
+func anyIncomplete(regular, inits []containerResources, complete func(containerResources) bool) bool {
+	for _, container := range regular {
+		if !complete(container) {
+			return true
+		}
+	}
+	for _, container := range inits {
+		if container.restartable && !complete(container) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a ResourceAmount) add(b ResourceAmount) ResourceAmount {
+	return ResourceAmount{MilliCPU: a.MilliCPU + b.MilliCPU, MemoryBytes: a.MemoryBytes + b.MemoryBytes}
+}
+
+func (a ResourceAmount) max(b ResourceAmount) ResourceAmount {
+	result := a
+	if b.MilliCPU > result.MilliCPU {
+		result.MilliCPU = b.MilliCPU
+	}
+	if b.MemoryBytes > result.MemoryBytes {
+		result.MemoryBytes = b.MemoryBytes
+	}
+	return result
+}
+
+func (a ResourceAmount) scale(factor int) ResourceAmount {
+	return ResourceAmount{MilliCPU: a.MilliCPU * int64(factor), MemoryBytes: a.MemoryBytes * int64(factor)}
 }
 
 // podSpec returns the PodSpec for the pod-template-bearing kinds render emits,
@@ -313,7 +340,7 @@ func parseMemory(value string) (int64, bool) {
 			if err != nil {
 				return 0, false
 			}
-			return int64(amount * float64(multiplier)), true
+			return int64(math.Round(amount * float64(multiplier))), true
 		}
 	}
 	if multiplier, ok := decimalMemorySuffix[value[len(value)-1:]]; ok {
@@ -321,13 +348,13 @@ func parseMemory(value string) (int64, bool) {
 		if err != nil {
 			return 0, false
 		}
-		return int64(amount * multiplier), true
+		return int64(math.Round(amount * multiplier)), true
 	}
 	bytes, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return 0, false
 	}
-	return int64(bytes), true
+	return int64(math.Round(bytes)), true
 }
 
 func formatCPU(milliCPU int64) string {

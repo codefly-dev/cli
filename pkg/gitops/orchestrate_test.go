@@ -51,7 +51,7 @@ func TestCopyEnvironmentBootstrapPreservesSharedBaseAndExcludesOtherEnvironments
 	if _, err := os.Stat(filepath.Join(destination, "overlays", "aws")); !os.IsNotExist(err) {
 		t.Fatalf("unselected environment copied: %v", err)
 	}
-	if err := validateTree(destination, &RenderOptions{Promotable: true}); err != nil {
+	if _, err := validateTree(destination, &RenderOptions{Promotable: true}); err != nil {
 		t.Fatalf("selected bootstrap dependency graph is invalid: %v", err)
 	}
 }
