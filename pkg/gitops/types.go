@@ -129,8 +129,9 @@ func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKub
 }
 
 type RenderResult struct {
-	Path      string    `json:"path"`
-	Inventory Inventory `json:"inventory"`
+	Path      string       `json:"path"`
+	Inventory Inventory    `json:"inventory"`
+	Sizing    SizingReport `json:"sizing"`
 }
 
 type PublishRequest struct {
