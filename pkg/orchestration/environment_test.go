@@ -198,6 +198,7 @@ func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 	deepCopied := map[string]bool{
 		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
 		"ManagedServices": true, "ServiceSecrets": true, "Secrets": true,
+		"ResourceQuota": true,
 	}
 	typ := reflect.TypeOf(resources.Environment{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -215,6 +216,35 @@ func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 			t.Errorf("resources.Environment.%s (%s) is shared, not copied, by cloneEnvironment — extend the clone before concurrent flows can contaminate each other", field.Name, field.Type)
 		}
 	}
+}
+
+func TestCloneEnvironmentIsolatesResourceQuota(t *testing.T) {
+	original := &resources.Environment{
+		Name: "staging",
+		ResourceQuota: &resources.EnvironmentResourceQuota{
+			Requests: &resources.EnvironmentResourceList{CPU: "4", Memory: "8Gi"},
+			Limits:   &resources.EnvironmentResourceList{CPU: "8", Memory: "16Gi"},
+			Pods:     "50",
+			DefaultContainer: &resources.EnvironmentContainerResources{
+				Requests: &resources.EnvironmentResourceList{CPU: "100m", Memory: "128Mi"},
+				Limits:   &resources.EnvironmentResourceList{CPU: "500m", Memory: "512Mi"},
+			},
+		},
+	}
+	clone := cloneEnvironment(original)
+
+	require.NotSame(t, original.ResourceQuota, clone.ResourceQuota)
+	require.NotSame(t, original.ResourceQuota.Requests, clone.ResourceQuota.Requests)
+	require.NotSame(t, original.ResourceQuota.Limits, clone.ResourceQuota.Limits)
+	require.NotSame(t, original.ResourceQuota.DefaultContainer, clone.ResourceQuota.DefaultContainer)
+	require.NotSame(t, original.ResourceQuota.DefaultContainer.Requests, clone.ResourceQuota.DefaultContainer.Requests)
+	require.NotSame(t, original.ResourceQuota.DefaultContainer.Limits, clone.ResourceQuota.DefaultContainer.Limits)
+
+	// Mutating the clone must not contaminate the original a concurrent flow holds.
+	clone.ResourceQuota.Requests.CPU = "99"
+	clone.ResourceQuota.DefaultContainer.Limits.Memory = "1Gi"
+	require.Equal(t, "4", original.ResourceQuota.Requests.CPU)
+	require.Equal(t, "512Mi", original.ResourceQuota.DefaultContainer.Limits.Memory)
 }
 
 func TestSelectEnvironmentIsEquivalentAcrossFlows(t *testing.T) {
