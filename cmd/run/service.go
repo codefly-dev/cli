@@ -57,7 +57,17 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	defer cancelRun()
 
 	cli.Init()
-	defer services.ClearAgents()
+	defer func() {
+		services.ClearAgents()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		evidence, err := processgroup.ReapStaleProcessGroupsWithEvidence(cleanupCtx)
+		cleanupCancel()
+		if err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("reap managed processes after run: %w", err))
+		} else if recovered := evidence.RecoveredPGIDs(); len(recovered) > 0 {
+			cli.Info("reaped %d managed process groups after run: %v", len(recovered), recovered)
+		}
+	}()
 
 	namingScopeExplicit = cmd.Flags().Changed("naming-scope")
 
