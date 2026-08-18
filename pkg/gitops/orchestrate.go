@@ -86,6 +86,7 @@ func renderModuleTree(
 						outputs[unique] = output
 					}
 				},
+				nil,
 			); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
@@ -130,6 +131,15 @@ func renderModuleTree(
 				); projectErr != nil {
 					return fmt.Errorf("project service %s secrets: %w", service.Name, projectErr)
 				}
+				if _, projectErr := projectServiceAutoscale(
+					filepath.Join(stage, unitDir, service.Name),
+					service.Name,
+					env.Name,
+					env.Namespace,
+					service.Autoscale,
+				); projectErr != nil {
+					return fmt.Errorf("project service %s autoscale: %w", service.Name, projectErr)
+				}
 			}
 			options.Units = append(options.Units, entry)
 		}
@@ -158,8 +168,12 @@ func renderModuleTree(
 		if !info.IsDir() {
 			return fmt.Errorf("module kustomize path is not a directory")
 		}
-		if err := copyEnvironmentBootstrap(static, env.Name, filepath.Join(stage, "bootstrap")); err != nil {
+		bootstrap := filepath.Join(stage, "bootstrap")
+		if err := copyEnvironmentBootstrap(static, env.Name, bootstrap); err != nil {
 			return fmt.Errorf("copy module environment bootstrap: %w", err)
+		}
+		if _, err := projectResourceQuota(bootstrap, env.Name, env.Namespace, env.ResourceQuota); err != nil {
+			return fmt.Errorf("project module namespace resource quota: %w", err)
 		}
 		return nil
 	})
@@ -254,6 +268,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		AppProject:  project,
 		Promotable:  true,
 	}, func(ctx context.Context, stage string) error {
+		var graph map[string]*resources.Service
 		if err := renderServiceFlow(
 			ctx,
 			workspace,
@@ -264,10 +279,14 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 			sink,
 			serviceRenderDestinations(stage),
 			nil,
+			func(services map[string]*resources.Service) { graph = services },
 		); err != nil {
 			return err
 		}
-		return projectRenderedServiceSecrets(stage, env)
+		if err := projectRenderedServiceSecrets(stage, env); err != nil {
+			return err
+		}
+		return projectRenderedServiceAutoscale(stage, env, graph)
 	})
 }
 
@@ -334,6 +353,7 @@ func renderServiceFlow(
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,
 	record func(map[string]*builderv0.DeploymentOutput),
+	recordServices func(map[string]*resources.Service),
 ) (result error) {
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
@@ -376,6 +396,17 @@ func renderServiceFlow(
 	}
 	if record != nil {
 		record(flow.DeploymentOutputs())
+	}
+	if recordServices != nil {
+		services := map[string]*resources.Service{}
+		for _, unique := range flow.OrderedServiceUniques() {
+			loaded, err := flow.ServiceFromUnique(unique)
+			if err != nil {
+				return err
+			}
+			services[unique] = loaded
+		}
+		recordServices(services)
 	}
 	return nil
 }

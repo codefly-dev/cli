@@ -98,5 +98,25 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 			clone.Secrets[i] = &p
 		}
 	}
+	if env.ResourceQuota != nil {
+		quota := *env.ResourceQuota
+		quota.Requests = cloneResourceList(env.ResourceQuota.Requests)
+		quota.Limits = cloneResourceList(env.ResourceQuota.Limits)
+		if env.ResourceQuota.DefaultContainer != nil {
+			defaults := *env.ResourceQuota.DefaultContainer
+			defaults.Requests = cloneResourceList(env.ResourceQuota.DefaultContainer.Requests)
+			defaults.Limits = cloneResourceList(env.ResourceQuota.DefaultContainer.Limits)
+			quota.DefaultContainer = &defaults
+		}
+		clone.ResourceQuota = &quota
+	}
 	return &clone
+}
+
+func cloneResourceList(list *resources.EnvironmentResourceList) *resources.EnvironmentResourceList {
+	if list == nil {
+		return nil
+	}
+	copied := *list
+	return &copied
 }

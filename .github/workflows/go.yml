@@ -93,6 +93,26 @@ jobs:
         if: matrix.gate == 'race'
         run: go test -failfast -race ./... -v
 
+      # The pinned Redis agent resolves a Nix runtime during runtime-init, so the
+      # proof needs Nix on the runner or the agent fails with "nix is not
+      # installed" instead of exercising the real dependency. Mirrors core's CI.
+      - name: Install Nix
+        # Strict — nix is core to the platform; if it doesn't install,
+        # CI must fail loud rather than silently skipping nix tests.
+        # DeterminateSystems' installer is the de-facto standard for
+        # GH Actions: deterministic, no daemon issues on ephemeral runners.
+        if: matrix.gate == 'control-integration'
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Allow unprivileged user namespaces (for bwrap)
+        # Ubuntu 24.04 ships with kernel.apparmor_restrict_unprivileged_userns=1
+        # which blocks bubblewrap's user-namespace setup ("bwrap: setting up uid
+        # map: Permission denied"). Disabling the restriction is the standard CI
+        # workaround — bwrap then works in unprivileged mode, which is what the
+        # nix runtime's sandbox expects.
+        if: matrix.gate == 'control-integration'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Install the pinned Redis agent
         if: matrix.gate == 'control-integration'
         run: codefly agent install codefly.dev/redis:0.0.74
