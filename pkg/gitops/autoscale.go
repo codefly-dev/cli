@@ -1,7 +1,6 @@
 package gitops
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,8 +56,17 @@ type hpaMetricTarget struct {
 
 // autoscaleManifest renders the HorizontalPodAutoscaler that scales a service's
 // Deployment from its declared autoscale block. The scaleTargetRef names the
-// Deployment discovered in the rendered tree; kustomize's built-in name
-// reference keeps it aligned if an overlay renames the Deployment.
+// Deployment as authored in the rendered tree.
+//
+// This relies on the same invariant the secret projection relies on for
+// secret-<service>: the promotable overlay does not rename the workload. When
+// the overlay itself renames the Deployment, kustomize's built-in name
+// reference rewrites this scaleTargetRef in the same build. But a name change
+// applied in the base — before the overlay composes the HPA in — would leave
+// this ref pointing at the pre-rename name with no error, only a silently
+// idle HPA. Promotable overlays pin images by digest rather than renaming
+// workloads, so that case does not arise; if that ever changes, the HPA (and
+// every fixed-name reference like secret-<service>) breaks together.
 func autoscaleManifest(service, namespace, deployment string, autoscale *resources.ServiceAutoscale) *horizontalPodAutoscaler {
 	return &horizontalPodAutoscaler{
 		APIVersion: hpaAPIVersion,
@@ -152,10 +160,12 @@ func serviceDeploymentName(root, service string) (string, error) {
 
 // projectRenderedServiceAutoscale projects a HorizontalPodAutoscaler onto every
 // service tree a single-service render produced — the origin service and any
-// in-graph dependencies it pulled in — loading each service's autoscale
-// declaration so per-service promotion renders the same HPAs as a full module
-// render.
-func projectRenderedServiceAutoscale(ctx context.Context, stage string, workspace *resources.Workspace, env *resources.Environment) error {
+// in-graph dependencies it pulled in — so per-service promotion renders the same
+// HPAs as a full module render. The autoscale declarations come from the graph
+// the flow already loaded, keyed by service unique, so no service is re-read
+// from disk (which would repeat postLoad side effects) and a service that
+// declares no autoscale costs only a nil map lookup.
+func projectRenderedServiceAutoscale(stage string, env *resources.Environment, graph map[string]*resources.Service) error {
 	modulesRoot := filepath.Join(stage, "modules")
 	moduleEntries, err := os.ReadDir(modulesRoot)
 	if os.IsNotExist(err) {
@@ -167,10 +177,6 @@ func projectRenderedServiceAutoscale(ctx context.Context, stage string, workspac
 	for _, moduleEntry := range moduleEntries {
 		if !moduleEntry.IsDir() {
 			continue
-		}
-		module, err := workspace.LoadModuleFromName(ctx, moduleEntry.Name())
-		if err != nil {
-			return fmt.Errorf("load module %s: %w", moduleEntry.Name(), err)
 		}
 		servicesRoot := filepath.Join(modulesRoot, moduleEntry.Name(), serviceUnitDir)
 		serviceEntries, err := os.ReadDir(servicesRoot)
@@ -184,9 +190,9 @@ func projectRenderedServiceAutoscale(ctx context.Context, stage string, workspac
 			if !serviceEntry.IsDir() {
 				continue
 			}
-			service, err := module.LoadServiceFromName(ctx, serviceEntry.Name())
-			if err != nil {
-				return fmt.Errorf("load service %s: %w", serviceEntry.Name(), err)
+			service := graph[resources.ServiceUnique(moduleEntry.Name(), serviceEntry.Name())]
+			if service == nil {
+				continue
 			}
 			if _, err := projectServiceAutoscale(
 				filepath.Join(servicesRoot, serviceEntry.Name()),

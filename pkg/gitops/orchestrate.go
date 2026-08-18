@@ -86,6 +86,7 @@ func renderModuleTree(
 						outputs[unique] = output
 					}
 				},
+				nil,
 			); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
@@ -267,6 +268,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		AppProject:  project,
 		Promotable:  true,
 	}, func(ctx context.Context, stage string) error {
+		var graph map[string]*resources.Service
 		if err := renderServiceFlow(
 			ctx,
 			workspace,
@@ -277,13 +279,14 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 			sink,
 			serviceRenderDestinations(stage),
 			nil,
+			func(services map[string]*resources.Service) { graph = services },
 		); err != nil {
 			return err
 		}
 		if err := projectRenderedServiceSecrets(stage, env); err != nil {
 			return err
 		}
-		return projectRenderedServiceAutoscale(ctx, stage, workspace, env)
+		return projectRenderedServiceAutoscale(stage, env, graph)
 	})
 }
 
@@ -350,6 +353,7 @@ func renderServiceFlow(
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,
 	record func(map[string]*builderv0.DeploymentOutput),
+	recordServices func(map[string]*resources.Service),
 ) (result error) {
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
@@ -392,6 +396,17 @@ func renderServiceFlow(
 	}
 	if record != nil {
 		record(flow.DeploymentOutputs())
+	}
+	if recordServices != nil {
+		services := map[string]*resources.Service{}
+		for _, unique := range flow.OrderedServiceUniques() {
+			loaded, err := flow.ServiceFromUnique(unique)
+			if err != nil {
+				return err
+			}
+			services[unique] = loaded
+		}
+		recordServices(services)
 	}
 	return nil
 }

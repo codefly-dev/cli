@@ -102,6 +102,31 @@ func TestProjectServiceAutoscaleInjectsPromotableOverlay(t *testing.T) {
 	}
 }
 
+func TestProjectRenderedServiceAutoscaleUsesLoadedGraph(t *testing.T) {
+	stage := t.TempDir()
+	scaled := filepath.Join(stage, "modules", "web", "services", "accounts")
+	writeServiceTree(t, scaled, "production")
+	// A rendered dependency the flow loaded but that declares no autoscale, and a
+	// rendered dir absent from the graph entirely: neither must be re-read from
+	// disk (there is no workspace here to read) nor produce an HPA.
+	plain := filepath.Join(stage, "modules", "web", "services", "orphan")
+	writeServiceTree(t, plain, "production")
+
+	env := &resources.Environment{Name: "production", Namespace: "payments"}
+	graph := map[string]*resources.Service{
+		resources.ServiceUnique("web", "accounts"): {Autoscale: &resources.ServiceAutoscale{Min: 2, Max: 6, TargetCPU: 70}},
+	}
+	if err := projectRenderedServiceAutoscale(stage, env, graph); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(scaled, "overlays", "production", hpaFile)); err != nil {
+		t.Fatalf("autoscaled service got no HPA: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(plain, "overlays", "production", hpaFile)); !os.IsNotExist(err) {
+		t.Fatalf("service absent from the graph got an HPA: %v", err)
+	}
+}
+
 func TestProjectServiceAutoscaleNoOpWithoutDeclaration(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "accounts")
 	writeServiceTree(t, root, "production")
