@@ -162,7 +162,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 			opts.UnitNames = append(opts.UnitNames, unit.Name)
 		}
 	}
-	if _, err := validateTree(root, opts); err != nil {
+	if _, err = validateTree(root, opts); err != nil {
 		return err
 	}
 	actual, err := buildInventory(root, opts)
@@ -434,6 +434,13 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	if !opts.Promotable {
 		return manifests, nil
 	}
+	return promotableEffectiveManifests(root, manifests, kustomizations, contract)
+}
+
+// promotableEffectiveManifests builds the kustomize output, validates the
+// promotable ruleset against both the built output and any manifests no
+// kustomization covers, and returns the deduplicated effective set.
+func promotableEffectiveManifests(root string, manifests []manifest, kustomizations []kustomization, contract *projectContract) ([]manifest, error) {
 	covered, effective, err := renderKustomizations(root, kustomizations)
 	if err != nil {
 		return nil, err

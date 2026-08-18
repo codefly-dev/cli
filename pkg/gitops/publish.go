@@ -423,7 +423,7 @@ func prepareServicePublication(
 		Promotable:           true,
 		CheckUnitDirectories: true,
 	}
-	if _, err := validateTree(target, options); err != nil {
+	if _, err = validateTree(target, options); err != nil {
 		return "", Inventory{}, fmt.Errorf("validate generated publication: %w", err)
 	}
 	finalInventory, err := buildInventory(target, options)
