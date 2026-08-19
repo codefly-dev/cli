@@ -5,16 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/blang/semver"
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"github.com/codefly-dev/core/agents/manager"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -27,6 +34,8 @@ var (
 	sourceVerbose        bool
 	sourceRace           bool
 	sourceCoverage       bool
+	sourceAgent          string
+	sourceQualification  bool
 )
 
 // SourceCmd validates an arbitrary checkout through the same Runtime.Test RPC
@@ -52,11 +61,19 @@ var SourceCmd = &cobra.Command{
 				return fmt.Errorf("resolve source directory: %w", err)
 			}
 		}
-		prepared, err := sourceworkspace.Prepare(ctx, dir)
+		prepared, err := prepareSourceWorkspace(ctx, dir, sourceAgent)
 		if err != nil {
 			return err
 		}
 		defer prepared.Close()
+		if sourceQualification {
+			if sourceAgent == "" {
+				return fmt.Errorf("source qualification requires an exact --agent")
+			}
+			if err := verifySourceCapabilityHandshake(ctx, prepared.Service.Agent); err != nil {
+				return err
+			}
+		}
 
 		request := &runtimev0.TestRequest{
 			Target:   sourceTarget,
@@ -97,6 +114,64 @@ var SourceCmd = &cobra.Command{
 	},
 }
 
+func prepareSourceWorkspace(ctx context.Context, dir, agentSpec string) (*sourceworkspace.Prepared, error) {
+	if agentSpec == "" {
+		return sourceworkspace.Prepare(ctx, dir)
+	}
+	if !strings.Contains(agentSpec, ":") {
+		return nil, fmt.Errorf("source agent must include an exact version")
+	}
+	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, agentSpec)
+	if err != nil {
+		return nil, fmt.Errorf("invalid source agent: %w", err)
+	}
+	if agent.Version == "latest" {
+		return nil, fmt.Errorf("source agent must use an exact version, not latest")
+	}
+	if _, err := semver.Parse(strings.TrimPrefix(agent.Version, "v")); err != nil || strings.HasPrefix(agent.Version, "v") {
+		return nil, fmt.Errorf("source agent version %q is not canonical semantic version", agent.Version)
+	}
+	return sourceworkspace.PrepareWithAgent(ctx, dir, agent)
+}
+
+func verifySourceCapabilityHandshake(ctx context.Context, agent *resources.Agent) error {
+	connection, err := manager.Load(ctx, agent, manager.WithoutSandbox(), manager.WithoutPrincipal())
+	if err != nil {
+		return fmt.Errorf("load exact source agent %s: %w", agent.Identifier(), err)
+	}
+	defer connection.Close()
+	return verifySourceCapabilityClients(ctx, agent, connection.GRPCConn())
+}
+
+func verifySourceCapabilityClients(ctx context.Context, agent *resources.Agent, connection grpc.ClientConnInterface) error {
+	info, err := agentv0.NewAgentClient(connection).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	if err != nil {
+		return fmt.Errorf("source agent handshake: %w", err)
+	}
+	runtimeAdvertised := false
+	for _, capability := range info.GetCapabilities() {
+		if capability.GetType() == agentv0.Capability_RUNTIME {
+			runtimeAdvertised = true
+			break
+		}
+	}
+	if !runtimeAdvertised {
+		return fmt.Errorf("source agent %s does not advertise Runtime capability", agent.Identifier())
+	}
+
+	codeClient := codev0.NewCodeClient(connection)
+	if _, err := codeClient.Execute(ctx, &codev0.CodeRequest{
+		Operation: &codev0.CodeRequest_GetProjectInfo{GetProjectInfo: &codev0.GetProjectInfoRequest{}},
+	}); err != nil {
+		return fmt.Errorf("source agent %s Code capability handshake: %w", agent.Identifier(), err)
+	}
+	toolingClient := toolingv0.NewToolingClient(connection)
+	if _, err := toolingClient.GetProjectInfo(ctx, &toolingv0.GetProjectInfoRequest{}); err != nil {
+		return fmt.Errorf("source agent %s Tooling capability handshake: %w", agent.Identifier(), err)
+	}
+	return nil
+}
+
 func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, request *runtimev0.TestRequest) (*orchestration.Flow, error) {
 	if err := resources.ValidateRuntimeContext(sourceRuntimeContext); err != nil {
 		return nil, fmt.Errorf("invalid runtime context: %w", err)
@@ -131,4 +206,6 @@ func init() {
 	SourceCmd.Flags().BoolVarP(&sourceVerbose, "verbose", "v", false, "Verbose test output")
 	SourceCmd.Flags().BoolVar(&sourceRace, "race", false, "Enable plugin-defined race checking")
 	SourceCmd.Flags().BoolVar(&sourceCoverage, "coverage", false, "Enable plugin-defined coverage")
+	SourceCmd.Flags().StringVar(&sourceAgent, "agent", "", "Use an exact publisher/name:version instead of the compatibility pin")
+	SourceCmd.Flags().BoolVar(&sourceQualification, "qualification", false, "Assert the exact agent's Runtime, Code, and Tooling handshake")
 }

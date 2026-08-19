@@ -16,19 +16,6 @@ import (
 	"golang.org/x/mod/modfile"
 )
 
-const (
-	GenericGoPluginVersion     = "0.0.33"
-	GenericPythonPluginVersion = "0.0.52"
-	GenericPluginVersion       = "0.0.26"
-	// NodePluginVersion is published under the historical nextjs agent name,
-	// but owns generic Node.js/TypeScript validation as well as Next.js-specific
-	// lifecycle behavior selected from the package manifest.
-	NodePluginVersion  = "0.0.141"
-	RustPluginVersion  = "0.0.29"
-	SwiftPluginVersion = "0.0.16"
-	pythonSetupMarker  = "setup.py"
-)
-
 // Prepared is a loaded ephemeral workspace containing one source resource.
 type Prepared struct {
 	Workspace *resources.Workspace
@@ -54,83 +41,8 @@ func (p *Prepared) Close() error {
 // SelectPlugin returns the authoritative plugin for a checkout. This registry
 // is intentionally typed and extensible; callers never select native commands.
 func SelectPlugin(sourceDir string) (*resources.Agent, error) {
-	candidates := []struct {
-		marker  string
-		name    string
-		version string
-	}{
-		{marker: "go.mod", name: "go", version: GenericGoPluginVersion},
-		{marker: "pyproject.toml", name: "python", version: GenericPythonPluginVersion},
-		{marker: "uv.lock", name: "python", version: GenericPythonPluginVersion},
-		{marker: pythonSetupMarker, name: "python", version: GenericPythonPluginVersion},
-		{marker: "setup.cfg", name: "python", version: GenericPythonPluginVersion},
-		{marker: "requirements.in", name: "python", version: GenericPythonPluginVersion},
-		{marker: "requirements.txt", name: "python", version: GenericPythonPluginVersion},
-		{marker: "package.json", name: "nextjs", version: NodePluginVersion},
-		{marker: "Cargo.toml", name: "rust", version: RustPluginVersion},
-		{marker: "Package.swift", name: "swift", version: SwiftPluginVersion},
-	}
-	for _, candidate := range candidates {
-		if _, err := os.Stat(filepath.Join(sourceDir, candidate.marker)); err == nil {
-			return &resources.Agent{
-				Kind: resources.ServiceAgent, Publisher: "codefly.dev",
-				Name: candidate.name, Version: candidate.version,
-			}, nil
-		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("inspect %s source marker: %w", candidate.marker, err)
-		}
-	}
-	// Markerless single-file repositories are common during editing and in
-	// generated worktrees. Extension evidence is sufficient to select the
-	// language plugin; the plugin remains authoritative for tool execution.
-	var selected *resources.Agent
-	err := filepath.WalkDir(sourceDir, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			if path != sourceDir && skipDetectionDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		var name, version string
-		switch strings.ToLower(filepath.Ext(entry.Name())) {
-		case ".go":
-			name, version = "go", GenericGoPluginVersion
-		case ".py":
-			name, version = "python", GenericPythonPluginVersion
-		case ".rs":
-			name, version = "rust", RustPluginVersion
-		case ".swift":
-			name, version = "swift", SwiftPluginVersion
-		case ".js", ".jsx", ".ts", ".tsx":
-			name, version = "nextjs", NodePluginVersion
-		}
-		if name != "" {
-			selected = &resources.Agent{
-				Kind: resources.ServiceAgent, Publisher: "codefly.dev",
-				Name: name, Version: version,
-			}
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("inspect source files: %w", err)
-	}
-	if selected != nil {
-		return selected, nil
-	}
-	// The generic agent is the language-neutral fallback. It owns baseline
-	// Code and Tooling capabilities and reports language runtime operations as
-	// typed unsupported results; it never guesses a native command. This keeps
-	// every valid source tree routable without growing a language registry in
-	// adapters such as Mind.
-	return &resources.Agent{
-		Kind: resources.ServiceAgent, Publisher: "codefly.dev",
-		Name: "generic", Version: GenericPluginVersion,
-	}, nil
+	plugin, _, err := compatibilityRoster.SelectPlugin(sourceDir)
+	return plugin, err
 }
 
 func skipDetectionDir(name string) bool {
