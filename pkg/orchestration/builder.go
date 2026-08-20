@@ -249,7 +249,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		if push.Load() {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.Images {
-				if err := verifyImageArchitecture(ctx, im); err != nil {
+				if err = verifyImageArchitecture(ctx, im); err != nil {
 					return nil, w.Wrapf(err, "refusing to push %s", im)
 				}
 				cmd := exec.CommandContext(ctx, "docker", "push", im)
