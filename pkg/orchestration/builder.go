@@ -249,6 +249,9 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		if push.Load() {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.Images {
+				if err := verifyImageArchitecture(ctx, im); err != nil {
+					return nil, w.Wrapf(err, "refusing to push %s", im)
+				}
 				cmd := exec.CommandContext(ctx, "docker", "push", im)
 				err := cmd.Run()
 				if err != nil {
@@ -303,6 +306,39 @@ func inspectImageDigest(ctx context.Context, image string) (string, error) {
 		return "", fmt.Errorf("image %s has no registry-backed sha256 digest; build and push the local snapshot first", image)
 	}
 	return digest, nil
+}
+
+// deploymentImageArchitecture is the architecture deployment nodes run. A
+// digest-pinned manifest names *an* image, not a compatible one, so an image
+// built for the wrong architecture pushes and syncs cleanly and only fails at
+// container exec (`exec format error`). Verifying before push turns that
+// silent, far-downstream crash into a loud build failure.
+const deploymentImageArchitecture = "amd64"
+
+func verifyImageArchitecture(ctx context.Context, image string) error {
+	output, err := exec.CommandContext(
+		ctx,
+		"docker",
+		"image",
+		"inspect",
+		"--format",
+		"{{.Architecture}}",
+		image,
+	).Output()
+	if err != nil {
+		return fmt.Errorf("inspect %s architecture: %w", image, err)
+	}
+	return checkImageArchitecture(image, strings.TrimSpace(string(output)))
+}
+
+func checkImageArchitecture(image, architecture string) error {
+	if architecture == "" {
+		return fmt.Errorf("image %s reports no architecture", image)
+	}
+	if architecture != deploymentImageArchitecture {
+		return fmt.Errorf("image %s was built for %s but deployment nodes require %s; rebuild it targeting %s before pushing", image, architecture, deploymentImageArchitecture, deploymentImageArchitecture)
+	}
+	return nil
 }
 
 func dockerBuildResult(result *builderv0.BuildResult) *builderv0.DockerBuildResult {

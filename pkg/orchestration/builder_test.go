@@ -23,6 +23,22 @@ func TestBuildResultKindAssertionIsSafeForNonDockerResults(t *testing.T) {
 	}
 }
 
+func TestCheckImageArchitectureRejectsNonDeploymentArch(t *testing.T) {
+	if err := checkImageArchitecture("frontend:v1", "amd64"); err != nil {
+		t.Fatalf("amd64 image rejected: %v", err)
+	}
+	err := checkImageArchitecture("frontend:v1", "arm64")
+	if err == nil {
+		t.Fatal("arm64 image was accepted for push to amd64 nodes")
+	}
+	if !strings.Contains(err.Error(), "arm64") || !strings.Contains(err.Error(), "amd64") {
+		t.Fatalf("error should name both architectures: %v", err)
+	}
+	if err := checkImageArchitecture("frontend:v1", ""); err == nil {
+		t.Fatal("empty architecture was accepted")
+	}
+}
+
 func TestPromotableDeploymentConfigurationsReplaceSecretBytesWithTypedReferences(t *testing.T) {
 	configuration := &basev0.Configuration{
 		Origin: "users/accounts",
