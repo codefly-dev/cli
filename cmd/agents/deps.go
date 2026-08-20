@@ -24,8 +24,11 @@ import (
 //     monorepo's core SOURCE — the "always allow local build" path. No network,
 //     no version pull (internal sync). Toggle off for a build with the native
 //     GOWORK=off, or `--unlink` to remove it entirely.
-//   - --pin: the ONLY mode that pulls — bump go.mod to a published core version,
-//     tidy, and verify the agent builds standalone (release / CI readiness).
+//   - --pin: the ONLY mode that pulls — bump every core-owning lock the agent
+//     owns (its root go.mod plus nested modules like base/code) to a published
+//     core version, tidy, and verify each builds standalone (release / CI
+//     readiness). Fails rather than reporting success if a factory template lock
+//     (go.mod.tmpl / go.sum.tmpl) is left referencing an older core.
 //
 // `--all` applies any of these across every agent in the directory tree.
 var DepsCmd = &cobra.Command{
@@ -271,14 +274,69 @@ func findGoModDirs(root string) ([]string, error) {
 	return dirs, nil
 }
 
-// pinCore bumps go.mod to a published core version and verifies the agent builds
-// standalone. This is the only mode that touches the network. Runs with
-// GOWORK=off so the local go.work can't mask a missing/incompatible published
-// version.
-func pinCore(ctx context.Context, dir, version string) (returnErr error) {
-	const core = "github.com/codefly-dev/core"
+const coreModule = "github.com/codefly-dev/core"
+
+// pinCore pins every core-owning lock the agent owns to a published core
+// version. It bumps and standalone-builds each Go module (the agent root plus
+// nested modules like base/code), then refuses to report success while any
+// factory template lock (go.mod.tmpl / go.sum.tmpl) still references an older
+// core: those seed freshly generated services, so a stale template lock
+// silently ships the old core even though the agent's own modules are pinned.
+// This is the only mode that touches the network. Runs with GOWORK=off so the
+// local go.work can't mask a missing/incompatible published version.
+func pinCore(ctx context.Context, dir, version string) error {
+	if err := pinCoreModules(ctx, dir, version); err != nil {
+		return err
+	}
+	// The pinned modules define the version freshly generated services must
+	// resolve to; any template lock that disagrees is the partial pin this
+	// guards against.
+	resolved := goModVersion(dir, coreModule)
+	stale, err := staleCoreTemplateLocks(dir, coreModule, resolved)
+	if err != nil {
+		return err
+	}
+	if len(stale) > 0 {
+		rel := make([]string, len(stale))
+		for i, p := range stale {
+			if r, rerr := filepath.Rel(dir, p); rerr == nil {
+				rel[i] = r
+			} else {
+				rel[i] = p
+			}
+		}
+		return fmt.Errorf(
+			"pinned modules to %s@%s but %d template dependency lock(s) still reference an older core and would ship it to freshly generated services: %s\nregenerate them from the pinned base module locks, then re-run --pin",
+			coreModule, resolved, len(stale), strings.Join(rel, ", "))
+	}
+	return nil
+}
+
+// pinCoreModules bumps every core-owning Go module under dir to the published
+// version, tidies, and verifies each builds standalone. It snapshots every
+// module's go.mod/go.sum up front and restores them all on any failure, so a
+// mid-sweep error never leaves the agent half-pinned.
+func pinCoreModules(ctx context.Context, dir, version string) (returnErr error) {
 	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
-	snapshots, err := snapshotFiles(filepath.Join(dir, "go.mod"), filepath.Join(dir, "go.sum"))
+	all, err := findGoModDirs(dir)
+	if err != nil {
+		return err
+	}
+	var modules []string
+	for _, m := range all {
+		if goModVersion(m, coreModule) != "?" {
+			modules = append(modules, m)
+		}
+	}
+	if len(modules) == 0 {
+		return fmt.Errorf("no module under %s requires %s; nothing to pin", dir, coreModule)
+	}
+
+	var paths []string
+	for _, m := range modules {
+		paths = append(paths, filepath.Join(m, "go.mod"), filepath.Join(m, "go.sum"))
+	}
+	snapshots, err := snapshotFiles(paths...)
 	if err != nil {
 		return err
 	}
@@ -287,16 +345,29 @@ func pinCore(ctx context.Context, dir, version string) (returnErr error) {
 			returnErr = errors.Join(returnErr, restoreFiles(context.WithoutCancel(ctx), snapshots))
 		}
 	}()
+
+	for _, m := range modules {
+		if err := pinModuleCore(ctx, m, version, env); err != nil {
+			return err
+		}
+	}
+	cli.Info("  pinned → %s@%s (%d module(s), standalone build OK)", coreModule, goModVersion(dir, coreModule), len(modules))
+	return nil
+}
+
+// pinModuleCore pins a single module's go.mod/go.sum to the published core
+// version and verifies it builds standalone.
+func pinModuleCore(ctx context.Context, dir, version string, env []string) error {
 	// Strip committed filesystem `replace => ../path` directives first: those are
 	// local-dev overrides that don't exist in a single-repo CI checkout, so they
 	// break the standalone build. Local builds keep working via the root go.work.
 	if dropped, err := stripLocalReplaces(ctx, dir, env); err != nil {
 		return err
 	} else if len(dropped) > 0 {
-		cli.Info("  stripped %d local replace(s): %s", len(dropped), strings.Join(dropped, ", "))
+		cli.Info("  stripped %d local replace(s) in %s: %s", len(dropped), dir, strings.Join(dropped, ", "))
 	}
-	if err := runGoEnv(ctx, dir, env, "get", core+"@"+version); err != nil {
-		return fmt.Errorf("go get %s@%s: %w", core, version, err)
+	if err := runGoEnv(ctx, dir, env, "get", coreModule+"@"+version); err != nil {
+		return fmt.Errorf("go get %s@%s: %w", coreModule, version, err)
 	}
 	if err := runGoEnv(ctx, dir, env, "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
@@ -304,10 +375,8 @@ func pinCore(ctx context.Context, dir, version string) (returnErr error) {
 	// Verify the standalone (published-core) build — fail loudly if the agent
 	// uses an API the pinned version doesn't have.
 	if err := runGoEnv(ctx, dir, env, "build", "./..."); err != nil {
-		return fmt.Errorf("standalone build against %s@%s FAILED — the agent likely uses an API not in that version: %w", core, version, err)
+		return fmt.Errorf("standalone build against %s@%s FAILED — the agent likely uses an API not in that version: %w", coreModule, version, err)
 	}
-	got := goModVersion(dir, core)
-	cli.Info("  pinned → %s@%s (standalone build OK)", core, got)
 	return nil
 }
 
@@ -450,6 +519,61 @@ func restoreFiles(ctx context.Context, snapshots []fileSnapshot) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// staleCoreTemplateLocks returns every factory template dependency lock
+// (go.mod.tmpl / go.sum.tmpl) under dir that references core at a version other
+// than want. These templates seed freshly generated services, so a stale one
+// silently hands the old core to new projects while the agent's own modules
+// report themselves pinned — the partial pin that let conformance create
+// services with patched base deps but vulnerable versions in fresh projects.
+func staleCoreTemplateLocks(dir, core, want string) ([]string, error) {
+	var stale []string
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case "vendor", "node_modules", ".git", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "go.mod.tmpl" && d.Name() != "go.sum.tmpl" {
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if templateLockPinsOtherCore(string(data), core, want) {
+			stale = append(stale, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(stale)
+	return stale, nil
+}
+
+// templateLockPinsOtherCore reports whether a go.mod.tmpl/go.sum.tmpl body
+// references core at any version other than want. It matches both go.mod
+// require lines (`<core> v0.3.2`) and go.sum lines (`<core> v0.3.2 h1:...` and
+// the `<core> v0.3.2/go.mod h1:...` variant).
+func templateLockPinsOtherCore(content, core, want string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || fields[0] != core {
+			continue
+		}
+		if strings.TrimSuffix(fields[1], "/go.mod") != want {
+			return true
+		}
+	}
+	return false
 }
 
 // goModVersion returns the required version of module in dir's go.mod (or "?").

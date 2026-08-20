@@ -123,6 +123,89 @@ func TestRunGoHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestTemplateLockPinsOtherCore(t *testing.T) {
+	const core = "github.com/codefly-dev/core"
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+		stale   bool
+	}{
+		{
+			name:    "go.mod require at wanted version",
+			content: "require (\n\tgithub.com/codefly-dev/core v0.3.4\n)\n",
+			want:    "v0.3.4",
+			stale:   false,
+		},
+		{
+			name:    "go.mod require at older version",
+			content: "require (\n\tgithub.com/codefly-dev/core v0.3.2\n)\n",
+			want:    "v0.3.4",
+			stale:   true,
+		},
+		{
+			name:    "go.sum hash lines at wanted version",
+			content: "github.com/codefly-dev/core v0.3.4 h1:abc\ngithub.com/codefly-dev/core v0.3.4/go.mod h1:def\n",
+			want:    "v0.3.4",
+			stale:   false,
+		},
+		{
+			name:    "go.sum go.mod hash line at older version",
+			content: "github.com/codefly-dev/core v0.3.2/go.mod h1:def\n",
+			want:    "v0.3.4",
+			stale:   true,
+		},
+		{
+			name:    "unrelated module at a different version is ignored",
+			content: "require (\n\tgithub.com/codefly-dev/sdk-go v0.1.0\n)\n",
+			want:    "v0.3.4",
+			stale:   false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := templateLockPinsOtherCore(tc.content, core, tc.want); got != tc.stale {
+				t.Fatalf("templateLockPinsOtherCore = %v, want %v", got, tc.stale)
+			}
+		})
+	}
+}
+
+func TestStaleCoreTemplateLocksFindsDriftAndSkipsGeneratedTrees(t *testing.T) {
+	const core = "github.com/codefly-dev/core"
+	root := t.TempDir()
+
+	write := func(rel, body string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A stale factory template pair (still on the old core) and a current one.
+	write("templates/factory/code/go.mod.tmpl", "require (\n\tgithub.com/codefly-dev/core v0.3.2\n)\n")
+	write("templates/factory/code/go.sum.tmpl", "github.com/codefly-dev/core v0.3.2/go.mod h1:old\n")
+	write("templates/other/code/go.mod.tmpl", "require (\n\tgithub.com/codefly-dev/core v0.3.4\n)\n")
+	// Real go.mod files and non-template files must be ignored.
+	write("base/code/go.mod", "module codefly-base\n\nrequire github.com/codefly-dev/core v0.3.2\n")
+	// Anything under a skipped tree must not be reported.
+	write("testdata/fixture/go.mod.tmpl", "require (\n\tgithub.com/codefly-dev/core v0.3.2\n)\n")
+
+	stale, err := staleCoreTemplateLocks(root, core, "v0.3.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(root, "templates/factory/code/go.mod.tmpl"),
+		filepath.Join(root, "templates/factory/code/go.sum.tmpl"),
+	}
+	if !reflect.DeepEqual(stale, want) {
+		t.Fatalf("stale template locks = %v, want %v", stale, want)
+	}
+}
+
 func boolString(value bool) string {
 	if value {
 		return "true"
