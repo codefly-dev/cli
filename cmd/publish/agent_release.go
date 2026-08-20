@@ -92,18 +92,18 @@ func missingLoaderPlatforms(hostOS, hostArch string) []string {
 // segment; verifyReleaseAssets asserts that for the host platform. The
 // asset prefix is kind-specific (service-, toolbox-, …), so it comes from
 // the core registration rather than a hardcoded string.
-func loaderArchiveName(reg resources.AgentKindRegistration, name, version string, p platform) string {
+func loaderArchiveName(reg *resources.AgentKindRegistration, name, version string, p platform) string {
 	return reg.GitHubAsset(name, version, p.os, p.arch)
 }
 
-func loaderSBOMName(reg resources.AgentKindRegistration, name, version string, p platform) string {
+func loaderSBOMName(reg *resources.AgentKindRegistration, name, version string, p platform) string {
 	return fmt.Sprintf("%s-%s_%s_%s_%s.cdx.json", reg.GitHubAssetPrefix, name, version, p.os, p.arch)
 }
 
 // loaderDownloadURL mirrors manager.DownloadURL for an arbitrary platform
 // (the resolver only knows the host platform). Consistency with the real
 // resolver is asserted in verifyReleaseAssets for the host target.
-func loaderDownloadURL(reg resources.AgentKindRegistration, publisher, name, version string, p platform) string {
+func loaderDownloadURL(reg *resources.AgentKindRegistration, publisher, name, version string, p platform) string {
 	owner := strings.ReplaceAll(publisher, ".", "-")
 	return fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/%s",
 		owner, reg.GitHubRepository(name), version, loaderArchiveName(reg, name, version, p))
@@ -172,7 +172,7 @@ type ciReport struct {
 // stageDir. It fails if CI produced no binary for a required platform —
 // the guard that rejects a publish from a host that cannot build every
 // loader target.
-func collectLoaderAssets(reg resources.AgentKindRegistration, ciOutput, name, version, stageDir string) ([]loaderAsset, error) {
+func collectLoaderAssets(reg *resources.AgentKindRegistration, ciOutput, name, version, stageDir string) ([]loaderAsset, error) {
 	raw, err := os.ReadFile(filepath.Join(ciOutput, "report.json"))
 	if err != nil {
 		return nil, fmt.Errorf("read agent CI report: %w", err)
@@ -267,6 +267,8 @@ func releaseAgentCIArgs(agentDir, output string, nativeOnly, skipConformance boo
 // tree, writing artifacts to output. Output streams live so the operator sees
 // progress; a non-zero exit fails the publish before any tag is pushed.
 func runReleaseAgentCI(ctx context.Context, self, agentDir, output string, nativeOnly, skipConformance bool) error {
+	//nolint:gosec // G204: self is the codefly binary (os.Executable), and the
+	// args are internally constructed flags, not user input.
 	cmd := exec.CommandContext(ctx, self, releaseAgentCIArgs(agentDir, output, nativeOnly, skipConformance)...)
 	cmd.Dir = agentDir
 	cmd.Env = os.Environ()
@@ -326,7 +328,7 @@ func releaseExists(ctx context.Context, workDir, tag string) bool {
 // through the exact URL `codefly agent install` requests. For the host
 // platform it asserts the URL matches manager.DownloadURL byte-for-byte,
 // so the upload names can never silently drift from the resolver.
-func verifyReleaseAssets(ctx context.Context, reg resources.AgentKindRegistration, publisher, name, version string, assets []loaderAsset) error {
+func verifyReleaseAssets(ctx context.Context, reg *resources.AgentKindRegistration, publisher, name, version string, assets []loaderAsset) error {
 	for _, asset := range assets {
 		url := loaderDownloadURL(reg, publisher, name, version, asset.platform)
 		if asset.platform.os == runtime.GOOS && asset.platform.arch == runtime.GOARCH {
@@ -386,7 +388,7 @@ type agentReleaser struct {
 	self            string
 	agentDir        string
 	workDir         string
-	reg             resources.AgentKindRegistration
+	reg             *resources.AgentKindRegistration
 	skipConformance bool
 	publisher       string
 	name            string
@@ -508,7 +510,7 @@ func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
 		self:            self,
 		agentDir:        agentDir,
 		workDir:         workDir,
-		reg:             reg,
+		reg:             &reg,
 		skipConformance: reg.Resource != resources.ServiceAgent,
 		publisher:       identity.Publisher,
 		name:            identity.Name,

@@ -23,8 +23,7 @@ import (
 func TestLoaderArchiveName_MatchesInstallResolver(t *testing.T) {
 	host := platform{os: runtime.GOOS, arch: runtime.GOARCH}
 	for _, kind := range []resources.AgentKind{resources.ServiceAgent, resources.ToolboxAgent} {
-		reg, err := resources.AgentKindRegistrationFor(kind)
-		require.NoError(t, err)
+		reg := registrationFor(t, kind)
 		got := loaderDownloadURL(reg, "codefly.dev", "go", "0.0.16", host)
 
 		agent := &resources.Agent{Kind: kind, Publisher: "codefly.dev", Name: "go", Version: "0.0.16"}
@@ -36,8 +35,7 @@ func TestLoaderArchiveName_MatchesInstallResolver(t *testing.T) {
 }
 
 func TestLoaderDownloadURL_PublisherDotsBecomeDashes(t *testing.T) {
-	reg, err := resources.AgentKindRegistrationFor(resources.ServiceAgent)
-	require.NoError(t, err)
+	reg := registrationFor(t, resources.ServiceAgent)
 	url := loaderDownloadURL(reg, "my.org.dev", "python", "1.2.3", platform{os: "linux", arch: "amd64"})
 	require.Equal(t,
 		"https://github.com/my-org-dev/service-python/releases/download/v1.2.3/service-python_1.2.3_linux_amd64.tar.gz",
@@ -45,8 +43,7 @@ func TestLoaderDownloadURL_PublisherDotsBecomeDashes(t *testing.T) {
 }
 
 func TestLoaderDownloadURL_ToolboxUsesToolboxPrefix(t *testing.T) {
-	reg, err := resources.AgentKindRegistrationFor(resources.ToolboxAgent)
-	require.NoError(t, err)
+	reg := registrationFor(t, resources.ToolboxAgent)
 	url := loaderDownloadURL(reg, "codefly.dev", "web", "0.0.14", platform{os: "linux", arch: "amd64"})
 	require.Equal(t,
 		"https://github.com/codefly-dev/toolbox-web/releases/download/v0.0.14/toolbox-web_0.0.14_linux_amd64.tar.gz",
@@ -213,11 +210,16 @@ func TestUnsupportedAgentKindFailsClosedWithActionableError(t *testing.T) {
 
 // --- helpers -------------------------------------------------------
 
-func serviceRegistration(t *testing.T) resources.AgentKindRegistration {
+func serviceRegistration(t *testing.T) *resources.AgentKindRegistration {
 	t.Helper()
-	reg, err := resources.AgentKindRegistrationFor(resources.ServiceAgent)
+	return registrationFor(t, resources.ServiceAgent)
+}
+
+func registrationFor(t *testing.T, kind resources.AgentKind) *resources.AgentKindRegistration {
+	t.Helper()
+	reg, err := resources.AgentKindRegistrationFor(kind)
 	require.NoError(t, err)
-	return reg
+	return &reg
 }
 
 // stageCIArtifacts writes a fake `codefly agent ci` output tree (report
