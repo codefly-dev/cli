@@ -22,6 +22,10 @@ integration.
 Task-oriented procedures. Each links to a full runbook under `docs/runbooks/`. Add a new
 runbook whenever you do a multi-step operational task a second time.
 
+> The runbooks are also reachable at **runtime** — they're embedded in the CLI:
+> - Shell / any agent driving the shell: `codefly help <topic>` (e.g. `codefly help bump-go-version`), and `codefly help` lists them under "Additional help topics".
+> - MCP-connected agents (`codefly mcp`): the **`how_to`** tool — call it with no args to list topics, or `topic=<name>` for the full runbook.
+
 ### Toolchain & dependencies
 - **Bump the Go version** (core + cli + agents + CI images) → [docs/runbooks/bump-go-version.md](docs/runbooks/bump-go-version.md)
 - **Go standards** (formatting, linting) → [docs/go.md](docs/go.md)

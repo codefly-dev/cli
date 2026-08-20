@@ -74,6 +74,16 @@ Add to your project's `.mcp.json` or global MCP config:
 | `list_agents` | List available agent types | -- |
 | `list_jobs` | List jobs (optionally filtered by module) | `module` (optional) |
 
+### Help Tools
+
+| Tool | Description | Required Args |
+|------|-------------|---------------|
+| `how_to` | Get codefly how-to runbooks (bump Go, cut a release, add a command, rebuild agents). Omit `topic` to list topics; pass it to fetch the full runbook. | `topic` (optional) |
+
+The runbooks are the embedded [`docs/runbooks/`](runbooks/) files, so `how_to` works offline
+and without repository access. The same content is available at the shell as
+`codefly help <topic>`.
+
 ### Per-Service Tools
 
 These tools operate on a specific service within a module.

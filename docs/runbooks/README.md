@@ -6,6 +6,15 @@ in `docs/` proper; if it lists *the steps to do a thing*, it belongs here.
 The canonical entry point is [`../../AGENTS.md`](../../AGENTS.md); its **How-To Index** links to
 each runbook below.
 
+> **These files are embedded in the CLI** by [`runbooks.go`](runbooks.go), so they're reachable
+> at runtime without a repo checkout:
+> - `codefly help <topic>` (shell) — e.g. `codefly help bump-go-version`.
+> - the `how_to` MCP tool (`codefly mcp`) — omit `topic` to list, pass it to fetch.
+>
+> `runbooks.go` keeps these `.md` files as the single source of truth (no duplication); editing a
+> runbook updates both surfaces on the next build. The `README.md` index is excluded from the
+> topic list.
+
 ## Index by category
 
 ### Toolchain & dependencies
