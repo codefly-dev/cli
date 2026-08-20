@@ -141,7 +141,7 @@ func TestLoadAgentCIManifestRejectsIncompleteAndUnsupported(t *testing.T) {
 		{
 			name:    "unsupported kind",
 			content: "publisher: codefly\nkind: codefly:application\nname: app\nversion: 1.0.0\n",
-			want:    "requires kind codefly:service",
+			want:    "agent CI supports codefly:service, codefly:module, codefly:toolbox, codefly:provider",
 		},
 	}
 	for _, test := range tests {
@@ -223,6 +223,27 @@ version: 0.0.20
 	}
 	if manifest.Kind != "codefly:module" || manifest.Name != "saas-starter" {
 		t.Fatalf("unexpected module manifest: %+v", manifest)
+	}
+}
+
+func TestLoadAgentCIManifestAllowsToolboxAndProviderWithSkipConformance(t *testing.T) {
+	for _, kind := range []string{"codefly:toolbox", "codefly:provider"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "agent.codefly.yaml"),
+				"publisher: codefly.dev\nkind: "+kind+"\nname: subject\nversion: 0.0.1\n")
+
+			if _, err := loadAgentCIManifest(dir, false); err == nil || !strings.Contains(err.Error(), "--skip-conformance") {
+				t.Fatalf("%s manifest without --skip-conformance error = %v, want it to require the flag", kind, err)
+			}
+			manifest, err := loadAgentCIManifest(dir, true)
+			if err != nil {
+				t.Fatalf("%s manifest with --skip-conformance: %v", kind, err)
+			}
+			if manifest.Kind != kind || manifest.Name != "subject" {
+				t.Fatalf("unexpected %s manifest: %+v", kind, manifest)
+			}
+		})
 	}
 }
 

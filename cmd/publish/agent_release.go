@@ -89,22 +89,24 @@ func missingLoaderPlatforms(hostOS, hostArch string) []string {
 
 // loaderArchiveName is the release asset name core's downloader requests.
 // It MUST stay byte-for-byte identical to manager.DownloadURL's asset
-// segment; verifyReleaseAssets asserts that for the host platform.
-func loaderArchiveName(name, version string, p platform) string {
-	return fmt.Sprintf("service-%s_%s_%s_%s.tar.gz", name, version, p.os, p.arch)
+// segment; verifyReleaseAssets asserts that for the host platform. The
+// asset prefix is kind-specific (service-, toolbox-, …), so it comes from
+// the core registration rather than a hardcoded string.
+func loaderArchiveName(reg *resources.AgentKindRegistration, name, version string, p platform) string {
+	return reg.GitHubAsset(name, version, p.os, p.arch)
 }
 
-func loaderSBOMName(name, version string, p platform) string {
-	return fmt.Sprintf("service-%s_%s_%s_%s.cdx.json", name, version, p.os, p.arch)
+func loaderSBOMName(reg *resources.AgentKindRegistration, name, version string, p platform) string {
+	return fmt.Sprintf("%s-%s_%s_%s_%s.cdx.json", reg.GitHubAssetPrefix, name, version, p.os, p.arch)
 }
 
 // loaderDownloadURL mirrors manager.DownloadURL for an arbitrary platform
 // (the resolver only knows the host platform). Consistency with the real
 // resolver is asserted in verifyReleaseAssets for the host target.
-func loaderDownloadURL(publisher, name, version string, p platform) string {
+func loaderDownloadURL(reg *resources.AgentKindRegistration, publisher, name, version string, p platform) string {
 	owner := strings.ReplaceAll(publisher, ".", "-")
-	return fmt.Sprintf("https://github.com/%s/service-%s/releases/download/v%s/%s",
-		owner, name, version, loaderArchiveName(name, version, p))
+	return fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/%s",
+		owner, reg.GitHubRepository(name), version, loaderArchiveName(reg, name, version, p))
 }
 
 // loaderAsset is one platform's staged release upload.
@@ -115,9 +117,10 @@ type loaderAsset struct {
 }
 
 // writeLoaderArchive packs the agent binary into a gzip tar at outPath
-// with the single entry service-<name> — the exact path core's downloader
-// extracts and executes.
-func writeLoaderArchive(binaryPath, agentName, outPath string) (err error) {
+// with the single entry entryName — the exact path core's downloader
+// extracts and executes (registration.ExecutableName, e.g. service-<name>
+// or toolbox-<name>).
+func writeLoaderArchive(binaryPath, entryName, outPath string) (err error) {
 	in, err := os.Open(binaryPath)
 	if err != nil {
 		return fmt.Errorf("open agent binary: %w", err)
@@ -139,7 +142,7 @@ func writeLoaderArchive(binaryPath, agentName, outPath string) (err error) {
 	gz := gzip.NewWriter(out)
 	tw := tar.NewWriter(gz)
 	if err := tw.WriteHeader(&tar.Header{
-		Name: "service-" + agentName,
+		Name: entryName,
 		Mode: 0o755,
 		Size: info.Size(),
 	}); err != nil {
@@ -169,7 +172,7 @@ type ciReport struct {
 // stageDir. It fails if CI produced no binary for a required platform —
 // the guard that rejects a publish from a host that cannot build every
 // loader target.
-func collectLoaderAssets(ciOutput, name, version, stageDir string) ([]loaderAsset, error) {
+func collectLoaderAssets(reg *resources.AgentKindRegistration, ciOutput, name, version, stageDir string) ([]loaderAsset, error) {
 	raw, err := os.ReadFile(filepath.Join(ciOutput, "report.json"))
 	if err != nil {
 		return nil, fmt.Errorf("read agent CI report: %w", err)
@@ -199,13 +202,13 @@ func collectLoaderAssets(ciOutput, name, version, stageDir string) ([]loaderAsse
 			missing = append(missing, p.target())
 			continue
 		}
-		archivePath := filepath.Join(stageDir, loaderArchiveName(name, version, p))
-		if err := writeLoaderArchive(binary, name, archivePath); err != nil {
+		archivePath := filepath.Join(stageDir, loaderArchiveName(reg, name, version, p))
+		if err := writeLoaderArchive(binary, reg.ExecutableName(name), archivePath); err != nil {
 			return nil, fmt.Errorf("package %s archive: %w", p.target(), err)
 		}
 		asset := loaderAsset{platform: p, archivePath: archivePath}
 		if sbom, ok := sboms[p.target()]; ok {
-			sbomPath := filepath.Join(stageDir, loaderSBOMName(name, version, p))
+			sbomPath := filepath.Join(stageDir, loaderSBOMName(reg, name, version, p))
 			if err := copyFile(sbom, sbomPath); err != nil {
 				return nil, fmt.Errorf("stage %s SBOM: %w", p.target(), err)
 			}
@@ -245,17 +248,28 @@ func copyFile(src, dst string) (err error) {
 	return err
 }
 
-// runReleaseAgentCI runs release-grade agent CI (native + linux/amd64
-// build, audit, conformance) against the bumped working tree, writing
-// artifacts to output. Output streams live so the operator sees progress;
-// a non-zero exit fails the publish before any tag is pushed.
-func runReleaseAgentCI(ctx context.Context, self, agentDir, output string) error {
-	cmd := exec.CommandContext(ctx, self,
-		"--timestamps=false",
-		"agent", "ci",
-		"--dir", agentDir,
-		"--output", output,
-	)
+// releaseAgentCIArgs builds the `codefly agent ci` argument vector for a
+// release-grade run. Conformance is service-only, so every other kind passes
+// skipConformance; only source-only module agents pass nativeOnly to skip the
+// linux/amd64 build that runtime kinds (service, toolbox, provider) require.
+func releaseAgentCIArgs(agentDir, output string, nativeOnly, skipConformance bool) []string {
+	args := []string{"--timestamps=false", "agent", "ci", "--dir", agentDir, "--output", output}
+	if nativeOnly {
+		args = append(args, "--native-only")
+	}
+	if skipConformance {
+		args = append(args, "--skip-conformance")
+	}
+	return args
+}
+
+// runReleaseAgentCI runs release-grade agent CI against the bumped working
+// tree, writing artifacts to output. Output streams live so the operator sees
+// progress; a non-zero exit fails the publish before any tag is pushed.
+func runReleaseAgentCI(ctx context.Context, self, agentDir, output string, nativeOnly, skipConformance bool) error {
+	//nolint:gosec // G204: self is the codefly binary (os.Executable), and the
+	// args are internally constructed flags, not user input.
+	cmd := exec.CommandContext(ctx, self, releaseAgentCIArgs(agentDir, output, nativeOnly, skipConformance)...)
 	cmd.Dir = agentDir
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stdout
@@ -314,11 +328,11 @@ func releaseExists(ctx context.Context, workDir, tag string) bool {
 // through the exact URL `codefly agent install` requests. For the host
 // platform it asserts the URL matches manager.DownloadURL byte-for-byte,
 // so the upload names can never silently drift from the resolver.
-func verifyReleaseAssets(ctx context.Context, publisher, name, version string, assets []loaderAsset) error {
+func verifyReleaseAssets(ctx context.Context, reg *resources.AgentKindRegistration, publisher, name, version string, assets []loaderAsset) error {
 	for _, asset := range assets {
-		url := loaderDownloadURL(publisher, name, version, asset.platform)
+		url := loaderDownloadURL(reg, publisher, name, version, asset.platform)
 		if asset.platform.os == runtime.GOOS && asset.platform.arch == runtime.GOARCH {
-			agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: publisher, Name: name, Version: version}
+			agent := &resources.Agent{Kind: reg.Resource, Publisher: publisher, Name: name, Version: version}
 			resolver, err := manager.DownloadURL(agent)
 			if err != nil {
 				return fmt.Errorf("cannot resolve install URL for %s/%s@%s: %w", publisher, name, version, err)
@@ -371,14 +385,16 @@ func assertAssetReachable(ctx context.Context, url string) error {
 // single agent repo. It owns the temporary CI-output and asset-staging
 // directories; the caller defers cleanup after Engine.Release returns.
 type agentReleaser struct {
-	self      string
-	agentDir  string
-	workDir   string
-	publisher string
-	name      string
-	ciOutput  string
-	stageDir  string
-	assets    []loaderAsset
+	self            string
+	agentDir        string
+	workDir         string
+	reg             *resources.AgentKindRegistration
+	skipConformance bool
+	publisher       string
+	name            string
+	ciOutput        string
+	stageDir        string
+	assets          []loaderAsset
 }
 
 type releaseGate interface {
@@ -392,22 +408,38 @@ type agentIdentity struct {
 	Name      string `yaml:"name"`
 }
 
-// newAgentReleaseGate selects release behavior from the manifest kind. Service
-// agents ship executable loader assets. Module agents are immutable source
-// releases consumed by `codefly sync module`, so they run source/build/audit
-// CI but deliberately publish only the signed Git tag.
+// loaderAssetKinds ship executable loader assets to a GitHub release: they
+// resolve via `AgentResolutionGitHubRelease` and core's downloader fetches
+// the per-platform archive. Toolboxes are callable capability plugins with
+// their own `.goreleaser.yaml`, so they take the same service-shaped path.
+var loaderAssetKinds = map[string]bool{
+	"":                             true, // legacy manifests default to service
+	string(resources.ServiceAgent): true,
+	string(resources.ToolboxAgent): true,
+}
+
+// sourceTagKinds are immutable source releases: publish runs source/build/audit
+// CI but ships only the signed Git tag. Modules are consumed by `codefly sync
+// module`; providers resolve as verified artifacts (Nix/local) built from that
+// tagged source, with no GitHub-release download path to upload assets to.
+var sourceTagKinds = map[string]bool{
+	string(resources.ModuleAgent):   true,
+	string(resources.ProviderAgent): true,
+}
+
+// newAgentReleaseGate selects release behavior from the manifest kind.
 func newAgentReleaseGate(agentDir, workDir string) (releaseGate, error) {
 	identity, err := readAgentIdentity(filepath.Join(agentDir, "agent.codefly.yaml"))
 	if err != nil {
 		return nil, err
 	}
-	switch identity.Kind {
-	case "", "codefly:service":
+	switch {
+	case loaderAssetKinds[identity.Kind]:
 		return newAgentReleaser(agentDir, workDir)
-	case "codefly:module":
-		return newModuleAgentReleaser(agentDir)
+	case sourceTagKinds[identity.Kind]:
+		return newSourceTagReleaser(agentDir, identity.Kind == string(resources.ModuleAgent))
 	default:
-		return nil, fmt.Errorf("publish does not yet define release semantics for agent kind %q", identity.Kind)
+		return nil, unsupportedReleaseKindError(identity.Kind)
 	}
 }
 
@@ -416,14 +448,33 @@ func checkAgentReleasePreconditionsForManifest(path string) error {
 	if err != nil {
 		return err
 	}
-	switch identity.Kind {
-	case "", "codefly:service":
+	switch {
+	case loaderAssetKinds[identity.Kind]:
 		return checkAgentReleasePreconditions()
-	case "codefly:module":
+	case sourceTagKinds[identity.Kind]:
 		return nil
 	default:
-		return fmt.Errorf("publish does not yet define release semantics for agent kind %q", identity.Kind)
+		return unsupportedReleaseKindError(identity.Kind)
 	}
+}
+
+// unsupportedReleaseKindError enumerates the kinds publish can release so the
+// failure is actionable. The list is derived from the routing maps so it
+// cannot drift from what the gate actually accepts. Job, application, and
+// solution agents are declared by core but have no release path yet — the gap
+// is a recorded decision, not an oversight.
+func unsupportedReleaseKindError(kind string) error {
+	var supported []string
+	for k := range loaderAssetKinds {
+		if k != "" { // the empty-string alias for service is not a nameable kind
+			supported = append(supported, k)
+		}
+	}
+	for k := range sourceTagKinds {
+		supported = append(supported, k)
+	}
+	sort.Strings(supported)
+	return fmt.Errorf("publish supports %s; got %q", strings.Join(supported, ", "), kind)
 }
 
 func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
@@ -438,6 +489,14 @@ func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
 	if err != nil {
 		return nil, err
 	}
+	kind := identity.Kind
+	if kind == "" {
+		kind = string(resources.ServiceAgent)
+	}
+	reg, err := resources.AgentKindRegistrationFor(resources.AgentKind(kind))
+	if err != nil {
+		return nil, err
+	}
 	ciOutput, err := os.MkdirTemp("", "codefly-publish-ci-*")
 	if err != nil {
 		return nil, err
@@ -448,13 +507,15 @@ func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
 		return nil, err
 	}
 	return &agentReleaser{
-		self:      self,
-		agentDir:  agentDir,
-		workDir:   workDir,
-		publisher: identity.Publisher,
-		name:      identity.Name,
-		ciOutput:  ciOutput,
-		stageDir:  stageDir,
+		self:            self,
+		agentDir:        agentDir,
+		workDir:         workDir,
+		reg:             &reg,
+		skipConformance: reg.Resource != resources.ServiceAgent,
+		publisher:       identity.Publisher,
+		name:            identity.Name,
+		ciOutput:        ciOutput,
+		stageDir:        stageDir,
 	}, nil
 }
 
@@ -470,10 +531,10 @@ func (r *agentReleaser) cleanup() {
 
 func (r *agentReleaser) beforeCommit(ctx context.Context, newTag string) error {
 	version := strings.TrimPrefix(newTag, "v")
-	if err := runReleaseAgentCI(ctx, r.self, r.agentDir, r.ciOutput); err != nil {
+	if err := runReleaseAgentCI(ctx, r.self, r.agentDir, r.ciOutput, false, r.skipConformance); err != nil {
 		return err
 	}
-	assets, err := collectLoaderAssets(r.ciOutput, r.name, version, r.stageDir)
+	assets, err := collectLoaderAssets(r.reg, r.ciOutput, r.name, version, r.stageDir)
 	if err != nil {
 		return err
 	}
@@ -486,52 +547,46 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	if err := createAndUploadRelease(ctx, r.workDir, newTag, r.assets); err != nil {
 		return err
 	}
-	return verifyReleaseAssets(ctx, r.publisher, r.name, version, r.assets)
+	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, version, r.assets)
 }
 
-type moduleAgentReleaser struct {
-	self     string
-	agentDir string
-	output   string
+// sourceTagReleaser publishes an immutable source release: it runs
+// source/build/audit CI against the bumped tree and then lets the Engine push
+// the signed Git tag, uploading no release assets. Used by module agents
+// (source-only, consumed by `codefly sync module`) and provider agents
+// (verified artifacts built from the tagged source). Modules build native-only
+// because nothing consumes a module binary; providers are runtime agents whose
+// consumers build the tagged source for linux, so they build every platform to
+// catch a linux-only break before the immutable tag.
+type sourceTagReleaser struct {
+	self       string
+	agentDir   string
+	output     string
+	nativeOnly bool
 }
 
-func newModuleAgentReleaser(agentDir string) (*moduleAgentReleaser, error) {
+func newSourceTagReleaser(agentDir string, nativeOnly bool) (*sourceTagReleaser, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve codefly executable: %w", err)
 	}
-	output, err := os.MkdirTemp("", "codefly-publish-module-ci-*")
+	output, err := os.MkdirTemp("", "codefly-publish-source-ci-*")
 	if err != nil {
 		return nil, err
 	}
-	return &moduleAgentReleaser{self: self, agentDir: agentDir, output: output}, nil
+	return &sourceTagReleaser{self: self, agentDir: agentDir, output: output, nativeOnly: nativeOnly}, nil
 }
 
-func (r *moduleAgentReleaser) attach(engine *Engine) {
+func (r *sourceTagReleaser) attach(engine *Engine) {
 	engine.BeforeCommit = r.beforeCommit
 }
 
-func (r *moduleAgentReleaser) cleanup() {
+func (r *sourceTagReleaser) cleanup() {
 	os.RemoveAll(r.output)
 }
 
-func (r *moduleAgentReleaser) beforeCommit(ctx context.Context, _ string) error {
-	cmd := exec.CommandContext(ctx, r.self,
-		"--timestamps=false",
-		"agent", "ci",
-		"--dir", r.agentDir,
-		"--output", r.output,
-		"--native-only",
-		"--skip-conformance",
-	)
-	cmd.Dir = r.agentDir
-	cmd.Env = os.Environ()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("release-grade module-agent CI failed: %w", err)
-	}
-	return nil
+func (r *sourceTagReleaser) beforeCommit(ctx context.Context, _ string) error {
+	return runReleaseAgentCI(ctx, r.self, r.agentDir, r.output, r.nativeOnly, true)
 }
 
 func readAgentIdentity(path string) (agentIdentity, error) {
