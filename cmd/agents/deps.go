@@ -285,13 +285,13 @@ const coreModule = "github.com/codefly-dev/core"
 // This is the only mode that touches the network. Runs with GOWORK=off so the
 // local go.work can't mask a missing/incompatible published version.
 func pinCore(ctx context.Context, dir, version string) error {
-	if err := pinCoreModules(ctx, dir, version); err != nil {
+	resolved, err := pinCoreModules(ctx, dir, version)
+	if err != nil {
 		return err
 	}
 	// The pinned modules define the version freshly generated services must
 	// resolve to; any template lock that disagrees is the partial pin this
 	// guards against.
-	resolved := goModVersion(dir, coreModule)
 	stale, err := staleCoreTemplateLocks(dir, coreModule, resolved)
 	if err != nil {
 		return err
@@ -306,21 +306,24 @@ func pinCore(ctx context.Context, dir, version string) error {
 			}
 		}
 		return fmt.Errorf(
-			"pinned modules to %s@%s but %d template dependency lock(s) still reference an older core and would ship it to freshly generated services: %s\nregenerate them from the pinned base module locks, then re-run --pin",
+			"pinned modules to %s@%s (go.mod/go.sum written) but %d template dependency lock(s) still reference an older core and would ship it to freshly generated services: %s\nregenerate them from the pinned base module locks, then re-run --pin",
 			coreModule, resolved, len(stale), strings.Join(rel, ", "))
 	}
 	return nil
 }
 
 // pinCoreModules bumps every core-owning Go module under dir to the published
-// version, tidies, and verifies each builds standalone. It snapshots every
-// module's go.mod/go.sum up front and restores them all on any failure, so a
-// mid-sweep error never leaves the agent half-pinned.
-func pinCoreModules(ctx context.Context, dir, version string) (returnErr error) {
+// version and tidies each, then verifies the agent's own root module builds
+// standalone. It snapshots every module's go.mod/go.sum up front and restores
+// them all on any failure, so a mid-sweep error never leaves the agent
+// half-pinned. It returns the concrete core version the modules resolved to
+// (`latest` becomes a real tag), read back from a module that was actually
+// pinned.
+func pinCoreModules(ctx context.Context, dir, version string) (resolved string, returnErr error) {
 	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
 	all, err := findGoModDirs(dir)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var modules []string
 	for _, m := range all {
@@ -329,7 +332,7 @@ func pinCoreModules(ctx context.Context, dir, version string) (returnErr error) 
 		}
 	}
 	if len(modules) == 0 {
-		return fmt.Errorf("no module under %s requires %s; nothing to pin", dir, coreModule)
+		return "", fmt.Errorf("no module under %s requires %s; nothing to pin", dir, coreModule)
 	}
 
 	var paths []string
@@ -338,7 +341,7 @@ func pinCoreModules(ctx context.Context, dir, version string) (returnErr error) 
 	}
 	snapshots, err := snapshotFiles(paths...)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() {
 		if returnErr != nil {
@@ -347,17 +350,26 @@ func pinCoreModules(ctx context.Context, dir, version string) (returnErr error) 
 	}()
 
 	for _, m := range modules {
-		if err := pinModuleCore(ctx, m, version, env); err != nil {
-			return err
+		// Only the agent's own root module is required to build standalone;
+		// nested modules (base fixtures, pre-generated example services) are
+		// not guaranteed to compile on their own, so verifying their locks is
+		// the job, not compiling them. base-incompatibility surfaces downstream
+		// in generated-service conformance.
+		if err := pinModuleCore(ctx, m, version, env, m == dir); err != nil {
+			return "", err
 		}
 	}
-	cli.Info("  pinned → %s@%s (%d module(s), standalone build OK)", coreModule, goModVersion(dir, coreModule), len(modules))
-	return nil
+	// modules is sorted by path, so the shallowest core-owning module comes
+	// first; that is the agent root whenever the root owns core, and otherwise a
+	// module we just pinned — either way its recorded version is the resolved one.
+	resolved = goModVersion(modules[0], coreModule)
+	cli.Info("  pinned → %s@%s (%d module(s), root standalone build OK)", coreModule, resolved, len(modules))
+	return resolved, nil
 }
 
 // pinModuleCore pins a single module's go.mod/go.sum to the published core
-// version and verifies it builds standalone.
-func pinModuleCore(ctx context.Context, dir, version string, env []string) error {
+// version. When build is set it also verifies the module builds standalone.
+func pinModuleCore(ctx context.Context, dir, version string, env []string, build bool) error {
 	// Strip committed filesystem `replace => ../path` directives first: those are
 	// local-dev overrides that don't exist in a single-repo CI checkout, so they
 	// break the standalone build. Local builds keep working via the root go.work.
@@ -371,6 +383,9 @@ func pinModuleCore(ctx context.Context, dir, version string, env []string) error
 	}
 	if err := runGoEnv(ctx, dir, env, "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
+	}
+	if !build {
+		return nil
 	}
 	// Verify the standalone (published-core) build — fail loudly if the agent
 	// uses an API the pinned version doesn't have.
@@ -528,7 +543,7 @@ func restoreFiles(ctx context.Context, snapshots []fileSnapshot) error {
 // report themselves pinned — the partial pin that let conformance create
 // services with patched base deps but vulnerable versions in fresh projects.
 func staleCoreTemplateLocks(dir, core, want string) ([]string, error) {
-	var stale []string
+	var candidates []string
 	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -540,20 +555,23 @@ func staleCoreTemplateLocks(dir, core, want string) ([]string, error) {
 			}
 			return nil
 		}
-		if d.Name() != "go.mod.tmpl" && d.Name() != "go.sum.tmpl" {
-			return nil
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		if templateLockPinsOtherCore(string(data), core, want) {
-			stale = append(stale, p)
+		if d.Name() == "go.mod.tmpl" || d.Name() == "go.sum.tmpl" {
+			candidates = append(candidates, p)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	var stale []string
+	for _, p := range candidates {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		if templateLockPinsOtherCore(string(data), core, want) {
+			stale = append(stale, p)
+		}
 	}
 	sort.Strings(stale)
 	return stale, nil
@@ -565,15 +583,27 @@ func staleCoreTemplateLocks(dir, core, want string) ([]string, error) {
 // the `<core> v0.3.2/go.mod h1:...` variant).
 func templateLockPinsOtherCore(content, core, want string) bool {
 	for _, line := range strings.Split(content, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) < 2 || fields[0] != core {
-			continue
-		}
-		if strings.TrimSuffix(fields[1], "/go.mod") != want {
+		if version, ok := moduleLineVersion(line, core); ok && strings.TrimSuffix(version, "/go.mod") != want {
 			return true
 		}
 	}
 	return false
+}
+
+// moduleLineVersion returns the version a go.mod/go.sum line pins for module.
+// It handles the single-line `require <mod> <ver>` form as well as the
+// block-require / go.sum form `<mod> <ver>`; ok is false when the line does not
+// reference module. It deliberately ignores `replace`/`module`/`exclude`
+// directives (their first field is never the bare module path).
+func moduleLineVersion(line, module string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) >= 1 && fields[0] == "require" {
+		fields = fields[1:] // single-line `require <mod> <ver>`
+	}
+	if len(fields) < 2 || fields[0] != module {
+		return "", false
+	}
+	return fields[1], true
 }
 
 // goModVersion returns the required version of module in dir's go.mod (or "?").
@@ -583,9 +613,8 @@ func goModVersion(dir, module string) string {
 		return "?"
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		f := strings.Fields(strings.TrimSpace(line))
-		if len(f) >= 2 && f[0] == module {
-			return f[1]
+		if version, ok := moduleLineVersion(line, module); ok {
+			return version
 		}
 	}
 	return "?"

@@ -156,6 +156,24 @@ func TestTemplateLockPinsOtherCore(t *testing.T) {
 			stale:   true,
 		},
 		{
+			name:    "single-line require at older version",
+			content: "require github.com/codefly-dev/core v0.3.2\n",
+			want:    "v0.3.4",
+			stale:   true,
+		},
+		{
+			name:    "single-line require at wanted version",
+			content: "require github.com/codefly-dev/core v0.3.4 // indirect\n",
+			want:    "v0.3.4",
+			stale:   false,
+		},
+		{
+			name:    "replace directive is not treated as a version pin",
+			content: "replace github.com/codefly-dev/core => ../core\n",
+			want:    "v0.3.4",
+			stale:   false,
+		},
+		{
 			name:    "unrelated module at a different version is ignored",
 			content: "require (\n\tgithub.com/codefly-dev/sdk-go v0.1.0\n)\n",
 			want:    "v0.3.4",
@@ -165,6 +183,41 @@ func TestTemplateLockPinsOtherCore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := templateLockPinsOtherCore(tc.content, core, tc.want); got != tc.stale {
 				t.Fatalf("templateLockPinsOtherCore = %v, want %v", got, tc.stale)
+			}
+		})
+	}
+}
+
+func TestGoModVersionHandlesRequireForms(t *testing.T) {
+	const core = "github.com/codefly-dev/core"
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "block require",
+			body: "module x\n\nrequire (\n\tgithub.com/codefly-dev/core v0.3.4\n)\n",
+			want: "v0.3.4",
+		},
+		{
+			name: "single-line require",
+			body: "module x\n\nrequire github.com/codefly-dev/core v0.3.4\n",
+			want: "v0.3.4",
+		},
+		{
+			name: "core absent",
+			body: "module x\n\nrequire github.com/codefly-dev/sdk-go v0.1.0\n",
+			want: "?",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := goModVersion(dir, core); got != tc.want {
+				t.Fatalf("goModVersion = %q, want %q", got, tc.want)
 			}
 		})
 	}
