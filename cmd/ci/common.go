@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
@@ -32,6 +34,37 @@ var initOnly bool
 
 // Test suites selected for CI. Empty means each agent's advertised default.
 var testSuites []string
+
+// temporaryPorts asks the runtime allocator for OS-probed ephemeral ports so a
+// CI run's port space cannot collide with another run's on the same host.
+var temporaryPorts bool
+
+// portOverrideFlags carries raw --override-port entries (endpoint=port) before
+// they are parsed into an EndpointDestination→port map.
+var portOverrideFlags []string
+
+// parsePortOverrides turns "app/subject/rest=45001" entries into an
+// EndpointDestination→port map for orchestration.Flow.WithPortOverrides.
+func parsePortOverrides(entries []string) (map[string]uint16, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	overrides := make(map[string]uint16, len(entries))
+	for _, entry := range entries {
+		destination, raw, ok := strings.Cut(entry, "=")
+		destination = strings.TrimSpace(destination)
+		raw = strings.TrimSpace(raw)
+		if !ok || destination == "" || raw == "" {
+			return nil, fmt.Errorf("invalid --override-port %q: want endpoint=port (e.g. app/subject/rest=45001)", entry)
+		}
+		port, err := strconv.ParseUint(raw, 10, 16)
+		if err != nil || port == 0 {
+			return nil, fmt.Errorf("invalid --override-port %q: %q is not a valid port", entry, raw)
+		}
+		overrides[destination] = uint16(port)
+	}
+	return overrides, nil
+}
 
 // Scheduler controls shared by every affected-service validation command.
 // Zero jobs selects a conservative machine-derived default.

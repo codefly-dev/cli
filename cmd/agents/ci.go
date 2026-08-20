@@ -756,6 +756,12 @@ func agentConformanceGateArguments() []string {
 		"--all",
 		"--format", "json",
 		"--output", ".codefly/ci",
+		// Every agent's conformance workspace has the identical
+		// agent-conformance/app/subject identity, so the deterministic port
+		// hash lands on the same host port for every agent. One leaked process
+		// from a prior run would then block every agent that follows. Ephemeral
+		// ports isolate each run's port space so a leak cannot cross runs.
+		"--temporary-ports",
 		// The preceding agent audit is the release's vulnerability policy gate
 		// and fails on actionable HIGH/CRITICAL findings. Conformance still
 		// records audit evidence, but must not reinterpret unpatched upstream

@@ -256,6 +256,8 @@ func init() {
 	RunCmd.Flags().StringSliceVar(&silent, "silent", []string{}, "Silent services")
 	RunCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for validation and tests")
 	RunCmd.Flags().StringSliceVar(&testSuites, "suite", nil, "Named test suite to run during the test phase (repeatable; default: each agent's advertised default)")
+	RunCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed ephemeral ports so this CI run's port space cannot collide with another run on the host")
+	RunCmd.Flags().StringSliceVar(&portOverrideFlags, "override-port", nil, "Pin an endpoint to a host port (endpoint=port, e.g. app/subject/rest=45001; repeatable)")
 	RunCmd.Flags().BoolVar(&ciAuditIncludeOutdated, "audit-outdated", true, "Include outdated dependencies in audit evidence")
 	RunCmd.Flags().BoolVar(&ciAuditIncludeDev, "audit-include-dev", false, "Include development/test-only dependencies in audit evidence")
 	RunCmd.Flags().BoolVar(&ciAuditFailOnVuln, "fail-on-vuln", true, "Fail audit on HIGH or CRITICAL vulnerabilities")

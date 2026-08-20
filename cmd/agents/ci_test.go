@@ -112,6 +112,13 @@ func TestAgentConformanceGateRecordsAuditWithoutDuplicatingReleasePolicy(t *test
 	}
 }
 
+func TestAgentConformanceGateIsolatesPortSpacePerRun(t *testing.T) {
+	arguments := agentConformanceGateArguments()
+	if !slices.Contains(arguments, "--temporary-ports") {
+		t.Fatalf("conformance arguments = %v, want --temporary-ports so every agent's identical app/subject identity cannot collide on one host port", arguments)
+	}
+}
+
 func TestAgentAdvertisesCapabilityUsesInstalledAgentContract(t *testing.T) {
 	info := &agentv0.AgentInformation{Capabilities: []*agentv0.Capability{
 		{Type: agentv0.Capability_RUNTIME},

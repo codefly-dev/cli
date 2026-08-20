@@ -99,6 +99,7 @@ type Flow struct {
 	// agents retain the dependency-free behavior they had before the contract.
 	testDependencyMode agentv0.TestDependencyMode
 	temporaryPorts     bool
+	portOverrides      map[string]uint16
 
 	// syncRequest carries CI dry-run intent to every builder participating in a
 	// SyncMode flow. Nil retains the conventional mutating sync behavior.
@@ -1712,6 +1713,19 @@ func (flow *Flow) WithTemporaryPorts(enabled bool) {
 
 func (flow *Flow) TemporaryPortsEnabled() bool {
 	return flow != nil && flow.temporaryPorts
+}
+
+// WithPortOverrides pins endpoints to caller-chosen host ports, keyed by
+// EndpointDestination (module/service/endpoint). An override takes precedence
+// over both the deterministic hash and temporary ports.
+func (flow *Flow) WithPortOverrides(overrides map[string]uint16) {
+	if len(overrides) == 0 {
+		return
+	}
+	flow.portOverrides = overrides
+	if flow.world != nil && flow.world.LocalNetworkManager != nil {
+		flow.world.LocalNetworkManager.WithPortOverrides(overrides)
+	}
 }
 
 func (flow *Flow) WithDockerStatus(status DockerStatus) {
