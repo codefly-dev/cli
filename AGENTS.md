@@ -28,6 +28,7 @@ runbook whenever you do a multi-step operational task a second time.
 
 ### Shipping
 - **Cut a release** (tag → GoReleaser → Homebrew cask) → [docs/runbooks/cut-a-release.md](docs/runbooks/cut-a-release.md)
+- **Release the whole agent fleet** (re-pin every agent on a new core, publish in dependency order) → [docs/runbooks/release-the-fleet.md](docs/runbooks/release-the-fleet.md)
 - **How releases & self-update work** → [docs/cli-updates.md](docs/cli-updates.md)
 
 ### Extending the CLI
@@ -37,6 +38,7 @@ runbook whenever you do a multi-step operational task a second time.
 ### Reference (deep dives, not step-by-step)
 - **All CLI commands, by category** → [docs/commands.md](docs/commands.md)
 - **Orchestration engine** → [docs/orchestration.md](docs/orchestration.md)
+- **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
 - **Daemon** → [docs/daemon.md](docs/daemon.md)
 - **MCP server** → [docs/mcp-server.md](docs/mcp-server.md)
 - **Contributing / dev setup** → [docs/development.md](docs/development.md)

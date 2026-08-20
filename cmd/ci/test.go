@@ -98,6 +98,12 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
+	flow.WithTemporaryPorts(temporaryPorts)
+	overrides, err := parsePortOverrides(portOverrideFlags)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	flow.WithPortOverrides(overrides)
 	flow.WithTestRequest(testRequestForSuite(suite, failFast))
 
 	err = flow.InitManagers(ctx)
