@@ -63,6 +63,42 @@ func TestRewriteAgentVersionPreservesUnmodeledKeysAndComments(t *testing.T) {
 	}
 }
 
+func TestRewriteAgentVersionPreservesNonCanonicalFormatting(t *testing.T) {
+	// A hand-authored, 2-space-indented file must survive with only the version
+	// token changed — no reflow to yaml.v3's canonical 4-space style.
+	in := "name: vault\nagent:\n  name: vault\n  version: 0.0.22\nendpoints:\n  - name: http\n    visibility: module\n"
+	want := "name: vault\nagent:\n  name: vault\n  version: 0.0.24\nendpoints:\n  - name: http\n    visibility: module\n"
+	out, err := rewriteAgentVersion([]byte(in), "0.0.24")
+	if err != nil {
+		t.Fatalf("rewriteAgentVersion: %v", err)
+	}
+	if string(out) != want {
+		t.Errorf("formatting not preserved:\ngot:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+func TestRewriteAgentVersionQuotedValue(t *testing.T) {
+	in := "name: vault\nagent:\n    name: vault\n    version: \"0.0.22\"\n"
+	want := "name: vault\nagent:\n    name: vault\n    version: \"0.0.24\"\n"
+	out, err := rewriteAgentVersion([]byte(in), "0.0.24")
+	if err != nil {
+		t.Fatalf("rewriteAgentVersion: %v", err)
+	}
+	if string(out) != want {
+		t.Errorf("quoted version not handled:\ngot:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+func TestRewriteAgentVersionNoChangeIsByteIdentical(t *testing.T) {
+	out, err := rewriteAgentVersion([]byte(vaultService), "0.0.22")
+	if err != nil {
+		t.Fatalf("rewriteAgentVersion: %v", err)
+	}
+	if string(out) != vaultService {
+		t.Errorf("no-op rewrite altered content:\n%s", out)
+	}
+}
+
 func TestRewriteAgentVersionKeepsHeadComment(t *testing.T) {
 	out, err := rewriteAgentVersion([]byte(vaultService), "0.0.24")
 	if err != nil {
