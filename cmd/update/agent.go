@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/core/agents/manager"
@@ -54,7 +55,7 @@ func updateServiceAgent(ctx context.Context, svc *resources.Service) (*agentUpda
 		return nil, nil
 	}
 	from := svc.Agent.Version
-	if _, err := manager.PinToLatestRelease(ctx, svc.Agent); err != nil {
+	if _, err = manager.PinToLatestRelease(ctx, svc.Agent); err != nil {
 		return nil, fmt.Errorf("cannot resolve latest agent version: %w", err)
 	}
 	if svc.Agent.Version == from {
@@ -67,7 +68,7 @@ func updateServiceAgent(ctx context.Context, svc *resources.Service) (*agentUpda
 	// Atomic write (temp + fsync + rename) so a crash mid-write cannot leave a
 	// truncated service.codefly.yaml — the very data integrity this command
 	// exists to protect.
-	if err := shared.WriteFileAtomic(ctx, file, updated, 0o600); err != nil {
+	if err = shared.WriteFileAtomic(ctx, file, updated, 0o600); err != nil {
 		return nil, fmt.Errorf("cannot write %s: %w", file, err)
 	}
 	return &agentUpdate{Name: svc.Agent.Name, From: from, To: svc.Agent.Version}, nil
@@ -140,11 +141,7 @@ func rewriteAgentVersion(content []byte, version string) ([]byte, error) {
 		return nil, fmt.Errorf("agent version value %q not found on its line", old)
 	}
 	at := col + rel
-	var edited []byte
-	edited = append(edited, line[:at]...)
-	edited = append(edited, version...)
-	edited = append(edited, line[at+len(old):]...)
-	lines[idx] = edited
+	lines[idx] = slices.Concat(line[:at], []byte(version), line[at+len(old):])
 	return bytes.Join(lines, []byte("\n")), nil
 }
 
