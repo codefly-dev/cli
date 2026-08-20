@@ -287,18 +287,18 @@ const coreModule = "github.com/codefly-dev/core"
 func pinCore(ctx context.Context, dir, version string) (returnErr error) {
 	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
 
-	nested, err := nestedGoModDirs(dir)
+	fixtures, err := baseFixtureDirs(dir)
 	if err != nil {
 		return err
 	}
-	// Snapshot every lock a pin touches up front — agent + nested modules and
+	// Snapshot every lock a pin touches up front — agent + base fixtures and
 	// their factory templates — so any failure restores the whole set rather
 	// than leaving a partial pin, the exact drift this command guards against.
 	var snapPaths []string
-	for _, m := range append([]string{dir}, nested...) {
+	for _, m := range append([]string{dir}, fixtures...) {
 		snapPaths = append(snapPaths, filepath.Join(m, "go.mod"), filepath.Join(m, "go.sum"))
 	}
-	for _, m := range nested {
+	for _, m := range fixtures {
 		if td := factoryTemplateDir(dir, m); td != "" {
 			snapPaths = append(snapPaths, filepath.Join(td, "go.mod.tmpl"), filepath.Join(td, "go.sum.tmpl"))
 		}
@@ -316,7 +316,7 @@ func pinCore(ctx context.Context, dir, version string) (returnErr error) {
 	if err := pinModule(ctx, dir, env, version, ""); err != nil {
 		return err
 	}
-	for _, m := range nested {
+	for _, m := range fixtures {
 		label := relLabel(dir, m)
 		if err := pinModule(ctx, m, env, version, label); err != nil {
 			return err
@@ -349,7 +349,7 @@ func pinModule(ctx context.Context, dir string, env []string, version, label str
 	// Verify the standalone (published-core) build — fail loudly if the module
 	// uses an API the pinned version doesn't have.
 	if err := runGoEnv(ctx, dir, env, "build", "./..."); err != nil {
-		return fmt.Errorf("standalone build against %s@%s FAILED — the agent likely uses an API not in that version: %w", coreModule, version, err)
+		return fmt.Errorf("standalone build of %s against %s@%s FAILED — it likely uses an API not in that version: %w", moduleLabel(label), coreModule, version, err)
 	}
 	got := goModVersion(dir, coreModule)
 	if label == "" {
@@ -360,34 +360,47 @@ func pinModule(ctx context.Context, dir string, env []string, version, label str
 	return nil
 }
 
-// nestedGoModDirs returns every go.mod directory strictly under dir (the agent's
-// base fixtures and other embedded modules), excluding the agent root itself.
-func nestedGoModDirs(dir string) ([]string, error) {
-	all, err := findGoModDirs(dir)
+// baseFixtureDirs returns every base-fixture Go module under the agent
+// (agentDir/base/<rel>/go.mod) — the runnable fixtures whose dependency locks
+// the agent owns and must keep in lockstep with core. Other nested modules
+// (e.g. a module template's own service scaffolds) are deliberately excluded:
+// they carry their own independent core versions and pinning them to this
+// agent's core — then demanding they build standalone — would fail the pin for
+// reasons unrelated to the agent's own lock.
+func baseFixtureDirs(agentDir string) ([]string, error) {
+	all, err := findGoModDirs(agentDir)
 	if err != nil {
 		return nil, err
 	}
-	var nested []string
+	var fixtures []string
 	for _, d := range all {
-		if d != dir {
-			nested = append(nested, d)
+		if isBaseFixture(agentDir, d) {
+			fixtures = append(fixtures, d)
 		}
 	}
-	return nested, nil
+	return fixtures, nil
+}
+
+// isBaseFixture reports whether moduleDir is a base fixture of agentDir, i.e.
+// lives under agentDir/base/. The agent root itself is never a base fixture.
+func isBaseFixture(agentDir, moduleDir string) bool {
+	rel, err := filepath.Rel(agentDir, moduleDir)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	return len(parts) >= 2 && parts[0] == "base"
 }
 
 // factoryTemplateDir maps a base fixture module at agentDir/base/<rel> to its
 // factory template directory agentDir/templates/factory/<rel>, returning "" when
 // the module isn't a base fixture or carries no go.mod.tmpl there.
 func factoryTemplateDir(agentDir, moduleDir string) string {
-	rel, err := filepath.Rel(agentDir, moduleDir)
-	if err != nil {
+	if !isBaseFixture(agentDir, moduleDir) {
 		return ""
 	}
+	rel, _ := filepath.Rel(agentDir, moduleDir)
 	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if len(parts) == 0 || parts[0] != "base" {
-		return ""
-	}
 	td := filepath.Join(append([]string{agentDir, "templates", "factory"}, parts[1:]...)...)
 	if !fileExists(filepath.Join(td, "go.mod.tmpl")) {
 		return ""
@@ -421,8 +434,8 @@ func regenerateFactoryTemplate(ctx context.Context, agentDir, moduleDir string) 
 	if err != nil {
 		return err
 	}
-	modTmpl := strings.ReplaceAll(string(baseMod), baseModule, placeholder)
-	sumTmpl := strings.ReplaceAll(string(baseSum), baseModule, placeholder)
+	modTmpl := swapModulePath(string(baseMod), baseModule, placeholder)
+	sumTmpl := swapModulePath(string(baseSum), baseModule, placeholder)
 	if err := shared.WriteFileAtomic(ctx, filepath.Join(td, "go.mod.tmpl"), []byte(modTmpl), 0o644); err != nil {
 		return err
 	}
@@ -431,6 +444,31 @@ func regenerateFactoryTemplate(ctx context.Context, agentDir, moduleDir string) 
 	}
 	cli.Info("  regenerated factory template %s from %s", relLabel(agentDir, td), relLabel(agentDir, moduleDir))
 	return nil
+}
+
+// swapModulePath rewrites go.mod/go.sum content, replacing only the
+// `module <from>` declaration line with `module <to>` and leaving every other
+// line byte-for-byte. Anchoring to the module line means a dependency path that
+// merely contains the module name as a substring can't be corrupted; go.sum
+// never names the main module, so it's returned unchanged.
+func swapModulePath(content, from, to string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == "module" && f[1] == from {
+			lines[i] = strings.Replace(line, from, to, 1)
+			break
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// moduleLabel names a module in operator-facing messages: the relative path for
+// a nested fixture, "the agent module" for the agent root (empty label).
+func moduleLabel(label string) string {
+	if label == "" {
+		return "the agent module"
+	}
+	return label
 }
 
 // goModModule returns the module path declared by a go.mod's `module` line.

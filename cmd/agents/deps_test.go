@@ -123,23 +123,28 @@ func TestRunGoHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestNestedGoModDirsExcludesAgentRoot(t *testing.T) {
+func TestBaseFixtureDirsSelectsOnlyBaseModules(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "base", "code")
-	if err := os.MkdirAll(base, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, dir := range []string{root, base} {
+	// A non-base nested module — e.g. a module-template's own service scaffold
+	// carrying its own (older, independent) core version. --pin must NOT touch it:
+	// pinning it to the agent's core and demanding a standalone build would fail
+	// the whole pin for reasons unrelated to the agent's own lock.
+	service := filepath.Join(root, "module", "services", "accounts", "code")
+	for _, dir := range []string{root, base, service} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.test/x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got, err := nestedGoModDirs(root)
+	got, err := baseFixtureDirs(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, []string{base}) {
-		t.Fatalf("nested dirs = %v, want %v", got, []string{base})
+		t.Fatalf("base fixture dirs = %v, want %v (agent root and non-base modules must be excluded)", got, []string{base})
 	}
 }
 
@@ -237,6 +242,31 @@ func TestGoModModuleAndTemplatePlaceholder(t *testing.T) {
 	}
 	if _, err := templateModulePlaceholder(filepath.Join(dir, "missing")); err == nil {
 		t.Fatal("missing template did not error")
+	}
+}
+
+func TestSwapModulePathOnlyTouchesModuleLine(t *testing.T) {
+	// A require line whose path contains the module name as a substring must
+	// survive untouched — only the `module` declaration is rewritten.
+	base := "module codefly-base\n\ngo 1.25\n\nrequire github.com/acme/codefly-base-utils v1.2.3\n"
+	got := swapModulePath(base, "codefly-base", "{{ .Service.Name.DNSCase }}")
+	want := "module {{ .Service.Name.DNSCase }}\n\ngo 1.25\n\nrequire github.com/acme/codefly-base-utils v1.2.3\n"
+	if got != want {
+		t.Fatalf("swapModulePath = %q, want %q", got, want)
+	}
+	// go.sum never declares the main module, so nothing changes.
+	sum := "github.com/acme/codefly-base-utils v1.2.3 h1:abc=\n"
+	if got := swapModulePath(sum, "codefly-base", "{{ .Service.Name.DNSCase }}"); got != sum {
+		t.Fatalf("swapModulePath on go.sum = %q, want unchanged", got)
+	}
+}
+
+func TestModuleLabel(t *testing.T) {
+	if got := moduleLabel(""); got != "the agent module" {
+		t.Fatalf("moduleLabel(empty) = %q", got)
+	}
+	if got := moduleLabel("base/code"); got != "base/code" {
+		t.Fatalf("moduleLabel(base/code) = %q", got)
 	}
 }
 
