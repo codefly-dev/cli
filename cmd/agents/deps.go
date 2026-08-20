@@ -277,6 +277,9 @@ func findGoModDirs(root string) ([]string, error) {
 
 const coreModule = "github.com/codefly-dev/core"
 
+// goModModuleDirective is the leading token of a go.mod module declaration.
+const goModModuleDirective = "module"
+
 // pinCore bumps every dependency lock the agent owns to a published core
 // version and verifies each module builds standalone. Beyond the agent's own
 // go.mod this covers nested base fixtures (base/code) and the factory templates
@@ -454,7 +457,7 @@ func regenerateFactoryTemplate(ctx context.Context, agentDir, moduleDir string) 
 func swapModulePath(content, from, to string) string {
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
-		if f := strings.Fields(line); len(f) >= 2 && f[0] == "module" && f[1] == from {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == goModModuleDirective && f[1] == from {
 			lines[i] = strings.Replace(line, from, to, 1)
 			break
 		}
@@ -475,7 +478,7 @@ func moduleLabel(label string) string {
 func goModModule(goMod []byte) string {
 	for _, line := range strings.Split(string(goMod), "\n") {
 		f := strings.Fields(line)
-		if len(f) >= 2 && f[0] == "module" {
+		if len(f) >= 2 && f[0] == goModModuleDirective {
 			return f[1]
 		}
 	}
