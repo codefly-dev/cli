@@ -22,19 +22,34 @@ import (
 // fails.
 func TestLoaderArchiveName_MatchesInstallResolver(t *testing.T) {
 	host := platform{os: runtime.GOOS, arch: runtime.GOARCH}
-	got := loaderDownloadURL("codefly.dev", "go", "0.0.16", host)
+	for _, kind := range []resources.AgentKind{resources.ServiceAgent, resources.ToolboxAgent} {
+		reg, err := resources.AgentKindRegistrationFor(kind)
+		require.NoError(t, err)
+		got := loaderDownloadURL(reg, "codefly.dev", "go", "0.0.16", host)
 
-	agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "go", Version: "0.0.16"}
-	resolver, err := manager.DownloadURL(agent)
-	require.NoError(t, err)
-	require.Equal(t, resolver, got,
-		"host-platform upload URL must match the install resolver byte-for-byte")
+		agent := &resources.Agent{Kind: kind, Publisher: "codefly.dev", Name: "go", Version: "0.0.16"}
+		resolver, err := manager.DownloadURL(agent)
+		require.NoError(t, err)
+		require.Equal(t, resolver, got,
+			"host-platform upload URL must match the install resolver byte-for-byte for %s", kind)
+	}
 }
 
 func TestLoaderDownloadURL_PublisherDotsBecomeDashes(t *testing.T) {
-	url := loaderDownloadURL("my.org.dev", "python", "1.2.3", platform{os: "linux", arch: "amd64"})
+	reg, err := resources.AgentKindRegistrationFor(resources.ServiceAgent)
+	require.NoError(t, err)
+	url := loaderDownloadURL(reg, "my.org.dev", "python", "1.2.3", platform{os: "linux", arch: "amd64"})
 	require.Equal(t,
 		"https://github.com/my-org-dev/service-python/releases/download/v1.2.3/service-python_1.2.3_linux_amd64.tar.gz",
+		url)
+}
+
+func TestLoaderDownloadURL_ToolboxUsesToolboxPrefix(t *testing.T) {
+	reg, err := resources.AgentKindRegistrationFor(resources.ToolboxAgent)
+	require.NoError(t, err)
+	url := loaderDownloadURL(reg, "codefly.dev", "web", "0.0.14", platform{os: "linux", arch: "amd64"})
+	require.Equal(t,
+		"https://github.com/codefly-dev/toolbox-web/releases/download/v0.0.14/toolbox-web_0.0.14_linux_amd64.tar.gz",
 		url)
 }
 
@@ -48,7 +63,7 @@ func TestWriteLoaderArchive_RoundTrip(t *testing.T) {
 	require.NoError(t, os.WriteFile(binary, payload, 0o755))
 
 	archive := filepath.Join(dir, "out.tar.gz")
-	require.NoError(t, writeLoaderArchive(binary, "go", archive))
+	require.NoError(t, writeLoaderArchive(binary, "service-go", archive))
 
 	entries := readTarGz(t, archive)
 	require.Len(t, entries, 1, "archive must hold exactly one entry")
@@ -59,17 +74,18 @@ func TestWriteLoaderArchive_RoundTrip(t *testing.T) {
 }
 
 func TestCollectLoaderAssets_AllPlatforms(t *testing.T) {
+	reg := serviceRegistration(t)
 	ci := stageCIArtifacts(t, map[string]bool{"darwin/arm64": true, "linux/amd64": true}, true)
 	stage := t.TempDir()
 
-	assets, err := collectLoaderAssets(ci, "go", "0.0.16", stage)
+	assets, err := collectLoaderAssets(reg, ci, "go", "0.0.16", stage)
 	require.NoError(t, err)
 	require.Len(t, assets, 2)
 
 	for _, asset := range assets {
 		require.FileExists(t, asset.archivePath)
 		require.Equal(t,
-			loaderArchiveName("go", "0.0.16", asset.platform),
+			loaderArchiveName(reg, "go", "0.0.16", asset.platform),
 			filepath.Base(asset.archivePath))
 		require.FileExists(t, asset.sbomPath, "SBOM must be staged for %s", asset.platform.target())
 	}
@@ -81,7 +97,7 @@ func TestCollectLoaderAssets_MissingPlatformFails(t *testing.T) {
 	ci := stageCIArtifacts(t, map[string]bool{"darwin/arm64": true}, true)
 	stage := t.TempDir()
 
-	_, err := collectLoaderAssets(ci, "go", "0.0.16", stage)
+	_, err := collectLoaderAssets(serviceRegistration(t), ci, "go", "0.0.16", stage)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "linux/amd64")
 	require.Contains(t, err.Error(), "required platform")
@@ -91,7 +107,7 @@ func TestCollectLoaderAssets_MissingSBOMStillPackages(t *testing.T) {
 	ci := stageCIArtifacts(t, map[string]bool{"darwin/arm64": true, "linux/amd64": true}, false)
 	stage := t.TempDir()
 
-	assets, err := collectLoaderAssets(ci, "go", "0.0.16", stage)
+	assets, err := collectLoaderAssets(serviceRegistration(t), ci, "go", "0.0.16", stage)
 	require.NoError(t, err)
 	require.Len(t, assets, 2)
 	for _, asset := range assets {
@@ -116,29 +132,64 @@ func TestMissingLoaderPlatforms(t *testing.T) {
 	}
 }
 
-func TestModuleAgentSelectsSourceReleaseGateWithoutLoaderAssets(t *testing.T) {
+func TestModuleAndProviderSelectSourceTagGateWithoutLoaderAssets(t *testing.T) {
+	for _, tc := range []struct{ kind, name string }{
+		{"codefly:module", "saas-starter"},
+		{"codefly:provider", "stripe"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			dir := t.TempDir()
+			manifest := []byte("publisher: codefly.dev\nkind: " + tc.kind + "\nname: " + tc.name + "\nversion: 0.1.0\n")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
+
+			require.NoError(t, checkAgentReleasePreconditionsForManifest(filepath.Join(dir, "agent.codefly.yaml")))
+			gate, err := newAgentReleaseGate(dir, dir)
+			require.NoError(t, err)
+			defer gate.cleanup()
+			_, ok := gate.(*sourceTagReleaser)
+			require.True(t, ok, "%s must publish a source tag, not loader assets", tc.kind)
+		})
+	}
+}
+
+func TestToolboxSelectsLoaderAssetGate(t *testing.T) {
+	// Toolboxes take the service-shaped loader-asset path, which requires a
+	// host that can build every loader platform plus gh — the same gate a
+	// real toolbox publish hits. Skip where that can't be exercised.
+	if err := checkAgentReleasePreconditions(); err != nil {
+		t.Skipf("host cannot exercise loader-asset publishing: %v", err)
+	}
 	dir := t.TempDir()
-	manifest := []byte("publisher: codefly.dev\nkind: codefly:module\nname: saas-starter\nversion: 0.0.20\n")
+	manifest := []byte("publisher: codefly.dev\nkind: codefly:toolbox\nname: web\nversion: 0.0.14\n")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
 
-	require.NoError(t, checkAgentReleasePreconditionsForManifest(filepath.Join(dir, "agent.codefly.yaml")))
 	gate, err := newAgentReleaseGate(dir, dir)
 	require.NoError(t, err)
 	defer gate.cleanup()
-	_, ok := gate.(*moduleAgentReleaser)
-	require.True(t, ok, "module agents must not use service loader-asset publishing")
+	releaser, ok := gate.(*agentReleaser)
+	require.True(t, ok, "toolbox agents must ship loader assets like services")
+	require.Equal(t, resources.ToolboxAgent, releaser.reg.Resource)
 }
 
-func TestUnknownAgentKindFailsClosedDuringReleaseSelection(t *testing.T) {
+func TestUnsupportedAgentKindFailsClosedWithActionableError(t *testing.T) {
 	dir := t.TempDir()
-	manifest := []byte("publisher: codefly.dev\nkind: codefly:toolbox\nname: web\nversion: 0.0.1\n")
+	manifest := []byte("publisher: codefly.dev\nkind: codefly:job\nname: batch\nversion: 0.0.1\n")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
 
 	_, err := newAgentReleaseGate(dir, dir)
-	require.ErrorContains(t, err, `release semantics for agent kind "codefly:toolbox"`)
+	require.ErrorContains(t, err, "publish supports")
+	require.ErrorContains(t, err, "codefly:service")
+	require.ErrorContains(t, err, `got "codefly:job"`)
 }
 
 // --- helpers -------------------------------------------------------
+
+func serviceRegistration(t *testing.T) resources.AgentKindRegistration {
+	t.Helper()
+	reg, err := resources.AgentKindRegistrationFor(resources.ServiceAgent)
+	require.NoError(t, err)
+	return reg
+}
 
 // stageCIArtifacts writes a fake `codefly agent ci` output tree (report
 // plus binary/SBOM files) for the given platforms and returns its root.
