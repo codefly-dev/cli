@@ -133,9 +133,12 @@ func TestMissingLoaderPlatforms(t *testing.T) {
 }
 
 func TestModuleAndProviderSelectSourceTagGateWithoutLoaderAssets(t *testing.T) {
-	for _, tc := range []struct{ kind, name string }{
-		{"codefly:module", "saas-starter"},
-		{"codefly:provider", "stripe"},
+	for _, tc := range []struct {
+		kind, name string
+		nativeOnly bool
+	}{
+		{"codefly:module", "saas-starter", true},
+		{"codefly:provider", "stripe", false},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			dir := t.TempDir()
@@ -146,29 +149,55 @@ func TestModuleAndProviderSelectSourceTagGateWithoutLoaderAssets(t *testing.T) {
 			gate, err := newAgentReleaseGate(dir, dir)
 			require.NoError(t, err)
 			defer gate.cleanup()
-			_, ok := gate.(*sourceTagReleaser)
+			releaser, ok := gate.(*sourceTagReleaser)
 			require.True(t, ok, "%s must publish a source tag, not loader assets", tc.kind)
+			require.Equal(t, tc.nativeOnly, releaser.nativeOnly,
+				"module builds native-only; provider builds every platform to catch linux-only breaks")
 		})
 	}
 }
 
-func TestToolboxSelectsLoaderAssetGate(t *testing.T) {
-	// Toolboxes take the service-shaped loader-asset path, which requires a
-	// host that can build every loader platform plus gh — the same gate a
-	// real toolbox publish hits. Skip where that can't be exercised.
+func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
+	// Loader-asset publishing requires a host that can build every loader
+	// platform plus gh — the same gate a real service/toolbox publish hits.
+	// Skip where that can't be exercised.
 	if err := checkAgentReleasePreconditions(); err != nil {
 		t.Skipf("host cannot exercise loader-asset publishing: %v", err)
 	}
-	dir := t.TempDir()
-	manifest := []byte("publisher: codefly.dev\nkind: codefly:toolbox\nname: web\nversion: 0.0.14\n")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
+	for _, tc := range []struct {
+		kind            string
+		resource        resources.AgentKind
+		skipConformance bool
+	}{
+		{"codefly:service", resources.ServiceAgent, false},
+		{"codefly:toolbox", resources.ToolboxAgent, true},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			dir := t.TempDir()
+			manifest := []byte("publisher: codefly.dev\nkind: " + tc.kind + "\nname: web\nversion: 0.0.14\n")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
 
-	gate, err := newAgentReleaseGate(dir, dir)
-	require.NoError(t, err)
-	defer gate.cleanup()
-	releaser, ok := gate.(*agentReleaser)
-	require.True(t, ok, "toolbox agents must ship loader assets like services")
-	require.Equal(t, resources.ToolboxAgent, releaser.reg.Resource)
+			gate, err := newAgentReleaseGate(dir, dir)
+			require.NoError(t, err)
+			defer gate.cleanup()
+			releaser, ok := gate.(*agentReleaser)
+			require.True(t, ok, "%s must ship loader assets", tc.kind)
+			require.Equal(t, tc.resource, releaser.reg.Resource)
+			require.Equal(t, tc.skipConformance, releaser.skipConformance,
+				"conformance is service-only; %s must skip=%v", tc.kind, tc.skipConformance)
+		})
+	}
+}
+
+func TestReleaseAgentCIArgs(t *testing.T) {
+	base := []string{"--timestamps=false", "agent", "ci", "--dir", "/d", "--output", "/o"}
+	require.Equal(t, base, releaseAgentCIArgs("/d", "/o", false, false))
+	require.Equal(t, append(append([]string{}, base...), "--skip-conformance"),
+		releaseAgentCIArgs("/d", "/o", false, true))
+	require.Equal(t, append(append([]string{}, base...), "--native-only"),
+		releaseAgentCIArgs("/d", "/o", true, false))
+	require.Equal(t, append(append([]string{}, base...), "--native-only", "--skip-conformance"),
+		releaseAgentCIArgs("/d", "/o", true, true))
 }
 
 func TestUnsupportedAgentKindFailsClosedWithActionableError(t *testing.T) {

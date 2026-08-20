@@ -471,14 +471,21 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 	if manifest.Publisher == "" || manifest.Kind == "" || manifest.Name == "" || manifest.Version == "" {
 		return agentYAML{}, fmt.Errorf("agent.codefly.yaml must have publisher, kind, name, and version")
 	}
-	if manifest.Kind == "codefly:module" {
-		if !skipConformance {
-			return agentYAML{}, fmt.Errorf("module-agent CI requires --skip-conformance until generated-module conformance is available")
-		}
-		return manifest, nil
-	}
 	if manifest.Kind != serviceAgentKind {
-		return agentYAML{}, fmt.Errorf("agent conformance currently requires kind codefly:service, got %s", manifest.Kind)
+		// Non-service kinds build and audit through the same pipeline as
+		// services, but agent CI has no conformance suite wired in for them
+		// yet, so they must acknowledge the gap with --skip-conformance.
+		// (Providers have a standalone suite in pkg/provider/conformance that
+		// is not yet reachable from here.)
+		switch manifest.Kind {
+		case string(resources.ModuleAgent), string(resources.ToolboxAgent), string(resources.ProviderAgent):
+			if !skipConformance {
+				return agentYAML{}, fmt.Errorf("%s CI requires --skip-conformance until conformance is wired into agent CI for this kind", manifest.Kind)
+			}
+			return manifest, nil
+		default:
+			return agentYAML{}, fmt.Errorf("agent CI supports codefly:service, codefly:module, codefly:toolbox, codefly:provider; got %s", manifest.Kind)
+		}
 	}
 	mode := conformanceMode(manifest)
 	switch mode {

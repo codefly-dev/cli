@@ -248,17 +248,26 @@ func copyFile(src, dst string) (err error) {
 	return err
 }
 
-// runReleaseAgentCI runs release-grade agent CI (native + linux/amd64
-// build, audit, conformance) against the bumped working tree, writing
-// artifacts to output. Output streams live so the operator sees progress;
-// a non-zero exit fails the publish before any tag is pushed.
-func runReleaseAgentCI(ctx context.Context, self, agentDir, output string) error {
-	cmd := exec.CommandContext(ctx, self,
-		"--timestamps=false",
-		"agent", "ci",
-		"--dir", agentDir,
-		"--output", output,
-	)
+// releaseAgentCIArgs builds the `codefly agent ci` argument vector for a
+// release-grade run. Conformance is service-only, so every other kind passes
+// skipConformance; only source-only module agents pass nativeOnly to skip the
+// linux/amd64 build that runtime kinds (service, toolbox, provider) require.
+func releaseAgentCIArgs(agentDir, output string, nativeOnly, skipConformance bool) []string {
+	args := []string{"--timestamps=false", "agent", "ci", "--dir", agentDir, "--output", output}
+	if nativeOnly {
+		args = append(args, "--native-only")
+	}
+	if skipConformance {
+		args = append(args, "--skip-conformance")
+	}
+	return args
+}
+
+// runReleaseAgentCI runs release-grade agent CI against the bumped working
+// tree, writing artifacts to output. Output streams live so the operator sees
+// progress; a non-zero exit fails the publish before any tag is pushed.
+func runReleaseAgentCI(ctx context.Context, self, agentDir, output string, nativeOnly, skipConformance bool) error {
+	cmd := exec.CommandContext(ctx, self, releaseAgentCIArgs(agentDir, output, nativeOnly, skipConformance)...)
 	cmd.Dir = agentDir
 	cmd.Env = os.Environ()
 	cmd.Stdout = os.Stdout
@@ -374,15 +383,16 @@ func assertAssetReachable(ctx context.Context, url string) error {
 // single agent repo. It owns the temporary CI-output and asset-staging
 // directories; the caller defers cleanup after Engine.Release returns.
 type agentReleaser struct {
-	self      string
-	agentDir  string
-	workDir   string
-	reg       resources.AgentKindRegistration
-	publisher string
-	name      string
-	ciOutput  string
-	stageDir  string
-	assets    []loaderAsset
+	self            string
+	agentDir        string
+	workDir         string
+	reg             resources.AgentKindRegistration
+	skipConformance bool
+	publisher       string
+	name            string
+	ciOutput        string
+	stageDir        string
+	assets          []loaderAsset
 }
 
 type releaseGate interface {
@@ -425,7 +435,7 @@ func newAgentReleaseGate(agentDir, workDir string) (releaseGate, error) {
 	case loaderAssetKinds[identity.Kind]:
 		return newAgentReleaser(agentDir, workDir)
 	case sourceTagKinds[identity.Kind]:
-		return newSourceTagReleaser(agentDir)
+		return newSourceTagReleaser(agentDir, identity.Kind == string(resources.ModuleAgent))
 	default:
 		return nil, unsupportedReleaseKindError(identity.Kind)
 	}
@@ -447,16 +457,21 @@ func checkAgentReleasePreconditionsForManifest(path string) error {
 }
 
 // unsupportedReleaseKindError enumerates the kinds publish can release so the
-// failure is actionable. Job, application, and solution agents are declared by
-// core but have no release path yet — the gap is a recorded decision, not an
-// oversight.
+// failure is actionable. The list is derived from the routing maps so it
+// cannot drift from what the gate actually accepts. Job, application, and
+// solution agents are declared by core but have no release path yet — the gap
+// is a recorded decision, not an oversight.
 func unsupportedReleaseKindError(kind string) error {
-	supported := []string{
-		string(resources.ServiceAgent),
-		string(resources.ToolboxAgent),
-		string(resources.ModuleAgent),
-		string(resources.ProviderAgent),
+	var supported []string
+	for k := range loaderAssetKinds {
+		if k != "" { // the empty-string alias for service is not a nameable kind
+			supported = append(supported, k)
+		}
 	}
+	for k := range sourceTagKinds {
+		supported = append(supported, k)
+	}
+	sort.Strings(supported)
 	return fmt.Errorf("publish supports %s; got %q", strings.Join(supported, ", "), kind)
 }
 
@@ -490,14 +505,15 @@ func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
 		return nil, err
 	}
 	return &agentReleaser{
-		self:      self,
-		agentDir:  agentDir,
-		workDir:   workDir,
-		reg:       reg,
-		publisher: identity.Publisher,
-		name:      identity.Name,
-		ciOutput:  ciOutput,
-		stageDir:  stageDir,
+		self:            self,
+		agentDir:        agentDir,
+		workDir:         workDir,
+		reg:             reg,
+		skipConformance: reg.Resource != resources.ServiceAgent,
+		publisher:       identity.Publisher,
+		name:            identity.Name,
+		ciOutput:        ciOutput,
+		stageDir:        stageDir,
 	}, nil
 }
 
@@ -513,7 +529,7 @@ func (r *agentReleaser) cleanup() {
 
 func (r *agentReleaser) beforeCommit(ctx context.Context, newTag string) error {
 	version := strings.TrimPrefix(newTag, "v")
-	if err := runReleaseAgentCI(ctx, r.self, r.agentDir, r.ciOutput); err != nil {
+	if err := runReleaseAgentCI(ctx, r.self, r.agentDir, r.ciOutput, false, r.skipConformance); err != nil {
 		return err
 	}
 	assets, err := collectLoaderAssets(r.reg, r.ciOutput, r.name, version, r.stageDir)
@@ -535,15 +551,19 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 // sourceTagReleaser publishes an immutable source release: it runs
 // source/build/audit CI against the bumped tree and then lets the Engine push
 // the signed Git tag, uploading no release assets. Used by module agents
-// (consumed by `codefly sync module`) and provider agents (resolved as
-// verified artifacts built from the tagged source).
+// (source-only, consumed by `codefly sync module`) and provider agents
+// (verified artifacts built from the tagged source). Modules build native-only
+// because nothing consumes a module binary; providers are runtime agents whose
+// consumers build the tagged source for linux, so they build every platform to
+// catch a linux-only break before the immutable tag.
 type sourceTagReleaser struct {
-	self     string
-	agentDir string
-	output   string
+	self       string
+	agentDir   string
+	output     string
+	nativeOnly bool
 }
 
-func newSourceTagReleaser(agentDir string) (*sourceTagReleaser, error) {
+func newSourceTagReleaser(agentDir string, nativeOnly bool) (*sourceTagReleaser, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve codefly executable: %w", err)
@@ -552,7 +572,7 @@ func newSourceTagReleaser(agentDir string) (*sourceTagReleaser, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &sourceTagReleaser{self: self, agentDir: agentDir, output: output}, nil
+	return &sourceTagReleaser{self: self, agentDir: agentDir, output: output, nativeOnly: nativeOnly}, nil
 }
 
 func (r *sourceTagReleaser) attach(engine *Engine) {
@@ -564,22 +584,7 @@ func (r *sourceTagReleaser) cleanup() {
 }
 
 func (r *sourceTagReleaser) beforeCommit(ctx context.Context, _ string) error {
-	cmd := exec.CommandContext(ctx, r.self,
-		"--timestamps=false",
-		"agent", "ci",
-		"--dir", r.agentDir,
-		"--output", r.output,
-		"--native-only",
-		"--skip-conformance",
-	)
-	cmd.Dir = r.agentDir
-	cmd.Env = os.Environ()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("release-grade source-agent CI failed: %w", err)
-	}
-	return nil
+	return runReleaseAgentCI(ctx, r.self, r.agentDir, r.output, r.nativeOnly, true)
 }
 
 func readAgentIdentity(path string) (agentIdentity, error) {
