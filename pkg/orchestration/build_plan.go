@@ -77,7 +77,10 @@ func (b *Builder) buildRecipe(
 			recipe.GetName(), b.instance.Unique(), recipe.GetPlatforms(), deploymentImageArchitecture, deploymentImageArchitecture,
 		)
 	}
-	dockerfile := filepath.Join(outputDir, filepath.FromSlash(recipe.GetDockerfile()))
+	dockerfile, err := recipeDockerfile(outputDir, recipe)
+	if err != nil {
+		return w.Wrapf(err, "cannot resolve dockerfile for recipe %s of %s", recipe.GetName(), b.instance.Unique())
+	}
 	contextDir, err := recipeContext(serviceDir, recipe)
 	if err != nil {
 		return w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
@@ -178,6 +181,20 @@ func platformsIncludeDeploymentArch(platforms []string) bool {
 		}
 	}
 	return false
+}
+
+// recipeDockerfile resolves a recipe's Dockerfile within the emitted recipe tree
+// and rejects a path that escapes it. VerifyDockerBuildPlan digests only the file
+// tree, not the recipe fields, so an unconstrained dockerfile could point
+// buildx -f at an out-of-tree file — the same escape recipeContext guards for the
+// build context.
+func recipeDockerfile(outputDir string, recipe *builderv0.DockerBuildRecipe) (string, error) {
+	dockerfile := filepath.Join(outputDir, filepath.FromSlash(recipe.GetDockerfile()))
+	rel, err := filepath.Rel(outputDir, dockerfile)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("recipe dockerfile %q escapes the recipe directory", recipe.GetDockerfile())
+	}
+	return dockerfile, nil
 }
 
 // recipeContext resolves a recipe's build context and rejects a context that

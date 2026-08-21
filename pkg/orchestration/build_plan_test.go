@@ -60,6 +60,18 @@ func TestPlatformsIncludeDeploymentArch(t *testing.T) {
 	require.False(t, platformsIncludeDeploymentArch(nil))
 }
 
+func TestRecipeDockerfileResolvesAndContains(t *testing.T) {
+	outputDir := filepath.FromSlash("/work/services/store/builder")
+
+	got, err := recipeDockerfile(outputDir, &builderv0.DockerBuildRecipe{Dockerfile: "Dockerfile"})
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(outputDir, "Dockerfile"), got)
+
+	// A recipe must not point buildx -f at a file outside the recipe tree.
+	_, err = recipeDockerfile(outputDir, &builderv0.DockerBuildRecipe{Dockerfile: "../../../../etc/passwd"})
+	require.Error(t, err)
+}
+
 func TestRecipeContextResolvesAndContains(t *testing.T) {
 	serviceDir := "/work/services/store"
 
