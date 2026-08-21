@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
+	coresbom "github.com/codefly-dev/core/agents/services/sbom"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/wool"
 )
@@ -49,7 +50,61 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 			return err
 		}
 	}
+	// A pushed image is release evidence: emit the service SBOM alongside the
+	// recipe so the durable artifact carries both the reproducible Dockerfile and
+	// its CycloneDX SBOM.
+	if shouldPush {
+		if err := b.recordServiceSBOM(ctx, outputDir, plan); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// recordServiceSBOM asks the agent for the service SBOM and writes it beside the
+// recipe (<recipe-dir>/sbom.cdx.json), so the emitted build artifact carries the
+// Dockerfile and its SBOM together. It is skipped when the agent does not
+// support SBOM generation.
+func (b *Builder) recordServiceSBOM(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan) error {
+	w := wool.Get(ctx).In("Builder.recordServiceSBOM", wool.ThisField(b.instance))
+	if _, supported := ValidationOperationSupport(b.instance.Info, ValidationSBOM); !supported {
+		w.Debug("agent does not support SBOM generation; skipping")
+		return nil
+	}
+	resp, err := b.instance.Builder.SBOM(ctx, &builderv0.SBOMRequest{})
+	if err != nil {
+		return w.Wrapf(err, "cannot generate SBOM for %s", b.instance.Unique())
+	}
+	payload, err := coresbom.MarshalCycloneDXJSON(resp.GetBom())
+	if err != nil {
+		return w.Wrapf(err, "cannot encode SBOM for %s", b.instance.Unique())
+	}
+	target := serviceSBOMPath(outputDir, plan)
+	output, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return w.Wrapf(err, "cannot write SBOM for %s", b.instance.Unique())
+	}
+	_, writeErr := output.Write(append(payload, '\n'))
+	closeErr := output.Close()
+	if writeErr != nil {
+		return w.Wrapf(writeErr, "cannot write SBOM for %s", b.instance.Unique())
+	}
+	if closeErr != nil {
+		return w.Wrapf(closeErr, "cannot write SBOM for %s", b.instance.Unique())
+	}
+	w.Debug("recorded service SBOM", wool.Field("path", target))
+	return nil
+}
+
+// serviceSBOMPath places the SBOM next to the recipe's Dockerfile so both travel
+// together, deriving the directory from the emitted recipe rather than assuming
+// a fixed builder/ layout.
+func serviceSBOMPath(outputDir string, plan *builderv0.DockerBuildPlan) string {
+	dir := "."
+	if recipes := plan.GetRecipes(); len(recipes) > 0 {
+		dir = filepath.Dir(filepath.FromSlash(recipes[0].GetDockerfile()))
+	}
+	return filepath.Join(outputDir, dir, "sbom.cdx.json")
 }
 
 // buildRecipe builds and (when pushing) publishes one recipe. It refuses to push

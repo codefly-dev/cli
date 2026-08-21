@@ -145,6 +145,22 @@ func TestReadPushedImageDigest(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestServiceSBOMPathSitsBesideTheDockerfile(t *testing.T) {
+	plan := &builderv0.DockerBuildPlan{
+		Recipes: []*builderv0.DockerBuildRecipe{{Name: "app", Dockerfile: "builder/Dockerfile"}},
+	}
+	require.Equal(t, filepath.Join("/svc", "builder", "sbom.cdx.json"), serviceSBOMPath("/svc", plan))
+
+	// A recipe rooted at the service dir puts the SBOM at the service root.
+	rootPlan := &builderv0.DockerBuildPlan{
+		Recipes: []*builderv0.DockerBuildRecipe{{Name: "app", Dockerfile: "Dockerfile"}},
+	}
+	require.Equal(t, filepath.Join("/svc", "sbom.cdx.json"), serviceSBOMPath("/svc", rootPlan))
+
+	// An empty plan falls back to the service root without panicking.
+	require.Equal(t, filepath.Join("/svc", "sbom.cdx.json"), serviceSBOMPath("/svc", &builderv0.DockerBuildPlan{}))
+}
+
 func TestBuildRecipeOutputDirectoryIsAbsoluteServiceDir(t *testing.T) {
 	serviceDir := t.TempDir()
 	outputDir, err := buildRecipeOutputDirectory(serviceDir)
