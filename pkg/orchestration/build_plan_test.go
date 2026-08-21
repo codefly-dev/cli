@@ -145,14 +145,14 @@ func TestReadPushedImageDigest(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestBuildRecipeOutputDirectoryIsAbsoluteAndDoesNotCreate(t *testing.T) {
+func TestBuildRecipeOutputDirectoryIsAbsoluteServiceDir(t *testing.T) {
 	serviceDir := t.TempDir()
 	outputDir, err := buildRecipeOutputDirectory(serviceDir)
 	require.NoError(t, err)
 	require.True(t, filepath.IsAbs(outputDir))
-	require.Equal(t, filepath.Join(serviceDir, buildRecipeDir), outputDir)
-	// The CLI must not create builder/ — a legacy agent that ignores the field
-	// must not have an empty directory left behind.
-	_, statErr := os.Stat(outputDir)
-	require.True(t, os.IsNotExist(statErr))
+	// output_directory is the service directory itself: the build context and the
+	// recipe-tree root the agent emits builder/Dockerfile into and the CLI verifies.
+	abs, err := filepath.Abs(serviceDir)
+	require.NoError(t, err)
+	require.Equal(t, abs, outputDir)
 }

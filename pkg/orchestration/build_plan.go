@@ -16,17 +16,10 @@ import (
 	"github.com/codefly-dev/core/wool"
 )
 
-const (
-	// buildRecipeDir is the service-relative directory an agent emits its build
-	// recipes into. It is the committed, durable location a consumer rebuilds from
-	// (docker buildx -f services/<svc>/builder/Dockerfile services/<svc>), and the
-	// Dockerfiles COPY builder/… paths relative to the service-directory context.
-	buildRecipeDir = "builder"
-	// buildxBuilderName is the dedicated docker-container buildx builder the CLI
-	// creates for multi-platform builds. The default buildx builder uses the
-	// "docker" driver, which cannot build multiple platforms.
-	buildxBuilderName = "codefly"
-)
+// buildxBuilderName is the dedicated docker-container buildx builder the CLI
+// creates for multi-platform builds. The default buildx builder uses the
+// "docker" driver, which cannot build multiple platforms.
+const buildxBuilderName = "codefly"
 
 // buildFromPlan owns the docker build the agent used to run in-process. It
 // verifies the recipe tree the agent emitted, then runs docker buildx for each
@@ -51,9 +44,8 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 			return w.NewError("snapshot build for %s requires push to resolve an immutable image digest", b.instance.Unique())
 		}
 	}
-	serviceDir := b.instance.Service.Dir()
 	for _, recipe := range recipes {
-		if err := b.buildRecipe(ctx, w, outputDir, serviceDir, recipe, shouldPush); err != nil {
+		if err := b.buildRecipe(ctx, w, outputDir, recipe, shouldPush); err != nil {
 			return err
 		}
 	}
@@ -67,7 +59,7 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 func (b *Builder) buildRecipe(
 	ctx context.Context,
 	w *wool.Wool,
-	outputDir, serviceDir string,
+	outputDir string,
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
 ) error {
@@ -81,7 +73,7 @@ func (b *Builder) buildRecipe(
 	if err != nil {
 		return w.Wrapf(err, "cannot resolve dockerfile for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
-	contextDir, err := recipeContext(serviceDir, recipe)
+	contextDir, err := recipeContext(outputDir, recipe)
 	if err != nil {
 		return w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
@@ -299,9 +291,10 @@ func readPushedImageDigest(metadataFile string) (string, error) {
 }
 
 // buildRecipeOutputDirectory is the absolute destination the caller asks the
-// agent to emit recipes into: the committed builder/ directory under the
-// service. It does not create the directory — the emitting agent owns writing
-// there, so a legacy agent that ignores the field leaves no empty directory.
+// agent to emit recipes into: the service directory itself. It is the build
+// context and the recipe tree root — recipes reference builder/Dockerfile and a
+// "." context relative to it, and the digest inventory covers it. It does not
+// create the directory (it already exists as the service dir).
 func buildRecipeOutputDirectory(serviceDir string) (string, error) {
-	return filepath.Abs(filepath.Join(serviceDir, buildRecipeDir))
+	return filepath.Abs(serviceDir)
 }
