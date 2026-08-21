@@ -223,7 +223,15 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
 
-	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: builder.BuildContextFromDocker(dockerContext)})
+	outputDir, err := buildRecipeOutputDirectory(b.instance.Service.Dir())
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot prepare build recipe directory")
+	}
+
+	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{
+		BuildContext:    builder.BuildContextFromDocker(dockerContext),
+		OutputDirectory: outputDir,
+	})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot call build")
 	}
@@ -245,7 +253,13 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
-	if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
+	// A build plan means the agent emitted recipes and the CLI owns the docker
+	// build; otherwise the agent built in-process (legacy) and the CLI only pushes.
+	if plan := resp.Result.GetDockerBuildPlan(); plan != nil {
+		if err = b.buildFromPlan(ctx, outputDir, plan); err != nil {
+			return nil, err
+		}
+	} else if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
 		if push.Load() {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.Images {
