@@ -15,6 +15,10 @@ import (
 	"github.com/Masterminds/semver"
 )
 
+// gitDir is the directory git owns in a working tree. It is never part of
+// published content: skipped when staging a source tree and when digesting.
+const gitDir = ".git"
+
 // GitHubStore publishes each library export to its own GitHub repository, tagged
 // with a semantic version. A Go export published this way is resolvable by
 // `go get github.com/<owner>/<name>-go@vX.Y.Z` with no codefly toolchain, since
@@ -63,11 +67,26 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	if c.Language != LanguageGo {
 		return Published{}, fmt.Errorf("librarystore: publishing %s libraries is not implemented yet", c.Language)
 	}
-	if _, err := semver.NewVersion(strings.TrimPrefix(c.Version, "v")); err != nil {
+	version, err := semver.NewVersion(strings.TrimPrefix(c.Version, "v"))
+	if err != nil {
 		return Published{}, fmt.Errorf("librarystore: %q is not a semantic version: %w", c.Version, err)
 	}
+	c.Version = version.String()
 	remote := s.remoteFor(c.Language, c.Name)
+	importPath := goModulePath(remote)
 	tag := versionTag(c.Version)
+
+	// The product promise is that consumers run `go get <importPath>@<tag>`. That
+	// only works when the published go.mod declares exactly that module path, so a
+	// mismatch must fail here, at publish time — after the tag lands the version
+	// is immutable and a broken release could never be corrected.
+	if err = validateGoModulePath(artifactDir, importPath); err != nil {
+		return Published{}, err
+	}
+	digest, err := treeDigest(artifactDir)
+	if err != nil {
+		return Published{}, err
+	}
 
 	work, err := os.MkdirTemp("", "codefly-library-publish-*")
 	if err != nil {
@@ -76,18 +95,14 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	defer os.RemoveAll(work)
 
 	if err = s.git(ctx, "", "clone", "--quiet", remote, work); err != nil {
-		return Published{}, fmt.Errorf("clone %s: %w", remote, err)
+		return Published{}, fmt.Errorf("clone %s (create the library repository first if it does not exist yet): %w", remote, err)
 	}
 	if s.tagExists(ctx, work, tag) {
 		return Published{}, fmt.Errorf("librarystore: %s %s is already published (versions are immutable)", c.Name, tag)
 	}
-	// A fresh library repository is an unborn branch; an existing one already has
-	// main. checkout -b creates it on the first publish, checkout switches to it
-	// afterwards.
-	if err = s.git(ctx, work, "checkout", "main"); err != nil {
-		if createErr := s.git(ctx, work, "checkout", "-b", "main"); createErr != nil {
-			return Published{}, fmt.Errorf("prepare main branch: %w", createErr)
-		}
+	branch, err := s.defaultBranch(ctx, work)
+	if err != nil {
+		return Published{}, err
 	}
 	if err = replaceTrackedTree(work, artifactDir); err != nil {
 		return Published{}, fmt.Errorf("stage artifact: %w", err)
@@ -96,9 +111,11 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		return Published{}, err
 	}
 	message := fmt.Sprintf("release %s %s", c.Name, tag)
+	// --allow-empty: a release whose content is identical to the previous one
+	// (a version bump with no code change) is a valid release, not an error.
 	if err = s.git(ctx, work,
 		"-c", "user.name="+s.commitName, "-c", "user.email="+s.commitEmail,
-		"commit", "--quiet", "-m", message); err != nil {
+		"commit", "--quiet", "--allow-empty", "-m", message); err != nil {
 		return Published{}, fmt.Errorf("commit release: %w", err)
 	}
 	if err = s.git(ctx, work,
@@ -106,7 +123,7 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		"tag", "-a", tag, "-m", message); err != nil {
 		return Published{}, fmt.Errorf("tag release: %w", err)
 	}
-	if err = s.git(ctx, work, "push", "--quiet", "origin", "main"); err != nil {
+	if err = s.git(ctx, work, "push", "--quiet", "origin", branch); err != nil {
 		return Published{}, fmt.Errorf("push branch: %w", err)
 	}
 	if err = s.git(ctx, work, "push", "--quiet", "origin", tag); err != nil {
@@ -116,66 +133,132 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	if err != nil {
 		return Published{}, err
 	}
-	digest, err := treeDigest(artifactDir)
-	if err != nil {
-		return Published{}, err
-	}
 	return s.published(c, remote, strings.TrimSpace(commit), digest), nil
+}
+
+// validateGoModulePath requires the artifact's go.mod to declare importPath as
+// its module path — the identity consumers will `go get`.
+func validateGoModulePath(artifactDir, importPath string) error {
+	data, err := os.ReadFile(filepath.Join(artifactDir, "go.mod"))
+	if err != nil {
+		return fmt.Errorf("librarystore: a Go library export must contain a go.mod: %w", err)
+	}
+	declared, err := parseGoModulePath(data)
+	if err != nil {
+		return fmt.Errorf("librarystore: invalid go.mod: %w", err)
+	}
+	if declared != importPath {
+		return fmt.Errorf(
+			"librarystore: go.mod declares module %q but consumers will require %q; the export must be rewritten to the published module path before publishing",
+			declared,
+			importPath,
+		)
+	}
+	return nil
+}
+
+func parseGoModulePath(data []byte) (string, error) {
+	for _, line := range strings.Split(string(data), "\n") {
+		if index := strings.Index(line, "//"); index >= 0 {
+			line = line[:index]
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "module" {
+			return strings.Trim(fields[1], `"`), nil
+		}
+	}
+	return "", fmt.Errorf("no module directive")
 }
 
 func (s *GitHubStore) Resolve(ctx context.Context, language Language, name, constraint string) (Published, error) {
 	if language != LanguageGo {
 		return Published{}, fmt.Errorf("librarystore: resolving %s libraries is not implemented yet", language)
 	}
-	versions, err := s.List(ctx, language, name)
+	remote := s.remoteFor(language, name)
+	tagged, err := s.listTagged(ctx, remote)
 	if err != nil {
 		return Published{}, err
 	}
-	if len(versions) == 0 {
+	if len(tagged) == 0 {
 		return Published{}, fmt.Errorf("librarystore: no published versions of %s", name)
 	}
 	check, err := semver.NewConstraint(strings.TrimSpace(constraint))
 	if err != nil {
 		return Published{}, fmt.Errorf("librarystore: invalid version constraint %q: %w", constraint, err)
 	}
-	var best *semver.Version
-	for _, candidate := range versions {
-		v, parseErr := semver.NewVersion(candidate)
-		if parseErr != nil {
-			continue
-		}
-		if check.Check(v) && (best == nil || v.GreaterThan(best)) {
-			best = v
+	var best *taggedVersion
+	for index := range tagged {
+		candidate := &tagged[index]
+		if check.Check(candidate.version) && (best == nil || candidate.version.GreaterThan(best.version)) {
+			best = candidate
 		}
 	}
 	if best == nil {
 		return Published{}, fmt.Errorf("librarystore: no published version of %s satisfies %q", name, constraint)
 	}
-	remote := s.remoteFor(language, name)
-	commit, err := s.output(ctx, "", "ls-remote", remote, "refs/tags/"+versionTag(best.String())+"^{}")
+	if !isCommitHash(best.ref) {
+		return Published{}, fmt.Errorf("librarystore: tag %s of %s resolves to invalid commit %q", versionTag(best.version.String()), name, best.ref)
+	}
+	digest, err := s.digestAtTag(ctx, remote, versionTag(best.version.String()))
 	if err != nil {
 		return Published{}, err
 	}
-	ref := strings.TrimSpace(strings.SplitN(strings.TrimSpace(commit), "\t", 2)[0])
-	return s.published(Coordinates{Language: language, Name: name, Version: best.String()}, remote, ref, ""), nil
+	coordinates := Coordinates{Language: language, Name: name, Version: best.version.String()}
+	return s.published(coordinates, remote, best.ref, digest), nil
 }
 
 func (s *GitHubStore) List(ctx context.Context, language Language, name string) ([]string, error) {
 	if language != LanguageGo {
 		return nil, fmt.Errorf("librarystore: listing %s libraries is not implemented yet", language)
 	}
-	remote := s.remoteFor(language, name)
+	tagged, err := s.listTagged(ctx, s.remoteFor(language, name))
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(tagged))
+	for _, entry := range tagged {
+		result = append(result, entry.version.String())
+	}
+	return result, nil
+}
+
+// taggedVersion is one published semver tag with the commit it resolves to.
+type taggedVersion struct {
+	version *semver.Version
+	ref     string
+}
+
+// listTagged reads the remote's semver tags and their commits in one ls-remote,
+// newest first. Capturing the commit here — instead of a second ls-remote at
+// resolve time — removes the window in which the tag set could change between
+// listing and commit lookup.
+func (s *GitHubStore) listTagged(ctx context.Context, remote string) ([]taggedVersion, error) {
 	out, err := s.output(ctx, "", "ls-remote", "--tags", remote)
 	if err != nil {
 		return nil, err
 	}
-	var versions []*semver.Version
+	return parseTagListing(out), nil
+}
+
+// parseTagListing extracts semver tags from `ls-remote --tags` output. An
+// annotated tag appears twice — the tag object and the peeled `^{}` commit —
+// and the peeled commit wins; a lightweight tag appears once and its hash is
+// already the commit.
+func parseTagListing(out string) []taggedVersion {
+	type entry struct {
+		version *semver.Version
+		ref     string
+		peeled  bool
+	}
+	byVersion := map[string]entry{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
 			continue
 		}
-		ref := strings.TrimSuffix(fields[1], "^{}")
+		ref := fields[1]
+		peeled := strings.HasSuffix(ref, "^{}")
+		ref = strings.TrimSuffix(ref, "^{}")
 		tag := strings.TrimPrefix(ref, "refs/tags/")
 		if tag == ref || !strings.HasPrefix(tag, "v") {
 			continue
@@ -184,20 +267,41 @@ func (s *GitHubStore) List(ctx context.Context, language Language, name string) 
 		if err != nil {
 			continue
 		}
-		versions = append(versions, v)
-	}
-	sort.Slice(versions, func(i, j int) bool { return versions[i].GreaterThan(versions[j]) })
-	seen := map[string]struct{}{}
-	result := make([]string, 0, len(versions))
-	for _, v := range versions {
 		key := v.String()
-		if _, ok := seen[key]; ok {
+		if existing, ok := byVersion[key]; ok && existing.peeled && !peeled {
 			continue
 		}
-		seen[key] = struct{}{}
-		result = append(result, key)
+		byVersion[key] = entry{version: v, ref: fields[0], peeled: peeled}
 	}
-	return result, nil
+	result := make([]taggedVersion, 0, len(byVersion))
+	for _, e := range byVersion {
+		result = append(result, taggedVersion{version: e.version, ref: e.ref})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].version.GreaterThan(result[j].version) })
+	return result
+}
+
+func isCommitHash(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+// digestAtTag computes the content digest of a published version from a shallow
+// clone at its tag, so Resolve honors the Published digest contract with the
+// same value Publish recorded.
+func (s *GitHubStore) digestAtTag(ctx context.Context, remote, tag string) (string, error) {
+	work, err := os.MkdirTemp("", "codefly-library-resolve-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(work)
+	if err := s.git(ctx, "", "clone", "--quiet", "--depth", "1", "--branch", tag, remote, work); err != nil {
+		return "", fmt.Errorf("fetch %s at %s: %w", remote, tag, err)
+	}
+	return treeDigest(work)
 }
 
 func (s *GitHubStore) published(c Coordinates, remote, ref, digest string) Published {
@@ -215,6 +319,18 @@ func (s *GitHubStore) published(c Coordinates, remote, ref, digest string) Publi
 
 func (s *GitHubStore) tagExists(ctx context.Context, dir, tag string) bool {
 	return s.git(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/tags/"+tag) == nil
+}
+
+// defaultBranch reports the branch the clone checked out — the remote's default
+// branch, or the unborn initial branch of an empty repository. Publishing on it
+// (rather than forcing "main") keeps the published repository's branch layout
+// matching its GitHub default.
+func (s *GitHubStore) defaultBranch(ctx context.Context, work string) (string, error) {
+	out, err := s.output(ctx, work, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve default branch: %w", err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func (s *GitHubStore) git(ctx context.Context, dir string, args ...string) error {
@@ -246,31 +362,65 @@ func gitArgs(dir string, args []string) []string {
 // replaceTrackedTree makes the working tree's tracked content equal source: it
 // removes every entry except .git, then copies source in. This keeps a release
 // commit an exact snapshot of the packaged export, dropping files a prior
-// version had and this one does not. os.CopyFS copies regular files and
-// directories and rejects symlinks, so a published export is self-contained.
+// version had and this one does not. A .git directory inside source (a library
+// that is itself a git checkout) is skipped — copying it would interleave with
+// and corrupt the clone's own .git — and symlinks are rejected so a published
+// export is self-contained.
 func replaceTrackedTree(work, source string) error {
 	entries, err := os.ReadDir(work)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() == ".git" {
+		if entry.Name() == gitDir {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(work, entry.Name())); err != nil {
 			return err
 		}
 	}
-	return os.CopyFS(work, os.DirFS(source))
+	fsys := os.DirFS(source)
+	return fs.WalkDir(fsys, ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == "." {
+			return nil
+		}
+		target := filepath.Join(work, filepath.FromSlash(path))
+		if entry.IsDir() {
+			if entry.Name() == gitDir {
+				return fs.SkipDir
+			}
+			return os.MkdirAll(target, 0o755)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("%s: only regular files and directories may be published", path)
+		}
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 }
 
 // treeDigest is a deterministic sha256 over the regular files under root, keyed
-// by slash-separated relative path, so an identical export yields an identical
-// digest. It reads through a root-scoped filesystem, so a symlink cannot escape
-// root during the walk.
+// by slash-separated relative path and the git-normalized file mode. Git
+// preserves only the executable bit through publish and clone, so the digest
+// folds each mode to 755/644 — capturing an executable-bit flip (a real change,
+// per the docker-build-recipe v2 contract) while staying identical between the
+// publish-side source tree and a resolve-side clone. Any .git directory is
+// excluded: it is never part of the published content. Reads go through a
+// root-scoped filesystem, so a symlink cannot escape root during the walk.
 func treeDigest(root string) (string, error) {
 	type entry struct {
 		path   string
+		mode   string
 		digest [32]byte
 	}
 	fsys := os.DirFS(root)
@@ -279,14 +429,28 @@ func treeDigest(root string) (string, error) {
 		if err != nil {
 			return err
 		}
-		if dirEntry.IsDir() || !dirEntry.Type().IsRegular() {
+		if dirEntry.IsDir() {
+			if dirEntry.Name() == gitDir {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !dirEntry.Type().IsRegular() {
 			return nil
 		}
 		data, err := fs.ReadFile(fsys, path)
 		if err != nil {
 			return err
 		}
-		entries = append(entries, entry{path: path, digest: sha256.Sum256(data)})
+		info, err := dirEntry.Info()
+		if err != nil {
+			return err
+		}
+		mode := "644"
+		if info.Mode()&0o111 != 0 {
+			mode = "755"
+		}
+		entries = append(entries, entry{path: path, mode: mode, digest: sha256.Sum256(data)})
 		return nil
 	})
 	if err != nil {
@@ -295,7 +459,7 @@ func treeDigest(root string) (string, error) {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
 	hasher := sha256.New()
 	for _, e := range entries {
-		fmt.Fprintf(hasher, "%s\x00%s\n", e.path, hex.EncodeToString(e.digest[:]))
+		fmt.Fprintf(hasher, "%s\x00%s\x00%s\n", e.path, e.mode, hex.EncodeToString(e.digest[:]))
 	}
 	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
