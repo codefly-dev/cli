@@ -133,13 +133,16 @@ func TestGitHubStoreRejectsModulePathMismatchBeforeTouchingTheRemote(t *testing.
 	require.Contains(t, err.Error(), "go.mod")
 }
 
-func TestGitHubStorePublishIgnoresAmbientSigningConfig(t *testing.T) {
+func TestGitHubStorePublishIgnoresAmbientSigningAndHookConfig(t *testing.T) {
 	ctx := context.Background()
-	// A global git config that forces signing with a bogus program would make an
-	// unguarded commit or tag fail; Publish must override it per-invocation.
+	// A global git config that forces signing with a bogus program, or points
+	// core.hooksPath at a hook that fails outside the user's own projects,
+	// would break an unguarded commit or tag; Publish must neutralize both.
+	hooks := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755))
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(globalConfig,
-		[]byte("[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n[gpg]\n\tprogram = /bin/false\n"), 0o644))
+		[]byte("[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n[gpg]\n\tprogram = /bin/false\n[core]\n\thooksPath = "+hooks+"\n"), 0o644))
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 
@@ -159,8 +162,35 @@ func TestGitHubStoreRejectsNonSemverAndUnsupportedLanguages(t *testing.T) {
 	_, err := store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageGo, Name: "authkit", Version: "latest"})
 	require.Error(t, err)
 
+	// Build metadata is valid semver but not a valid Go module version: the go
+	// command discards it, so the tag could never be fetched once pushed.
+	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0+build.1"})
+	require.ErrorContains(t, err, "build metadata")
+
 	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguagePython, Name: "authkit", Version: "1.0.0"})
 	require.ErrorContains(t, err, "not implemented")
+}
+
+func TestGitHubStoreRejectsUnsafeCoordinates(t *testing.T) {
+	ctx := context.Background()
+	// The default remoteFor is kept: validation must fire before any remote is
+	// contacted, so a traversal name never reaches a git command at all.
+	store := NewGitHubStore("codefly-dev")
+
+	// git's HTTP client normalizes "owner/../../evil/repo" to a different
+	// repository, so a crafted name would redirect a credentialed publish.
+	_, err := store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageGo, Name: "../../evil/lib", Version: "1.0.0"})
+	require.ErrorContains(t, err, "invalid library name")
+	_, err = store.Resolve(ctx, LanguageGo, "../../evil/lib", "^1.0.0")
+	require.ErrorContains(t, err, "invalid library name")
+	_, err = store.List(ctx, LanguageGo, "--upload-pack=evil")
+	require.ErrorContains(t, err, "invalid library name")
+	_, err = store.List(ctx, LanguageGo, "a..b")
+	require.ErrorContains(t, err, "invalid library name")
+
+	store.Owner = "codefly-dev/../evil"
+	_, err = store.List(ctx, LanguageGo, "authkit")
+	require.ErrorContains(t, err, "invalid owner")
 }
 
 func TestReplaceTrackedTreeSkipsSourceGitAndPreservesCloneGit(t *testing.T) {
@@ -190,24 +220,79 @@ func TestReplaceTrackedTreeSkipsSourceGitAndPreservesCloneGit(t *testing.T) {
 	require.Equal(t, "package lib\n", string(data))
 }
 
+func TestTreeDigestAgreesAcrossLineEndingConfig(t *testing.T) {
+	ctx := context.Background()
+	store := NewGitHubStore("codefly-dev")
+
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+
+	// Publish side: core.autocrlf=input stores an LF blob while the working
+	// tree keeps CRLF bytes. A digest over working-tree bytes would differ from
+	// a plain clone's LF checkout; a digest over blob IDs cannot.
+	pub := t.TempDir()
+	run(pub, "init", "--quiet")
+	run(pub, "config", "core.autocrlf", "input")
+	run(pub, "config", "user.email", "t@t")
+	run(pub, "config", "user.name", "t")
+	run(pub, "config", "commit.gpgsign", "false")
+	require.NoError(t, os.WriteFile(filepath.Join(pub, "lib.go"), []byte("package x\r\n"), 0o644))
+	run(pub, "add", "-A")
+	run(pub, "commit", "--quiet", "-m", "x")
+
+	clone := filepath.Join(t.TempDir(), "clone")
+	run(pub, "clone", "--quiet", "-c", "core.autocrlf=false", pub, clone)
+
+	dPub, err := store.treeDigest(ctx, pub)
+	require.NoError(t, err)
+	dClone, err := store.treeDigest(ctx, clone)
+	require.NoError(t, err)
+	require.Equal(t, dPub, dClone)
+}
+
+func TestOutputSurfacesGitStderr(t *testing.T) {
+	ctx := context.Background()
+	store := storeTo(filepath.Join(t.TempDir(), "missing.git"))
+
+	// A failing ls-remote must carry git's own diagnosis, not an opaque
+	// "exit status 128" that hides an auth failure from a typo'd remote.
+	_, err := store.List(ctx, LanguageGo, "authkit")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "repository")
+}
+
 func TestParseTagListingPeeledWinsAndLightweightFallsBack(t *testing.T) {
 	annotatedObject := strings.Repeat("a", 40)
 	annotatedCommit := strings.Repeat("b", 40)
 	lightweightCommit := strings.Repeat("c", 40)
+	nonCanonicalCommit := strings.Repeat("f", 40)
 	out := annotatedObject + "\trefs/tags/v1.0.0\n" +
 		annotatedCommit + "\trefs/tags/v1.0.0^{}\n" +
 		lightweightCommit + "\trefs/tags/v2.0.0\n" +
 		strings.Repeat("d", 40) + "\trefs/heads/main\n" +
-		strings.Repeat("e", 40) + "\trefs/tags/not-semver\n"
+		strings.Repeat("e", 40) + "\trefs/tags/not-semver\n" +
+		nonCanonicalCommit + "\trefs/tags/v3.0\n"
 
 	tagged := parseTagListing(out)
-	require.Len(t, tagged, 2)
-	// Newest first; a lightweight tag's hash is already the commit.
-	require.Equal(t, "2.0.0", tagged[0].version.String())
-	require.Equal(t, lightweightCommit, tagged[0].ref)
+	require.Len(t, tagged, 3)
+	// A non-canonical tag keeps its verbatim name: reconstructing "v3.0.0" from
+	// the parsed version would name a ref that does not exist.
+	require.Equal(t, "3.0.0", tagged[0].version.String())
+	require.Equal(t, "v3.0", tagged[0].tag)
+	require.Equal(t, nonCanonicalCommit, tagged[0].ref)
+	// A lightweight tag's hash is already the commit.
+	require.Equal(t, "2.0.0", tagged[1].version.String())
+	require.Equal(t, "v2.0.0", tagged[1].tag)
+	require.Equal(t, lightweightCommit, tagged[1].ref)
 	// The peeled commit wins over the annotated tag object.
-	require.Equal(t, "1.0.0", tagged[1].version.String())
-	require.Equal(t, annotatedCommit, tagged[1].ref)
+	require.Equal(t, "1.0.0", tagged[2].version.String())
+	require.Equal(t, "v1.0.0", tagged[2].tag)
+	require.Equal(t, annotatedCommit, tagged[2].ref)
 }
 
 func TestIsCommitHash(t *testing.T) {
