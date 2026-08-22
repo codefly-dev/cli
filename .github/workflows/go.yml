@@ -14,7 +14,11 @@ jobs:
   quality:
     name: ${{ matrix.gate }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The race and coverage gates take 4-5 minutes on a warm cache with ±40s of
+    # runner variance, so a 5-minute budget cancels borderline-healthy runs.
+    # 8 minutes keeps a hang from burning a full runner-hour while leaving the
+    # suite real headroom.
+    timeout-minutes: 8
     strategy:
       fail-fast: true
       matrix:
