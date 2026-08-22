@@ -147,4 +147,10 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.12.2
+          # Build the linter from source under the module's Go toolchain
+          # (1.27) instead of downloading the prebuilt binary, which is built
+          # with an older Go and refuses to lint a module targeting a newer
+          # one ("the Go language version used to build golangci-lint is lower
+          # than the targeted Go version"). Matches `make lint`.
+          install-mode: goinstall
           only-new-issues: true
