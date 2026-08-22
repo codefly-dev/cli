@@ -20,7 +20,9 @@ const (
 type Coordinates struct {
 	Language Language
 	Name     string
-	Version  string // semantic version, with or without a leading "v"
+	// Version is a semantic version. Callers may pass it with or without a
+	// leading "v"; every Published carries it in canonical form without one.
+	Version string
 }
 
 // Published is a resolved, durable location for a library export that a native
@@ -35,7 +37,10 @@ type Published struct {
 	Ref string
 	// Location is the backing URL.
 	Location string
-	// Digest is the sha256 over the published artifact tree ("sha256:<hex>").
+	// Digest is the sha256 over the published artifact tree ("sha256:<hex>"),
+	// set by Publish from the source tree and by Resolve from the published
+	// content at the resolved version. The two agree for a store-published
+	// version.
 	Digest string
 	// InstallHint is a copy-pasteable native install command.
 	InstallHint string
