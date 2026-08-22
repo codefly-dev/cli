@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "publisher": "codefly.dev",
+      "name": "go",
+      "version": "0.0.37",
+      "markers": [
+        "go.mod"
+      ],
+      "extensions": [
+        ".go"
+      ]
+    },
+    {
+      "publisher": "codefly.dev",
+      "name": "python",
+      "version": "0.0.52",
+      "markers": [
+        "pyproject.toml",
+        "uv.lock",
+        "setup.py",
+        "setup.cfg",
+        "requirements.in",
+        "requirements.txt"
+      ],
+      "extensions": [
+        ".py"
+      ]
+    },
+    {
+      "publisher": "codefly.dev",
+      "name": "nextjs",
+      "version": "0.0.141",
+      "markers": [
+        "package.json"
+      ],
+      "extensions": [
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx"
+      ]
+    },
+    {
+      "publisher": "codefly.dev",
+      "name": "rust",
+      "version": "0.0.29",
+      "markers": [
+        "Cargo.toml"
+      ],
+      "extensions": [
+        ".rs"
+      ]
+    },
+    {
+      "publisher": "codefly.dev",
+      "name": "swift",
+      "version": "0.0.16",
+      "markers": [
+        "Package.swift"
+      ],
+      "extensions": [
+        ".swift"
+      ]
+    },
+    {
+      "publisher": "codefly.dev",
+      "name": "generic",
+      "version": "0.0.26",
+      "fallback": true
+    }
+  ]
+}

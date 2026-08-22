@@ -20,4 +20,5 @@ func init() {
 	AgentCmd.AddCommand(agents.InstallCmd)
 	AgentCmd.AddCommand(agents.VersionsCmd)
 	AgentCmd.AddCommand(agents.ListCmd)
+	AgentCmd.AddCommand(agents.PromoteSourceCmd)
 }
