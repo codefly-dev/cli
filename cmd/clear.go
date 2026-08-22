@@ -186,11 +186,20 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		} else {
 			w.Info("no stale agent sockets")
 		}
-		if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
-			w.Warn("cannot reap stale process groups", wool.ErrField(err))
-			failures = append(failures, fmt.Errorf("reap stale process groups: %w", err))
+		var processEvidence processgroup.CleanupEvidence
+		var processErr error
+		if options.keepProcesses {
+			processEvidence, processErr = processgroup.ReapStaleProcessGroupsWithEvidence(ctx)
 		} else {
-			w.Info("reaped orphaned process groups")
+			processEvidence, processErr = processgroup.StopManagedProcessGroups(ctx)
+		}
+		if processErr != nil {
+			w.Warn("cannot reap stale process groups", wool.ErrField(processErr))
+			failures = append(failures, fmt.Errorf("reap stale process groups: %w", processErr))
+		} else if recovered := processEvidence.RecoveredPGIDs(); len(recovered) > 0 {
+			w.Info("reaped managed process groups", wool.Field("count", len(recovered)), wool.Field("pgids", recovered))
+		} else {
+			w.Info("managed process groups reconciled")
 		}
 		if err := postgresipc.ReapOrphanedPostgresIPC(ctx); err != nil {
 			w.Warn("cannot reap stale PostgreSQL IPC", wool.ErrField(err))

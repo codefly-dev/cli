@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/wool"
 	"github.com/gofrs/flock"
 	"github.com/shirou/gopsutil/v3/process"
@@ -23,6 +22,7 @@ import (
 
 const (
 	stateDirName         = "runs"
+	authenticatedDirName = "authenticated-v1"
 	registryLockName     = ".reaper.lock"
 	maxSweepPasses       = 4
 	maxRecordSize        = 16 << 10
@@ -32,6 +32,7 @@ const (
 	groupAuthEnv         = "CODEFLY_PROCESS_GROUP_AUTH"
 	dispositionFailed    = "failed"
 	dispositionReaped    = "reaped"
+	dispositionStopped   = "stopped"
 	dispositionRemoved   = "removed"
 	dispositionRejected  = "rejected"
 	dispositionPreserved = "preserved"
@@ -44,6 +45,8 @@ const (
 var errLeaderExited = errors.New("process-group leader exited")
 
 var errProcessGroupIdentityChanged = errors.New("process group identity changed")
+
+var errProcessGroupEmpty = errors.New("process group is empty")
 
 type recordContract uint8
 
@@ -111,38 +114,151 @@ type processSignalHandle interface {
 	Close() error
 }
 
-var legacyRegistryProcessLock = make(chan struct{}, 1)
+var registryProcessLock = make(chan struct{}, 1)
+
+// CleanupOutcome is the aggregate result of reconciling managed process groups.
+type CleanupOutcome string
+
+const (
+	CleanupClean           CleanupOutcome = "clean"
+	CleanupRecoveredOrphan CleanupOutcome = "recovered-orphan"
+	CleanupFailed          CleanupOutcome = "cleanup-failed"
+)
+
+// GroupCleanup identifies the outcome retained for one registry record.
+type GroupCleanup struct {
+	PGID    int
+	Record  string
+	Outcome CleanupOutcome
+}
+
+// CleanupEvidence retains typed cleanup and recovery outcomes for callers.
+type CleanupEvidence struct {
+	Outcome CleanupOutcome
+	Groups  []GroupCleanup
+}
+
+// RecoveredPGIDs returns the exact process groups recovered from stale state.
+func (e CleanupEvidence) RecoveredPGIDs() []int {
+	var pgids []int
+	for _, group := range e.Groups {
+		if group.Outcome == CleanupRecoveredOrphan && group.PGID > 1 {
+			pgids = append(pgids, group.PGID)
+		}
+	}
+	return pgids
+}
+
+func (e *CleanupEvidence) merge(other CleanupEvidence) {
+	for _, group := range other.Groups {
+		e.record(group.Record, group.PGID, group.Outcome)
+	}
+	if other.Outcome == CleanupFailed {
+		e.Outcome = CleanupFailed
+	} else if other.Outcome == CleanupRecoveredOrphan && e.Outcome == CleanupClean {
+		e.Outcome = CleanupRecoveredOrphan
+	}
+}
+
+func (e *CleanupEvidence) record(path string, pgid int, outcome CleanupOutcome) {
+	if outcome == CleanupFailed {
+		e.Outcome = CleanupFailed
+	} else if outcome == CleanupRecoveredOrphan && e.Outcome == CleanupClean {
+		e.Outcome = CleanupRecoveredOrphan
+	}
+	for index := range e.Groups {
+		if e.Groups[index].Record != path {
+			continue
+		}
+		if cleanupOutcomePriority(outcome) > cleanupOutcomePriority(e.Groups[index].Outcome) {
+			e.Groups[index].Outcome = outcome
+		}
+		if e.Groups[index].PGID <= 1 {
+			e.Groups[index].PGID = pgid
+		}
+		return
+	}
+	e.Groups = append(e.Groups, GroupCleanup{PGID: pgid, Record: path, Outcome: outcome})
+}
+
+func cleanupOutcomePriority(outcome CleanupOutcome) int {
+	switch outcome {
+	case CleanupFailed:
+		return 2
+	case CleanupRecoveredOrphan:
+		return 1
+	default:
+		return 0
+	}
+}
 
 // ReapStaleProcessGroups reconciles both the current authenticated registry
 // and the legacy root registry still written by independently released agents.
 func ReapStaleProcessGroups(ctx context.Context) error {
-	currentErr := runnersbase.ReapStaleProcessGroups(ctx)
-	legacyErr := reapLegacyProcessGroups(ctx)
-	return errors.Join(currentErr, legacyErr)
+	_, err := ReapStaleProcessGroupsWithEvidence(ctx)
+	return err
 }
 
-func reapLegacyProcessGroups(ctx context.Context) error {
-	select {
-	case legacyRegistryProcessLock <- struct{}{}:
-		defer func() { <-legacyRegistryProcessLock }()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+// ReapStaleProcessGroupsWithEvidence recovers groups whose recorded owner is
+// gone and retains the outcome for callers that need lifecycle evidence.
+func ReapStaleProcessGroupsWithEvidence(ctx context.Context) (CleanupEvidence, error) {
+	return reconcileProcessGroupRegistries(ctx, false)
+}
 
+// StopManagedProcessGroups stops every managed group, including groups whose
+// agent owner has not finished exiting yet.
+func StopManagedProcessGroups(ctx context.Context) (CleanupEvidence, error) {
+	return reconcileProcessGroupRegistries(ctx, true)
+}
+
+func reconcileProcessGroupRegistries(ctx context.Context, stopManaged bool) (CleanupEvidence, error) {
+	evidence := CleanupEvidence{Outcome: CleanupClean}
 	dir, err := stateDir()
 	if err != nil {
-		return err
+		evidence.Outcome = CleanupFailed
+		return evidence, err
+	}
+	currentEvidence, currentErr := reapProcessGroups(ctx, filepath.Join(dir, authenticatedDirName), stopManaged)
+	evidence.merge(currentEvidence)
+	legacyEvidence, legacyErr := reapProcessGroups(ctx, dir, stopManaged)
+	evidence.merge(legacyEvidence)
+	if err := errors.Join(currentErr, legacyErr); err != nil {
+		evidence.Outcome = CleanupFailed
+		return evidence, err
+	}
+	return evidence, nil
+}
+
+func reapProcessGroups(ctx context.Context, dir string, stopManaged bool) (CleanupEvidence, error) {
+	evidence := CleanupEvidence{Outcome: CleanupClean}
+	select {
+	case registryProcessLock <- struct{}{}:
+		defer func() { <-registryProcessLock }()
+	case <-ctx.Done():
+		evidence.Outcome = CleanupFailed
+		return evidence, ctx.Err()
+	}
+
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return evidence, nil
+		}
+		evidence.Outcome = CleanupFailed
+		return evidence, err
 	}
 	registryLock := flock.New(filepath.Join(dir, registryLockName))
 	locked, err := registryLock.TryLockContext(ctx, 25*time.Millisecond)
 	if err != nil {
-		return fmt.Errorf("lock process-group registry: %w", err)
+		evidence.Outcome = CleanupFailed
+		return evidence, fmt.Errorf("lock process-group registry: %w", err)
 	}
 	if !locked {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("lock process-group registry: %w", err)
+			evidence.Outcome = CleanupFailed
+			return evidence, fmt.Errorf("lock process-group registry: %w", err)
 		}
-		return errors.New("lock process-group registry: lock was not acquired")
+		evidence.Outcome = CleanupFailed
+		return evidence, errors.New("lock process-group registry: lock was not acquired")
 	}
 	defer func() {
 		_ = registryLock.Unlock()
@@ -151,7 +267,8 @@ func reapLegacyProcessGroups(ctx context.Context) error {
 
 	var failures []error
 	for range maxSweepPasses {
-		reaped, passErr := sweep(ctx, dir)
+		reaped, passEvidence, passErr := sweep(ctx, dir, stopManaged)
+		evidence.merge(passEvidence)
 		if passErr != nil {
 			failures = append(failures, passErr)
 		}
@@ -163,7 +280,11 @@ func reapLegacyProcessGroups(ctx context.Context) error {
 			break
 		}
 	}
-	return errors.Join(failures...)
+	if err := errors.Join(failures...); err != nil {
+		evidence.Outcome = CleanupFailed
+		return evidence, err
+	}
+	return evidence, nil
 }
 
 func stateDir() (string, error) {
@@ -178,10 +299,12 @@ func stateDir() (string, error) {
 	return dir, nil
 }
 
-func sweep(ctx context.Context, dir string) (int, error) {
+func sweep(ctx context.Context, dir string, stopManaged bool) (int, CleanupEvidence, error) {
+	evidence := CleanupEvidence{Outcome: CleanupClean}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, fmt.Errorf("read process-group registry: %w", err)
+		evidence.Outcome = CleanupFailed
+		return 0, evidence, fmt.Errorf("read process-group registry: %w", err)
 	}
 
 	reaped := 0
@@ -195,22 +318,52 @@ func sweep(ctx context.Context, dir string) (int, error) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		disposition, err := reconcile(ctx, path)
-		if disposition == dispositionReaped {
+		disposition, err := reconcile(ctx, path, stopManaged)
+		if disposition == dispositionReaped || disposition == dispositionStopped {
 			reaped++
 		}
+		outcome := CleanupClean
+		if disposition == dispositionReaped {
+			outcome = CleanupRecoveredOrphan
+		}
+		if err != nil || disposition == dispositionFailed {
+			outcome = CleanupFailed
+		}
+		evidence.record(path, pgidFromRecordName(entry.Name()), outcome)
 		if err != nil {
 			failures = append(failures, err)
 		}
 	}
-	return reaped, errors.Join(failures...)
+	return reaped, evidence, errors.Join(failures...)
 }
 
-func reconcile(ctx context.Context, path string) (string, error) {
+func pgidFromRecordName(name string) int {
+	value, err := strconv.Atoi(strings.TrimSuffix(name, ".pgid"))
+	if err != nil || value <= 1 {
+		return 0
+	}
+	return value
+}
+
+func reconcile(ctx context.Context, path string, stopManaged bool) (string, error) {
 	w := wool.Get(ctx).In("processgroup.reconcile")
 	rec, snapshot, err := readRecord(ctx, path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			return dispositionRemoved, nil
+		}
+		if filepath.Base(filepath.Dir(path)) == authenticatedDirName && snapshot.info != nil {
+			quarantinePath, quarantineErr := quarantineInvalidRecord(path, snapshot)
+			if quarantineErr != nil {
+				return dispositionFailed, errors.Join(
+					fmt.Errorf("read process-group record %s: %w", path, err),
+					fmt.Errorf("quarantine invalid process-group record %s: %w", path, quarantineErr),
+				)
+			}
+			w.Warn("quarantined invalid process-group record without signaling",
+				wool.Field("record", path),
+				wool.Field("quarantine", quarantinePath),
+				wool.ErrField(err))
 			return dispositionRemoved, nil
 		}
 		w.Warn("could not reconcile process-group record",
@@ -234,12 +387,12 @@ func reconcile(ctx context.Context, path string) (string, error) {
 		return dispositionRemoved, nil
 	}
 	if rec.contract == authenticatedJSONRecord {
-		return reconcileAuthenticated(ctx, path, &rec, snapshot, fields)
+		return reconcileAuthenticated(ctx, path, &rec, snapshot, fields, stopManaged)
 	}
 
 	leader, err := inspectLeader(rec.pgid)
 	if errors.Is(err, errLeaderExited) {
-		return reconcileLeaderless(ctx, path, &rec, snapshot, fields)
+		return reconcileLeaderless(ctx, path, &rec, snapshot, fields, stopManaged)
 	}
 	if err != nil {
 		w.Warn("could not inspect process-group leader",
@@ -265,7 +418,6 @@ func reconcile(ctx context.Context, path string) (string, error) {
 				wool.ErrField(err))...)
 		return dispositionFailed, fmt.Errorf("authenticate process-group leader %d from record %s: %w", rec.pgid, path, err)
 	}
-
 	if leader.parent == rec.parent {
 		ownerAlive, err := ownerPredatesRecord(&rec)
 		if err != nil {
@@ -276,20 +428,31 @@ func reconcile(ctx context.Context, path string) (string, error) {
 			return dispositionFailed, fmt.Errorf("inspect process-group owner %d from record %s: %w", rec.parent, path, err)
 		}
 		if ownerAlive {
+			if stopManaged {
+				return reapGroup(ctx, path, &rec, snapshot, fields, dispositionStopped)
+			}
 			w.Debug("reconciled process-group record", append(fields,
 				wool.Field("disposition", "preserved-live-owner"))...)
 			return dispositionPreserved, nil
 		}
 	}
 
-	return reapGroup(ctx, path, &rec, snapshot, fields)
+	return reapGroup(ctx, path, &rec, snapshot, fields, dispositionReaped)
 }
 
-func reconcileAuthenticated(ctx context.Context, path string, rec *record, snapshot recordSnapshot, fields []*wool.LogField) (string, error) {
+func reconcileAuthenticated(ctx context.Context, path string, rec *record, snapshot recordSnapshot, fields []*wool.LogField, stopManaged bool) (string, error) {
 	w := wool.Get(ctx).In("processgroup.reconcile")
-	_, authenticated, err := authenticateAuthenticatedGroup(ctx, &rec.auth)
+	members, authenticated, err := authenticateAuthenticatedGroup(ctx, &rec.auth)
 	if err != nil {
 		return dispositionFailed, fmt.Errorf("authenticate process group %d from record %s: %w", rec.pgid, path, err)
+	}
+	if len(members) == 0 {
+		if removeErr := removeRecord(path, snapshot); removeErr != nil {
+			return dispositionFailed, fmt.Errorf("remove empty process-group record %s: %w", path, removeErr)
+		}
+		w.Debug("reconciled empty authenticated process-group record",
+			append(fields, wool.Field("disposition", "removed-empty-group"))...)
+		return dispositionRemoved, nil
 	}
 	if !authenticated {
 		if removeErr := removeRecord(path, snapshot); removeErr != nil {
@@ -298,6 +461,17 @@ func reconcileAuthenticated(ctx context.Context, path string, rec *record, snaps
 		w.Warn("rejected authenticated process-group record without signaling group",
 			append(fields, wool.Field("disposition", "rejected-reused-group"))...)
 		return dispositionRejected, nil
+	}
+	if stopManaged {
+		ownerAlive, ownerErr := recordedOwnerAlive(rec.auth.Owner)
+		if ownerErr != nil {
+			return dispositionFailed, fmt.Errorf("inspect process-group owner %d from record %s: %w", rec.auth.Owner.PID, path, ownerErr)
+		}
+		disposition := dispositionReaped
+		if ownerAlive {
+			disposition = dispositionStopped
+		}
+		return reapGroup(ctx, path, rec, snapshot, fields, disposition)
 	}
 	ownerAlive, err := recordedOwnerAlive(rec.auth.Owner)
 	if err != nil {
@@ -308,7 +482,7 @@ func reconcileAuthenticated(ctx context.Context, path string, rec *record, snaps
 			wool.Field("disposition", "preserved-live-owner"))...)
 		return dispositionPreserved, nil
 	}
-	return reapGroup(ctx, path, rec, snapshot, fields)
+	return reapGroup(ctx, path, rec, snapshot, fields, dispositionReaped)
 }
 
 func readRecord(ctx context.Context, path string) (record, recordSnapshot, error) {
@@ -507,6 +681,24 @@ func removeRecord(path string, snapshot recordSnapshot) error {
 	return nil
 }
 
+func quarantineInvalidRecord(path string, snapshot recordSnapshot) (string, error) {
+	if err := recordIsUnchanged(path, snapshot); err != nil {
+		return "", err
+	}
+	quarantinePath := path + ".invalid"
+	if err := os.Rename(path, quarantinePath); err != nil {
+		return "", err
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return quarantinePath, err
+	}
+	if err := errors.Join(directory.Sync(), directory.Close()); err != nil {
+		return quarantinePath, err
+	}
+	return quarantinePath, nil
+}
+
 func recordedCommand(summary string) string {
 	separator := strings.LastIndex(summary, " <")
 	if separator <= 0 || !strings.HasSuffix(summary, " args>") {
@@ -619,15 +811,14 @@ func inspectProcessGroup(ctx context.Context, pgid int) ([]processIdentity, erro
 	return identities, nil
 }
 
+var inspectAuthenticatedProcessGroup = inspectProcessGroup
+
 func authenticateAuthenticatedGroup(ctx context.Context, rec *authenticatedRecord) ([]processIdentity, bool, error) {
-	members, err := inspectProcessGroup(ctx, rec.PGID)
+	members, err := inspectAuthenticatedProcessGroup(ctx, rec.PGID)
 	if err != nil {
 		return nil, false, err
 	}
 	if len(members) == 0 {
-		if groupAlive(rec.PGID) {
-			return nil, false, errors.New("live process group had no inspectable members")
-		}
 		return nil, false, nil
 	}
 	for _, member := range members {
@@ -690,7 +881,7 @@ func (identity *processIdentity) same(other *processIdentity) bool {
 		identity.bootID == other.bootID && identity.startID == other.startID
 }
 
-func reconcileLeaderless(ctx context.Context, path string, rec *record, snapshot recordSnapshot, fields []*wool.LogField) (string, error) {
+func reconcileLeaderless(ctx context.Context, path string, rec *record, snapshot recordSnapshot, fields []*wool.LogField, stopManaged bool) (string, error) {
 	w := wool.Get(ctx).In("processgroup.reconcile")
 	authenticated, err := groupPredatesRecord(ctx, rec)
 	if err != nil {
@@ -717,11 +908,14 @@ func reconcileLeaderless(ctx context.Context, path string, rec *record, snapshot
 		return dispositionFailed, fmt.Errorf("inspect process-group owner %d from record %s: %w", rec.parent, path, err)
 	}
 	if ownerAlive {
+		if stopManaged {
+			return reapGroup(ctx, path, rec, snapshot, fields, dispositionStopped)
+		}
 		w.Debug("reconciled process-group record", append(fields,
 			wool.Field("disposition", "preserved-live-owner-leaderless-group"))...)
 		return dispositionPreserved, nil
 	}
-	return reapGroup(ctx, path, rec, snapshot, fields)
+	return reapGroup(ctx, path, rec, snapshot, fields, dispositionReaped)
 }
 
 func groupPredatesRecord(ctx context.Context, rec *record) (bool, error) {
@@ -751,7 +945,7 @@ func ownerPredatesRecord(rec *record) (bool, error) {
 	return !owner.started.After(rec.writtenAt.Add(createTimePrecision)), nil
 }
 
-func reapGroup(ctx context.Context, path string, rec *record, snapshot recordSnapshot, fields []*wool.LogField) (string, error) {
+func reapGroup(ctx context.Context, path string, rec *record, snapshot recordSnapshot, fields []*wool.LogField, disposition string) (string, error) {
 	w := wool.Get(ctx).In("processgroup.reconcile")
 	if err := recordIsUnchanged(path, snapshot); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -759,8 +953,13 @@ func reapGroup(ctx context.Context, path string, rec *record, snapshot recordSna
 		}
 		return dispositionFailed, fmt.Errorf("verify process-group record %s before signaling: %w", path, err)
 	}
-	w.Warn("reaping stale managed process group",
-		append(fields, wool.Field("disposition", "terminating-stale-owner"))...)
+	if disposition == dispositionStopped {
+		w.Info("stopping managed process group",
+			append(fields, wool.Field("disposition", "terminating-live-owner"))...)
+	} else {
+		w.Warn("reaping stale managed process group",
+			append(fields, wool.Field("disposition", "terminating-stale-owner"))...)
+	}
 	if err := terminateGroup(ctx, rec); err != nil {
 		w.Warn("failed to reap stale managed process group",
 			append(fields,
@@ -769,11 +968,11 @@ func reapGroup(ctx context.Context, path string, rec *record, snapshot recordSna
 		return dispositionFailed, fmt.Errorf("reap process group %d from record %s: %w", rec.pgid, path, err)
 	}
 	if err := removeRecord(path, snapshot); err != nil {
-		return dispositionReaped, fmt.Errorf("remove reaped process-group record %s: %w", path, err)
+		return disposition, fmt.Errorf("remove reaped process-group record %s: %w", path, err)
 	}
-	w.Info("reconciled stale managed process group",
-		append(fields, wool.Field("disposition", dispositionReaped))...)
-	return dispositionReaped, nil
+	w.Info("reconciled managed process group",
+		append(fields, wool.Field("disposition", disposition))...)
+	return disposition, nil
 }
 
 func (rec *record) matches(leader leaderIdentity) bool {
@@ -791,6 +990,9 @@ func groupAlive(pgid int) bool {
 
 func terminateGroup(ctx context.Context, rec *record) error {
 	if err := signalRecordGroup(ctx, rec, syscall.SIGTERM); err != nil {
+		if errors.Is(err, errProcessGroupEmpty) {
+			return nil
+		}
 		if errors.Is(err, errProcessGroupIdentityChanged) && !groupAlive(rec.pgid) {
 			return nil
 		}
@@ -803,6 +1005,9 @@ func terminateGroup(ctx context.Context, rec *record) error {
 		return err
 	}
 	if err := signalRecordGroup(ctx, rec, syscall.SIGKILL); err != nil {
+		if errors.Is(err, errProcessGroupEmpty) {
+			return nil
+		}
 		if errors.Is(err, errProcessGroupIdentityChanged) && !groupAlive(rec.pgid) {
 			return nil
 		}
@@ -835,6 +1040,9 @@ func signalRecordGroup(ctx context.Context, rec *record, signal syscall.Signal) 
 		return err
 	}
 	if !authenticated {
+		if rec.contract == authenticatedJSONRecord && len(members) == 0 {
+			return errProcessGroupEmpty
+		}
 		return errProcessGroupIdentityChanged
 	}
 	return signalProcessIdentities(ctx, members, signal)
