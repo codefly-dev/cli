@@ -185,6 +185,16 @@ codefly build service api
 codefly build service api --standalone  # Build without dependency resolution
 ```
 
+A successful build also archives the generated build recipe (the `builder/`
+Dockerfile and its sibling files) into `services/<svc>/build-recipes/<agent-version>/`,
+with a `recipe.codefly.json` manifest recording the producing agent and per-file
+digests. The live `builder/` tree is transient — re-rendered per machine and
+excluded from composed modules — so this committed archive keeps the reproducible
+recipe durable and inspectable for a consumer without the codefly toolchain. The
+Dockerfile expects the service directory as the build context (it `COPY`s
+`builder/…` paths); restore `builder/` from the archive, then rebuild directly,
+e.g. `docker buildx build --platform linux/amd64 -f services/<svc>/builder/Dockerfile services/<svc>`.
+
 ### `codefly test service [name]`
 
 Run one service's tests through its agent Test RPC. This is the focused local

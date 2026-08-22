@@ -243,6 +243,10 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("call to build failed")
 	}
 
+	if err = recordBuildRecipe(ctx, b.instance.Service); err != nil {
+		return nil, w.Wrapf(err, "cannot record build recipe")
+	}
+
 	err = b.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for build")
