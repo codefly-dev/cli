@@ -133,6 +133,25 @@ func TestGitHubStoreRejectsModulePathMismatchBeforeTouchingTheRemote(t *testing.
 	require.Contains(t, err.Error(), "go.mod")
 }
 
+func TestGitHubStorePublishIgnoresAmbientSigningConfig(t *testing.T) {
+	ctx := context.Background()
+	// A global git config that forces signing with a bogus program would make an
+	// unguarded commit or tag fail; Publish must override it per-invocation.
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(globalConfig,
+		[]byte("[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n[gpg]\n\tprogram = /bin/false\n"), 0o644))
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+
+	remote := bareRepo(t)
+	store := storeTo(remote)
+	modulePath := goModulePath(remote)
+
+	_, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"),
+		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	require.NoError(t, err)
+}
+
 func TestGitHubStoreRejectsNonSemverAndUnsupportedLanguages(t *testing.T) {
 	ctx := context.Background()
 	store := storeTo(bareRepo(t))
@@ -208,6 +227,11 @@ func TestGoModulePathAndRepositoryName(t *testing.T) {
 func TestDefaultRemoteFor(t *testing.T) {
 	store := NewGitHubStore("codefly-dev")
 	require.Equal(t, "https://github.com/codefly-dev/authkit-go.git", store.remoteFor(LanguageGo, "authkit"))
+
+	// Owner is read live, so reassigning it after construction retargets the
+	// store instead of silently publishing to the original owner.
+	store.Owner = "acme"
+	require.Equal(t, "https://github.com/acme/authkit-go.git", store.remoteFor(LanguageGo, "authkit"))
 }
 
 func TestParseGoModulePath(t *testing.T) {
@@ -223,37 +247,69 @@ func TestParseGoModulePath(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestTreeDigestDeterministicContentAndModeSensitiveGitExcluded(t *testing.T) {
-	a := goModule(t, "example.com/x", "package x\n")
-	b := goModule(t, "example.com/x", "package x\n")
-	c := goModule(t, "example.com/x", "package x // different\n")
+func TestTreeDigestCoversTrackedContentOnlyModeSensitive(t *testing.T) {
+	ctx := context.Background()
+	store := NewGitHubStore("codefly-dev")
 
-	da, err := treeDigest(a)
+	initRepo := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		for _, args := range [][]string{
+			{"init", "--quiet"},
+			{"config", "user.email", "t@t"},
+			{"config", "user.name", "t"},
+			{"config", "commit.gpgsign", "false"},
+		} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			require.NoError(t, cmd.Run(), strings.Join(args, " "))
+		}
+		return dir
+	}
+	commit := func(t *testing.T, dir string) {
+		t.Helper()
+		for _, args := range [][]string{{"add", "-A"}, {"commit", "--quiet", "-m", "x"}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			require.NoError(t, cmd.Run(), strings.Join(args, " "))
+		}
+	}
+
+	a := initRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(a, "lib.go"), []byte("package x\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(a, ".gitignore"), []byte("secret.txt\n"), 0o644))
+	commit(t, a)
+	da, err := store.treeDigest(ctx, a)
 	require.NoError(t, err)
-	db, err := treeDigest(b)
-	require.NoError(t, err)
-	dc, err := treeDigest(c)
+	require.True(t, strings.HasPrefix(da, "sha256:"))
+
+	// Byte-identical committed content yields an identical digest.
+	b := initRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(b, "lib.go"), []byte("package x\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(b, ".gitignore"), []byte("secret.txt\n"), 0o644))
+	commit(t, b)
+	db, err := store.treeDigest(ctx, b)
 	require.NoError(t, err)
 	require.Equal(t, da, db)
-	require.NotEqual(t, da, dc)
 
-	// Flipping the executable bit is a real change — git preserves it into the
-	// published tree.
-	require.NoError(t, os.Chmod(filepath.Join(b, "lib.go"), 0o755))
-	dbExec, err := treeDigest(b)
+	// A .gitignore'd, untracked file is never published, so it must not change
+	// the digest — otherwise the publish tree and a clone would disagree.
+	require.NoError(t, os.WriteFile(filepath.Join(a, "secret.txt"), []byte("shhh\n"), 0o644))
+	daIgnored, err := store.treeDigest(ctx, a)
 	require.NoError(t, err)
-	require.NotEqual(t, da, dbExec)
+	require.Equal(t, da, daIgnored)
 
-	// A non-executable mode variation git cannot preserve does not change it.
-	require.NoError(t, os.Chmod(filepath.Join(a, "lib.go"), 0o640))
-	daTightened, err := treeDigest(a)
+	// Different tracked content changes the digest.
+	require.NoError(t, os.WriteFile(filepath.Join(b, "lib.go"), []byte("package x // different\n"), 0o644))
+	commit(t, b)
+	dbChanged, err := store.treeDigest(ctx, b)
 	require.NoError(t, err)
-	require.Equal(t, da, daTightened)
+	require.NotEqual(t, db, dbChanged)
 
-	// .git content is never part of the published tree.
-	require.NoError(t, os.MkdirAll(filepath.Join(a, ".git"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(a, ".git", "config"), []byte("[core]\n"), 0o644))
-	daWithGit, err := treeDigest(a)
+	// Flipping the executable bit is a real change git carries into the tree.
+	require.NoError(t, os.Chmod(filepath.Join(a, "lib.go"), 0o755))
+	commit(t, a)
+	daExec, err := store.treeDigest(ctx, a)
 	require.NoError(t, err)
-	require.Equal(t, da, daWithGit)
+	require.NotEqual(t, da, daExec)
 }

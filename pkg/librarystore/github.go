@@ -38,7 +38,7 @@ type GitHubStore struct {
 func NewGitHubStore(owner string) *GitHubStore {
 	s := &GitHubStore{Owner: owner, commitName: "codefly", commitEmail: "bot@codefly.dev"}
 	s.remoteFor = func(language Language, name string) string {
-		return fmt.Sprintf("https://github.com/%s/%s.git", owner, repositoryName(language, name))
+		return fmt.Sprintf("https://github.com/%s/%s.git", s.Owner, repositoryName(language, name))
 	}
 	return s
 }
@@ -83,10 +83,6 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	if err = validateGoModulePath(artifactDir, importPath); err != nil {
 		return Published{}, err
 	}
-	digest, err := treeDigest(artifactDir)
-	if err != nil {
-		return Published{}, err
-	}
 
 	work, err := os.MkdirTemp("", "codefly-library-publish-*")
 	if err != nil {
@@ -115,11 +111,13 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	// (a version bump with no code change) is a valid release, not an error.
 	if err = s.git(ctx, work,
 		"-c", "user.name="+s.commitName, "-c", "user.email="+s.commitEmail,
+		"-c", "commit.gpgsign=false",
 		"commit", "--quiet", "--allow-empty", "-m", message); err != nil {
 		return Published{}, fmt.Errorf("commit release: %w", err)
 	}
 	if err = s.git(ctx, work,
 		"-c", "user.name="+s.commitName, "-c", "user.email="+s.commitEmail,
+		"-c", "tag.gpgsign=false",
 		"tag", "-a", tag, "-m", message); err != nil {
 		return Published{}, fmt.Errorf("tag release: %w", err)
 	}
@@ -130,6 +128,10 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		return Published{}, fmt.Errorf("push tag: %w", err)
 	}
 	commit, err := s.output(ctx, work, "rev-parse", tag+"^{commit}")
+	if err != nil {
+		return Published{}, err
+	}
+	digest, err := s.treeDigest(ctx, work)
 	if err != nil {
 		return Published{}, err
 	}
@@ -301,7 +303,7 @@ func (s *GitHubStore) digestAtTag(ctx context.Context, remote, tag string) (stri
 	if err := s.git(ctx, "", "clone", "--quiet", "--depth", "1", "--branch", tag, remote, work); err != nil {
 		return "", fmt.Errorf("fetch %s at %s: %w", remote, tag, err)
 	}
-	return treeDigest(work)
+	return s.treeDigest(ctx, work)
 }
 
 func (s *GitHubStore) published(c Coordinates, remote, ref, digest string) Published {
@@ -336,6 +338,7 @@ func (s *GitHubStore) defaultBranch(ctx context.Context, work string) (string, e
 func (s *GitHubStore) git(ctx context.Context, dir string, args ...string) error {
 	//nolint:gosec // git is invoked with internal subcommands and store-controlled arguments, never a shell.
 	command := exec.CommandContext(ctx, "git", gitArgs(dir, args)...)
+	command.Env = gitEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
@@ -345,11 +348,21 @@ func (s *GitHubStore) git(ctx context.Context, dir string, args ...string) error
 func (s *GitHubStore) output(ctx context.Context, dir string, args ...string) (string, error) {
 	//nolint:gosec // git is invoked with internal subcommands and store-controlled arguments, never a shell.
 	command := exec.CommandContext(ctx, "git", gitArgs(dir, args)...)
+	command.Env = gitEnv()
 	out, err := command.Output()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return string(out), nil
+}
+
+// gitEnv runs git non-interactively: a missing credential fails fast rather than
+// blocking on a terminal prompt, and no credential-manager UI is launched.
+// Ambient configuration is otherwise preserved so a user's configured push
+// credentials still work; signing is disabled per-invocation on the commands
+// that create objects, not by discarding global config wholesale.
+func gitEnv() []string {
+	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
 }
 
 func gitArgs(dir string, args []string) []string {
@@ -409,52 +422,45 @@ func replaceTrackedTree(work, source string) error {
 	})
 }
 
-// treeDigest is a deterministic sha256 over the regular files under root, keyed
-// by slash-separated relative path and the git-normalized file mode. Git
-// preserves only the executable bit through publish and clone, so the digest
-// folds each mode to 755/644 — capturing an executable-bit flip (a real change,
-// per the docker-build-recipe v2 contract) while staying identical between the
-// publish-side source tree and a resolve-side clone. Any .git directory is
-// excluded: it is never part of the published content. Reads go through a
-// root-scoped filesystem, so a symlink cannot escape root during the walk.
-func treeDigest(root string) (string, error) {
+// treeDigest is a deterministic sha256 over the git-tracked files in dir, keyed
+// by slash-separated relative path and git-normalized mode. Driving the file
+// set from `git ls-files` — rather than a filesystem walk — means the digest
+// describes exactly the published content: files a .gitignore excludes are
+// never committed and never hashed, so the publish-side working tree and a
+// resolve-side clone of the same version produce the same digest. Git preserves
+// only the executable bit, so modes fold to 755/644 — capturing an
+// executable-bit flip (a real change, per the docker-build-recipe v2 contract)
+// while ignoring mode variations git itself does not carry.
+func (s *GitHubStore) treeDigest(ctx context.Context, dir string) (string, error) {
+	out, err := s.output(ctx, dir, "ls-files", "--stage", "-z")
+	if err != nil {
+		return "", err
+	}
 	type entry struct {
 		path   string
 		mode   string
 		digest [32]byte
 	}
-	fsys := os.DirFS(root)
 	var entries []entry
-	err := fs.WalkDir(fsys, ".", func(path string, dirEntry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	// `ls-files --stage -z` records are "<mode> <object> <stage>\t<path>\0".
+	for _, record := range strings.Split(strings.TrimRight(out, "\x00"), "\x00") {
+		if record == "" {
+			continue
 		}
-		if dirEntry.IsDir() {
-			if dirEntry.Name() == gitDir {
-				return fs.SkipDir
-			}
-			return nil
+		meta, path, ok := strings.Cut(record, "\t")
+		if !ok {
+			continue
 		}
-		if !dirEntry.Type().IsRegular() {
-			return nil
-		}
-		data, err := fs.ReadFile(fsys, path)
-		if err != nil {
-			return err
-		}
-		info, err := dirEntry.Info()
-		if err != nil {
-			return err
-		}
+		fields := strings.Fields(meta)
 		mode := "644"
-		if info.Mode()&0o111 != 0 {
+		if len(fields) > 0 && strings.HasSuffix(fields[0], "755") {
 			mode = "755"
 		}
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
+		if err != nil {
+			return "", err
+		}
 		entries = append(entries, entry{path: path, mode: mode, digest: sha256.Sum256(data)})
-		return nil
-	})
-	if err != nil {
-		return "", err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
 	hasher := sha256.New()
