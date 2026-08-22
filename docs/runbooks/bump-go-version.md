@@ -55,6 +55,14 @@ go mod tidy
 - **`Makefile` / `.github/workflows/go.yml`** — the `golangci-lint` version (`GOLANGCI_LINT_VERSION`)
   is pinned and must support the new Go minor. Bump it if the new Go release needs a newer linter.
 
+  **Leading-edge Go minors:** published golangci-lint *binaries* lag new Go releases by weeks — a
+  binary built with the previous Go minor both refuses a module that targets the newer `go`
+  directive ("used to build golangci-lint is lower than the targeted Go version") and cannot parse
+  the newer stdlib. The CI lint job therefore builds golangci-lint **from source** with the
+  module's Go (`install-mode: goinstall` in `go.yml`; `make lint` already does this via `go
+  install`), so its type checker matches the toolchain. Revert to the default prebuilt-binary mode
+  once a golangci-lint release compiled with the new Go minor is available.
+
 ### 3. Grep to catch anything new
 
 Pinned versions creep in over time. Before finishing, sweep each repo:

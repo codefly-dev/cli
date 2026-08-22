@@ -146,5 +146,14 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.12.2
+          version: v2.13.1
+          # Build golangci-lint from source with the module's Go (1.27) instead
+          # of downloading a prebuilt binary. Published golangci-lint releases
+          # are still compiled with Go 1.26, and a Go 1.26 binary both refuses a
+          # module that targets go 1.27 ("used to build golangci-lint is lower
+          # than the targeted Go version") and cannot parse 1.27 stdlib sources.
+          # goinstall compiles it against the Go set up above, so its type
+          # checker understands 1.27. Mirrors `make lint`. Drop once a
+          # 1.27-built golangci-lint release ships.
+          install-mode: goinstall
           only-new-issues: true
