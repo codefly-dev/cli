@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -48,6 +49,37 @@ func repositoryName(language Language, name string) string {
 	return fmt.Sprintf("%s-%s", name, language)
 }
 
+// validCoordinateToken reports whether value can be embedded in a repository
+// URL and passed on a git command line: a plain alphanumeric/dot/dash/underscore
+// token. A ".." would let a crafted name traverse the URL path — git's HTTP
+// client normalizes "owner/../../evil/repo" to a different repository — and a
+// leading "-" could read as an option.
+func validCoordinateToken(value string) bool {
+	if value == "" || len(value) > 100 || strings.HasPrefix(value, ".") || strings.HasPrefix(value, "-") || strings.Contains(value, "..") {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// validateTarget guards the owner and library name before they reach a remote
+// URL. Library names arrive from workspace configuration, which is a trust
+// boundary: an unvalidated name could redirect a credentialed publish to a
+// repository the coordinates never named.
+func (s *GitHubStore) validateTarget(name string) error {
+	if !validCoordinateToken(s.Owner) {
+		return fmt.Errorf("librarystore: invalid owner %q", s.Owner)
+	}
+	if !validCoordinateToken(name) {
+		return fmt.Errorf("librarystore: invalid library name %q", name)
+	}
+	return nil
+}
+
 // goModulePath derives the Go module path from a remote URL: the identity a
 // consumer passes to `go get`. It is only meaningful for real remote URLs; a
 // local test remote yields a path used purely for assertions.
@@ -67,9 +99,18 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	if c.Language != LanguageGo {
 		return Published{}, fmt.Errorf("librarystore: publishing %s libraries is not implemented yet", c.Language)
 	}
+	if err := s.validateTarget(c.Name); err != nil {
+		return Published{}, err
+	}
 	version, err := semver.NewVersion(strings.TrimPrefix(c.Version, "v"))
 	if err != nil {
 		return Published{}, fmt.Errorf("librarystore: %q is not a semantic version: %w", c.Version, err)
+	}
+	// Go module versions are canonical semver: build metadata is discarded by
+	// the go command, so a tag carrying it could never be fetched — and once
+	// pushed it would be immutable. Refuse it before anything irreversible.
+	if version.Metadata() != "" {
+		return Published{}, fmt.Errorf("librarystore: %q carries build metadata, which Go module versions do not support", c.Version)
 	}
 	c.Version = version.String()
 	remote := s.remoteFor(c.Language, c.Name)
@@ -109,10 +150,12 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	message := fmt.Sprintf("release %s %s", c.Name, tag)
 	// --allow-empty: a release whose content is identical to the previous one
 	// (a version bump with no code change) is a valid release, not an error.
+	// --no-verify: ambient hooks (core.hooksPath, clone templates) belong to
+	// the user's own projects and must not fail or mutate a release commit.
 	if err = s.git(ctx, work,
 		"-c", "user.name="+s.commitName, "-c", "user.email="+s.commitEmail,
 		"-c", "commit.gpgsign=false",
-		"commit", "--quiet", "--allow-empty", "-m", message); err != nil {
+		"commit", "--quiet", "--allow-empty", "--no-verify", "-m", message); err != nil {
 		return Published{}, fmt.Errorf("commit release: %w", err)
 	}
 	if err = s.git(ctx, work,
@@ -121,12 +164,9 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		"tag", "-a", tag, "-m", message); err != nil {
 		return Published{}, fmt.Errorf("tag release: %w", err)
 	}
-	if err = s.git(ctx, work, "push", "--quiet", "origin", branch); err != nil {
-		return Published{}, fmt.Errorf("push branch: %w", err)
-	}
-	if err = s.git(ctx, work, "push", "--quiet", "origin", tag); err != nil {
-		return Published{}, fmt.Errorf("push tag: %w", err)
-	}
+	// Resolve the commit and digest before pushing: every failure up to here
+	// leaves the remote untouched and the publish cleanly retryable. A failure
+	// after the push would report an error for a release that is already live.
 	commit, err := s.output(ctx, work, "rev-parse", tag+"^{commit}")
 	if err != nil {
 		return Published{}, err
@@ -134,6 +174,12 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	digest, err := s.treeDigest(ctx, work)
 	if err != nil {
 		return Published{}, err
+	}
+	if err = s.git(ctx, work, "push", "--quiet", "origin", branch); err != nil {
+		return Published{}, fmt.Errorf("push branch: %w", err)
+	}
+	if err = s.git(ctx, work, "push", "--quiet", "origin", tag); err != nil {
+		return Published{}, fmt.Errorf("push tag: %w", err)
 	}
 	return s.published(c, remote, strings.TrimSpace(commit), digest), nil
 }
@@ -176,6 +222,9 @@ func (s *GitHubStore) Resolve(ctx context.Context, language Language, name, cons
 	if language != LanguageGo {
 		return Published{}, fmt.Errorf("librarystore: resolving %s libraries is not implemented yet", language)
 	}
+	if err := s.validateTarget(name); err != nil {
+		return Published{}, err
+	}
 	remote := s.remoteFor(language, name)
 	tagged, err := s.listTagged(ctx, remote)
 	if err != nil {
@@ -199,9 +248,9 @@ func (s *GitHubStore) Resolve(ctx context.Context, language Language, name, cons
 		return Published{}, fmt.Errorf("librarystore: no published version of %s satisfies %q", name, constraint)
 	}
 	if !isCommitHash(best.ref) {
-		return Published{}, fmt.Errorf("librarystore: tag %s of %s resolves to invalid commit %q", versionTag(best.version.String()), name, best.ref)
+		return Published{}, fmt.Errorf("librarystore: tag %s of %s resolves to invalid commit %q", best.tag, name, best.ref)
 	}
-	digest, err := s.digestAtTag(ctx, remote, versionTag(best.version.String()))
+	digest, err := s.digestAtTag(ctx, remote, best.tag)
 	if err != nil {
 		return Published{}, err
 	}
@@ -212,6 +261,9 @@ func (s *GitHubStore) Resolve(ctx context.Context, language Language, name, cons
 func (s *GitHubStore) List(ctx context.Context, language Language, name string) ([]string, error) {
 	if language != LanguageGo {
 		return nil, fmt.Errorf("librarystore: listing %s libraries is not implemented yet", language)
+	}
+	if err := s.validateTarget(name); err != nil {
+		return nil, err
 	}
 	tagged, err := s.listTagged(ctx, s.remoteFor(language, name))
 	if err != nil {
@@ -225,8 +277,12 @@ func (s *GitHubStore) List(ctx context.Context, language Language, name string) 
 }
 
 // taggedVersion is one published semver tag with the commit it resolves to.
+// The tag name is carried through verbatim: reconstructing it from the parsed
+// version would break on a non-canonical tag like "v1.0", whose normalized
+// form names a ref that does not exist.
 type taggedVersion struct {
 	version *semver.Version
+	tag     string
 	ref     string
 }
 
@@ -249,6 +305,7 @@ func (s *GitHubStore) listTagged(ctx context.Context, remote string) ([]taggedVe
 func parseTagListing(out string) []taggedVersion {
 	type entry struct {
 		version *semver.Version
+		tag     string
 		ref     string
 		peeled  bool
 	}
@@ -273,11 +330,11 @@ func parseTagListing(out string) []taggedVersion {
 		if existing, ok := byVersion[key]; ok && existing.peeled && !peeled {
 			continue
 		}
-		byVersion[key] = entry{version: v, ref: fields[0], peeled: peeled}
+		byVersion[key] = entry{version: v, tag: tag, ref: fields[0], peeled: peeled}
 	}
 	result := make([]taggedVersion, 0, len(byVersion))
 	for _, e := range byVersion {
-		result = append(result, taggedVersion{version: e.version, ref: e.ref})
+		result = append(result, taggedVersion{version: e.version, tag: e.tag, ref: e.ref})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].version.GreaterThan(result[j].version) })
 	return result
@@ -351,6 +408,10 @@ func (s *GitHubStore) output(ctx context.Context, dir string, args ...string) (s
 	command.Env = gitEnv()
 	out, err := command.Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return string(out), nil
@@ -422,24 +483,24 @@ func replaceTrackedTree(work, source string) error {
 	})
 }
 
-// treeDigest is a deterministic sha256 over the git-tracked files in dir, keyed
-// by slash-separated relative path and git-normalized mode. Driving the file
-// set from `git ls-files` — rather than a filesystem walk — means the digest
-// describes exactly the published content: files a .gitignore excludes are
-// never committed and never hashed, so the publish-side working tree and a
-// resolve-side clone of the same version produce the same digest. Git preserves
-// only the executable bit, so modes fold to 755/644 — capturing an
-// executable-bit flip (a real change, per the docker-build-recipe v2 contract)
-// while ignoring mode variations git itself does not carry.
+// treeDigest is a deterministic sha256 over dir's git index: each tracked
+// file's slash-separated path, git-normalized mode, and blob object ID. Blob
+// IDs are content-addressed after git's own normalization (line endings,
+// filters), so the publish-side tree and a resolve-side clone of the same
+// release always agree; hashing working-tree bytes instead would make the
+// digest vary with ambient core.autocrlf. Files a .gitignore excludes are
+// never committed and never hashed. Git preserves only the executable bit, so
+// modes fold to 755/644 — an executable-bit flip is a real change (per the
+// docker-build-recipe v2 contract), other mode variations are not carried.
 func (s *GitHubStore) treeDigest(ctx context.Context, dir string) (string, error) {
 	out, err := s.output(ctx, dir, "ls-files", "--stage", "-z")
 	if err != nil {
 		return "", err
 	}
 	type entry struct {
-		path   string
-		mode   string
-		digest [32]byte
+		path string
+		mode string
+		oid  string
 	}
 	var entries []entry
 	// `ls-files --stage -z` records are "<mode> <object> <stage>\t<path>\0".
@@ -452,20 +513,19 @@ func (s *GitHubStore) treeDigest(ctx context.Context, dir string) (string, error
 			continue
 		}
 		fields := strings.Fields(meta)
+		if len(fields) < 2 {
+			continue
+		}
 		mode := "644"
-		if len(fields) > 0 && strings.HasSuffix(fields[0], "755") {
+		if strings.HasSuffix(fields[0], "755") {
 			mode = "755"
 		}
-		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
-		if err != nil {
-			return "", err
-		}
-		entries = append(entries, entry{path: path, mode: mode, digest: sha256.Sum256(data)})
+		entries = append(entries, entry{path: path, mode: mode, oid: fields[1]})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
 	hasher := sha256.New()
 	for _, e := range entries {
-		fmt.Fprintf(hasher, "%s\x00%s\x00%s\n", e.path, e.mode, hex.EncodeToString(e.digest[:]))
+		fmt.Fprintf(hasher, "%s\x00%s\x00%s\n", e.path, e.mode, e.oid)
 	}
 	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
