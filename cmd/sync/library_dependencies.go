@@ -5,6 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
@@ -89,6 +90,19 @@ func syncLibraryDependencies() error {
 	cli.Info("Library dependencies:")
 	for _, dep := range svc.LibraryDependencies {
 		cli.Info("  - %s (%s) [%v]", dep.Name, dep.Version, dep.Languages)
+	}
+
+	// A service that pulls several library SDKs shares first-party contracts
+	// through them. If the closure needs a shared library at two majors, the
+	// generated SDKs will not link once installed together, so reject the
+	// diamond here instead of letting it surface as a runtime panic.
+	closure, err := composition.NewResolver(workspace).Closure(ctx, svc.LibraryDependencies,
+		fmt.Sprintf("service %s/%s", moduleName, serviceName))
+	if err != nil {
+		return fmt.Errorf("cannot resolve library closure: %w", err)
+	}
+	if err := closure.Validate(); err != nil {
+		return err
 	}
 
 	if err := resolver.SetupLocalDevelopment(ctx, svc); err != nil {
