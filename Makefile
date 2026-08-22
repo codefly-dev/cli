@@ -8,7 +8,7 @@ dashboard:
 	cd web/dashboard && npm ci && npm run build
 
 # Keep in sync with the pinned version in .github/workflows/go.yml.
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.13.1
 
 .PHONY: install-golangci-lint
 install-golangci-lint:
