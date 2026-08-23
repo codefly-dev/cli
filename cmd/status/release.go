@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -103,8 +104,20 @@ func runRelease(cmd *cobra.Command, args []string) error {
 	if createIssues {
 		fmt.Printf("\n==> Creating GitHub issues for agents with issues...\n")
 		issuesCreated := 0
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		for _, s := range statuses {
 			if s.Delta > 50 || len(s.Issues) > 0 {
+				// Never file a chore issue against an archived repo: it's frozen
+				// and can't be bumped or released, so the issue would be noise
+				// nobody can act on. Resolve the repo from the clone's origin so
+				// this works regardless of org.
+				if owner, repo := remoteOwnerRepo(ctx, filepath.Join(baseDir, s.Name)); gh.Archived(ctx, owner, repo) {
+					fmt.Printf("⏭ Skipping archived repo %s\n", s.Name)
+					continue
+				}
 				if err := createAgentIssue(baseDir, s); err != nil {
 					fmt.Printf("⚠ Failed to create issue for %s: %v\n", s.Name, err)
 				} else {
@@ -247,6 +260,35 @@ func checkAgentHealth(agentPath string) []string {
 	}
 
 	return issues
+}
+
+// remoteOwnerRepo returns the GitHub owner/repo a local clone points at, read
+// from its origin remote. It returns empty strings when the path isn't a git
+// repo, has no origin, or points somewhere other than github.com — callers then
+// treat the repo as non-archived and proceed as before.
+func remoteOwnerRepo(ctx context.Context, path string) (owner, repo string) {
+	out, err := exec.CommandContext(ctx, "git", "-C", path, "config", "--get", "remote.origin.url").Output()
+	if err != nil {
+		return "", ""
+	}
+	return parseGitHubRemote(strings.TrimSpace(string(out)))
+}
+
+// parseGitHubRemote extracts owner/repo from a github.com remote URL, handling
+// both git@github.com:owner/repo.git and https://github.com/owner/repo(.git).
+// It returns empty strings for any non-GitHub or unparseable remote.
+func parseGitHubRemote(url string) (owner, repo string) {
+	url = strings.TrimSuffix(url, ".git")
+	i := strings.Index(url, "github.com")
+	if i < 0 {
+		return "", ""
+	}
+	rest := strings.TrimLeft(url[i+len("github.com"):], ":/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", ""
+	}
+	return parts[0], parts[1]
 }
 
 func createAgentIssue(baseDir string, status AgentStatus) error {

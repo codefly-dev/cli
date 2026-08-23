@@ -16,6 +16,7 @@ import (
 	"github.com/blang/semver"
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/core/resources"
 	"github.com/google/go-github/v89/github"
 	"github.com/spf13/cobra"
@@ -33,7 +34,16 @@ var (
 	fetchReleases = fetchReleasesFromGitHub
 	fetchTags     = fetchTagsFromGitHub
 	fetchOCITags  = fetchOCITagsFromRegistry
+	repoArchived  = agentRepoArchived
 )
+
+// agentRepoArchived reports whether the agent's GitHub repo is archived. An
+// archived repo is frozen — it can never publish another version — so drift
+// tooling treats it as up to date instead of forever "behind".
+func agentRepoArchived(ctx context.Context, agent *resources.Agent) bool {
+	owner, repo := githubSource(agent)
+	return gh.Archived(ctx, owner, repo)
+}
 
 // releaseInfo is one published GitHub release: the version it tags and the
 // os_arch suffixes it ships a downloadable asset for.
@@ -200,6 +210,13 @@ func init() {
 // resolvability inventory. GitHub lookups that fail (missing repo, rate limit)
 // degrade to a warning so the local-cache and pinned columns still render.
 func collectInventory(ctx context.Context, agent *resources.Agent, pinned []string) inventory {
+	// An archived repo is frozen: it will never publish another tag or release,
+	// so its pin can't advance. Reporting it as "N versions behind" is pure
+	// noise (agent list / versions / `codefly ci`). Skip the remote sources and
+	// report only what's pinned and locally cached, so drift computes 0 behind.
+	if repoArchived(ctx, agent) {
+		return buildInventory(agent, nil, nil, localCacheVersions(ctx, agent), pinned, nil, false)
+	}
 	releases, err := fetchReleases(ctx, agent)
 	if err != nil {
 		cli.Warning("cannot list GitHub releases for %s/%s: %v", agent.Publisher, agent.Name, err)
