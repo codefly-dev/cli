@@ -97,7 +97,8 @@ func run(c *cobra.Command, args []string) error {
 	// bare tag push, so they get a generous timeout.
 	timeout := 60 * time.Second
 	if manifest.Mode == ModeAgent && !dryRun {
-		releaser, err := newAgentReleaseGate(filepath.Dir(manifest.Path))
+		var releaser releaseGate
+		releaser, err = newAgentReleaseGate(filepath.Dir(manifest.Path))
 		if err != nil {
 			return err
 		}
@@ -169,7 +170,8 @@ func runReTag(c *cobra.Command, _ []string) error {
 	// but failed to upload. Same generous timeout as publish.
 	timeout := 60 * time.Second
 	if manifest.Mode == ModeAgent && !dryRun {
-		releaser, err := newAgentReleaseGate(filepath.Dir(manifest.Path))
+		var releaser releaseGate
+		releaser, err = newAgentReleaseGate(filepath.Dir(manifest.Path))
 		if err != nil {
 			return err
 		}
