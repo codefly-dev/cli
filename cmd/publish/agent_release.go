@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
+	"github.com/google/go-github/v89/github"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,14 +44,15 @@ var loaderPlatforms = []platform{
 // checkAgentReleasePreconditions fails fast on the two things that would
 // otherwise only surface AFTER the expensive CI run (or, in `publish
 // all`, after earlier repos already shipped): a host that can't build
-// every loader platform, and a missing gh CLI. Both are deterministic and
+// every loader platform, and the absence of any GitHub credential to
+// authenticate the release API calls. Both are deterministic and
 // side-effect free, so they are safe to run during the validate phase.
 func checkAgentReleasePreconditions() error {
 	if err := hostBuildsLoaderPlatforms(); err != nil {
 		return err
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		return fmt.Errorf("the gh CLI is required to upload agent release assets but is not on PATH: %w", err)
+	if gh.Token() == "" {
+		return fmt.Errorf("a GitHub token is required to publish agent release assets; set GITHUB_TOKEN or GH_TOKEN, or authenticate the gh CLI (gh auth login)")
 	}
 	return nil
 }
@@ -281,47 +284,77 @@ func runReleaseAgentCI(ctx context.Context, self, agentDir, output string, nativ
 }
 
 // createAndUploadRelease publishes every staged loader archive and SBOM to
-// the GitHub release for tag. gh runs from workDir so it resolves the
-// repository from the origin remote.
+// the GitHub release for tag in owner/repo.
 //
 // Idempotent by design: it creates the release on the first publish, or
 // uploads into an existing one (clobbering same-named assets) on a retry
 // or `re-tag`. Without this a re-run after a partial upload would error on
 // the already-existing release, stranding a half-uploaded release.
-func createAndUploadRelease(ctx context.Context, workDir, tag string, assets []loaderAsset) error {
-	files := make([]string, 0, len(assets)*2)
+func createAndUploadRelease(ctx context.Context, client *github.Client, owner, repo, tag string, assets []loaderAsset) error {
+	release, err := getOrCreateRelease(ctx, client, owner, repo, tag)
+	if err != nil {
+		return err
+	}
+	existing := map[string]int64{}
+	for _, asset := range release.Assets {
+		existing[asset.GetName()] = asset.GetID()
+	}
 	for _, asset := range assets {
-		files = append(files, asset.archivePath)
+		files := []string{asset.archivePath}
 		if asset.sbomPath != "" {
 			files = append(files, asset.sbomPath)
 		}
-	}
-	var args []string
-	if releaseExists(ctx, workDir, tag) {
-		args = append([]string{"release", "upload", tag}, files...)
-		args = append(args, "--clobber")
-	} else {
-		args = append([]string{"release", "create", tag, "--title", tag, "--notes", "Release " + tag}, files...)
-	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	cmd.Dir = workDir
-	cmd.Env = os.Environ()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("publish GitHub release %s: %w", tag, err)
+		for _, file := range files {
+			if err := uploadReleaseAsset(ctx, client, owner, repo, release.GetID(), file, existing); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-// releaseExists reports whether a GitHub release already exists for tag.
-func releaseExists(ctx context.Context, workDir, tag string) bool {
-	cmd := exec.CommandContext(ctx, "gh", "release", "view", tag)
-	cmd.Dir = workDir
-	cmd.Env = os.Environ()
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	return cmd.Run() == nil
+// getOrCreateRelease returns the existing release for tag, or creates one when
+// none exists yet. A non-404 lookup error is surfaced rather than masked as a
+// missing release, so a transient API failure can't silently spawn a duplicate.
+func getOrCreateRelease(ctx context.Context, client *github.Client, owner, repo, tag string) (*github.RepositoryRelease, error) {
+	release, resp, err := client.Repositories.GetReleaseByTag(ctx, owner, repo, tag)
+	if err == nil {
+		return release, nil
+	}
+	if resp == nil || resp.StatusCode != http.StatusNotFound {
+		return nil, fmt.Errorf("look up GitHub release %s: %w", tag, err)
+	}
+	created, _, err := client.Repositories.CreateRelease(ctx, owner, repo, github.CreateReleaseRequest{
+		TagName: tag,
+		Name:    github.Ptr(tag),
+		Body:    github.Ptr("Release " + tag),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create GitHub release %s: %w", tag, err)
+	}
+	return created, nil
+}
+
+// uploadReleaseAsset uploads path into the release, replicating `gh --clobber`:
+// an already-present asset of the same name is deleted first, since the GitHub
+// API rejects uploading a duplicate name into a release.
+func uploadReleaseAsset(ctx context.Context, client *github.Client, owner, repo string, releaseID int64, path string, existing map[string]int64) error {
+	name := filepath.Base(path)
+	if id, ok := existing[name]; ok {
+		if _, err := client.Repositories.DeleteReleaseAsset(ctx, owner, repo, id); err != nil {
+			return fmt.Errorf("replace existing release asset %s: %w", name, err)
+		}
+		delete(existing, name)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open release asset %s: %w", path, err)
+	}
+	defer file.Close()
+	if _, _, err := client.Repositories.UploadReleaseAsset(ctx, owner, repo, releaseID, &github.UploadOptions{Name: name}, file); err != nil {
+		return fmt.Errorf("upload release asset %s: %w", name, err)
+	}
+	return nil
 }
 
 // verifyReleaseAssets confirms every uploaded loader archive resolves
@@ -387,7 +420,6 @@ func assertAssetReachable(ctx context.Context, url string) error {
 type agentReleaser struct {
 	self            string
 	agentDir        string
-	workDir         string
 	reg             *resources.AgentKindRegistration
 	skipConformance bool
 	publisher       string
@@ -428,14 +460,14 @@ var sourceTagKinds = map[string]bool{
 }
 
 // newAgentReleaseGate selects release behavior from the manifest kind.
-func newAgentReleaseGate(agentDir, workDir string) (releaseGate, error) {
+func newAgentReleaseGate(agentDir string) (releaseGate, error) {
 	identity, err := readAgentIdentity(filepath.Join(agentDir, "agent.codefly.yaml"))
 	if err != nil {
 		return nil, err
 	}
 	switch {
 	case loaderAssetKinds[identity.Kind]:
-		return newAgentReleaser(agentDir, workDir)
+		return newAgentReleaser(agentDir)
 	case sourceTagKinds[identity.Kind]:
 		return newSourceTagReleaser(agentDir, identity.Kind == string(resources.ModuleAgent))
 	default:
@@ -477,7 +509,7 @@ func unsupportedReleaseKindError(kind string) error {
 	return fmt.Errorf("publish supports %s; got %q", strings.Join(supported, ", "), kind)
 }
 
-func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
+func newAgentReleaser(agentDir string) (*agentReleaser, error) {
 	if err := checkAgentReleasePreconditions(); err != nil {
 		return nil, err
 	}
@@ -509,7 +541,6 @@ func newAgentReleaser(agentDir, workDir string) (*agentReleaser, error) {
 	return &agentReleaser{
 		self:            self,
 		agentDir:        agentDir,
-		workDir:         workDir,
 		reg:             &reg,
 		skipConformance: reg.Resource != resources.ServiceAgent,
 		publisher:       identity.Publisher,
@@ -544,7 +575,13 @@ func (r *agentReleaser) beforeCommit(ctx context.Context, newTag string) error {
 
 func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	version := strings.TrimPrefix(newTag, "v")
-	if err := createAndUploadRelease(ctx, r.workDir, newTag, r.assets); err != nil {
+	owner := strings.ReplaceAll(r.publisher, ".", "-")
+	repo := r.reg.GitHubRepository(r.name)
+	client, err := gh.NewClient()
+	if err != nil {
+		return err
+	}
+	if err := createAndUploadRelease(ctx, client, owner, repo, newTag, r.assets); err != nil {
 		return err
 	}
 	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, version, r.assets)
