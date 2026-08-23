@@ -21,15 +21,16 @@ func TestInventoryUnitDirectoriesAreDistinctAndKindChecked(t *testing.T) {
 		{Kind: UnitKindService, Name: "api", Path: "services/api"},
 		{Kind: UnitKindService, Name: "web", Path: "services/web"},
 		{Kind: UnitKindService, Name: "managed"},
+		{Kind: UnitKindSolution, Name: "checkout", Path: "solutions/checkout"},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dirs) != 1 || dirs[0] != "services" {
-		t.Fatalf("unit directories = %v, want [services]", dirs)
+	if len(dirs) != 2 || dirs[0] != "services" || dirs[1] != "solutions" {
+		t.Fatalf("unit directories = %v, want [services solutions]", dirs)
 	}
 	if _, err := inventoryUnitDirectories(&Inventory{Units: []InventoryUnit{
-		{Kind: "solution", Name: "checkout", Path: "solutions/checkout"},
+		{Kind: "widget", Name: "checkout", Path: "widgets/checkout"},
 	}}); err == nil || !strings.Contains(err.Error(), "unknown kind") {
 		t.Fatalf("error = %v, want unknown kind rejection", err)
 	}

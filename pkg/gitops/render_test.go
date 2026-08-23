@@ -205,12 +205,36 @@ func TestValidateInventoryUnitsRejectsUnknownKind(t *testing.T) {
 	inventory := &Inventory{
 		Module: "users",
 		Units: []InventoryUnit{
-			{Kind: "solution", Module: "users", Name: "checkout", Path: "solutions/checkout"},
+			{Kind: "widget", Module: "users", Name: "checkout", Path: "widgets/checkout"},
 		},
 	}
 	err := validateInventoryUnits(inventory)
 	if err == nil || !strings.Contains(err.Error(), "unknown kind") {
 		t.Fatalf("validateInventoryUnits error = %v, want unknown kind rejection", err)
+	}
+}
+
+func TestValidateInventoryUnitsAcceptsSolutionKind(t *testing.T) {
+	output := &InventoryKubernetesOutput{
+		Kind:            "KUSTOMIZE",
+		Profile:         "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+		Validation: &InventoryKubernetesValidation{
+			StaticValidation:     "STATUS_PASSED",
+			ServerSideValidation: "STATUS_PASSED",
+			Promotable:           true,
+			Violations:           []string{},
+		},
+	}
+	inventory := &Inventory{
+		Module:    "users",
+		OwnedPath: "deployments/modules/users",
+		Units: []InventoryUnit{
+			{Kind: UnitKindSolution, Module: "users", Name: "checkout", Path: "solutions/checkout", Output: output},
+		},
+	}
+	if err := validateInventoryUnits(inventory); err != nil {
+		t.Fatalf("validateInventoryUnits rejected a solution unit: %v", err)
 	}
 }
 

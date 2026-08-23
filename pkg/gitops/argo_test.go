@@ -102,6 +102,43 @@ func TestGenerateArgoBootstrapEmitsTenantApplicationSet(t *testing.T) {
 	}
 }
 
+func TestGenerateArgoBootstrapStampsSolutionUnit(t *testing.T) {
+	root := t.TempDir()
+	revision := strings.Repeat("c", 40)
+	targetPath := "environments/deployments/modules/hello"
+	inventory := &Inventory{
+		SchemaVersion: SchemaVersion,
+		Module:        "hello",
+		Environment:   "local",
+		Namespace:     "hello",
+		AppProject:    "hello",
+		Units: []InventoryUnit{
+			{Kind: UnitKindSolution, Module: "hello", Name: "hello", Path: "solutions/hello"},
+		},
+	}
+	writeOverlay(t, filepath.Join(root, "solutions", "hello", "overlays", "local"))
+	config := &repositoryConfig{RepoURL: "https://github.com/codefly-dev/manifests.git"}
+	if err := generateArgoBootstrap(
+		context.Background(), config, root, targetPath, inventory, "local", revision, "",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "bootstrap", "applicationset.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := string(data)
+	if !strings.Contains(set, "overlay: "+targetPath+"/solutions/hello/overlays/local") {
+		t.Fatalf("ApplicationSet does not stamp the solution overlay:\n%s", set)
+	}
+	// A solution reaches ArgoCD through the same bootstrap contract as a service:
+	// its Application is discovered by the graph gates that back publish/observe.
+	if err := validateBootstrapUnits(filepath.Join(root, "bootstrap"), targetPath, inventory, "local"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGenerateArgoBootstrapBoundsApplicationName(t *testing.T) {
 	root := t.TempDir()
 	revision := strings.Repeat("c", 40)
