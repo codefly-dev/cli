@@ -105,8 +105,21 @@ func runRelease(cmd *cobra.Command, args []string) error {
 	if createIssues {
 		fmt.Printf("\n==> Creating GitHub issues for agents with issues...\n")
 		issuesCreated := 0
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		for _, s := range statuses {
 			if s.Delta > 50 || len(s.Issues) > 0 {
+				// Never file a chore issue against an archived repo: it's frozen
+				// and can't be bumped or released, so the issue would be noise
+				// nobody can act on. Resolve the repo from the clone's origin so
+				// this works regardless of org; an unresolvable remote falls
+				// through to the normal (non-archived) path.
+				if repoIsArchived(ctx, filepath.Join(baseDir, s.Name)) {
+					fmt.Printf("⏭ Skipping archived repo %s\n", s.Name)
+					continue
+				}
 				if err := createAgentIssue(baseDir, s); err != nil {
 					fmt.Printf("⚠ Failed to create issue for %s: %v\n", s.Name, err)
 				} else {
@@ -249,6 +262,17 @@ func checkAgentHealth(agentPath string) []string {
 	}
 
 	return issues
+}
+
+// repoIsArchived reports whether the clone at path points at an archived GitHub
+// repo. A remote we can't resolve (not a git repo, no origin, non-GitHub) is
+// treated as non-archived so the caller proceeds exactly as before.
+func repoIsArchived(ctx context.Context, path string) bool {
+	owner, repo, err := agentRepository(path)
+	if err != nil {
+		return false
+	}
+	return gh.Archived(ctx, owner, repo)
 }
 
 func createAgentIssue(baseDir string, status AgentStatus) error {
