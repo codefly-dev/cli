@@ -77,11 +77,27 @@ func stageAssets(t *testing.T, names ...string) []loaderAsset {
 	dir := t.TempDir()
 	assets := make([]loaderAsset, 0, len(names))
 	for _, name := range names {
-		path := filepath.Join(dir, name)
-		require.NoError(t, os.WriteFile(path, []byte("payload-"+name), 0o644))
-		assets = append(assets, loaderAsset{archivePath: path})
+		assets = append(assets, loaderAsset{archivePath: stageFile(t, dir, name)})
 	}
 	return assets
+}
+
+// stageAssetWithSBOM builds a single loader asset carrying both an archive and
+// an SBOM, so the SBOM upload branch of createAndUploadRelease is exercised.
+func stageAssetWithSBOM(t *testing.T, archiveName, sbomName string) loaderAsset {
+	t.Helper()
+	dir := t.TempDir()
+	return loaderAsset{
+		archivePath: stageFile(t, dir, archiveName),
+		sbomPath:    stageFile(t, dir, sbomName),
+	}
+}
+
+func stageFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, []byte("payload-"+name), 0o644))
+	return path
 }
 
 func TestCreateAndUploadRelease_CreatesWhenAbsent(t *testing.T) {
@@ -110,4 +126,32 @@ func TestCreateAndUploadRelease_ClobbersExistingAsset(t *testing.T) {
 	require.False(t, f.created, "an existing release must be reused, not recreated")
 	require.Equal(t, []int64{7}, f.deleted, "the same-named asset must be deleted before re-upload")
 	require.Equal(t, []string{name}, f.uploaded)
+}
+
+func TestCreateAndUploadRelease_UploadsSBOMAlongsideArchive(t *testing.T) {
+	archive := "service-go_0.0.16_linux_amd64.tar.gz"
+	sbom := "service-go_0.0.16_linux_amd64.cdx.json"
+	f := &fakeGitHub{}
+	client := f.server(t, "v0.0.16", nil)
+	assets := []loaderAsset{stageAssetWithSBOM(t, archive, sbom)}
+
+	require.NoError(t, createAndUploadRelease(context.Background(), client, "codefly-dev", "service-go", "v0.0.16", assets))
+
+	require.ElementsMatch(t, []string{archive, sbom}, f.uploaded,
+		"both the archive and its SBOM must be uploaded")
+}
+
+func TestCreateAndUploadRelease_ClobbersSBOMToo(t *testing.T) {
+	archive := "service-go_0.0.16_linux_amd64.tar.gz"
+	sbom := "service-go_0.0.16_linux_amd64.cdx.json"
+	f := &fakeGitHub{}
+	client := f.server(t, "v0.0.16", map[string]int64{archive: 7, sbom: 9})
+	assets := []loaderAsset{stageAssetWithSBOM(t, archive, sbom)}
+
+	require.NoError(t, createAndUploadRelease(context.Background(), client, "codefly-dev", "service-go", "v0.0.16", assets))
+
+	require.False(t, f.created, "an existing release must be reused, not recreated")
+	require.ElementsMatch(t, []int64{7, 9}, f.deleted,
+		"both the archive and SBOM must be deleted before re-upload")
+	require.ElementsMatch(t, []string{archive, sbom}, f.uploaded)
 }

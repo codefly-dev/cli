@@ -11,6 +11,15 @@ import (
 	"github.com/google/go-github/v89/github"
 )
 
+// Owner maps a codefly publisher to its GitHub repository owner: dots become
+// dashes (codefly.dev -> codefly-dev). This is the single source of the rule
+// that core's manager.DownloadURL (the install resolver) and the release
+// upload/verify paths must all agree on; keeping it in one place is what stops
+// an upload target from silently drifting from the URL installers request.
+func Owner(publisher string) string {
+	return strings.ReplaceAll(publisher, ".", "-")
+}
+
 // NewClient returns a client authenticated with a resolved token when one is
 // available, or an anonymous client otherwise. Authenticating lifts the
 // unauthenticated 60/hour rate limit that turns listing many pinned agents

@@ -478,7 +478,7 @@ func fetchTagsFromGitHub(ctx context.Context, agent *resources.Agent) ([]string,
 // githubSource mirrors manager.toGithubSource (unexported): the publisher's
 // dots become dashes and the repo is service-<name>.
 func githubSource(agent *resources.Agent) (owner, repo string) {
-	return strings.ReplaceAll(agent.Publisher, ".", "-"), "service-" + agent.Name
+	return gh.Owner(agent.Publisher), "service-" + agent.Name
 }
 
 func localCacheVersions(ctx context.Context, agent *resources.Agent) []string {

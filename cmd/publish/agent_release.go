@@ -107,7 +107,7 @@ func loaderSBOMName(reg *resources.AgentKindRegistration, name, version string, 
 // (the resolver only knows the host platform). Consistency with the real
 // resolver is asserted in verifyReleaseAssets for the host target.
 func loaderDownloadURL(reg *resources.AgentKindRegistration, publisher, name, version string, p platform) string {
-	owner := strings.ReplaceAll(publisher, ".", "-")
+	owner := gh.Owner(publisher)
 	return fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/%s",
 		owner, reg.GitHubRepository(name), version, loaderArchiveName(reg, name, version, p))
 }
@@ -575,7 +575,7 @@ func (r *agentReleaser) beforeCommit(ctx context.Context, newTag string) error {
 
 func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	version := strings.TrimPrefix(newTag, "v")
-	owner := strings.ReplaceAll(r.publisher, ".", "-")
+	owner := gh.Owner(r.publisher)
 	repo := r.reg.GitHubRepository(r.name)
 	client, err := gh.NewClient()
 	if err != nil {

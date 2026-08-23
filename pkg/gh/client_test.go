@@ -6,6 +6,18 @@ import (
 	"testing"
 )
 
+func TestOwnerReplacesDotsWithDashes(t *testing.T) {
+	for _, tc := range []struct{ publisher, want string }{
+		{"codefly.dev", "codefly-dev"},
+		{"my.org.dev", "my-org-dev"},
+		{"codefly", "codefly"},
+	} {
+		if got := Owner(tc.publisher); got != tc.want {
+			t.Fatalf("Owner(%q) = %q, want %q", tc.publisher, got, tc.want)
+		}
+	}
+}
+
 func TestNewClientAddsAuthorization(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "secret")
 	var got string
