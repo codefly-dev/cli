@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver"
+	"github.com/google/go-github/v89/github"
 )
 
 // gitDir is the directory git owns in a working tree. It is never part of
@@ -33,6 +35,12 @@ type GitHubStore struct {
 	// commitIdentity is the author used for release commits.
 	commitName  string
 	commitEmail string
+	// ensureRepository creates the export's GitHub repository when it is absent,
+	// and is a no-op when it already exists. It runs before the clone in Publish:
+	// repository creation is a platform (API) operation git cannot perform. Tests
+	// point remoteFor at a local bare repository that already exists and disable
+	// this so publish never contacts the GitHub API.
+	ensureRepository func(ctx context.Context, language Language, name string) error
 }
 
 // NewGitHubStore returns a store publishing to repositories under owner.
@@ -41,6 +49,7 @@ func NewGitHubStore(owner string) *GitHubStore {
 	s.remoteFor = func(language Language, name string) string {
 		return fmt.Sprintf("https://github.com/%s/%s.git", s.Owner, repositoryName(language, name))
 	}
+	s.ensureRepository = s.createLibraryRepository
 	return s
 }
 
@@ -125,6 +134,10 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		return Published{}, err
 	}
 
+	if err = s.ensureRepository(ctx, c.Language, c.Name); err != nil {
+		return Published{}, err
+	}
+
 	work, err := os.MkdirTemp("", "codefly-library-publish-*")
 	if err != nil {
 		return Published{}, err
@@ -203,6 +216,61 @@ func validateGoModulePath(artifactDir, importPath string) error {
 		)
 	}
 	return nil
+}
+
+// createLibraryRepository creates the export's repository under the store owner
+// when a credential is available, and is a no-op when the repository already
+// exists. Without a token it does nothing: the subsequent clone fails with the
+// "create the library repository first" message, preserving today's behavior for
+// operators who provision repositories out of band.
+func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Language, name string) error {
+	token := githubToken()
+	if token == "" {
+		return nil
+	}
+	client, err := github.NewClient(github.WithAuthToken(token))
+	if err != nil {
+		return err
+	}
+	return ensureRepositoryExists(ctx, client, s.Owner, repositoryName(language, name))
+}
+
+// ensureRepositoryExists creates owner/repo when GitHub reports it absent, and
+// returns nil when it already exists. A "not found" means create it; any other
+// failure — permission, rate limit, network — is surfaced rather than mistaken
+// for a missing repository. The repository is created private: publishing an
+// automated release must not make an organization's history public as a side
+// effect; widening visibility is a deliberate, reversible follow-up.
+func ensureRepositoryExists(ctx context.Context, client *github.Client, owner, repo string) error {
+	if _, resp, err := client.Repositories.Get(ctx, owner, repo); err == nil {
+		return nil
+	} else if resp == nil || resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("librarystore: check repository %s/%s: %w", owner, repo, err)
+	}
+	if _, _, err := client.Repositories.Create(ctx, owner, &github.Repository{
+		Name:    github.Ptr(repo),
+		Private: github.Ptr(true),
+	}); err != nil {
+		return fmt.Errorf("librarystore: create repository %s/%s (a token with repository-creation scope is required): %w", owner, repo, err)
+	}
+	return nil
+}
+
+// githubToken resolves a GitHub token from GITHUB_TOKEN/GH_TOKEN, falling back
+// to the `gh` CLI's stored credential so local publishing works without an
+// exported token. An empty result leaves repository creation to the operator.
+func githubToken() string {
+	if t := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(os.Getenv("GH_TOKEN")); t != "" {
+		return t
+	}
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func parseGoModulePath(data []byte) (string, error) {
