@@ -178,9 +178,9 @@ func preparePublish(
 	}
 	var snapshotRevision string
 	if restoreRevision == "" {
-		module, err := workspace.LoadModuleFromName(ctx, request.Module)
-		if err != nil {
-			return fail(fmt.Errorf("load rendered module %q: %w", request.Module, err))
+		generateBootstrap, bootstrapErr := publicationGeneratesBootstrap(ctx, workspace, request.Module, &inventory)
+		if bootstrapErr != nil {
+			return fail(bootstrapErr)
 		}
 		snapshotRevision, inventory, err = prepareServicePublication(
 			ctx,
@@ -189,8 +189,7 @@ func preparePublish(
 			targetPath,
 			rendered,
 			&inventory,
-			workspace,
-			module,
+			generateBootstrap,
 			request.Environment,
 			config,
 			promotionBranch,
@@ -279,6 +278,12 @@ func loadPublicationInventory(
 	if inventory.OwnedPath != expectedOwnedPath {
 		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
 	}
+	if inventoryHasSolutionUnits(&inventory) {
+		if err := validateSolutionUnits(request.Module, inventory.Units); err != nil {
+			return Inventory{}, err
+		}
+		return inventory, nil
+	}
 	if err := validateModuleUnits(
 		ctx,
 		workspace,
@@ -289,6 +294,49 @@ func loadPublicationInventory(
 		return Inventory{}, err
 	}
 	return inventory, nil
+}
+
+// inventoryHasSolutionUnits reports whether a publication carries solution units.
+// A solution owns its own unit graph and Argo transport, so it is published
+// without a service-module resource to cross-check against.
+func inventoryHasSolutionUnits(inventory *Inventory) bool {
+	for _, unit := range inventory.Units {
+		if unit.Kind == UnitKindSolution {
+			return true
+		}
+	}
+	return false
+}
+
+// validateSolutionUnits checks a solution publication's unit graph. A solution's
+// units are defined by the executor's render, not by a workspace module, so the
+// only invariants to enforce are that every rendered unit is a solution unit of
+// the published module — no service units smuggled in, no foreign module.
+func validateSolutionUnits(moduleName string, units []InventoryUnit) error {
+	for _, unit := range units {
+		if unit.Kind != UnitKindSolution {
+			return fmt.Errorf("solution publication contains non-solution unit %q of kind %q", unit.Name, unit.Kind)
+		}
+		if unit.Module != moduleName {
+			return fmt.Errorf("rendered solution unit %q belongs to module %q, expected %q", unit.Name, unit.Module, moduleName)
+		}
+	}
+	return nil
+}
+
+// publicationGeneratesBootstrap reports whether the CLI owns Argo bootstrap
+// generation for this publication. A solution renders its transport through the
+// CLI exactly like an agent-backed module; a plain service module without an
+// agent instead ships a pre-rendered bootstrap in its own tree.
+func publicationGeneratesBootstrap(ctx context.Context, workspace *resources.Workspace, moduleName string, inventory *Inventory) (bool, error) {
+	if inventoryHasSolutionUnits(inventory) {
+		return true, nil
+	}
+	module, err := workspace.LoadModuleFromName(ctx, moduleName)
+	if err != nil {
+		return false, fmt.Errorf("load rendered module %q: %w", moduleName, err)
+	}
+	return module.Agent != nil, nil
 }
 
 func validateModuleUnits(
@@ -342,8 +390,7 @@ func prepareServicePublication(
 	targetPath string,
 	rendered string,
 	renderedInventory *Inventory,
-	workspace *resources.Workspace,
-	module *resources.Module,
+	generateBootstrap bool,
 	environment string,
 	config *repositoryConfig,
 	promotionBranch string,
@@ -357,7 +404,6 @@ func prepareServicePublication(
 		targetPath,
 		rendered,
 		renderedInventory,
-		module,
 		environment,
 		publishSnapshot,
 	)
@@ -371,7 +417,7 @@ func prepareServicePublication(
 	if err = removePublicationRemainder(target, unitDirs); err != nil {
 		return "", Inventory{}, err
 	}
-	if module.Agent != nil {
+	if generateBootstrap {
 		if err := generateArgoBootstrap(
 			ctx,
 			config,
@@ -400,7 +446,7 @@ func prepareServicePublication(
 	if err := validateBootstrapRevision(filepath.Join(target, "bootstrap"), snapshot.revision); err != nil {
 		return "", Inventory{}, err
 	}
-	if module.Agent != nil {
+	if generateBootstrap {
 		if err = validateBootstrapUnits(
 			filepath.Join(target, "bootstrap"),
 			targetPath,
@@ -452,10 +498,10 @@ func prepareServiceSnapshot(
 	targetPath,
 	rendered string,
 	renderedInventory *Inventory,
-	module *resources.Module,
 	environment string,
 	publishSnapshot bool,
 ) (serviceSnapshotPreparation, error) {
+	moduleName := renderedInventory.Module
 	unitDirs, dirErr := inventoryUnitDirectories(renderedInventory)
 	if dirErr != nil {
 		return serviceSnapshotPreparation{}, dirErr
@@ -485,7 +531,7 @@ func prepareServiceSnapshot(
 	if _, err := gitCommand(ctx, repo, append([]string{"add", "-A", "--"}, servicePaths...)...); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
-	existingSnapshot, err := existingServiceSnapshot(ctx, repo, module.Name, environment, filepath.Join(target, "bootstrap"))
+	existingSnapshot, err := existingServiceSnapshot(ctx, repo, moduleName, environment, filepath.Join(target, "bootstrap"))
 	if err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
@@ -534,13 +580,13 @@ func prepareServiceSnapshot(
 	}
 	snapshotRevision := existingSnapshot
 	if snapshotChanged || lineageMissing {
-		snapshotRevision, err = commitServiceSnapshot(ctx, repo, module.Name, environment, existingSnapshot)
+		snapshotRevision, err = commitServiceSnapshot(ctx, repo, moduleName, environment, existingSnapshot)
 		if err != nil {
 			return serviceSnapshotPreparation{}, err
 		}
 	}
 	if publishSnapshot {
-		if err := publishServiceSnapshot(ctx, repo, module.Name, environment, snapshotRevision); err != nil {
+		if err := publishServiceSnapshot(ctx, repo, moduleName, environment, snapshotRevision); err != nil {
 			return serviceSnapshotPreparation{}, err
 		}
 	}

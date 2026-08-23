@@ -274,6 +274,173 @@ exit 2
 	}
 }
 
+// TestLocalK3dDisposableSolutionQualification is the acceptance bar for the
+// codefly:solution deploy path: a hello-solution goes OCI package → rendered
+// owned tree → published snapshot → ArgoCD Application → its own synced
+// namespace. The in-process executor stands in for the verified-artifact plugin;
+// everything downstream (render pipeline, publish, ArgoCD reconciliation) is the
+// real service path, unchanged, driving a solution unit to the last mile the
+// previous non-service kinds never reached.
+func TestLocalK3dDisposableSolutionQualification(t *testing.T) {
+	if os.Getenv("CODEFLY_GITOPS_K3D_QUALIFY") != "1" {
+		t.Skip("set CODEFLY_GITOPS_K3D_QUALIFY=1 to run the disposable k3d solution qualification")
+	}
+	for _, binary := range []string{"docker", "k3d", "kubectl", "ssh-keygen"} {
+		if _, err := exec.LookPath(binary); err != nil {
+			t.Fatalf("%s is required: %v", binary, err)
+		}
+	}
+
+	installFakeSolutionExecutor(t, &fakeSolutionExecutor{})
+	remote := createBareRepository(t)
+	workspace := loadSolutionWorkspace(t, remote)
+	env := workspace.FindEnvironment("local")
+	if env == nil {
+		t.Fatal("environment local not found")
+	}
+	agent := &resources.Agent{
+		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
+	}
+	if _, err := RenderSolution(context.Background(), &SolutionRenderRequest{
+		Workspace: workspace, Environment: env, Agent: agent, Name: "hello",
+		Source:     filepath.Join(workspace.Dir(), "solution-src"),
+		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
+		AppProject: "hello",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	configureSSHSigning(t)
+	request := PublishRequest{
+		Module: "hello", Environment: "local", Local: true,
+		PromotionBranch: "codefly/promote-hello-local",
+	}
+	plan, err := PlanPublish(context.Background(), workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := Publish(context.Background(), workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergePromotionToMain(t, remote, request.PromotionBranch)
+	gitRun(t, "", "--git-dir", remote, "update-server-info")
+
+	cluster := "codefly-solution-" + fmt.Sprintf("%x", time.Now().UnixNano())
+	runExternal(t, "", nil, "k3d", "cluster", "create", cluster,
+		"--servers", "1", "--agents", "0", "--wait", "--timeout", "2m",
+		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
+	t.Cleanup(func() {
+		command := exec.Command("k3d", "cluster", "delete", cluster)
+		_ = command.Run()
+	})
+	gitServer := cluster + "-git"
+	runExternal(t, "", nil, "docker", "run", "--detach", "--name", gitServer,
+		"--network", "k3d-"+cluster, "--volume", filepath.Dir(remote)+":/git:ro",
+		"alpine:3.22.1", "sh", "-c",
+		"apk add --no-cache git-daemon >/dev/null && exec git daemon --reuseaddr --export-all --base-path=/git --listen=0.0.0 --port=9418 /git")
+	t.Cleanup(func() {
+		command := exec.Command("docker", "rm", "--force", gitServer)
+		_ = command.Run()
+	})
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig.yaml")
+	config := runExternal(t, "", nil, "k3d", "kubeconfig", "get", cluster)
+	if err := os.WriteFile(kubeconfig, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kubectl := func(input []byte, args ...string) string {
+		full := append([]string{"--kubeconfig", kubeconfig}, args...)
+		return runExternal(t, "", input, "kubectl", full...)
+	}
+	kubectl(nil, "create", "namespace", "argocd")
+	kubectl(nil, "apply", "--server-side", "--force-conflicts", "-n", "argocd", "-f",
+		"https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.1/manifests/install.yaml")
+	kubectl(nil, "wait", "--for=condition=Ready", "pod", "--all", "-n", "argocd", "--timeout=5m")
+
+	// The solution provisions its own namespace: the AppProject whitelists the
+	// cluster-scoped Namespace the rendered overlay carries, and the namespace is
+	// NOT pre-created — proving the packaged solution stamps its own anatomy.
+	repository := "git://" + gitServer + "/" + filepath.Base(remote)
+	argoResources := fmt.Sprintf(`apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: hello
+  namespace: argocd
+spec:
+  sourceRepos:
+    - %s
+  destinations:
+    - namespace: hello
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hello
+  namespace: argocd
+spec:
+  project: hello
+  source:
+    repoURL: %s
+    targetRevision: %s
+    path: environments/deployments/modules/hello/solutions/hello/overlays/local
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hello
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+`, repository, repository, published.SnapshotRevision)
+	kubectl([]byte(argoResources), "apply", "-f", "-")
+
+	bin := t.TempDir()
+	argocd := filepath.Join(bin, "argocd")
+	shim := `#!/bin/sh
+if [ "$1" = "proj" ]; then
+  exec kubectl --kubeconfig "$CODEFLY_TEST_KUBECONFIG" -n argocd get appproject "$3" -o json
+fi
+if [ "$1" = "app" ]; then
+  exec kubectl --kubeconfig "$CODEFLY_TEST_KUBECONFIG" -n argocd get application "$3" -o json
+fi
+if [ "$1" = "cluster" ]; then
+  printf '{"server":"https://kubernetes.default.svc","name":"%s","config":{"kubeconfig":"%s"}}\n' "$CODEFLY_TEST_CLUSTER" "$CODEFLY_TEST_KUBECONFIG"
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(argocd, []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEFLY_TEST_KUBECONFIG", kubeconfig)
+	t.Setenv("CODEFLY_TEST_CLUSTER", cluster)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	observed, err := Observe(context.Background(), &ObserveRequest{
+		WorkspaceRoot: workspace.Dir(), Module: "hello", Environment: "local",
+		AppProject: "hello", Applications: []string{"hello"},
+		Revision: published.SnapshotRevision, Commit: published.Commit, Tree: published.Tree,
+		RenderDigest: published.RenderDigest, Repository: published.Repository, Path: published.Path,
+		PullRequest: published.PullRequest, Local: true,
+		Timeout: 5 * time.Minute, PollInterval: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.Evidence.Health != "Healthy" || observed.Evidence.ArgoRevision != published.SnapshotRevision {
+		t.Fatalf("solution qualification evidence = %+v", observed.Evidence)
+	}
+	// The solution's rendered ConfigMap landed in the namespace it stamped.
+	if value := kubectl(nil, "get", "configmap", "hello", "-n", "hello", "-o", "jsonpath={.data.release}"); value != "qualified" {
+		t.Fatalf("solution ConfigMap release = %q", value)
+	}
+}
+
 // TestLocalFetchRemoteLifecycle proves the CLI-owned read-only fetch remote on a
 // disposable k3d network: host loopback exposure, private reachability of the
 // exact reviewed revision over container DNS + TLS with declarative CA trust, no
