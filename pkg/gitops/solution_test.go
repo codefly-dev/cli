@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
+	"strings"
 )
 
 // fakeSolutionExecutor is an in-process codefly:solution executor: Package
@@ -25,6 +26,7 @@ type fakeSolutionExecutor struct {
 	packageSource     string
 	renderArtifact    string
 	renderDestination string
+	renderNamespace   string
 	environment       string
 }
 
@@ -40,14 +42,19 @@ func (f *fakeSolutionExecutor) Package(_ context.Context, req *solutionv0.Packag
 func (f *fakeSolutionExecutor) Render(_ context.Context, req *solutionv0.RenderRequest) (*solutionv0.RenderResponse, error) {
 	f.renderArtifact = req.GetArtifactReference()
 	f.renderDestination = req.GetDestination()
+	// A real executor cannot know the target namespace; the host supplies it.
+	f.renderNamespace = req.GetValues()[SolutionNamespaceValue]
+	if f.renderNamespace == "" {
+		return nil, fmt.Errorf("render was not told the target namespace")
+	}
 	overlay := filepath.Join(req.GetDestination(), "overlays", req.GetContext().GetEnvironment())
 	if err := os.MkdirAll(overlay, 0o755); err != nil {
 		return nil, err
 	}
 	files := map[string]string{
 		"kustomization.yaml": "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - namespace.yaml\n  - configmap.yaml\n",
-		"namespace.yaml":     "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: hello\n",
-		"configmap.yaml":     "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: hello\n  namespace: hello\ndata:\n  release: qualified\n",
+		"namespace.yaml":     fmt.Sprintf("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n", f.renderNamespace),
+		"configmap.yaml":     fmt.Sprintf("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: hello\n  namespace: %s\ndata:\n  release: qualified\n", f.renderNamespace),
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(overlay, name), []byte(body), 0o644); err != nil {
@@ -132,7 +139,7 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
 
-	result, err := RenderSolution(context.Background(), SolutionRenderRequest{
+	result, err := RenderSolution(context.Background(), &SolutionRenderRequest{
 		Workspace:   workspace,
 		Environment: env,
 		Agent:       agent,
@@ -158,6 +165,11 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 	if filepath.Base(fake.renderDestination) != "hello" || filepath.Base(filepath.Dir(fake.renderDestination)) != solutionUnitDir {
 		t.Fatalf("executor render destination %q, want .../solutions/hello", fake.renderDestination)
 	}
+	// The host must tell the executor the environment namespace, or it cannot
+	// render a Namespace that survives publish (the AppProject's sole destination).
+	if fake.renderNamespace != "hello" {
+		t.Fatalf("executor was told namespace %q, want the environment namespace %q", fake.renderNamespace, "hello")
+	}
 
 	inventory := result.Inventory
 	if len(inventory.Units) != 1 {
@@ -181,5 +193,79 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(result.Path, "solutions", "hello", "overlays", "local", "configmap.yaml")); err != nil {
 		t.Fatalf("rendered overlay missing: %v", err)
+	}
+}
+
+func TestSolutionPublicationDoesNotRequireAModuleResource(t *testing.T) {
+	// A workspace named "hello" with no module "checkout": if the publish path
+	// tried to load a service module for a solution, this would error.
+	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
+	inventory := &Inventory{Units: []InventoryUnit{
+		{Kind: UnitKindSolution, Module: "checkout", Name: "checkout", Path: "solutions/checkout"},
+	}}
+	generate, err := publicationGeneratesBootstrap(context.Background(), workspace, "checkout", inventory)
+	if err != nil || !generate {
+		t.Fatalf("publicationGeneratesBootstrap = (%v, %v), want (true, nil) with no module load", generate, err)
+	}
+	if err := validateSolutionUnits("checkout", inventory.Units); err != nil {
+		t.Fatalf("validateSolutionUnits: %v", err)
+	}
+	// A service unit smuggled into a solution publication must be rejected.
+	mixed := []InventoryUnit{{Kind: UnitKindService, Module: "checkout", Name: "api", Path: "services/api"}}
+	if err := validateSolutionUnits("checkout", mixed); err == nil {
+		t.Fatal("validateSolutionUnits accepted a non-solution unit")
+	}
+}
+
+// TestLocalGitopsPublishSolutionGeneratesBootstrap drives the real publish path
+// for a solution and asserts the CLI generates the Argo ApplicationSet — the
+// transport a solution has no service module or module-agent to trigger. Without
+// the publish fix this produces a tree with no bootstrap, so the solution never
+// reaches ArgoCD; the assertion here is what catches that regression.
+func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
+	ctx := context.Background()
+	installFakeSolutionExecutor(t, &fakeSolutionExecutor{})
+	remote := createBareRepository(t)
+	workspace := loadSolutionWorkspace(t, remote)
+	env := workspace.FindEnvironment("local")
+	if env == nil {
+		t.Fatal("environment local not found")
+	}
+	agent := &resources.Agent{
+		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
+	}
+	if _, err := RenderSolution(ctx, &SolutionRenderRequest{
+		Workspace: workspace, Environment: env, Agent: agent, Name: "hello",
+		Source:     filepath.Join(workspace.Dir(), "solution-src"),
+		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
+		AppProject: "hello",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configureSSHSigning(t)
+
+	request := PublishRequest{
+		Module: "hello", Environment: "local", Local: true,
+		PromotionBranch: "codefly/promote-hello-local",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	appSet := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/bootstrap/applicationset.yaml")
+	if !strings.Contains(appSet, "kind: ApplicationSet") ||
+		!strings.Contains(appSet, "overlay: "+result.Path+"/solutions/hello/overlays/local") {
+		t.Fatalf("published bootstrap does not stamp the solution Application:\n%s", appSet)
+	}
+	// The packaged solution's own Namespace is authorized by the generated
+	// AppProject: destination namespace plus a cluster-scoped Namespace whitelist.
+	project := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/bootstrap/project.yaml")
+	if !strings.Contains(project, "namespace: hello") || !strings.Contains(project, "kind: Namespace") {
+		t.Fatalf("generated AppProject does not authorize the solution namespace:\n%s", project)
 	}
 }

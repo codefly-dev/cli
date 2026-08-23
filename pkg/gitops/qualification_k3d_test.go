@@ -301,7 +301,7 @@ func TestLocalK3dDisposableSolutionQualification(t *testing.T) {
 	agent := &resources.Agent{
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
-	if _, err := RenderSolution(context.Background(), SolutionRenderRequest{
+	if _, err := RenderSolution(context.Background(), &SolutionRenderRequest{
 		Workspace: workspace, Environment: env, Agent: agent, Name: "hello",
 		Source:     filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",

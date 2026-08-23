@@ -46,7 +46,7 @@ type SolutionRenderRequest struct {
 // RenderSolution packages a solution into an OCI artifact and renders its
 // manifests into the owned gitops tree, driving the codefly:solution executor
 // through the same promotable render pipeline services and modules use.
-func RenderSolution(ctx context.Context, req SolutionRenderRequest) (RenderResult, error) {
+func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResult, error) {
 	if err := req.Workspace.ValidateEnvironments(ctx); err != nil {
 		return RenderResult{}, err
 	}
@@ -97,7 +97,7 @@ func RenderSolution(ctx context.Context, req SolutionRenderRequest) (RenderResul
 		if err != nil {
 			return fmt.Errorf("package solution %s: %w", req.Name, err)
 		}
-		if err := solutionDiagnostics("package", req.Name, packaged.GetDiagnostics()); err != nil {
+		if err = solutionDiagnostics("package", req.Name, packaged.GetDiagnostics()); err != nil {
 			return err
 		}
 		artifact.ArtifactDigest = packaged.GetArtifactDigest()
@@ -106,12 +106,12 @@ func RenderSolution(ctx context.Context, req SolutionRenderRequest) (RenderResul
 			Context:           solutionContext,
 			ArtifactReference: packaged.GetReference(),
 			Destination:       filepath.Join(stage, solutionUnitDir, req.Name),
-			Values:            req.Values,
+			Values:            solutionRenderValues(req.Values, env.Namespace),
 		})
 		if err != nil {
 			return fmt.Errorf("render solution %s: %w", req.Name, err)
 		}
-		if err := solutionDiagnostics("render", req.Name, rendered.GetDiagnostics()); err != nil {
+		if err = solutionDiagnostics("render", req.Name, rendered.GetDiagnostics()); err != nil {
 			return err
 		}
 		if len(rendered.GetRenderedPaths()) == 0 {
@@ -127,6 +127,24 @@ func RenderSolution(ctx context.Context, req SolutionRenderRequest) (RenderResul
 		}}
 		return nil
 	})
+}
+
+// SolutionNamespaceValue is the Render value key through which the CLI tells the
+// solution executor the exact namespace its manifests must target. Publish binds
+// the rendered namespace to the environment's namespace — the AppProject's sole
+// destination — so the executor cannot choose it and must render into this one.
+const SolutionNamespaceValue = "codefly.namespace"
+
+// solutionRenderValues layers the CLI-authoritative namespace over the caller's
+// values. The namespace wins on collision: a value that disagreed with the
+// environment namespace would render a Namespace the publish AppProject rejects.
+func solutionRenderValues(values map[string]string, namespace string) map[string]string {
+	merged := make(map[string]string, len(values)+1)
+	for key, value := range values {
+		merged[key] = value
+	}
+	merged[SolutionNamespaceValue] = namespace
+	return merged
 }
 
 // solutionExecutor is the subset of the ceiling-enforcing solution client
@@ -172,7 +190,8 @@ func solutionDiagnostics(phase, name string, diagnostics []*basev0.FailureDiagno
 // validation stays NOT_RUN because the CLI runs only the static ruleset.
 func solutionRenderAttestation() *InventoryKubernetesOutput {
 	return &InventoryKubernetesOutput{
-		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Kind: builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		//nolint:staticcheck // validateInventoryKubernetesOutput accepts exactly this profile; matching it is required, not optional.
 		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String(),
 		ContractVersion: coreservices.KubernetesManifestContractVersion,
 		Validation: &InventoryKubernetesValidation{

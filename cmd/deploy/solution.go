@@ -22,7 +22,7 @@ var SolutionCmd = &cobra.Command{
 	Use:   "solution [name]",
 	Short: "Package and render a solution into the gitops tree",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -53,7 +53,7 @@ var SolutionCmd = &cobra.Command{
 			return fmt.Errorf("cannot parse solution agent %q: %w", solutionAgent, err)
 		}
 
-		result, err := gitops.RenderSolution(ctx, gitops.SolutionRenderRequest{
+		result, err := gitops.RenderSolution(ctx, &gitops.SolutionRenderRequest{
 			Workspace:   workspace,
 			Environment: env,
 			Agent:       agent,
