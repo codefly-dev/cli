@@ -280,6 +280,7 @@ func createAgentIssue(baseDir string, status AgentStatus) error {
 }
 
 func agentRepository(agentPath string) (string, string, error) {
+	//nolint:gosec // git is invoked with fixed subcommands; agentPath is a scanned filesystem path, never a shell.
 	out, err := exec.Command("git", "-C", agentPath, "remote", "get-url", "origin").Output()
 	if err != nil {
 		return "", "", fmt.Errorf("resolve %s origin remote: %w", agentPath, err)

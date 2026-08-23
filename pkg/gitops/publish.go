@@ -1277,11 +1277,11 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 		if pr.GetHead().GetSHA() != commit {
 			return "", 0, fmt.Errorf("pull request head is %s, expected %s", pr.GetHead().GetSHA(), commit)
 		}
-		if _, _, err := client.PullRequests.Edit(ctx, owner, repo, pr.GetNumber(), &github.PullRequest{
+		if _, _, editErr := client.PullRequests.Edit(ctx, owner, repo, pr.GetNumber(), &github.PullRequest{
 			Title: github.Ptr(title),
 			Body:  github.Ptr(body),
-		}); err != nil {
-			return "", 0, fmt.Errorf("update promotion pull request: %w", err)
+		}); editErr != nil {
+			return "", 0, fmt.Errorf("update promotion pull request: %w", editErr)
 		}
 		return pr.GetHTMLURL(), pr.GetNumber(), nil
 	}
