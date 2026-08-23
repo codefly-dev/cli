@@ -85,6 +85,37 @@ func TestBuildInventoryLatestTagBeatsLatestResolvable(t *testing.T) {
 	}
 }
 
+func TestBuildInventoryDistinguishesSourcePinFromPromotionCandidate(t *testing.T) {
+	agent := &resources.Agent{
+		Kind:      resources.ServiceAgent,
+		Publisher: "codefly.dev",
+		Name:      "python",
+		Version:   "latest",
+	}
+	releases := []releaseInfo{
+		{version: "0.0.52", platforms: []string{ciPlatform}},
+		{version: "0.0.53", platforms: []string{ciPlatform}},
+	}
+
+	inv := buildInventory(agent, releases, []string{"0.0.52", "0.0.53"}, nil, nil, nil, false)
+
+	if inv.LatestResolvable != "0.0.53" {
+		t.Fatalf("latest resolvable = %q, want 0.0.53", inv.LatestResolvable)
+	}
+	if inv.SourceWorkspace == nil {
+		t.Fatal("source-workspace status missing")
+	}
+	if inv.SourceWorkspace.WillLaunch != "0.0.52" {
+		t.Fatalf("source checkout version = %q, want pinned 0.0.52", inv.SourceWorkspace.WillLaunch)
+	}
+	if !inv.SourceWorkspace.Stale || inv.SourceWorkspace.PromotionCandidate != "0.0.53" {
+		t.Fatalf("source-workspace status = %+v, want stale promotion candidate 0.0.53", inv.SourceWorkspace)
+	}
+	if len(inv.SourceWorkspace.Markers) == 0 {
+		t.Fatal("source-workspace marker families missing")
+	}
+}
+
 func TestBuildInventorySortsDescending(t *testing.T) {
 	tags := []string{"0.0.56", "0.0.74", "0.0.73"}
 	inv := buildInventory(redisAgent(), nil, tags, nil, nil, nil, false)
