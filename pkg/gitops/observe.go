@@ -12,12 +12,8 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
-
-	ghclient "github.com/codefly-dev/cli/pkg/github"
-	"github.com/google/go-github/v89/github"
 )
 
 var (
@@ -727,43 +723,43 @@ func observeReview(ctx context.Context, pullRequest, publishedCommit, repository
 	if len(segments) != 4 || segments[0]+"/"+strings.TrimSuffix(segments[1], ".git") != repositorySlug {
 		return ReviewEvidence{}, fmt.Errorf("promotion pull request repository differs from published repository")
 	}
-	owner, repo, err := splitRepositorySlug(repositorySlug)
-	if err != nil {
-		return ReviewEvidence{}, err
-	}
-	number, err := strconv.Atoi(segments[3])
-	if err != nil {
-		return ReviewEvidence{}, fmt.Errorf("parse promotion pull request number: %w", err)
-	}
-	client, err := ghclient.NewClient()
-	if err != nil {
-		return ReviewEvidence{}, err
-	}
-	pullRequestResource, _, err := client.PullRequests.Get(ctx, owner, repo, number)
+	output, err := command(ctx, "", "gh", "pr", "view", pullRequest,
+		"--json", "url,state,reviewDecision,reviews,mergeCommit,commits")
 	if err != nil {
 		return ReviewEvidence{}, fmt.Errorf("observe promotion review: %w", err)
 	}
-	if pullRequestResource.GetHTMLURL() != pullRequest {
-		return ReviewEvidence{}, fmt.Errorf("GitHub returned promotion pull request %s, expected %s", pullRequestResource.GetHTMLURL(), pullRequest)
+	var response struct {
+		URL            string `json:"url"`
+		State          string `json:"state"`
+		ReviewDecision string `json:"reviewDecision"`
+		Reviews        []struct {
+			State  string `json:"state"`
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"reviews"`
+		MergeCommit struct {
+			OID string `json:"oid"`
+		} `json:"mergeCommit"`
+		Commits []struct {
+			OID string `json:"oid"`
+		} `json:"commits"`
 	}
-	if !pullRequestResource.GetMerged() {
-		return ReviewEvidence{}, fmt.Errorf("promotion pull request is %s, expected MERGED", strings.ToUpper(pullRequestResource.GetState()))
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		return ReviewEvidence{}, fmt.Errorf("decode promotion review: %w", err)
 	}
-	reviews, err := listPullRequestReviews(ctx, client, owner, repo, number)
-	if err != nil {
-		return ReviewEvidence{}, fmt.Errorf("observe promotion review: %w", err)
+	if response.URL != pullRequest {
+		return ReviewEvidence{}, fmt.Errorf("GitHub returned promotion pull request %s, expected %s", response.URL, pullRequest)
 	}
-	decision := deriveReviewDecision(reviews)
-	if decision != approvedReviewDecision {
-		return ReviewEvidence{}, fmt.Errorf("promotion pull request review decision is %s, expected APPROVED", decision)
+	if response.State != "MERGED" {
+		return ReviewEvidence{}, fmt.Errorf("promotion pull request is %s, expected MERGED", response.State)
 	}
-	commits, err := listPullRequestCommits(ctx, client, owner, repo, number)
-	if err != nil {
-		return ReviewEvidence{}, fmt.Errorf("observe promotion review: %w", err)
+	if response.ReviewDecision != approvedReviewDecision {
+		return ReviewEvidence{}, fmt.Errorf("promotion pull request review decision is %s, expected APPROVED", response.ReviewDecision)
 	}
 	published := false
-	for _, commit := range commits {
-		if commit.GetSHA() == publishedCommit {
+	for _, commit := range response.Commits {
+		if commit.OID == publishedCommit {
 			published = true
 			break
 		}
@@ -772,12 +768,12 @@ func observeReview(ctx context.Context, pullRequest, publishedCommit, repository
 		return ReviewEvidence{}, fmt.Errorf("promotion pull request does not contain signed commit %s", publishedCommit)
 	}
 	evidence := ReviewEvidence{
-		URL: pullRequestResource.GetHTMLURL(), State: "MERGED", ReviewDecision: decision,
-		MergeCommit: pullRequestResource.GetMergeCommitSHA(),
+		URL: response.URL, State: response.State, ReviewDecision: response.ReviewDecision,
+		MergeCommit: response.MergeCommit.OID,
 	}
-	for _, review := range reviews {
-		if review.GetState() == approvedReviewDecision && review.GetUser().GetLogin() != "" {
-			evidence.Reviewers = append(evidence.Reviewers, review.GetUser().GetLogin())
+	for _, review := range response.Reviews {
+		if review.State == approvedReviewDecision && review.Author.Login != "" {
+			evidence.Reviewers = append(evidence.Reviewers, review.Author.Login)
 		}
 	}
 	sort.Strings(evidence.Reviewers)
@@ -785,63 +781,4 @@ func observeReview(ctx context.Context, pullRequest, publishedCommit, repository
 		return ReviewEvidence{}, fmt.Errorf("promotion pull request has no approving review")
 	}
 	return evidence, nil
-}
-
-// deriveReviewDecision reproduces GitHub's pull-request review decision from the
-// REST review list — a field only the GraphQL API exposes directly. Only each
-// author's latest APPROVED/CHANGES_REQUESTED/DISMISSED review counts; a single
-// outstanding change request blocks approval, and at least one standing approval
-// is required.
-func deriveReviewDecision(reviews []*github.PullRequestReview) string {
-	latest := make(map[string]string)
-	for _, review := range reviews {
-		switch review.GetState() {
-		case "APPROVED", "CHANGES_REQUESTED", "DISMISSED":
-			latest[review.GetUser().GetLogin()] = review.GetState()
-		}
-	}
-	decision := "REVIEW_REQUIRED"
-	for _, state := range latest {
-		if state == "CHANGES_REQUESTED" {
-			return "CHANGES_REQUESTED"
-		}
-		if state == approvedReviewDecision {
-			decision = approvedReviewDecision
-		}
-	}
-	return decision
-}
-
-func listPullRequestReviews(ctx context.Context, client *github.Client, owner, repo string, number int) ([]*github.PullRequestReview, error) {
-	var all []*github.PullRequestReview
-	opts := &github.ListOptions{PerPage: 100}
-	for {
-		reviews, resp, err := client.PullRequests.ListReviews(ctx, owner, repo, number, opts)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, reviews...)
-		if resp.NextPage == 0 {
-			break
-		}
-		opts.Page = resp.NextPage
-	}
-	return all, nil
-}
-
-func listPullRequestCommits(ctx context.Context, client *github.Client, owner, repo string, number int) ([]*github.RepositoryCommit, error) {
-	var all []*github.RepositoryCommit
-	opts := &github.ListOptions{PerPage: 100}
-	for {
-		commits, resp, err := client.PullRequests.ListCommits(ctx, owner, repo, number, opts)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, commits...)
-		if resp.NextPage == 0 {
-			break
-		}
-		opts.Page = resp.NextPage
-	}
-	return all, nil
 }
