@@ -245,12 +245,20 @@ func defaultCrossOutput(cliSrcDir, goos string) string {
 // buildCLICross compiles a static CLI binary for goos/goarch. Static
 // (CGO_ENABLED=0 + -extldflags "-static") so alpine images can run it
 // without glibc; stripped (-s -w) for size. Replaces scripts/build/linux.sh.
+//
+// The `codefly_nosemantic` tag drops the tree-sitter semantic analyzer, which
+// cannot link without cgo. It is required (not merely implied by CGO_ENABLED=0):
+// without it this CGO-free build would select the analyzer variant and fail to
+// link. This cross binary is an in-container artifact that never serves the
+// semantic gateway, and it is never installed over the running CLI, so the
+// analyzer is not needed here. See pkg/engine/source_nosemantic.go.
 func buildCLICross(ctx context.Context, srcDir, output, goos, goarch string) error {
 	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 	start := time.Now()
 	build := exec.CommandContext(ctx, "go", "build",
+		"-tags", "codefly_nosemantic",
 		"-ldflags", `-s -w -extldflags "-static"`,
 		"-o", output,
 		".",
