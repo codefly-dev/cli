@@ -3,6 +3,8 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,29 +77,32 @@ gitops:
 	if err := os.WriteFile(kubectl, []byte("#!/bin/sh\ntouch \"$CODEFLY_TEST_KUBECTL_CALLED\"\nexit 97\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gh := filepath.Join(bin, "gh")
-	ghScript := `#!/bin/sh
-set -eu
-if [ "$1 $2" = "pr list" ]; then
-  printf '%s\n' '[]'
-  exit 0
-fi
-if [ "$1 $2" = "pr create" ]; then
-  printf '%s\n' 'https://github.com/codefly-test/manifests/pull/1'
-  exit 0
-fi
-if [ "$1 $2" = "pr view" ]; then
-  revision="$(git --git-dir "$CODEFLY_TEST_REMOTE" rev-parse refs/heads/codefly/promote-payments-aws)"
-  printf '{"number":1,"url":"https://github.com/codefly-test/manifests/pull/1","headRefOid":"%s","baseRefName":"main"}\n' "$revision"
-  exit 0
-fi
-exit 2
-`
-	if err := os.WriteFile(gh, []byte(ghScript), 0o755); err != nil {
-		t.Fatal(err)
+	branchRevision := func() string {
+		out, err := exec.Command("git", "--git-dir", remote, "rev-parse", "refs/heads/codefly/promote-payments-aws").Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
 	}
+	pullRequest := func() string {
+		return fmt.Sprintf(`{"number":1,"html_url":"https://github.com/codefly-test/manifests/pull/1","head":{"sha":%q},"base":{"ref":"main"}}`, branchRevision())
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
+			fmt.Fprint(w, pullRequest())
+		case strings.HasSuffix(r.URL.Path, "/pulls/1"):
+			fmt.Fprint(w, pullRequest())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
 	t.Setenv("CODEFLY_TEST_KUBECTL_CALLED", kubectlCalled)
-	t.Setenv("CODEFLY_TEST_REMOTE", remote)
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", server.URL)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	request := PublishRequest{

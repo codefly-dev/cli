@@ -3,6 +3,8 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -258,23 +260,21 @@ func TestObserveRejectsUnverifiedLocalReviewReference(t *testing.T) {
 }
 
 func TestObserveReviewProvesApprovalMergeAndPublishedCommit(t *testing.T) {
-	bin := t.TempDir()
-	script := filepath.Join(bin, "gh")
-	content := `#!/bin/sh
-printf '%s\n' "$CODEFLY_TEST_GH_RESPONSE"
-`
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("CODEFLY_TEST_GH_RESPONSE", `{
-  "url":"https://github.com/codefly-dev/manifests/pull/42",
-  "state":"MERGED",
-  "reviewDecision":"APPROVED",
-  "reviews":[{"state":"APPROVED","author":{"login":"reviewer"}}],
-  "mergeCommit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-  "commits":[{"oid":"cccccccccccccccccccccccccccccccccccccccc"}]
-}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/42/reviews"):
+			fmt.Fprint(w, `[{"state":"APPROVED","user":{"login":"reviewer"}}]`)
+		case strings.HasSuffix(r.URL.Path, "/pulls/42/commits"):
+			fmt.Fprintf(w, `[{"sha":%q}]`, signedCommit)
+		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
+			fmt.Fprintf(w, `{"number":42,"html_url":"https://github.com/codefly-dev/manifests/pull/42","state":"closed","merged":true,"merge_commit_sha":%q}`, observedRevision)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", server.URL)
 	review, err := observeReview(context.Background(),
 		"https://github.com/codefly-dev/manifests/pull/42", signedCommit,
 		"https://github.com/codefly-dev/manifests.git", false)
