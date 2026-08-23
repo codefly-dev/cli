@@ -8,6 +8,14 @@ import (
 	"testing"
 )
 
+func TestRunCmdRegistersPortIsolationFlags(t *testing.T) {
+	for _, name := range []string{"temporary-ports", "override-port"} {
+		if RunCmd.Flags().Lookup(name) == nil {
+			t.Fatalf("ci run must register --%s so agent conformance can isolate its port space", name)
+		}
+	}
+}
+
 func TestRunCIPhasesContinuesAfterFailureWhenFailFastDisabled(t *testing.T) {
 	phases := []string{"verify", "lint", "compile", "test"}
 	var executed []string

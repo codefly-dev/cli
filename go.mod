@@ -1,8 +1,6 @@
 module github.com/codefly-dev/cli
 
-go 1.26.3
-
-toolchain go1.26.6
+go 1.27.0
 
 require (
 	connectrpc.com/connect v1.20.0
@@ -11,7 +9,7 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.2.130-0.20260817235706-3f3e35fd884f
+	github.com/codefly-dev/core v0.3.8
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go v0.1.65

@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/services"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -42,12 +41,12 @@ func updateWorkspace(workspace *resources.Workspace) error {
 		}
 		for _, svc := range svcs {
 			cli.Header(2, "Updating service <%s>", svc.Name)
-			update, err := services.UpdateAgent(ctx, svc)
+			update, err := updateServiceAgent(ctx, svc)
 			if err != nil {
 				return fmt.Errorf("cannot update service %s/%s: %w", mod.Name, svc.Name, err)
 			}
-			if update.AgentUpdate != nil {
-				cli.Header(2, "Updating agent <%s> version: %s -> %s", update.AgentUpdate.Name, update.AgentUpdate.From, update.AgentUpdate.To)
+			if update != nil {
+				cli.Header(2, "Updating agent <%s> version: %s -> %s", update.Name, update.From, update.To)
 			}
 		}
 	}

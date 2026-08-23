@@ -2,6 +2,7 @@ package processgroup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,8 @@ const (
 	helperReadyEnv    = "CODEFLY_TEST_PROCESS_GROUP_READY_FILE"
 	helperReleaseEnv  = "CODEFLY_TEST_PROCESS_GROUP_RELEASE_FILE"
 	helperTermEnv     = "CODEFLY_TEST_PROCESS_GROUP_TERM_FILE"
+	helperPortsEnv    = "CODEFLY_TEST_PROCESS_GROUP_PORTS"
+	helperStateDirEnv = "CODEFLY_TEST_PROCESS_GROUP_STATE_DIR"
 )
 
 func TestProcessGroupHelper(t *testing.T) {
@@ -111,6 +114,58 @@ func TestProcessGroupHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer listener.Close()
+		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stopping := make(chan os.Signal, 1)
+		signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
+		defer signal.Stop(stopping)
+		<-stopping
+	case "graph-owner":
+		for index, port := range strings.Split(os.Getenv(helperPortsEnv), ",") {
+			readyPath := filepath.Join(filepath.Dir(os.Getenv(helperReadyEnv)), fmt.Sprintf("service-%d-ready", index))
+			pidPath := filepath.Join(filepath.Dir(os.Getenv(helperReadyEnv)), fmt.Sprintf("service-%d-pid", index))
+			statePath := filepath.Join(os.Getenv(helperStateDirEnv), fmt.Sprintf("service-%d", index))
+			command := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
+			command.Env = append(os.Environ(),
+				helperRoleEnv+"=stateful-listener",
+				helperPortEnv+"="+port,
+				helperReadyEnv+"="+readyPath,
+				helperStateDirEnv+"="+statePath)
+			command.Stdout = io.Discard
+			command.Stderr = io.Discard
+			if _, err := runnersbase.StartTrackedProcessGroup(command); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(pidPath, []byte(strconv.Itoa(command.Process.Pid)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			go func() { _ = command.Wait() }()
+			waitForFile(t, readyPath)
+		}
+		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		select {}
+	case "stateful-listener":
+		listener, err := net.Listen("tcp", "127.0.0.1:"+os.Getenv(helperPortEnv))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		statePath := os.Getenv(helperStateDirEnv)
+		state := 0
+		if data, readErr := os.ReadFile(statePath); readErr == nil {
+			state, err = strconv.Atoi(string(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatal(readErr)
+		}
+		if err := os.WriteFile(statePath, []byte(strconv.Itoa(state+1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -313,6 +368,159 @@ func TestReaperCleansAuthenticatedRootRecordAfterOwnerIsKilled(t *testing.T) {
 	}
 }
 
+func TestStopManagedProcessGroupsReapsGraphAndPreservesStateForRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	runtimeDir := t.TempDir()
+	stateDir := filepath.Join(runtimeDir, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ports := distinctAvailablePorts(t, 3)
+	portValues := make([]string, len(ports))
+	for index, port := range ports {
+		portValues[index] = strconv.Itoa(port)
+	}
+	readyPath := filepath.Join(runtimeDir, "graph-ready")
+
+	startGraph := func() (*exec.Cmd, []int) {
+		t.Helper()
+		_ = os.Remove(readyPath)
+		for index := range ports {
+			_ = os.Remove(filepath.Join(runtimeDir, fmt.Sprintf("service-%d-ready", index)))
+			_ = os.Remove(filepath.Join(runtimeDir, fmt.Sprintf("service-%d-pid", index)))
+		}
+		owner := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
+		owner.Env = append(os.Environ(),
+			helperRoleEnv+"=graph-owner",
+			helperPortsEnv+"="+strings.Join(portValues, ","),
+			helperReadyEnv+"="+readyPath,
+			helperStateDirEnv+"="+stateDir)
+		owner.Stdout = io.Discard
+		owner.Stderr = io.Discard
+		if err := owner.Start(); err != nil {
+			t.Fatal(err)
+		}
+		waitForFile(t, readyPath)
+		pgids := make([]int, len(ports))
+		for index, port := range ports {
+			pgids[index] = readPID(t, filepath.Join(runtimeDir, fmt.Sprintf("service-%d-pid", index)))
+			assertPortHeld(t, port)
+		}
+		return owner, pgids
+	}
+
+	firstOwner, firstPGIDs := startGraph()
+	t.Cleanup(func() {
+		_ = firstOwner.Process.Kill()
+		for _, pgid := range firstPGIDs {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	})
+	if err := firstOwner.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstOwner.Wait(); err == nil {
+		t.Fatal("interrupted graph owner exited successfully")
+	}
+	firstEvidence, err := StopManagedProcessGroups(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRecoveredPGIDs(t, firstEvidence, firstPGIDs)
+	assertGraphStopped(t, ports, firstPGIDs)
+	for index := range ports {
+		assertStateGeneration(t, filepath.Join(stateDir, fmt.Sprintf("service-%d", index)), 1)
+	}
+
+	secondOwner, secondPGIDs := startGraph()
+	t.Cleanup(func() {
+		_ = secondOwner.Process.Kill()
+		for _, pgid := range secondPGIDs {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	})
+	for index := range ports {
+		assertStateGeneration(t, filepath.Join(stateDir, fmt.Sprintf("service-%d", index)), 2)
+	}
+	secondEvidence, err := StopManagedProcessGroups(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCleanStoppedPGIDs(t, secondEvidence, secondPGIDs)
+	assertGraphStopped(t, ports, secondPGIDs)
+	if err := secondOwner.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := secondOwner.Wait(); err == nil {
+		t.Fatal("stopped graph owner exited successfully")
+	}
+}
+
+func TestReaperTreatsEmptyAuthenticatedRecordAsClean(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	port := availablePort(t)
+	command := startListener(t, port, filepath.Join(t.TempDir(), "ready"))
+	pid := command.Process.Pid
+	defer func() {
+		_ = syscall.Kill(-pid, syscall.SIGTERM)
+		_ = command.Wait()
+	}()
+	leader, err := inspectProcessIdentity(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := inspectProcessIdentity(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := func(identity processIdentity) recordedProcessIdentity {
+		return recordedProcessIdentity{
+			PID:        identity.pid,
+			BootID:     identity.bootID,
+			StartID:    identity.startID,
+			Executable: identity.executable,
+		}
+	}
+	recordData, err := json.Marshal(authenticatedRecord{
+		PGID:           pid,
+		Leader:         recorded(leader),
+		Owner:          recorded(owner),
+		Authentication: strings.Repeat("ab", groupAuthBytes),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordDir := filepath.Join(home, ".codefly", stateDirName, authenticatedDirName)
+	if err := os.MkdirAll(recordDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := filepath.Join(recordDir, fmt.Sprintf("%d.pgid", pid))
+	if err := os.WriteFile(recordPath, recordData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalInspector := inspectAuthenticatedProcessGroup
+	inspectAuthenticatedProcessGroup = func(context.Context, int) ([]processIdentity, error) { return nil, nil }
+	t.Cleanup(func() { inspectAuthenticatedProcessGroup = originalInspector })
+
+	evidence, err := ReapStaleProcessGroupsWithEvidence(context.Background())
+	inspectAuthenticatedProcessGroup = originalInspector
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.Outcome != CleanupClean {
+		t.Fatalf("cleanup outcome = %q, want %q", evidence.Outcome, CleanupClean)
+	}
+	if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty authenticated record still exists: %v", err)
+	}
+	assertPortHeld(t, port)
+	if err := syscall.Kill(-pid, 0); err != nil {
+		t.Fatalf("empty-record reconciliation signaled process group %d: %v", pid, err)
+	}
+}
+
 func TestReaperClearsVerifiedStaleListenerWhenOwnerPIDWasReused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	port := availablePort(t)
@@ -419,8 +627,12 @@ func TestReaperRetainsMalformedParentWithoutSignalingGroup(t *testing.T) {
 	}
 	rewriteRecordField(t, recordPath, "parent", "not-a-pid")
 
-	if err := ReapStaleProcessGroups(context.Background()); err == nil {
+	evidence, err := ReapStaleProcessGroupsWithEvidence(context.Background())
+	if err == nil {
 		t.Fatal("reaper accepted a malformed parent")
+	}
+	if evidence.Outcome != CleanupFailed {
+		t.Fatalf("cleanup outcome = %q, want %q", evidence.Outcome, CleanupFailed)
 	}
 	assertPortHeld(t, port)
 	if _, err := os.Stat(recordPath); err != nil {
@@ -923,6 +1135,82 @@ func availablePort(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return port
+}
+
+func distinctAvailablePorts(t *testing.T, count int) []int {
+	t.Helper()
+	seen := make(map[int]struct{}, count)
+	ports := make([]int, 0, count)
+	for len(ports) < count {
+		port := availablePort(t)
+		if _, exists := seen[port]; exists {
+			continue
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	return ports
+}
+
+func assertRecoveredPGIDs(t *testing.T, evidence CleanupEvidence, expected []int) {
+	t.Helper()
+	if evidence.Outcome != CleanupRecoveredOrphan {
+		t.Fatalf("cleanup outcome = %q, want %q", evidence.Outcome, CleanupRecoveredOrphan)
+	}
+	recovered := make(map[int]struct{}, len(evidence.Groups))
+	for _, pgid := range evidence.RecoveredPGIDs() {
+		recovered[pgid] = struct{}{}
+	}
+	for _, pgid := range expected {
+		if _, ok := recovered[pgid]; !ok {
+			t.Fatalf("cleanup evidence did not retain process group %d: %+v", pgid, evidence.Groups)
+		}
+	}
+}
+
+func assertCleanStoppedPGIDs(t *testing.T, evidence CleanupEvidence, expected []int) {
+	t.Helper()
+	if evidence.Outcome != CleanupClean {
+		t.Fatalf("cleanup outcome = %q, want %q", evidence.Outcome, CleanupClean)
+	}
+	stopped := make(map[int]struct{}, len(evidence.Groups))
+	for _, group := range evidence.Groups {
+		if group.Outcome == CleanupClean {
+			stopped[group.PGID] = struct{}{}
+		}
+	}
+	for _, pgid := range expected {
+		if _, ok := stopped[pgid]; !ok {
+			t.Fatalf("cleanup evidence did not retain stopped process group %d: %+v", pgid, evidence.Groups)
+		}
+	}
+}
+
+func assertGraphStopped(t *testing.T, ports, pgids []int) {
+	t.Helper()
+	for _, port := range ports {
+		assertPortAvailable(t, port)
+	}
+	for _, pgid := range pgids {
+		if err := syscall.Kill(-pgid, 0); !errors.Is(err, syscall.ESRCH) {
+			t.Fatalf("managed process group %d is still alive: %v", pgid, err)
+		}
+	}
+}
+
+func assertStateGeneration(t *testing.T, path string, expected int) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation, err := strconv.Atoi(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation != expected {
+		t.Fatalf("state generation at %s = %d, want %d", path, generation, expected)
+	}
 }
 
 func assertPortHeld(t *testing.T, port int) {

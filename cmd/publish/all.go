@@ -160,7 +160,7 @@ func runAll(c *cobra.Command, args []string) error {
 		timeout := 120 * time.Second
 		var releaser releaseGate
 		if t.Manifest.Mode == ModeAgent {
-			releaser, err = newAgentReleaseGate(filepath.Dir(t.Manifest.Path), t.Dir)
+			releaser, err = newAgentReleaseGate(filepath.Dir(t.Manifest.Path))
 			if err != nil {
 				return fmt.Errorf("prepare agent release for %s: %w", relOrBase(root, t.Dir), err)
 			}

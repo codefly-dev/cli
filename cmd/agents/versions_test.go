@@ -207,8 +207,12 @@ func TestVersionsBehindIgnoresUnresolvableNewer(t *testing.T) {
 }
 
 func TestSummarizeWorkspaceAgentsReportsDrift(t *testing.T) {
-	restoreReleases, restoreTags, restoreOCI := fetchReleases, fetchTags, fetchOCITags
-	defer func() { fetchReleases, fetchTags, fetchOCITags = restoreReleases, restoreTags, restoreOCI }()
+	restoreReleases, restoreTags, restoreOCI, restoreArchived := fetchReleases, fetchTags, fetchOCITags, repoArchived
+	defer func() {
+		fetchReleases, fetchTags, fetchOCITags, repoArchived = restoreReleases, restoreTags, restoreOCI, restoreArchived
+	}()
+	// Keep the archived check off the network: none of these fixtures are archived.
+	repoArchived = func(context.Context, *resources.Agent) bool { return false }
 
 	fetchReleases = func(_ context.Context, _ *resources.Agent) ([]releaseInfo, error) {
 		return []releaseInfo{
@@ -240,8 +244,12 @@ func TestSummarizeWorkspaceAgentsReportsDrift(t *testing.T) {
 }
 
 func TestLatestResolvableDriftMatchesInventory(t *testing.T) {
-	restoreReleases, restoreTags, restoreOCI := fetchReleases, fetchTags, fetchOCITags
-	defer func() { fetchReleases, fetchTags, fetchOCITags = restoreReleases, restoreTags, restoreOCI }()
+	restoreReleases, restoreTags, restoreOCI, restoreArchived := fetchReleases, fetchTags, fetchOCITags, repoArchived
+	defer func() {
+		fetchReleases, fetchTags, fetchOCITags, repoArchived = restoreReleases, restoreTags, restoreOCI, restoreArchived
+	}()
+	// Keep the archived check off the network: none of these fixtures are archived.
+	repoArchived = func(context.Context, *resources.Agent) bool { return false }
 
 	fetchReleases = func(_ context.Context, _ *resources.Agent) ([]releaseInfo, error) {
 		return []releaseInfo{{version: "0.0.22", platforms: []string{ciPlatform}}}, nil
@@ -260,6 +268,38 @@ func TestLatestResolvableDriftMatchesInventory(t *testing.T) {
 	}
 	if behind != 1 {
 		t.Fatalf("behind = %d, want 1 (only resolvable 0.0.22)", behind)
+	}
+}
+
+func TestArchivedRepoReportsNoDrift(t *testing.T) {
+	restoreReleases, restoreTags, restoreOCI, restoreArchived := fetchReleases, fetchTags, fetchOCITags, repoArchived
+	defer func() {
+		fetchReleases, fetchTags, fetchOCITags, repoArchived = restoreReleases, restoreTags, restoreOCI, restoreArchived
+	}()
+	// The remote clearly has newer resolvable releases...
+	fetchReleases = func(_ context.Context, _ *resources.Agent) ([]releaseInfo, error) {
+		return []releaseInfo{{version: "0.0.99", platforms: []string{ciPlatform}}}, nil
+	}
+	fetchTags = func(_ context.Context, _ *resources.Agent) ([]string, error) {
+		return []string{"0.0.15", "0.0.99"}, nil
+	}
+	fetchOCITags = func(_ context.Context, _ *resources.Agent) (bool, []string, error) {
+		return false, nil, nil
+	}
+	// ...but the repo is archived, so drift tooling must ignore it entirely and
+	// must never even reach for the remote source list.
+	repoArchived = func(context.Context, *resources.Agent) bool { return true }
+	fetchReleases = func(_ context.Context, _ *resources.Agent) ([]releaseInfo, error) {
+		t.Fatal("fetchReleases called for an archived repo")
+		return nil, nil
+	}
+
+	latest, behind := LatestResolvableDrift(context.Background(), redisAgent(), "0.0.15")
+	if behind != 0 {
+		t.Fatalf("behind = %d, want 0 for an archived repo", behind)
+	}
+	if latest != "" {
+		t.Fatalf("latest resolvable = %q, want empty for an archived repo", latest)
 	}
 }
 
@@ -334,45 +374,13 @@ func TestLocalCacheVersionsScansAgentDir(t *testing.T) {
 	}
 }
 
-func TestNewGitHubClientAddsAuthorization(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "secret")
-	var got string
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		got = r.Header.Get("Authorization")
-	}))
-	defer server.Close()
-
-	client, err := newGitHubClient()
-	if err != nil {
-		t.Fatalf("newGitHubClient: %v", err)
-	}
-	resp, err := client.Client().Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if got != "Bearer secret" {
-		t.Fatalf("Authorization = %q, want %q", got, "Bearer secret")
-	}
-}
-
-func TestNewGitHubClientUnauthenticated(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("PATH", "") // no `gh` on PATH: force the tokenless path
-
-	client, err := newGitHubClient()
-	if err != nil {
-		t.Fatalf("newGitHubClient: %v", err)
-	}
-	if client == nil {
-		t.Fatal("newGitHubClient returned a nil client")
-	}
-}
-
 func TestSummarizeWorkspaceAgentsCachesAndFlagsResolvability(t *testing.T) {
-	restoreReleases, restoreTags, restoreOCI := fetchReleases, fetchTags, fetchOCITags
-	defer func() { fetchReleases, fetchTags, fetchOCITags = restoreReleases, restoreTags, restoreOCI }()
+	restoreReleases, restoreTags, restoreOCI, restoreArchived := fetchReleases, fetchTags, fetchOCITags, repoArchived
+	defer func() {
+		fetchReleases, fetchTags, fetchOCITags, repoArchived = restoreReleases, restoreTags, restoreOCI, restoreArchived
+	}()
+	// Keep the archived check off the network: none of these fixtures are archived.
+	repoArchived = func(context.Context, *resources.Agent) bool { return false }
 
 	var releaseCalls int
 	fetchReleases = func(_ context.Context, agent *resources.Agent) ([]releaseInfo, error) {

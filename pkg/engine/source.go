@@ -19,10 +19,6 @@ type Source struct {
 	server *codecore.DefaultCodeServer
 }
 
-func newSource(root string) *Source {
-	return &Source{server: codecore.NewDefaultCodeServer(root)}
-}
-
 // ExecuteCode executes a language-neutral Code request.
 func (s *Source) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
 	if s == nil {

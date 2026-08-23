@@ -223,7 +223,15 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
 
-	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{BuildContext: builder.BuildContextFromDocker(dockerContext)})
+	outputDir, err := buildRecipeOutputDirectory(b.instance.Service.Dir())
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot prepare build recipe directory")
+	}
+
+	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{
+		BuildContext:    builder.BuildContextFromDocker(dockerContext),
+		OutputDirectory: outputDir,
+	})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot call build")
 	}
@@ -233,6 +241,10 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 
 	if resp.State != nil && resp.State.State != builderv0.BuildStatus_SUCCESS {
 		return nil, w.NewError("call to build failed")
+	}
+
+	if err = recordBuildRecipe(ctx, b.instance.Service); err != nil {
+		return nil, w.Wrapf(err, "cannot record build recipe")
 	}
 
 	err = b.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
@@ -245,10 +257,19 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
-	if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
+	// A build plan means the agent emitted recipes and the CLI owns the docker
+	// build; otherwise the agent built in-process (legacy) and the CLI only pushes.
+	if plan := resp.Result.GetDockerBuildPlan(); plan != nil {
+		if err = b.buildFromPlan(ctx, outputDir, plan); err != nil {
+			return nil, err
+		}
+	} else if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
 		if push.Load() {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.Images {
+				if err = verifyImageArchitecture(ctx, im); err != nil {
+					return nil, w.Wrapf(err, "refusing to push %s", im)
+				}
 				cmd := exec.CommandContext(ctx, "docker", "push", im)
 				err := cmd.Run()
 				if err != nil {
@@ -303,6 +324,39 @@ func inspectImageDigest(ctx context.Context, image string) (string, error) {
 		return "", fmt.Errorf("image %s has no registry-backed sha256 digest; build and push the local snapshot first", image)
 	}
 	return digest, nil
+}
+
+// deploymentImageArchitecture is the architecture deployment nodes run. A
+// digest-pinned manifest names *an* image, not a compatible one, so an image
+// built for the wrong architecture pushes and syncs cleanly and only fails at
+// container exec (`exec format error`). Verifying before push turns that
+// silent, far-downstream crash into a loud build failure.
+const deploymentImageArchitecture = "amd64"
+
+func verifyImageArchitecture(ctx context.Context, image string) error {
+	output, err := exec.CommandContext(
+		ctx,
+		"docker",
+		"image",
+		"inspect",
+		"--format",
+		"{{.Architecture}}",
+		image,
+	).Output()
+	if err != nil {
+		return fmt.Errorf("inspect %s architecture: %w", image, err)
+	}
+	return checkImageArchitecture(image, strings.TrimSpace(string(output)))
+}
+
+func checkImageArchitecture(image, architecture string) error {
+	if architecture == "" {
+		return fmt.Errorf("image %s reports no architecture", image)
+	}
+	if architecture != deploymentImageArchitecture {
+		return fmt.Errorf("image %s was built for %s but deployment nodes require %s; rebuild it targeting %s before pushing", image, architecture, deploymentImageArchitecture, deploymentImageArchitecture)
+	}
+	return nil
 }
 
 func dockerBuildResult(result *builderv0.BuildResult) *builderv0.DockerBuildResult {

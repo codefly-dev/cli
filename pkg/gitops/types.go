@@ -12,10 +12,13 @@ const (
 	EvidenceSchemaVersion = 1
 )
 
-// UnitKindService is the artifact kind for a codefly service. It is the only
-// kind rendered today; new kinds (jobs, applications, solutions) register their
-// own render subdirectory in unitDirectory.
+// UnitKindService is the artifact kind for a codefly service.
 const UnitKindService = "service"
+
+// UnitKindSolution is the artifact kind for a codefly solution: a packaged unit
+// that carries its own namespace anatomy (routes, needs, and the services it
+// bundles) and renders through the same promotable pipeline as a service.
+const UnitKindSolution = "solution"
 
 // moduleBundleDir is the render subdirectory holding the module-level bundle. It
 // sits beside the per-unit directories but is not itself a unit, so it is not
@@ -24,6 +27,9 @@ const moduleBundleDir = "module"
 
 // serviceUnitDir is the render subdirectory holding service units.
 const serviceUnitDir = "services"
+
+// solutionUnitDir is the render subdirectory holding solution units.
+const solutionUnitDir = "solutions"
 
 // unitDirectory maps an artifact kind to the render subdirectory that holds its
 // units, reporting whether the kind is known. Generalizing the render path
@@ -34,6 +40,8 @@ func unitDirectory(kind string) (string, bool) {
 	switch kind {
 	case UnitKindService:
 		return serviceUnitDir, true
+	case UnitKindSolution:
+		return solutionUnitDir, true
 	default:
 		return "", false
 	}

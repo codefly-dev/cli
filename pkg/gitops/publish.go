@@ -16,9 +16,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/google/go-github/v89/github"
 	"gopkg.in/yaml.v3"
 )
 
@@ -178,9 +180,9 @@ func preparePublish(
 	}
 	var snapshotRevision string
 	if restoreRevision == "" {
-		module, err := workspace.LoadModuleFromName(ctx, request.Module)
-		if err != nil {
-			return fail(fmt.Errorf("load rendered module %q: %w", request.Module, err))
+		generateBootstrap, bootstrapErr := publicationGeneratesBootstrap(ctx, workspace, request.Module, &inventory)
+		if bootstrapErr != nil {
+			return fail(bootstrapErr)
 		}
 		snapshotRevision, inventory, err = prepareServicePublication(
 			ctx,
@@ -189,8 +191,7 @@ func preparePublish(
 			targetPath,
 			rendered,
 			&inventory,
-			workspace,
-			module,
+			generateBootstrap,
 			request.Environment,
 			config,
 			promotionBranch,
@@ -279,6 +280,12 @@ func loadPublicationInventory(
 	if inventory.OwnedPath != expectedOwnedPath {
 		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
 	}
+	if inventoryHasSolutionUnits(&inventory) {
+		if err := validateSolutionUnits(request.Module, inventory.Units); err != nil {
+			return Inventory{}, err
+		}
+		return inventory, nil
+	}
 	if err := validateModuleUnits(
 		ctx,
 		workspace,
@@ -289,6 +296,49 @@ func loadPublicationInventory(
 		return Inventory{}, err
 	}
 	return inventory, nil
+}
+
+// inventoryHasSolutionUnits reports whether a publication carries solution units.
+// A solution owns its own unit graph and Argo transport, so it is published
+// without a service-module resource to cross-check against.
+func inventoryHasSolutionUnits(inventory *Inventory) bool {
+	for _, unit := range inventory.Units {
+		if unit.Kind == UnitKindSolution {
+			return true
+		}
+	}
+	return false
+}
+
+// validateSolutionUnits checks a solution publication's unit graph. A solution's
+// units are defined by the executor's render, not by a workspace module, so the
+// only invariants to enforce are that every rendered unit is a solution unit of
+// the published module — no service units smuggled in, no foreign module.
+func validateSolutionUnits(moduleName string, units []InventoryUnit) error {
+	for _, unit := range units {
+		if unit.Kind != UnitKindSolution {
+			return fmt.Errorf("solution publication contains non-solution unit %q of kind %q", unit.Name, unit.Kind)
+		}
+		if unit.Module != moduleName {
+			return fmt.Errorf("rendered solution unit %q belongs to module %q, expected %q", unit.Name, unit.Module, moduleName)
+		}
+	}
+	return nil
+}
+
+// publicationGeneratesBootstrap reports whether the CLI owns Argo bootstrap
+// generation for this publication. A solution renders its transport through the
+// CLI exactly like an agent-backed module; a plain service module without an
+// agent instead ships a pre-rendered bootstrap in its own tree.
+func publicationGeneratesBootstrap(ctx context.Context, workspace *resources.Workspace, moduleName string, inventory *Inventory) (bool, error) {
+	if inventoryHasSolutionUnits(inventory) {
+		return true, nil
+	}
+	module, err := workspace.LoadModuleFromName(ctx, moduleName)
+	if err != nil {
+		return false, fmt.Errorf("load rendered module %q: %w", moduleName, err)
+	}
+	return module.Agent != nil, nil
 }
 
 func validateModuleUnits(
@@ -342,8 +392,7 @@ func prepareServicePublication(
 	targetPath string,
 	rendered string,
 	renderedInventory *Inventory,
-	workspace *resources.Workspace,
-	module *resources.Module,
+	generateBootstrap bool,
 	environment string,
 	config *repositoryConfig,
 	promotionBranch string,
@@ -357,7 +406,6 @@ func prepareServicePublication(
 		targetPath,
 		rendered,
 		renderedInventory,
-		module,
 		environment,
 		publishSnapshot,
 	)
@@ -371,7 +419,7 @@ func prepareServicePublication(
 	if err = removePublicationRemainder(target, unitDirs); err != nil {
 		return "", Inventory{}, err
 	}
-	if module.Agent != nil {
+	if generateBootstrap {
 		if err := generateArgoBootstrap(
 			ctx,
 			config,
@@ -400,7 +448,7 @@ func prepareServicePublication(
 	if err := validateBootstrapRevision(filepath.Join(target, "bootstrap"), snapshot.revision); err != nil {
 		return "", Inventory{}, err
 	}
-	if module.Agent != nil {
+	if generateBootstrap {
 		if err = validateBootstrapUnits(
 			filepath.Join(target, "bootstrap"),
 			targetPath,
@@ -452,10 +500,10 @@ func prepareServiceSnapshot(
 	targetPath,
 	rendered string,
 	renderedInventory *Inventory,
-	module *resources.Module,
 	environment string,
 	publishSnapshot bool,
 ) (serviceSnapshotPreparation, error) {
+	moduleName := renderedInventory.Module
 	unitDirs, dirErr := inventoryUnitDirectories(renderedInventory)
 	if dirErr != nil {
 		return serviceSnapshotPreparation{}, dirErr
@@ -485,7 +533,7 @@ func prepareServiceSnapshot(
 	if _, err := gitCommand(ctx, repo, append([]string{"add", "-A", "--"}, servicePaths...)...); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
-	existingSnapshot, err := existingServiceSnapshot(ctx, repo, module.Name, environment, filepath.Join(target, "bootstrap"))
+	existingSnapshot, err := existingServiceSnapshot(ctx, repo, moduleName, environment, filepath.Join(target, "bootstrap"))
 	if err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
@@ -534,13 +582,13 @@ func prepareServiceSnapshot(
 	}
 	snapshotRevision := existingSnapshot
 	if snapshotChanged || lineageMissing {
-		snapshotRevision, err = commitServiceSnapshot(ctx, repo, module.Name, environment, existingSnapshot)
+		snapshotRevision, err = commitServiceSnapshot(ctx, repo, moduleName, environment, existingSnapshot)
 		if err != nil {
 			return serviceSnapshotPreparation{}, err
 		}
 	}
 	if publishSnapshot {
-		if err := publishServiceSnapshot(ctx, repo, module.Name, environment, snapshotRevision); err != nil {
+		if err := publishServiceSnapshot(ctx, repo, moduleName, environment, snapshotRevision); err != nil {
 			return serviceSnapshotPreparation{}, err
 		}
 	}
@@ -1205,69 +1253,74 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 			commit,
 		)
 	}
-	output, err := command(ctx, "", "gh", "pr", "list",
-		"--repo", prepared.plan.RepositorySlug, "--head", prepared.plan.PromotionBranch,
-		"--base", prepared.plan.BaseBranch, "--state", "open", "--json", "number,url,headRefOid")
+	owner, repo, err := splitRepositorySlug(prepared.plan.RepositorySlug)
+	if err != nil {
+		return "", 0, err
+	}
+	client, err := gh.NewClient()
+	if err != nil {
+		return "", 0, err
+	}
+	existing, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
+		State: "open",
+		Head:  owner + ":" + prepared.plan.PromotionBranch,
+		Base:  prepared.plan.BaseBranch,
+	})
 	if err != nil {
 		return "", 0, fmt.Errorf("inspect promotion pull request: %w", err)
-	}
-	var existing []struct {
-		Number     int    `json:"number"`
-		URL        string `json:"url"`
-		HeadRefOID string `json:"headRefOid"`
-	}
-	if err := json.Unmarshal([]byte(output), &existing); err != nil {
-		return "", 0, fmt.Errorf("decode promotion pull request: %w", err)
 	}
 	if len(existing) > 1 {
 		return "", 0, fmt.Errorf("multiple open promotion pull requests target %s", prepared.plan.PromotionBranch)
 	}
 	if len(existing) == 1 {
 		pr := existing[0]
-		if pr.HeadRefOID != commit {
-			return "", 0, fmt.Errorf("pull request head is %s, expected %s", pr.HeadRefOID, commit)
+		if pr.GetHead().GetSHA() != commit {
+			return "", 0, fmt.Errorf("pull request head is %s, expected %s", pr.GetHead().GetSHA(), commit)
 		}
-		if _, err := command(ctx, "", "gh", "pr", "edit", strconv.Itoa(pr.Number),
-			"--repo", prepared.plan.RepositorySlug, "--title", title, "--body", body); err != nil {
-			return "", 0, fmt.Errorf("update promotion pull request: %w", err)
+		if _, _, editErr := client.PullRequests.Edit(ctx, owner, repo, pr.GetNumber(), &github.PullRequest{
+			Title: github.Ptr(title),
+			Body:  github.Ptr(body),
+		}); editErr != nil {
+			return "", 0, fmt.Errorf("update promotion pull request: %w", editErr)
 		}
-		return pr.URL, pr.Number, nil
+		return pr.GetHTMLURL(), pr.GetNumber(), nil
 	}
-	url, err := command(ctx, "", "gh", "pr", "create", "--repo", prepared.plan.RepositorySlug,
-		"--base", prepared.plan.BaseBranch, "--head", prepared.plan.PromotionBranch,
-		"--title", title, "--body", body)
+	created, _, err := client.PullRequests.Create(ctx, owner, repo, &github.NewPullRequest{
+		Title: github.Ptr(title),
+		Head:  github.Ptr(prepared.plan.PromotionBranch),
+		Base:  github.Ptr(prepared.plan.BaseBranch),
+		Body:  github.Ptr(body),
+	})
 	if err != nil {
 		return "", 0, fmt.Errorf("open promotion pull request: %w", err)
 	}
-	return verifyPullRequest(ctx, prepared.plan.RepositorySlug, strings.TrimSpace(url), prepared.plan.BaseBranch, commit)
+	return verifyPullRequest(ctx, client, owner, repo, created.GetNumber(), prepared.plan.BaseBranch, commit)
+}
+
+func splitRepositorySlug(slug string) (string, string, error) {
+	owner, repo, ok := strings.Cut(slug, "/")
+	if !ok || owner == "" || repo == "" {
+		return "", "", fmt.Errorf("invalid repository %q", slug)
+	}
+	return owner, repo, nil
 }
 
 func localReviewRef(promotionBranch, commit string) string {
 	return "refs/codefly/reviews/" + strings.ReplaceAll(promotionBranch, "/", "-") + "/" + commit
 }
 
-func verifyPullRequest(ctx context.Context, repository, pullRequest, baseBranch, commit string) (string, int, error) {
-	output, err := command(ctx, "", "gh", "pr", "view", pullRequest, "--repo", repository,
-		"--json", "number,url,headRefOid,baseRefName")
+func verifyPullRequest(ctx context.Context, client *github.Client, owner, repo string, number int, baseBranch, commit string) (string, int, error) {
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
 		return "", 0, fmt.Errorf("verify promotion pull request: %w", err)
 	}
-	var response struct {
-		Number      int    `json:"number"`
-		URL         string `json:"url"`
-		HeadRefOID  string `json:"headRefOid"`
-		BaseRefName string `json:"baseRefName"`
-	}
-	if err := json.Unmarshal([]byte(output), &response); err != nil {
-		return "", 0, fmt.Errorf("decode verified promotion pull request: %w", err)
-	}
-	if response.HeadRefOID != commit || response.BaseRefName != baseBranch {
+	if pr.GetHead().GetSHA() != commit || pr.GetBase().GetRef() != baseBranch {
 		return "", 0, fmt.Errorf(
 			"promotion pull request targets %s at %s, expected %s at %s",
-			response.BaseRefName, response.HeadRefOID, baseBranch, commit,
+			pr.GetBase().GetRef(), pr.GetHead().GetSHA(), baseBranch, commit,
 		)
 	}
-	return response.URL, response.Number, nil
+	return pr.GetHTMLURL(), pr.GetNumber(), nil
 }
 
 func resolveGitops(workspace *resources.Workspace, environment string, local bool) (*repositoryConfig, string, string, string, error) {

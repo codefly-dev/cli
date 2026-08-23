@@ -199,6 +199,29 @@ func TestCIWithPlanOptionsReportsConcurrentFailuresInPlanOrder(t *testing.T) {
 	}
 }
 
+func TestParsePortOverrides(t *testing.T) {
+	overrides, err := parsePortOverrides([]string{"app/subject/rest=45001", " app/subject/grpc = 45003 "})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := overrides["app/subject/rest"]; got != 45001 {
+		t.Fatalf("rest port = %d, want 45001", got)
+	}
+	if got := overrides["app/subject/grpc"]; got != 45003 {
+		t.Fatalf("grpc port = %d, want 45003 (surrounding spaces trimmed)", got)
+	}
+
+	if got, err := parsePortOverrides(nil); got != nil || err != nil {
+		t.Fatalf("empty input = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	for _, bad := range []string{"app/subject/rest", "app/subject/rest=", "=45001", "app/subject/rest=0", "app/subject/rest=70000", "app/subject/rest=abc"} {
+		if _, err := parsePortOverrides([]string{bad}); err == nil {
+			t.Fatalf("parsePortOverrides(%q) = nil error, want a rejection", bad)
+		}
+	}
+}
+
 func TestNormalizeCIJobs(t *testing.T) {
 	if jobs, err := normalizeCIJobs(2); err != nil || jobs != 2 {
 		t.Fatalf("explicit jobs = %d, %v", jobs, err)

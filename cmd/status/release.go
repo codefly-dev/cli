@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/fatih/color"
+	"github.com/google/go-github/v89/github"
 	"github.com/spf13/cobra"
 )
 
@@ -103,8 +105,21 @@ func runRelease(cmd *cobra.Command, args []string) error {
 	if createIssues {
 		fmt.Printf("\n==> Creating GitHub issues for agents with issues...\n")
 		issuesCreated := 0
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		for _, s := range statuses {
 			if s.Delta > 50 || len(s.Issues) > 0 {
+				// Never file a chore issue against an archived repo: it's frozen
+				// and can't be bumped or released, so the issue would be noise
+				// nobody can act on. Resolve the repo from the clone's origin so
+				// this works regardless of org; an unresolvable remote falls
+				// through to the normal (non-archived) path.
+				if repoIsArchived(ctx, filepath.Join(baseDir, s.Name)) {
+					fmt.Printf("⏭ Skipping archived repo %s\n", s.Name)
+					continue
+				}
 				if err := createAgentIssue(baseDir, s); err != nil {
 					fmt.Printf("⚠ Failed to create issue for %s: %v\n", s.Name, err)
 				} else {
@@ -249,6 +264,17 @@ func checkAgentHealth(agentPath string) []string {
 	return issues
 }
 
+// repoIsArchived reports whether the clone at path points at an archived GitHub
+// repo. A remote we can't resolve (not a git repo, no origin, non-GitHub) is
+// treated as non-archived so the caller proceeds exactly as before.
+func repoIsArchived(ctx context.Context, path string) bool {
+	owner, repo, err := agentRepository(path)
+	if err != nil {
+		return false
+	}
+	return gh.Archived(ctx, owner, repo)
+}
+
 func createAgentIssue(baseDir string, status AgentStatus) error {
 	agentPath := filepath.Join(baseDir, status.Name)
 
@@ -261,18 +287,44 @@ func createAgentIssue(baseDir string, status AgentStatus) error {
 		status.CoreVer, status.LatestCore, status.Delta,
 		agentPath)
 
-	// Use gh to create issue
-	cmd := exec.CommandContext(context.Background(),
-		"gh", "issue", "create",
-		"--title", title,
-		"--body", body,
-		"--label", "chore",
-		"--label", "dependencies")
-	cmd.Dir = agentPath
-
-	if err := cmd.Run(); err != nil {
+	owner, repo, err := agentRepository(agentPath)
+	if err != nil {
 		return err
 	}
+	client, err := gh.NewClient()
+	if err != nil {
+		return err
+	}
+	_, _, err = client.Issues.Create(context.Background(), owner, repo, &github.IssueRequest{
+		Title:  github.Ptr(title),
+		Body:   github.Ptr(body),
+		Labels: &[]string{"chore", "dependencies"},
+	})
+	return err
+}
 
-	return nil
+func agentRepository(agentPath string) (string, string, error) {
+	//nolint:gosec // git is invoked with fixed subcommands; agentPath is a scanned filesystem path, never a shell.
+	out, err := exec.Command("git", "-C", agentPath, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve %s origin remote: %w", agentPath, err)
+	}
+	return parseGitHubRemote(strings.TrimSpace(string(out)))
+}
+
+func parseGitHubRemote(remote string) (string, string, error) {
+	trimmed := strings.TrimSuffix(remote, ".git")
+	switch {
+	case strings.HasPrefix(trimmed, "git@github.com:"):
+		trimmed = strings.TrimPrefix(trimmed, "git@github.com:")
+	case strings.HasPrefix(trimmed, "https://github.com/"):
+		trimmed = strings.TrimPrefix(trimmed, "https://github.com/")
+	default:
+		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
+	}
+	owner, repo, ok := strings.Cut(trimmed, "/")
+	if !ok || owner == "" || repo == "" {
+		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
+	}
+	return owner, repo, nil
 }

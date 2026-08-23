@@ -14,7 +14,11 @@ jobs:
   quality:
     name: ${{ matrix.gate }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The race and coverage gates take 4-5 minutes on a warm cache with ±40s of
+    # runner variance, so a 5-minute budget cancels borderline-healthy runs.
+    # 8 minutes keeps a hang from burning a full runner-hour while leaving the
+    # suite real headroom.
+    timeout-minutes: 8
     strategy:
       fail-fast: true
       matrix:
@@ -89,6 +93,20 @@ jobs:
         with:
           config: ./.testcoverage.yaml
 
+      # The CGO-free companion/self-cross build (`-tags codefly_nosemantic`,
+      # CGO_ENABLED=0) selects pkg/engine/source_nosemantic.go. `codefly
+      # companion publish` exercises it only in companions.yaml, which needs
+      # Docker; verify here, unconditionally, that the variant both links
+      # statically and runs its base source behavior. Without this a regression
+      # in the analyzer-free variant would surface only at publish time.
+      - name: Verify CGO-free (companion) build variant
+        if: matrix.gate == 'coverage'
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -tags codefly_nosemantic -ldflags '-s -w -extldflags "-static"' -o /dev/null .
+          go test -tags codefly_nosemantic ./pkg/engine/ -run '^TestNewSourceExecutesLanguageNeutralOperation$' -count=1
+
       - name: Test with race detection
         if: matrix.gate == 'race'
         run: go test -failfast -race ./... -v
@@ -146,5 +164,15 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.12.2
+          # v2.13.1 bundles staticcheck (honnef.co/go/tools) v0.8.0, the first
+          # release that understands Go 1.27 stdlib source; v2.12.2's v0.7.0
+          # panics in its IR builder analyzing 1.27 packages. Keep in sync with
+          # GOLANGCI_LINT_VERSION in the Makefile.
+          version: v2.13.1
+          # Build the linter from source under the module's Go toolchain
+          # (1.27) instead of downloading the prebuilt binary, which is built
+          # with an older Go and refuses to lint a module targeting a newer
+          # one ("the Go language version used to build golangci-lint is lower
+          # than the targeted Go version"). Matches `make lint`.
+          install-mode: goinstall
           only-new-issues: true
