@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	ghclient "github.com/codefly-dev/cli/pkg/github"
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
@@ -1257,7 +1257,7 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 	if err != nil {
 		return "", 0, err
 	}
-	client, err := ghclient.NewClient()
+	client, err := gh.NewClient()
 	if err != nil {
 		return "", 0, err
 	}

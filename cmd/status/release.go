@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	ghclient "github.com/codefly-dev/cli/pkg/github"
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/fatih/color"
 	"github.com/google/go-github/v89/github"
 	"github.com/spf13/cobra"
@@ -267,7 +267,7 @@ func createAgentIssue(baseDir string, status AgentStatus) error {
 	if err != nil {
 		return err
 	}
-	client, err := ghclient.NewClient()
+	client, err := gh.NewClient()
 	if err != nil {
 		return err
 	}
