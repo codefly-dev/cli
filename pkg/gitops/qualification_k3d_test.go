@@ -3,6 +3,8 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/resources"
+	"github.com/google/go-github/v89/github"
 )
 
 var mindShapedServices = []string{
@@ -75,27 +78,35 @@ gitops:
 	if err := os.WriteFile(kubectl, []byte("#!/bin/sh\ntouch \"$CODEFLY_TEST_KUBECTL_CALLED\"\nexit 97\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gh := filepath.Join(bin, "gh")
-	ghScript := `#!/bin/sh
-set -eu
-if [ "$1 $2" = "pr list" ]; then
-  printf '%s\n' '[]'
-  exit 0
-fi
-if [ "$1 $2" = "pr create" ]; then
-  printf '%s\n' 'https://github.com/codefly-test/manifests/pull/1'
-  exit 0
-fi
-if [ "$1 $2" = "pr view" ]; then
-  revision="$(git --git-dir "$CODEFLY_TEST_REMOTE" rev-parse refs/heads/codefly/promote-payments-aws)"
-  printf '{"number":1,"url":"https://github.com/codefly-test/manifests/pull/1","headRefOid":"%s","baseRefName":"main"}\n' "$revision"
-  exit 0
-fi
-exit 2
-`
-	if err := os.WriteFile(gh, []byte(ghScript), 0o755); err != nil {
-		t.Fatal(err)
+	// The promotion pull-request flow is a GitHub platform operation on the
+	// go-github API. Serve the three REST endpoints it touches from a local
+	// server and point the client at it, so no request reaches api.github.com.
+	// The head SHA is read from the promotion branch of the local remote, so
+	// verifyPullRequest sees the commit Publish actually pushed.
+	promotionPR := func(w http.ResponseWriter) {
+		out, err := exec.Command("git", "--git-dir", remote, "rev-parse", "refs/heads/codefly/promote-payments-aws").Output()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, `{"number":1,"html_url":"https://github.com/codefly-test/manifests/pull/1","head":{"sha":"%s"},"base":{"ref":"main"}}`,
+			strings.TrimSpace(string(out)))
 	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/codefly-test/manifests/pulls" {
+			fmt.Fprint(w, "[]") // no open promotion pull request yet
+			return
+		}
+		promotionPR(w) // create (POST .../pulls) and verify (GET .../pulls/1)
+	}))
+	defer server.Close()
+	originalNewClient := newGitHubClient
+	newGitHubClient = func() (*github.Client, error) {
+		endpoint := server.URL + "/"
+		return github.NewClient(github.WithURLs(&endpoint, &endpoint))
+	}
+	t.Cleanup(func() { newGitHubClient = originalNewClient })
+
 	t.Setenv("CODEFLY_TEST_KUBECTL_CALLED", kubectlCalled)
 	t.Setenv("CODEFLY_TEST_REMOTE", remote)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -16,9 +16,11 @@ import (
 	"strconv"
 	"strings"
 
+	ghclient "github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/google/go-github/v89/github"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,6 +29,10 @@ var (
 	githubSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 	pathComponentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 )
+
+// newGitHubClient is a seam so promotion pull-request tests can point the API
+// client at a local server instead of api.github.com.
+var newGitHubClient = ghclient.NewClient
 
 const (
 	httpsScheme   = "https"
@@ -1251,69 +1257,78 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 			commit,
 		)
 	}
-	output, err := command(ctx, "", "gh", "pr", "list",
-		"--repo", prepared.plan.RepositorySlug, "--head", prepared.plan.PromotionBranch,
-		"--base", prepared.plan.BaseBranch, "--state", "open", "--json", "number,url,headRefOid")
+	owner, repo, err := splitRepositorySlug(prepared.plan.RepositorySlug)
+	if err != nil {
+		return "", 0, err
+	}
+	client, err := newGitHubClient()
+	if err != nil {
+		return "", 0, err
+	}
+	existing, _, err := client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
+		Head:  owner + ":" + prepared.plan.PromotionBranch,
+		Base:  prepared.plan.BaseBranch,
+		State: "open",
+	})
 	if err != nil {
 		return "", 0, fmt.Errorf("inspect promotion pull request: %w", err)
-	}
-	var existing []struct {
-		Number     int    `json:"number"`
-		URL        string `json:"url"`
-		HeadRefOID string `json:"headRefOid"`
-	}
-	if err := json.Unmarshal([]byte(output), &existing); err != nil {
-		return "", 0, fmt.Errorf("decode promotion pull request: %w", err)
 	}
 	if len(existing) > 1 {
 		return "", 0, fmt.Errorf("multiple open promotion pull requests target %s", prepared.plan.PromotionBranch)
 	}
 	if len(existing) == 1 {
 		pr := existing[0]
-		if pr.HeadRefOID != commit {
-			return "", 0, fmt.Errorf("pull request head is %s, expected %s", pr.HeadRefOID, commit)
+		if pr.GetHead().GetSHA() != commit {
+			return "", 0, fmt.Errorf("pull request head is %s, expected %s", pr.GetHead().GetSHA(), commit)
 		}
-		if _, err := command(ctx, "", "gh", "pr", "edit", strconv.Itoa(pr.Number),
-			"--repo", prepared.plan.RepositorySlug, "--title", title, "--body", body); err != nil {
+		if _, _, err = client.PullRequests.Edit(ctx, owner, repo, pr.GetNumber(), &github.PullRequest{
+			Title: &title, Body: &body,
+		}); err != nil {
 			return "", 0, fmt.Errorf("update promotion pull request: %w", err)
 		}
-		return pr.URL, pr.Number, nil
+		return pr.GetHTMLURL(), pr.GetNumber(), nil
 	}
-	url, err := command(ctx, "", "gh", "pr", "create", "--repo", prepared.plan.RepositorySlug,
-		"--base", prepared.plan.BaseBranch, "--head", prepared.plan.PromotionBranch,
-		"--title", title, "--body", body)
+	created, _, err := client.PullRequests.Create(ctx, owner, repo, &github.NewPullRequest{
+		Base:  &prepared.plan.BaseBranch,
+		Head:  &prepared.plan.PromotionBranch,
+		Title: &title,
+		Body:  &body,
+	})
 	if err != nil {
 		return "", 0, fmt.Errorf("open promotion pull request: %w", err)
 	}
-	return verifyPullRequest(ctx, prepared.plan.RepositorySlug, strings.TrimSpace(url), prepared.plan.BaseBranch, commit)
+	return verifyPullRequest(ctx, client, owner, repo, created.GetNumber(), prepared.plan.BaseBranch, commit)
 }
 
 func localReviewRef(promotionBranch, commit string) string {
 	return "refs/codefly/reviews/" + strings.ReplaceAll(promotionBranch, "/", "-") + "/" + commit
 }
 
-func verifyPullRequest(ctx context.Context, repository, pullRequest, baseBranch, commit string) (string, int, error) {
-	output, err := command(ctx, "", "gh", "pr", "view", pullRequest, "--repo", repository,
-		"--json", "number,url,headRefOid,baseRefName")
+// splitRepositorySlug splits a validated "owner/repo" slug. RepositorySlug is
+// produced by validateRepositoryURL, so it is always exactly two segments.
+func splitRepositorySlug(slug string) (owner, repo string, err error) {
+	parts := strings.SplitN(slug, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid repository slug %q", slug)
+	}
+	return parts[0], parts[1], nil
+}
+
+// verifyPullRequest re-reads the created pull request and confirms it targets
+// the expected base at the expected head commit — a read-back guard against a
+// create that silently landed against the wrong ref.
+func verifyPullRequest(ctx context.Context, client *github.Client, owner, repo string, number int, baseBranch, commit string) (string, int, error) {
+	pr, _, err := client.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
 		return "", 0, fmt.Errorf("verify promotion pull request: %w", err)
 	}
-	var response struct {
-		Number      int    `json:"number"`
-		URL         string `json:"url"`
-		HeadRefOID  string `json:"headRefOid"`
-		BaseRefName string `json:"baseRefName"`
-	}
-	if err := json.Unmarshal([]byte(output), &response); err != nil {
-		return "", 0, fmt.Errorf("decode verified promotion pull request: %w", err)
-	}
-	if response.HeadRefOID != commit || response.BaseRefName != baseBranch {
+	if pr.GetHead().GetSHA() != commit || pr.GetBase().GetRef() != baseBranch {
 		return "", 0, fmt.Errorf(
 			"promotion pull request targets %s at %s, expected %s at %s",
-			response.BaseRefName, response.HeadRefOID, baseBranch, commit,
+			pr.GetBase().GetRef(), pr.GetHead().GetSHA(), baseBranch, commit,
 		)
 	}
-	return response.URL, response.Number, nil
+	return pr.GetHTMLURL(), pr.GetNumber(), nil
 }
 
 func resolveGitops(workspace *resources.Workspace, environment string, local bool) (*repositoryConfig, string, string, string, error) {

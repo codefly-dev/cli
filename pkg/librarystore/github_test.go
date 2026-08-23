@@ -29,6 +29,7 @@ func goModule(t *testing.T, modulePath, body string) string {
 func storeTo(remote string) *GitHubStore {
 	s := NewGitHubStore("codefly-dev")
 	s.remoteFor = func(Language, string) string { return remote }
+	s.ensureRepo = func(context.Context, Language, string) error { return nil }
 	return s
 }
 

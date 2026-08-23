@@ -4,14 +4,19 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	ghclient "github.com/codefly-dev/cli/pkg/gh"
 	"github.com/fatih/color"
+	"github.com/google/go-github/v89/github"
 	"github.com/spf13/cobra"
 )
+
+// newGitHubClient is a seam so the chore-issue test can point the API client at
+// a local server instead of api.github.com.
+var newGitHubClient = ghclient.NewClient
 
 var releaseCmd = &cobra.Command{
 	Use:   "release",
@@ -261,18 +266,20 @@ func createAgentIssue(baseDir string, status AgentStatus) error {
 		status.CoreVer, status.LatestCore, status.Delta,
 		agentPath)
 
-	// Use gh to create issue
-	cmd := exec.CommandContext(context.Background(),
-		"gh", "issue", "create",
-		"--title", title,
-		"--body", body,
-		"--label", "chore",
-		"--label", "dependencies")
-	cmd.Dir = agentPath
-
-	if err := cmd.Run(); err != nil {
+	ctx := context.Background()
+	owner, repo, err := ghclient.RepoAtDir(ctx, agentPath)
+	if err != nil {
 		return err
 	}
-
-	return nil
+	client, err := newGitHubClient()
+	if err != nil {
+		return err
+	}
+	labels := []string{"chore", "dependencies"}
+	_, _, err = client.Issues.Create(ctx, owner, repo, &github.IssueRequest{
+		Title:  &title,
+		Body:   &body,
+		Labels: &labels,
+	})
+	return err
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver"
+	ghclient "github.com/codefly-dev/cli/pkg/gh"
+	"github.com/google/go-github/v89/github"
 )
 
 // gitDir is the directory git owns in a working tree. It is never part of
@@ -30,6 +33,10 @@ type GitHubStore struct {
 	// remoteFor resolves the git remote for a library export. Tests override it to
 	// point at a local bare repository so publish/resolve exercise real git.
 	remoteFor func(language Language, name string) string
+	// ensureRepo creates the target repository when it is missing so a first-ever
+	// publish does not fail on `git clone`. Tests override it to a no-op because
+	// they publish to a local bare repository that always exists.
+	ensureRepo func(ctx context.Context, language Language, name string) error
 	// commitIdentity is the author used for release commits.
 	commitName  string
 	commitEmail string
@@ -41,7 +48,42 @@ func NewGitHubStore(owner string) *GitHubStore {
 	s.remoteFor = func(language Language, name string) string {
 		return fmt.Sprintf("https://github.com/%s/%s.git", s.Owner, repositoryName(language, name))
 	}
+	s.ensureRepo = s.createRepositoryIfMissing
 	return s
+}
+
+// newGitHubClient is a seam so repository-creation tests can point the API
+// client at a local server instead of api.github.com.
+var newGitHubClient = ghclient.NewClient
+
+// createRepositoryIfMissing creates the export's GitHub repository when it does
+// not exist yet. Repository creation is a GitHub *platform* operation — the one
+// step git cannot perform — so it uses the go-github API while all content
+// publishing stays on git. It runs only after a clone fails, so the common
+// republish-of-an-existing-repo path never touches the API. The `Get` still
+// runs first here so that, when the repository already exists (the clone failed
+// for some other reason), we do not attempt a doomed create and mask the real
+// clone error. The repository is public so consumers can `go get` it without
+// codefly credentials.
+func (s *GitHubStore) createRepositoryIfMissing(ctx context.Context, language Language, name string) error {
+	client, err := newGitHubClient()
+	if err != nil {
+		return err
+	}
+	repo := repositoryName(language, name)
+	if _, resp, getErr := client.Repositories.Get(ctx, s.Owner, repo); getErr == nil {
+		return nil
+	} else if resp == nil || resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("check library repository %s/%s: %w", s.Owner, repo, getErr)
+	}
+	private := false
+	if _, _, err := client.Repositories.Create(ctx, s.Owner, &github.Repository{
+		Name:    &repo,
+		Private: &private,
+	}); err != nil {
+		return fmt.Errorf("create library repository %s/%s: %w", s.Owner, repo, err)
+	}
+	return nil
 }
 
 // repositoryName is the per-export repository name, e.g. "authkit-go".
@@ -131,8 +173,26 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	}
 	defer os.RemoveAll(work)
 
+	// Clone first: an existing library republish is pure git and must not depend
+	// on the GitHub API being reachable or the caller being API-authenticated.
+	// Only when the clone fails do we reach for the platform API to create the
+	// repository (the one step git cannot do) and retry once. A clone that fails
+	// for any other reason (auth, network) surfaces from the retry.
 	if err = s.git(ctx, "", "clone", "--quiet", remote, work); err != nil {
-		return Published{}, fmt.Errorf("clone %s (create the library repository first if it does not exist yet): %w", remote, err)
+		if createErr := s.ensureRepo(ctx, c.Language, c.Name); createErr != nil {
+			return Published{}, createErr
+		}
+		// Wipe whatever the failed first clone left behind so the retry clones
+		// into a clean directory.
+		if err = os.RemoveAll(work); err != nil {
+			return Published{}, err
+		}
+		if err = os.MkdirAll(work, 0o755); err != nil {
+			return Published{}, err
+		}
+		if err = s.git(ctx, "", "clone", "--quiet", remote, work); err != nil {
+			return Published{}, fmt.Errorf("clone %s: %w", remote, err)
+		}
 	}
 	if s.tagExists(ctx, work, tag) {
 		return Published{}, fmt.Errorf("librarystore: %s %s is already published (versions are immutable)", c.Name, tag)

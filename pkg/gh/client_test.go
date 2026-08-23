@@ -78,3 +78,34 @@ func TestTokenEmptyWithoutCredentials(t *testing.T) {
 		t.Fatalf("Token() = %q, want empty when no credential source exists", got)
 	}
 }
+
+func TestParseRemote(t *testing.T) {
+	for _, tc := range []struct {
+		remote      string
+		owner, repo string
+		wantErr     bool
+	}{
+		{remote: "https://github.com/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://github.com/codefly-dev/cli", owner: "codefly-dev", repo: "cli"},
+		{remote: "git@github.com:codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		{remote: "ssh://git@github.com/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://github.com/codefly-dev/cli/", owner: "codefly-dev", repo: "cli"},
+		{remote: "not-a-remote", wantErr: true},
+		{remote: "https://gitlab.com/codefly-dev/cli.git", wantErr: true},
+	} {
+		owner, repo, err := ParseRemote(tc.remote)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("ParseRemote(%q) = %q/%q, want error", tc.remote, owner, repo)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseRemote(%q): %v", tc.remote, err)
+			continue
+		}
+		if owner != tc.owner || repo != tc.repo {
+			t.Errorf("ParseRemote(%q) = %q/%q, want %q/%q", tc.remote, owner, repo, tc.owner, tc.repo)
+		}
+	}
+}

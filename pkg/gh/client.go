@@ -1,9 +1,15 @@
 // Package gh provides a shared authenticated go-github client and token
 // resolution for the CLI's platform (REST API) flows — agent-release
-// publishing and version listing — so they resolve credentials one way.
+// publishing, version listing, promotion pull requests, chore issues, and
+// library repository creation — so they resolve credentials and owner/repo one
+// way. Git *content* operations (clone/add/commit/tag/push) stay on the git
+// binary; the sole git touchpoint here is RepoAtDir, which reads the origin
+// remote's URL to derive the owner/repo an API call needs — a config read.
 package gh
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -48,4 +54,39 @@ func Token() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// RepoAtDir resolves the owner and repository name from the `origin` remote of
+// the git working tree at dir — the same repository the `gh` CLI infers when it
+// runs from that directory. Platform operations need the owner/repo pair
+// explicitly because, unlike `gh`, the API client does not read it from the
+// ambient git remote.
+func RepoAtDir(ctx context.Context, dir string) (owner, repo string, err error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve origin remote in %s: %w", dir, err)
+	}
+	return ParseRemote(strings.TrimSpace(string(out)))
+}
+
+// ParseRemote extracts the owner and repository name from a github.com remote
+// URL in either HTTPS (https://github.com/owner/repo.git) or SSH
+// (git@github.com:owner/repo.git) form. A remote on any other host is rejected:
+// the derived owner/repo is only meaningful against api.github.com, so silently
+// accepting a non-github.com host would send an API call to the wrong place.
+func ParseRemote(remote string) (owner, repo string, err error) {
+	trimmed := strings.TrimSuffix(remote, ".git")
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	index := strings.Index(trimmed, "github.com")
+	if index < 0 {
+		return "", "", fmt.Errorf("not a github.com remote: %q", remote)
+	}
+	trimmed = trimmed[index+len("github.com"):]
+	trimmed = strings.TrimLeft(trimmed, ":/")
+	segments := strings.Split(trimmed, "/")
+	if len(segments) < 2 || segments[len(segments)-2] == "" || segments[len(segments)-1] == "" {
+		return "", "", fmt.Errorf("cannot derive owner/repo from remote %q", remote)
+	}
+	return segments[len(segments)-2], segments[len(segments)-1], nil
 }

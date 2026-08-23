@@ -261,8 +261,11 @@ approved, merged pull request and verifies the publication digest, the
 snapshot revision bound into every Application, exact service paths, project
 authority, cluster identity, sync, operation, and Healthy status before writing
 evidence under `.codefly/gitops/evidence/`.
-Publishing requires configured Git commit signing and an authenticated `gh`
-session; observation uses the active authenticated `argocd` context. Rollback
+Publishing requires configured Git commit signing and a GitHub token — from
+`GITHUB_TOKEN`/`GH_TOKEN`, or an authenticated `gh` session as a credential
+fallback — for the pull-request API; observation reads the promotion pull
+request's review decision through `gh` and uses the active authenticated
+`argocd` context. Rollback
 refuses a target revision unless a prior Healthy reviewed evidence receipt
 links that revision.
 
