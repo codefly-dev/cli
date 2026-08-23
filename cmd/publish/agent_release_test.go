@@ -143,7 +143,7 @@ func TestModuleAndProviderSelectSourceTagGateWithoutLoaderAssets(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
 
 			require.NoError(t, checkAgentReleasePreconditionsForManifest(filepath.Join(dir, "agent.codefly.yaml")))
-			gate, err := newAgentReleaseGate(dir, dir)
+			gate, err := newAgentReleaseGate(dir)
 			require.NoError(t, err)
 			defer gate.cleanup()
 			releaser, ok := gate.(*sourceTagReleaser)
@@ -156,8 +156,8 @@ func TestModuleAndProviderSelectSourceTagGateWithoutLoaderAssets(t *testing.T) {
 
 func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
 	// Loader-asset publishing requires a host that can build every loader
-	// platform plus gh — the same gate a real service/toolbox publish hits.
-	// Skip where that can't be exercised.
+	// platform plus a resolvable GitHub token — the same gate a real
+	// service/toolbox publish hits. Skip where that can't be exercised.
 	if err := checkAgentReleasePreconditions(); err != nil {
 		t.Skipf("host cannot exercise loader-asset publishing: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
 			manifest := []byte("publisher: codefly.dev\nkind: " + tc.kind + "\nname: web\nversion: 0.0.14\n")
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
 
-			gate, err := newAgentReleaseGate(dir, dir)
+			gate, err := newAgentReleaseGate(dir)
 			require.NoError(t, err)
 			defer gate.cleanup()
 			releaser, ok := gate.(*agentReleaser)
@@ -202,7 +202,7 @@ func TestUnsupportedAgentKindFailsClosedWithActionableError(t *testing.T) {
 	manifest := []byte("publisher: codefly.dev\nkind: codefly:job\nname: batch\nversion: 0.0.1\n")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
 
-	_, err := newAgentReleaseGate(dir, dir)
+	_, err := newAgentReleaseGate(dir)
 	require.ErrorContains(t, err, "publish supports")
 	require.ErrorContains(t, err, "codefly:service")
 	require.ErrorContains(t, err, `got "codefly:job"`)

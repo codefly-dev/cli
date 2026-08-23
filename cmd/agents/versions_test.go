@@ -343,42 +343,6 @@ func TestLocalCacheVersionsScansAgentDir(t *testing.T) {
 	}
 }
 
-func TestNewGitHubClientAddsAuthorization(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "secret")
-	var got string
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		got = r.Header.Get("Authorization")
-	}))
-	defer server.Close()
-
-	client, err := newGitHubClient()
-	if err != nil {
-		t.Fatalf("newGitHubClient: %v", err)
-	}
-	resp, err := client.Client().Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if got != "Bearer secret" {
-		t.Fatalf("Authorization = %q, want %q", got, "Bearer secret")
-	}
-}
-
-func TestNewGitHubClientUnauthenticated(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("PATH", "") // no `gh` on PATH: force the tokenless path
-
-	client, err := newGitHubClient()
-	if err != nil {
-		t.Fatalf("newGitHubClient: %v", err)
-	}
-	if client == nil {
-		t.Fatal("newGitHubClient returned a nil client")
-	}
-}
-
 func TestSummarizeWorkspaceAgentsCachesAndFlagsResolvability(t *testing.T) {
 	restoreReleases, restoreTags, restoreOCI, restoreArchived := fetchReleases, fetchTags, fetchOCITags, repoArchived
 	defer func() {

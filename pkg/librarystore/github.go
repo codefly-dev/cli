@@ -3,17 +3,21 @@ package librarystore
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/Masterminds/semver"
+	"github.com/google/go-github/v89/github"
 )
 
 // gitDir is the directory git owns in a working tree. It is never part of
@@ -33,6 +37,19 @@ type GitHubStore struct {
 	// commitIdentity is the author used for release commits.
 	commitName  string
 	commitEmail string
+	// ensureRepository creates the export's GitHub repository when it is absent,
+	// and is a no-op when it already exists. It runs before the clone in Publish:
+	// repository creation is a platform (API) operation git cannot perform. Tests
+	// point remoteFor at a local bare repository that already exists and disable
+	// this so publish never contacts the GitHub API.
+	ensureRepository func(ctx context.Context, language Language, name string) error
+	// tokenSource resolves the GitHub credential used both to create the repository
+	// (via the API) and to authenticate git's HTTPS clone/push to github.com, so
+	// the two never diverge. It is injectable so tests can exercise the no-token
+	// path without shelling out to `gh`.
+	tokenSource func() string
+	tokenOnce   sync.Once
+	cachedToken string
 }
 
 // NewGitHubStore returns a store publishing to repositories under owner.
@@ -41,7 +58,17 @@ func NewGitHubStore(owner string) *GitHubStore {
 	s.remoteFor = func(language Language, name string) string {
 		return fmt.Sprintf("https://github.com/%s/%s.git", s.Owner, repositoryName(language, name))
 	}
+	s.tokenSource = githubToken
+	s.ensureRepository = s.createLibraryRepository
 	return s
+}
+
+// authToken resolves the GitHub credential once and caches it: publish runs the
+// token source (which may shell out to `gh`) for repository creation and then for
+// every git invocation, and re-resolving each time would be both slow and racy.
+func (s *GitHubStore) authToken() string {
+	s.tokenOnce.Do(func() { s.cachedToken = s.tokenSource() })
+	return s.cachedToken
 }
 
 // repositoryName is the per-export repository name, e.g. "authkit-go".
@@ -125,6 +152,10 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		return Published{}, err
 	}
 
+	if err = s.ensureRepository(ctx, c.Language, c.Name); err != nil {
+		return Published{}, err
+	}
+
 	work, err := os.MkdirTemp("", "codefly-library-publish-*")
 	if err != nil {
 		return Published{}, err
@@ -203,6 +234,95 @@ func validateGoModulePath(artifactDir, importPath string) error {
 		)
 	}
 	return nil
+}
+
+// createLibraryRepository creates the export's repository under the store owner
+// when a credential is available, and is a no-op when the repository already
+// exists. Without a token it does nothing: the subsequent clone fails with the
+// "create the library repository first" message, preserving today's behavior for
+// operators who provision repositories out of band.
+func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Language, name string) error {
+	token := s.authToken()
+	if token == "" {
+		return nil
+	}
+	client, err := github.NewClient(github.WithAuthToken(token))
+	if err != nil {
+		return err
+	}
+	return ensureRepositoryExists(ctx, client, s.Owner, repositoryName(language, name))
+}
+
+// ensureRepositoryExists creates owner/repo when GitHub reports it absent, and
+// returns nil when it already exists. A "not found" means create it; any other
+// failure — permission, rate limit, network — is surfaced rather than mistaken
+// for a missing repository.
+//
+// The repository is created public: the store's contract is that a consumer
+// resolves the export with its native tool (`go get github.com/owner/name-go`)
+// without codefly or credentials, and the install hint Publish returns says
+// exactly that — a private repository would make that command fail for anyone
+// outside the organization. It is created org-owned when the owner is an
+// organization and under the authenticated user otherwise, so the same code path
+// serves the "organization or user" owner the store documents.
+//
+// A create that fails with 422 means the repository was created concurrently (or
+// out of band) between the lookup and the create; that is the idempotent success
+// this function promises, not an error.
+func ensureRepositoryExists(ctx context.Context, client *github.Client, owner, repo string) error {
+	if _, resp, err := client.Repositories.Get(ctx, owner, repo); err == nil {
+		return nil
+	} else if resp == nil || resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("librarystore: check repository %s/%s: %w", owner, repo, err)
+	}
+	org, err := createOwner(ctx, client, owner)
+	if err != nil {
+		return err
+	}
+	if _, resp, err := client.Repositories.Create(ctx, org, &github.Repository{
+		Name:     github.Ptr(repo),
+		Private:  github.Ptr(false),
+		AutoInit: github.Ptr(true),
+	}); err != nil {
+		if resp != nil && resp.StatusCode == http.StatusUnprocessableEntity {
+			return nil
+		}
+		return fmt.Errorf("librarystore: create repository %s/%s (a token with repository-creation scope is required): %w", owner, repo, err)
+	}
+	return nil
+}
+
+// createOwner maps the store owner to the org argument Repositories.Create wants:
+// the owner login for an organization, or "" for a user account (which targets
+// the authenticated user's `POST /user/repos`, the only user-repo creation the
+// GitHub API allows). Passing an organization's login to the user endpoint — or
+// vice versa — is a 404, so the owner's type must decide the route.
+func createOwner(ctx context.Context, client *github.Client, owner string) (string, error) {
+	user, _, err := client.Users.Get(ctx, owner)
+	if err != nil {
+		return "", fmt.Errorf("librarystore: resolve owner %s: %w", owner, err)
+	}
+	if user.GetType() == "Organization" {
+		return owner, nil
+	}
+	return "", nil
+}
+
+// githubToken resolves a GitHub token from GITHUB_TOKEN/GH_TOKEN, falling back
+// to the `gh` CLI's stored credential so local publishing works without an
+// exported token. An empty result leaves repository creation to the operator.
+func githubToken() string {
+	if t := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(os.Getenv("GH_TOKEN")); t != "" {
+		return t
+	}
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func parseGoModulePath(data []byte) (string, error) {
@@ -395,7 +515,7 @@ func (s *GitHubStore) defaultBranch(ctx context.Context, work string) (string, e
 func (s *GitHubStore) git(ctx context.Context, dir string, args ...string) error {
 	//nolint:gosec // git is invoked with internal subcommands and store-controlled arguments, never a shell.
 	command := exec.CommandContext(ctx, "git", gitArgs(dir, args)...)
-	command.Env = gitEnv()
+	command.Env = s.gitEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
@@ -405,7 +525,7 @@ func (s *GitHubStore) git(ctx context.Context, dir string, args ...string) error
 func (s *GitHubStore) output(ctx context.Context, dir string, args ...string) (string, error) {
 	//nolint:gosec // git is invoked with internal subcommands and store-controlled arguments, never a shell.
 	command := exec.CommandContext(ctx, "git", gitArgs(dir, args)...)
-	command.Env = gitEnv()
+	command.Env = s.gitEnv()
 	out, err := command.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -422,8 +542,24 @@ func (s *GitHubStore) output(ctx context.Context, dir string, args ...string) (s
 // Ambient configuration is otherwise preserved so a user's configured push
 // credentials still work; signing is disabled per-invocation on the commands
 // that create objects, not by discarding global config wholesale.
-func gitEnv() []string {
-	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+//
+// When a token is available it also authenticates HTTPS operations against
+// github.com with that same credential, so a host that has a token but no git
+// credential helper can still clone and push a repository it just created over
+// the API. The header is passed through GIT_CONFIG_* — not argv — so the token
+// is never exposed to `ps`, and it is scoped to github.com so git never sends it
+// to another host (e.g. after a redirect).
+func (s *GitHubStore) gitEnv() []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+	if token := s.authToken(); token != "" {
+		header := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+		env = append(env,
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader",
+			"GIT_CONFIG_VALUE_0="+header,
+		)
+	}
+	return env
 }
 
 func gitArgs(dir string, args []string) []string {

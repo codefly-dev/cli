@@ -2,12 +2,17 @@ package librarystore
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/google/go-github/v89/github"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,6 +34,12 @@ func goModule(t *testing.T, modulePath, body string) string {
 func storeTo(remote string) *GitHubStore {
 	s := NewGitHubStore("codefly-dev")
 	s.remoteFor = func(Language, string) string { return remote }
+	// The local bare remote already exists, so creation is a no-op; disabling it
+	// also keeps publish tests from ever contacting the real GitHub API.
+	s.ensureRepository = func(context.Context, Language, string) error { return nil }
+	// No ambient token: keep git operations off the github.com auth path so tests
+	// never depend on the host's `gh`/GITHUB_TOKEN state.
+	s.tokenSource = func() string { return "" }
 	return s
 }
 
@@ -66,6 +77,202 @@ func TestGitHubStorePublishResolveGoLibrary(t *testing.T) {
 	require.Equal(t, second.Ref, resolved.Ref)
 	require.Equal(t, second.Digest, resolved.Digest)
 	require.Contains(t, resolved.InstallHint, "@v1.2.0")
+}
+
+func TestGitHubStorePublishCreatesMissingRepositoryBeforeCloning(t *testing.T) {
+	ctx := context.Background()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	store := NewGitHubStore("codefly-dev")
+	store.remoteFor = func(Language, string) string { return remote }
+
+	// The remote does not exist yet: publish must create it (here, the local bare
+	// repository the clone will target) before the git clone/commit/tag/push runs.
+	store.tokenSource = func() string { return "" }
+	var created bool
+	store.ensureRepository = func(context.Context, Language, string) error {
+		created = true
+		return exec.Command("git", "init", "--quiet", "--bare", remote).Run()
+	}
+
+	published, err := store.Publish(ctx, goModule(t, goModulePath(remote), "package authkit\n"),
+		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	require.NoError(t, err)
+	require.True(t, created, "ensureRepository must run before the clone")
+	require.Equal(t, "1.0.0", published.Version)
+
+	// The git path is unchanged: the release is resolvable from the created repo.
+	versions, err := store.List(ctx, LanguageGo, "authkit")
+	require.NoError(t, err)
+	require.Equal(t, []string{"1.0.0"}, versions)
+}
+
+func TestGitHubStorePublishAbortsWhenRepositoryCreationFails(t *testing.T) {
+	ctx := context.Background()
+	// An unreachable remote proves the creation failure aborts before any git
+	// operation: a clone attempt would surface a network error, not this one.
+	store := storeTo("https://192.0.2.1/unreachable/authkit-go.git")
+	store.ensureRepository = func(context.Context, Language, string) error {
+		return errNoRepoScope
+	}
+
+	_, err := store.Publish(ctx, goModule(t, goModulePath("https://192.0.2.1/unreachable/authkit-go.git"), "package authkit\n"),
+		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	require.ErrorIs(t, err, errNoRepoScope)
+}
+
+var errNoRepoScope = &repoScopeError{}
+
+type repoScopeError struct{}
+
+func (*repoScopeError) Error() string { return "no repo-creation scope" }
+
+func TestEnsureRepositoryExists(t *testing.T) {
+	ctx := context.Background()
+
+	newClient := func(t *testing.T, handler http.HandlerFunc) *github.Client {
+		t.Helper()
+		server := httptest.NewServer(handler)
+		t.Cleanup(server.Close)
+		client, err := github.NewClient(github.WithEnterpriseURLs(server.URL, server.URL))
+		require.NoError(t, err)
+		return client
+	}
+
+	t.Run("existing repository is a no-op", func(t *testing.T) {
+		var created bool
+		client := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				created = true
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
+		})
+		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go"))
+		require.False(t, created, "an existing repository must not be re-created")
+	})
+
+	t.Run("an absent org repository is created public, org-owned, initialized", func(t *testing.T) {
+		var createPath string
+		var body struct {
+			Private  *bool `json:"private"`
+			AutoInit *bool `json:"auto_init"`
+		}
+		client := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/api/v3/users/codefly-dev":
+				_, _ = w.Write([]byte(`{"type":"Organization"}`))
+			case r.URL.Path == "/api/v3/repos/codefly-dev/authkit-go":
+				w.WriteHeader(http.StatusNotFound)
+			case r.Method == http.MethodPost:
+				createPath = r.URL.Path
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
+			}
+		})
+		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go"))
+		require.Equal(t, "/api/v3/orgs/codefly-dev/repos", createPath, "an organization owner uses the org endpoint")
+		require.NotNil(t, body.Private)
+		require.False(t, *body.Private, "the published repository must be public so `go get` resolves it")
+		require.NotNil(t, body.AutoInit)
+		require.True(t, *body.AutoInit, "auto-init gives a deterministic default branch instead of the host's git config")
+	})
+
+	t.Run("a user owner is created under the authenticated user", func(t *testing.T) {
+		var createPath string
+		client := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/api/v3/users/alice":
+				_, _ = w.Write([]byte(`{"type":"User"}`))
+			case r.URL.Path == "/api/v3/repos/alice/authkit-go":
+				w.WriteHeader(http.StatusNotFound)
+			case r.Method == http.MethodPost:
+				createPath = r.URL.Path
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
+			}
+		})
+		require.NoError(t, ensureRepositoryExists(ctx, client, "alice", "authkit-go"))
+		require.Equal(t, "/api/v3/user/repos", createPath, "a user owner uses the authenticated-user endpoint")
+	})
+
+	t.Run("a concurrent create (422) is an idempotent success", func(t *testing.T) {
+		client := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/api/v3/users/codefly-dev":
+				_, _ = w.Write([]byte(`{"type":"Organization"}`))
+			case r.URL.Path == "/api/v3/repos/codefly-dev/authkit-go":
+				w.WriteHeader(http.StatusNotFound)
+			case r.Method == http.MethodPost:
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"Repository creation failed.","errors":[{"resource":"Repository","code":"custom","message":"name already exists on this account"}]}`))
+			}
+		})
+		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go"),
+			"a repository that appeared between the lookup and the create is not an error")
+	})
+
+	t.Run("a non-404 lookup error is surfaced, not treated as absent", func(t *testing.T) {
+		var created bool
+		client := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				created = true
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go")
+		require.ErrorContains(t, err, "check repository")
+		require.False(t, created, "a lookup failure must not trigger a blind create")
+	})
+
+	t.Run("a token without creation scope yields an actionable error", func(t *testing.T) {
+		client := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/api/v3/users/codefly-dev":
+				_, _ = w.Write([]byte(`{"type":"Organization"}`))
+			case r.URL.Path == "/api/v3/repos/codefly-dev/authkit-go":
+				w.WriteHeader(http.StatusNotFound)
+			case r.Method == http.MethodPost:
+				w.WriteHeader(http.StatusForbidden)
+			}
+		})
+		err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go")
+		require.ErrorContains(t, err, "repository-creation scope")
+	})
+}
+
+func TestGitEnvInjectsScopedTokenHeaderForGitHub(t *testing.T) {
+	store := NewGitHubStore("codefly-dev")
+	store.tokenSource = func() string { return "s3cr3t" }
+
+	env := store.gitEnv()
+	want := "GIT_CONFIG_VALUE_0=Authorization: Basic " +
+		base64.StdEncoding.EncodeToString([]byte("x-access-token:s3cr3t"))
+	require.Contains(t, env, "GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader",
+		"the credential must be scoped to github.com so it is never sent elsewhere")
+	require.Contains(t, env, want, "the resolved token must authenticate git clone/push, not only the API")
+
+	// Without a token, git keeps today's ambient-credential behavior: no header.
+	store2 := NewGitHubStore("codefly-dev")
+	store2.tokenSource = func() string { return "" }
+	for _, e := range store2.gitEnv() {
+		require.NotContains(t, e, "extraHeader")
+	}
+}
+
+func TestGitHubStorePublishWithoutTokenFallsBackToCloneError(t *testing.T) {
+	ctx := context.Background()
+	// Exercise the real wiring: NewGitHubStore's default ensureRepository, driven
+	// by a token source that yields nothing. Creation must degrade to a no-op so
+	// the missing remote surfaces today's "create the library repository first".
+	remote := filepath.Join(t.TempDir(), "missing.git")
+	store := NewGitHubStore("codefly-dev")
+	store.remoteFor = func(Language, string) string { return remote }
+	store.tokenSource = func() string { return "" }
+
+	_, err := store.Publish(ctx, goModule(t, goModulePath(remote), "package authkit\n"),
+		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	require.ErrorContains(t, err, "create the library repository first")
 }
 
 func TestGitHubStorePublishedVersionsAreImmutableButIdenticalContentReleases(t *testing.T) {

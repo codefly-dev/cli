@@ -279,6 +279,13 @@ func needsLinuxCLI(targets []*Companion) bool {
 // the alpine images can run without glibc. Flag stripping (-s -w)
 // drops the symbol table and DWARF info; ~25-30% size reduction with
 // no runtime cost.
+//
+// The `codefly_nosemantic` tag drops the tree-sitter semantic analyzer, which
+// cannot link without cgo. It is required (not merely implied by CGO_ENABLED=0):
+// without it this CGO-free build would select the analyzer variant and fail to
+// link. The companion CLI only builds and runs services in-container and never
+// serves the semantic gateway, so the analyzer is not needed here. See
+// pkg/engine/source_nosemantic.go.
 func buildLinuxCLI(coreDir, arch string) error {
 	cliDir := filepath.Join(coreDir, "..", "cli")
 	if info, err := os.Stat(cliDir); err != nil || !info.IsDir() {
@@ -290,6 +297,7 @@ func buildLinuxCLI(coreDir, arch string) error {
 	}
 
 	cmd := exec.Command("go", "build",
+		"-tags", "codefly_nosemantic",
 		"-ldflags", `-s -w -extldflags "-static"`,
 		"-o", outBin,
 		".",
