@@ -9,7 +9,6 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	codecore "github.com/codefly-dev/core/code"
-	"github.com/codefly-dev/core/code/semantic"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 )
 
@@ -18,14 +17,6 @@ import (
 type Source struct {
 	mu     sync.RWMutex
 	server *codecore.DefaultCodeServer
-}
-
-// Core omits the tree-sitter analyzer by default so Go service agents stay
-// CGO-free. The CLI is the workspace-wide source behavior behind the gateway —
-// semantic index and symbol mutation are part of its contract — so it installs
-// the analyzer explicitly. See core/code.WithSemanticAnalyzer.
-func newSource(root string) *Source {
-	return &Source{server: codecore.NewDefaultCodeServer(root, codecore.WithSemanticAnalyzer(semantic.New()))}
 }
 
 // ExecuteCode executes a language-neutral Code request.
