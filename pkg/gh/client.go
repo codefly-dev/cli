@@ -25,10 +25,16 @@ func Owner(publisher string) string {
 // unauthenticated 60/hour rate limit that turns listing many pinned agents
 // flaky, and it is what lets release publishing write to the API at all.
 func NewClient() (*github.Client, error) {
+	var options []github.ClientOptionsFunc
 	if token := Token(); token != "" {
-		return github.NewClient(github.WithAuthToken(token))
+		options = append(options, github.WithAuthToken(token))
 	}
-	return github.NewClient()
+	// GITHUB_API_URL is set by GitHub Actions and against GitHub Enterprise;
+	// honoring it points the client at the right host (and gives tests an HTTP seam).
+	if endpoint := strings.TrimSpace(os.Getenv("GITHUB_API_URL")); endpoint != "" {
+		options = append(options, github.WithEnterpriseURLs(endpoint, endpoint))
+	}
+	return github.NewClient(options...)
 }
 
 // Token resolves a GitHub token from GITHUB_TOKEN/GH_TOKEN, falling back to the

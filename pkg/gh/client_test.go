@@ -78,3 +78,18 @@ func TestTokenEmptyWithoutCredentials(t *testing.T) {
 		t.Fatalf("Token() = %q, want empty when no credential source exists", got)
 	}
 }
+
+func TestNewClientHonorsAPIEndpoint(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PATH", "")
+	t.Setenv("GITHUB_API_URL", "https://ghe.example.com/api/v3")
+
+	client, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if got := client.BaseURL(); got != "https://ghe.example.com/api/v3/" {
+		t.Fatalf("BaseURL = %q, want trailing-slash normalized endpoint", got)
+	}
+}

@@ -3,6 +3,8 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,67 @@ import (
 )
 
 var preparedPermit = mutationauthority.NewPreparedPermit()
+
+func TestOpenOrUpdatePullRequestEditsExistingOpenPromotion(t *testing.T) {
+	const commit = "1234567890123456789012345678901234567890"
+	prepared := &preparedRepository{plan: PublishPlan{
+		RepositorySlug:  "codefly-test/manifests",
+		PromotionBranch: "codefly/promote-payments-aws",
+		BaseBranch:      "main",
+	}}
+
+	var edited bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+			fmt.Fprintf(w, `[{"number":7,"html_url":"https://github.com/codefly-test/manifests/pull/7","head":{"sha":%q}}]`, commit)
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/pulls/7"):
+			edited = true
+			fmt.Fprint(w, `{"number":7,"html_url":"https://github.com/codefly-test/manifests/pull/7"}`)
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", server.URL)
+
+	url, number, err := openOrUpdatePullRequest(context.Background(), prepared, &PublishRequest{}, commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !edited {
+		t.Fatal("existing pull request was not edited")
+	}
+	if url != "https://github.com/codefly-test/manifests/pull/7" || number != 7 {
+		t.Fatalf("openOrUpdatePullRequest = %q, %d", url, number)
+	}
+}
+
+func TestOpenOrUpdatePullRequestRejectsHeadCommitDrift(t *testing.T) {
+	const commit = "1234567890123456789012345678901234567890"
+	prepared := &preparedRepository{plan: PublishPlan{
+		RepositorySlug:  "codefly-test/manifests",
+		PromotionBranch: "codefly/promote-payments-aws",
+		BaseBranch:      "main",
+	}}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls") {
+			fmt.Fprint(w, `[{"number":7,"html_url":"https://github.com/codefly-test/manifests/pull/7","head":{"sha":"ffffffffffffffffffffffffffffffffffffffff"}}]`)
+			return
+		}
+		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", server.URL)
+
+	if _, _, err := openOrUpdatePullRequest(context.Background(), prepared, &PublishRequest{}, commit); err == nil ||
+		!strings.Contains(err.Error(), "pull request head is") {
+		t.Fatalf("head drift error = %v", err)
+	}
+}
 
 func TestInventoryUnitDirectoriesAreDistinctAndKindChecked(t *testing.T) {
 	dirs, err := inventoryUnitDirectories(&Inventory{Units: []InventoryUnit{

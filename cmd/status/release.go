@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/fatih/color"
+	"github.com/google/go-github/v89/github"
 	"github.com/spf13/cobra"
 )
 
@@ -261,18 +263,44 @@ func createAgentIssue(baseDir string, status AgentStatus) error {
 		status.CoreVer, status.LatestCore, status.Delta,
 		agentPath)
 
-	// Use gh to create issue
-	cmd := exec.CommandContext(context.Background(),
-		"gh", "issue", "create",
-		"--title", title,
-		"--body", body,
-		"--label", "chore",
-		"--label", "dependencies")
-	cmd.Dir = agentPath
-
-	if err := cmd.Run(); err != nil {
+	owner, repo, err := agentRepository(agentPath)
+	if err != nil {
 		return err
 	}
+	client, err := gh.NewClient()
+	if err != nil {
+		return err
+	}
+	_, _, err = client.Issues.Create(context.Background(), owner, repo, &github.IssueRequest{
+		Title:  github.Ptr(title),
+		Body:   github.Ptr(body),
+		Labels: &[]string{"chore", "dependencies"},
+	})
+	return err
+}
 
-	return nil
+func agentRepository(agentPath string) (string, string, error) {
+	//nolint:gosec // git is invoked with fixed subcommands; agentPath is a scanned filesystem path, never a shell.
+	out, err := exec.Command("git", "-C", agentPath, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve %s origin remote: %w", agentPath, err)
+	}
+	return parseGitHubRemote(strings.TrimSpace(string(out)))
+}
+
+func parseGitHubRemote(remote string) (string, string, error) {
+	trimmed := strings.TrimSuffix(remote, ".git")
+	switch {
+	case strings.HasPrefix(trimmed, "git@github.com:"):
+		trimmed = strings.TrimPrefix(trimmed, "git@github.com:")
+	case strings.HasPrefix(trimmed, "https://github.com/"):
+		trimmed = strings.TrimPrefix(trimmed, "https://github.com/")
+	default:
+		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
+	}
+	owner, repo, ok := strings.Cut(trimmed, "/")
+	if !ok || owner == "" || repo == "" {
+		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
+	}
+	return owner, repo, nil
 }
