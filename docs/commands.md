@@ -307,6 +307,7 @@ Add resources to the workspace.
 ```bash
 codefly add module backend                                     # Add a module
 codefly add module saas --agent=saas-starter                   # Scaffold and pin a module template
+codefly add module host --source=../saas-host/modules/host     # Reference an out-of-repo module (no vendored copy)
 codefly add service api --agent=go-grpc                        # Add a service with an agent
 codefly add service-dependency api --dependency=backend/db     # Add a service dependency
 codefly add library utils                                      # Add a library
@@ -322,6 +323,15 @@ match the source's service code or add fails without leaving a partial module
 behind. Inventory-only scaffolds may omit the base manifest and service code;
 their first `sync module` treats the missing manifest as an empty base and
 populates the pinned source without rerunning the agent.
+
+`add module --source <path>` declares a module **by reference** rather than
+vendoring a copy: the workspace entry records a `path:` to an out-of-repo module
+directory, and `codefly run` boots it alongside local modules. This is the
+composition mode for multi-repo solutions (a solution repo referencing the host
+and runtime modules it does not own); it is distinct from `sync module`, which
+vendors a hash-pinned base. `codefly doctor workspace` reports each referenced
+module and flags an unresolved reference with the `module_reference_unresolved`
+diagnostic.
 
 **`add service` flags:**
 

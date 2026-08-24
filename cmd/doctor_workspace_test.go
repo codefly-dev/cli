@@ -145,6 +145,38 @@ func TestDoctorWorkspaceOutsideWorkspace(t *testing.T) {
 	requireCode(t, report, codeWorkspaceNotFound, "fail")
 }
 
+func TestDoctorWorkspaceReportsResolvedReferencedModule(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "module.codefly.yaml"), []byte("kind: module\nname: host\nservices: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: host\n      path: " + source + "\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleReferenceUnresolved)
+	found := false
+	for _, d := range report.Checks {
+		if d.Name == "referenced module host" && d.Status == "ok" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("resolved referenced module not reported: %s", reportJSON(t, report))
+	}
+}
+
+func TestDoctorWorkspaceFlagsUnresolvedReferencedModule(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: host\n      path: /nonexistent/host\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireCode(t, report, codeModuleReferenceUnresolved, "fail")
+	if report.Status != readinessStatusNotReady {
+		t.Fatalf("status = %q, want not_ready", report.Status)
+	}
+}
+
 func TestDoctorWorkspaceMalformedWorkspace(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: [unclosed\n  bad yaml::\n",

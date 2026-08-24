@@ -175,6 +175,77 @@ func TestAddModuleRollsBackScaffoldWhoseBytesDoNotMatchPinnedSource(t *testing.T
 	}
 }
 
+func TestAddReferencedModuleRegistersPathWithoutVendoring(t *testing.T) {
+	source := t.TempDir()
+	writeAddTestFile(t, filepath.Join(source, "module.codefly.yaml"), "kind: module\nname: host\nservices:\n  - name: api\n")
+	writeAddTestFile(t, filepath.Join(source, "services", "api", "service.codefly.yaml"),
+		"name: api\nversion: 0.0.0\nagent:\n  kind: codefly:service\n  name: fixture\n  publisher: codefly.dev\n  version: 1.0.0\nendpoints: []\n")
+
+	root := t.TempDir()
+	workspace := &resources.Workspace{Name: "solution", Layout: resources.LayoutKindModules}
+	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	previousSource, previousDefault := moduleSource, moduleWithDefault
+	moduleSource, moduleWithDefault = source, true
+	defer func() { moduleSource, moduleWithDefault = previousSource, previousDefault }()
+
+	if err := addReferencedModule("host"); err != nil {
+		t.Fatal(err)
+	}
+
+	// No vendored copy is materialized.
+	if _, err := os.Stat(filepath.Join(root, "modules", "host")); !os.IsNotExist(err) {
+		t.Fatalf("referenced module was vendored: %v", err)
+	}
+
+	reloaded, err := resources.FindWorkspaceUp(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.ExistsModule("host") {
+		t.Fatal("referenced module was not registered")
+	}
+	// The reference resolves back to the out-of-repo source, which is what
+	// `codefly run` relies on to boot the module.
+	mod, err := reloaded.LoadModuleFromName(context.Background(), "host")
+	if err != nil {
+		t.Fatalf("referenced module does not resolve: %v", err)
+	}
+	if mod.Dir() != source {
+		t.Fatalf("resolved dir = %s, want %s", mod.Dir(), source)
+	}
+}
+
+func TestAddReferencedModuleRejectsNameMismatch(t *testing.T) {
+	source := t.TempDir()
+	writeAddTestFile(t, filepath.Join(source, "module.codefly.yaml"), "kind: module\nname: host\nservices: []\n")
+
+	root := t.TempDir()
+	workspace := &resources.Workspace{Name: "solution", Layout: resources.LayoutKindModules}
+	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	previousSource, previousDefault := moduleSource, moduleWithDefault
+	moduleSource, moduleWithDefault = source, true
+	defer func() { moduleSource, moduleWithDefault = previousSource, previousDefault }()
+
+	if err := addReferencedModule("runtime"); err == nil {
+		t.Fatal("referencing a module under a mismatched name returned success")
+	}
+	reloaded, err := resources.FindWorkspaceUp(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ExistsModule("runtime") {
+		t.Fatal("mismatched reference was registered")
+	}
+}
+
 func TestResourceCommandsReturnErrorsThroughCobra(t *testing.T) {
 	for _, command := range []*cobra.Command{
 		ModuleCmd,
