@@ -33,7 +33,7 @@ var VerifyPlatformCmd = &cobra.Command{
 	Use:   "verify-platform <os_arch>",
 	Short: "Verify every language agent ships a release asset for a platform (e.g. linux_arm64)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		return verifyRosterPlatform(ctx, normalizePlatform(args[0]))
