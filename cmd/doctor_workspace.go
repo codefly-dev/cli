@@ -42,6 +42,7 @@ const (
 	codeProviderResolutionFailed  = "provider_resolution_failed"
 	codePlaintextNotAllowed       = "plaintext_not_allowed"
 	codeReferenceSchemeUnknown    = "reference_scheme_unknown"
+	codeModuleReferenceUnresolved = "module_reference_unresolved"
 	codeTimeout                   = "timeout"
 )
 
@@ -111,6 +112,8 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	if ws == nil {
 		return report
 	}
+
+	checkReferencedModules(ctx, ws, report)
 
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
@@ -192,6 +195,28 @@ func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report 
 	report.WorkspaceDir = ws.Dir()
 	report.add("", "workspace", "ok", fmt.Sprintf("%s (%s layout) at %s", ws.Name, ws.Layout, ws.Dir()), "")
 	return ws
+}
+
+// checkReferencedModules reports every module declared by reference — a `path:`
+// override pointing outside the vendored modules/<name>/ layout — and flags any
+// whose target cannot be loaded. Without it an unresolved reference only
+// surfaces later as an opaque "cannot load workspace services" failure; here the
+// module and its resolved path are named directly. Vendored modules (no path
+// override) and the implicit flat-layout module are skipped.
+func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
+	for _, ref := range ws.Modules {
+		if ref.PathOverride == nil {
+			continue
+		}
+		resolved := ws.ModulePath(ctx, ref)
+		if _, err := resources.LoadModuleFromDir(ctx, resolved); err != nil {
+			report.add(codeModuleReferenceUnresolved, "referenced module "+ref.Name, "fail",
+				fmt.Sprintf("referenced module %q does not resolve at %s: %v", ref.Name, resolved, err),
+				fmt.Sprintf("fix the `path:` of module %q in %s, or vendor it with `codefly sync module`", ref.Name, resources.WorkspaceConfigurationName))
+			continue
+		}
+		report.add("", "referenced module "+ref.Name, "ok", fmt.Sprintf("%s → %s", ref.Name, resolved), "")
+	}
 }
 
 func checkEnvironment(ws *resources.Workspace, name string, report *workspaceReadinessReport) *resources.Environment {
@@ -737,11 +762,12 @@ With --json, a versioned report is printed to stdout:
    remediation?}]}
 
 Stable diagnostic codes: workspace_not_found, workspace_invalid,
-environment_not_found, service_not_found, configuration_directory_missing,
-configuration_missing, configuration_invalid, configuration_duplicate,
-provider_not_configured, provider_executable_missing,
-provider_authentication_required, provider_resolution_failed,
-plaintext_not_allowed, reference_scheme_unknown, timeout. External provider
+environment_not_found, service_not_found, module_reference_unresolved,
+configuration_directory_missing, configuration_missing,
+configuration_invalid, configuration_duplicate, provider_not_configured,
+provider_executable_missing, provider_authentication_required,
+provider_resolution_failed, plaintext_not_allowed, reference_scheme_unknown,
+timeout. External provider
 binding checks add external_provider.* codes (bindings_unreadable,
 bindings_schema_unknown, and the per-binding validation codes).`,
 	RunE: func(cmd *cobra.Command, _ []string) error {

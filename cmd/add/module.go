@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	modulesync "github.com/codefly-dev/cli/cmd/sync"
@@ -27,12 +28,64 @@ var ModuleCmd = &cobra.Command{
 		if interactive {
 			return fmt.Errorf("interactive mode not implemented yet")
 		}
+		if moduleSource != "" {
+			return addReferencedModule(args[0])
+		}
 		return addModule(args[0])
 	},
 }
 
 var moduleAgentInput string
+var moduleSource string
 var moduleWithDefault bool
+
+// addReferencedModule registers a module by reference — pointing at an
+// out-of-repo directory — instead of vendoring a copy under modules/<name>/.
+// This lets a solution repo be the composition root that references the host
+// and runtime modules it does not own; `codefly run` boots them alongside
+// local modules because resolution flows through the reference's path override.
+func addReferencedModule(name string) error {
+	ctx, done := common.NewContext()
+	defer done()
+
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot load workspace: %w", err)
+	}
+	if workspace.ExistsModule(name) {
+		return fmt.Errorf("module <%s> already exists", name)
+	}
+
+	source, err := filepath.Abs(moduleSource)
+	if err != nil {
+		return fmt.Errorf("cannot resolve source path %q: %w", moduleSource, err)
+	}
+	mod, err := resources.LoadModuleFromDir(ctx, source)
+	if err != nil {
+		return fmt.Errorf("cannot load referenced module at %s: %w", source, err)
+	}
+	if mod.Name != name {
+		return fmt.Errorf("referenced module at %s is named <%s>, not <%s>", source, mod.Name, name)
+	}
+
+	// Store a workspace-relative override when the source lives inside the
+	// workspace so the reference stays portable; fall back to the absolute
+	// path for the out-of-repo case, which is the whole point of a reference.
+	stored := source
+	if rel, relErr := filepath.Rel(workspace.Dir(), source); relErr == nil && filepath.IsLocal(rel) {
+		stored = rel
+	}
+
+	if err := workspace.AddModuleReference(&resources.ModuleReference{Name: name, PathOverride: &stored}); err != nil {
+		return fmt.Errorf("cannot add module reference: %w", err)
+	}
+	if err := workspace.Save(ctx); err != nil {
+		return fmt.Errorf("cannot save workspace: %w", err)
+	}
+
+	cli.Header(2, "Referenced module <%s> added from %s.", name, source)
+	return nil
+}
 
 func addModule(name string) (result error) {
 	ctx, done := common.NewContext()
@@ -149,5 +202,7 @@ func addModule(name string) (result error) {
 func init() {
 	ModuleCmd.PersistentFlags().BoolVarP(&interactive, "interactive", "i", false, "interactive mode")
 	ModuleCmd.Flags().StringVar(&moduleAgentInput, "agent", "", "Module template agent (e.g. user-management, rag)")
+	ModuleCmd.Flags().StringVar(&moduleSource, "source", "", "Reference an existing out-of-repo module by path instead of vendoring a copy")
+	ModuleCmd.MarkFlagsMutuallyExclusive("agent", "source")
 	ModuleCmd.Flags().BoolVar(&moduleWithDefault, "yes", false, "Skip confirmation prompts (non-interactive/MCP mode)")
 }
