@@ -62,6 +62,15 @@ jobs:
         working-directory: cli
         run: GOWORK=off GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
 
+      # A multi-platform buildx push builds every image as one manifest, so the
+      # arm64 stages need an emulator (QEMU) and a builder that can emit a
+      # manifest list.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -69,10 +78,10 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Publish every companion at its pinned version
-        # Pin linux/amd64: companion images in the registry are amd64, and
-        # agents/CI pull them on amd64. Explicit so the arch never depends on
-        # the runner.
-        run: ${{ github.workspace }}/bin/codefly companion publish --all --platform linux/amd64 --core-dir "${{ github.workspace }}/core"
+        # Publish multi-arch: every language service agent ships linux/arm64, so
+        # a companion must too or it can't run a single language service on an
+        # arm64 host. One manifest list serves both arches.
+        run: ${{ github.workspace }}/bin/codefly companion publish --all --platform linux/amd64,linux/arm64 --core-dir "${{ github.workspace }}/core"
 
       - name: Verify every embedded tag is in the registry
         run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"
@@ -106,6 +115,13 @@ jobs:
       - name: Build the codefly CLI
         working-directory: cli
         run: GOWORK=off GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
+
+      - name: Verify a linux/arm64 companion can resolve every language agent
+        # Guards the arm64 companion footgun: publishing an arm64 companion is
+        # only safe while every language agent still ships a linux/arm64 asset.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: ${{ github.workspace }}/bin/codefly agent verify-platform linux/arm64
 
       - name: Verify every embedded tag is in the registry
         run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"
