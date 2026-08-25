@@ -35,6 +35,11 @@ type DevServerOrphan struct {
 	// codefly supervisor (PPID 1) — the escaped, no-longer-tracked leak that
 	// the registry-based reaper can no longer identify.
 	Orphaned bool
+	// Owned is true when the process carries codefly's process-group
+	// authentication in its environment, proving codefly spawned it. Only owned
+	// groups are ever signalled; a dev server the user launched by hand inside a
+	// workspace is surfaced by a scan but never reaped.
+	Owned bool
 }
 
 // ScanDevServerOrphans finds frontend dev servers running inside a codefly
@@ -77,12 +82,17 @@ func ScanDevServerOrphans(ctx context.Context) ([]DevServerOrphan, error) {
 		if err != nil {
 			continue
 		}
+		owned, err := processIsCodeflyOwned(pid)
+		if err != nil {
+			continue
+		}
 		orphan := DevServerOrphan{
 			PID:       pid,
 			PGID:      pgid,
 			Command:   strings.Join(argv, " "),
 			Cwd:       cwd,
 			Workspace: workspace,
+			Owned:     owned,
 		}
 		if ppid, err := proc.PpidWithContext(ctx); err == nil {
 			orphan.Parent = int(ppid)
@@ -96,11 +106,13 @@ func ScanDevServerOrphans(ctx context.Context) ([]DevServerOrphan, error) {
 	return orphans, nil
 }
 
-// ReapDevServerOrphans terminates the process groups of orphaned dev servers
-// (those reparented away from their codefly supervisor). Servers still owned by
-// a live supervisor are left alone — the registry-based reaper handles those.
-// It returns one entry per reaped process group; with dryRun set, nothing is
-// signalled and the return value is what would be reaped.
+// ReapDevServerOrphans terminates the process groups of leaked dev servers. A
+// group is reaped only when it is (1) codefly-owned — a member carries codefly's
+// process-group authentication, so codefly spawned it — and (2) stale — its
+// group leader is gone or has itself been reparented to init. Dev servers the
+// user launched by hand (no authentication) and servers still supervised by a
+// live codefly (leader with a live parent) are left untouched. With dryRun set,
+// nothing is signalled and the return value is what would be reaped.
 func ReapDevServerOrphans(ctx context.Context, dryRun bool) ([]DevServerOrphan, error) {
 	orphans, err := ScanDevServerOrphans(ctx)
 	if err != nil {
@@ -110,10 +122,18 @@ func ReapDevServerOrphans(ctx context.Context, dryRun bool) ([]DevServerOrphan, 
 	var reaped []DevServerOrphan
 	var failures []error
 	for _, orphan := range orphans {
-		if !orphan.Orphaned {
+		if !orphan.Owned {
 			continue
 		}
 		if _, done := reapedGroups[orphan.PGID]; done {
+			continue
+		}
+		stale, err := groupIsStale(orphan.PGID)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("inspect dev-server process group %d (%s): %w", orphan.PGID, orphan.Cwd, err))
+			continue
+		}
+		if !stale {
 			continue
 		}
 		reapedGroups[orphan.PGID] = struct{}{}
@@ -121,7 +141,7 @@ func ReapDevServerOrphans(ctx context.Context, dryRun bool) ([]DevServerOrphan, 
 		if dryRun {
 			continue
 		}
-		if err := killProcessGroup(ctx, orphan.PGID); err != nil {
+		if err := killAuthenticatedProcessGroup(ctx, orphan.PGID); err != nil {
 			failures = append(failures, fmt.Errorf("reap dev-server process group %d (%s): %w", orphan.PGID, orphan.Cwd, err))
 		}
 	}
@@ -168,29 +188,102 @@ func isRegularFile(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-func killProcessGroup(ctx context.Context, pgid int) error {
+// processIsCodeflyOwned reports whether pid carries codefly's process-group
+// authentication in its environment — proof that codefly spawned it (and, via
+// inheritance, its whole tree). This survives the loss of the registry record,
+// so it identifies leaked codefly servers that `clear` may safely reap.
+func processIsCodeflyOwned(pid int) (bool, error) {
+	authentication, err := readProcessGroupAuthentication(pid)
+	if errors.Is(err, errProcessNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return authentication != "", nil
+}
+
+// groupIsStale reports whether the process group has lost its supervisor. It is
+// stale unless its leader (the process whose pid equals the pgid) is alive and
+// still has a live parent — i.e. is being supervised. A gone or init-reparented
+// leader means the group has escaped codefly and is safe to reap.
+func groupIsStale(pgid int) (bool, error) {
+	leader, err := inspectProcessIdentity(pgid)
+	if errors.Is(err, errProcessNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if leader.pgid == pgid && leader.parent != 1 {
+		return false, nil
+	}
+	return true, nil
+}
+
+// groupHasCodeflyMember reports whether the live process group still contains a
+// codefly-owned member. It is re-checked immediately before each destructive
+// signal so that a process group whose number was recycled between the scan and
+// the kill is never signalled unless it is, right now, codefly's.
+func groupHasCodeflyMember(ctx context.Context, pgid int) (bool, error) {
+	members, err := inspectProcessGroup(ctx, pgid)
+	if err != nil {
+		return false, err
+	}
+	for _, member := range members {
+		owned, err := processIsCodeflyOwned(member.pid)
+		if err != nil {
+			return false, err
+		}
+		if owned {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// killAuthenticatedProcessGroup escalates SIGTERM then SIGKILL to the group,
+// but re-confirms the group still holds a codefly-owned member immediately
+// before each signal. That closes the window between scan and kill in which the
+// process-group number could have been recycled by an unrelated group: if the
+// group is no longer codefly's (or already gone), it aborts without signalling.
+func killAuthenticatedProcessGroup(ctx context.Context, pgid int) error {
 	if pgid <= 1 {
 		return fmt.Errorf("refusing to signal process group %d", pgid)
 	}
 	if pgid == syscall.Getpgrp() {
 		return errors.New("refusing to signal own process group")
 	}
-	if err := signalGroup(pgid, syscall.SIGTERM); err != nil {
+	owned, err := groupHasCodeflyMember(ctx, pgid)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return nil
+	}
+	if err = signalGroup(pgid, syscall.SIGTERM); err != nil {
 		return err
 	}
 	if waitForGroupDeath(ctx, pgid, sigtermGrace) {
 		return nil
 	}
-	if err := ctx.Err(); err != nil {
+	if err = ctx.Err(); err != nil {
 		return err
 	}
-	if err := signalGroup(pgid, syscall.SIGKILL); err != nil {
+	owned, err = groupHasCodeflyMember(ctx, pgid)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return nil
+	}
+	if err = signalGroup(pgid, syscall.SIGKILL); err != nil {
 		return err
 	}
 	if waitForGroupDeath(ctx, pgid, sigkillGrace) {
 		return nil
 	}
-	if err := ctx.Err(); err != nil {
+	if err = ctx.Err(); err != nil {
 		return err
 	}
 	return fmt.Errorf("process group %d remained alive after SIGKILL", pgid)

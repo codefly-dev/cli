@@ -306,25 +306,27 @@ func clearNixDataNote(w *wool.Wool) {
 		"      then `codefly run service <svc>` re-applies migrations from scratch.")
 }
 
-// reapOrphanedDevServers reaps dev servers (next dev / npm run dev) that escaped
-// the process-group registry — matched by signature (a dev-server command whose
-// cwd is inside a codefly workspace) and reparented away from codefly. The
-// registry reap cannot see these; it only knows records.
+// reapOrphanedDevServers reaps codefly-owned dev servers (next dev / npm run dev)
+// that escaped the process-group registry: found by signature, proven codefly's
+// by their process-group authentication, and reaped only when their group has
+// lost its supervisor. The registry reap cannot see these; it only knows records.
 func reapOrphanedDevServers(ctx context.Context, w *wool.Wool, options clearOptions) []error {
 	if options.keepProcesses {
 		return nil
 	}
 	reaped, err := processgroup.ReapDevServerOrphans(ctx, options.dryRun)
-	switch {
-	case len(reaped) == 0:
-		w.Info("no orphaned dev servers")
-	case options.dryRun:
-		w.Info("would reap orphaned dev servers", wool.Field("count", len(reaped)), wool.Field("pgids", devServerPGIDs(reaped)))
-	default:
-		w.Info("reaped orphaned dev servers", wool.Field("count", len(reaped)), wool.Field("pgids", devServerPGIDs(reaped)))
-	}
 	if err != nil {
 		w.Warn("cannot reap orphaned dev servers", wool.ErrField(err))
+	}
+	switch {
+	case len(reaped) > 0 && options.dryRun:
+		w.Info("would reap orphaned dev servers", wool.Field("count", len(reaped)), wool.Field("pgids", devServerPGIDs(reaped)))
+	case len(reaped) > 0:
+		w.Info("reaped orphaned dev servers", wool.Field("count", len(reaped)), wool.Field("pgids", devServerPGIDs(reaped)))
+	case err == nil:
+		w.Info("no orphaned dev servers")
+	}
+	if err != nil {
 		return []error{fmt.Errorf("reap orphaned dev servers: %w", err)}
 	}
 	return nil
