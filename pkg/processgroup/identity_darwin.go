@@ -72,6 +72,47 @@ func darwinProcessCommand(info *unix.KinfoProc) string {
 	return string(command)
 }
 
+// processWorkingDirectory returns the current working directory of pid via
+// proc_pidinfo(PROC_PIDVNODEPATHINFO). The current directory path lives at a
+// fixed offset inside the returned proc_vnodepathinfo structure (after the
+// leading vnode_info of pvi_cdir). Staying on the syscall keeps this cgo-free,
+// matching the rest of this package.
+func processWorkingDirectory(pid int) (string, error) {
+	const (
+		procInfoCallPIDInfo      = 0x2
+		procPIDVNodePathInfo     = 9
+		procPIDVNodePathInfoSize = 2352
+		currentDirPathOffset     = 152
+		maxPathLen               = 1024
+	)
+	var buf [procPIDVNodePathInfoSize]byte
+	written, _, errno := syscall.Syscall6(
+		syscall.SYS_PROC_INFO,
+		procInfoCallPIDInfo,
+		uintptr(pid),
+		procPIDVNodePathInfo,
+		0,
+		uintptr(unsafe.Pointer(&buf[0])),
+		unsafe.Sizeof(buf),
+	)
+	runtime.KeepAlive(&buf)
+	if errno != 0 {
+		if errors.Is(errno, syscall.ESRCH) {
+			return "", errProcessNotFound
+		}
+		return "", errno
+	}
+	if written < currentDirPathOffset+1 {
+		return "", errors.New("process working directory is incomplete")
+	}
+	path := buf[currentDirPathOffset : currentDirPathOffset+maxPathLen]
+	end := bytes.IndexByte(path, 0)
+	if end <= 0 {
+		return "", errors.New("process working directory is empty")
+	}
+	return string(path[:end]), nil
+}
+
 func darwinBootID() (string, error) {
 	bootTime, err := unix.SysctlTimeval("kern.boottime")
 	if err != nil {

@@ -745,7 +745,17 @@ Replay recorded operations.
 
 ### `codefly clear`
 
-Clear cached state and temporary files.
+Clear cached state and temporary files. Also reaps orphaned frontend dev
+servers (`next dev` / `npm run dev` / `vite`) whose working directory is inside
+a codefly workspace but that were reparented away from codefly — the leaks that
+`codefly ps` reports as `orphaned`.
+
+### `codefly ps`
+
+List frontend dev servers running inside a codefly workspace, machine-wide and
+independent of the current directory (unlike `list jobs`, which needs a
+workspace). Servers marked `orphaned` escaped codefly's tracking and can be
+reaped with `codefly clear`. Add `--json` for machine-readable output.
 
 ---
 
