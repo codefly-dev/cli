@@ -74,6 +74,17 @@ func readLinuxProcessStat(pid int) (nativeProcessIdentity, error) {
 	return nativeProcessIdentity{pid: pid, pgid: pgid, parent: parent, startID: startID}, nil
 }
 
+func processWorkingDirectory(pid int) (string, error) {
+	cwd, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "cwd"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", errProcessNotFound
+		}
+		return "", err
+	}
+	return cwd, nil
+}
+
 func linuxBootID() (string, error) {
 	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {

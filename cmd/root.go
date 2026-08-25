@@ -261,6 +261,9 @@ func init() {
 	// Clear things
 	RootCmd.AddCommand(ClearCmd)
 
+	// Inspect running processes
+	RootCmd.AddCommand(PsCmd)
+
 	// Test things
 	RootCmd.AddCommand(TestCmd)
 	RootCmd.AddCommand(LintCmd)
