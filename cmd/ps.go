@@ -25,7 +25,7 @@ codefly workspace, machine-wide. STATUS is one of: orphaned (codefly's, escaped
 its supervisor — reaped by 'codefly clear'), tracked (codefly's, still
 supervised), or external (not codefly's — shown for visibility, never reaped).`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)
