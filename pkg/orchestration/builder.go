@@ -242,9 +242,9 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("call to build failed")
 	}
 
-	if err = recordBuildRecipe(ctx, b.instance.Service); err != nil {
-		return nil, w.Wrapf(err, "cannot record build recipe")
-	}
+	// A build plan means the agent emitted recipes and the CLI owns the docker
+	// build; otherwise the agent built in-process (legacy) and the CLI only pushes.
+	plan := resp.Result.GetDockerBuildPlan()
 
 	err = b.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
 	if err != nil {
@@ -256,9 +256,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
-	// A build plan means the agent emitted recipes and the CLI owns the docker
-	// build; otherwise the agent built in-process (legacy) and the CLI only pushes.
-	if plan := resp.Result.GetDockerBuildPlan(); plan != nil {
+	if plan != nil {
 		if err = b.buildFromPlan(ctx, outputDir, plan); err != nil {
 			return nil, err
 		}
@@ -286,6 +284,13 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 			}
 		}
 	}
+
+	// Record the durable recipe only after the build succeeded, so the committed
+	// archive never advertises a recipe that failed verification or never built.
+	if err = recordBuildRecipe(ctx, b.instance.Service, plan); err != nil {
+		return nil, w.Wrapf(err, "cannot record build recipe")
+	}
+
 	return outputProperty, nil
 }
 
