@@ -222,6 +222,15 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 	configurationManager.WithLoader(localReader)
 
+	// A GitOps snapshot render is value-free: it emits secret references derived
+	// from the committed declarations and discards every secret value. Resolving
+	// references against their real provider would demand provider auth or local
+	// plaintext value files for values that never reach a manifest, so a snapshot
+	// resolves them to an inert placeholder instead (see snapshotSecretResolver).
+	if mode == SnapshotMode {
+		configurationManager.WithSecretResolver(snapshotSecretResolver{})
+	}
+
 	stateManager, err := NewStateManager(ctx, configurationManager, world.Dependencies)
 	if err != nil {
 		return nil, w.Wrap(err)
