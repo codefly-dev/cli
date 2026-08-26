@@ -42,7 +42,7 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 	if len(recipes) == 0 {
 		return w.NewError("build plan for %s contains no recipes", b.instance.Unique())
 	}
-	shouldPush := push.Load()
+	shouldPush := b.world.Push
 	if b.world.Mode == SnapshotMode {
 		if len(recipes) != 1 {
 			return w.NewError("snapshot build for %s emitted %d recipes; exactly one deployable image is required", b.instance.Unique(), len(recipes))

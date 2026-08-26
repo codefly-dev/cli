@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -86,5 +87,38 @@ func TestModuleRenderRootsRejectCycle(t *testing.T) {
 
 	if _, err := moduleRenderRoots("users", services); err == nil {
 		t.Fatal("cyclic module graph was accepted")
+	}
+}
+
+// Before #474, snapshot push (and this registry preparation) was gated on
+// cluster.kind == "k3d", so every managed render dead-ended with "snapshot
+// build requires push". Registry preparation is now cluster-agnostic: any
+// environment declaring a registry URL prepares cleanly whatever the cluster
+// kind, including a nil cluster. Auth is empty here (managed registries
+// authenticate out-of-band), so no credential helper is invoked.
+func TestPrepareSnapshotRegistryIgnoresClusterKind(t *testing.T) {
+	registry := &resources.EnvironmentRegistry{URL: "registry.example.com/team"}
+	for _, cluster := range []*resources.EnvironmentCluster{
+		{Kind: "k3d"},
+		{Kind: "eks"},
+		{Kind: "aks"},
+		{Kind: ""},
+		nil,
+	} {
+		env := &resources.Environment{Name: "snap", Cluster: cluster, Registry: registry}
+		if err := prepareSnapshotRegistry(context.Background(), env); err != nil {
+			t.Fatalf("cluster %+v: %v", cluster, err)
+		}
+	}
+}
+
+func TestPrepareSnapshotRegistryRequiresRegistryURL(t *testing.T) {
+	for _, env := range []*resources.Environment{
+		{Name: "snap"},
+		{Name: "snap", Registry: &resources.EnvironmentRegistry{URL: "   "}},
+	} {
+		if err := prepareSnapshotRegistry(context.Background(), env); err == nil {
+			t.Fatalf("registry %+v was accepted without a URL", env.Registry)
+		}
 	}
 }

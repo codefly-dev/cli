@@ -67,6 +67,9 @@ func renderModuleTree(
 		if err != nil {
 			return err
 		}
+		if err := prepareSnapshotRegistry(ctx, env); err != nil {
+			return err
+		}
 		outputs := make(map[string]*builderv0.DeploymentOutput)
 		for _, service := range roots {
 			if err := renderServiceFlow(
@@ -268,6 +271,9 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		AppProject:  project,
 		Promotable:  true,
 	}, func(ctx context.Context, stage string) error {
+		if err := prepareSnapshotRegistry(ctx, env); err != nil {
+			return err
+		}
 		var graph map[string]*resources.Service
 		if err := renderServiceFlow(
 			ctx,
@@ -343,6 +349,23 @@ func serviceRenderDestinations(root string) func(*resources.Module, *resources.S
 	}
 }
 
+// prepareSnapshotRegistry validates the environment's registry and, when it
+// declares an auth method, logs in so `docker push` can resolve the immutable
+// snapshot digest. Managed registries authenticate out-of-band and declare no
+// auth, so login is skipped. Runs once per render rather than per service.
+func prepareSnapshotRegistry(ctx context.Context, env *resources.Environment) error {
+	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
+		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
+	}
+	builder.SetRepository(env.Registry.URL)
+	if env.Registry.Auth != "" {
+		if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
+			return fmt.Errorf("authenticate snapshot registry: %w", err)
+		}
+	}
+	return nil
+}
+
 func renderServiceFlow(
 	ctx context.Context,
 	workspace *resources.Workspace,
@@ -355,20 +378,11 @@ func renderServiceFlow(
 	record func(map[string]*builderv0.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
 ) (result error) {
-	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
-		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
-	}
-	builder.SetRepository(env.Registry.URL)
-	if env.Registry.Auth != "" {
-		if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
-			return fmt.Errorf("authenticate snapshot registry: %w", err)
-		}
-	}
-	orchestration.SetBuilderPush()
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
 	if err != nil {
 		return err
 	}
+	flow.WithPush(true)
 	if sink != nil {
 		flow.WithOutputSink(sink)
 	}

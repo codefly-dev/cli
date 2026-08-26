@@ -146,8 +146,15 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 }
 
 type World struct {
-	Env                     *resources.Environment
-	Mode                    Mode
+	Env  *resources.Environment
+	Mode Mode
+
+	// Push drives whether a docker build pushes its image to the registry.
+	// Scoped to the flow (not process-global) so a snapshot render that
+	// requires push cannot silently make a later in-process BuildMode build
+	// push without being asked.
+	Push bool
+
 	Workspace               *resources.Workspace
 	DeploymentDestination   func(*resources.Module, *resources.Service) string
 	KubernetesOutputProfile builderv0.KubernetesOutputProfile
@@ -1693,6 +1700,10 @@ func (flow *Flow) WithKubernetesOutputProfile(profile builderv0.KubernetesOutput
 
 func (flow *Flow) WithStandAlone(alone bool) {
 	flow.standAlone = alone
+}
+
+func (flow *Flow) WithPush(push bool) {
+	flow.world.Push = push
 }
 
 func (flow *Flow) WithRuntimeContext(runtimeContext string) {
