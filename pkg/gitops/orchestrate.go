@@ -67,7 +67,7 @@ func renderModuleTree(
 		if err != nil {
 			return err
 		}
-		if err := prepareSnapshotRegistry(ctx, env); err != nil {
+		if err = prepareSnapshotRegistry(ctx, env); err != nil {
 			return err
 		}
 		outputs := make(map[string]*builderv0.DeploymentOutput)
