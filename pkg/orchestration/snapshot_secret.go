@@ -10,7 +10,7 @@ import (
 // every secret reference. promotableConfiguration drops secret values before they
 // reach a manifest, so this string never lands in the rendered tree; it exists
 // only so resolution succeeds without contacting a provider.
-const snapshotSecretPlaceholder = "codefly-gitops-snapshot-placeholder"
+const snapshotSecretPlaceholder = "codefly-gitops-snapshot-placeholder" //nolint:gosec // G101: inert placeholder that promotableConfiguration discards, never a real credential
 
 // snapshotSecretResolver keeps a GitOps snapshot render value-free. A promotable
 // render retains only secret KEYS — promotableConfiguration replaces each secret
