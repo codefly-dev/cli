@@ -56,6 +56,10 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 		gitops := *env.Gitops
 		clone.Gitops = &gitops
 	}
+	if env.Dns != nil {
+		dns := *env.Dns
+		clone.Dns = &dns
+	}
 	if len(env.Ingress) > 0 {
 		clone.Ingress = append([]resources.EnvironmentIngressRoute(nil), env.Ingress...)
 		for i := range clone.Ingress {
