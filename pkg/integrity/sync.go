@@ -466,6 +466,88 @@ func RestoreMissingServiceCode(sourceRoot, targetRoot string) ([]string, error) 
 	return restored, nil
 }
 
+// PlanServiceManifestRefresh lists the composed-service generated manifests a
+// refresh would rewrite from the pinned source, sorted, without mutating.
+func PlanServiceManifestRefresh(sourceRoot, targetRoot string) ([]string, error) {
+	sourceRoot, targetRoot, err := refreshRoots(sourceRoot, targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	return serviceManifestRefreshCandidates(sourceRoot, targetRoot)
+}
+
+// RefreshServiceManifests overwrites each composed service's generated
+// service.codefly.yaml with the pinned source's copy, returning the rewritten
+// paths sorted. A per-service service.codefly.yaml is a generated overlay
+// (marked "DO NOT EDIT") absent from the base manifest, so an ordinary base sync
+// never touches it and its agent pins drift stale against the module release.
+// The pinned source carries the canonical regenerated manifest for each service
+// at that version, so copying it re-aligns the consumer's manifests — agent pins
+// included — with the version being synced.
+func RefreshServiceManifests(sourceRoot, targetRoot string) ([]string, error) {
+	sourceRoot, targetRoot, err := refreshRoots(sourceRoot, targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	candidates, err := serviceManifestRefreshCandidates(sourceRoot, targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, relative := range candidates {
+		if err := atomicCopyFile(
+			filepath.Join(sourceRoot, filepath.FromSlash(relative)),
+			filepath.Join(targetRoot, filepath.FromSlash(relative)),
+		); err != nil {
+			return nil, fmt.Errorf("refresh service manifest %s: %w", relative, err)
+		}
+	}
+	return candidates, nil
+}
+
+func serviceManifestRefreshCandidates(sourceRoot, targetRoot string) ([]string, error) {
+	composed, err := composedServiceNames(targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]string, 0, len(composed))
+	for service := range composed {
+		relative := "services/" + service + "/" + resources.ServiceConfigurationName
+		// The pinned source only generates manifests for services it defines; a
+		// symlinked or otherwise unsafe target path is never rewritten.
+		if !safeModulePath(sourceRoot, relative, true) || !safeModulePath(targetRoot, relative, false) {
+			continue
+		}
+		sourceDigest, digestErr := sha256File(filepath.Join(sourceRoot, filepath.FromSlash(relative)))
+		if digestErr != nil {
+			return nil, fmt.Errorf("hash source service manifest %s: %w", relative, digestErr)
+		}
+		targetDigest, targetErr := sha256File(filepath.Join(targetRoot, filepath.FromSlash(relative)))
+		if targetErr != nil && !os.IsNotExist(targetErr) {
+			return nil, fmt.Errorf("hash target service manifest %s: %w", relative, targetErr)
+		}
+		if os.IsNotExist(targetErr) || targetDigest != sourceDigest {
+			candidates = append(candidates, relative)
+		}
+	}
+	sort.Strings(candidates)
+	return candidates, nil
+}
+
+func refreshRoots(sourceRoot, targetRoot string) (string, string, error) {
+	source, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve source module: %w", err)
+	}
+	target, err := filepath.Abs(targetRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve target module: %w", err)
+	}
+	if source == target {
+		return "", "", fmt.Errorf("source and target module must differ")
+	}
+	return source, target, nil
+}
+
 // ValidateServiceCodeSource proves that a source checkout is the exact origin
 // of the target manifest's owned service code. Generated scaffold metadata may
 // legitimately differ, so provenance is checked at the repair ownership boundary.

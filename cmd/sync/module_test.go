@@ -317,6 +317,51 @@ func TestPreparedModuleSourceRejectsScaffoldFromDifferentBytes(t *testing.T) {
 	}
 }
 
+// A base sync must also refresh the consumer's generated per-service
+// service.codefly.yaml so its agent pin tracks the synced module version instead
+// of drifting stale (#479). The manifest is a consumer overlay, so the base
+// manifest never lists it.
+func TestSyncModuleRefreshesGeneratedServiceManifestAgentPin(t *testing.T) {
+	repository := t.TempDir()
+	runGit(t, repository, "init", "--quiet")
+	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
+	runGit(t, repository, "config", "user.name", "Module Sync Test")
+	sourceModule := filepath.Join(repository, "module")
+	codePath := "services/vault/code/main.go"
+	code := "package main\n"
+	manifestPath := "services/vault/" + resources.ServiceConfigurationName
+	upstreamManifest := "name: vault\nagent:\n  kind: codefly:service\n  name: vault\n  publisher: codefly.dev\n  version: 0.0.25\n"
+	writeSyncTestFile(t, filepath.Join(sourceModule, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: vault\n")
+	writeSyncTestFile(t, filepath.Join(sourceModule, codePath), code)
+	writeSyncTestFile(t, filepath.Join(sourceModule, filepath.FromSlash(manifestPath)), upstreamManifest)
+	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
+		`{"files":{"`+codePath+`":"`+syncTestDigest(code)+`"}}`)
+	runGit(t, repository, "add", ".")
+	runGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")
+	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v0.0.42")
+
+	targetRoot := filepath.Join(t.TempDir(), "app")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: vault\n")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "tools", "base-manifest.json"), `{"files":{}}`)
+	writeSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(manifestPath)),
+		"name: vault\nagent:\n  kind: codefly:service\n  name: vault\n  publisher: codefly.dev\n  version: 0.0.15\n")
+	remote := (&url.URL{Scheme: "file", Path: repository}).String()
+	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), &moduleSourceLock{
+		Schema: moduleSourceLockSchema, Repository: remote, Ref: "v0.0.42",
+		Commit: runGit(t, repository, "rev-parse", "HEAD"), Subdirectory: "module",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target, err := resources.LoadModuleFromDir(context.Background(), targetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{Apply: true}); err != nil {
+		t.Fatal(err)
+	}
+	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(manifestPath)), upstreamManifest)
+}
+
 func TestModuleAgentSourceMatchesAgentReleaseRepository(t *testing.T) {
 	options, err := moduleAgentSource(&resources.Agent{
 		Kind: resources.ModuleAgent, Publisher: "codefly.dev", Name: "saas-starter", Version: "0.0.36",
