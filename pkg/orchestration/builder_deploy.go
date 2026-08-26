@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
@@ -263,6 +264,53 @@ func promotableDeploymentConfigurations(
 	return own, safeDependencies, references, nil
 }
 
+// endpointConfigSuffixes name plain routing values — identity endpoint URLs and
+// selectors — that the credential-name heuristic misfiles as secrets. Deploy
+// keeps them as inline config rather than forcing vault-seeded secret
+// references they do not need.
+var endpointConfigSuffixes = []string{"_URL", "_SELECTOR"}
+
+// endpointMarkerStripper removes the broad substring markers that routinely
+// appear in plain routing names (OAuth authorize/token endpoints). AUTH and
+// TOKEN are the only markers the suffix exemption is allowed to override;
+// anything else IsSensitiveKey reacts to names a real credential.
+var endpointMarkerStripper = strings.NewReplacer("AUTH", "", "TOKEN", "")
+
+var keyCanonicalizer = strings.NewReplacer(" ", "_", "-", "_", ".", "_", "/", "_")
+
+// promotesToDeploymentSecret reports whether a config value must be pulled into
+// a Kubernetes secret reference. An explicit Secret flag is authoritative; the
+// name heuristic is a safety net for un-flagged credentials, minus the endpoint
+// URLs and selectors it otherwise misfiles.
+func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
+	if value.GetSecret() {
+		return true
+	}
+	if !resources.IsSensitiveKey(value.GetKey()) {
+		return false
+	}
+	return !isPlainEndpointKey(value.GetKey())
+}
+
+// isPlainEndpointKey rescues a URL/selector name only when its sensitivity is due
+// solely to the endpoint markers. It strips those markers and defers to
+// IsSensitiveKey, so any real credential marker — including ones core adds later —
+// still forces promotion without this package tracking core's marker list.
+func isPlainEndpointKey(key string) bool {
+	canonical := keyCanonicalizer.Replace(strings.ToUpper(key))
+	hasEndpointSuffix := false
+	for _, suffix := range endpointConfigSuffixes {
+		if strings.HasSuffix(canonical, suffix) {
+			hasEndpointSuffix = true
+			break
+		}
+	}
+	if !hasEndpointSuffix {
+		return false
+	}
+	return !resources.IsSensitiveKey(endpointMarkerStripper.Replace(canonical))
+}
+
 func promotableConfiguration(
 	configuration *basev0.Configuration,
 	secretName string,
@@ -280,7 +328,7 @@ func promotableConfiguration(
 		info := proto.Clone(sourceInfo).(*basev0.ConfigurationInformation)
 		info.ConfigurationValues = info.ConfigurationValues[:0]
 		for _, sourceValue := range sourceInfo.GetConfigurationValues() {
-			if !sourceValue.GetSecret() && !resources.IsSensitiveKey(sourceValue.GetKey()) {
+			if !promotesToDeploymentSecret(sourceValue) {
 				info.ConfigurationValues = append(info.ConfigurationValues, proto.Clone(sourceValue).(*basev0.ConfigurationValue))
 				continue
 			}

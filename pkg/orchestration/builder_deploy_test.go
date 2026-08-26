@@ -61,6 +61,46 @@ func TestPromotableDeploymentInputsReplaceSecretValuesWithReferences(t *testing.
 	}
 }
 
+func TestPromotableDeploymentInputsKeepEndpointURLsAsPlainConfig(t *testing.T) {
+	configuration := &basev0.Configuration{
+		Origin: "users/accounts",
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "identity",
+			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize"},
+				{Key: "TOKEN_URL", Value: "https://issuer.example.com/token"},
+				{Key: "IDENTITY_SELECTOR", Value: "primary"},
+				{Key: "DATABASE_URL", Value: "postgres://credential-bearing-value"},
+				{Key: "SECRET_URL", Value: "credential-bearing-value"},
+				{Key: "PRIVATE_KEY_URL", Value: "credential-bearing-value"},
+				{Key: "ACCESS_TOKEN", Value: "credential-bearing-value"},
+			},
+		}},
+	}
+
+	sanitized, _, references, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
+	require.NoError(t, err)
+
+	values := sanitized.GetInfos()[0].GetConfigurationValues()
+	kept := map[string]string{}
+	for _, value := range values {
+		kept[value.GetKey()] = value.GetValue()
+	}
+	require.Equal(t, map[string]string{
+		"IDENTITY_AUTHORIZE_URL": "https://issuer.example.com/authorize",
+		"TOKEN_URL":              "https://issuer.example.com/token",
+		"IDENTITY_SELECTOR":      "primary",
+	}, kept)
+
+	prefix := "CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__IDENTITY__"
+	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
+		prefix + "DATABASE_URL":    {Name: "accounts-secrets", Key: prefix + "DATABASE_URL"},
+		prefix + "SECRET_URL":      {Name: "accounts-secrets", Key: prefix + "SECRET_URL"},
+		prefix + "PRIVATE_KEY_URL": {Name: "accounts-secrets", Key: prefix + "PRIVATE_KEY_URL"},
+		prefix + "ACCESS_TOKEN":    {Name: "accounts-secrets", Key: prefix + "ACCESS_TOKEN"},
+	}, references)
+}
+
 func TestPromotableDeploymentInputsRejectSecretStructuredData(t *testing.T) {
 	configuration := &basev0.Configuration{
 		Origin: "users/accounts",
