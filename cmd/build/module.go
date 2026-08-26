@@ -57,7 +57,6 @@ var ModuleCmd = &cobra.Command{
 					return fmt.Errorf("registry login failed: %w", err)
 				}
 			}
-			orchestration.SetBuilderPush()
 		}
 
 		cli.Header(1, "Building module %s for env %s", module.Name, env.Name)
@@ -86,6 +85,7 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return w.Wrap(err)
 	}
+	flow.WithPush(push)
 	flow.WithOutputSink(cli.NewOutputSink())
 	stopped := false
 	defer func() {

@@ -106,12 +106,12 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 				return nil, w.Wrapf(err, "registry login failed")
 			}
 		}
-		orchestration.SetBuilderPush()
 	}
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.BuildMode)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	flow.WithPush(push)
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)

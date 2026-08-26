@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-	"sync/atomic"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -264,7 +263,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 			return nil, err
 		}
 	} else if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
-		if push.Load() {
+		if b.world.Push {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.Images {
 				if err = verifyImageArchitecture(ctx, im); err != nil {
@@ -368,12 +367,6 @@ func dockerBuildResult(result *builderv0.BuildResult) *builderv0.DockerBuildResu
 		return nil
 	}
 	return kind.DockerBuildResult
-}
-
-var push atomic.Bool
-
-func SetBuilderPush() {
-	push.Store(true)
 }
 
 func (b *Builder) Unique() string {
