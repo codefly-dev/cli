@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -19,19 +20,66 @@ const (
 	buildRecipeSourceDir  = "builder"
 	buildRecipeArchiveDir = "build-recipes"
 	buildRecipeManifest   = "recipe.codefly.json"
-	buildRecipeSchema     = "codefly.dev/build-recipe/v1"
+	// buildRecipeSchema is v2 because the manifest now carries the recipe build
+	// instructions (image, paths, target, platforms, and build-args) alongside
+	// the file digests. v1 recorded only the file digests, so a consumer had the
+	// vendored Dockerfile but not the build-args the image was built with — a
+	// FRONTEND_SKIN_RUNTIME=1 dropped from the durable recipe rebuilds a different
+	// image than the one that shipped.
+	buildRecipeSchema = "codefly.dev/build-recipe/v2"
 )
 
-// BuildRecipe records which agent produced a service's build recipe and the
-// digest of every recipe file, so a consumer without the codefly toolchain can
-// identify the recipe and rebuild the image directly from the vendored
-// Dockerfile.
+// BuildRecipe records which agent produced a service's build recipe, the exact
+// build instructions for every image it emits, and the digest of every recipe
+// file, so a consumer without the codefly toolchain can identify the recipe and
+// rebuild the image directly from the vendored Dockerfile.
 type BuildRecipe struct {
 	Schema    string            `json:"schema"`
 	Publisher string            `json:"publisher"`
 	Name      string            `json:"name"`
 	Version   string            `json:"version"`
+	Recipes   []RecipeSpec      `json:"recipes,omitempty"`
 	Files     map[string]string `json:"files"`
+}
+
+// RecipeSpec is the durable, agent-declared build instruction for one image: the
+// Dockerfile and context to build, the target stage, the platforms, and the
+// build-args that must be passed with --build-arg. Persisting build-args is what
+// lets a consumer reproduce the exact image — a build-arg such as
+// FRONTEND_SKIN_RUNTIME changes what the image compiles, so a recipe that omits
+// it rebuilds a different image.
+type RecipeSpec struct {
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	Dockerfile   string            `json:"dockerfile"`
+	Context      string            `json:"context"`
+	Dockerignore string            `json:"dockerignore,omitempty"`
+	Target       string            `json:"target,omitempty"`
+	Platforms    []string          `json:"platforms,omitempty"`
+	BuildArgs    map[string]string `json:"buildArgs,omitempty"`
+}
+
+// recipeSpecs projects the emitted build plan's recipes into their durable
+// manifest form.
+func recipeSpecs(plan *builderv0.DockerBuildPlan) []RecipeSpec {
+	recipes := plan.GetRecipes()
+	if len(recipes) == 0 {
+		return nil
+	}
+	specs := make([]RecipeSpec, 0, len(recipes))
+	for _, recipe := range recipes {
+		specs = append(specs, RecipeSpec{
+			Name:         recipe.GetName(),
+			Image:        recipe.GetImage(),
+			Dockerfile:   recipe.GetDockerfile(),
+			Context:      recipe.GetContext(),
+			Dockerignore: recipe.GetDockerignore(),
+			Target:       recipe.GetTarget(),
+			Platforms:    recipe.GetPlatforms(),
+			BuildArgs:    recipe.GetBuildArgs(),
+		})
+	}
+	return specs
 }
 
 // recordBuildRecipe copies a service's freshly generated builder/ recipe into a
@@ -41,7 +89,7 @@ type BuildRecipe struct {
 // build recipe is lost the moment the working tree is discarded. The archive
 // preserves the recipe per producing agent version so a consumer can inspect and
 // rebuild the exact recipe that shipped an image.
-func recordBuildRecipe(ctx context.Context, service *resources.Service) error {
+func recordBuildRecipe(ctx context.Context, service *resources.Service, plan *builderv0.DockerBuildPlan) error {
 	w := wool.Get(ctx).In("recordBuildRecipe", wool.NameField(service.Name))
 	source := filepath.Join(service.Dir(), buildRecipeSourceDir)
 	info, err := os.Stat(source)
@@ -71,6 +119,7 @@ func recordBuildRecipe(ctx context.Context, service *resources.Service) error {
 		Publisher: service.Agent.Publisher,
 		Name:      service.Agent.Name,
 		Version:   version,
+		Recipes:   recipeSpecs(plan),
 		Files:     files,
 	}
 	payload, err := json.MarshalIndent(manifest, "", "  ")

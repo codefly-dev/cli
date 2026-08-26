@@ -243,7 +243,11 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("call to build failed")
 	}
 
-	if err = recordBuildRecipe(ctx, b.instance.Service); err != nil {
+	// A build plan means the agent emitted recipes and the CLI owns the docker
+	// build; otherwise the agent built in-process (legacy) and the CLI only pushes.
+	plan := resp.Result.GetDockerBuildPlan()
+
+	if err = recordBuildRecipe(ctx, b.instance.Service, plan); err != nil {
 		return nil, w.Wrapf(err, "cannot record build recipe")
 	}
 
@@ -257,9 +261,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
-	// A build plan means the agent emitted recipes and the CLI owns the docker
-	// build; otherwise the agent built in-process (legacy) and the CLI only pushes.
-	if plan := resp.Result.GetDockerBuildPlan(); plan != nil {
+	if plan != nil {
 		if err = b.buildFromPlan(ctx, outputDir, plan); err != nil {
 			return nil, err
 		}
