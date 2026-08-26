@@ -359,14 +359,12 @@ func renderServiceFlow(
 		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
 	}
 	builder.SetRepository(env.Registry.URL)
-	if env.Cluster != nil && env.Cluster.Kind == "k3d" {
-		if env.Registry.Auth != "" {
-			if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
-				return fmt.Errorf("authenticate snapshot registry: %w", err)
-			}
+	if env.Registry.Auth != "" {
+		if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
+			return fmt.Errorf("authenticate snapshot registry: %w", err)
 		}
-		orchestration.SetBuilderPush()
 	}
+	orchestration.SetBuilderPush()
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
 	if err != nil {
 		return err
