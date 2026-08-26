@@ -52,11 +52,7 @@ func renderModuleBundle(
 	}
 	defer os.RemoveAll(stage)
 
-	relativeModule, err := filepath.Rel(workspace.Dir(), module.Dir())
-	if err != nil || !filepath.IsLocal(relativeModule) {
-		return fmt.Errorf("module %q is outside the workspace", module.Name)
-	}
-	stagedModule := filepath.Join(stage, relativeModule)
+	stagedModule := filepath.Join(stage, workspaceStagedModulePath(workspace, module))
 	if err := copyModuleInputTree(module.Dir(), stagedModule); err != nil {
 		return fmt.Errorf("stage module bundle input: %w", err)
 	}
@@ -98,6 +94,22 @@ func renderModuleBundle(
 		return err
 	}
 	return nil
+}
+
+// workspaceStagedModulePath is where a module's input tree is copied inside the
+// transport-neutral staging root. A vendored module keeps its real
+// workspace-relative position; a path-referenced module — one a composition-root
+// workspace declares out-of-repo (see AddModuleReference) — has no in-workspace
+// position, so it is staged at the modules-layout canonical path. Either way the
+// module stays nested under the staged workspace configuration, matching the
+// layout the module bundle generator is handed. Only modules-layout workspaces
+// carry referenced modules: a flat workspace's sole module always resolves to the
+// workspace directory itself and takes the first branch.
+func workspaceStagedModulePath(workspace *resources.Workspace, module *resources.Module) string {
+	if relative, err := filepath.Rel(workspace.Dir(), module.Dir()); err == nil && filepath.IsLocal(relative) {
+		return relative
+	}
+	return filepath.Join("modules", module.Name)
 }
 
 var moduleInputPrunedDirectories = map[string]struct{}{
