@@ -235,6 +235,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// snapshot is by definition the promotable GitOps snapshot.
 	if mode == SnapshotMode {
 		configurationManager.WithSecretResolver(snapshotSecretResolver{})
+		//nolint:staticcheck // SA1019: builder_deploy and the whole render path still gate on PROMOTABLE_GITOPS_V1; this must match them, migrate together.
 		world.KubernetesOutputProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
 	}
 
