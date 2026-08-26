@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
@@ -263,6 +264,47 @@ func promotableDeploymentConfigurations(
 	return own, safeDependencies, references, nil
 }
 
+// endpointConfigSuffixes name plain routing values — identity endpoint URLs and
+// selectors — that the credential-name heuristic misfiles as secrets. Deploy
+// keeps them as inline config rather than forcing vault-seeded secret
+// references they do not need.
+var endpointConfigSuffixes = []string{"_URL", "_SELECTOR"}
+
+// connectionMarkers name values whose URL embeds a credential (connection
+// strings), so an endpoint suffix must not exempt them from secret promotion.
+var connectionMarkers = []string{"DATABASE_URL", "CONNECTION", "DSN"}
+
+var keyCanonicalizer = strings.NewReplacer(" ", "_", "-", "_", ".", "_", "/", "_")
+
+// promotesToDeploymentSecret reports whether a config value must be pulled into
+// a Kubernetes secret reference. An explicit Secret flag is authoritative; the
+// name heuristic is a safety net for un-flagged credentials, minus the endpoint
+// URLs and selectors it otherwise misfiles.
+func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
+	if value.GetSecret() {
+		return true
+	}
+	if !resources.IsSensitiveKey(value.GetKey()) {
+		return false
+	}
+	return !isPlainEndpointKey(value.GetKey())
+}
+
+func isPlainEndpointKey(key string) bool {
+	canonical := keyCanonicalizer.Replace(strings.ToUpper(key))
+	for _, marker := range connectionMarkers {
+		if strings.Contains(canonical, marker) {
+			return false
+		}
+	}
+	for _, suffix := range endpointConfigSuffixes {
+		if strings.HasSuffix(canonical, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func promotableConfiguration(
 	configuration *basev0.Configuration,
 	secretName string,
@@ -280,7 +322,7 @@ func promotableConfiguration(
 		info := proto.Clone(sourceInfo).(*basev0.ConfigurationInformation)
 		info.ConfigurationValues = info.ConfigurationValues[:0]
 		for _, sourceValue := range sourceInfo.GetConfigurationValues() {
-			if !sourceValue.GetSecret() && !resources.IsSensitiveKey(sourceValue.GetKey()) {
+			if !promotesToDeploymentSecret(sourceValue) {
 				info.ConfigurationValues = append(info.ConfigurationValues, proto.Clone(sourceValue).(*basev0.ConfigurationValue))
 				continue
 			}
