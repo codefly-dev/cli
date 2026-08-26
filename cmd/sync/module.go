@@ -272,6 +272,11 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	if err := plan.Applicable(); err != nil {
 		return err
 	}
+	pendingRefresh, err := integrity.PlanServiceManifestRefresh(resolved.Root, target.Dir())
+	if err != nil {
+		return fmt.Errorf("plan service manifest refresh: %w", err)
+	}
+	printServiceManifestRefreshPlan(pendingRefresh, options.Apply)
 	if !options.Apply {
 		output.Info("module sync dry-run is applicable; rerun with --apply")
 		return nil
@@ -289,7 +294,29 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 		return err
 	}
 	output.Info("✓ module <%s> base updated; product overlays preserved", target.Name)
+	refreshed, err := integrity.RefreshServiceManifests(resolved.Root, target.Dir())
+	if err != nil {
+		return fmt.Errorf("refresh generated service manifests: %w", err)
+	}
+	if len(refreshed) > 0 {
+		output.Info("✓ refreshed %d generated service manifest(s) to the pinned agent versions:", len(refreshed))
+		for _, relative := range refreshed {
+			output.Info("  REFRESHED %s", relative)
+		}
+		output.Info("restart any active stack so services load the refreshed agent pins")
+	}
 	return nil
+}
+
+func printServiceManifestRefreshPlan(pending []string, applying bool) {
+	if len(pending) == 0 {
+		return
+	}
+	label := "WOULD REFRESH GENERATED SERVICE MANIFESTS"
+	if applying {
+		label = "WILL REFRESH GENERATED SERVICE MANIFESTS"
+	}
+	output.Info("  %s (%d): %s", label, len(pending), strings.Join(pending, ", "))
 }
 
 func restoreComposedModuleCode(ctx context.Context, target *resources.Module, options *moduleSyncOptions) error {

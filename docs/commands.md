@@ -375,6 +375,15 @@ sync so the agent can generate consumer-owned module and service inventory.
 `sync module --create` initializes and populates only the manifest-owned base;
 it does not run a module agent or generate that consumer inventory.
 
+An `--apply` also refreshes each composed service's generated
+`service.codefly.yaml` from the pinned source. These per-service manifests are
+generated overlays (`# Code generated ... DO NOT EDIT`) that the base manifest
+does not track, so without this their agent pins would drift stale against the
+synced module version; the dry-run lists the manifests it would rewrite. Only
+manifests still carrying the generated marker are refreshed — a service manifest
+you have taken over as hand-authored product content (no marker) is left
+untouched, the same ownership boundary `codefly update` honors.
+
 `sync module <name> --restore-code` restores only absent service files listed
 by the pinned base manifest. Existing base files and consumer-owned overlays
 are not changed. A legacy scaffold with neither a source lock nor a recorded

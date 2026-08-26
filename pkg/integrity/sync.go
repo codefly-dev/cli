@@ -1,16 +1,25 @@
 package integrity
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
 )
+
+// generatedFileMarker matches the leading-comment marker that machine-generated
+// manifests carry ("# Code generated ... DO NOT EDIT."). It is the same
+// ownership signal `codefly update` uses to leave a generated service manifest
+// to its source instead of editing it in place.
+var generatedFileMarker = regexp.MustCompile(`Code generated .* DO NOT EDIT\.`)
 
 const baseManifestRelativePath = "tools/base-manifest.json"
 
@@ -464,6 +473,123 @@ func RestoreMissingServiceCode(sourceRoot, targetRoot string) ([]string, error) 
 		restored = append(restored, relative)
 	}
 	return restored, nil
+}
+
+// PlanServiceManifestRefresh lists the composed-service generated manifests a
+// refresh would rewrite from the pinned source, sorted, without mutating.
+func PlanServiceManifestRefresh(sourceRoot, targetRoot string) ([]string, error) {
+	sourceRoot, targetRoot, err := refreshRoots(sourceRoot, targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	return serviceManifestRefreshCandidates(sourceRoot, targetRoot)
+}
+
+// RefreshServiceManifests overwrites each composed service's generated
+// service.codefly.yaml with the pinned source's copy, returning the rewritten
+// paths sorted. A per-service service.codefly.yaml is a generated overlay
+// (marked "DO NOT EDIT") absent from the base manifest, so an ordinary base sync
+// never touches it and its agent pins drift stale against the module release.
+// The pinned source carries the canonical regenerated manifest for each service
+// at that version, so copying it re-aligns the consumer's manifests — agent pins
+// included — with the version being synced. Only a manifest that still declares
+// itself generated is refreshed; a consumer manifest without that marker is
+// hand-authored product content and is left untouched.
+func RefreshServiceManifests(sourceRoot, targetRoot string) ([]string, error) {
+	sourceRoot, targetRoot, err := refreshRoots(sourceRoot, targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	candidates, err := serviceManifestRefreshCandidates(sourceRoot, targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, relative := range candidates {
+		if err := atomicCopyFile(
+			filepath.Join(sourceRoot, filepath.FromSlash(relative)),
+			filepath.Join(targetRoot, filepath.FromSlash(relative)),
+		); err != nil {
+			return nil, fmt.Errorf("refresh service manifest %s: %w", relative, err)
+		}
+	}
+	return candidates, nil
+}
+
+func serviceManifestRefreshCandidates(sourceRoot, targetRoot string) ([]string, error) {
+	composed, err := composedServiceNames(targetRoot)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]string, 0, len(composed))
+	for service := range composed {
+		relative := "services/" + service + "/" + resources.ServiceConfigurationName
+		// The pinned source only generates manifests for services it defines; a
+		// symlinked or otherwise unsafe target path is never rewritten.
+		if !safeModulePath(sourceRoot, relative, true) || !safeModulePath(targetRoot, relative, false) {
+			continue
+		}
+		sourceDigest, digestErr := sha256File(filepath.Join(sourceRoot, filepath.FromSlash(relative)))
+		if digestErr != nil {
+			return nil, fmt.Errorf("hash source service manifest %s: %w", relative, digestErr)
+		}
+		targetContent, readErr := os.ReadFile(filepath.Join(targetRoot, filepath.FromSlash(relative)))
+		if os.IsNotExist(readErr) {
+			// The consumer composes this source-defined service but has no manifest
+			// yet; there is no consumer-owned content to lose, so materialize the
+			// pinned source's copy.
+			candidates = append(candidates, relative)
+			continue
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read target service manifest %s: %w", relative, readErr)
+		}
+		// A manifest is refreshable only while it is still the source-owned
+		// generated projection. A consumer manifest without the generated marker
+		// is hand-authored product content that the sync must never overwrite —
+		// the same ownership boundary `codefly update` honors.
+		if !carriesGeneratedMarker(targetContent) {
+			continue
+		}
+		if sha256Bytes(targetContent) != sourceDigest {
+			candidates = append(candidates, relative)
+		}
+	}
+	sort.Strings(candidates)
+	return candidates, nil
+}
+
+// carriesGeneratedMarker reports whether the leading comment block declares the
+// file machine-generated ("# Code generated ... DO NOT EDIT.").
+func carriesGeneratedMarker(content []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			return false
+		}
+		if generatedFileMarker.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func refreshRoots(sourceRoot, targetRoot string) (string, string, error) {
+	source, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve source module: %w", err)
+	}
+	target, err := filepath.Abs(targetRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve target module: %w", err)
+	}
+	if source == target {
+		return "", "", fmt.Errorf("source and target module must differ")
+	}
+	return source, target, nil
 }
 
 // ValidateServiceCodeSource proves that a source checkout is the exact origin

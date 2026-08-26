@@ -152,8 +152,12 @@ func sha256File(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return sha256Bytes(payload), nil
+}
+
+func sha256Bytes(payload []byte) string {
 	digest := sha256.Sum256(payload)
-	return hex.EncodeToString(digest[:]), nil
+	return hex.EncodeToString(digest[:])
 }
 
 type baseIntegrityAllow struct {
