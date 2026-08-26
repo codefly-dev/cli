@@ -270,9 +270,18 @@ func promotableDeploymentConfigurations(
 // references they do not need.
 var endpointConfigSuffixes = []string{"_URL", "_SELECTOR"}
 
-// connectionMarkers name values whose URL embeds a credential (connection
-// strings), so an endpoint suffix must not exempt them from secret promotion.
-var connectionMarkers = []string{"DATABASE_URL", "CONNECTION", "DSN"}
+// credentialValueMarkers name values that carry a credential in the value
+// itself (passwords, keys, session/cookie material, connection strings). A key
+// carrying one of these keeps secret promotion even with an endpoint suffix; the
+// suffix exemption only rescues names whose sensitivity comes from the broad
+// AUTH/TOKEN markers, which routinely appear in plain OAuth endpoint names.
+// Mirrors github.com/codefly-dev/core/internal/sensitive markers minus AUTH and
+// TOKEN.
+var credentialValueMarkers = []string{
+	"PASSWORD", "PASSWD", "SECRET", "CREDENTIAL",
+	"API_KEY", "PRIVATE_KEY", "ACCESS_KEY", "UNSEAL_KEY",
+	"COOKIE", "SESSION", "DATABASE_URL", "CONNECTION", "DSN",
+}
 
 var keyCanonicalizer = strings.NewReplacer(" ", "_", "-", "_", ".", "_", "/", "_")
 
@@ -292,7 +301,7 @@ func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
 
 func isPlainEndpointKey(key string) bool {
 	canonical := keyCanonicalizer.Replace(strings.ToUpper(key))
-	for _, marker := range connectionMarkers {
+	for _, marker := range credentialValueMarkers {
 		if strings.Contains(canonical, marker) {
 			return false
 		}
