@@ -222,6 +222,22 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 	configurationManager.WithLoader(localReader)
 
+	// A GitOps snapshot render is value-free: it emits secret references derived
+	// from the committed declarations and discards every secret value. Resolving
+	// references against their real provider would demand provider auth or local
+	// plaintext value files for values that never reach a manifest, so a snapshot
+	// resolves them to an inert placeholder instead (see snapshotSecretResolver).
+	//
+	// The placeholder is only ever safe because the promotable profile strips
+	// secret values back into secretKeyRefs before a builder sees them; any other
+	// profile would ship the placeholder as a real value. Bind that profile here,
+	// at the same point the resolver is registered, so the two cannot drift: a
+	// snapshot is by definition the promotable GitOps snapshot.
+	if mode == SnapshotMode {
+		configurationManager.WithSecretResolver(snapshotSecretResolver{})
+		world.KubernetesOutputProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+	}
+
 	stateManager, err := NewStateManager(ctx, configurationManager, world.Dependencies)
 	if err != nil {
 		return nil, w.Wrap(err)
