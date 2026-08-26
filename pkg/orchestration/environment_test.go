@@ -198,7 +198,7 @@ func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 	deepCopied := map[string]bool{
 		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
 		"ManagedServices": true, "ServiceSecrets": true, "Secrets": true,
-		"ResourceQuota": true,
+		"ResourceQuota": true, "Dns": true,
 	}
 	typ := reflect.TypeOf(resources.Environment{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -245,6 +245,21 @@ func TestCloneEnvironmentIsolatesResourceQuota(t *testing.T) {
 	clone.ResourceQuota.DefaultContainer.Limits.Memory = "1Gi"
 	require.Equal(t, "4", original.ResourceQuota.Requests.CPU)
 	require.Equal(t, "512Mi", original.ResourceQuota.DefaultContainer.Limits.Memory)
+}
+
+func TestCloneEnvironmentIsolatesDns(t *testing.T) {
+	original := &resources.Environment{
+		Name: "azure",
+		Dns:  &resources.EnvironmentDNS{AppHostSuffix: "staging.eastus2.azure.example.com"},
+	}
+	clone := cloneEnvironment(original)
+
+	require.NotSame(t, original.Dns, clone.Dns)
+	require.Equal(t, original.Dns.AppHostSuffix, clone.Dns.AppHostSuffix)
+
+	// Mutating the clone must not contaminate the original a concurrent flow holds.
+	clone.Dns.AppHostSuffix = "other.example.com"
+	require.Equal(t, "staging.eastus2.azure.example.com", original.Dns.AppHostSuffix)
 }
 
 func TestSelectEnvironmentIsEquivalentAcrossFlows(t *testing.T) {
