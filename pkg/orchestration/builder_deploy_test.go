@@ -72,6 +72,7 @@ func TestPromotableDeploymentInputsKeepEndpointURLsAsPlainConfig(t *testing.T) {
 				{Key: "IDENTITY_SELECTOR", Value: "primary"},
 				{Key: "DATABASE_URL", Value: "postgres://credential-bearing-value"},
 				{Key: "SECRET_URL", Value: "credential-bearing-value"},
+				{Key: "PRIVATE_KEY_URL", Value: "credential-bearing-value"},
 				{Key: "ACCESS_TOKEN", Value: "credential-bearing-value"},
 			},
 		}},
@@ -93,9 +94,10 @@ func TestPromotableDeploymentInputsKeepEndpointURLsAsPlainConfig(t *testing.T) {
 
 	prefix := "CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__IDENTITY__"
 	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
-		prefix + "DATABASE_URL": {Name: "accounts-secrets", Key: prefix + "DATABASE_URL"},
-		prefix + "SECRET_URL":   {Name: "accounts-secrets", Key: prefix + "SECRET_URL"},
-		prefix + "ACCESS_TOKEN": {Name: "accounts-secrets", Key: prefix + "ACCESS_TOKEN"},
+		prefix + "DATABASE_URL":    {Name: "accounts-secrets", Key: prefix + "DATABASE_URL"},
+		prefix + "SECRET_URL":      {Name: "accounts-secrets", Key: prefix + "SECRET_URL"},
+		prefix + "PRIVATE_KEY_URL": {Name: "accounts-secrets", Key: prefix + "PRIVATE_KEY_URL"},
+		prefix + "ACCESS_TOKEN":    {Name: "accounts-secrets", Key: prefix + "ACCESS_TOKEN"},
 	}, references)
 }
 

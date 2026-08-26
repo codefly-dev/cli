@@ -270,18 +270,11 @@ func promotableDeploymentConfigurations(
 // references they do not need.
 var endpointConfigSuffixes = []string{"_URL", "_SELECTOR"}
 
-// credentialValueMarkers name values that carry a credential in the value
-// itself (passwords, keys, session/cookie material, connection strings). A key
-// carrying one of these keeps secret promotion even with an endpoint suffix; the
-// suffix exemption only rescues names whose sensitivity comes from the broad
-// AUTH/TOKEN markers, which routinely appear in plain OAuth endpoint names.
-// Mirrors github.com/codefly-dev/core/internal/sensitive markers minus AUTH and
-// TOKEN.
-var credentialValueMarkers = []string{
-	"PASSWORD", "PASSWD", "SECRET", "CREDENTIAL",
-	"API_KEY", "PRIVATE_KEY", "ACCESS_KEY", "UNSEAL_KEY",
-	"COOKIE", "SESSION", "DATABASE_URL", "CONNECTION", "DSN",
-}
+// endpointMarkerStripper removes the broad substring markers that routinely
+// appear in plain routing names (OAuth authorize/token endpoints). AUTH and
+// TOKEN are the only markers the suffix exemption is allowed to override;
+// anything else IsSensitiveKey reacts to names a real credential.
+var endpointMarkerStripper = strings.NewReplacer("AUTH", "", "TOKEN", "")
 
 var keyCanonicalizer = strings.NewReplacer(" ", "_", "-", "_", ".", "_", "/", "_")
 
@@ -299,19 +292,23 @@ func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
 	return !isPlainEndpointKey(value.GetKey())
 }
 
+// isPlainEndpointKey rescues a URL/selector name only when its sensitivity is due
+// solely to the endpoint markers. It strips those markers and defers to
+// IsSensitiveKey, so any real credential marker — including ones core adds later —
+// still forces promotion without this package tracking core's marker list.
 func isPlainEndpointKey(key string) bool {
 	canonical := keyCanonicalizer.Replace(strings.ToUpper(key))
-	for _, marker := range credentialValueMarkers {
-		if strings.Contains(canonical, marker) {
-			return false
-		}
-	}
+	hasEndpointSuffix := false
 	for _, suffix := range endpointConfigSuffixes {
 		if strings.HasSuffix(canonical, suffix) {
-			return true
+			hasEndpointSuffix = true
+			break
 		}
 	}
-	return false
+	if !hasEndpointSuffix {
+		return false
+	}
+	return !resources.IsSensitiveKey(endpointMarkerStripper.Replace(canonical))
 }
 
 func promotableConfiguration(
