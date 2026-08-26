@@ -34,12 +34,17 @@ const (
 // file, so a consumer without the codefly toolchain can identify the recipe and
 // rebuild the image directly from the vendored Dockerfile.
 type BuildRecipe struct {
-	Schema    string            `json:"schema"`
-	Publisher string            `json:"publisher"`
-	Name      string            `json:"name"`
-	Version   string            `json:"version"`
-	Recipes   []RecipeSpec      `json:"recipes,omitempty"`
-	Files     map[string]string `json:"files"`
+	Schema    string `json:"schema"`
+	Publisher string `json:"publisher"`
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	// Recipes carries the build instructions per image. It is absent for a legacy
+	// in-agent build (the agent built in-process and emitted no plan): such an
+	// archive is schema v2 but has only file digests, exactly like v1. A consumer
+	// gates on this field's presence, not on the schema version, to decide whether
+	// it can rebuild from the recipe rather than only inspect the vendored files.
+	Recipes []RecipeSpec      `json:"recipes,omitempty"`
+	Files   map[string]string `json:"files"`
 }
 
 // RecipeSpec is the durable, agent-declared build instruction for one image: the
@@ -59,6 +64,12 @@ type RecipeSpec struct {
 	BuildArgs    map[string]string `json:"buildArgs,omitempty"`
 }
 
+// redactedBuildArgValue stands in for a sensitive build-arg's value in the
+// durable, committed recipe. It matches the marker the core sensitive-logging
+// layer uses. The key is preserved so a consumer still knows the build requires
+// the argument; the value is dropped so it never enters version control.
+const redactedBuildArgValue = "****"
+
 // recipeSpecs projects the emitted build plan's recipes into their durable
 // manifest form.
 func recipeSpecs(plan *builderv0.DockerBuildPlan) []RecipeSpec {
@@ -76,10 +87,30 @@ func recipeSpecs(plan *builderv0.DockerBuildPlan) []RecipeSpec {
 			Dockerignore: recipe.GetDockerignore(),
 			Target:       recipe.GetTarget(),
 			Platforms:    recipe.GetPlatforms(),
-			BuildArgs:    recipe.GetBuildArgs(),
+			BuildArgs:    durableBuildArgs(recipe.GetBuildArgs()),
 		})
 	}
 	return specs
+}
+
+// durableBuildArgs copies build-args for the committed recipe, replacing the
+// value of any credential-shaped key with a redaction marker. This archive is
+// committed to the repository, so a build-arg carrying a token or password must
+// never be persisted verbatim — the live build still receives the real value
+// from the ephemeral build plan, not from this file.
+func durableBuildArgs(args map[string]string) map[string]string {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(args))
+	for key, value := range args {
+		if resources.IsSensitiveKey(key) {
+			out[key] = redactedBuildArgValue
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 // recordBuildRecipe copies a service's freshly generated builder/ recipe into a

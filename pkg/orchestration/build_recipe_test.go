@@ -63,6 +63,10 @@ func TestRecordBuildRecipeArchivesRecipeTaggedWithVersion(t *testing.T) {
 		digest := sha256.Sum256([]byte(content))
 		require.Equal(t, hex.EncodeToString(digest[:]), manifest.Files[name])
 	}
+	// A legacy in-agent build emits no plan: the manifest records file digests
+	// only and must not carry a "recipes" key at all.
+	require.Empty(t, manifest.Recipes)
+	require.NotContains(t, string(payload), "\"recipes\"")
 }
 
 func TestRecordBuildRecipePersistsAgentDeclaredBuildArgs(t *testing.T) {
@@ -105,6 +109,43 @@ func TestRecordBuildRecipePersistsAgentDeclaredBuildArgs(t *testing.T) {
 	require.Equal(t, "final", got.Target)
 	require.Equal(t, []string{"linux/amd64", "linux/arm64"}, got.Platforms)
 	require.Equal(t, map[string]string{"FRONTEND_SKIN_RUNTIME": "1"}, got.BuildArgs)
+}
+
+func TestRecordBuildRecipeRedactsSensitiveBuildArgs(t *testing.T) {
+	recipe := map[string]string{"Dockerfile": "FROM alpine\n"}
+	service := serviceWithRecipe(t, "0.3.5", recipe)
+
+	secret := "npm_s3cr3t-value"
+	plan := &builderv0.DockerBuildPlan{
+		Recipes: []*builderv0.DockerBuildRecipe{{
+			Name:       "app",
+			Image:      "repo/app:v1",
+			Dockerfile: "Dockerfile",
+			Context:    ".",
+			BuildArgs: map[string]string{
+				"FRONTEND_SKIN_RUNTIME": "1",
+				"NPM_TOKEN":             secret,
+			},
+		}},
+	}
+
+	require.NoError(t, recordBuildRecipe(context.Background(), service, plan))
+
+	archive := filepath.Join(service.Dir(), buildRecipeArchiveDir, "0.3.5")
+	payload, err := os.ReadFile(filepath.Join(archive, buildRecipeManifest))
+	require.NoError(t, err)
+
+	// The secret value must never be written to the committed archive; the key is
+	// kept so a consumer still knows the build needs it.
+	require.NotContains(t, string(payload), secret)
+
+	var manifest BuildRecipe
+	require.NoError(t, json.Unmarshal(payload, &manifest))
+	require.Len(t, manifest.Recipes, 1)
+	require.Equal(t, map[string]string{
+		"FRONTEND_SKIN_RUNTIME": "1",
+		"NPM_TOKEN":             redactedBuildArgValue,
+	}, manifest.Recipes[0].BuildArgs)
 }
 
 func TestRecordBuildRecipeReplacesStalePriorArchive(t *testing.T) {

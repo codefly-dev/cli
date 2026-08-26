@@ -247,10 +247,6 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	// build; otherwise the agent built in-process (legacy) and the CLI only pushes.
 	plan := resp.Result.GetDockerBuildPlan()
 
-	if err = recordBuildRecipe(ctx, b.instance.Service, plan); err != nil {
-		return nil, w.Wrapf(err, "cannot record build recipe")
-	}
-
 	err = b.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for build")
@@ -289,6 +285,13 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 			}
 		}
 	}
+
+	// Record the durable recipe only after the build succeeded, so the committed
+	// archive never advertises a recipe that failed verification or never built.
+	if err = recordBuildRecipe(ctx, b.instance.Service, plan); err != nil {
+		return nil, w.Wrapf(err, "cannot record build recipe")
+	}
+
 	return outputProperty, nil
 }
 
