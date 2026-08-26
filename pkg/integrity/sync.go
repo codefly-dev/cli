@@ -1,16 +1,25 @@
 package integrity
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
 )
+
+// generatedFileMarker matches the leading-comment marker that machine-generated
+// manifests carry ("# Code generated ... DO NOT EDIT."). It is the same
+// ownership signal `codefly update` uses to leave a generated service manifest
+// to its source instead of editing it in place.
+var generatedFileMarker = regexp.MustCompile(`Code generated .* DO NOT EDIT\.`)
 
 const baseManifestRelativePath = "tools/base-manifest.json"
 
@@ -483,7 +492,9 @@ func PlanServiceManifestRefresh(sourceRoot, targetRoot string) ([]string, error)
 // never touches it and its agent pins drift stale against the module release.
 // The pinned source carries the canonical regenerated manifest for each service
 // at that version, so copying it re-aligns the consumer's manifests — agent pins
-// included — with the version being synced.
+// included — with the version being synced. Only a manifest that still declares
+// itself generated is refreshed; a consumer manifest without that marker is
+// hand-authored product content and is left untouched.
 func RefreshServiceManifests(sourceRoot, targetRoot string) ([]string, error) {
 	sourceRoot, targetRoot, err := refreshRoots(sourceRoot, targetRoot)
 	if err != nil {
@@ -521,16 +532,49 @@ func serviceManifestRefreshCandidates(sourceRoot, targetRoot string) ([]string, 
 		if digestErr != nil {
 			return nil, fmt.Errorf("hash source service manifest %s: %w", relative, digestErr)
 		}
-		targetDigest, targetErr := sha256File(filepath.Join(targetRoot, filepath.FromSlash(relative)))
-		if targetErr != nil && !os.IsNotExist(targetErr) {
-			return nil, fmt.Errorf("hash target service manifest %s: %w", relative, targetErr)
+		targetContent, readErr := os.ReadFile(filepath.Join(targetRoot, filepath.FromSlash(relative)))
+		if os.IsNotExist(readErr) {
+			// The consumer composes this source-defined service but has no manifest
+			// yet; there is no consumer-owned content to lose, so materialize the
+			// pinned source's copy.
+			candidates = append(candidates, relative)
+			continue
 		}
-		if os.IsNotExist(targetErr) || targetDigest != sourceDigest {
+		if readErr != nil {
+			return nil, fmt.Errorf("read target service manifest %s: %w", relative, readErr)
+		}
+		// A manifest is refreshable only while it is still the source-owned
+		// generated projection. A consumer manifest without the generated marker
+		// is hand-authored product content that the sync must never overwrite —
+		// the same ownership boundary `codefly update` honors.
+		if !carriesGeneratedMarker(targetContent) {
+			continue
+		}
+		if sha256Bytes(targetContent) != sourceDigest {
 			candidates = append(candidates, relative)
 		}
 	}
 	sort.Strings(candidates)
 	return candidates, nil
+}
+
+// carriesGeneratedMarker reports whether the leading comment block declares the
+// file machine-generated ("# Code generated ... DO NOT EDIT.").
+func carriesGeneratedMarker(content []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#") {
+			return false
+		}
+		if generatedFileMarker.MatchString(line) {
+			return true
+		}
+	}
+	return false
 }
 
 func refreshRoots(sourceRoot, targetRoot string) (string, string, error) {

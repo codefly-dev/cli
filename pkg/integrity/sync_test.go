@@ -426,6 +426,8 @@ func TestBaseSyncClassifiesStaleUpstreamManifestAsDigestMismatch(t *testing.T) {
 	}
 }
 
+const generatedManifestHeader = "# Code generated from deployment/topology.bindings.codefly.yaml. DO NOT EDIT.\n"
+
 // A per-service generated service.codefly.yaml is a consumer overlay, not a
 // base-owned file, so a base sync leaves its agent pin stale. RefreshServiceManifests
 // re-aligns each composed service's manifest with the pinned source, and only
@@ -433,12 +435,12 @@ func TestBaseSyncClassifiesStaleUpstreamManifestAsDigestMismatch(t *testing.T) {
 func TestRefreshServiceManifestsRewritesComposedGeneratedManifests(t *testing.T) {
 	source, target := syncFixture(t)
 	relative := "services/kept/" + resources.ServiceConfigurationName
-	upstream := "name: kept\nagent:\n  name: vault\n  version: 0.0.25\n"
+	upstream := generatedManifestHeader + "name: kept\nagent:\n  name: vault\n  version: 0.0.25\n"
 	writeTestFile(t, filepath.Join(source, filepath.FromSlash(relative)), upstream)
-	writeTestFile(t, filepath.Join(target, filepath.FromSlash(relative)), "name: kept\nagent:\n  name: vault\n  version: 0.0.15\n")
+	writeTestFile(t, filepath.Join(target, filepath.FromSlash(relative)), generatedManifestHeader+"name: kept\nagent:\n  name: vault\n  version: 0.0.15\n")
 	// A service the pinned source defines but the module does not compose must
 	// never be created on the consumer side.
-	writeTestFile(t, filepath.Join(source, "services", "extra", resources.ServiceConfigurationName), "name: extra\n")
+	writeTestFile(t, filepath.Join(source, "services", "extra", resources.ServiceConfigurationName), generatedManifestHeader+"name: extra\n")
 
 	pending, err := PlanServiceManifestRefresh(source, target)
 	if err != nil {
@@ -467,6 +469,35 @@ func TestRefreshServiceManifestsRewritesComposedGeneratedManifests(t *testing.T)
 	if len(again) != 0 {
 		t.Fatalf("refresh was not idempotent: %#v", again)
 	}
+}
+
+// A service manifest the consumer has taken over as hand-authored product
+// content — no "Code generated ... DO NOT EDIT" marker — is off-limits to the
+// sync, the same ownership boundary `codefly update` honors. Overwriting it
+// would silently destroy consumer-owned endpoints, spec, and dependencies.
+func TestRefreshServiceManifestsPreservesHandAuthoredManifest(t *testing.T) {
+	source, target := syncFixture(t)
+	relative := "services/kept/" + resources.ServiceConfigurationName
+	writeTestFile(t, filepath.Join(source, filepath.FromSlash(relative)),
+		generatedManifestHeader+"name: kept\nagent:\n  name: vault\n  version: 0.0.25\n")
+	handAuthored := "name: kept\nagent:\n  name: vault\n  version: 0.0.15\nendpoints:\n  - name: custom\n"
+	writeTestFile(t, filepath.Join(target, filepath.FromSlash(relative)), handAuthored)
+
+	pending, err := PlanServiceManifestRefresh(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("hand-authored manifest was planned for refresh: %#v", pending)
+	}
+	refreshed, err := RefreshServiceManifests(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed) != 0 {
+		t.Fatalf("hand-authored manifest was overwritten: %#v", refreshed)
+	}
+	assertFileContents(t, filepath.Join(target, filepath.FromSlash(relative)), handAuthored)
 }
 
 const targetModuleYAML = `kind: module

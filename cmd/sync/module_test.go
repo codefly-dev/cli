@@ -330,7 +330,8 @@ func TestSyncModuleRefreshesGeneratedServiceManifestAgentPin(t *testing.T) {
 	codePath := "services/vault/code/main.go"
 	code := "package main\n"
 	manifestPath := "services/vault/" + resources.ServiceConfigurationName
-	upstreamManifest := "name: vault\nagent:\n  kind: codefly:service\n  name: vault\n  publisher: codefly.dev\n  version: 0.0.25\n"
+	generatedHeader := "# Code generated from deployment/topology.bindings.codefly.yaml. DO NOT EDIT.\n"
+	upstreamManifest := generatedHeader + "name: vault\nagent:\n  kind: codefly:service\n  name: vault\n  publisher: codefly.dev\n  version: 0.0.25\n"
 	writeSyncTestFile(t, filepath.Join(sourceModule, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: vault\n")
 	writeSyncTestFile(t, filepath.Join(sourceModule, codePath), code)
 	writeSyncTestFile(t, filepath.Join(sourceModule, filepath.FromSlash(manifestPath)), upstreamManifest)
@@ -344,7 +345,7 @@ func TestSyncModuleRefreshesGeneratedServiceManifestAgentPin(t *testing.T) {
 	writeSyncTestFile(t, filepath.Join(targetRoot, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: vault\n")
 	writeSyncTestFile(t, filepath.Join(targetRoot, "tools", "base-manifest.json"), `{"files":{}}`)
 	writeSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(manifestPath)),
-		"name: vault\nagent:\n  kind: codefly:service\n  name: vault\n  publisher: codefly.dev\n  version: 0.0.15\n")
+		generatedHeader+"name: vault\nagent:\n  kind: codefly:service\n  name: vault\n  publisher: codefly.dev\n  version: 0.0.15\n")
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
 	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), &moduleSourceLock{
 		Schema: moduleSourceLockSchema, Repository: remote, Ref: "v0.0.42",
