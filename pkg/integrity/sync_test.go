@@ -471,6 +471,35 @@ func TestRefreshServiceManifestsRewritesComposedGeneratedManifests(t *testing.T)
 	}
 }
 
+// A source manifest that no longer declares itself generated (e.g. an upstream
+// generator regression that dropped the marker) must not be copied over the
+// consumer's generated manifest: doing so would strip the consumer file's own
+// marker and freeze that service out of every future refresh.
+func TestRefreshServiceManifestsSkipsUngeneratedSource(t *testing.T) {
+	source, target := syncFixture(t)
+	relative := "services/kept/" + resources.ServiceConfigurationName
+	writeTestFile(t, filepath.Join(source, filepath.FromSlash(relative)),
+		"name: kept\nagent:\n  name: vault\n  version: 0.0.25\n")
+	generated := generatedManifestHeader + "name: kept\nagent:\n  name: vault\n  version: 0.0.15\n"
+	writeTestFile(t, filepath.Join(target, filepath.FromSlash(relative)), generated)
+
+	pending, err := PlanServiceManifestRefresh(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("markerless source was planned for refresh: %#v", pending)
+	}
+	refreshed, err := RefreshServiceManifests(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed) != 0 {
+		t.Fatalf("markerless source overwrote the consumer manifest: %#v", refreshed)
+	}
+	assertFileContents(t, filepath.Join(target, filepath.FromSlash(relative)), generated)
+}
+
 // A service manifest the consumer has taken over as hand-authored product
 // content — no "Code generated ... DO NOT EDIT" marker — is off-limits to the
 // sync, the same ownership boundary `codefly update` honors. Overwriting it

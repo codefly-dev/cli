@@ -16,10 +16,14 @@ import (
 )
 
 // generatedFileMarker matches the leading-comment marker that machine-generated
-// manifests carry ("# Code generated ... DO NOT EDIT."). It is the same
-// ownership signal `codefly update` uses to leave a generated service manifest
-// to its source instead of editing it in place.
-var generatedFileMarker = regexp.MustCompile(`Code generated .* DO NOT EDIT\.`)
+// files carry ("# Code generated ... DO NOT EDIT."); generatedFileSource pulls
+// out the "from <source>" clause when the marker names what it was rendered
+// from. This is the single ownership signal for machine-generated files, shared
+// by base sync and `codefly update`.
+var (
+	generatedFileMarker = regexp.MustCompile(`Code generated .* DO NOT EDIT\.`)
+	generatedFileSource = regexp.MustCompile(`Code generated from (.+?)\. DO NOT EDIT\.`)
+)
 
 const baseManifestRelativePath = "tools/base-manifest.json"
 
@@ -528,9 +532,17 @@ func serviceManifestRefreshCandidates(sourceRoot, targetRoot string) ([]string, 
 		if !safeModulePath(sourceRoot, relative, true) || !safeModulePath(targetRoot, relative, false) {
 			continue
 		}
-		sourceDigest, digestErr := sha256File(filepath.Join(sourceRoot, filepath.FromSlash(relative)))
-		if digestErr != nil {
-			return nil, fmt.Errorf("hash source service manifest %s: %w", relative, digestErr)
+		sourceContent, srcErr := os.ReadFile(filepath.Join(sourceRoot, filepath.FromSlash(relative)))
+		if srcErr != nil {
+			return nil, fmt.Errorf("read source service manifest %s: %w", relative, srcErr)
+		}
+		// The pinned source is the authority on whether this manifest is a
+		// generated projection. A source manifest that does not declare itself
+		// generated is not a file the sync owns; copying it over the consumer
+		// would strip the consumer's marker and freeze the service out of every
+		// future refresh, so it is skipped.
+		if !carriesGeneratedMarker(sourceContent) {
+			continue
 		}
 		targetContent, readErr := os.ReadFile(filepath.Join(targetRoot, filepath.FromSlash(relative)))
 		if os.IsNotExist(readErr) {
@@ -543,14 +555,13 @@ func serviceManifestRefreshCandidates(sourceRoot, targetRoot string) ([]string, 
 		if readErr != nil {
 			return nil, fmt.Errorf("read target service manifest %s: %w", relative, readErr)
 		}
-		// A manifest is refreshable only while it is still the source-owned
-		// generated projection. A consumer manifest without the generated marker
-		// is hand-authored product content that the sync must never overwrite —
-		// the same ownership boundary `codefly update` honors.
+		// A consumer manifest without the generated marker is hand-authored
+		// product content that the sync must never overwrite — the same ownership
+		// boundary `codefly update` honors.
 		if !carriesGeneratedMarker(targetContent) {
 			continue
 		}
-		if sha256Bytes(targetContent) != sourceDigest {
+		if sha256Bytes(targetContent) != sha256Bytes(sourceContent) {
 			candidates = append(candidates, relative)
 		}
 	}
@@ -558,9 +569,12 @@ func serviceManifestRefreshCandidates(sourceRoot, targetRoot string) ([]string, 
 	return candidates, nil
 }
 
-// carriesGeneratedMarker reports whether the leading comment block declares the
-// file machine-generated ("# Code generated ... DO NOT EDIT.").
-func carriesGeneratedMarker(content []byte) bool {
+// GeneratedFileMarker reports the source named by a leading
+// "Code generated from <source>. DO NOT EDIT." marker and whether any generated
+// marker is present in the file's leading comment block. It is the single
+// ownership signal used to decide whether a file is machine-generated — and thus
+// owned by its source — rather than hand-authored.
+func GeneratedFileMarker(content []byte) (source string, generated bool) {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -568,13 +582,22 @@ func carriesGeneratedMarker(content []byte) bool {
 			continue
 		}
 		if !strings.HasPrefix(line, "#") {
-			return false
+			return "", false
 		}
-		if generatedFileMarker.MatchString(line) {
-			return true
+		if !generatedFileMarker.MatchString(line) {
+			continue
 		}
+		if m := generatedFileSource.FindStringSubmatch(line); m != nil {
+			return m[1], true
+		}
+		return "", true
 	}
-	return false
+	return "", false
+}
+
+func carriesGeneratedMarker(content []byte) bool {
+	_, generated := GeneratedFileMarker(content)
+	return generated
 }
 
 func refreshRoots(sourceRoot, targetRoot string) (string, string, error) {

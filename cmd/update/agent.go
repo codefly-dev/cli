@@ -1,15 +1,12 @@
 package update
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
-	"strings"
 
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
@@ -17,14 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/codefly-dev/cli/pkg/cli"
-)
-
-// generatedHeader matches the machine-generated marker that go:generate-style
-// tools stamp on files; generatedSource pulls out the "from <source>" clause
-// when the marker names the file it was rendered from.
-var (
-	generatedHeader = regexp.MustCompile(`Code generated .* DO NOT EDIT\.`)
-	generatedSource = regexp.MustCompile(`Code generated from (.+?)\. DO NOT EDIT\.`)
+	"github.com/codefly-dev/cli/pkg/integrity"
 )
 
 // agentUpdate records a resolved agent version bump for reporting.
@@ -46,7 +36,7 @@ func updateServiceAgent(ctx context.Context, svc *resources.Service) (*agentUpda
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w", file, err)
 	}
-	if source, generated := generatedMarker(content); generated {
+	if source, generated := integrity.GeneratedFileMarker(content); generated {
 		if source != "" {
 			cli.Warning("Skipping generated file %s; edit its source (%s) and regenerate instead", file, source)
 		} else {
@@ -72,29 +62,6 @@ func updateServiceAgent(ctx context.Context, svc *resources.Service) (*agentUpda
 		return nil, fmt.Errorf("cannot write %s: %w", file, err)
 	}
 	return &agentUpdate{Name: svc.Agent.Name, From: from, To: svc.Agent.Version}, nil
-}
-
-// generatedMarker reports the declared source and whether content carries a
-// generated marker in its leading comment block.
-func generatedMarker(content []byte) (source string, generated bool) {
-	scanner := bufio.NewScanner(bytes.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "#") {
-			break
-		}
-		if !generatedHeader.MatchString(line) {
-			continue
-		}
-		if m := generatedSource.FindStringSubmatch(line); m != nil {
-			return m[1], true
-		}
-		return "", true
-	}
-	return "", false
 }
 
 // rewriteAgentVersion replaces only the agent.version scalar, editing the one
