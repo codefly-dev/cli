@@ -122,3 +122,56 @@ func TestPrepareSnapshotRegistryRequiresRegistryURL(t *testing.T) {
 		}
 	}
 }
+
+// A module with no buildable services renders only its bootstrap kustomize tree
+// (or module bundle), which needs no registry to build or push. Demanding a
+// registry.url for such a render is spurious: the registry precondition must
+// gate on there being a service to build, not on the render happening at all.
+func TestRenderModuleWithoutServicesDoesNotRequireRegistry(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		resources.WorkspaceConfigurationName: `name: platform
+layout: modules
+modules:
+  - name: infra
+environments:
+  - name: prod
+    namespace: platform
+`,
+		filepath.Join("modules", "infra", resources.ModuleConfigurationName): `kind: module
+name: infra
+`,
+		filepath.Join("modules", "infra", "deployment", "kustomize", "base", "kustomization.yaml"):             "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n",
+		filepath.Join("modules", "infra", "deployment", "kustomize", "base", "deployment.yaml"):                pinnedDeployment,
+		filepath.Join("modules", "infra", "deployment", "kustomize", "overlays", "prod", "kustomization.yaml"): "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n",
+	}
+	for rel, content := range files {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := workspace.LoadModuleFromName(ctx, "infra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := workspace.FindEnvironment("prod")
+	if env == nil {
+		t.Fatal("prod environment did not load")
+	}
+	if env.Registry != nil {
+		t.Fatalf("test env must declare no registry, got %+v", env.Registry)
+	}
+
+	if _, err := RenderModule(ctx, workspace, module, env, "", nil); err != nil {
+		t.Fatalf("registry-less render of a service-less module failed: %v", err)
+	}
+}

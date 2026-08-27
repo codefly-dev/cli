@@ -67,8 +67,14 @@ func renderModuleTree(
 		if err != nil {
 			return err
 		}
-		if err = prepareSnapshotRegistry(ctx, env); err != nil {
-			return err
+		// The registry is only needed to build and push service images. A module
+		// with no buildable services still renders its bootstrap kustomize tree or
+		// module bundle, which need no registry, so demand one only when there is a
+		// service to build.
+		if len(roots) > 0 {
+			if err = prepareSnapshotRegistry(ctx, env); err != nil {
+				return err
+			}
 		}
 		outputs := make(map[string]*builderv0.DeploymentOutput)
 		for _, service := range roots {
