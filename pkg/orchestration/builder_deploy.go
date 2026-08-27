@@ -248,27 +248,68 @@ func promotableDeploymentConfigurations(
 	dependencies []*basev0.Configuration,
 	secretName string,
 ) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
+	if misplaced := misplacedSecretKeys(append([]*basev0.Configuration{configuration}, dependencies...)); len(misplaced) > 0 {
+		return nil, nil, nil, fmt.Errorf(
+			"restricted rendering rejects credential-named keys carrying a plaintext value; declare each as a secret (secretKeyRef) instead of inline config: %s",
+			strings.Join(misplaced, ", "),
+		)
+	}
 	references := map[string]*builderv0.KubernetesSecretKeyReference{}
-	var misplaced []string
-	own, err := promotableConfiguration(configuration, secretName, references, &misplaced)
+	own, err := promotableConfiguration(configuration, secretName, references)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	safeDependencies := make([]*basev0.Configuration, 0, len(dependencies))
 	for _, dependency := range dependencies {
-		safe, err := promotableConfiguration(dependency, secretName, references, &misplaced)
+		safe, err := promotableConfiguration(dependency, secretName, references)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		safeDependencies = append(safeDependencies, safe)
 	}
-	if len(misplaced) > 0 {
-		return nil, nil, nil, fmt.Errorf(
-			"restricted rendering received secret-classified keys as plaintext config; move each to its *.secret.env so it renders as a secretKeyRef: %s",
-			strings.Join(misplaced, ", "),
-		)
-	}
 	return own, safeDependencies, references, nil
+}
+
+// restrictedRenderRejects reports whether restricted render will refuse a value
+// that reaches it inline. It mirrors the per-value half of core's
+// validateRestrictedDeploymentRequest guard (core agents/services/base_builder.go):
+// a non-empty value carrying an explicit Secret flag or a credential-named key.
+// Both sides key off resources.IsSensitiveKey, so core stays the single source of
+// truth for the marker list and this is the one place that tracks the guard's
+// shape. The Secret clause never decides a misplacement (Secret values promote to
+// references first, below) but is kept so the predicate is a faithful standalone
+// mirror rather than one narrowed to its current caller.
+func restrictedRenderRejects(value *basev0.ConfigurationValue) bool {
+	return value.GetValue() != "" && (value.GetSecret() || resources.IsSensitiveKey(value.GetKey()))
+}
+
+// misplacedSecretKeys lists the credential-named plaintext values that would be
+// forwarded inline to restricted render and rejected there one key per run. A
+// value promoted to a secretKeyRef never reaches core inline, so a key is
+// misplaced only when it both survives promotion and restrictedRenderRejects.
+// Each entry names the key, the configuration scope it came from (so a value
+// exposed by a dependency, not authored in a local *.env file, is still
+// traceable), and the *.secret.env convention that resolves it.
+func misplacedSecretKeys(configurations []*basev0.Configuration) []string {
+	var misplaced []string
+	for _, configuration := range configurations {
+		scope := configuration.GetOrigin()
+		if scope == resources.ConfigurationWorkspace {
+			scope = "workspace"
+		}
+		for _, info := range configuration.GetInfos() {
+			for _, value := range info.GetConfigurationValues() {
+				if promotesToDeploymentSecret(value) || !restrictedRenderRejects(value) {
+					continue
+				}
+				misplaced = append(misplaced, fmt.Sprintf(
+					"%s in %s (declare it as a secret, e.g. %s.secret.env)",
+					value.GetKey(), scope, info.GetName(),
+				))
+			}
+		}
+	}
+	return misplaced
 }
 
 // endpointKeySuffixes name the OIDC identity endpoint keys — authorize/token
@@ -326,7 +367,6 @@ func promotableConfiguration(
 	configuration *basev0.Configuration,
 	secretName string,
 	references map[string]*builderv0.KubernetesSecretKeyReference,
-	misplaced *[]string,
 ) (*basev0.Configuration, error) {
 	if configuration == nil {
 		return nil, nil
@@ -341,14 +381,6 @@ func promotableConfiguration(
 		info.ConfigurationValues = info.ConfigurationValues[:0]
 		for _, sourceValue := range sourceInfo.GetConfigurationValues() {
 			if !promotesToDeploymentSecret(sourceValue) {
-				// A plaintext value under a secret-classified key is exactly what
-				// core's restricted-render guard rejects, one key per run. Collect
-				// every such key here so the operator gets a single actionable
-				// error naming the *.secret.env each belongs in.
-				if sourceValue.GetValue() != "" && resources.IsSensitiveKey(sourceValue.GetKey()) {
-					*misplaced = append(*misplaced, fmt.Sprintf("%s (%s.secret.env)", sourceValue.GetKey(), sourceInfo.GetName()))
-					continue
-				}
 				info.ConfigurationValues = append(info.ConfigurationValues, proto.Clone(sourceValue).(*basev0.ConfigurationValue))
 				continue
 			}

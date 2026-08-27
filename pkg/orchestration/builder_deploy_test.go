@@ -77,14 +77,44 @@ func TestPromotableDeploymentInputsRejectMisplacedSecretEndpointKeys(t *testing.
 
 	_, _, _, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
 	require.Error(t, err)
-	// Every misplaced key is named in one error, each with the file it belongs in.
-	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_URL (identity.secret.env)")
-	require.Contains(t, err.Error(), "IDENTITY_TOKEN_URL (identity.secret.env)")
-	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_SELECTOR (identity.secret.env)")
-	require.Contains(t, err.Error(), "identity.secret.env")
+	// Every misplaced key is named in one error, each with the *.secret.env that
+	// resolves it — the reported case is a local identity.env file.
+	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_URL in users/accounts (declare it as a secret, e.g. identity.secret.env)")
+	require.Contains(t, err.Error(), "IDENTITY_TOKEN_URL in users/accounts (declare it as a secret, e.g. identity.secret.env)")
+	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_SELECTOR in users/accounts (declare it as a secret, e.g. identity.secret.env)")
 	// A plain endpoint-shaped key (no credential marker) is not a secret and must
 	// not be dragged into the misplacement error.
 	require.NotContains(t, err.Error(), "IDENTITY_ISSUER")
+}
+
+func TestPromotableDeploymentInputsAggregateMisplacedKeysAcrossConfigurations(t *testing.T) {
+	own := &basev0.Configuration{
+		Origin: resources.ConfigurationWorkspace,
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "identity",
+			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize"},
+			},
+		}},
+	}
+	dependency := &basev0.Configuration{
+		Origin: "infra/postgres",
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "connection",
+			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "IDENTITY_TOKEN_URL", Value: "https://issuer.example.com/token"},
+			},
+		}},
+	}
+
+	_, _, _, err := promotableDeploymentConfigurations(own, []*basev0.Configuration{dependency}, "accounts-secrets")
+	require.Error(t, err)
+	// A misplaced key in the service config AND one exposed by a dependency both
+	// surface in a single error, each traceable to its own configuration scope —
+	// the workspace file uses the friendly "workspace" label, the dependency uses
+	// its service origin (whose info name is not a local file the operator edits).
+	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_URL in workspace (declare it as a secret, e.g. identity.secret.env)")
+	require.Contains(t, err.Error(), "IDENTITY_TOKEN_URL in infra/postgres (declare it as a secret, e.g. connection.secret.env)")
 }
 
 func TestPromotableDeploymentInputsPromoteDeclaredSecretEndpointKeys(t *testing.T) {
