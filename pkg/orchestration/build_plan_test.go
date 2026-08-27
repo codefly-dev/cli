@@ -51,6 +51,30 @@ func TestBuildxArgsLocalBuildIsSinglePlatformLoadOnDefaultBuilder(t *testing.T) 
 	require.NotContains(t, joined, "--metadata-file")
 }
 
+func TestBuildxCreateArgsUsesHostNetworkContainerDriver(t *testing.T) {
+	args := buildxCreateArgs()
+	joined := strings.Join(args, " ")
+
+	require.Equal(t, []string{"buildx", "create"}, args[:2])
+	require.Contains(t, joined, "--name codefly")
+	require.Contains(t, joined, "--driver docker-container")
+	// Host networking lets BuildKit inherit the host resolver so it can reach a
+	// tailnet split-DNS private registry instead of stalling on DNS.
+	require.Contains(t, joined, "--driver-opt network=host")
+	require.Contains(t, joined, "--bootstrap")
+}
+
+func TestBuilderHasHostNetwork(t *testing.T) {
+	// A builder created with --driver-opt network=host reports it under Driver
+	// Options; a pre-fix builder omits the line entirely and must read as stale
+	// so the caller refuses to reuse it instead of stalling on tailnet DNS.
+	ready := []byte("Name:          codefly\nDriver:        docker-container\nNodes:\nName:                  codefly0\nDriver Options:        network=\"host\"\nStatus:                running\n")
+	require.True(t, builderHasHostNetwork(ready))
+
+	stale := []byte("Name:          codefly\nDriver:        docker-container\nNodes:\nName:                  codefly0\nStatus:                running\n")
+	require.False(t, builderHasHostNetwork(stale))
+}
+
 func TestPlatformsIncludeDeploymentArch(t *testing.T) {
 	require.True(t, platformsIncludeDeploymentArch([]string{"linux/arm64", "linux/amd64"}))
 	require.True(t, platformsIncludeDeploymentArch([]string{"linux/amd64/v2"}))

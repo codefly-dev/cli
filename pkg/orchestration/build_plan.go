@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -251,17 +252,25 @@ func applyRecipeIgnore(outputDir, dockerfile string, recipe *builderv0.DockerBui
 
 // ensureBuildxBuilder provisions the dedicated docker-container buildx builder
 // used for multi-platform builds. It is idempotent and tolerates a concurrent
-// creation racing another service's build.
+// creation racing another service's build. A builder created before host
+// networking was required is reported as stale rather than reused: reusing it
+// silently reproduces the ~90-minute tailnet DNS stall, and recreating it in
+// place would race a sibling service mid-build on the shared builder, so the
+// caller is told to remove it out of band.
 func ensureBuildxBuilder(ctx context.Context) error {
-	if buildxBuilderExists(ctx) {
+	switch buildxBuilderState(ctx) {
+	case buildxBuilderReady:
 		return nil
+	case buildxBuilderStale:
+		return fmt.Errorf(
+			"buildx builder %q predates host networking and cannot reach a tailnet split-DNS registry; run `docker buildx rm %s` and retry",
+			buildxBuilderName, buildxBuilderName,
+		)
 	}
-	output, err := exec.CommandContext(
-		ctx, "docker", "buildx", "create",
-		"--name", buildxBuilderName, "--driver", "docker-container", "--bootstrap",
-	).CombinedOutput()
+	args := buildxCreateArgs()
+	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	if err != nil {
-		if buildxBuilderExists(ctx) {
+		if buildxBuilderState(ctx) == buildxBuilderReady {
 			return nil
 		}
 		return fmt.Errorf("create buildx builder %q: %w: %s", buildxBuilderName, err, strings.TrimSpace(string(output)))
@@ -269,8 +278,50 @@ func ensureBuildxBuilder(ctx context.Context) error {
 	return nil
 }
 
-func buildxBuilderExists(ctx context.Context) bool {
-	return exec.CommandContext(ctx, "docker", "buildx", "inspect", buildxBuilderName).Run() == nil
+// buildxCreateArgs renders the docker buildx create argv for the dedicated
+// container-driver builder. network=host runs BuildKit in the host network
+// namespace so it inherits the host resolver and routes; without it the
+// container-driver's isolated bridge net has its own resolver and cannot reach a
+// tailnet split-DNS, so a push to a private-endpoint registry stalls on DNS
+// resolution until its auth token ages out. It also grants the network.host
+// build entitlement, which is acceptable for a builder running the recipes the
+// CLI itself emits.
+func buildxCreateArgs() []string {
+	return []string{
+		"buildx", "create",
+		"--name", buildxBuilderName,
+		"--driver", "docker-container",
+		"--driver-opt", "network=host",
+		"--bootstrap",
+	}
+}
+
+type buildxBuilderStatus int
+
+const (
+	buildxBuilderMissing buildxBuilderStatus = iota
+	buildxBuilderReady
+	buildxBuilderStale
+)
+
+// buildxBuilderState reports whether the codefly builder is absent, present with
+// host networking, or present without it (a pre-fix builder). Detection reads the
+// builder's stored driver options, which docker buildx inspect renders whether or
+// not the daemon is running, so it does not depend on bootstrapping the node.
+func buildxBuilderState(ctx context.Context) buildxBuilderStatus {
+	output, err := exec.CommandContext(ctx, "docker", "buildx", "inspect", buildxBuilderName).CombinedOutput()
+	if err != nil {
+		return buildxBuilderMissing
+	}
+	if builderHasHostNetwork(output) {
+		return buildxBuilderReady
+	}
+	return buildxBuilderStale
+}
+
+func builderHasHostNetwork(inspectOutput []byte) bool {
+	return bytes.Contains(inspectOutput, []byte(`network="host"`)) ||
+		bytes.Contains(inspectOutput, []byte("network=host"))
 }
 
 // readPushedImageDigest reads the registry manifest digest buildx recorded in
