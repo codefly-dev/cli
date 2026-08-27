@@ -256,10 +256,8 @@ func ensureBuildxBuilder(ctx context.Context) error {
 	if buildxBuilderExists(ctx) {
 		return nil
 	}
-	output, err := exec.CommandContext(
-		ctx, "docker", "buildx", "create",
-		"--name", buildxBuilderName, "--driver", "docker-container", "--bootstrap",
-	).CombinedOutput()
+	args := buildxCreateArgs()
+	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	if err != nil {
 		if buildxBuilderExists(ctx) {
 			return nil
@@ -267,6 +265,22 @@ func ensureBuildxBuilder(ctx context.Context) error {
 		return fmt.Errorf("create buildx builder %q: %w: %s", buildxBuilderName, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// buildxCreateArgs renders the docker buildx create argv for the dedicated
+// container-driver builder. network=host runs BuildKit in the host network
+// namespace so it inherits the host resolver and routes; without it the
+// container-driver's isolated bridge net has its own resolver and cannot reach a
+// tailnet split-DNS, so a push to a private-endpoint registry stalls on DNS
+// resolution until its auth token ages out.
+func buildxCreateArgs() []string {
+	return []string{
+		"buildx", "create",
+		"--name", buildxBuilderName,
+		"--driver", "docker-container",
+		"--driver-opt", "network=host",
+		"--bootstrap",
+	}
 }
 
 func buildxBuilderExists(ctx context.Context) bool {
