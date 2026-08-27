@@ -248,6 +248,12 @@ func promotableDeploymentConfigurations(
 	dependencies []*basev0.Configuration,
 	secretName string,
 ) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
+	if misplaced := misplacedSecretKeys(append([]*basev0.Configuration{configuration}, dependencies...)); len(misplaced) > 0 {
+		return nil, nil, nil, fmt.Errorf(
+			"restricted rendering rejects credential-named keys carrying a plaintext value; declare each as a secret (secretKeyRef) instead of inline config: %s",
+			strings.Join(misplaced, ", "),
+		)
+	}
 	references := map[string]*builderv0.KubernetesSecretKeyReference{}
 	own, err := promotableConfiguration(configuration, secretName, references)
 	if err != nil {
@@ -264,24 +270,69 @@ func promotableDeploymentConfigurations(
 	return own, safeDependencies, references, nil
 }
 
-// endpointConfigSuffixes name plain routing values — identity endpoint URLs and
-// selectors — that the credential-name heuristic misfiles as secrets. Deploy
-// keeps them as inline config rather than forcing vault-seeded secret
-// references they do not need.
-var endpointConfigSuffixes = []string{"_URL", "_SELECTOR"}
+// restrictedRenderRejects reports whether restricted render will refuse a value
+// that reaches it inline. It mirrors the per-value half of core's
+// validateRestrictedDeploymentRequest guard (core agents/services/base_builder.go):
+// a non-empty value carrying an explicit Secret flag or a credential-named key.
+// Both sides key off resources.IsSensitiveKey, so core stays the single source of
+// truth for the marker list and this is the one place that tracks the guard's
+// shape. The Secret clause never decides a misplacement (Secret values promote to
+// references first, below) but is kept so the predicate is a faithful standalone
+// mirror rather than one narrowed to its current caller.
+func restrictedRenderRejects(value *basev0.ConfigurationValue) bool {
+	return value.GetValue() != "" && (value.GetSecret() || resources.IsSensitiveKey(value.GetKey()))
+}
+
+// misplacedSecretKeys lists the credential-named plaintext values that would be
+// forwarded inline to restricted render and rejected there one key per run. A
+// value promoted to a secretKeyRef never reaches core inline, so a key is
+// misplaced only when it both survives promotion and restrictedRenderRejects.
+// Each entry names the key, the configuration scope it came from (so a value
+// exposed by a dependency, not authored in a local *.env file, is still
+// traceable), and the *.secret.env convention that resolves it.
+func misplacedSecretKeys(configurations []*basev0.Configuration) []string {
+	var misplaced []string
+	for _, configuration := range configurations {
+		scope := configuration.GetOrigin()
+		if scope == resources.ConfigurationWorkspace {
+			scope = "workspace"
+		}
+		for _, info := range configuration.GetInfos() {
+			for _, value := range info.GetConfigurationValues() {
+				if promotesToDeploymentSecret(value) || !restrictedRenderRejects(value) {
+					continue
+				}
+				misplaced = append(misplaced, fmt.Sprintf(
+					"%s in %s (declare it as a secret, e.g. %s.secret.env)",
+					value.GetKey(), scope, info.GetName(),
+				))
+			}
+		}
+	}
+	return misplaced
+}
+
+// endpointKeySuffixes name the OIDC identity endpoint keys — authorize/token
+// URLs and the authorize selector — whose only credential signal is the broad
+// AUTH/TOKEN substring markers. They are secret-classified: restricted render
+// requires them in *.secret.env (rendered as secretKeyRefs), so a plaintext
+// value under one of these names is a misplacement, not plain routing config.
+var endpointKeySuffixes = []string{"_URL", "_SELECTOR"}
 
 // endpointMarkerStripper removes the broad substring markers that routinely
-// appear in plain routing names (OAuth authorize/token endpoints). AUTH and
-// TOKEN are the only markers the suffix exemption is allowed to override;
-// anything else IsSensitiveKey reacts to names a real credential.
+// appear in OAuth authorize/token endpoint names. AUTH and TOKEN are the only
+// markers the suffix classifier keys on; anything else IsSensitiveKey reacts to
+// names a real credential the connection-string safety net promotes on its own.
 var endpointMarkerStripper = strings.NewReplacer("AUTH", "", "TOKEN", "")
 
 var keyCanonicalizer = strings.NewReplacer(" ", "_", "-", "_", ".", "_", "/", "_")
 
 // promotesToDeploymentSecret reports whether a config value must be pulled into
 // a Kubernetes secret reference. An explicit Secret flag is authoritative; the
-// name heuristic is a safety net for un-flagged credentials, minus the endpoint
-// URLs and selectors it otherwise misfiles.
+// name heuristic is a safety net for un-flagged credentials, minus the identity
+// endpoint keys, which restricted render handles as a misplacement error rather
+// than silently promoting a plaintext value into a secretKeyRef whose backing
+// secret was never seeded.
 func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
 	if value.GetSecret() {
 		return true
@@ -289,17 +340,18 @@ func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
 	if !resources.IsSensitiveKey(value.GetKey()) {
 		return false
 	}
-	return !isPlainEndpointKey(value.GetKey())
+	return !isSecretEndpointKey(value.GetKey())
 }
 
-// isPlainEndpointKey rescues a URL/selector name only when its sensitivity is due
-// solely to the endpoint markers. It strips those markers and defers to
-// IsSensitiveKey, so any real credential marker — including ones core adds later —
-// still forces promotion without this package tracking core's marker list.
-func isPlainEndpointKey(key string) bool {
+// isSecretEndpointKey reports whether a key is an OIDC identity endpoint key
+// (…_URL/…_SELECTOR) whose sensitivity comes solely from the broad AUTH/TOKEN
+// markers. It strips those markers and defers to IsSensitiveKey, so a real
+// credential marker — including ones core adds later — still takes the
+// connection-string promotion path without this package tracking core's list.
+func isSecretEndpointKey(key string) bool {
 	canonical := keyCanonicalizer.Replace(strings.ToUpper(key))
 	hasEndpointSuffix := false
-	for _, suffix := range endpointConfigSuffixes {
+	for _, suffix := range endpointKeySuffixes {
 		if strings.HasSuffix(canonical, suffix) {
 			hasEndpointSuffix = true
 			break
