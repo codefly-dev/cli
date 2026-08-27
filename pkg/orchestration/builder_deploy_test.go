@@ -61,19 +61,40 @@ func TestPromotableDeploymentInputsReplaceSecretValuesWithReferences(t *testing.
 	}
 }
 
-func TestPromotableDeploymentInputsKeepEndpointURLsAsPlainConfig(t *testing.T) {
+func TestPromotableDeploymentInputsRejectMisplacedSecretEndpointKeys(t *testing.T) {
 	configuration := &basev0.Configuration{
 		Origin: "users/accounts",
 		Infos: []*basev0.ConfigurationInformation{{
 			Name: "identity",
 			ConfigurationValues: []*basev0.ConfigurationValue{
 				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize"},
-				{Key: "TOKEN_URL", Value: "https://issuer.example.com/token"},
+				{Key: "IDENTITY_TOKEN_URL", Value: "https://issuer.example.com/token"},
+				{Key: "IDENTITY_AUTHORIZE_SELECTOR", Value: "primary"},
+				{Key: "IDENTITY_ISSUER", Value: "https://issuer.example.com"},
+			},
+		}},
+	}
+
+	_, _, _, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
+	require.Error(t, err)
+	// Every misplaced key is named in one error, each with the file it belongs in.
+	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_URL (identity.secret.env)")
+	require.Contains(t, err.Error(), "IDENTITY_TOKEN_URL (identity.secret.env)")
+	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_SELECTOR (identity.secret.env)")
+	require.Contains(t, err.Error(), "identity.secret.env")
+	// A plain endpoint-shaped key (no credential marker) is not a secret and must
+	// not be dragged into the misplacement error.
+	require.NotContains(t, err.Error(), "IDENTITY_ISSUER")
+}
+
+func TestPromotableDeploymentInputsPromoteDeclaredSecretEndpointKeys(t *testing.T) {
+	configuration := &basev0.Configuration{
+		Origin: "users/accounts",
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "identity",
+			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize", Secret: true},
 				{Key: "IDENTITY_SELECTOR", Value: "primary"},
-				{Key: "DATABASE_URL", Value: "postgres://credential-bearing-value"},
-				{Key: "SECRET_URL", Value: "credential-bearing-value"},
-				{Key: "PRIVATE_KEY_URL", Value: "credential-bearing-value"},
-				{Key: "ACCESS_TOKEN", Value: "credential-bearing-value"},
 			},
 		}},
 	}
@@ -86,11 +107,31 @@ func TestPromotableDeploymentInputsKeepEndpointURLsAsPlainConfig(t *testing.T) {
 	for _, value := range values {
 		kept[value.GetKey()] = value.GetValue()
 	}
-	require.Equal(t, map[string]string{
-		"IDENTITY_AUTHORIZE_URL": "https://issuer.example.com/authorize",
-		"TOKEN_URL":              "https://issuer.example.com/token",
-		"IDENTITY_SELECTOR":      "primary",
-	}, kept)
+	require.Equal(t, map[string]string{"IDENTITY_SELECTOR": "primary"}, kept)
+
+	prefix := "CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__IDENTITY__"
+	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
+		prefix + "IDENTITY_AUTHORIZE_URL": {Name: "accounts-secrets", Key: prefix + "IDENTITY_AUTHORIZE_URL"},
+	}, references)
+}
+
+func TestPromotableDeploymentInputsPromoteCredentialURLsAsReferences(t *testing.T) {
+	configuration := &basev0.Configuration{
+		Origin: "users/accounts",
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "identity",
+			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "DATABASE_URL", Value: "postgres://credential-bearing-value"},
+				{Key: "SECRET_URL", Value: "credential-bearing-value"},
+				{Key: "PRIVATE_KEY_URL", Value: "credential-bearing-value"},
+				{Key: "ACCESS_TOKEN", Value: "credential-bearing-value"},
+			},
+		}},
+	}
+
+	sanitized, _, references, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
+	require.NoError(t, err)
+	require.Empty(t, sanitized.GetInfos())
 
 	prefix := "CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__IDENTITY__"
 	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
