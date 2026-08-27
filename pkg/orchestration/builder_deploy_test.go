@@ -61,19 +61,22 @@ func TestPromotableDeploymentInputsReplaceSecretValuesWithReferences(t *testing.
 	}
 }
 
-func TestPromotableDeploymentInputsKeepEndpointURLsAsPlainConfig(t *testing.T) {
+// A non-secret value whose name trips IsSensitiveKey must be promoted to a secret
+// reference, never left inline. The promotable/GitOps profile is a restricted
+// profile, and core's restricted deployment validation rejects any inline value
+// with a sensitive-looking key ("restricted rendering cannot receive secret
+// value"). Keeping such names inline — as an earlier endpoint-URL allowlist did —
+// turns a deployable (promote-then-seed) config into a hard deploy failure, so
+// only an explicit non-secret signal (not the key name) may keep them inline.
+func TestPromotableDeploymentInputsPromoteSensitiveNamedEndpointKeys(t *testing.T) {
 	configuration := &basev0.Configuration{
 		Origin: "users/accounts",
 		Infos: []*basev0.ConfigurationInformation{{
 			Name: "identity",
 			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "MODE", Value: "production"},
 				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize"},
 				{Key: "TOKEN_URL", Value: "https://issuer.example.com/token"},
-				{Key: "IDENTITY_SELECTOR", Value: "primary"},
-				{Key: "DATABASE_URL", Value: "postgres://credential-bearing-value"},
-				{Key: "SECRET_URL", Value: "credential-bearing-value"},
-				{Key: "PRIVATE_KEY_URL", Value: "credential-bearing-value"},
-				{Key: "ACCESS_TOKEN", Value: "credential-bearing-value"},
 			},
 		}},
 	}
@@ -82,22 +85,14 @@ func TestPromotableDeploymentInputsKeepEndpointURLsAsPlainConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	values := sanitized.GetInfos()[0].GetConfigurationValues()
-	kept := map[string]string{}
-	for _, value := range values {
-		kept[value.GetKey()] = value.GetValue()
-	}
-	require.Equal(t, map[string]string{
-		"IDENTITY_AUTHORIZE_URL": "https://issuer.example.com/authorize",
-		"TOKEN_URL":              "https://issuer.example.com/token",
-		"IDENTITY_SELECTOR":      "primary",
-	}, kept)
+	require.Len(t, values, 1)
+	require.Equal(t, "MODE", values[0].GetKey())
+	require.Equal(t, "production", values[0].GetValue())
 
 	prefix := "CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__IDENTITY__"
 	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
-		prefix + "DATABASE_URL":    {Name: "accounts-secrets", Key: prefix + "DATABASE_URL"},
-		prefix + "SECRET_URL":      {Name: "accounts-secrets", Key: prefix + "SECRET_URL"},
-		prefix + "PRIVATE_KEY_URL": {Name: "accounts-secrets", Key: prefix + "PRIVATE_KEY_URL"},
-		prefix + "ACCESS_TOKEN":    {Name: "accounts-secrets", Key: prefix + "ACCESS_TOKEN"},
+		prefix + "IDENTITY_AUTHORIZE_URL": {Name: "accounts-secrets", Key: prefix + "IDENTITY_AUTHORIZE_URL"},
+		prefix + "TOKEN_URL":              {Name: "accounts-secrets", Key: prefix + "TOKEN_URL"},
 	}, references)
 }
 
