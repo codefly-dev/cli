@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/processgroup"
@@ -52,6 +54,34 @@ func parseCodeflyOwnedPIDs(out []byte, self int) []int {
 		}
 	}
 	return pids
+}
+
+// killedProcessSettle bounds how long clear waits for the codefly processes it
+// SIGKILLed to actually exit before it sweeps for orphaned native services. Agents
+// die promptly under SIGKILL; the cap only guards against a wedged process holding
+// up the command indefinitely.
+const killedProcessSettle = 3 * time.Second
+
+// waitProcessesExited blocks until every pid has been fully reaped (kill(0) fails
+// with ESRCH) or the deadline passes, whichever comes first. A pid we cannot signal
+// (still present) counts as alive; only a genuinely gone process lets the loop
+// advance. The killed agents share this process's user, so a signal never fails
+// with EPERM here.
+func waitProcessesExited(ctx context.Context, pids []int, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for {
+		anyAlive := false
+		for _, pid := range pids {
+			if syscall.Kill(pid, 0) == nil {
+				anyAlive = true
+				break
+			}
+		}
+		if !anyAlive || ctx.Err() != nil || !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 var (
@@ -166,6 +196,15 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 				killed++
 			}
 			w.Info("killed codefly processes", wool.Field("killed", killed), wool.Field("total", len(pids)))
+			// SIGKILL is asynchronous: the agents we just signalled are not yet
+			// reaped, so the native binaries they supervised have not yet
+			// reparented to init. The orphan sweeps below decide a group is
+			// reapable only once its supervisor is gone (groupIsStale), so racing
+			// them against a still-dying agent would leave the just-orphaned
+			// binary looking supervised and skip it. Wait for the agents to exit
+			// before sweeping so a `clear` that killed a live run still reaps the
+			// natives it just orphaned.
+			waitProcessesExited(ctx, pids, killedProcessSettle)
 		}
 	} else {
 		w.Info("keeping processes (--keep-processes)")
@@ -210,6 +249,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	}
 
 	failures = append(failures, reapOrphanedDevServers(ctx, w, options)...)
+	failures = append(failures, reapOrphanedNativeServices(ctx, w, options)...)
 
 	if options.keepContainers {
 		return errors.Join(failures...)
@@ -333,6 +373,41 @@ func reapOrphanedDevServers(ctx context.Context, w *wool.Wool, options clearOpti
 }
 
 func devServerPGIDs(orphans []processgroup.DevServerOrphan) []int {
+	pgids := make([]int, 0, len(orphans))
+	for i := range orphans {
+		pgids = append(pgids, orphans[i].PGID)
+	}
+	return pgids
+}
+
+// reapOrphanedNativeServices reaps codefly-owned native-mode service processes —
+// compiled user binaries under a build cache and the postgres cluster — that
+// survived their supervisor and keep squatting on their deterministic ports. Like
+// the dev-server reap, it only signals groups proven codefly's by their
+// process-group authentication and stale enough to have lost their supervisor.
+func reapOrphanedNativeServices(ctx context.Context, w *wool.Wool, options clearOptions) []error {
+	if options.keepProcesses {
+		return nil
+	}
+	reaped, err := processgroup.ReapNativeServiceOrphans(ctx, options.dryRun)
+	if err != nil {
+		w.Warn("cannot reap orphaned native services", wool.ErrField(err))
+	}
+	switch {
+	case len(reaped) > 0 && options.dryRun:
+		w.Info("would reap orphaned native services", wool.Field("count", len(reaped)), wool.Field("pgids", nativeServicePGIDs(reaped)))
+	case len(reaped) > 0:
+		w.Info("reaped orphaned native services", wool.Field("count", len(reaped)), wool.Field("pgids", nativeServicePGIDs(reaped)))
+	case err == nil:
+		w.Info("no orphaned native services")
+	}
+	if err != nil {
+		return []error{fmt.Errorf("reap orphaned native services: %w", err)}
+	}
+	return nil
+}
+
+func nativeServicePGIDs(orphans []processgroup.NativeServiceOrphan) []int {
 	pgids := make([]int, 0, len(orphans))
 	for i := range orphans {
 		pgids = append(pgids, orphans[i].PGID)

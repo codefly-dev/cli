@@ -51,6 +51,31 @@ func TestIsDevServerCommand(t *testing.T) {
 	}
 }
 
+func TestIsNativeServiceCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		want bool
+	}{
+		{"go native binary", []string{"/repo/svc/code/cache/native/a1b2c3d4", "serve"}, true},
+		{"debug native binary", []string{"/repo/svc/code/cache/native/a1b2c3d4-debug"}, true},
+		{"relative native binary", []string{"cache/native/a1b2c3d4", "serve"}, true},
+		{"postgres postmaster", []string{"/opt/homebrew/bin/postgres", "-D", "/home/u/.codefly/data/ws"}, true},
+		{"cache/native only inside a later arg", []string{"go", "run", "/repo/cache/native/x"}, false},
+		{"lookalike parent dir is not the cache segment", []string{"/repo/mycache/native/tool"}, false},
+		{"unrelated binary", []string{"/usr/local/bin/myserver", "--port", "8080"}, false},
+		{"psql client, not postmaster", []string{"psql", "-h", "localhost"}, false},
+		{"empty", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isNativeServiceCommand(tc.argv); got != tc.want {
+				t.Fatalf("isNativeServiceCommand(%q) = %v, want %v", tc.argv, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEnclosingWorkspace(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "ws")
@@ -294,5 +319,142 @@ func TestKillAuthenticatedProcessGroupSparesUnownedGroup(t *testing.T) {
 	}
 	if !isAlive(pid) {
 		t.Fatalf("unowned dev server %d was killed despite lacking codefly authentication", pid)
+	}
+}
+
+// startNativeServiceHelper spawns a real sleeping process whose argv[0] is
+// nativeBin — a path shaped like a compiled native-mode binary under a codefly
+// build cache. With auth set it carries codefly's process-group authentication.
+// Unlike the dev-server helper it does not depend on a workspace directory, which
+// is exactly what native services (e.g. postgres running from a data dir) need.
+func startNativeServiceHelper(t *testing.T, nativeBin, auth string, joinGroup int) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDevServerOrphanHelper$")
+	cmd.Args[0] = nativeBin
+	cmd.Env = append(os.Environ(), devServerHelperEnv+"=1")
+	if auth != "" {
+		cmd.Env = append(cmd.Env, groupAuthEnv+"="+auth)
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: joinGroup}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	reaped := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(reaped)
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		<-reaped
+	})
+	return cmd
+}
+
+func waitForScannedNativeOrphan(t *testing.T, pid int) NativeServiceOrphan {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("native service %d not discovered before timeout", pid)
+		}
+		orphans, err := ScanNativeServiceOrphans(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range orphans {
+			if orphans[i].PID == pid {
+				return orphans[i]
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func nativeCacheBinary(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "cache", "native", "a1b2c3d4e5f6")
+}
+
+func TestScanNativeServiceOrphansFindsOwnedNativeBinary(t *testing.T) {
+	command := startNativeServiceHelper(t, nativeCacheBinary(t), testGroupAuth, 0)
+	pid := command.Process.Pid
+	found := waitForScannedNativeOrphan(t, pid)
+
+	if found.PGID != pid {
+		t.Errorf("PGID = %d, want %d (process is its own group leader)", found.PGID, pid)
+	}
+	if !found.Owned {
+		t.Errorf("Owned = false, want true (process carries the group authentication)")
+	}
+}
+
+func TestScanNativeServiceOrphansMarksUnauthenticatedExternal(t *testing.T) {
+	// A postgres-shaped process with no authentication stands in for a user's own
+	// or system postgres: surfaced, but never codefly's to reap.
+	command := startNativeServiceHelper(t, "postgres", "", 0)
+	found := waitForScannedNativeOrphan(t, command.Process.Pid)
+	if found.Owned {
+		t.Errorf("Owned = true, want false (no group authentication => not codefly's)")
+	}
+}
+
+func TestReapNativeServiceOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
+	external := startNativeServiceHelper(t, "postgres", "", 0)                        // no auth => not codefly's
+	supervised := startNativeServiceHelper(t, nativeCacheBinary(t), testGroupAuth, 0) // owned, but leader has a live parent
+	waitForScannedNativeOrphan(t, external.Process.Pid)
+	waitForScannedNativeOrphan(t, supervised.Process.Pid)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	reaped, err := ReapNativeServiceOrphans(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, orphan := range reaped {
+		if orphan.PGID == external.Process.Pid {
+			t.Errorf("would reap unowned native service %d (not codefly's)", external.Process.Pid)
+		}
+		if orphan.PGID == supervised.Process.Pid {
+			t.Errorf("would reap supervised native service %d (leader still has a live parent)", supervised.Process.Pid)
+		}
+	}
+}
+
+func TestReapNativeServiceOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
+	leader := startNativeServiceHelper(t, nativeCacheBinary(t), testGroupAuth, 0)
+	leaderPID := leader.Process.Pid
+	waitForGroupLeader(t, leaderPID)
+
+	// A second owned member joins the leader's group, then the leader dies —
+	// leaving a live, codefly-owned group whose leader is gone (stale).
+	member := startNativeServiceHelper(t, nativeCacheBinary(t), testGroupAuth, leaderPID)
+	if pgid, err := syscall.Getpgid(member.Process.Pid); err != nil || pgid != leaderPID {
+		t.Fatalf("member %d joined group %d, err %v; want group %d", member.Process.Pid, pgid, err, leaderPID)
+	}
+	if err := syscall.Kill(leaderPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	for isAlive(leaderPID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitForScannedNativeOrphan(t, member.Process.Pid)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	reaped, err := ReapNativeServiceOrphans(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := false
+	for _, orphan := range reaped {
+		if orphan.PGID == leaderPID {
+			selected = true
+		}
+	}
+	if !selected {
+		t.Fatalf("owned stale native-service group %d was not selected for reaping", leaderPID)
 	}
 }

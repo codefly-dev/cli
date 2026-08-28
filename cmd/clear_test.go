@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"os/exec"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestClearAndStopCommandsReturnErrors(t *testing.T) {
@@ -53,5 +55,71 @@ func TestCodeflyOwnedPIDsReturnsProcessErrors(t *testing.T) {
 	cancel()
 	if _, err := codeflyOwnedPIDs(ctx, -1); err == nil {
 		t.Fatal("expected cancelled process enumeration to return an error")
+	}
+}
+
+// TestWaitProcessesExitedBlocksUntilGone guards the reparent race: clear must not
+// sweep for orphaned natives until the agents it SIGKILLed have actually exited.
+// A no-op wait (the original bug) would return immediately while the process is
+// still alive, so the first half asserts the wait genuinely blocks; the second
+// asserts it returns promptly once the process is gone.
+func TestWaitProcessesExitedBlocksUntilGone(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	reaped := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(reaped)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-reaped
+	})
+
+	start := time.Now()
+	waitProcessesExited(context.Background(), []int{pid}, 300*time.Millisecond)
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
+		t.Fatalf("waitProcessesExited returned after %s while the process was still alive; expected to wait to the timeout", elapsed)
+	}
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-reaped
+
+	start = time.Now()
+	waitProcessesExited(context.Background(), []int{pid}, 5*time.Second)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("waitProcessesExited blocked %s after the process exited; expected a prompt return", elapsed)
+	}
+}
+
+// TestWaitProcessesExitedHonorsCancelledContext ensures a wedged process cannot
+// hang clear once the command's context is cancelled (e.g. a second Ctrl-C).
+func TestWaitProcessesExitedHonorsCancelledContext(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	reaped := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(reaped)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-reaped
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	waitProcessesExited(ctx, []int{pid}, time.Minute)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("waitProcessesExited ignored the cancelled context and blocked %s", elapsed)
 	}
 }
