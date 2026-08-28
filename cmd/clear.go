@@ -210,6 +210,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	}
 
 	failures = append(failures, reapOrphanedDevServers(ctx, w, options)...)
+	failures = append(failures, reapOrphanedNativeServices(ctx, w, options)...)
 
 	if options.keepContainers {
 		return errors.Join(failures...)
@@ -333,6 +334,41 @@ func reapOrphanedDevServers(ctx context.Context, w *wool.Wool, options clearOpti
 }
 
 func devServerPGIDs(orphans []processgroup.DevServerOrphan) []int {
+	pgids := make([]int, 0, len(orphans))
+	for i := range orphans {
+		pgids = append(pgids, orphans[i].PGID)
+	}
+	return pgids
+}
+
+// reapOrphanedNativeServices reaps codefly-owned native-mode service processes —
+// compiled user binaries under a build cache and the postgres cluster — that
+// survived their supervisor and keep squatting on their deterministic ports. Like
+// the dev-server reap, it only signals groups proven codefly's by their
+// process-group authentication and stale enough to have lost their supervisor.
+func reapOrphanedNativeServices(ctx context.Context, w *wool.Wool, options clearOptions) []error {
+	if options.keepProcesses {
+		return nil
+	}
+	reaped, err := processgroup.ReapNativeServiceOrphans(ctx, options.dryRun)
+	if err != nil {
+		w.Warn("cannot reap orphaned native services", wool.ErrField(err))
+	}
+	switch {
+	case len(reaped) > 0 && options.dryRun:
+		w.Info("would reap orphaned native services", wool.Field("count", len(reaped)), wool.Field("pgids", nativeServicePGIDs(reaped)))
+	case len(reaped) > 0:
+		w.Info("reaped orphaned native services", wool.Field("count", len(reaped)), wool.Field("pgids", nativeServicePGIDs(reaped)))
+	case err == nil:
+		w.Info("no orphaned native services")
+	}
+	if err != nil {
+		return []error{fmt.Errorf("reap orphaned native services: %w", err)}
+	}
+	return nil
+}
+
+func nativeServicePGIDs(orphans []processgroup.NativeServiceOrphan) []int {
 	pgids := make([]int, 0, len(orphans))
 	for i := range orphans {
 		pgids = append(pgids, orphans[i].PGID)

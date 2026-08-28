@@ -18,6 +18,13 @@ import (
 // for a workspace marker before giving up.
 const maxWorkspaceWalk = 64
 
+// nativeBuildCacheSegment marks a compiled native-mode service binary. The go and
+// rust runners build a service's user binary under "<service>/cache/native/<hash>"
+// and exec it in place, so this segment in a process's executable identifies a
+// codefly-built native service. (The issue's manual workaround greps the same
+// path.)
+const nativeBuildCacheSegment = "/cache/native/"
+
 // DevServerOrphan is a frontend dev server found by signature rather than by
 // registry record: a dev-server-shaped process whose working directory sits
 // inside a codefly workspace. These leak when the `codefly run` / daemon that
@@ -146,6 +153,144 @@ func ReapDevServerOrphans(ctx context.Context, dryRun bool) ([]DevServerOrphan, 
 		}
 	}
 	return reaped, errors.Join(failures...)
+}
+
+// NativeServiceOrphan is a native-mode service process found by signature rather
+// than by registry record: a compiled user binary the go/rust runner built under a
+// codefly build cache, or a PostgreSQL cluster codefly started for a host service.
+// Native services bind deterministic per-workspace ports, so one that outlives its
+// supervisor keeps LISTENing on that port and collides with the next `codefly run`
+// — the "address already in use" boot failure or the stale backend still serving a
+// module-federation manifest the issue describes. The registry reaper can no longer
+// see these once its record is lost (a daemonized postmaster escapes its tracked
+// group entirely); this signature scan is the fallback `codefly clear` needs.
+//
+// Unlike a dev server, a native service is not required to sit inside a workspace
+// directory — a postgres data dir lives under ~/.codefly/data, outside the repo —
+// so ownership rests entirely on the process-group authentication.
+type NativeServiceOrphan struct {
+	PID      int
+	PGID     int
+	Parent   int
+	Command  string
+	Cwd      string
+	Started  time.Time
+	Orphaned bool
+	Owned    bool
+}
+
+// ScanNativeServiceOrphans finds native-mode service processes (a compiled user
+// binary under a codefly build cache, or a postgres cluster) running anywhere on
+// the machine, without relying on the process-group registry. Ownership is decided
+// by the process-group authentication alone, so a user's own or system postgres is
+// surfaced with Owned=false and never reaped.
+func ScanNativeServiceOrphans(ctx context.Context) ([]NativeServiceOrphan, error) {
+	pids, err := process.PidsWithContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("enumerate processes: %w", err)
+	}
+	self := os.Getpid()
+	var orphans []NativeServiceOrphan
+	for _, rawPID := range pids {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		pid := int(rawPID)
+		if pid <= 1 || pid == self {
+			continue
+		}
+		proc, err := process.NewProcessWithContext(ctx, rawPID)
+		if err != nil {
+			continue
+		}
+		argv, err := proc.CmdlineSliceWithContext(ctx)
+		if err != nil || !isNativeServiceCommand(argv) {
+			continue
+		}
+		pgid, err := syscall.Getpgid(pid)
+		if err != nil {
+			continue
+		}
+		owned, err := processIsCodeflyOwned(pid)
+		if err != nil {
+			continue
+		}
+		orphan := NativeServiceOrphan{
+			PID:     pid,
+			PGID:    pgid,
+			Command: strings.Join(argv, " "),
+			Owned:   owned,
+		}
+		if cwd, err := processWorkingDirectory(pid); err == nil {
+			orphan.Cwd = cwd
+		}
+		if ppid, err := proc.PpidWithContext(ctx); err == nil {
+			orphan.Parent = int(ppid)
+			orphan.Orphaned = ppid == 1
+		}
+		if started, err := proc.CreateTimeWithContext(ctx); err == nil {
+			orphan.Started = time.UnixMilli(started)
+		}
+		orphans = append(orphans, orphan)
+	}
+	return orphans, nil
+}
+
+// ReapNativeServiceOrphans terminates the process groups of leaked native-mode
+// services. As with dev servers, a group is reaped only when it is (1) codefly-owned
+// — a member carries the process-group authentication — and (2) stale — its leader
+// is gone or reparented to init. With dryRun set, nothing is signalled and the
+// return value is what would be reaped.
+func ReapNativeServiceOrphans(ctx context.Context, dryRun bool) ([]NativeServiceOrphan, error) {
+	orphans, err := ScanNativeServiceOrphans(ctx)
+	if err != nil {
+		return nil, err
+	}
+	reapedGroups := make(map[int]struct{})
+	var reaped []NativeServiceOrphan
+	var failures []error
+	for _, orphan := range orphans {
+		if !orphan.Owned {
+			continue
+		}
+		if _, done := reapedGroups[orphan.PGID]; done {
+			continue
+		}
+		stale, err := groupIsStale(orphan.PGID)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("inspect native-service process group %d (%s): %w", orphan.PGID, orphan.Command, err))
+			continue
+		}
+		if !stale {
+			continue
+		}
+		reapedGroups[orphan.PGID] = struct{}{}
+		reaped = append(reaped, orphan)
+		if dryRun {
+			continue
+		}
+		if err := killAuthenticatedProcessGroup(ctx, orphan.PGID); err != nil {
+			failures = append(failures, fmt.Errorf("reap native-service process group %d (%s): %w", orphan.PGID, orphan.Command, err))
+		}
+	}
+	return reaped, errors.Join(failures...)
+}
+
+// isNativeServiceCommand recognises the native-mode service process shapes that
+// squat on deterministic ports after their supervisor dies: a compiled user binary
+// the go/rust runner built under a codefly build cache, and the PostgreSQL
+// postmaster codefly starts for a host service. Matching by the postgres name is
+// deliberately broad; the authentication + staleness gates in
+// ReapNativeServiceOrphans are what keep it from ever reaping a user's own or system
+// postgres.
+func isNativeServiceCommand(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	if strings.Contains(argv[0], nativeBuildCacheSegment) {
+		return true
+	}
+	return filepath.Base(argv[0]) == "postgres"
 }
 
 // isDevServerCommand recognises the frontend dev-server process shapes that
