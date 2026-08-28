@@ -155,6 +155,19 @@ type World struct {
 	// push without being asked.
 	Push bool
 
+	// BuildxBuilder names a caller-provided docker buildx builder to run the
+	// build on (e.g. a native amd64 buildkit reached over the network), letting
+	// an amd64 target build without local QEMU emulation. Empty selects the
+	// default builder, or the dedicated local container builder for multi-arch.
+	BuildxBuilder string
+
+	// CaptureImageDigest asks a pushed build to resolve the immutable manifest
+	// digest of the image it published so a caller can report or pin it. It is
+	// opt-in per flow: a plain `build module` never consumes a digest, so it does
+	// not opt in and never pays for (or fails on) digest resolution. A snapshot
+	// resolves the digest unconditionally because its manifest pins it.
+	CaptureImageDigest bool
+
 	Workspace               *resources.Workspace
 	DeploymentDestination   func(*resources.Module, *resources.Service) string
 	KubernetesOutputProfile builderv0.KubernetesOutputProfile
@@ -798,6 +811,27 @@ func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
 		}
 	}
 	return outputs
+}
+
+// OriginImageDigest returns the immutable registry manifest digest of the image
+// the origin service pushed during a build, or "" when nothing was pushed. It is
+// how a targeted single-service build+push returns the digest to its caller.
+func (flow *Flow) OriginImageDigest() string {
+	if flow == nil || flow.hub == nil {
+		return ""
+	}
+	origin := resources.WithUnique(flow.originService).Unique()
+	for _, manager := range flow.hub.managers {
+		if manager.Unique() != origin {
+			continue
+		}
+		source, ok := manager.(interface{ BuilderImageDigest() string })
+		if !ok {
+			return ""
+		}
+		return source.BuilderImageDigest()
+	}
+	return ""
 }
 
 func (flow *Flow) Build(ctx context.Context) error {
@@ -1721,6 +1755,14 @@ func (flow *Flow) WithStandAlone(alone bool) {
 
 func (flow *Flow) WithPush(push bool) {
 	flow.world.Push = push
+}
+
+func (flow *Flow) WithBuildxBuilder(name string) {
+	flow.world.BuildxBuilder = name
+}
+
+func (flow *Flow) WithImageDigest(capture bool) {
+	flow.world.CaptureImageDigest = capture
 }
 
 func (flow *Flow) WithRuntimeContext(runtimeContext string) {

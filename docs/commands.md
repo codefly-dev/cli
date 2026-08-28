@@ -185,6 +185,19 @@ codefly build service api
 codefly build service api --standalone  # Build without dependency resolution
 ```
 
+To build and push a single service's deployable image for a target environment —
+the targeted fix for one image on a live cell, without re-rendering the module's
+whole manifest tree — add `--push --env <env>`. The build owns the deployment
+platform (`linux/amd64`) and build env exactly as a module render does, and on
+success prints the pushed image's immutable digest (`Image digest sha256:…`).
+Pass `--stand-alone` to build only the named service. To run the amd64 build on a
+native/remote builder instead of local QEMU emulation, point it at a preexisting
+docker buildx builder with `--builder <name>`:
+
+```bash
+codefly build service front --env production --push --stand-alone --builder amd64-remote
+```
+
 A successful build also archives the generated build recipe (the `builder/`
 Dockerfile and its sibling files) into `services/<svc>/build-recipes/<agent-version>/`,
 with a `recipe.codefly.json` manifest recording the producing agent and per-file
