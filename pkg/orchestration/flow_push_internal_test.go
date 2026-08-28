@@ -21,3 +21,19 @@ func TestWithPushIsScopedPerFlow(t *testing.T) {
 	require.True(t, snapshot.world.Push)
 	require.False(t, build.world.Push, "enabling push on one flow must not affect another")
 }
+
+// Digest capture is opt-in per flow and defaults off. A `build module` flow
+// never consumes a digest, so it must not opt in and must not be pulled into
+// (or fail on) digest resolution just because a sibling `build service` flow
+// shares the process and asked for it.
+func TestWithImageDigestDefaultsOffAndIsScopedPerFlow(t *testing.T) {
+	service := &Flow{world: &World{Mode: BuildMode}}
+	module := &Flow{world: &World{Mode: BuildMode}}
+
+	require.False(t, service.world.CaptureImageDigest, "a fresh flow must default to no digest capture")
+
+	service.WithImageDigest(true)
+
+	require.True(t, service.world.CaptureImageDigest)
+	require.False(t, module.world.CaptureImageDigest, "opting one flow into digest capture must not affect another")
+}

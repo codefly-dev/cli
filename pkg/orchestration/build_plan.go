@@ -107,7 +107,7 @@ func (b *Builder) buildRecipe(
 	// A pushed build records the immutable manifest digest a snapshot pins and a
 	// targeted single-service build returns to its caller. A non-pushed build
 	// never lands in a registry, so there is no digest to capture.
-	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.Mode == BuildMode)
+	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest)
 	var metadataFile string
 	if captureDigest {
 		file, err := os.CreateTemp("", "codefly-build-metadata-*.json")
@@ -130,10 +130,18 @@ func (b *Builder) buildRecipe(
 
 	if captureDigest {
 		digest, err := readPushedImageDigest(metadataFile)
-		if err != nil {
+		switch {
+		case err != nil && b.world.Mode == SnapshotMode:
+			// A snapshot's manifest pins this digest, so failing to resolve it
+			// means the snapshot cannot be produced — a hard error.
 			return w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
+		case err != nil:
+			// The image is already pushed; the digest is only reported. Failing
+			// the build here would wrongly signal that the push failed.
+			w.Warn("built and pushed but could not resolve image digest", wool.ErrField(err))
+		default:
+			b.imageDigest = digest
 		}
-		b.imageDigest = digest
 	}
 	return nil
 }

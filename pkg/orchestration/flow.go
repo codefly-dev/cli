@@ -161,6 +161,13 @@ type World struct {
 	// default builder, or the dedicated local container builder for multi-arch.
 	BuildxBuilder string
 
+	// CaptureImageDigest asks a pushed build to resolve the immutable manifest
+	// digest of the image it published so a caller can report or pin it. It is
+	// opt-in per flow: a plain `build module` never consumes a digest, so it does
+	// not opt in and never pays for (or fails on) digest resolution. A snapshot
+	// resolves the digest unconditionally because its manifest pins it.
+	CaptureImageDigest bool
+
 	Workspace               *resources.Workspace
 	DeploymentDestination   func(*resources.Module, *resources.Service) string
 	KubernetesOutputProfile builderv0.KubernetesOutputProfile
@@ -1752,6 +1759,10 @@ func (flow *Flow) WithPush(push bool) {
 
 func (flow *Flow) WithBuildxBuilder(name string) {
 	flow.world.BuildxBuilder = name
+}
+
+func (flow *Flow) WithImageDigest(capture bool) {
+	flow.world.CaptureImageDigest = capture
 }
 
 func (flow *Flow) WithRuntimeContext(runtimeContext string) {

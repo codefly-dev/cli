@@ -39,8 +39,11 @@ var ServiceCmd = &cobra.Command{
 			return fmt.Errorf("cannot initialize service: %w", err)
 		}
 		reportDigest := func() {
-			if digest := flow.OriginImageDigest(); digest != "" {
+			switch digest := flow.OriginImageDigest(); {
+			case digest != "":
 				cli.Info("Image digest %s", digest)
+			case push:
+				cli.Warning("Pushed %s but could not resolve its image digest", service.Name)
 			}
 		}
 		cleaned := false
@@ -119,6 +122,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 	}
 	flow.WithPush(push)
 	flow.WithBuildxBuilder(buildxBuilder)
+	flow.WithImageDigest(true)
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)
