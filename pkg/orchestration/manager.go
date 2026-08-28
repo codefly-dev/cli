@@ -124,6 +124,13 @@ func (manager *Manager) BuilderDeploymentOutput() *builderv0.DeploymentOutput {
 	return manager.Builder.DeploymentOutput()
 }
 
+func (manager *Manager) BuilderImageDigest() string {
+	if manager.Builder == nil {
+		return ""
+	}
+	return manager.Builder.ImageDigest()
+}
+
 func (manager *Manager) RunnerDoLoad(ctx context.Context) (*OutputProperty, error) {
 	return manager.Runner.Load(ctx)
 }

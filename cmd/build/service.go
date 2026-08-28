@@ -38,6 +38,11 @@ var ServiceCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot initialize service: %w", err)
 		}
+		reportDigest := func() {
+			if digest := flow.OriginImageDigest(); digest != "" {
+				cli.Info("Image digest %s", digest)
+			}
+		}
 		cleaned := false
 		cleanup := func() error {
 			if cleaned {
@@ -65,6 +70,7 @@ var ServiceCmd = &cobra.Command{
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		reportDigest()
 		cli.Header(1, "Work done!")
 		return nil
 	},
@@ -112,6 +118,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 		return nil, w.Wrap(err)
 	}
 	flow.WithPush(push)
+	flow.WithBuildxBuilder(buildxBuilder)
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)
@@ -144,10 +151,12 @@ var standAlone bool
 var org string
 var push bool
 var envInput string
+var buildxBuilder string
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&org, "org", "", "Image registry override (e.g. ghcr.io/myorg). Wins over the env's registry.url.")
 	ServiceCmd.Flags().BoolVar(&push, "push", false, "Push the image to the repository")
 	ServiceCmd.Flags().StringVar(&envInput, "env", "local", "Environment to build for (looks up registry/cluster from workspace.codefly.yaml)")
+	ServiceCmd.Flags().StringVar(&buildxBuilder, "builder", "", "docker buildx builder to run the build on (e.g. a native amd64 buildkit) to avoid local QEMU emulation")
 }

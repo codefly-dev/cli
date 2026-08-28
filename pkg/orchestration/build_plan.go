@@ -93,15 +93,23 @@ func (b *Builder) buildRecipe(
 	}
 	defer cleanupIgnore()
 
+	// A caller-provided builder (e.g. a native amd64 buildkit) is authoritative:
+	// it owns whatever platforms the recipe declares, so the CLI neither
+	// provisions nor selects the local emulating builder.
+	builderName := b.world.BuildxBuilder
 	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
-	if multiArch {
+	if multiArch && builderName == "" {
 		if err := ensureBuildxBuilder(ctx); err != nil {
 			return w.Wrapf(err, "cannot provision multi-architecture builder for %s", b.instance.Unique())
 		}
 	}
 
+	// A pushed build records the immutable manifest digest a snapshot pins and a
+	// targeted single-service build returns to its caller. A non-pushed build
+	// never lands in a registry, so there is no digest to capture.
+	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.Mode == BuildMode)
 	var metadataFile string
-	if b.world.Mode == SnapshotMode {
+	if captureDigest {
 		file, err := os.CreateTemp("", "codefly-build-metadata-*.json")
 		if err != nil {
 			return w.Wrapf(err, "cannot stage build metadata for %s", b.instance.Unique())
@@ -111,7 +119,7 @@ func (b *Builder) buildRecipe(
 		defer os.Remove(metadataFile)
 	}
 
-	args := buildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile)
+	args := buildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName)
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush))
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
@@ -120,7 +128,7 @@ func (b *Builder) buildRecipe(
 		return w.Wrapf(err, "cannot build %s", recipe.GetImage())
 	}
 
-	if b.world.Mode == SnapshotMode {
+	if captureDigest {
 		digest, err := readPushedImageDigest(metadataFile)
 		if err != nil {
 			return w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
@@ -133,11 +141,15 @@ func (b *Builder) buildRecipe(
 // buildxArgs renders the docker buildx argv for one recipe. A push builds every
 // requested platform into one manifest list; a local build cannot materialize a
 // multi-platform manifest list, so it targets a single platform and loads it
-// into the daemon. Multi-platform builds run on the dedicated container-driver
-// builder, and a metadata file captures the pushed manifest digest.
-func buildxArgs(recipe *builderv0.DockerBuildRecipe, dockerfile, contextDir string, push, multiArch bool, metadataFile string) []string {
+// into the daemon. A caller-provided builder wins; otherwise multi-platform
+// builds run on the dedicated container-driver builder. A metadata file captures
+// the pushed manifest digest.
+func buildxArgs(recipe *builderv0.DockerBuildRecipe, dockerfile, contextDir string, push, multiArch bool, metadataFile, builderName string) []string {
 	args := []string{"buildx", "build"}
-	if multiArch {
+	switch {
+	case builderName != "":
+		args = append(args, "--builder", builderName)
+	case multiArch:
 		args = append(args, "--builder", buildxBuilderName)
 	}
 	platforms := recipe.GetPlatforms()

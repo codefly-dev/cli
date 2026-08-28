@@ -72,6 +72,12 @@ func (b *Builder) DeploymentOutput() *builderv0.DeploymentOutput {
 	return b.deploymentOutput
 }
 
+// ImageDigest returns the immutable registry manifest digest of the image this
+// builder pushed, or "" when it built without pushing.
+func (b *Builder) ImageDigest() string {
+	return b.imageDigest
+}
+
 func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(b.instance))
 
@@ -281,6 +287,11 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 			b.imageDigest, err = inspectImageDigest(ctx, buildResult.Images[0])
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
+			}
+		} else if b.world.Mode == BuildMode && b.world.Push && len(buildResult.Images) == 1 {
+			b.imageDigest, err = inspectImageDigest(ctx, buildResult.Images[0])
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot resolve pushed image for %s", b.instance.Unique())
 			}
 		}
 	}

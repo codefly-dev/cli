@@ -17,7 +17,7 @@ func TestBuildxArgsPushIsMultiArchManifestListOnContainerBuilder(t *testing.T) {
 		Target:    "final",
 		BuildArgs: map[string]string{"VERSION": "1", "COMMIT": "abc"},
 	}
-	args := buildxArgs(recipe, "/svc/builder/Dockerfile", "/svc", true, true, "/tmp/meta.json")
+	args := buildxArgs(recipe, "/svc/builder/Dockerfile", "/svc", true, true, "/tmp/meta.json", "")
 	joined := strings.Join(args, " ")
 
 	require.Equal(t, []string{"buildx", "build"}, args[:2])
@@ -38,7 +38,7 @@ func TestBuildxArgsLocalBuildIsSinglePlatformLoadOnDefaultBuilder(t *testing.T) 
 		Image:     "repo/app:v1",
 		Platforms: []string{"linux/amd64", "linux/arm64"},
 	}
-	args := buildxArgs(recipe, "/svc/builder/Dockerfile", "/svc", false, false, "")
+	args := buildxArgs(recipe, "/svc/builder/Dockerfile", "/svc", false, false, "", "")
 	joined := strings.Join(args, " ")
 
 	// A local load cannot materialize a multi-platform manifest list, and it
@@ -49,6 +49,37 @@ func TestBuildxArgsLocalBuildIsSinglePlatformLoadOnDefaultBuilder(t *testing.T) 
 	require.Contains(t, joined, "--load")
 	require.NotContains(t, joined, "--push")
 	require.NotContains(t, joined, "--metadata-file")
+}
+
+func TestBuildxArgsCallerBuilderWinsOverContainerBuilder(t *testing.T) {
+	recipe := &builderv0.DockerBuildRecipe{
+		Image:     "repo/app:v1",
+		Platforms: []string{"linux/amd64", "linux/arm64"},
+	}
+	// A caller-provided builder (e.g. a native amd64 buildkit) is authoritative,
+	// even for a multi-arch push that would otherwise select "codefly".
+	args := buildxArgs(recipe, "/svc/builder/Dockerfile", "/svc", true, true, "/tmp/meta.json", "amd64-remote")
+	joined := strings.Join(args, " ")
+
+	require.Contains(t, joined, "--builder amd64-remote")
+	require.NotContains(t, joined, "--builder codefly")
+	require.Contains(t, joined, "--push")
+}
+
+func TestBuildxArgsSinglePlatformPushOnCallerBuilder(t *testing.T) {
+	recipe := &builderv0.DockerBuildRecipe{
+		Image:     "repo/app:v1",
+		Platforms: []string{"linux/amd64"},
+	}
+	// The #501 targeted amd64 fix: one platform, pushed on a native builder so
+	// no local QEMU is involved. Single-platform builds are not "multiArch".
+	args := buildxArgs(recipe, "/svc/builder/Dockerfile", "/svc", true, false, "/tmp/meta.json", "amd64-remote")
+	joined := strings.Join(args, " ")
+
+	require.Contains(t, joined, "--builder amd64-remote")
+	require.Contains(t, joined, "--platform linux/amd64")
+	require.Contains(t, joined, "--push")
+	require.NotContains(t, joined, "--load")
 }
 
 func TestBuildxCreateArgsUsesHostNetworkContainerDriver(t *testing.T) {
