@@ -85,32 +85,58 @@ func ScanDevServerOrphans(ctx context.Context) ([]DevServerOrphan, error) {
 		if !ok {
 			continue
 		}
-		pgid, err := syscall.Getpgid(pid)
-		if err != nil {
+		snap, ok := snapshotProcess(ctx, pid, proc)
+		if !ok {
 			continue
 		}
-		owned, err := processIsCodeflyOwned(pid)
-		if err != nil {
-			continue
-		}
-		orphan := DevServerOrphan{
+		orphans = append(orphans, DevServerOrphan{
 			PID:       pid,
-			PGID:      pgid,
+			PGID:      snap.pgid,
+			Parent:    snap.parent,
 			Command:   strings.Join(argv, " "),
 			Cwd:       cwd,
 			Workspace: workspace,
-			Owned:     owned,
-		}
-		if ppid, err := proc.PpidWithContext(ctx); err == nil {
-			orphan.Parent = int(ppid)
-			orphan.Orphaned = ppid == 1
-		}
-		if started, err := proc.CreateTimeWithContext(ctx); err == nil {
-			orphan.Started = time.UnixMilli(started)
-		}
-		orphans = append(orphans, orphan)
+			Started:   snap.started,
+			Orphaned:  snap.orphaned,
+			Owned:     snap.owned,
+		})
 	}
 	return orphans, nil
+}
+
+// processSnapshot is the process-group, ownership, parentage, and timing view the
+// orphan scanners share once a process has matched their signature. Building it in
+// one place keeps the fiddly ordering (getpgid → ownership → parent → start time)
+// from drifting between the dev-server and native-service scanners.
+type processSnapshot struct {
+	pgid     int
+	parent   int
+	orphaned bool
+	owned    bool
+	started  time.Time
+}
+
+// snapshotProcess gathers the shared view. ok is false when the process's group or
+// ownership can no longer be read (it exited mid-scan, or its environment is
+// unreadable) — the caller skips it, matching both scanners' original behavior.
+func snapshotProcess(ctx context.Context, pid int, proc *process.Process) (processSnapshot, bool) {
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		return processSnapshot{}, false
+	}
+	owned, err := processIsCodeflyOwned(pid)
+	if err != nil {
+		return processSnapshot{}, false
+	}
+	snap := processSnapshot{pgid: pgid, owned: owned}
+	if ppid, err := proc.PpidWithContext(ctx); err == nil {
+		snap.parent = int(ppid)
+		snap.orphaned = ppid == 1
+	}
+	if started, err := proc.CreateTimeWithContext(ctx); err == nil {
+		snap.started = time.UnixMilli(started)
+	}
+	return snap, true
 }
 
 // ReapDevServerOrphans terminates the process groups of leaked dev servers. A
@@ -207,29 +233,21 @@ func ScanNativeServiceOrphans(ctx context.Context) ([]NativeServiceOrphan, error
 		if err != nil || !isNativeServiceCommand(argv) {
 			continue
 		}
-		pgid, err := syscall.Getpgid(pid)
-		if err != nil {
-			continue
-		}
-		owned, err := processIsCodeflyOwned(pid)
-		if err != nil {
+		snap, ok := snapshotProcess(ctx, pid, proc)
+		if !ok {
 			continue
 		}
 		orphan := NativeServiceOrphan{
-			PID:     pid,
-			PGID:    pgid,
-			Command: strings.Join(argv, " "),
-			Owned:   owned,
+			PID:      pid,
+			PGID:     snap.pgid,
+			Parent:   snap.parent,
+			Command:  strings.Join(argv, " "),
+			Started:  snap.started,
+			Orphaned: snap.orphaned,
+			Owned:    snap.owned,
 		}
 		if cwd, err := processWorkingDirectory(pid); err == nil {
 			orphan.Cwd = cwd
-		}
-		if ppid, err := proc.PpidWithContext(ctx); err == nil {
-			orphan.Parent = int(ppid)
-			orphan.Orphaned = ppid == 1
-		}
-		if started, err := proc.CreateTimeWithContext(ctx); err == nil {
-			orphan.Started = time.UnixMilli(started)
 		}
 		orphans = append(orphans, orphan)
 	}
@@ -287,10 +305,15 @@ func isNativeServiceCommand(argv []string) bool {
 	if len(argv) == 0 {
 		return false
 	}
-	if strings.Contains(argv[0], nativeBuildCacheSegment) {
+	exe := argv[0]
+	// Match the build-cache segment both mid-path (absolute binary, e.g.
+	// "/ws/svc/code/cache/native/<hash>") and as a leading segment (a binary
+	// built under a relative source dir, "cache/native/<hash>"). Anchoring on the
+	// path separator is what keeps an unrelated "mycache/native/..." from matching.
+	if strings.Contains(exe, nativeBuildCacheSegment) || strings.HasPrefix(exe, nativeBuildCacheSegment[1:]) {
 		return true
 	}
-	return filepath.Base(argv[0]) == "postgres"
+	return filepath.Base(exe) == "postgres"
 }
 
 // isDevServerCommand recognises the frontend dev-server process shapes that

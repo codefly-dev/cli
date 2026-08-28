@@ -59,8 +59,10 @@ func TestIsNativeServiceCommand(t *testing.T) {
 	}{
 		{"go native binary", []string{"/repo/svc/code/cache/native/a1b2c3d4", "serve"}, true},
 		{"debug native binary", []string{"/repo/svc/code/cache/native/a1b2c3d4-debug"}, true},
+		{"relative native binary", []string{"cache/native/a1b2c3d4", "serve"}, true},
 		{"postgres postmaster", []string{"/opt/homebrew/bin/postgres", "-D", "/home/u/.codefly/data/ws"}, true},
 		{"cache/native only inside a later arg", []string{"go", "run", "/repo/cache/native/x"}, false},
+		{"lookalike parent dir is not the cache segment", []string{"/repo/mycache/native/tool"}, false},
 		{"unrelated binary", []string{"/usr/local/bin/myserver", "--port", "8080"}, false},
 		{"psql client, not postmaster", []string{"psql", "-h", "localhost"}, false},
 		{"empty", nil, false},
