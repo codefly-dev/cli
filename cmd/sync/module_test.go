@@ -427,7 +427,7 @@ func TestStaleLockfilesSelectsDriftedIncludingUnchangedAndShrinkwrap(t *testing.
 	writeSyncTestFile(t, filepath.Join(sourceRoot, "services", "web", "code", "package.json"), withDep)
 	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "web", "code", "npm-shrinkwrap.json"), emptyLock)
 
-	stale, err := staleLockfiles(sourceRoot, moduleDir, integrity.BaseSyncPlan{
+	stale, err := staleLockfiles(sourceRoot, moduleDir, &integrity.BaseSyncPlan{
 		Unchanged: []string{"services/frontend/code/package.json", "services/api/code/package.json", "services/web/code/package.json"},
 		Update:    []string{"services/vault/code/package.json"},
 	})
@@ -449,7 +449,7 @@ func TestRegenerateNpmLockfilesRequiresNpmForGenuineDrift(t *testing.T) {
 	// An empty PATH makes npm undiscoverable; a genuinely drifted lockfile must
 	// then fail loudly rather than silently leaving the workspace uninstallable.
 	t.Setenv("PATH", t.TempDir())
-	err := regenerateNpmLockfiles(context.Background(), sourceRoot, moduleDir, integrity.BaseSyncPlan{
+	err := regenerateNpmLockfiles(context.Background(), sourceRoot, moduleDir, &integrity.BaseSyncPlan{
 		Update: []string{"services/frontend/code/package.json"},
 	})
 	if err == nil {

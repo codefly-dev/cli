@@ -278,7 +278,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 		return fmt.Errorf("plan service manifest refresh: %w", err)
 	}
 	printServiceManifestRefreshPlan(pendingRefresh, options.Apply)
-	pendingLocks, err := staleLockfiles(resolved.Root, target.Dir(), plan)
+	pendingLocks, err := staleLockfiles(resolved.Root, target.Dir(), &plan)
 	if err != nil {
 		return fmt.Errorf("inspect service lockfiles: %w", err)
 	}
@@ -317,7 +317,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	// can fail. Running it after those two commit means a network failure leaves
 	// only the lockfile adrift, and the next sync — which sees package.json as
 	// unchanged but the lockfile still out of sync — heals it.
-	if err := regenerateNpmLockfiles(ctx, resolved.Root, target.Dir(), applied); err != nil {
+	if err := regenerateNpmLockfiles(ctx, resolved.Root, target.Dir(), &applied); err != nil {
 		return err
 	}
 	return nil
@@ -383,7 +383,7 @@ func lockLabels(stale []staleLock) []string {
 // dry-run predicts the post-apply drift rather than the pre-apply state. A
 // directory without a lockfile is not an `npm ci` workflow and is never given
 // one.
-func staleLockfiles(sourceRoot, moduleDir string, plan integrity.BaseSyncPlan) ([]staleLock, error) {
+func staleLockfiles(sourceRoot, moduleDir string, plan *integrity.BaseSyncPlan) ([]staleLock, error) {
 	var stale []staleLock
 	for _, relative := range slices.Concat(plan.Unchanged, plan.Create, plan.Update, plan.ResolveUpstream) {
 		if path.Base(relative) != "package.json" {
@@ -477,7 +477,7 @@ func sameDependencyMap(a, b map[string]string) bool {
 // but leaves the committed lockfile untouched, so the next `npm ci` (for example
 // in a render's frontend Dockerfile) fails closed on the drift.
 // `--package-lock-only` rewrites the lockfile without materializing node_modules.
-func regenerateNpmLockfiles(ctx context.Context, sourceRoot, moduleDir string, plan integrity.BaseSyncPlan) error {
+func regenerateNpmLockfiles(ctx context.Context, sourceRoot, moduleDir string, plan *integrity.BaseSyncPlan) error {
 	stale, err := staleLockfiles(sourceRoot, moduleDir, plan)
 	if err != nil {
 		return err
@@ -486,7 +486,7 @@ func regenerateNpmLockfiles(ctx context.Context, sourceRoot, moduleDir string, p
 		return nil
 	}
 	labels := lockLabels(stale)
-	if _, err := exec.LookPath("npm"); err != nil {
+	if _, lookErr := exec.LookPath("npm"); lookErr != nil {
 		return fmt.Errorf("refreshed dependencies left %d service lockfile(s) out of sync but npm is not installed to regenerate them; install npm, then run `npm install --package-lock-only` in the directory of each: %s", len(labels), strings.Join(labels, ", "))
 	}
 	for _, entry := range stale {
