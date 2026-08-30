@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -277,6 +278,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 		return fmt.Errorf("plan service manifest refresh: %w", err)
 	}
 	printServiceManifestRefreshPlan(pendingRefresh, options.Apply)
+	printLockfileRefreshPlan(refreshedLockfileDirs(target.Dir(), plan), options.Apply)
 	if !options.Apply {
 		output.Info("module sync dry-run is applicable; rerun with --apply")
 		return nil
@@ -290,10 +292,14 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), resolved.Lock); err != nil {
 		return fmt.Errorf("write module source lock: %w", err)
 	}
-	if _, err := integrity.ApplyBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream); err != nil {
+	applied, err := integrity.ApplyBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream)
+	if err != nil {
 		return err
 	}
 	output.Info("✓ module <%s> base updated; product overlays preserved", target.Name)
+	if err := regenerateNpmLockfiles(ctx, target.Dir(), applied); err != nil {
+		return err
+	}
 	refreshed, err := integrity.RefreshServiceManifests(resolved.Root, target.Dir())
 	if err != nil {
 		return fmt.Errorf("refresh generated service manifests: %w", err)
@@ -317,6 +323,78 @@ func printServiceManifestRefreshPlan(pending []string, applying bool) {
 		label = "WILL REFRESH GENERATED SERVICE MANIFESTS"
 	}
 	output.Info("  %s (%d): %s", label, len(pending), strings.Join(pending, ", "))
+}
+
+func printLockfileRefreshPlan(dirs []string, applying bool) {
+	if len(dirs) == 0 {
+		return
+	}
+	label := "WOULD REGENERATE PACKAGE LOCKS"
+	if applying {
+		label = "WILL REGENERATE PACKAGE LOCKS"
+	}
+	locks := make([]string, len(dirs))
+	for i, dir := range dirs {
+		locks[i] = path.Join(dir, "package-lock.json")
+	}
+	output.Info("  %s (%d): %s", label, len(dirs), strings.Join(locks, ", "))
+}
+
+// refreshedLockfileDirs lists the module-relative directories whose package.json
+// a base sync rewrites and that already carry a package-lock.json. A directory
+// without a lockfile is not an `npm ci` workflow, so the sync must not force one
+// on it; directories are returned once each, sorted.
+func refreshedLockfileDirs(moduleDir string, plan integrity.BaseSyncPlan) []string {
+	seen := map[string]struct{}{}
+	var dirs []string
+	for _, relative := range slices.Concat(plan.Create, plan.Update, plan.ResolveUpstream) {
+		if path.Base(relative) != "package.json" {
+			continue
+		}
+		relativeDir := path.Dir(relative)
+		if _, done := seen[relativeDir]; done {
+			continue
+		}
+		seen[relativeDir] = struct{}{}
+		if !fileExists(filepath.Join(moduleDir, filepath.FromSlash(relativeDir), "package-lock.json")) {
+			continue
+		}
+		dirs = append(dirs, relativeDir)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// regenerateNpmLockfiles brings each refreshed package.json's package-lock.json
+// back in sync with the new base dependencies. A base sync rewrites a service's
+// package.json but leaves the committed package-lock.json untouched, so the next
+// `npm ci` (for example in a render's frontend Dockerfile) fails closed on the
+// drift. `--package-lock-only` rewrites the lockfile without materializing
+// node_modules.
+func regenerateNpmLockfiles(ctx context.Context, moduleDir string, plan integrity.BaseSyncPlan) error {
+	dirs := refreshedLockfileDirs(moduleDir, plan)
+	if len(dirs) == 0 {
+		return nil
+	}
+	locks := make([]string, len(dirs))
+	for i, dir := range dirs {
+		locks[i] = path.Join(dir, "package-lock.json")
+	}
+	if _, err := exec.LookPath("npm"); err != nil {
+		return fmt.Errorf("refreshed %d package.json file(s) but npm is not installed to regenerate their package-lock.json; install npm, then run `npm install --package-lock-only` in the directory of each: %s", len(dirs), strings.Join(locks, ", "))
+	}
+	for _, dir := range dirs {
+		command := exec.CommandContext(ctx, "npm", "install", "--package-lock-only", "--no-audit", "--no-fund")
+		command.Dir = filepath.Join(moduleDir, filepath.FromSlash(dir))
+		if out, runErr := command.CombinedOutput(); runErr != nil {
+			return fmt.Errorf("regenerate %s: %w: %s", path.Join(dir, "package-lock.json"), runErr, strings.TrimSpace(string(out)))
+		}
+	}
+	output.Info("✓ regenerated %d package-lock.json file(s) to match the refreshed dependencies:", len(dirs))
+	for _, lock := range locks {
+		output.Info("  REGENERATED %s", lock)
+	}
+	return nil
 }
 
 func restoreComposedModuleCode(ctx context.Context, target *resources.Module, options *moduleSyncOptions) error {

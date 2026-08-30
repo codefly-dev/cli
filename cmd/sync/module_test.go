@@ -363,6 +363,82 @@ func TestSyncModuleRefreshesGeneratedServiceManifestAgentPin(t *testing.T) {
 	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(manifestPath)), upstreamManifest)
 }
 
+func TestRefreshedLockfileDirsSelectsRefreshedPackageJsonWithExistingLock(t *testing.T) {
+	moduleDir := t.TempDir()
+	// A refreshed package.json that already ships a lockfile: this is exactly the
+	// case that leaves `npm ci` broken, so it must be selected.
+	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "frontend", "code", "package-lock.json"), "{}")
+	// A refreshed package.json with no lockfile is not an `npm ci` workflow and
+	// must not have one forced on it.
+	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "api", "code", "package.json"), "{}")
+	// A brand-new (created) service that already carries a lockfile is selected.
+	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "vault", "code", "package-lock.json"), "{}")
+
+	dirs := refreshedLockfileDirs(moduleDir, integrity.BaseSyncPlan{
+		Update:          []string{"services/frontend/code/package.json", "services/api/code/package.json", "services/frontend/code/main.go"},
+		Create:          []string{"services/vault/code/package.json"},
+		ResolveUpstream: []string{"services/frontend/code/package.json"},
+	})
+
+	want := []string{"services/frontend/code", "services/vault/code"}
+	if strings.Join(dirs, ",") != strings.Join(want, ",") {
+		t.Fatalf("refreshedLockfileDirs = %v, want %v", dirs, want)
+	}
+}
+
+func TestSyncModuleRegeneratesStalePackageLock(t *testing.T) {
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm is required to regenerate package-lock.json")
+	}
+	repository := t.TempDir()
+	runGit(t, repository, "init", "--quiet")
+	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
+	runGit(t, repository, "config", "user.name", "Module Sync Test")
+	sourceModule := filepath.Join(repository, "module")
+	packagePath := "services/frontend/code/package.json"
+	newPackage := "{\n  \"name\": \"frontend\",\n  \"version\": \"2.0.0\"\n}\n"
+	oldPackage := "{\n  \"name\": \"frontend\",\n  \"version\": \"1.0.0\"\n}\n"
+	writeSyncTestFile(t, filepath.Join(sourceModule, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: frontend\n")
+	writeSyncTestFile(t, filepath.Join(sourceModule, filepath.FromSlash(packagePath)), newPackage)
+	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
+		`{"files":{"`+packagePath+`":"`+syncTestDigest(newPackage)+`"}}`)
+	runGit(t, repository, "add", ".")
+	runGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")
+	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v0.0.44")
+
+	targetRoot := filepath.Join(t.TempDir(), "app")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: frontend\n")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "tools", "base-manifest.json"),
+		`{"files":{"`+packagePath+`":"`+syncTestDigest(oldPackage)+`"}}`)
+	writeSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(packagePath)), oldPackage)
+	stalePackageLock := "{\n  \"name\": \"frontend\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"requires\": true,\n  \"packages\": {\n    \"\": {\n      \"name\": \"frontend\",\n      \"version\": \"1.0.0\"\n    }\n  }\n}\n"
+	lockPath := filepath.Join(targetRoot, "services", "frontend", "code", "package-lock.json")
+	writeSyncTestFile(t, lockPath, stalePackageLock)
+	remote := (&url.URL{Scheme: "file", Path: repository}).String()
+	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), &moduleSourceLock{
+		Schema: moduleSourceLockSchema, Repository: remote, Ref: "v0.0.44",
+		Commit: runGit(t, repository, "rev-parse", "HEAD"), Subdirectory: "module",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target, err := resources.LoadModuleFromDir(context.Background(), targetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{Apply: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(packagePath)), newPackage)
+	regenerated, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(regenerated), "1.0.0") || !strings.Contains(string(regenerated), "2.0.0") {
+		t.Fatalf("package-lock.json was not regenerated to the refreshed version:\n%s", regenerated)
+	}
+}
+
 func TestModuleAgentSourceMatchesAgentReleaseRepository(t *testing.T) {
 	options, err := moduleAgentSource(&resources.Agent{
 		Kind: resources.ModuleAgent, Publisher: "codefly.dev", Name: "saas-starter", Version: "0.0.36",

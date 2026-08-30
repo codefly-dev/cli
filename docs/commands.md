@@ -397,6 +397,14 @@ manifests still carrying the generated marker are refreshed — a service manife
 you have taken over as hand-authored product content (no marker) is left
 untouched, the same ownership boundary `codefly update` honors.
 
+An `--apply` that rewrites a service's `package.json` also regenerates the
+`package-lock.json` sitting next to it (`npm install --package-lock-only`), so
+the synced workspace stays installable with `npm ci` (for example in a render's
+frontend Dockerfile) instead of failing on a lockfile that still names the old
+dependencies. Only a directory that already has a `package-lock.json` is
+regenerated — a service without one is not an `npm ci` workflow — and the
+dry-run lists the lockfiles it would rewrite.
+
 `sync module <name> --restore-code` restores only absent service files listed
 by the pinned base manifest. Existing base files and consumer-owned overlays
 are not changed. A legacy scaffold with neither a source lock nor a recorded
