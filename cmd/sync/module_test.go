@@ -363,43 +363,118 @@ func TestSyncModuleRefreshesGeneratedServiceManifestAgentPin(t *testing.T) {
 	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(manifestPath)), upstreamManifest)
 }
 
-func TestRefreshedLockfileDirsSelectsRefreshedPackageJsonWithExistingLock(t *testing.T) {
-	moduleDir := t.TempDir()
-	// A refreshed package.json that already ships a lockfile: this is exactly the
-	// case that leaves `npm ci` broken, so it must be selected.
-	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "frontend", "code", "package-lock.json"), "{}")
-	// A refreshed package.json with no lockfile is not an `npm ci` workflow and
-	// must not have one forced on it.
-	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "api", "code", "package.json"), "{}")
-	// A brand-new (created) service that already carries a lockfile is selected.
-	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "vault", "code", "package-lock.json"), "{}")
-
-	dirs := refreshedLockfileDirs(moduleDir, integrity.BaseSyncPlan{
-		Update:          []string{"services/frontend/code/package.json", "services/api/code/package.json", "services/frontend/code/main.go"},
-		Create:          []string{"services/vault/code/package.json"},
-		ResolveUpstream: []string{"services/frontend/code/package.json"},
-	})
-
-	want := []string{"services/frontend/code", "services/vault/code"}
-	if strings.Join(dirs, ",") != strings.Join(want, ",") {
-		t.Fatalf("refreshedLockfileDirs = %v, want %v", dirs, want)
+func TestLockfileStaleDetectsDependencyDrift(t *testing.T) {
+	inSync := `{"lockfileVersion":3,"packages":{"":{"name":"frontend","dependencies":{"dep-a":"1.0.0"}}}}`
+	cases := []struct {
+		name      string
+		pkg       string
+		lock      string
+		wantStale bool
+	}{
+		{"in-sync", `{"dependencies":{"dep-a":"1.0.0"}}`, inSync, false},
+		{"missing dependency", `{"dependencies":{"dep-a":"1.0.0","dep-b":"2.0.0"}}`, inSync, true},
+		{"changed specifier", `{"dependencies":{"dep-a":"2.0.0"}}`, inSync, true},
+		{"dev dependency drift", `{"dependencies":{"dep-a":"1.0.0"},"devDependencies":{"dep-c":"1.0.0"}}`, inSync, true},
+		// A version-only bump is not the drift `npm ci` rejects, so it must not
+		// trigger a needless regeneration.
+		{"version bump only", `{"version":"9.9.9","dependencies":{"dep-a":"1.0.0"}}`, inSync, false},
+		// lockfileVersion 1 has no packages map: npm cannot describe it, so it is
+		// regenerated rather than trusted.
+		{"legacy lockfile", `{"dependencies":{"dep-a":"1.0.0"}}`, `{"lockfileVersion":1,"dependencies":{"dep-a":{"version":"1.0.0"}}}`, true},
+		{"unparseable lockfile", `{"dependencies":{"dep-a":"1.0.0"}}`, `not json`, true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			packageJSONPath := filepath.Join(dir, "package.json")
+			lockPath := filepath.Join(dir, "package-lock.json")
+			writeSyncTestFile(t, packageJSONPath, testCase.pkg)
+			writeSyncTestFile(t, lockPath, testCase.lock)
+			stale, err := lockfileStale(packageJSONPath, lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stale != testCase.wantStale {
+				t.Fatalf("lockfileStale = %v, want %v", stale, testCase.wantStale)
+			}
+		})
 	}
 }
 
-func TestSyncModuleRegeneratesStalePackageLock(t *testing.T) {
-	if _, err := exec.LookPath("npm"); err != nil {
-		t.Skip("npm is required to regenerate package-lock.json")
+// The base sync commits its manifest last, so a package.json a prior interrupted
+// run already wrote reappears as Unchanged on the retry. Selection must key off
+// on-disk drift, not the plan bucket, or a lockfile a failed regeneration left
+// behind would never be healed. An in-sync lockfile is skipped (no needless npm
+// run, so npm is required only for genuine drift), a directory with no lockfile
+// is never given one, and an npm-shrinkwrap.json is honored like a lock.
+func TestStaleLockfilesSelectsDriftedIncludingUnchangedAndShrinkwrap(t *testing.T) {
+	sourceRoot := t.TempDir()
+	moduleDir := t.TempDir()
+	withDep := `{"dependencies":{"dep-a":"1.0.0"}}`
+	inSyncLock := `{"lockfileVersion":3,"packages":{"":{"dependencies":{"dep-a":"1.0.0"}}}}`
+	emptyLock := `{"lockfileVersion":3,"packages":{"":{}}}`
+
+	// Unchanged (a prior run already wrote it) with a lockfile that never got the
+	// new dependency: must be selected on the rerun.
+	writeSyncTestFile(t, filepath.Join(sourceRoot, "services", "frontend", "code", "package.json"), withDep)
+	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "frontend", "code", "package-lock.json"), emptyLock)
+	// Unchanged but the lockfile is already in sync: must be skipped.
+	writeSyncTestFile(t, filepath.Join(sourceRoot, "services", "api", "code", "package.json"), withDep)
+	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "api", "code", "package-lock.json"), inSyncLock)
+	// Updated but the service has no lockfile: never given one.
+	writeSyncTestFile(t, filepath.Join(sourceRoot, "services", "vault", "code", "package.json"), withDep)
+	// A drifted npm-shrinkwrap.json is honored like a package-lock.json.
+	writeSyncTestFile(t, filepath.Join(sourceRoot, "services", "web", "code", "package.json"), withDep)
+	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "web", "code", "npm-shrinkwrap.json"), emptyLock)
+
+	stale, err := staleLockfiles(sourceRoot, moduleDir, integrity.BaseSyncPlan{
+		Unchanged: []string{"services/frontend/code/package.json", "services/api/code/package.json", "services/web/code/package.json"},
+		Update:    []string{"services/vault/code/package.json"},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	got := strings.Join(lockLabels(stale), ",")
+	want := "services/frontend/code/package-lock.json,services/web/code/npm-shrinkwrap.json"
+	if got != want {
+		t.Fatalf("staleLockfiles = %q, want %q", got, want)
+	}
+}
+
+func TestRegenerateNpmLockfilesRequiresNpmForGenuineDrift(t *testing.T) {
+	sourceRoot := t.TempDir()
+	moduleDir := t.TempDir()
+	writeSyncTestFile(t, filepath.Join(sourceRoot, "services", "frontend", "code", "package.json"), `{"dependencies":{"dep-a":"1.0.0"}}`)
+	writeSyncTestFile(t, filepath.Join(moduleDir, "services", "frontend", "code", "package-lock.json"), `{"lockfileVersion":3,"packages":{"":{}}}`)
+	// An empty PATH makes npm undiscoverable; a genuinely drifted lockfile must
+	// then fail loudly rather than silently leaving the workspace uninstallable.
+	t.Setenv("PATH", t.TempDir())
+	err := regenerateNpmLockfiles(context.Background(), sourceRoot, moduleDir, integrity.BaseSyncPlan{
+		Update: []string{"services/frontend/code/package.json"},
+	})
+	if err == nil {
+		t.Fatal("expected an error when npm is absent and a lockfile is drifted")
+	}
+	if !strings.Contains(err.Error(), "npm is not installed") || !strings.Contains(err.Error(), "services/frontend/code/package-lock.json") {
+		t.Fatalf("error does not name the missing tool and the lockfile: %v", err)
+	}
+}
+
+func TestSyncModuleRefreshesManifestsEvenWhenLockRegenFails(t *testing.T) {
 	repository := t.TempDir()
 	runGit(t, repository, "init", "--quiet")
 	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
 	runGit(t, repository, "config", "user.name", "Module Sync Test")
 	sourceModule := filepath.Join(repository, "module")
 	packagePath := "services/frontend/code/package.json"
-	newPackage := "{\n  \"name\": \"frontend\",\n  \"version\": \"2.0.0\"\n}\n"
-	oldPackage := "{\n  \"name\": \"frontend\",\n  \"version\": \"1.0.0\"\n}\n"
+	manifestPath := "services/frontend/" + resources.ServiceConfigurationName
+	generatedHeader := "# Code generated from deployment/topology.bindings.codefly.yaml. DO NOT EDIT.\n"
+	upstreamManifest := generatedHeader + "name: frontend\nagent:\n  kind: codefly:service\n  name: frontend\n  publisher: codefly.dev\n  version: 0.0.25\n"
+	newPackage := "{\n  \"dependencies\": {\n    \"dep-a\": \"1.0.0\"\n  }\n}\n"
+	oldPackage := "{}\n"
 	writeSyncTestFile(t, filepath.Join(sourceModule, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: frontend\n")
 	writeSyncTestFile(t, filepath.Join(sourceModule, filepath.FromSlash(packagePath)), newPackage)
+	writeSyncTestFile(t, filepath.Join(sourceModule, filepath.FromSlash(manifestPath)), upstreamManifest)
 	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
 		`{"files":{"`+packagePath+`":"`+syncTestDigest(newPackage)+`"}}`)
 	runGit(t, repository, "add", ".")
@@ -411,7 +486,68 @@ func TestSyncModuleRegeneratesStalePackageLock(t *testing.T) {
 	writeSyncTestFile(t, filepath.Join(targetRoot, "tools", "base-manifest.json"),
 		`{"files":{"`+packagePath+`":"`+syncTestDigest(oldPackage)+`"}}`)
 	writeSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(packagePath)), oldPackage)
-	stalePackageLock := "{\n  \"name\": \"frontend\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"requires\": true,\n  \"packages\": {\n    \"\": {\n      \"name\": \"frontend\",\n      \"version\": \"1.0.0\"\n    }\n  }\n}\n"
+	writeSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(manifestPath)),
+		generatedHeader+"name: frontend\nagent:\n  kind: codefly:service\n  name: frontend\n  publisher: codefly.dev\n  version: 0.0.15\n")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "services", "frontend", "code", "package-lock.json"),
+		`{"lockfileVersion":3,"packages":{"":{}}}`)
+	remote := (&url.URL{Scheme: "file", Path: repository}).String()
+	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), &moduleSourceLock{
+		Schema: moduleSourceLockSchema, Repository: remote, Ref: "v0.0.44",
+		Commit: runGit(t, repository, "rev-parse", "HEAD"), Subdirectory: "module",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Shadow npm with a stub that always fails, keeping git on PATH so the source
+	// still resolves. The deterministic manifest refresh runs before the fragile
+	// regeneration, so an npm failure must not rob it.
+	stubBin := t.TempDir()
+	writeExecutable(t, filepath.Join(stubBin, "npm"), "#!/bin/sh\necho 'stub npm failure' 1>&2\nexit 1\n")
+	t.Setenv("PATH", stubBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	target, err := resources.LoadModuleFromDir(context.Background(), targetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = syncComposedModule(context.Background(), target, &moduleSyncOptions{Apply: true})
+	if err == nil {
+		t.Fatal("expected the lockfile regeneration failure to surface")
+	}
+	if !strings.Contains(err.Error(), "regenerate") {
+		t.Fatalf("error is not about lockfile regeneration: %v", err)
+	}
+	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(manifestPath)), upstreamManifest)
+}
+
+func TestSyncModuleRegeneratesStalePackageLock(t *testing.T) {
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm is required to regenerate the lockfile")
+	}
+	repository := t.TempDir()
+	runGit(t, repository, "init", "--quiet")
+	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
+	runGit(t, repository, "config", "user.name", "Module Sync Test")
+	sourceModule := filepath.Join(repository, "module")
+	packagePath := "services/frontend/code/package.json"
+	localDepPath := "services/frontend/code/local-dep/package.json"
+	// A file: dependency resolves from disk, so the regeneration stays offline.
+	newPackage := "{\n  \"name\": \"frontend\",\n  \"version\": \"1.0.0\",\n  \"dependencies\": {\n    \"local-dep\": \"file:./local-dep\"\n  }\n}\n"
+	oldPackage := "{\n  \"name\": \"frontend\",\n  \"version\": \"1.0.0\"\n}\n"
+	localDep := "{\n  \"name\": \"local-dep\",\n  \"version\": \"1.0.0\"\n}\n"
+	writeSyncTestFile(t, filepath.Join(sourceModule, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: frontend\n")
+	writeSyncTestFile(t, filepath.Join(sourceModule, filepath.FromSlash(packagePath)), newPackage)
+	writeSyncTestFile(t, filepath.Join(sourceModule, filepath.FromSlash(localDepPath)), localDep)
+	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
+		`{"files":{"`+packagePath+`":"`+syncTestDigest(newPackage)+`","`+localDepPath+`":"`+syncTestDigest(localDep)+`"}}`)
+	runGit(t, repository, "add", ".")
+	runGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")
+	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v0.0.44")
+
+	targetRoot := filepath.Join(t.TempDir(), "app")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "module.codefly.yaml"), "kind: module\nname: app\nservices:\n  - name: frontend\n")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "tools", "base-manifest.json"),
+		`{"files":{"`+packagePath+`":"`+syncTestDigest(oldPackage)+`"}}`)
+	writeSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(packagePath)), oldPackage)
+	stalePackageLock := "{\n  \"name\": \"frontend\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"packages\": {\n    \"\": {\n      \"name\": \"frontend\",\n      \"version\": \"1.0.0\"\n    }\n  }\n}\n"
 	lockPath := filepath.Join(targetRoot, "services", "frontend", "code", "package-lock.json")
 	writeSyncTestFile(t, lockPath, stalePackageLock)
 	remote := (&url.URL{Scheme: "file", Path: repository}).String()
@@ -434,8 +570,17 @@ func TestSyncModuleRegeneratesStalePackageLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(regenerated), "1.0.0") || !strings.Contains(string(regenerated), "2.0.0") {
-		t.Fatalf("package-lock.json was not regenerated to the refreshed version:\n%s", regenerated)
+	// The refreshed lockfile now records the dependency the old one was missing,
+	// so `npm ci` no longer fails closed.
+	if !strings.Contains(string(regenerated), "local-dep") {
+		t.Fatalf("package-lock.json was not regenerated with the refreshed dependency:\n%s", regenerated)
+	}
+	stillStale, err := lockfileStale(filepath.Join(targetRoot, filepath.FromSlash(packagePath)), lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillStale {
+		t.Fatal("lockfile is still reported stale after regeneration")
 	}
 }
 
@@ -733,6 +878,13 @@ func writeSyncTestFile(t *testing.T, path, contents string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeExecutable(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
