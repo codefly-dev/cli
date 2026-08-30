@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -277,6 +278,11 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 		return fmt.Errorf("plan service manifest refresh: %w", err)
 	}
 	printServiceManifestRefreshPlan(pendingRefresh, options.Apply)
+	pendingLocks, err := staleLockfiles(resolved.Root, target.Dir(), &plan)
+	if err != nil {
+		return fmt.Errorf("inspect service lockfiles: %w", err)
+	}
+	printLockfileRefreshPlan(lockLabels(pendingLocks), options.Apply)
 	if !options.Apply {
 		output.Info("module sync dry-run is applicable; rerun with --apply")
 		return nil
@@ -290,7 +296,8 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), resolved.Lock); err != nil {
 		return fmt.Errorf("write module source lock: %w", err)
 	}
-	if _, err := integrity.ApplyBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream); err != nil {
+	applied, err := integrity.ApplyBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream)
+	if err != nil {
 		return err
 	}
 	output.Info("✓ module <%s> base updated; product overlays preserved", target.Name)
@@ -305,6 +312,14 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 		}
 		output.Info("restart any active stack so services load the refreshed agent pins")
 	}
+	// Regenerate lockfiles last. The base update and manifest refresh are
+	// deterministic filesystem operations; npm resolves against a registry and
+	// can fail. Running it after those two commit means a network failure leaves
+	// only the lockfile adrift, and the next sync — which sees package.json as
+	// unchanged but the lockfile still out of sync — heals it.
+	if err := regenerateNpmLockfiles(ctx, resolved.Root, target.Dir(), &applied); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -317,6 +332,175 @@ func printServiceManifestRefreshPlan(pending []string, applying bool) {
 		label = "WILL REFRESH GENERATED SERVICE MANIFESTS"
 	}
 	output.Info("  %s (%d): %s", label, len(pending), strings.Join(pending, ", "))
+}
+
+func printLockfileRefreshPlan(labels []string, applying bool) {
+	if len(labels) == 0 {
+		return
+	}
+	label := "WOULD REGENERATE SERVICE LOCKFILES"
+	if applying {
+		label = "WILL REGENERATE SERVICE LOCKFILES"
+	}
+	output.Info("  %s (%d): %s", label, len(labels), strings.Join(labels, ", "))
+}
+
+// npmLockNames are the lockfiles `npm ci` consumes, in npm's own precedence: an
+// npm-shrinkwrap.json shadows a package-lock.json, and `npm install
+// --package-lock-only` updates whichever of the two is present.
+var npmLockNames = []string{"npm-shrinkwrap.json", "package-lock.json"}
+
+func serviceLockfile(dir string) (string, bool) {
+	for _, name := range npmLockNames {
+		if fileExists(filepath.Join(dir, name)) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+type staleLock struct {
+	dir      string // module-relative directory holding the package.json and its lockfile
+	lockName string
+}
+
+func lockLabels(stale []staleLock) []string {
+	labels := make([]string, len(stale))
+	for i, entry := range stale {
+		labels[i] = path.Join(entry.dir, entry.lockName)
+	}
+	return labels
+}
+
+// staleLockfiles lists the service directories whose lockfile does not yet
+// record the dependencies the pinned base declares. Selection is driven by
+// on-disk drift, not by whether *this* run rewrote the package.json: a base sync
+// commits its manifest last, so a package.json a prior interrupted run already
+// wrote reappears as Unchanged. Keying off drift instead lets a rerun heal a
+// lockfile that a failed regeneration left behind, and skips a directory whose
+// lockfile is already in sync. The incoming package.json is read from the pinned
+// source (which, for an Unchanged path, is byte-identical to the target), so the
+// dry-run predicts the post-apply drift rather than the pre-apply state. A
+// directory without a lockfile is not an `npm ci` workflow and is never given
+// one.
+func staleLockfiles(sourceRoot, moduleDir string, plan *integrity.BaseSyncPlan) ([]staleLock, error) {
+	var stale []staleLock
+	for _, relative := range slices.Concat(plan.Unchanged, plan.Create, plan.Update, plan.ResolveUpstream) {
+		if path.Base(relative) != "package.json" {
+			continue
+		}
+		relativeDir := path.Dir(relative)
+		lockName, ok := serviceLockfile(filepath.Join(moduleDir, filepath.FromSlash(relativeDir)))
+		if !ok {
+			continue
+		}
+		drifted, err := lockfileStale(
+			filepath.Join(sourceRoot, filepath.FromSlash(relative)),
+			filepath.Join(moduleDir, filepath.FromSlash(relativeDir), lockName),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("inspect %s: %w", path.Join(relativeDir, lockName), err)
+		}
+		if drifted {
+			stale = append(stale, staleLock{dir: relativeDir, lockName: lockName})
+		}
+	}
+	sort.Slice(stale, func(i, j int) bool { return stale[i].dir < stale[j].dir })
+	return stale, nil
+}
+
+type nodeDependencies struct {
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
+}
+
+// lockfileStale reports whether packageJSON declares a direct dependency the
+// lockfile's root package does not already record with the same specifier. This
+// is exactly the drift `npm ci` rejects ("Missing: X from lock file"):
+// package.json edits only touch direct dependency specifiers, which npm mirrors
+// verbatim into the lockfile's root package. A lockfile npm cannot describe
+// (lockfileVersion 1, which has no packages map, or an unparseable/absent root
+// entry) is treated as stale so it is regenerated rather than trusted; equally,
+// a package.json that does not parse is treated as stale so npm surfaces the
+// real error. The comparison is exact, so a specifier npm normalizes on write
+// can cause a redundant but harmless regeneration — the safe direction, since a
+// missed drift reintroduces the very failure this guards against.
+func lockfileStale(packageJSONPath, lockPath string) (bool, error) {
+	packageBytes, err := os.ReadFile(packageJSONPath)
+	if err != nil {
+		return false, err
+	}
+	lockBytes, err := os.ReadFile(lockPath)
+	if err != nil {
+		return false, err
+	}
+	var pkg nodeDependencies
+	if json.Unmarshal(packageBytes, &pkg) != nil {
+		return true, nil
+	}
+	var lock struct {
+		Packages map[string]nodeDependencies `json:"packages"`
+	}
+	if json.Unmarshal(lockBytes, &lock) != nil {
+		return true, nil
+	}
+	root, ok := lock.Packages[""]
+	if !ok {
+		return true, nil
+	}
+	return !sameDependencies(pkg, root), nil
+}
+
+func sameDependencies(a, b nodeDependencies) bool {
+	return sameDependencyMap(a.Dependencies, b.Dependencies) &&
+		sameDependencyMap(a.DevDependencies, b.DevDependencies) &&
+		sameDependencyMap(a.OptionalDependencies, b.OptionalDependencies) &&
+		sameDependencyMap(a.PeerDependencies, b.PeerDependencies)
+}
+
+func sameDependencyMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, spec := range a {
+		if b[name] != spec {
+			return false
+		}
+	}
+	return true
+}
+
+// regenerateNpmLockfiles brings each drifted service lockfile back in sync with
+// the pinned base's dependencies. A base sync rewrites a service's package.json
+// but leaves the committed lockfile untouched, so the next `npm ci` (for example
+// in a render's frontend Dockerfile) fails closed on the drift.
+// `--package-lock-only` rewrites the lockfile without materializing node_modules.
+func regenerateNpmLockfiles(ctx context.Context, sourceRoot, moduleDir string, plan *integrity.BaseSyncPlan) error {
+	stale, err := staleLockfiles(sourceRoot, moduleDir, plan)
+	if err != nil {
+		return err
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+	labels := lockLabels(stale)
+	if _, lookErr := exec.LookPath("npm"); lookErr != nil {
+		return fmt.Errorf("refreshed dependencies left %d service lockfile(s) out of sync but npm is not installed to regenerate them; install npm, then run `npm install --package-lock-only` in the directory of each: %s", len(labels), strings.Join(labels, ", "))
+	}
+	for _, entry := range stale {
+		command := exec.CommandContext(ctx, "npm", "install", "--package-lock-only", "--no-audit", "--no-fund")
+		command.Dir = filepath.Join(moduleDir, filepath.FromSlash(entry.dir))
+		if out, runErr := command.CombinedOutput(); runErr != nil {
+			return fmt.Errorf("regenerate %s: %w: %s", path.Join(entry.dir, entry.lockName), runErr, strings.TrimSpace(string(out)))
+		}
+	}
+	output.Info("✓ regenerated %d service lockfile(s) to match the refreshed dependencies:", len(stale))
+	for _, label := range labels {
+		output.Info("  REGENERATED %s", label)
+	}
+	return nil
 }
 
 func restoreComposedModuleCode(ctx context.Context, target *resources.Module, options *moduleSyncOptions) error {
