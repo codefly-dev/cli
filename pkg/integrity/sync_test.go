@@ -27,7 +27,22 @@ func TestBaseSyncPreservesOverlaysAndAppliesOnlyOwnedFiles(t *testing.T) {
 	writeManifest(t, source, "stable.txt", "update.txt", "create.txt", "module.codefly.yaml")
 	writeManifest(t, target, "stable.txt", "update.txt", "remove.txt", "module.codefly.yaml")
 
+	// module.codefly.yaml is an allow-listed divergence whose recorded base
+	// differs from the pinned source: a masked upstream change that now blocks by
+	// default. Keeping the local composition root is the intent here, so the
+	// operator re-affirms with --keep-local-divergences; overlays and owned files
+	// must still apply exactly as before.
 	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.AllowedUpstreamChanged, []string{"module.codefly.yaml"}) {
+		t.Fatalf("AllowedUpstreamChanged = %#v, want [module.codefly.yaml]", plan.AllowedUpstreamChanged)
+	}
+	if err := plan.Applicable(); err == nil {
+		t.Fatal("masked allow-listed upstream change must block by default")
+	}
+	plan, err = PlanBaseSyncWithResolutions(source, target, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +55,7 @@ func TestBaseSyncPreservesOverlaysAndAppliesOnlyOwnedFiles(t *testing.T) {
 		!reflect.DeepEqual(plan.Allowed, []string{"module.codefly.yaml"}) {
 		t.Fatalf("unexpected plan: %#v", plan)
 	}
-	if _, err := ApplyBaseSync(source, target); err != nil {
+	if _, err := ApplyBaseSync(source, target, true); err != nil {
 		t.Fatal(err)
 	}
 	assertFileContents(t, filepath.Join(target, "update.txt"), "new")
@@ -49,6 +64,140 @@ func TestBaseSyncPreservesOverlaysAndAppliesOnlyOwnedFiles(t *testing.T) {
 	assertFileContents(t, filepath.Join(target, "module.codefly.yaml"), targetModuleYAML)
 	if _, err := os.Stat(filepath.Join(target, "remove.txt")); !os.IsNotExist(err) {
 		t.Fatalf("retired base file still exists: %v", err)
+	}
+}
+
+func TestBaseSyncFlagsAllowListedUpstreamChange(t *testing.T) {
+	source, target := syncFixture(t)
+	// Both files are allow-listed divergences (kept local unconditionally).
+	// overlay.txt's pinned upstream digest moved since the recorded base;
+	// stable.txt's did not. Only the former is a masked upstream change.
+	writeTestFile(t, filepath.Join(source, "overlay.txt"), "upstream v2")
+	writeTestFile(t, filepath.Join(source, "stable.txt"), "shared")
+	writeTestFile(t, filepath.Join(target, "overlay.txt"), "upstream v1")
+	writeTestFile(t, filepath.Join(target, "stable.txt"), "shared")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-integrity-allow.json"), map[string]any{
+		"overlay.txt":       "product overlay",
+		"stable.txt":        "product overlay",
+		"requiredAdditions": map[string]string{},
+	})
+	writeManifest(t, source, "overlay.txt", "stable.txt")
+	writeManifest(t, target, "overlay.txt", "stable.txt")
+
+	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both remain allow-listed (kept local); only overlay.txt is flagged as
+	// masking an upstream change, so the drop can never be silent.
+	if !reflect.DeepEqual(plan.AllowedUpstreamChanged, []string{"overlay.txt"}) {
+		t.Fatalf("AllowedUpstreamChanged = %#v, want [overlay.txt]", plan.AllowedUpstreamChanged)
+	}
+	// The "still kept local" contract must hold for both files regardless of the
+	// masking flag — surfacing the change must not eject either from Allowed.
+	if !reflect.DeepEqual(plan.Allowed, []string{"overlay.txt", "stable.txt"}) {
+		t.Fatalf("Allowed = %#v, want [overlay.txt stable.txt]", plan.Allowed)
+	}
+	// A masked upstream change blocks by default: an unattended --apply must not
+	// be able to drop it with a zero exit.
+	if err := plan.Applicable(); err == nil {
+		t.Fatal("masked allow-listed upstream change must block apply by default")
+	}
+	if !plan.MaskedUpstreamBlocked() {
+		t.Fatal("plan should report it is blocked solely on the masked upstream change")
+	}
+	// --keep-local-divergences is the explicit re-affirmation that unblocks it,
+	// keeping the local version while the recorded base advances on apply.
+	reaffirmed, err := PlanBaseSyncWithResolutions(source, target, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reaffirmed.AllowedUpstreamChanged, []string{"overlay.txt"}) {
+		t.Fatalf("re-affirmed AllowedUpstreamChanged = %#v, want [overlay.txt]", reaffirmed.AllowedUpstreamChanged)
+	}
+	if err := reaffirmed.Applicable(); err != nil {
+		t.Fatalf("--keep-local-divergences must let the intentional divergence apply: %v", err)
+	}
+	if reaffirmed.MaskedUpstreamBlocked() {
+		t.Fatal("re-affirmed plan must not report itself blocked")
+	}
+}
+
+func TestBaseSyncDoesNotFlagAllowListedFirstPopulate(t *testing.T) {
+	source, target := syncFixture(t)
+	// overlay.txt is allow-listed and present in the source manifest, but the
+	// target has no recorded base for it (wasBase=false). There is no recorded
+	// base to have moved from, so this is an initial state, not a masked upstream
+	// change — it must not be flagged, or every first populate would false-alarm.
+	writeTestFile(t, filepath.Join(source, "overlay.txt"), "upstream v1")
+	writeTestFile(t, filepath.Join(target, "overlay.txt"), "local divergence")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-integrity-allow.json"), map[string]any{
+		"overlay.txt":       "product overlay",
+		"requiredAdditions": map[string]string{},
+	})
+	writeManifest(t, source, "overlay.txt")
+	writeManifest(t, target) // empty recorded base: no entry for overlay.txt
+
+	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.AllowedUpstreamChanged) != 0 {
+		t.Fatalf("AllowedUpstreamChanged = %#v, want empty (no recorded base to move from)", plan.AllowedUpstreamChanged)
+	}
+	if !reflect.DeepEqual(plan.Allowed, []string{"overlay.txt"}) {
+		t.Fatalf("Allowed = %#v, want [overlay.txt]", plan.Allowed)
+	}
+	if err := plan.Applicable(); err != nil {
+		t.Fatalf("first-populate allow-listed path must not block: %v", err)
+	}
+}
+
+func TestBaseSyncFlagsAllowListedUpstreamRemoval(t *testing.T) {
+	source, target := syncFixture(t)
+	// retired.txt was part of the recorded base and is allow-listed; the pinned
+	// source dropped it (upstream removal) while the local copy still exists.
+	// Keeping it local silently would mask the removal, so it must be surfaced
+	// and block by default, exactly like a masked upstream modification.
+	writeTestFile(t, filepath.Join(target, "retired.txt"), "kept local after upstream removed it")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-integrity-allow.json"), map[string]any{
+		"retired.txt":       "product overlay",
+		"requiredAdditions": map[string]string{},
+	})
+	writeManifest(t, source)                // source no longer ships retired.txt
+	writeManifest(t, target, "retired.txt") // but it is in the recorded base
+
+	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.AllowedUpstreamRemoved, []string{"retired.txt"}) {
+		t.Fatalf("AllowedUpstreamRemoved = %#v, want [retired.txt]", plan.AllowedUpstreamRemoved)
+	}
+	if err := plan.Applicable(); err == nil {
+		t.Fatal("masked allow-listed upstream removal must block apply by default")
+	}
+	// Re-affirmation unblocks the removal case too, while the local file is kept.
+	reaffirmed, err := PlanBaseSyncWithResolutions(source, target, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reaffirmed.AllowedUpstreamRemoved, []string{"retired.txt"}) {
+		t.Fatalf("re-affirmed AllowedUpstreamRemoved = %#v, want [retired.txt]", reaffirmed.AllowedUpstreamRemoved)
+	}
+	if err := reaffirmed.Applicable(); err != nil {
+		t.Fatalf("--keep-local-divergences must let a masked removal apply: %v", err)
+	}
+	// A local file already gone is nothing to keep and must not be flagged.
+	if err := os.Remove(filepath.Join(target, "retired.txt")); err != nil {
+		t.Fatal(err)
+	}
+	gone, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone.AllowedUpstreamRemoved) != 0 {
+		t.Fatalf("AllowedUpstreamRemoved = %#v, want empty when local file is already gone", gone.AllowedUpstreamRemoved)
 	}
 }
 
@@ -64,7 +213,7 @@ func TestBaseSyncTreatsMissingTargetManifestAsFirstPopulate(t *testing.T) {
 	if !reflect.DeepEqual(plan.Create, []string{"services/kept/code/main.go"}) {
 		t.Fatalf("create = %v", plan.Create)
 	}
-	if _, err := ApplyBaseSync(source, target); err != nil {
+	if _, err := ApplyBaseSync(source, target, false); err != nil {
 		t.Fatal(err)
 	}
 	assertFileContents(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package main\n")
@@ -86,7 +235,7 @@ func TestBaseSyncFailsClosedWhenTargetManifestMissingButBaseFilesDiffer(t *testi
 	if _, err := PlanBaseSync(source, target); err == nil {
 		t.Fatal("plan against a missing manifest with conflicting base files was not refused")
 	}
-	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"services/kept/code/main.go"}); err == nil {
+	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"services/kept/code/main.go"}, false); err == nil {
 		t.Fatal("--accept-upstream overwrote a base file whose provenance was erased")
 	}
 	assertFileContents(t, filepath.Join(target, "services", "kept", "code", "main.go"), "package main // heavily customized\n")
@@ -145,7 +294,7 @@ func TestBaseSyncRefusesModifiedBaseAndOverlayCollisionWithoutMutation(t *testin
 		Files: map[string]string{"owned.txt": digestOf(t, "old owned")},
 	})
 
-	plan, err := ApplyBaseSync(source, target)
+	plan, err := ApplyBaseSync(source, target, false)
 	if err == nil {
 		t.Fatal("unsafe base sync unexpectedly applied")
 	}
@@ -167,7 +316,7 @@ func TestBaseSyncAppliesOnlyExplicitUpstreamResolutions(t *testing.T) {
 		Files: map[string]string{"owned.txt": digestOf(t, "old owned")},
 	})
 
-	plan, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt"})
+	plan, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +329,7 @@ func TestBaseSyncAppliesOnlyExplicitUpstreamResolutions(t *testing.T) {
 	}
 	assertFileContents(t, filepath.Join(target, "owned.txt"), "product edited base")
 
-	plan, err = ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt", "collision.txt"})
+	plan, err = ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt", "collision.txt"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,10 +349,10 @@ func TestBaseSyncUpstreamResolutionIsResumable(t *testing.T) {
 		Files: map[string]string{"owned.txt": digestOf(t, "old owned")},
 	})
 
-	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt"}); err != nil {
+	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt"}, false); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt"})
+	plan, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +362,7 @@ func TestBaseSyncUpstreamResolutionIsResumable(t *testing.T) {
 	if err := plan.Applicable(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt"}); err != nil {
+	if _, err := ApplyBaseSyncWithResolutions(source, target, []string{"owned.txt"}, false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -240,7 +389,7 @@ func TestBaseSyncRejectsUnsafeUpstreamResolutionSelections(t *testing.T) {
 		{name: "required product addition", path: "protected.txt"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := PlanBaseSyncWithResolutions(source, target, []string{test.path}); err == nil {
+			if _, err := PlanBaseSyncWithResolutions(source, target, []string{test.path}, false); err == nil {
 				t.Fatalf("unsafe upstream selection %q was accepted", test.path)
 			}
 		})
@@ -256,7 +405,7 @@ func TestBaseSyncRejectsDuplicateUpstreamResolution(t *testing.T) {
 		Files: map[string]string{"owned.txt": digestOf(t, "old")},
 	})
 
-	if _, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt", "owned.txt"}); err == nil {
+	if _, err := PlanBaseSyncWithResolutions(source, target, []string{"owned.txt", "owned.txt"}, false); err == nil {
 		t.Fatal("duplicate upstream selection was accepted")
 	}
 }
@@ -269,7 +418,7 @@ func TestBaseSyncDoesNotInstallServicesOutsideConsumerComposition(t *testing.T) 
 	writeManifest(t, source, "services/kept/base.txt", "services/omitted/base.txt")
 	writeManifest(t, target, "services/kept/base.txt")
 
-	plan, err := ApplyBaseSync(source, target)
+	plan, err := ApplyBaseSync(source, target, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +515,7 @@ func TestBaseSyncRejectsManifestTraversalBeforeMutation(t *testing.T) {
 	})
 	writeManifest(t, target)
 
-	plan, err := ApplyBaseSync(source, target)
+	plan, err := ApplyBaseSync(source, target, false)
 	if err == nil {
 		t.Fatal("manifest traversal unexpectedly applied")
 	}

@@ -41,12 +41,13 @@ type moduleSourceLock struct {
 }
 
 type moduleSyncOptions struct {
-	Source         string
-	To             string
-	Subdirectory   string
-	AcceptUpstream []string
-	Apply          bool
-	RestoreCode    bool
+	Source               string
+	To                   string
+	Subdirectory         string
+	AcceptUpstream       []string
+	Apply                bool
+	RestoreCode          bool
+	KeepLocalDivergences bool
 }
 
 // ModuleCmd updates an immutable base underneath a product-owned overlay.
@@ -245,6 +246,7 @@ func init() {
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.To, "to", "", "immutable semantic-version tag to resolve (for example v0.0.8)")
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
 	ModuleCmd.Flags().StringArrayVar(&moduleSyncFlags.AcceptUpstream, "accept-upstream", nil, "replace one reviewed conflicting path with the immutable upstream version (repeatable)")
+	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.KeepLocalDivergences, "keep-local-divergences", false, "re-affirm allow-listed divergences whose upstream changed or was removed, keeping the local version and advancing the recorded base")
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.Apply, "apply", false, "apply the reviewed update; default is dry-run")
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.RestoreCode, "restore-code", false, "restore missing base-owned service code from the pinned module version")
 }
@@ -259,7 +261,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	}
 	defer cleanup()
 
-	plan, err := integrity.PlanBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream)
+	plan, err := integrity.PlanBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream, options.KeepLocalDivergences)
 	if err != nil {
 		return err
 	}
@@ -296,7 +298,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	if err := writeModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath), resolved.Lock); err != nil {
 		return fmt.Errorf("write module source lock: %w", err)
 	}
-	applied, err := integrity.ApplyBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream)
+	applied, err := integrity.ApplyBaseSyncWithResolutions(resolved.Root, target.Dir(), options.AcceptUpstream, options.KeepLocalDivergences)
 	if err != nil {
 		return err
 	}
@@ -854,7 +856,10 @@ func printModuleSyncPlan(module string, plan *integrity.BaseSyncPlan, applying b
 	} else {
 		output.Info("  source: %s (local, not persisted)", plan.SourceRoot)
 	}
-	output.Info("  unchanged=%d create=%d update=%d remove=%d omitted=%d allowed=%d", len(plan.Unchanged), len(plan.Create), len(plan.Update), len(plan.Remove), len(plan.Omitted), len(plan.Allowed))
+	// upstream-changed is a subset of allowed (both are source-owned paths), so it
+	// is shown parenthetically to avoid reading as an additive count; upstream-removed
+	// is disjoint (the path left the source) and is its own token.
+	output.Info("  unchanged=%d create=%d update=%d remove=%d omitted=%d allowed=%d (upstream-changed=%d) allowed-upstream-removed=%d", len(plan.Unchanged), len(plan.Create), len(plan.Update), len(plan.Remove), len(plan.Omitted), len(plan.Allowed), len(plan.AllowedUpstreamChanged), len(plan.AllowedUpstreamRemoved))
 	output.Info("  resolve-upstream=%d already-reconciled=%d", len(plan.ResolveUpstream), len(plan.ReconciledUpstream))
 	output.Info("  modified=%d collisions=%d stale-modified=%d released=%d", len(plan.Modified), len(plan.Collisions), len(plan.StaleModified), len(plan.Released))
 	printPathGroups([]pathGroup{
@@ -863,6 +868,20 @@ func printModuleSyncPlan(module string, plan *integrity.BaseSyncPlan, applying b
 		{"RESOLVE FROM UPSTREAM", plan.ResolveUpstream},
 		{"ALREADY RECONCILED FROM UPSTREAM", plan.ReconciledUpstream},
 	})
+	if masked := len(plan.AllowedUpstreamChanged) + len(plan.AllowedUpstreamRemoved); masked > 0 {
+		if plan.MaskedUpstreamBlocked() {
+			output.Warning("  %d allow-listed file(s) received an upstream change this sync; sync is BLOCKED until you decide (they would otherwise be kept LOCAL, silently dropping the upstream change):", masked)
+		} else {
+			output.Warning("  %d allow-listed file(s) received an upstream change this sync, kept LOCAL by --keep-local-divergences (the recorded base advances to acknowledge it):", masked)
+		}
+		printPathGroups([]pathGroup{
+			{"ALLOW-LISTED DIVERGENCE MASKING AN UPSTREAM CHANGE", plan.AllowedUpstreamChanged},
+			{"ALLOW-LISTED DIVERGENCE MASKING AN UPSTREAM REMOVAL", plan.AllowedUpstreamRemoved},
+		})
+		if plan.MaskedUpstreamBlocked() {
+			output.Warning("  to proceed: keep the divergences with --keep-local-divergences, or take upstream by removing the entry from tools/base-integrity-allow.json and re-running (optionally with --accept-upstream <path>), or reconcile by hand.")
+		}
+	}
 	for _, line := range sourceInvalidReport(plan.SourceInvalid) {
 		output.Info("  %s", line)
 	}
