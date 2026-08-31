@@ -48,6 +48,7 @@ type moduleSyncOptions struct {
 	Apply                bool
 	RestoreCode          bool
 	KeepLocalDivergences bool
+	VerifyTag            bool
 }
 
 // ModuleCmd updates an immutable base underneath a product-owned overlay.
@@ -247,6 +248,7 @@ func init() {
 	ModuleCmd.Flags().StringVar(&moduleSyncFlags.Subdirectory, "subdir", "", "module path inside the source repository (auto-detects module/)")
 	ModuleCmd.Flags().StringArrayVar(&moduleSyncFlags.AcceptUpstream, "accept-upstream", nil, "replace one reviewed conflicting path with the immutable upstream version (repeatable)")
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.KeepLocalDivergences, "keep-local-divergences", false, "re-affirm allow-listed divergences whose upstream changed or was removed, keeping the local version and advancing the recorded base")
+	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.VerifyTag, "verify-tag", false, "exit non-zero unless the tree fully reaches --to (no blocker withheld the apply and no allow-listed divergence masked an upstream change)")
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.Apply, "apply", false, "apply the reviewed update; default is dry-run")
 	ModuleCmd.Flags().BoolVar(&moduleSyncFlags.RestoreCode, "restore-code", false, "restore missing base-owned service code from the pinned module version")
 }
@@ -273,6 +275,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	}
 	printModuleSyncPlan(target.Name, &plan, options.Apply, resolved.Lock)
 	if err := plan.Applicable(); err != nil {
+		reportBaseNotAdvanced(target.Dir(), resolved.Lock, &plan)
 		return err
 	}
 	pendingRefresh, err := integrity.PlanServiceManifestRefresh(resolved.Root, target.Dir())
@@ -287,7 +290,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	printLockfileRefreshPlan(lockLabels(pendingLocks), options.Apply)
 	if !options.Apply {
 		output.Info("module sync dry-run is applicable; rerun with --apply")
-		return nil
+		return verifyTagReach(options, resolved.Lock, &plan)
 	}
 	if resolved.Lock == nil {
 		return fmt.Errorf("local module sources are preview-only; publish an immutable semantic-version tag before applying")
@@ -322,7 +325,56 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	if err := regenerateNpmLockfiles(ctx, resolved.Root, target.Dir(), &applied); err != nil {
 		return err
 	}
-	return nil
+	return verifyTagReach(options, resolved.Lock, &applied)
+}
+
+// reportBaseNotAdvanced surfaces the aggregate outcome that the per-blocker
+// groups can bury: an --apply whose blockers withheld it leaves the recorded
+// base pinned at its old ref, never reaching --to. Without this line the run's
+// only signal is a reconciliation error a busy operator can miss, so every
+// downstream render/promote ships stale code believing it reached the target.
+// It is scoped to an --apply against a persisted remote lock (advancement is
+// only a contract there) and stays silent when the recorded base is already the
+// target — a same-tag re-run is not a stalled advance.
+func reportBaseNotAdvanced(moduleDir string, lock *moduleSourceLock, plan *integrity.BaseSyncPlan) {
+	if lock == nil {
+		return
+	}
+	recorded := recordedBaseRef(moduleDir)
+	if recorded == lock.Ref {
+		return
+	}
+	if recorded == "" {
+		recorded = "(unpinned)"
+	}
+	output.Warning("base-source NOT advanced: still %s (target %s) — %d file(s) withheld/masked; tree is not %s",
+		recorded, lock.Ref, plan.WithheldPaths(), lock.Ref)
+}
+
+// verifyTagReach enforces --verify-tag: the tree must fully reach the target
+// tag. A blocker already fails the run on its own, so the check that only
+// --verify-tag adds is the re-affirmed apply that advanced the recorded base
+// while an allow-listed divergence kept a masked upstream change local — a
+// zero-exit outcome the flag turns into a non-zero one for CI gates.
+func verifyTagReach(options *moduleSyncOptions, lock *moduleSourceLock, plan *integrity.BaseSyncPlan) error {
+	if !options.VerifyTag || plan.ReachesTarget() {
+		return nil
+	}
+	target := strings.TrimSpace(options.To)
+	if lock != nil {
+		target = lock.Ref
+	}
+	return fmt.Errorf("--verify-tag: tree does not fully reach %s — %d allow-listed divergence(s) masked an upstream change or removal and kept the local version", target, len(plan.AllowedUpstreamChanged)+len(plan.AllowedUpstreamRemoved))
+}
+
+// recordedBaseRef returns the ref currently pinned in the module's source lock,
+// or "" when the module has no valid lock yet (a brand-new or legacy scaffold).
+func recordedBaseRef(moduleDir string) string {
+	lock, err := readModuleSourceLock(filepath.Join(moduleDir, moduleSourceLockRelativePath))
+	if err != nil {
+		return ""
+	}
+	return lock.Ref
 }
 
 func printServiceManifestRefreshPlan(pending []string, applying bool) {

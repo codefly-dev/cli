@@ -123,6 +123,56 @@ func TestBaseSyncFlagsAllowListedUpstreamChange(t *testing.T) {
 	}
 }
 
+// A masked upstream change means the tree cannot reach the target tag: it
+// blocks (and is counted as withheld) by default, and even a re-affirmed apply
+// that advances the recorded base keeps the local version, so ReachesTarget
+// stays false. A clean sync with no masking reaches the tag.
+func TestReachesTargetAndWithheldPathsTrackMaskedUpstream(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "overlay.txt"), "upstream v2")
+	writeTestFile(t, filepath.Join(target, "overlay.txt"), "upstream v1")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-integrity-allow.json"), map[string]any{
+		"overlay.txt":       "product overlay",
+		"requiredAdditions": map[string]string{},
+	})
+	writeManifest(t, source, "overlay.txt")
+	writeManifest(t, target, "overlay.txt")
+
+	blocked, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.WithheldPaths() != 1 {
+		t.Fatalf("WithheldPaths = %d, want 1", blocked.WithheldPaths())
+	}
+	if blocked.ReachesTarget() {
+		t.Fatal("a masked upstream change must not report the tree reaches the target")
+	}
+
+	reaffirmed, err := PlanBaseSyncWithResolutions(source, target, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Re-affirmation unblocks the apply (nothing withheld) but the local version
+	// is still kept, so the tree does not reach the tag byte-for-byte.
+	if reaffirmed.WithheldPaths() != 0 {
+		t.Fatalf("re-affirmed WithheldPaths = %d, want 0", reaffirmed.WithheldPaths())
+	}
+	if reaffirmed.ReachesTarget() {
+		t.Fatal("keeping a masked divergence local must still not reach the target tag")
+	}
+
+	writeTestFile(t, filepath.Join(target, "overlay.txt"), "upstream v2")
+	writeManifest(t, target, "overlay.txt")
+	clean, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clean.ReachesTarget() {
+		t.Fatal("a sync with no masking or blockers must reach the target tag")
+	}
+}
+
 func TestBaseSyncDoesNotFlagAllowListedFirstPopulate(t *testing.T) {
 	source, target := syncFixture(t)
 	// overlay.txt is allow-listed and present in the source manifest, but the
