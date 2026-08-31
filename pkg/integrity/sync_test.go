@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -120,6 +121,79 @@ func TestBaseSyncFlagsAllowListedUpstreamChange(t *testing.T) {
 	}
 	if reaffirmed.MaskedUpstreamBlocked() {
 		t.Fatal("re-affirmed plan must not report itself blocked")
+	}
+}
+
+// A masked upstream change means the tree cannot reach the target tag: it
+// blocks (and is counted as withheld) by default, and even a re-affirmed apply
+// that advances the recorded base keeps the local version, so ReachesTarget
+// stays false. A clean sync with no masking reaches the tag.
+func TestReachesTargetAndWithheldPathsTrackMaskedUpstream(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, "overlay.txt"), "upstream v2")
+	writeTestFile(t, filepath.Join(target, "overlay.txt"), "upstream v1")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-integrity-allow.json"), map[string]any{
+		"overlay.txt":       "product overlay",
+		"requiredAdditions": map[string]string{},
+	})
+	writeManifest(t, source, "overlay.txt")
+	writeManifest(t, target, "overlay.txt")
+
+	blocked, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.WithheldPaths() != 1 {
+		t.Fatalf("WithheldPaths = %d, want 1", blocked.WithheldPaths())
+	}
+	if blocked.ReachesTarget() {
+		t.Fatal("a masked upstream change must not report the tree reaches the target")
+	}
+
+	reaffirmed, err := PlanBaseSyncWithResolutions(source, target, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Re-affirmation unblocks the apply (nothing withheld) but the local version
+	// is still kept, so the tree does not reach the tag byte-for-byte.
+	if reaffirmed.WithheldPaths() != 0 {
+		t.Fatalf("re-affirmed WithheldPaths = %d, want 0", reaffirmed.WithheldPaths())
+	}
+	if reaffirmed.ReachesTarget() {
+		t.Fatal("keeping a masked divergence local must still not reach the target tag")
+	}
+
+	writeTestFile(t, filepath.Join(target, "overlay.txt"), "upstream v2")
+	writeManifest(t, target, "overlay.txt")
+	clean, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clean.ReachesTarget() {
+		t.Fatal("a sync with no masking or blockers must reach the target tag")
+	}
+}
+
+// A manifest path can be both an invalid source (missing/unsafe upstream) and
+// an invalid target (a symlink in its place), landing it in two blocker groups.
+// Applicable reports each category, but WithheldPaths counts distinct files, so
+// the "N files withheld" figure never over-reports a single doubly-flagged path.
+func TestWithheldPathsCountsDistinctFilesAcrossGroups(t *testing.T) {
+	plan := BaseSyncPlan{
+		SourceInvalid: []InvalidSource{{Path: "services/api/code/main.go", Reason: SourceUnreadable}},
+		TargetInvalid: []string{"services/api/code/main.go"},
+		Modified:      []string{"module.codefly.yaml"},
+	}
+	if got := plan.WithheldPaths(); got != 2 {
+		t.Fatalf("WithheldPaths = %d, want 2 (one doubly-flagged path + one modified)", got)
+	}
+	// Applicable still names both categories the path triggers.
+	err := plan.Applicable()
+	if err == nil {
+		t.Fatal("plan with invalid paths must not be applicable")
+	}
+	if !strings.Contains(err.Error(), "invalid-source=1") || !strings.Contains(err.Error(), "invalid-target=1") {
+		t.Fatalf("Applicable must report both categories: %v", err)
 	}
 }
 

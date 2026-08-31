@@ -104,32 +104,79 @@ func (plan *BaseSyncPlan) MaskedUpstreamBlocked() bool {
 		(len(plan.AllowedUpstreamChanged) > 0 || len(plan.AllowedUpstreamRemoved) > 0)
 }
 
-func (plan BaseSyncPlan) Applicable() error {
-	var blockers []string
-	add := func(label string, count int) {
-		if count > 0 {
-			blockers = append(blockers, fmt.Sprintf("%s=%d", label, count))
-		}
+type blockerGroup struct {
+	label string
+	paths []string
+}
+
+// blockerGroups is the single source of truth for what withholds an apply, so
+// Applicable's error string and WithheldPaths' count can never drift apart. Each
+// group carries its paths, not just a count, so WithheldPaths can dedup a path
+// that lands in more than one group (a manifest path can be both an invalid
+// source and an invalid target).
+func (plan *BaseSyncPlan) blockerGroups() []blockerGroup {
+	invalidSource := make([]string, len(plan.SourceInvalid))
+	for i, entry := range plan.SourceInvalid {
+		invalidSource[i] = entry.Path
 	}
-	add("invalid-source", len(plan.SourceInvalid))
-	add("invalid-target", len(plan.TargetInvalid))
-	add("modified-base", len(plan.Modified))
-	add("overlay-collisions", len(plan.Collisions))
-	add("modified-upstream-deletions", len(plan.StaleModified))
-	add("missing-required-overlays", len(plan.MissingRequiredAdditions))
-	add("invalid-required-overlays", len(plan.InvalidRequiredAdditions))
+	groups := []blockerGroup{
+		{"invalid-source", invalidSource},
+		{"invalid-target", plan.TargetInvalid},
+		{"modified-base", plan.Modified},
+		{"overlay-collisions", plan.Collisions},
+		{"modified-upstream-deletions", plan.StaleModified},
+		{"missing-required-overlays", plan.MissingRequiredAdditions},
+		{"invalid-required-overlays", plan.InvalidRequiredAdditions},
+	}
 	// A masked upstream change/removal blocks by default: leaving it non-blocking
 	// is exactly how an unattended --apply shipped stale allow-listed code with a
 	// zero exit. --keep-local-divergences (divergencesReaffirmed) is the explicit,
 	// once-per-change acknowledgement that lets an intentional divergence proceed.
 	if !plan.divergencesReaffirmed {
-		add("allowed-upstream-changed", len(plan.AllowedUpstreamChanged))
-		add("allowed-upstream-removed", len(plan.AllowedUpstreamRemoved))
+		groups = append(groups,
+			blockerGroup{"allowed-upstream-changed", plan.AllowedUpstreamChanged},
+			blockerGroup{"allowed-upstream-removed", plan.AllowedUpstreamRemoved},
+		)
+	}
+	return groups
+}
+
+func (plan *BaseSyncPlan) Applicable() error {
+	var blockers []string
+	for _, group := range plan.blockerGroups() {
+		if len(group.paths) > 0 {
+			blockers = append(blockers, fmt.Sprintf("%s=%d", group.label, len(group.paths)))
+		}
 	}
 	if len(blockers) == 0 {
 		return nil
 	}
 	return fmt.Errorf("base sync requires reconciliation: %s", strings.Join(blockers, ", "))
+}
+
+// WithheldPaths counts the distinct files that block advancement — the set
+// Applicable() refuses on, deduplicated so a path flagged in two groups counts
+// once. When non-zero, an --apply is withheld and the recorded base does not
+// advance to the target tag.
+func (plan *BaseSyncPlan) WithheldPaths() int {
+	withheld := make(map[string]struct{})
+	for _, group := range plan.blockerGroups() {
+		for _, path := range group.paths {
+			withheld[path] = struct{}{}
+		}
+	}
+	return len(withheld)
+}
+
+// ReachesTarget reports whether applying this plan lands a tree that fully
+// matches the pinned target tag. It is false when a blocker withholds the apply
+// or when an allow-listed divergence masks an upstream change or removal and
+// keeps the local version — so even a re-affirmed apply that advances the
+// recorded base does not "reach" the tag byte-for-byte.
+func (plan *BaseSyncPlan) ReachesTarget() bool {
+	return plan.WithheldPaths() == 0 &&
+		len(plan.AllowedUpstreamChanged) == 0 &&
+		len(plan.AllowedUpstreamRemoved) == 0
 }
 
 func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {

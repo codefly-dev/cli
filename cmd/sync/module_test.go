@@ -872,6 +872,177 @@ func TestRollbackRemovesPopulatedModuleDir(t *testing.T) {
 	assertModuleAbsent(t, loaded, root)
 }
 
+// maskedUpstreamFixture builds a remote whose allow-listed overlay.txt changed
+// between v1.0.0 and v2.0.0, and a target module pinned at v1.0.0 that keeps its
+// own copy. A --to v2.0.0 sync therefore masks a real upstream change: it blocks
+// by default, and even --keep-local-divergences keeps the local file so the tree
+// never reaches v2.0.0. Returns the remote URL and the loaded target module.
+func maskedUpstreamFixture(t *testing.T) (string, *resources.Module) {
+	t.Helper()
+	repository := t.TempDir()
+	runGit(t, repository, "init", "--quiet")
+	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
+	runGit(t, repository, "config", "user.name", "Module Sync Test")
+	sourceModule := filepath.Join(repository, "module")
+
+	writeSyncTestFile(t, filepath.Join(sourceModule, "module.codefly.yaml"), "kind: module\nname: app\nservices: []\n")
+	writeSyncTestFile(t, filepath.Join(sourceModule, "overlay.txt"), "upstream v1")
+	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
+		`{"files":{"overlay.txt":"`+syncTestDigest("upstream v1")+`"}}`)
+	runGit(t, repository, "add", ".")
+	runGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "v1")
+	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v1.0.0")
+	v1Commit := runGit(t, repository, "rev-parse", "v1.0.0^{commit}")
+
+	writeSyncTestFile(t, filepath.Join(sourceModule, "overlay.txt"), "upstream v2")
+	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
+		`{"files":{"overlay.txt":"`+syncTestDigest("upstream v2")+`"}}`)
+	runGit(t, repository, "add", ".")
+	runGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "v2")
+	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v2.0.0")
+
+	remote := (&url.URL{Scheme: "file", Path: repository}).String()
+
+	targetRoot := filepath.Join(t.TempDir(), "app")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "module.codefly.yaml"), "kind: module\nname: app\nservices: []\n")
+	writeSyncTestFile(t, filepath.Join(targetRoot, "overlay.txt"), "local divergence")
+	writeSyncTestFile(t, filepath.Join(targetRoot, moduleBaseManifestRelativePath),
+		`{"files":{"overlay.txt":"`+syncTestDigest("upstream v1")+`"}}`)
+	writeSyncTestFile(t, filepath.Join(targetRoot, "tools", "base-integrity-allow.json"),
+		`{"overlay.txt":"product overlay","requiredAdditions":{}}`)
+	writeSyncTestFile(t, filepath.Join(targetRoot, moduleSourceLockRelativePath),
+		`{"schema":"`+moduleSourceLockSchema+`","repository":"`+remote+`","ref":"v1.0.0","commit":"`+v1Commit+`"}`)
+
+	target, err := resources.LoadModuleFromDir(context.Background(), targetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return remote, target
+}
+
+// A blocked apply must not silently leave the base pinned at the old ref: it
+// prints an aggregate "base-source NOT advanced" line and leaves the lock intact.
+func TestSyncModuleBlockedApplyReportsBaseNotAdvanced(t *testing.T) {
+	remote, target := maskedUpstreamFixture(t)
+
+	output.StartCapture()
+	defer output.DrainCapture()
+	err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
+		Source: remote, To: "v2.0.0", Subdirectory: "module", Apply: true,
+	})
+	captured := output.DrainCapture()
+	if err == nil {
+		t.Fatal("a masked upstream change must withhold the apply")
+	}
+
+	var advanced string
+	for _, line := range captured {
+		if strings.Contains(line.Message, "base-source NOT advanced") {
+			advanced = line.Message
+		}
+	}
+	if advanced == "" {
+		t.Fatalf("no base-source NOT advanced line in output: %#v", captured)
+	}
+	for _, want := range []string{"still v1.0.0", "target v2.0.0", "tree is not v2.0.0"} {
+		if !strings.Contains(advanced, want) {
+			t.Fatalf("advance warning %q missing %q", advanced, want)
+		}
+	}
+
+	lock, err := readModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.Ref != "v1.0.0" {
+		t.Fatalf("recorded base ref = %q, want v1.0.0 (withheld apply must not advance it)", lock.Ref)
+	}
+}
+
+// A dry-run that previews the same blockers must not claim the base was NOT
+// advanced: nothing was ever going to advance, so the apply-outcome line would
+// misrepresent a preview. The blocker error still surfaces on its own.
+func TestSyncModuleDryRunDoesNotReportBaseNotAdvanced(t *testing.T) {
+	remote, target := maskedUpstreamFixture(t)
+
+	output.StartCapture()
+	defer output.DrainCapture()
+	err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
+		Source: remote, To: "v2.0.0", Subdirectory: "module", // no Apply
+	})
+	captured := output.DrainCapture()
+	if err == nil {
+		t.Fatal("a masked upstream change must still block the dry-run")
+	}
+	for _, line := range captured {
+		if strings.Contains(line.Message, "base-source NOT advanced") {
+			t.Fatalf("dry-run must not print an apply-outcome advance line: %q", line.Message)
+		}
+	}
+}
+
+// --verify-tag turns the one zero-exit path that still ships a partial tree —
+// a re-affirmed apply that advances the base while keeping a masked upstream
+// change local — into a non-zero exit for CI, without preventing the apply.
+func TestSyncModuleVerifyTagFailsOnReaffirmedMask(t *testing.T) {
+	remote, target := maskedUpstreamFixture(t)
+
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
+		Source: remote, To: "v2.0.0", Subdirectory: "module", Apply: true, KeepLocalDivergences: true, VerifyTag: true,
+	}); err == nil {
+		t.Fatal("--verify-tag must fail when a masked upstream change is kept local")
+	} else if !strings.Contains(err.Error(), "verify-tag") || !strings.Contains(err.Error(), "v2.0.0") {
+		t.Fatalf("error does not explain the verify-tag failure: %v", err)
+	}
+
+	// The apply still ran: the local file is kept and the recorded base advances,
+	// which is exactly why a human-readable line alone would not fail CI.
+	assertSyncTestFile(t, filepath.Join(target.Dir(), "overlay.txt"), "local divergence")
+	lock, err := readModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.Ref != "v2.0.0" {
+		t.Fatalf("recorded base ref = %q, want v2.0.0 (re-affirmed apply advances it)", lock.Ref)
+	}
+}
+
+// --verify-tag is a reachability assertion, so it must also fail a dry-run
+// preview that would not reach the tag — catching the problem before any apply.
+func TestSyncModuleVerifyTagFailsOnDryRunPreview(t *testing.T) {
+	remote, target := maskedUpstreamFixture(t)
+
+	err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
+		Source: remote, To: "v2.0.0", Subdirectory: "module", KeepLocalDivergences: true, VerifyTag: true, // no Apply
+	})
+	if err == nil {
+		t.Fatal("--verify-tag must fail a dry-run that would not fully reach the tag")
+	}
+	if !strings.Contains(err.Error(), "verify-tag") || !strings.Contains(err.Error(), "v2.0.0") {
+		t.Fatalf("error does not explain the verify-tag failure: %v", err)
+	}
+	// The preview must not have advanced the recorded base.
+	lock, err := readModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.Ref != "v1.0.0" {
+		t.Fatalf("recorded base ref = %q, want v1.0.0 (a dry-run must not advance it)", lock.Ref)
+	}
+}
+
+// Without --verify-tag the same re-affirmed apply succeeds: keeping an
+// intentional divergence local is a zero-exit outcome by design.
+func TestSyncModuleReaffirmedMaskSucceedsWithoutVerifyTag(t *testing.T) {
+	remote, target := maskedUpstreamFixture(t)
+
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
+		Source: remote, To: "v2.0.0", Subdirectory: "module", Apply: true, KeepLocalDivergences: true,
+	}); err != nil {
+		t.Fatalf("--keep-local-divergences apply must succeed without --verify-tag: %v", err)
+	}
+}
+
 func writeSyncTestFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
