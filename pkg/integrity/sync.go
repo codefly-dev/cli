@@ -65,9 +65,14 @@ type BaseSyncPlan struct {
 	Allowed   []string
 	// AllowedUpstreamChanged is the subset of Allowed whose pinned upstream digest
 	// changed since the target's recorded base. The divergence entry is masking a
-	// real upstream update that this sync is silently keeping local — surfaced so
-	// the drop is never invisible.
+	// real upstream update that this sync would otherwise keep local — surfaced,
+	// and blocking by default, so the drop is never invisible and never unattended.
 	AllowedUpstreamChanged []string
+	// AllowedUpstreamRemoved is the set of allow-listed paths upstream retired
+	// (present in the recorded base, absent from the pinned source) whose local
+	// file still exists. The divergence masks an upstream removal; it is the
+	// deletion sibling of AllowedUpstreamChanged and is treated identically.
+	AllowedUpstreamRemoved []string
 	Modified               []string
 	Collisions             []string
 	// ResolveUpstream contains explicitly reviewed conflicts that will be
@@ -84,6 +89,19 @@ type BaseSyncPlan struct {
 	InvalidRequiredAdditions []string
 
 	resolutionTargetDigests map[string]string
+	// divergencesReaffirmed records the operator's explicit --keep-local-divergences
+	// decision. It is the only thing that lets a masked upstream change or removal
+	// stop blocking, so an unattended apply cannot silently drop one.
+	divergencesReaffirmed bool
+}
+
+// MaskedUpstreamBlocked reports whether this plan is withheld solely because an
+// allow-listed divergence is masking an upstream change or removal that the
+// operator has not yet re-affirmed. It exists so the plan printer can explain
+// the block (and its remedy) without duplicating the Applicable() policy.
+func (plan *BaseSyncPlan) MaskedUpstreamBlocked() bool {
+	return !plan.divergencesReaffirmed &&
+		(len(plan.AllowedUpstreamChanged) > 0 || len(plan.AllowedUpstreamRemoved) > 0)
 }
 
 func (plan BaseSyncPlan) Applicable() error {
@@ -100,6 +118,14 @@ func (plan BaseSyncPlan) Applicable() error {
 	add("modified-upstream-deletions", len(plan.StaleModified))
 	add("missing-required-overlays", len(plan.MissingRequiredAdditions))
 	add("invalid-required-overlays", len(plan.InvalidRequiredAdditions))
+	// A masked upstream change/removal blocks by default: leaving it non-blocking
+	// is exactly how an unattended --apply shipped stale allow-listed code with a
+	// zero exit. --keep-local-divergences (divergencesReaffirmed) is the explicit,
+	// once-per-change acknowledgement that lets an intentional divergence proceed.
+	if !plan.divergencesReaffirmed {
+		add("allowed-upstream-changed", len(plan.AllowedUpstreamChanged))
+		add("allowed-upstream-removed", len(plan.AllowedUpstreamRemoved))
+	}
 	if len(blockers) == 0 {
 		return nil
 	}
@@ -226,6 +252,14 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 			continue
 		}
 		if _, ok := allow.Divergences[relative]; ok {
+			// Upstream retired this base path (it was in the recorded base but the
+			// pinned source dropped it) while an allow-listed divergence keeps a
+			// local copy. If that copy still exists, the sync is masking an upstream
+			// removal — the deletion sibling of AllowedUpstreamChanged. Record it so
+			// it is surfaced and blocks by default rather than vanishing here.
+			if _, statErr := os.Stat(filepath.Join(targetRoot, filepath.FromSlash(relative))); statErr == nil {
+				plan.AllowedUpstreamRemoved = append(plan.AllowedUpstreamRemoved, relative)
+			}
 			continue
 		}
 		if service := serviceOf(relative); service != "" && len(composed) > 0 && !composed[service] {
@@ -270,11 +304,12 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 // decisions to a base sync plan. Only source-owned modified paths and overlay
 // collisions can be replaced. A source-equal path is also accepted so the same
 // command can safely resume after an interruption.
-func PlanBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream []string) (BaseSyncPlan, error) {
+func PlanBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream []string, keepLocalDivergences bool) (BaseSyncPlan, error) {
 	plan, err := PlanBaseSync(sourceRoot, targetRoot)
 	if err != nil {
 		return BaseSyncPlan{}, err
 	}
+	plan.divergencesReaffirmed = keepLocalDivergences
 	if len(acceptUpstream) == 0 {
 		return plan, nil
 	}
@@ -328,11 +363,12 @@ func PlanBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream [
 // manifest last. Each file replacement is atomic. If the process is
 // interrupted, rerunning converges safely because already-updated files match
 // the new manifest while the old manifest remains the verification authority.
-func ApplyBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
+func ApplyBaseSync(sourceRoot, targetRoot string, keepLocalDivergences bool) (BaseSyncPlan, error) {
 	plan, err := PlanBaseSync(sourceRoot, targetRoot)
 	if err != nil {
 		return BaseSyncPlan{}, err
 	}
+	plan.divergencesReaffirmed = keepLocalDivergences
 	if err := plan.Applicable(); err != nil {
 		return plan, err
 	}
@@ -386,6 +422,7 @@ func ApplyBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 	if err != nil {
 		return plan, fmt.Errorf("verify updated base before commit: %w", err)
 	}
+	finalPlan.divergencesReaffirmed = keepLocalDivergences
 	if err := finalPlan.Applicable(); err != nil {
 		return plan, fmt.Errorf("base changed while applying update: %w", err)
 	}
@@ -401,8 +438,8 @@ func ApplyBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 // ApplyBaseSyncWithResolutions replaces only explicitly reviewed conflicts,
 // then applies the ordinary fail-closed base update. Source and target digests
 // are checked again immediately before every accepted replacement.
-func ApplyBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream []string) (BaseSyncPlan, error) {
-	plan, err := PlanBaseSyncWithResolutions(sourceRoot, targetRoot, acceptUpstream)
+func ApplyBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream []string, keepLocalDivergences bool) (BaseSyncPlan, error) {
+	plan, err := PlanBaseSyncWithResolutions(sourceRoot, targetRoot, acceptUpstream, keepLocalDivergences)
 	if err != nil {
 		return BaseSyncPlan{}, err
 	}
@@ -429,7 +466,7 @@ func ApplyBaseSyncWithResolutions(sourceRoot, targetRoot string, acceptUpstream 
 			return plan, fmt.Errorf("resolve base file %s from upstream: %w", relative, err)
 		}
 	}
-	if _, err := ApplyBaseSync(plan.SourceRoot, plan.TargetRoot); err != nil {
+	if _, err := ApplyBaseSync(plan.SourceRoot, plan.TargetRoot, keepLocalDivergences); err != nil {
 		return plan, err
 	}
 	return plan, nil
