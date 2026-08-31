@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -170,6 +171,29 @@ func TestReachesTargetAndWithheldPathsTrackMaskedUpstream(t *testing.T) {
 	}
 	if !clean.ReachesTarget() {
 		t.Fatal("a sync with no masking or blockers must reach the target tag")
+	}
+}
+
+// A manifest path can be both an invalid source (missing/unsafe upstream) and
+// an invalid target (a symlink in its place), landing it in two blocker groups.
+// Applicable reports each category, but WithheldPaths counts distinct files, so
+// the "N files withheld" figure never over-reports a single doubly-flagged path.
+func TestWithheldPathsCountsDistinctFilesAcrossGroups(t *testing.T) {
+	plan := BaseSyncPlan{
+		SourceInvalid: []InvalidSource{{Path: "services/api/code/main.go", Reason: SourceUnreadable}},
+		TargetInvalid: []string{"services/api/code/main.go"},
+		Modified:      []string{"module.codefly.yaml"},
+	}
+	if got := plan.WithheldPaths(); got != 2 {
+		t.Fatalf("WithheldPaths = %d, want 2 (one doubly-flagged path + one modified)", got)
+	}
+	// Applicable still names both categories the path triggers.
+	err := plan.Applicable()
+	if err == nil {
+		t.Fatal("plan with invalid paths must not be applicable")
+	}
+	if !strings.Contains(err.Error(), "invalid-source=1") || !strings.Contains(err.Error(), "invalid-target=1") {
+		t.Fatalf("Applicable must report both categories: %v", err)
 	}
 }
 

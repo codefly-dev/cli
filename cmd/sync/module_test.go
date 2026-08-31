@@ -959,6 +959,28 @@ func TestSyncModuleBlockedApplyReportsBaseNotAdvanced(t *testing.T) {
 	}
 }
 
+// A dry-run that previews the same blockers must not claim the base was NOT
+// advanced: nothing was ever going to advance, so the apply-outcome line would
+// misrepresent a preview. The blocker error still surfaces on its own.
+func TestSyncModuleDryRunDoesNotReportBaseNotAdvanced(t *testing.T) {
+	remote, target := maskedUpstreamFixture(t)
+
+	output.StartCapture()
+	defer output.DrainCapture()
+	err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
+		Source: remote, To: "v2.0.0", Subdirectory: "module", // no Apply
+	})
+	captured := output.DrainCapture()
+	if err == nil {
+		t.Fatal("a masked upstream change must still block the dry-run")
+	}
+	for _, line := range captured {
+		if strings.Contains(line.Message, "base-source NOT advanced") {
+			t.Fatalf("dry-run must not print an apply-outcome advance line: %q", line.Message)
+		}
+	}
+}
+
 // --verify-tag turns the one zero-exit path that still ships a partial tree —
 // a re-affirmed apply that advances the base while keeping a masked upstream
 // change local — into a non-zero exit for CI, without preventing the apply.
@@ -982,6 +1004,30 @@ func TestSyncModuleVerifyTagFailsOnReaffirmedMask(t *testing.T) {
 	}
 	if lock.Ref != "v2.0.0" {
 		t.Fatalf("recorded base ref = %q, want v2.0.0 (re-affirmed apply advances it)", lock.Ref)
+	}
+}
+
+// --verify-tag is a reachability assertion, so it must also fail a dry-run
+// preview that would not reach the tag — catching the problem before any apply.
+func TestSyncModuleVerifyTagFailsOnDryRunPreview(t *testing.T) {
+	remote, target := maskedUpstreamFixture(t)
+
+	err := syncComposedModule(context.Background(), target, &moduleSyncOptions{
+		Source: remote, To: "v2.0.0", Subdirectory: "module", KeepLocalDivergences: true, VerifyTag: true, // no Apply
+	})
+	if err == nil {
+		t.Fatal("--verify-tag must fail a dry-run that would not fully reach the tag")
+	}
+	if !strings.Contains(err.Error(), "verify-tag") || !strings.Contains(err.Error(), "v2.0.0") {
+		t.Fatalf("error does not explain the verify-tag failure: %v", err)
+	}
+	// The preview must not have advanced the recorded base.
+	lock, err := readModuleSourceLock(filepath.Join(target.Dir(), moduleSourceLockRelativePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.Ref != "v1.0.0" {
+		t.Fatalf("recorded base ref = %q, want v1.0.0 (a dry-run must not advance it)", lock.Ref)
 	}
 }
 

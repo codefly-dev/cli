@@ -275,7 +275,7 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 	}
 	printModuleSyncPlan(target.Name, &plan, options.Apply, resolved.Lock)
 	if err := plan.Applicable(); err != nil {
-		reportBaseNotAdvanced(target.Dir(), resolved.Lock, &plan)
+		reportBaseNotAdvanced(target.Dir(), options.Apply, resolved.Lock, &plan)
 		return err
 	}
 	pendingRefresh, err := integrity.PlanServiceManifestRefresh(resolved.Root, target.Dir())
@@ -334,10 +334,11 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 // only signal is a reconciliation error a busy operator can miss, so every
 // downstream render/promote ships stale code believing it reached the target.
 // It is scoped to an --apply against a persisted remote lock (advancement is
-// only a contract there) and stays silent when the recorded base is already the
-// target — a same-tag re-run is not a stalled advance.
-func reportBaseNotAdvanced(moduleDir string, lock *moduleSourceLock, plan *integrity.BaseSyncPlan) {
-	if lock == nil {
+// only a contract there, and a dry-run never intended to advance anything) and
+// stays silent when the recorded base is already the target — a same-tag re-run
+// is not a stalled advance.
+func reportBaseNotAdvanced(moduleDir string, applying bool, lock *moduleSourceLock, plan *integrity.BaseSyncPlan) {
+	if !applying || lock == nil {
 		return
 	}
 	recorded := recordedBaseRef(moduleDir)
@@ -352,10 +353,10 @@ func reportBaseNotAdvanced(moduleDir string, lock *moduleSourceLock, plan *integ
 }
 
 // verifyTagReach enforces --verify-tag: the tree must fully reach the target
-// tag. A blocker already fails the run on its own, so the check that only
-// --verify-tag adds is the re-affirmed apply that advanced the recorded base
-// while an allow-listed divergence kept a masked upstream change local — a
-// zero-exit outcome the flag turns into a non-zero one for CI gates.
+// tag, on a dry-run preview as well as an apply. A blocker already fails the run
+// on its own, so the check that only --verify-tag adds is the re-affirmed plan
+// that keeps a masked upstream change local while advancing the recorded base —
+// a zero-exit outcome the flag turns into a non-zero one for CI gates.
 func verifyTagReach(options *moduleSyncOptions, lock *moduleSourceLock, plan *integrity.BaseSyncPlan) error {
 	if !options.VerifyTag || plan.ReachesTarget() {
 		return nil
@@ -364,7 +365,7 @@ func verifyTagReach(options *moduleSyncOptions, lock *moduleSourceLock, plan *in
 	if lock != nil {
 		target = lock.Ref
 	}
-	return fmt.Errorf("--verify-tag: tree does not fully reach %s — %d allow-listed divergence(s) masked an upstream change or removal and kept the local version", target, len(plan.AllowedUpstreamChanged)+len(plan.AllowedUpstreamRemoved))
+	return fmt.Errorf("--verify-tag: tree does not fully reach %s — %d allow-listed divergence(s) mask an upstream change or removal, keeping the local version", target, len(plan.AllowedUpstreamChanged)+len(plan.AllowedUpstreamRemoved))
 }
 
 // recordedBaseRef returns the ref currently pinned in the module's source lock,
