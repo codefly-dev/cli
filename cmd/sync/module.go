@@ -854,7 +854,7 @@ func printModuleSyncPlan(module string, plan *integrity.BaseSyncPlan, applying b
 	} else {
 		output.Info("  source: %s (local, not persisted)", plan.SourceRoot)
 	}
-	output.Info("  unchanged=%d create=%d update=%d remove=%d omitted=%d allowed=%d", len(plan.Unchanged), len(plan.Create), len(plan.Update), len(plan.Remove), len(plan.Omitted), len(plan.Allowed))
+	output.Info("  unchanged=%d create=%d update=%d remove=%d omitted=%d allowed=%d allowed-upstream-changed=%d", len(plan.Unchanged), len(plan.Create), len(plan.Update), len(plan.Remove), len(plan.Omitted), len(plan.Allowed), len(plan.AllowedUpstreamChanged))
 	output.Info("  resolve-upstream=%d already-reconciled=%d", len(plan.ResolveUpstream), len(plan.ReconciledUpstream))
 	output.Info("  modified=%d collisions=%d stale-modified=%d released=%d", len(plan.Modified), len(plan.Collisions), len(plan.StaleModified), len(plan.Released))
 	printPathGroups([]pathGroup{
@@ -863,6 +863,13 @@ func printModuleSyncPlan(module string, plan *integrity.BaseSyncPlan, applying b
 		{"RESOLVE FROM UPSTREAM", plan.ResolveUpstream},
 		{"ALREADY RECONCILED FROM UPSTREAM", plan.ReconciledUpstream},
 	})
+	if len(plan.AllowedUpstreamChanged) > 0 {
+		output.Warning("  %d allow-listed file(s) received an upstream change this sync that was kept LOCAL (dropped):", len(plan.AllowedUpstreamChanged))
+		printPathGroups([]pathGroup{
+			{"ALLOW-LISTED DIVERGENCE MASKING AN UPSTREAM CHANGE", plan.AllowedUpstreamChanged},
+		})
+		output.Warning("  to take upstream for these, remove the entry from tools/base-integrity-allow.json and re-run (optionally with --accept-upstream <path>), or reconcile by hand.")
+	}
 	for _, line := range sourceInvalidReport(plan.SourceInvalid) {
 		output.Info("  %s", line)
 	}

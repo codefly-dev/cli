@@ -63,8 +63,13 @@ type BaseSyncPlan struct {
 	Released   []string
 	Omitted    []string
 	Allowed    []string
-	Modified   []string
-	Collisions []string
+	// AllowedUpstreamChanged is the subset of Allowed whose pinned upstream digest
+	// changed since the target's recorded base. The divergence entry is masking a
+	// real upstream update that this sync is silently keeping local — surfaced so
+	// the drop is never invisible.
+	AllowedUpstreamChanged []string
+	Modified               []string
+	Collisions             []string
 	// ResolveUpstream contains explicitly reviewed conflicts that will be
 	// replaced by the immutable upstream version. ReconciledUpstream contains
 	// requested paths that already match upstream, which makes an interrupted
@@ -166,6 +171,13 @@ func PlanBaseSync(sourceRoot, targetRoot string) (BaseSyncPlan, error) {
 		}
 		if _, ok := allow.Divergences[relative]; ok {
 			plan.Allowed = append(plan.Allowed, relative)
+			// An allow-listed divergence is kept local unconditionally. If the
+			// pinned upstream digest moved since the recorded base, this sync is
+			// dropping a real upstream change — record it so it is reported, not
+			// folded silently into the allowed=N count.
+			if base, wasBase := targetManifest.Files[relative]; wasBase && sourceManifest.Files[relative] != base {
+				plan.AllowedUpstreamChanged = append(plan.AllowedUpstreamChanged, relative)
+			}
 			continue
 		}
 		source := filepath.Join(sourceRoot, filepath.FromSlash(relative))

@@ -52,6 +52,38 @@ func TestBaseSyncPreservesOverlaysAndAppliesOnlyOwnedFiles(t *testing.T) {
 	}
 }
 
+func TestBaseSyncFlagsAllowListedUpstreamChange(t *testing.T) {
+	source, target := syncFixture(t)
+	// Both files are allow-listed divergences (kept local unconditionally).
+	// overlay.txt's pinned upstream digest moved since the recorded base;
+	// stable.txt's did not. Only the former is a masked upstream change.
+	writeTestFile(t, filepath.Join(source, "overlay.txt"), "upstream v2")
+	writeTestFile(t, filepath.Join(source, "stable.txt"), "shared")
+	writeTestFile(t, filepath.Join(target, "overlay.txt"), "upstream v1")
+	writeTestFile(t, filepath.Join(target, "stable.txt"), "shared")
+	writeTestJSON(t, filepath.Join(target, "tools", "base-integrity-allow.json"), map[string]any{
+		"overlay.txt":       "product overlay",
+		"stable.txt":        "product overlay",
+		"requiredAdditions": map[string]string{},
+	})
+	writeManifest(t, source, "overlay.txt", "stable.txt")
+	writeManifest(t, target, "overlay.txt", "stable.txt")
+
+	plan, err := PlanBaseSync(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both remain allow-listed (kept local); only overlay.txt is flagged as
+	// masking an upstream change, so the drop can never be silent.
+	if !reflect.DeepEqual(plan.AllowedUpstreamChanged, []string{"overlay.txt"}) {
+		t.Fatalf("AllowedUpstreamChanged = %#v, want [overlay.txt]", plan.AllowedUpstreamChanged)
+	}
+	// Surfacing the drop must stay non-blocking: intentional divergences still apply.
+	if err := plan.Applicable(); err != nil {
+		t.Fatalf("allow-listed upstream change must not block apply: %v", err)
+	}
+}
+
 func TestBaseSyncTreatsMissingTargetManifestAsFirstPopulate(t *testing.T) {
 	source, target := syncFixture(t)
 	writeTestFile(t, filepath.Join(source, "services", "kept", "code", "main.go"), "package main\n")
