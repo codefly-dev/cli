@@ -56,13 +56,13 @@ type BaseSyncPlan struct {
 	SourceRoot string
 	TargetRoot string
 
-	Unchanged  []string
-	Create     []string
-	Update     []string
-	Remove     []string
-	Released   []string
-	Omitted    []string
-	Allowed    []string
+	Unchanged []string
+	Create    []string
+	Update    []string
+	Remove    []string
+	Released  []string
+	Omitted   []string
+	Allowed   []string
 	// AllowedUpstreamChanged is the subset of Allowed whose pinned upstream digest
 	// changed since the target's recorded base. The divergence entry is masking a
 	// real upstream update that this sync is silently keeping local — surfaced so
