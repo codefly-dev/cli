@@ -141,7 +141,7 @@ func (plan *BaseSyncPlan) blockerGroups() []blockerGroup {
 	return groups
 }
 
-func (plan BaseSyncPlan) Applicable() error {
+func (plan *BaseSyncPlan) Applicable() error {
 	var blockers []string
 	for _, group := range plan.blockerGroups() {
 		if len(group.paths) > 0 {
