@@ -1,0 +1,4 @@
+kind: module
+name: wiki
+services:
+    - name: backend

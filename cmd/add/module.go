@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	modulesync "github.com/codefly-dev/cli/cmd/sync"
@@ -15,6 +16,7 @@ import (
 	actionsmodule "github.com/codefly-dev/core/actions/module"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
+	"github.com/go-git/go-git/v5"
 	"github.com/spf13/cobra"
 )
 
@@ -28,8 +30,8 @@ var ModuleCmd = &cobra.Command{
 		if interactive {
 			return fmt.Errorf("interactive mode not implemented yet")
 		}
-		if moduleSource != "" {
-			return addReferencedModule(args[0])
+		if moduleSource != "" || moduleWorktree != "" {
+			return addComposedModule(args[0])
 		}
 		return addModule(args[0])
 	},
@@ -37,14 +39,22 @@ var ModuleCmd = &cobra.Command{
 
 var moduleAgentInput string
 var moduleSource string
+var moduleWorktree string
+var moduleVersion string
 var moduleWithDefault bool
 
-// addReferencedModule registers a module by reference — pointing at an
-// out-of-repo directory — instead of vendoring a copy under modules/<name>/.
-// This lets a solution repo be the composition root that references the host
-// and runtime modules it does not own; `codefly run` boots them alongside
-// local modules because resolution flows through the reference's path override.
-func addReferencedModule(name string) error {
+// addComposedModule composes an out-of-repo module without vendoring a copy.
+//
+// It splits identity from location: the machine-specific location goes into the
+// gitignored codefly.local.yaml overlay (a `resolve:` directive), and — only
+// when the module is not already composed — a portable identity (source +
+// version) is added to the committed workspace config. So the committed file
+// never carries a machine path, and choosing a local source leaves `git status`
+// clean when the module is already declared.
+//
+//   - --source <path>:            overlay `path: <abs>` (edit this dir in place).
+//   - --worktree <repo>@<ref>:    overlay `worktree: <repo>@<ref>` (find my checkout).
+func addComposedModule(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
@@ -52,39 +62,145 @@ func addReferencedModule(name string) error {
 	if err != nil {
 		return fmt.Errorf("cannot load workspace: %w", err)
 	}
-	if workspace.ExistsModule(name) {
-		return fmt.Errorf("module <%s> already exists", name)
+
+	directive := &resources.ModuleResolveDirective{}
+	var identitySource string
+	var location string
+	if moduleWorktree != "" {
+		repo, ref, ok := strings.Cut(moduleWorktree, "@")
+		if !ok || repo == "" || ref == "" {
+			return fmt.Errorf("--worktree %q must be <owner/repo>@<ref>", moduleWorktree)
+		}
+		directive.Worktree = moduleWorktree
+		identitySource = repo
+		location = fmt.Sprintf("worktree %s", moduleWorktree)
+	} else {
+		source, err := filepath.Abs(moduleSource)
+		if err != nil {
+			return fmt.Errorf("cannot resolve source path %q: %w", moduleSource, err)
+		}
+		mod, err := resources.LoadModuleFromDir(ctx, source)
+		if err != nil {
+			return fmt.Errorf("cannot load module at %s: %w", source, err)
+		}
+		if mod.Name != name {
+			return fmt.Errorf("module at %s is named <%s>, not <%s>", source, mod.Name, name)
+		}
+		directive.Path = source
+		// Derive identity from the checkout's origin remote when the source is a
+		// git repo, so the committed reference can name the canonical repo. A
+		// non-git source composes location-only (overlay just points at it).
+		identitySource = gitRemoteIdentity(source)
+		location = source
 	}
 
-	source, err := filepath.Abs(moduleSource)
-	if err != nil {
-		return fmt.Errorf("cannot resolve source path %q: %w", moduleSource, err)
+	// 1. Location → the gitignored overlay. Read the workspace's own overlay
+	// (not an ancestor's) so sibling entries are preserved, then upsert.
+	overlay := &resources.LocalOverlay{Resolve: map[string]*resources.ModuleResolveDirective{}}
+	if _, statErr := os.Stat(filepath.Join(workspace.Dir(), resources.LocalOverlayConfigurationName)); statErr == nil {
+		loaded, err := resources.LoadLocalOverlay(ctx, workspace.Dir())
+		if err != nil {
+			return fmt.Errorf("cannot load local overlay: %w", err)
+		}
+		if loaded != nil {
+			overlay = loaded
+		}
 	}
-	mod, err := resources.LoadModuleFromDir(ctx, source)
-	if err != nil {
-		return fmt.Errorf("cannot load referenced module at %s: %w", source, err)
+	if overlay.Resolve == nil {
+		overlay.Resolve = map[string]*resources.ModuleResolveDirective{}
 	}
-	if mod.Name != name {
-		return fmt.Errorf("referenced module at %s is named <%s>, not <%s>", source, mod.Name, name)
+	overlay.Resolve[name] = directive
+	if saveErr := resources.SaveLocalOverlay(ctx, workspace.Dir(), overlay); saveErr != nil {
+		return fmt.Errorf("cannot save local overlay: %w", saveErr)
+	}
+	// Keep the machine-local overlay out of git so a local source choice never
+	// shows up in `git status`. Idempotent: the committed .gitignore gains the
+	// rule once, then subsequent composes touch only the ignored overlay.
+	if ignoreErr := ensureGitignoreEntry(workspace.Dir(), resources.LocalOverlayConfigurationName); ignoreErr != nil {
+		return fmt.Errorf("cannot gitignore %s: %w", resources.LocalOverlayConfigurationName, ignoreErr)
 	}
 
-	// Store a workspace-relative override when the source lives inside the
-	// workspace so the reference stays portable; fall back to the absolute
-	// path for the out-of-repo case, which is the whole point of a reference.
-	stored := source
-	if rel, relErr := filepath.Rel(workspace.Dir(), source); relErr == nil && filepath.IsLocal(rel) {
-		stored = rel
+	// 2. Identity → the committed config, only if not already composed. Never a
+	// path: the committed reference stays portable across every checkout.
+	if !workspace.ExistsModule(name) {
+		ref := &resources.ModuleReference{Name: name}
+		if identitySource != "" {
+			ref.Source = identitySource
+			ref.Version = moduleVersion
+		}
+		if err := workspace.AddModuleReference(ref); err != nil {
+			return fmt.Errorf("cannot add module reference: %w", err)
+		}
+		if err := workspace.Save(ctx); err != nil {
+			return fmt.Errorf("cannot save workspace: %w", err)
+		}
 	}
 
-	if err := workspace.AddModuleReference(&resources.ModuleReference{Name: name, PathOverride: &stored}); err != nil {
-		return fmt.Errorf("cannot add module reference: %w", err)
-	}
-	if err := workspace.Save(ctx); err != nil {
-		return fmt.Errorf("cannot save workspace: %w", err)
-	}
-
-	cli.Header(2, "Referenced module <%s> added from %s.", name, source)
+	cli.Header(2, "Module <%s> composed from %s (location in %s).", name, location, resources.LocalOverlayConfigurationName)
 	return nil
+}
+
+// gitRemoteIdentity returns "<owner>/<repo>" from dir's origin remote when dir
+// is a git checkout, or "" when it is not a repo or has no origin. The value
+// feeds a committed module reference's canonical source identity.
+func gitRemoteIdentity(dir string) string {
+	repo, err := git.PlainOpenWithOptions(dir, &git.PlainOpenOptions{DetectDotGit: true})
+	if err != nil {
+		return ""
+	}
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		return ""
+	}
+	urls := remote.Config().URLs
+	if len(urls) == 0 {
+		return ""
+	}
+	return normalizeRemoteToOwnerRepo(urls[0])
+}
+
+// ensureGitignoreEntry appends entry to the workspace's .gitignore unless an
+// exact-match line is already present, creating the file when absent. It leaves
+// any other content untouched.
+func ensureGitignoreEntry(dir, entry string) error {
+	gitignore := filepath.Join(dir, ".gitignore")
+	content, err := os.ReadFile(gitignore)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return nil
+		}
+	}
+	var buf []byte
+	if len(content) > 0 && !strings.HasSuffix(string(content), "\n") {
+		buf = append(buf, '\n')
+	}
+	buf = append(buf, []byte(entry+"\n")...)
+	f, err := os.OpenFile(gitignore, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(buf)
+	return err
+}
+
+// normalizeRemoteToOwnerRepo reduces a git remote URL (SSH or HTTPS) to a
+// lowercase "<owner>/<repo>" slug, matching how the resolver identifies repos.
+func normalizeRemoteToOwnerRepo(url string) string {
+	url = strings.TrimSpace(url)
+	url = strings.TrimSuffix(url, ".git")
+	if i := strings.Index(url, "github.com"); i >= 0 {
+		rest := url[i+len("github.com"):]
+		rest = strings.TrimLeft(rest, ":/")
+		if strings.Count(rest, "/") >= 1 {
+			parts := strings.SplitN(rest, "/", 3)
+			return strings.ToLower(parts[0] + "/" + parts[1])
+		}
+	}
+	return ""
 }
 
 func addModule(name string) (result error) {
@@ -202,7 +318,9 @@ func addModule(name string) (result error) {
 func init() {
 	ModuleCmd.PersistentFlags().BoolVarP(&interactive, "interactive", "i", false, "interactive mode")
 	ModuleCmd.Flags().StringVar(&moduleAgentInput, "agent", "", "Module template agent (e.g. user-management, rag)")
-	ModuleCmd.Flags().StringVar(&moduleSource, "source", "", "Reference an existing out-of-repo module by path instead of vendoring a copy")
-	ModuleCmd.MarkFlagsMutuallyExclusive("agent", "source")
+	ModuleCmd.Flags().StringVar(&moduleSource, "source", "", "Compose an out-of-repo module at a local path; the path lands in codefly.local.yaml, not committed config")
+	ModuleCmd.Flags().StringVar(&moduleWorktree, "worktree", "", "Compose an out-of-repo module by <owner/repo>@<ref>; the resolver finds your local worktree (location in codefly.local.yaml)")
+	ModuleCmd.Flags().StringVar(&moduleVersion, "version", "latest", "Committed version constraint recorded with a composed module's identity")
+	ModuleCmd.MarkFlagsMutuallyExclusive("agent", "source", "worktree")
 	ModuleCmd.Flags().BoolVar(&moduleWithDefault, "yes", false, "Skip confirmation prompts (non-interactive/MCP mode)")
 }

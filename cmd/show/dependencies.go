@@ -1,6 +1,7 @@
 package show
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -41,6 +42,8 @@ var DependenciesCmd = &cobra.Command{
 		fmt.Println("Service dependency graph (X required by Y):")
 		fmt.Println(deps.Print())
 
+		printModuleResolution(ctx, workspace)
+
 		if service == nil {
 			return nil
 		}
@@ -58,4 +61,31 @@ var DependenciesCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// printModuleResolution reports where each composed module resolves — a local
+// path, a matched git worktree, or a pinned artifact coordinate — so a
+// composition root's identity/overlay split is visible in one place. Each module
+// resolves independently: a directive that fails to resolve (e.g. a worktree
+// with no local checkout) is reported inline rather than aborting the report.
+func printModuleResolution(ctx context.Context, workspace *resources.Workspace) {
+	if len(workspace.Modules) == 0 {
+		return
+	}
+	fmt.Println("\nModule resolution (identity → location):")
+	for _, ref := range workspace.Modules {
+		res, err := workspace.ResolveModule(ctx, ref)
+		if err != nil {
+			fmt.Printf("  %s: unresolved (%v)\n", ref.Name, err)
+			continue
+		}
+		switch res.Kind {
+		case resources.ResolutionWorktree:
+			fmt.Printf("  %s: worktree %s@%s → %s\n", res.Module, res.Source, res.Ref, res.Dir)
+		case resources.ResolutionPinned:
+			fmt.Printf("  %s: pinned %s@%s\n", res.Module, res.Source, res.Version)
+		default:
+			fmt.Printf("  %s: path %s\n", res.Module, res.Dir)
+		}
+	}
 }
