@@ -1,0 +1,5 @@
+name: two-entries
+layout: modules
+modules:
+    - name: wiki
+    - name: host

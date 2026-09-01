@@ -1,0 +1,5 @@
+name: wiki-solution
+layout: modules
+modules:
+    - name: wiki
+    - name: host

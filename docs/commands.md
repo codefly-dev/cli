@@ -167,6 +167,27 @@ manifests, and build and deployment operations ignore them. In-process callers
 select the identical resolver through
 `control.RunRequest{Service: "mind/mind", Profile: "local"}`.
 
+### `codefly run solution`
+
+Boot a whole solution as a unit from its root. A solution root is a workspace
+whose module declares a `service-entry` — the single runnable service the rest
+of the composition hangs off. `run solution` resolves that entry and delegates
+to the same dependency-graph orchestration as `run service <entry>`, so a
+solution boots exactly the way its entry service does — no second sequencing
+engine.
+
+```bash
+codefly run solution                         # From a solution root
+codefly run solution --fixture dev-admin     # With a named fixture
+codefly run solution --env local --headless  # Headless (CI, MCP, pipes)
+```
+
+The composed modules resolve through the [module resolver](#module-composition):
+committed identity (`source` + `version`) plus a gitignored `codefly.local.yaml`
+overlay, so the identical command runs in CI (everything pinned, no sibling
+checkouts) and against your local worktrees. It errors clearly when no module —
+or more than one — declares a `service-entry`.
+
 ### `codefly run job [name]`
 
 Run a job (scheduled or one-shot task).
@@ -320,7 +341,8 @@ Add resources to the workspace.
 ```bash
 codefly add module backend                                     # Add a module
 codefly add module saas --agent=saas-starter                   # Scaffold and pin a module template
-codefly add module host --source=../saas-host/modules/host     # Reference an out-of-repo module (no vendored copy)
+codefly add module host --source=../saas-host/modules/host     # Compose an out-of-repo module (location → codefly.local.yaml)
+codefly add module documents --worktree=obin-ai/module-document-store@main  # Compose by identity; the resolver finds your local worktree
 codefly add service api --agent=go-grpc                        # Add a service with an agent
 codefly add service-dependency api --dependency=backend/db     # Add a service dependency
 codefly add library utils                                      # Add a library
@@ -337,13 +359,30 @@ behind. Inventory-only scaffolds may omit the base manifest and service code;
 their first `sync module` treats the missing manifest as an empty base and
 populates the pinned source without rerunning the agent.
 
-`add module --source <path>` declares a module **by reference** rather than
-vendoring a copy: the workspace entry records a `path:` to an out-of-repo module
-directory, and `codefly run` boots it alongside local modules. This is the
-composition mode for multi-repo solutions (a solution repo referencing the host
-and runtime modules it does not own); it is distinct from `sync module`, which
-vendors a hash-pinned base. `codefly doctor workspace` reports each referenced
-module and flags an unresolved reference with the `module_reference_unresolved`
+#### Module composition
+
+`add module --source <path>` and `add module --worktree <owner/repo>@<ref>`
+compose an out-of-repo module **without vendoring a copy** — the composition
+mode for multi-repo solutions (a solution repo booting the host and runtime
+modules it does not own). It is distinct from `sync module`, which vendors a
+hash-pinned base.
+
+Composition splits **identity** (what to compose, portable) from **location**
+(where it lives on this machine):
+
+- The machine-specific location goes into a gitignored `codefly.local.yaml`
+  overlay — a `resolve:` directive per module (`path:` for `--source`,
+  `worktree: <owner/repo>@<ref>` for `--worktree`). It never lands in committed
+  config, so a local source choice keeps `git status` clean.
+- When the module is not yet composed, a portable identity (`source` +
+  `version`, never a path) is added to `workspace.codefly.yaml`. `--source`
+  derives the identity from the directory's `origin` remote when it is a git
+  checkout.
+
+At boot the [resolver](#codefly-run-solution) walks the precedence overlay
+`path` → overlay `worktree` → overlay `pinned` → committed identity, so the same
+committed config resolves on every worktree and in CI. `codefly doctor
+workspace` flags an unresolved reference with the `module_reference_unresolved`
 diagnostic.
 
 **`add service` flags:**

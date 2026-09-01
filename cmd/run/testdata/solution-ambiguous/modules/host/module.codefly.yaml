@@ -1,0 +1,5 @@
+kind: module
+name: host
+service-entry: gateway
+services:
+    - name: gateway

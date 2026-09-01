@@ -1,0 +1,5 @@
+name: no-entry
+layout: modules
+modules:
+    - name: wiki
+    - name: host
