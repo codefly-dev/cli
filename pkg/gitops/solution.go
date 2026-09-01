@@ -23,6 +23,10 @@ import (
 // deployments/modules/<name> and carries one solution unit, so the existing
 // publish/observe/ApplicationSet pipeline stamps its Application and syncs its
 // namespace without any transport changes.
+//
+// Each solution renders into its own namespace, derived from its id, rather than
+// the shared host namespace, so solutions are isolatable from the platform and
+// from one another.
 type SolutionRenderRequest struct {
 	Workspace   *resources.Workspace
 	Environment *resources.Environment
@@ -51,6 +55,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		return RenderResult{}, err
 	}
 	env := req.Environment
+	namespace := solutionNamespace(req.Name)
 	destination := filepath.Join(req.Workspace.Dir(), "deployments", "modules", req.Name)
 	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", req.Name))
 	gitopsPath := ""
@@ -66,7 +71,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		Destination: destination,
 		Module:      req.Name,
 		Environment: env.Name,
-		Namespace:   env.Namespace,
+		Namespace:   namespace,
 		AppProject:  req.AppProject,
 		Promotable:  true,
 		OwnedPath:   ownedPath,
@@ -106,7 +111,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 			Context:           solutionContext,
 			ArtifactReference: packaged.GetReference(),
 			Destination:       filepath.Join(stage, solutionUnitDir, req.Name),
-			Values:            solutionRenderValues(req.Values, env.Namespace),
+			Values:            solutionRenderValues(req.Values, namespace),
 		})
 		if err != nil {
 			return fmt.Errorf("render solution %s: %w", req.Name, err)
@@ -131,13 +136,21 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 
 // SolutionNamespaceValue is the Render value key through which the CLI tells the
 // solution executor the exact namespace its manifests must target. Publish binds
-// the rendered namespace to the environment's namespace — the AppProject's sole
+// the rendered namespace to the solution's own namespace — the AppProject's sole
 // destination — so the executor cannot choose it and must render into this one.
 const SolutionNamespaceValue = "codefly.namespace"
 
+// solutionNamespace derives a solution's own Kubernetes namespace from its deploy
+// id, isolating each solution from the platform host namespace and from sibling
+// solutions. The id is already a single path component (it names the render
+// subdirectory and module), so it is used verbatim.
+func solutionNamespace(name string) string {
+	return name
+}
+
 // solutionRenderValues layers the CLI-authoritative namespace over the caller's
 // values. The namespace wins on collision: a value that disagreed with the
-// environment namespace would render a Namespace the publish AppProject rejects.
+// solution namespace would render a Namespace the publish AppProject rejects.
 func solutionRenderValues(values map[string]string, namespace string) map[string]string {
 	merged := make(map[string]string, len(values)+1)
 	for key, value := range values {

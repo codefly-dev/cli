@@ -139,11 +139,14 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
 
+	// The solution id differs from the environment namespace ("hello") so the
+	// assertions below prove the render targets the solution's own namespace, not
+	// the shared host namespace.
 	result, err := RenderSolution(context.Background(), &SolutionRenderRequest{
 		Workspace:   workspace,
 		Environment: env,
 		Agent:       agent,
-		Name:        "hello",
+		Name:        "lastlogin-go",
 		Source:      filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:   "ghcr.io/codefly-dev/hello-solution:0.0.1",
 		AppProject:  "hello",
@@ -162,13 +165,13 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 	if fake.renderArtifact != "ghcr.io/codefly-dev/hello-solution:0.0.1@sha256:"+digestPlaceholder {
 		t.Fatalf("executor rendered from artifact %q", fake.renderArtifact)
 	}
-	if filepath.Base(fake.renderDestination) != "hello" || filepath.Base(filepath.Dir(fake.renderDestination)) != solutionUnitDir {
-		t.Fatalf("executor render destination %q, want .../solutions/hello", fake.renderDestination)
+	if filepath.Base(fake.renderDestination) != "lastlogin-go" || filepath.Base(filepath.Dir(fake.renderDestination)) != solutionUnitDir {
+		t.Fatalf("executor render destination %q, want .../solutions/lastlogin-go", fake.renderDestination)
 	}
-	// The host must tell the executor the environment namespace, or it cannot
-	// render a Namespace that survives publish (the AppProject's sole destination).
-	if fake.renderNamespace != "hello" {
-		t.Fatalf("executor was told namespace %q, want the environment namespace %q", fake.renderNamespace, "hello")
+	// The host must tell the executor the solution's own namespace, derived from
+	// its id — not the shared environment namespace "hello".
+	if fake.renderNamespace != "lastlogin-go" {
+		t.Fatalf("executor was told namespace %q, want the solution namespace %q", fake.renderNamespace, "lastlogin-go")
 	}
 
 	inventory := result.Inventory
@@ -176,22 +179,23 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 		t.Fatalf("inventory units = %+v", inventory.Units)
 	}
 	unit := inventory.Units[0]
-	if unit.Kind != UnitKindSolution || unit.Name != "hello" || unit.Path != "solutions/hello" {
+	if unit.Kind != UnitKindSolution || unit.Name != "lastlogin-go" || unit.Path != "solutions/lastlogin-go" {
 		t.Fatalf("solution unit = %+v", unit)
 	}
 	if unit.Output == nil || unit.Output.Validation == nil || !unit.Output.Validation.Promotable {
 		t.Fatalf("solution unit output = %+v", unit.Output)
 	}
 
-	// The rendered, validated tree is on disk under the solution unit directory.
+	// The rendered, validated tree is on disk under the solution unit directory,
+	// and its inventory namespace is the solution's own, not the environment's.
 	loaded, err := LoadInventory(result.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Module != "hello" || loaded.Namespace != "hello" {
+	if loaded.Module != "lastlogin-go" || loaded.Namespace != "lastlogin-go" {
 		t.Fatalf("persisted inventory = %+v", loaded)
 	}
-	if _, err := os.Stat(filepath.Join(result.Path, "solutions", "hello", "overlays", "local", "configmap.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(result.Path, "solutions", "lastlogin-go", "overlays", "local", "configmap.yaml")); err != nil {
 		t.Fatalf("rendered overlay missing: %v", err)
 	}
 }
@@ -235,18 +239,18 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
 	if _, err := RenderSolution(ctx, &SolutionRenderRequest{
-		Workspace: workspace, Environment: env, Agent: agent, Name: "hello",
+		Workspace: workspace, Environment: env, Agent: agent, Name: "lastlogin-go",
 		Source:     filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
-		AppProject: "hello",
+		AppProject: "lastlogin-go",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	configureSSHSigning(t)
 
 	request := PublishRequest{
-		Module: "hello", Environment: "local", Local: true,
-		PromotionBranch: "codefly/promote-hello-local",
+		Module: "lastlogin-go", Environment: "local", Local: true,
+		PromotionBranch: "codefly/promote-lastlogin-go-local",
 	}
 	plan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
@@ -259,13 +263,18 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 
 	appSet := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/bootstrap/applicationset.yaml")
 	if !strings.Contains(appSet, "kind: ApplicationSet") ||
-		!strings.Contains(appSet, "overlay: "+result.Path+"/solutions/hello/overlays/local") {
+		!strings.Contains(appSet, "overlay: "+result.Path+"/solutions/lastlogin-go/overlays/local") {
 		t.Fatalf("published bootstrap does not stamp the solution Application:\n%s", appSet)
 	}
 	// The packaged solution's own Namespace is authorized by the generated
 	// AppProject: destination namespace plus a cluster-scoped Namespace whitelist.
+	// It is the solution's own namespace ("lastlogin-go"), not the shared host
+	// namespace ("hello").
 	project := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/bootstrap/project.yaml")
-	if !strings.Contains(project, "namespace: hello") || !strings.Contains(project, "kind: Namespace") {
+	if !strings.Contains(project, "namespace: lastlogin-go") || !strings.Contains(project, "kind: Namespace") {
 		t.Fatalf("generated AppProject does not authorize the solution namespace:\n%s", project)
+	}
+	if strings.Contains(project, "namespace: hello") {
+		t.Fatalf("generated AppProject leaks the shared host namespace:\n%s", project)
 	}
 }
