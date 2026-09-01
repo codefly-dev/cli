@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/codefly-dev/core/agents/manager"
@@ -23,6 +24,10 @@ import (
 // deployments/modules/<name> and carries one solution unit, so the existing
 // publish/observe/ApplicationSet pipeline stamps its Application and syncs its
 // namespace without any transport changes.
+//
+// Each solution renders into its own namespace, derived from its id, rather than
+// the shared host namespace, so solutions are isolatable from the platform and
+// from one another.
 type SolutionRenderRequest struct {
 	Workspace   *resources.Workspace
 	Environment *resources.Environment
@@ -51,6 +56,10 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		return RenderResult{}, err
 	}
 	env := req.Environment
+	namespace, err := solutionNamespace(req.Name, env.Namespace)
+	if err != nil {
+		return RenderResult{}, err
+	}
 	destination := filepath.Join(req.Workspace.Dir(), "deployments", "modules", req.Name)
 	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", req.Name))
 	gitopsPath := ""
@@ -66,7 +75,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		Destination: destination,
 		Module:      req.Name,
 		Environment: env.Name,
-		Namespace:   env.Namespace,
+		Namespace:   namespace,
 		AppProject:  req.AppProject,
 		Promotable:  true,
 		OwnedPath:   ownedPath,
@@ -106,7 +115,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 			Context:           solutionContext,
 			ArtifactReference: packaged.GetReference(),
 			Destination:       filepath.Join(stage, solutionUnitDir, req.Name),
-			Values:            solutionRenderValues(req.Values, env.Namespace),
+			Values:            solutionRenderValues(req.Values, namespace),
 		})
 		if err != nil {
 			return fmt.Errorf("render solution %s: %w", req.Name, err)
@@ -131,13 +140,45 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 
 // SolutionNamespaceValue is the Render value key through which the CLI tells the
 // solution executor the exact namespace its manifests must target. Publish binds
-// the rendered namespace to the environment's namespace — the AppProject's sole
+// the rendered namespace to the solution's own namespace — the AppProject's sole
 // destination — so the executor cannot choose it and must render into this one.
 const SolutionNamespaceValue = "codefly.namespace"
 
+// dns1123Label is the RFC 1123 label grammar Kubernetes enforces on a namespace
+// name: lowercase alphanumerics and '-', beginning and ending alphanumeric.
+var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// solutionNamespace derives a solution's own Kubernetes namespace from its deploy
+// id, isolating each solution from the platform host namespace and from sibling
+// solutions. The id is only a validated path component upstream (it names the
+// render subdirectory and module), which is far looser than a namespace name, so
+// the two invariants a namespace carries are enforced here rather than left to
+// fail at cluster apply:
+//
+//   - It must be a valid RFC 1123 label. The render authorizes the Namespace under
+//     a declared AppProject that skips per-name checks, and publish stamps it into
+//     the AppProject destination unvalidated, so an id like "My_Solution" would
+//     otherwise sail through render and publish and fail only when ArgoCD applies
+//     it — a late, opaque error far from the deploy command.
+//   - It must differ from the host namespace. A solution renders and owns a
+//     cluster-scoped Namespace object that its ArgoCD Application prunes under the
+//     promotable sync policy (Automated.Prune); were that the shared platform
+//     namespace, the solution would own it and, on any later namespace change,
+//     prune it — cascade-deleting the platform. A solution is isolated by
+//     definition, so this is a hard error, not a warning.
+func solutionNamespace(name, hostNamespace string) (string, error) {
+	if len(name) > 63 || !dns1123Label.MatchString(name) {
+		return "", fmt.Errorf("solution %q is not a valid Kubernetes namespace: it must be a lowercase RFC 1123 label (a-z, 0-9, '-') of at most 63 characters", name)
+	}
+	if name == hostNamespace {
+		return "", fmt.Errorf("solution %q would render into the host namespace %q; a solution must be isolated in its own namespace, not the shared platform namespace", name, hostNamespace)
+	}
+	return name, nil
+}
+
 // solutionRenderValues layers the CLI-authoritative namespace over the caller's
 // values. The namespace wins on collision: a value that disagreed with the
-// environment namespace would render a Namespace the publish AppProject rejects.
+// solution namespace would render a Namespace the publish AppProject rejects.
 func solutionRenderValues(values map[string]string, namespace string) map[string]string {
 	merged := make(map[string]string, len(values)+1)
 	for key, value := range values {
