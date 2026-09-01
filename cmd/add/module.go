@@ -33,6 +33,9 @@ var ModuleCmd = &cobra.Command{
 		if moduleSource != "" || moduleWorktree != "" {
 			return addComposedModule(args[0])
 		}
+		if cmd.Flags().Changed("version") {
+			return fmt.Errorf("--version only applies when composing a module with --source or --worktree")
+		}
 		return addModule(args[0])
 	},
 }
@@ -94,7 +97,27 @@ func addComposedModule(name string) error {
 		location = source
 	}
 
-	// 1. Location → the gitignored overlay. Read the workspace's own overlay
+	// 1. Identity → the committed config, only if not already composed. Never a
+	// path: the committed reference stays portable across every checkout. This
+	// durable declaration is written first: if the overlay write below then
+	// fails, the module is declared-but-unlocated (the resolver treats it as
+	// pinned) and re-running the command completes it — a coherent partial state
+	// rather than an overlay entry orphaned to a module that was never declared.
+	if !workspace.ExistsModule(name) {
+		ref := &resources.ModuleReference{Name: name}
+		if identitySource != "" {
+			ref.Source = identitySource
+			ref.Version = moduleVersion
+		}
+		if err := workspace.AddModuleReference(ref); err != nil {
+			return fmt.Errorf("cannot add module reference: %w", err)
+		}
+		if err := workspace.Save(ctx); err != nil {
+			return fmt.Errorf("cannot save workspace: %w", err)
+		}
+	}
+
+	// 2. Location → the gitignored overlay. Read the workspace's own overlay
 	// (not an ancestor's) so sibling entries are preserved, then upsert.
 	overlay := &resources.LocalOverlay{Resolve: map[string]*resources.ModuleResolveDirective{}}
 	if _, statErr := os.Stat(filepath.Join(workspace.Dir(), resources.LocalOverlayConfigurationName)); statErr == nil {
@@ -118,22 +141,6 @@ func addComposedModule(name string) error {
 	// rule once, then subsequent composes touch only the ignored overlay.
 	if ignoreErr := ensureGitignoreEntry(workspace.Dir(), resources.LocalOverlayConfigurationName); ignoreErr != nil {
 		return fmt.Errorf("cannot gitignore %s: %w", resources.LocalOverlayConfigurationName, ignoreErr)
-	}
-
-	// 2. Identity → the committed config, only if not already composed. Never a
-	// path: the committed reference stays portable across every checkout.
-	if !workspace.ExistsModule(name) {
-		ref := &resources.ModuleReference{Name: name}
-		if identitySource != "" {
-			ref.Source = identitySource
-			ref.Version = moduleVersion
-		}
-		if err := workspace.AddModuleReference(ref); err != nil {
-			return fmt.Errorf("cannot add module reference: %w", err)
-		}
-		if err := workspace.Save(ctx); err != nil {
-			return fmt.Errorf("cannot save workspace: %w", err)
-		}
 	}
 
 	cli.Header(2, "Module <%s> composed from %s (location in %s).", name, location, resources.LocalOverlayConfigurationName)
@@ -187,20 +194,31 @@ func ensureGitignoreEntry(dir, entry string) error {
 	return err
 }
 
-// normalizeRemoteToOwnerRepo reduces a git remote URL (SSH or HTTPS) to a
-// lowercase "<owner>/<repo>" slug, matching how the resolver identifies repos.
-func normalizeRemoteToOwnerRepo(url string) string {
-	url = strings.TrimSpace(url)
-	url = strings.TrimSuffix(url, ".git")
-	if i := strings.Index(url, "github.com"); i >= 0 {
-		rest := url[i+len("github.com"):]
-		rest = strings.TrimLeft(rest, ":/")
-		if strings.Count(rest, "/") >= 1 {
-			parts := strings.SplitN(rest, "/", 3)
-			return strings.ToLower(parts[0] + "/" + parts[1])
+// normalizeRemoteToOwnerRepo reduces a git remote URL (SSH or HTTPS, any host)
+// to a lowercase "<owner>/<repo>" slug by stripping the scheme, optional
+// userinfo, and host. It mirrors core's resolver repo normalization so a
+// committed source identity compares equal to the origin remote the resolver
+// matches worktrees against — and, unlike a substring match on "github.com", it
+// is not fooled by a look-alike host such as "github.com.example".
+func normalizeRemoteToOwnerRepo(remote string) string {
+	s := strings.TrimSpace(remote)
+	s = strings.TrimSuffix(s, ".git")
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+		if at := strings.Index(s, "@"); at >= 0 {
+			s = s[at+1:]
+		}
+		if slash := strings.Index(s, "/"); slash >= 0 {
+			s = s[slash+1:]
+		}
+	} else if at := strings.Index(s, "@"); at >= 0 {
+		// scp-like syntax: git@host:org/repo
+		s = s[at+1:]
+		if colon := strings.Index(s, ":"); colon >= 0 {
+			s = s[colon+1:]
 		}
 	}
-	return ""
+	return strings.ToLower(strings.Trim(s, "/"))
 }
 
 func addModule(name string) (result error) {

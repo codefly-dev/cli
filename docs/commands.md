@@ -381,10 +381,9 @@ Composition splits **identity** (what to compose, portable) from **location**
 
 At boot the [resolver](#codefly-run-solution) walks the precedence overlay
 `path` → overlay `worktree` → overlay `pinned` → committed identity, so the same
-committed config resolves on every worktree and in CI. `codefly show
-dependencies` reports how each module resolved (path / worktree / pinned), and
-`codefly doctor workspace` flags an unresolved reference with the
-`module_reference_unresolved` diagnostic.
+committed config resolves on every worktree and in CI. `codefly doctor
+workspace` flags an unresolved reference with the `module_reference_unresolved`
+diagnostic.
 
 **`add service` flags:**
 

@@ -452,3 +452,80 @@ func addTestDigest(contents string) string {
 	digest := sha256.Sum256([]byte(contents))
 	return hex.EncodeToString(digest[:])
 }
+
+func TestNormalizeRemoteToOwnerRepo(t *testing.T) {
+	cases := map[string]string{
+		"git@github.com:obin-ai/module-host.git":       "obin-ai/module-host",
+		"https://github.com/obin-ai/module-host.git":   "obin-ai/module-host",
+		"https://user@github.com/Obin-AI/Module-Host":  "obin-ai/module-host",
+		"git@gitlab.com:group/proj.git":                "group/proj",
+		"ssh://git@github.com/obin-ai/module-host.git": "obin-ai/module-host",
+		// A look-alike host must not smuggle its way into the slug: the whole
+		// host is stripped, leaving the real owner/repo.
+		"https://github.com.example/foo/bar": "foo/bar",
+	}
+	for remote, want := range cases {
+		if got := normalizeRemoteToOwnerRepo(remote); got != want {
+			t.Errorf("normalizeRemoteToOwnerRepo(%q) = %q, want %q", remote, got, want)
+		}
+	}
+}
+
+func TestAddModuleRejectsVersionWithoutComposeFlag(t *testing.T) {
+	versionFlag := ModuleCmd.Flags().Lookup("version")
+	prevChanged, prevValue := versionFlag.Changed, moduleVersion
+	defer func() {
+		versionFlag.Changed, moduleVersion = prevChanged, prevValue
+		ModuleCmd.SetArgs(nil)
+	}()
+
+	ModuleCmd.SetArgs([]string{"billing", "--version", "1.2.3"})
+	err := ModuleCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--version only applies") {
+		t.Fatalf("plain add module --version error = %v, want a --version guard error", err)
+	}
+}
+
+func TestAddComposedModuleAlreadyDeclaredKeepsGitStatusClean(t *testing.T) {
+	root := t.TempDir()
+	runAddTestGit(t, root, "init", "--quiet")
+	runAddTestGit(t, root, "config", "user.email", "add-module@example.invalid")
+	runAddTestGit(t, root, "config", "user.name", "Add Module Test")
+
+	workspace := &resources.Workspace{
+		Name:   "solution",
+		Layout: resources.LayoutKindModules,
+		Modules: []*resources.ModuleReference{
+			{Name: "documents", Source: "obin-ai/module-document-store", Version: "latest"},
+		},
+	}
+	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	// The overlay ignore rule is committed once (steady state); after that a
+	// local source choice must leave `git status` completely clean.
+	writeAddTestFile(t, filepath.Join(root, ".gitignore"), resources.LocalOverlayConfigurationName+"\n")
+	runAddTestGit(t, root, "add", "-A")
+	runAddTestGit(t, root, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "init")
+	t.Chdir(root)
+
+	previousWorktree, previousVersion := moduleWorktree, moduleVersion
+	moduleWorktree, moduleVersion = "obin-ai/module-document-store@main", "latest"
+	defer func() { moduleWorktree, moduleVersion = previousWorktree, previousVersion }()
+
+	if composeErr := addComposedModule("documents"); composeErr != nil {
+		t.Fatal(composeErr)
+	}
+
+	if status := runAddTestGit(t, root, "status", "--porcelain"); status != "" {
+		t.Fatalf("git status not clean after composing an already-declared module:\n%s", status)
+	}
+	// The overlay was still written — it is just git-ignored.
+	overlay, err := resources.LoadLocalOverlay(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overlay == nil || overlay.Resolve["documents"] == nil {
+		t.Fatal("overlay was not written")
+	}
+}
