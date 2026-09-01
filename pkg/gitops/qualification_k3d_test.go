@@ -307,18 +307,18 @@ func TestLocalK3dDisposableSolutionQualification(t *testing.T) {
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
 	if _, err := RenderSolution(context.Background(), &SolutionRenderRequest{
-		Workspace: workspace, Environment: env, Agent: agent, Name: "hello",
+		Workspace: workspace, Environment: env, Agent: agent, Name: "lastlogin-go",
 		Source:     filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
-		AppProject: "hello",
+		AppProject: "lastlogin-go",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	configureSSHSigning(t)
 	request := PublishRequest{
-		Module: "hello", Environment: "local", Local: true,
-		PromotionBranch: "codefly/promote-hello-local",
+		Module: "lastlogin-go", Environment: "local", Local: true,
+		PromotionBranch: "codefly/promote-lastlogin-go-local",
 	}
 	plan, err := PlanPublish(context.Background(), workspace, &request)
 	if err != nil {
@@ -362,20 +362,21 @@ func TestLocalK3dDisposableSolutionQualification(t *testing.T) {
 		"https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.1/manifests/install.yaml")
 	kubectl(nil, "wait", "--for=condition=Ready", "pod", "--all", "-n", "argocd", "--timeout=5m")
 
-	// The solution provisions its own namespace: the AppProject whitelists the
-	// cluster-scoped Namespace the rendered overlay carries, and the namespace is
-	// NOT pre-created — proving the packaged solution stamps its own anatomy.
+	// The solution provisions its own namespace ("lastlogin-go"), distinct from the
+	// host namespace ("hello"): the AppProject whitelists the cluster-scoped
+	// Namespace the rendered overlay carries, and the namespace is NOT pre-created
+	// — proving the packaged solution stamps its own anatomy into its own namespace.
 	repository := "git://" + gitServer + "/" + filepath.Base(remote)
 	argoResources := fmt.Sprintf(`apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
-  name: hello
+  name: lastlogin-go
   namespace: argocd
 spec:
   sourceRepos:
     - %s
   destinations:
-    - namespace: hello
+    - namespace: lastlogin-go
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:
     - group: ""
@@ -384,17 +385,17 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: hello
+  name: lastlogin-go
   namespace: argocd
 spec:
-  project: hello
+  project: lastlogin-go
   source:
     repoURL: %s
     targetRevision: %s
-    path: environments/deployments/modules/hello/solutions/hello/overlays/local
+    path: environments/deployments/modules/lastlogin-go/solutions/lastlogin-go/overlays/local
   destination:
     server: https://kubernetes.default.svc
-    namespace: hello
+    namespace: lastlogin-go
   syncPolicy:
     automated:
       prune: true
@@ -427,8 +428,8 @@ exit 2
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	observed, err := Observe(context.Background(), &ObserveRequest{
-		WorkspaceRoot: workspace.Dir(), Module: "hello", Environment: "local",
-		AppProject: "hello", Applications: []string{"hello"},
+		WorkspaceRoot: workspace.Dir(), Module: "lastlogin-go", Environment: "local",
+		AppProject: "lastlogin-go", Applications: []string{"lastlogin-go"},
 		Revision: published.SnapshotRevision, Commit: published.Commit, Tree: published.Tree,
 		RenderDigest: published.RenderDigest, Repository: published.Repository, Path: published.Path,
 		PullRequest: published.PullRequest, Local: true,
@@ -441,7 +442,7 @@ exit 2
 		t.Fatalf("solution qualification evidence = %+v", observed.Evidence)
 	}
 	// The solution's rendered ConfigMap landed in the namespace it stamped.
-	if value := kubectl(nil, "get", "configmap", "hello", "-n", "hello", "-o", "jsonpath={.data.release}"); value != "qualified" {
+	if value := kubectl(nil, "get", "configmap", "hello", "-n", "lastlogin-go", "-o", "jsonpath={.data.release}"); value != "qualified" {
 		t.Fatalf("solution ConfigMap release = %q", value)
 	}
 }

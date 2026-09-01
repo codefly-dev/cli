@@ -200,6 +200,50 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 	}
 }
 
+// TestRenderSolutionRejectsInvalidNamespace proves the render fails fast when a
+// solution id is a legal module/path component but not a legal Kubernetes
+// namespace. Without the boundary check the id would sail through render (the
+// declared AppProject skips per-name checks) and publish, then fail only when
+// ArgoCD applies the Namespace — a late, opaque error far from the deploy command.
+func TestRenderSolutionRejectsInvalidNamespace(t *testing.T) {
+	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
+	env := workspace.FindEnvironment("local")
+	agent := &resources.Agent{
+		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
+	}
+	_, err := RenderSolution(context.Background(), &SolutionRenderRequest{
+		Workspace: workspace, Environment: env, Agent: agent, Name: "LastLogin_Go",
+		Source:     filepath.Join(workspace.Dir(), "solution-src"),
+		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
+		AppProject: "hello",
+	})
+	if err == nil || !strings.Contains(err.Error(), "RFC 1123") {
+		t.Fatalf("RenderSolution accepted an invalid Kubernetes namespace id: %v", err)
+	}
+}
+
+// TestRenderSolutionRejectsHostNamespaceCollision proves the render refuses a
+// solution whose id equals the host namespace. Such a solution would render and
+// own the shared platform Namespace object, which its ArgoCD Application prunes
+// under the promotable sync policy — so a later namespace change would
+// cascade-delete the platform. Isolation from the host is a hard invariant.
+func TestRenderSolutionRejectsHostNamespaceCollision(t *testing.T) {
+	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
+	env := workspace.FindEnvironment("local") // env namespace is "hello"
+	agent := &resources.Agent{
+		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
+	}
+	_, err := RenderSolution(context.Background(), &SolutionRenderRequest{
+		Workspace: workspace, Environment: env, Agent: agent, Name: "hello",
+		Source:     filepath.Join(workspace.Dir(), "solution-src"),
+		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
+		AppProject: "hello",
+	})
+	if err == nil || !strings.Contains(err.Error(), "host namespace") {
+		t.Fatalf("RenderSolution rendered a solution into the host namespace: %v", err)
+	}
+}
+
 func TestSolutionPublicationDoesNotRequireAModuleResource(t *testing.T) {
 	// A workspace named "hello" with no module "checkout": if the publish path
 	// tried to load a service module for a solution, this would error.
