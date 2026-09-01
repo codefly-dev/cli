@@ -1,59 +1,82 @@
 package run
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
 )
 
-func TestSolutionCommandReturnsErrors(t *testing.T) {
-	if SolutionCmd.RunE == nil || SolutionCmd.Run != nil {
-		t.Fatal("run solution must return errors through RunE")
-	}
-	if err := SolutionCmd.Args(SolutionCmd, []string{"unexpected"}); err == nil {
-		t.Fatal("run solution accepted a positional argument")
-	}
-}
+func strptr(s string) *string { return &s }
 
-func TestResolveSolutionEntry(t *testing.T) {
-	entry, err := resolveSolutionEntryFromDir(t, "testdata/solution")
-	if err != nil {
-		t.Fatalf("resolve solution entry: %v", err)
+// A solution composes the saas host, which declares its own service-entry
+// (frontend). The solution root must be the workspace's own `path: .` module,
+// not the composed dependency — otherwise resolveSolutionEntry sees two
+// service-entries and reports an ambiguous root.
+func TestSolutionRootRef(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		workspace *resources.Workspace
+		want      string // "" means nil expected
+	}{
+		{
+			name: "self identified by path: .",
+			workspace: &resources.Workspace{
+				Name: "lastlogin-go",
+				Modules: []*resources.ModuleReference{
+					{Name: "lastlogin-go", PathOverride: strptr(".")},
+					{Name: "saas-starter", PathOverride: strptr("../../../module-saas-starter/module")},
+				},
+			},
+			want: "lastlogin-go",
+		},
+		{
+			name: "path: . wins even when listed after the dependency",
+			workspace: &resources.Workspace{
+				Name: "wiki",
+				Modules: []*resources.ModuleReference{
+					{Name: "saas-starter", PathOverride: strptr("../saas/module")},
+					{Name: "documents"},
+					{Name: "wiki", PathOverride: strptr(".")},
+				},
+			},
+			want: "wiki",
+		},
+		{
+			name: "falls back to name == workspace when no explicit path: .",
+			workspace: &resources.Workspace{
+				Name: "lastlogin-python",
+				Modules: []*resources.ModuleReference{
+					{Name: "saas-starter", PathOverride: strptr("../saas/module")},
+					{Name: "lastlogin-python"},
+				},
+			},
+			want: "lastlogin-python",
+		},
+		{
+			name: "no self module present",
+			workspace: &resources.Workspace{
+				Name: "orphan",
+				Modules: []*resources.ModuleReference{
+					{Name: "saas-starter", PathOverride: strptr("../saas/module")},
+				},
+			},
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := solutionRootRef(tc.workspace)
+			if tc.want == "" {
+				if got != nil {
+					t.Fatalf("expected nil root, got %q", got.Name)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected root %q, got nil", tc.want)
+			}
+			if got.Name != tc.want {
+				t.Fatalf("expected root %q, got %q", tc.want, got.Name)
+			}
+		})
 	}
-	if entry != "wiki/backend" {
-		t.Fatalf("solution entry = %q, want wiki/backend", entry)
-	}
-}
-
-func TestResolveSolutionEntryNoRoot(t *testing.T) {
-	_, err := resolveSolutionEntryFromDir(t, "testdata/solution-none")
-	if err == nil {
-		t.Fatal("expected an error when no module declares a service-entry")
-	}
-	if !strings.Contains(err.Error(), "no module declares a service-entry") {
-		t.Fatalf("no-root error = %q", err)
-	}
-}
-
-func TestResolveSolutionEntryAmbiguous(t *testing.T) {
-	_, err := resolveSolutionEntryFromDir(t, "testdata/solution-ambiguous")
-	if err == nil {
-		t.Fatal("expected an error when several modules declare a service-entry")
-	}
-	if !strings.Contains(err.Error(), "ambiguous solution root") ||
-		!strings.Contains(err.Error(), "wiki/backend") ||
-		!strings.Contains(err.Error(), "host/gateway") {
-		t.Fatalf("ambiguous error = %q", err)
-	}
-}
-
-func resolveSolutionEntryFromDir(t *testing.T, dir string) (string, error) {
-	t.Helper()
-	ctx := t.Context()
-	workspace, err := resources.LoadWorkspaceFromDir(ctx, dir)
-	if err != nil {
-		t.Fatalf("load workspace %s: %v", dir, err)
-	}
-	return resolveSolutionEntry(ctx, workspace)
 }

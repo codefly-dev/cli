@@ -41,12 +41,29 @@ var SolutionCmd = &cobra.Command{
 	},
 }
 
-// resolveSolutionEntry finds the solution root: the single composed module that
-// declares a service-entry, returning its "<module>/<service-entry>" unique.
-// Composed modules that fail to resolve (e.g. a pinned coordinate with no local
-// checkout yet) are not the local root, so their load errors are collected and
-// only surfaced if no entry is found at all.
+// resolveSolutionEntry finds the solution root and returns its
+// "<module>/<service-entry>" unique. The root is the workspace's own module —
+// the one referenced by `path: .` (equivalently, whose name matches the
+// workspace). Composed dependency modules (e.g. the saas host) may declare their
+// own service-entry, but those are dependencies, not the solution root, so they
+// must not be treated as competing roots.
+//
+// When no self-root module is identifiable, fall back to scanning for a single
+// module that declares a service-entry. Composed modules that fail to resolve
+// (e.g. a pinned coordinate with no local checkout yet) are not the local root,
+// so their load errors are collected and only surfaced if no entry is found.
 func resolveSolutionEntry(ctx context.Context, workspace *resources.Workspace) (string, error) {
+	if root := solutionRootRef(workspace); root != nil {
+		mod, err := workspace.LoadModuleFromReference(ctx, root)
+		if err != nil {
+			return "", fmt.Errorf("cannot load solution root module <%s>: %w", root.Name, err)
+		}
+		if mod.ServiceEntry == "" {
+			return "", fmt.Errorf("solution root module <%s> declares no service-entry", mod.Name)
+		}
+		return mod.Name + "/" + mod.ServiceEntry, nil
+	}
+
 	var entries []string
 	var loadErrs []error
 	for _, ref := range workspace.Modules {
@@ -70,6 +87,23 @@ func resolveSolutionEntry(ctx context.Context, workspace *resources.Workspace) (
 	default:
 		return "", fmt.Errorf("ambiguous solution root in workspace <%s>: multiple modules declare a service-entry (%s); run `codefly run service <module/service>` explicitly", workspace.Name, strings.Join(entries, ", "))
 	}
+}
+
+// solutionRootRef returns the workspace's own module reference — the `path: .`
+// self module (or, failing an explicit path, the module whose name matches the
+// workspace) — or nil if none is present.
+func solutionRootRef(workspace *resources.Workspace) *resources.ModuleReference {
+	for _, ref := range workspace.Modules {
+		if ref.PathOverride != nil && *ref.PathOverride == "." {
+			return ref
+		}
+	}
+	for _, ref := range workspace.Modules {
+		if ref.Name == workspace.Name {
+			return ref
+		}
+	}
+	return nil
 }
 
 func init() {
