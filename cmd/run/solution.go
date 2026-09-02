@@ -108,8 +108,8 @@ func solutionRootRef(workspace *resources.Workspace) *resources.ModuleReference 
 
 func init() {
 	// Solution-facing subset of the run flags, bound to the same package vars
-	// runServiceCommand reads. The advanced/testing flags (cli-server,
-	// temporary-ports, naming-scope, …) stay ServiceCmd-only.
+	// runServiceCommand reads. The advanced/testing flags (cli-server, …) stay
+	// ServiceCmd-only.
 	SolutionCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
 	SolutionCmd.Flags().StringVar(&environmentName, "env", orchestration.LocalEnvironmentName, "Workspace environment to run")
 	SolutionCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)")
@@ -117,4 +117,10 @@ func init() {
 	SolutionCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
 	SolutionCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood")
 	SolutionCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
+	// Port-isolation flags: fold a scope into every port hash so the whole
+	// solution boots on a disjoint port set, in parallel with another running
+	// stack. runServiceCommand reads cmd.Flags().Changed("naming-scope"), so an
+	// explicit empty scope still clears a workspace-declared one here too.
+	SolutionCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope: boot the solution on a disjoint port set for parallel runs")
+	SolutionCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed temporary ports for this flow (advanced; intended for SDK-managed tests)")
 }

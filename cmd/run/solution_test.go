@@ -8,6 +8,19 @@ import (
 
 func strptr(s string) *string { return &s }
 
+// The solution verb delegates to runServiceCommand, which folds --naming-scope
+// into env.NamingScope (and thus every port hash) — but only if the flag is
+// actually registered on SolutionCmd, so a solution can boot on a disjoint port
+// set in parallel with another running stack.
+func TestSolutionCommandExposesPortIsolationFlags(t *testing.T) {
+	if flag := SolutionCmd.Flags().Lookup("naming-scope"); flag == nil {
+		t.Fatal("run solution has no --naming-scope flag")
+	}
+	if flag := SolutionCmd.Flags().Lookup("temporary-ports"); flag == nil {
+		t.Fatal("run solution has no --temporary-ports flag")
+	}
+}
+
 // A solution composes the saas host, which declares its own service-entry
 // (frontend). The solution root must be the workspace's own `path: .` module,
 // not the composed dependency — otherwise resolveSolutionEntry sees two
