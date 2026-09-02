@@ -804,8 +804,8 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free picks the first advertised backend)")
-	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope (for testing encapsulation)")
-	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed temporary ports for this flow (advanced; intended for SDK-managed tests)")
+	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", namingScopeUsage)
+	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, temporaryPortsUsage)
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
 	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
