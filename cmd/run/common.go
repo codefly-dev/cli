@@ -40,6 +40,13 @@ var setOverrides []string
 // Useful for testing/CI
 var namingScope string
 
+// Help text for the port-isolation flags. Shared so `run service` and `run
+// solution` describe the same mechanism identically and cannot drift.
+const (
+	namingScopeUsage    = "Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)"
+	temporaryPortsUsage = "Allocate OS-probed ephemeral ports for this flow — a disjoint, non-deterministic port set (advanced; not previewable via `show network`)"
+)
+
 // namingScopeExplicit records whether --naming-scope was passed at all, so an
 // explicit empty value can clear a workspace-declared scope while an absent
 // flag keeps it.

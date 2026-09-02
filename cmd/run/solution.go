@@ -120,7 +120,8 @@ func init() {
 	// Port-isolation flags: fold a scope into every port hash so the whole
 	// solution boots on a disjoint port set, in parallel with another running
 	// stack. runServiceCommand reads cmd.Flags().Changed("naming-scope"), so an
-	// explicit empty scope still clears a workspace-declared one here too.
-	SolutionCmd.Flags().StringVar(&namingScope, "naming-scope", "", "Runtime namingScope: boot the solution on a disjoint port set for parallel runs")
-	SolutionCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed temporary ports for this flow (advanced; intended for SDK-managed tests)")
+	// explicit empty scope still clears a workspace-declared one here too. Same
+	// usage text as ServiceCmd — one mechanism, one description.
+	SolutionCmd.Flags().StringVar(&namingScope, "naming-scope", "", namingScopeUsage)
+	SolutionCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, temporaryPortsUsage)
 }
