@@ -28,6 +28,21 @@ var SolutionCmd = &cobra.Command{
 			done()
 			return fmt.Errorf("cannot load workspace: %w", err)
 		}
+		// Pull composed modules that resolve to a pinned artifact into the local
+		// cache and point the overlay at them, so the delegated run below loads
+		// them as local checkouts instead of erroring on an unfetched coordinate.
+		if err = materializePinnedModules(ctx, workspace); err != nil {
+			done()
+			return err
+		}
+		// Reload so the overlay materialize just wrote is in effect: composed
+		// pinned modules now resolve to their cache checkout, which the
+		// service-entry scan may need to load.
+		workspace, err = common.LoadWorkspace(ctx)
+		if err != nil {
+			done()
+			return fmt.Errorf("cannot reload workspace: %w", err)
+		}
 		entry, err := resolveSolutionEntry(ctx, workspace)
 		done()
 		if err != nil {
