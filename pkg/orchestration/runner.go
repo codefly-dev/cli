@@ -394,7 +394,40 @@ func (world *World) workspaceConfigurationsFor(ctx context.Context, service *res
 			dependencies = append(dependencies, dependency)
 		}
 	}
-	return world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
+	declared, err := world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
+	if err != nil {
+		return nil, err
+	}
+	// The composition root injects its own workspace configurations into every
+	// service, so a composed-module service resolves root-provided values
+	// without redeclaring them as dependencies. This set is disjoint by name
+	// from the declared-dependency set (core resolves a shared name to the root
+	// at load), so the union is unambiguous.
+	root, err := world.ConfigurationManager.GetCompositionRootWorkspaceConfigurations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := declared
+	for _, conf := range root {
+		if world.workspaceConfigurationExcluded(conf) {
+			continue
+		}
+		out = append(out, conf)
+	}
+	return out, nil
+}
+
+// workspaceConfigurationExcluded reports whether a resolved workspace
+// configuration is profile-excluded. Workspace configurations carry their name
+// on each Info (the Configuration.Origin is always "workspace"), and every Info
+// in a given configuration shares that name.
+func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) bool {
+	for _, info := range conf.Infos {
+		if world.excludedWorkspaceConfigurations[info.Name] {
+			return true
+		}
+	}
+	return false
 }
 
 func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
