@@ -84,9 +84,7 @@ func TestWorkspaceConfigurationsForInjectsCompositionRootSet(t *testing.T) {
 	require.ElementsMatch(t, []string{"work-context"}, workspaceConfigurationNames(confs))
 }
 
-// The union of declared dependencies and the composition-root set is returned,
-// without duplicating a name that appears in both places (core keeps the two
-// sets disjoint by name).
+// The union of declared dependencies and the composition-root set is returned.
 func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
 	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
@@ -99,6 +97,25 @@ func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
 		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"db", "work-context"}, workspaceConfigurationNames(confs))
+}
+
+// A name that is both a declared dependency and a composition-root
+// configuration (e.g. the root service declaring its own workspace config) is
+// emitted once, not duplicated.
+func TestWorkspaceConfigurationsForDeduplicatesOverlap(t *testing.T) {
+	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+		confs: []*basev0.Configuration{
+			workspaceConfiguration("db", "url", "postgres://db"),
+			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
+		},
+		rootConfigs: []string{"work-context"},
+	})
+	world := &World{ConfigurationManager: manager}
+
+	confs, err := world.workspaceConfigurationsFor(context.Background(),
+		&resources.Service{WorkspaceConfigurationDependencies: []string{"db", "work-context"}})
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"db", "work-context"}, workspaceConfigurationNames(confs))
 }

@@ -400,21 +400,41 @@ func (world *World) workspaceConfigurationsFor(ctx context.Context, service *res
 	}
 	// The composition root injects its own workspace configurations into every
 	// service, so a composed-module service resolves root-provided values
-	// without redeclaring them as dependencies. This set is disjoint by name
-	// from the declared-dependency set (core resolves a shared name to the root
-	// at load), so the union is unambiguous.
+	// without redeclaring them as dependencies. A service that declares a
+	// dependency on one of the root's own configurations (e.g. the root service
+	// itself) yields that name in both sets, so union by name to avoid emitting
+	// it twice.
 	root, err := world.ConfigurationManager.GetCompositionRootWorkspaceConfigurations(ctx)
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]bool, len(declared))
+	for _, conf := range declared {
+		for _, info := range conf.Infos {
+			seen[info.Name] = true
+		}
+	}
 	out := declared
 	for _, conf := range root {
-		if world.workspaceConfigurationExcluded(conf) {
+		if world.workspaceConfigurationExcluded(conf) || world.workspaceConfigurationSeen(conf, seen) {
 			continue
 		}
 		out = append(out, conf)
 	}
 	return out, nil
+}
+
+// workspaceConfigurationSeen reports whether every Info name in a resolved
+// workspace configuration is already present in seen (all Infos of a workspace
+// configuration share one name), i.e. the configuration was already emitted via
+// the declared-dependency set.
+func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen map[string]bool) bool {
+	for _, info := range conf.Infos {
+		if seen[info.Name] {
+			return true
+		}
+	}
+	return false
 }
 
 // workspaceConfigurationExcluded reports whether a resolved workspace
