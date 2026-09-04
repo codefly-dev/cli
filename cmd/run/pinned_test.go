@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -299,6 +300,26 @@ func TestResolvePinnedTagUnsatisfiableRangeErrors(t *testing.T) {
 	}
 }
 
+// A reachable remote that publishes no satisfying tag must error even when the
+// cache still holds a formerly-satisfying tag (e.g. one the remote has since
+// yanked). The cache is a fallback for an unreachable remote, never a stand-in for
+// a remote that has definitively answered "nothing matches".
+func TestResolvePinnedTagUnsatisfiableRangeIgnoresStaleCache(t *testing.T) {
+	source := initModuleRepo(t, "", "v0.0.48") // remote no longer publishes anything >=0.0.49
+	sourceCache := filepath.Join(t.TempDir(), "modules", "owner", "repo")
+	if err := os.MkdirAll(filepath.Join(sourceCache, "v0.0.50"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolvePinnedTag(context.Background(), source, ">=0.0.49", sourceCache)
+	if err == nil {
+		t.Fatal("reachable remote with no satisfying tag must error, not boot the stale cached v0.0.50")
+	}
+	if !strings.Contains(err.Error(), ">=0.0.49") {
+		t.Fatalf("error should name the constraint, got %q", err)
+	}
+}
+
 // A range pin whose remote is unreachable degrades to the highest cached tag that
 // satisfies the constraint, ignoring cached tags outside the range.
 func TestResolvePinnedTagRangeOfflineUsesCache(t *testing.T) {
@@ -330,6 +351,23 @@ func TestHighestSemverTagPrefersStable(t *testing.T) {
 	}
 	if got := highestSemverTag([]string{"main", "not-a-tag"}, nil); got != "" {
 		t.Fatalf("no semver tags should yield empty, got %q", got)
+	}
+}
+
+// A constraint filters tags before the stable/pre-release split, so a plain range
+// never selects an out-of-range pre-release even when it is numerically highest —
+// following semver constraint semantics rather than `latest`'s pre-release
+// fallback.
+func TestHighestSemverTagRangeExcludesPrerelease(t *testing.T) {
+	constraint, err := semver.NewConstraint(">=0.0.49")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := highestSemverTag([]string{"v0.0.49", "v0.0.50-rc1"}, constraint); got != "v0.0.49" {
+		t.Fatalf("range = %q, want stable v0.0.49, not out-of-range pre-release v0.0.50-rc1", got)
+	}
+	if got := highestSemverTag([]string{"v0.0.50-rc1"}, constraint); got != "" {
+		t.Fatalf("range with only an out-of-range pre-release = %q, want empty", got)
 	}
 }
 

@@ -198,6 +198,10 @@ func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout stri
 // ">=0.0.49") asks for the highest published tag that satisfies it. When the
 // remote is unreachable either degrades to the highest satisfying tag already in
 // the local cache, so a warmed-up solution still boots offline.
+//
+// A range follows semver constraint semantics: a pre-release tag satisfies a
+// range only when the range itself names a pre-release (e.g. ">=0.0.49-0"). This
+// differs from `latest`, which selects a pre-release when no stable tag exists.
 func resolvePinnedTag(ctx context.Context, url, version, sourceCache string) (string, error) {
 	version = strings.TrimSpace(version)
 	if version == "" || version == "latest" {
@@ -217,27 +221,36 @@ func resolvePinnedTag(ctx context.Context, url, version, sourceCache string) (st
 }
 
 // highestTag returns the highest published tag on url satisfying constraint (any
-// tag when constraint is nil, the `latest` case), degrading to the highest
-// satisfying tag in the local cache when the remote is unreachable. label names
-// the requested constraint for a clear "nothing matches" error.
+// tag when constraint is nil, the `latest` case). It degrades to the highest
+// satisfying tag in the local cache only when the remote is *unreachable*, so a
+// warmed-up solution still boots offline. When the remote answers but publishes
+// no satisfying tag, that is a hard error the cache must not mask — otherwise a
+// yanked or since-removed tag left in the cache would silently boot in place of an
+// unsatisfiable range. label names the requested constraint for that error.
 func highestTag(ctx context.Context, url, sourceCache string, constraint *semver.Constraints, label string) (string, error) {
-	tag, err := highestRemoteTag(ctx, url, constraint, label)
+	tags, err := remoteTags(ctx, url)
 	if err != nil {
 		if cached := highestSemverTag(cachedTags(sourceCache), constraint); cached != "" {
 			return cached, nil
 		}
 		return "", err
 	}
-	return tag, nil
+	if tag := highestSemverTag(tags, constraint); tag != "" {
+		return tag, nil
+	}
+	if constraint != nil {
+		return "", fmt.Errorf("no published tag on %s satisfies %q", url, label)
+	}
+	return "", fmt.Errorf("no semver tags published on %s", url)
 }
 
-// highestRemoteTag returns the highest published tag on url satisfying constraint
-// (any tag when constraint is nil), preferring a stable release over a
-// pre-release.
-func highestRemoteTag(ctx context.Context, url string, constraint *semver.Constraints, label string) (string, error) {
+// remoteTags lists the published tag names on url. Its error means the remote
+// could not be reached (or refused): an empty-but-reachable remote returns an
+// empty slice and no error, so callers can tell "unreachable" from "no such tag".
+func remoteTags(ctx context.Context, url string) ([]string, error) {
 	out, err := gitCommand(ctx, "ls-remote", "--tags", "--refs", url).Output()
 	if err != nil {
-		return "", fmt.Errorf("list tags of %s: %w", url, err)
+		return nil, fmt.Errorf("list tags of %s: %w", url, err)
 	}
 	var tags []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -247,14 +260,7 @@ func highestRemoteTag(ctx context.Context, url string, constraint *semver.Constr
 		}
 		tags = append(tags, strings.TrimPrefix(fields[1], "refs/tags/"))
 	}
-	tag := highestSemverTag(tags, constraint)
-	if tag == "" {
-		if constraint != nil {
-			return "", fmt.Errorf("no published tag on %s satisfies %q", url, label)
-		}
-		return "", fmt.Errorf("no semver tags published on %s", url)
-	}
-	return tag, nil
+	return tags, nil
 }
 
 // cachedTags lists the version-keyed subdirectories already present under a
