@@ -194,32 +194,47 @@ func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout stri
 // resolvePinnedTag maps a committed version constraint to a concrete tag. An
 // explicit version is used as its tag (gaining the conventional "v" prefix when it
 // is a bare semver) and never touches the network. A "latest" (or empty)
-// constraint asks the remote for the highest published tag; when the remote is
-// unreachable it degrades to the highest tag already in the local cache, so a
-// warmed-up solution still boots offline.
+// constraint asks the remote for the highest published tag; a semver range (e.g.
+// ">=0.0.49") asks for the highest published tag that satisfies it. When the
+// remote is unreachable either degrades to the highest satisfying tag already in
+// the local cache, so a warmed-up solution still boots offline.
 func resolvePinnedTag(ctx context.Context, url, version, sourceCache string) (string, error) {
 	version = strings.TrimSpace(version)
 	if version == "" || version == "latest" {
-		tag, err := highestRemoteTag(ctx, url)
-		if err != nil {
-			if cached := highestSemverTag(cachedTags(sourceCache)); cached != "" {
-				return cached, nil
-			}
-			return "", err
-		}
-		return tag, nil
+		return highestTag(ctx, url, sourceCache, nil, version)
 	}
-	if !strings.HasPrefix(version, "v") {
-		if _, err := semver.NewVersion(version); err == nil {
-			return "v" + version, nil
+	if _, err := semver.NewVersion(strings.TrimPrefix(version, "v")); err == nil {
+		if strings.HasPrefix(version, "v") {
+			return version, nil
 		}
+		return "v" + version, nil
 	}
-	return version, nil
+	constraint, err := semver.NewConstraint(version)
+	if err != nil {
+		return version, nil
+	}
+	return highestTag(ctx, url, sourceCache, constraint, version)
 }
 
-// highestRemoteTag returns the highest published tag on url, preferring a stable
-// release over a pre-release.
-func highestRemoteTag(ctx context.Context, url string) (string, error) {
+// highestTag returns the highest published tag on url satisfying constraint (any
+// tag when constraint is nil, the `latest` case), degrading to the highest
+// satisfying tag in the local cache when the remote is unreachable. label names
+// the requested constraint for a clear "nothing matches" error.
+func highestTag(ctx context.Context, url, sourceCache string, constraint *semver.Constraints, label string) (string, error) {
+	tag, err := highestRemoteTag(ctx, url, constraint, label)
+	if err != nil {
+		if cached := highestSemverTag(cachedTags(sourceCache), constraint); cached != "" {
+			return cached, nil
+		}
+		return "", err
+	}
+	return tag, nil
+}
+
+// highestRemoteTag returns the highest published tag on url satisfying constraint
+// (any tag when constraint is nil), preferring a stable release over a
+// pre-release.
+func highestRemoteTag(ctx context.Context, url string, constraint *semver.Constraints, label string) (string, error) {
 	out, err := gitCommand(ctx, "ls-remote", "--tags", "--refs", url).Output()
 	if err != nil {
 		return "", fmt.Errorf("list tags of %s: %w", url, err)
@@ -232,8 +247,11 @@ func highestRemoteTag(ctx context.Context, url string) (string, error) {
 		}
 		tags = append(tags, strings.TrimPrefix(fields[1], "refs/tags/"))
 	}
-	tag := highestSemverTag(tags)
+	tag := highestSemverTag(tags, constraint)
 	if tag == "" {
+		if constraint != nil {
+			return "", fmt.Errorf("no published tag on %s satisfies %q", url, label)
+		}
 		return "", fmt.Errorf("no semver tags published on %s", url)
 	}
 	return tag, nil
@@ -256,10 +274,11 @@ func cachedTags(sourceCache string) []string {
 	return tags
 }
 
-// highestSemverTag returns the highest semver tag from tags, preferring a stable
-// release; a pre-release wins only when no stable tag is present. Non-semver tags
-// are ignored. Returns "" when none parse.
-func highestSemverTag(tags []string) string {
+// highestSemverTag returns the highest semver tag from tags that satisfies
+// constraint (any tag when constraint is nil), preferring a stable release; a
+// pre-release wins only when no stable tag is present. Non-semver tags are
+// ignored. Returns "" when none parse or none satisfy.
+func highestSemverTag(tags []string, constraint *semver.Constraints) string {
 	type tagged struct {
 		tag string
 		ver *semver.Version
@@ -268,6 +287,9 @@ func highestSemverTag(tags []string) string {
 	for _, tag := range tags {
 		ver, err := semver.NewVersion(strings.TrimPrefix(tag, "v"))
 		if err != nil {
+			continue
+		}
+		if constraint != nil && !constraint.Check(ver) {
 			continue
 		}
 		if ver.Prerelease() == "" {

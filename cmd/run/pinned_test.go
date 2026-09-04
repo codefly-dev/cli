@@ -269,16 +269,66 @@ func TestResolvePinnedTagLatestOfflineUsesCache(t *testing.T) {
 	}
 }
 
+// A semver-range pin resolves to the highest published tag that satisfies it,
+// not verbatim (which would clone a branch named ">=0.0.49" and fail).
+func TestResolvePinnedTagResolvesSemverRange(t *testing.T) {
+	source := initModuleRepo(t, "", "v0.0.48", "v0.0.49", "v0.0.50")
+	sourceCache := t.TempDir()
+
+	tag, err := resolvePinnedTag(context.Background(), source, ">=0.0.49", sourceCache)
+	if err != nil {
+		t.Fatalf("resolve range: %v", err)
+	}
+	if tag != "v0.0.50" {
+		t.Fatalf(">=0.0.49 resolved to %q, want highest satisfying v0.0.50", tag)
+	}
+}
+
+// An unsatisfiable range errors clearly, naming the constraint, rather than being
+// passed verbatim to git.
+func TestResolvePinnedTagUnsatisfiableRangeErrors(t *testing.T) {
+	source := initModuleRepo(t, "", "v0.0.48", "v0.0.50")
+	sourceCache := t.TempDir()
+
+	_, err := resolvePinnedTag(context.Background(), source, ">=1.0.0", sourceCache)
+	if err == nil {
+		t.Fatal("unsatisfiable range must error")
+	}
+	if !strings.Contains(err.Error(), ">=1.0.0") {
+		t.Fatalf("error should name the constraint, got %q", err)
+	}
+}
+
+// A range pin whose remote is unreachable degrades to the highest cached tag that
+// satisfies the constraint, ignoring cached tags outside the range.
+func TestResolvePinnedTagRangeOfflineUsesCache(t *testing.T) {
+	sourceCache := filepath.Join(t.TempDir(), "modules", "owner", "repo")
+	for _, tag := range []string{"v0.0.1", "v0.0.49", "v0.0.50", "v0.1.0"} {
+		if err := os.MkdirAll(filepath.Join(sourceCache, tag), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadURL := "file://" + filepath.Join(t.TempDir(), "does-not-exist")
+
+	tag, err := resolvePinnedTag(context.Background(), deadURL, ">=0.0.49, <0.1.0", sourceCache)
+	if err != nil {
+		t.Fatalf("offline range must fall back to cache: %v", err)
+	}
+	if tag != "v0.0.50" {
+		t.Fatalf("offline range = %q, want highest cached satisfying v0.0.50", tag)
+	}
+}
+
 // latest prefers a stable release over a higher pre-release, and falls back to a
 // pre-release only when no stable tag exists.
 func TestHighestSemverTagPrefersStable(t *testing.T) {
-	if got := highestSemverTag([]string{"v1.0.0", "v1.1.0-rc1", "v0.9.0"}); got != "v1.0.0" {
+	if got := highestSemverTag([]string{"v1.0.0", "v1.1.0-rc1", "v0.9.0"}, nil); got != "v1.0.0" {
 		t.Fatalf("highest = %q, want stable v1.0.0 over rc", got)
 	}
-	if got := highestSemverTag([]string{"v1.1.0-rc1", "v1.1.0-rc2"}); got != "v1.1.0-rc2" {
+	if got := highestSemverTag([]string{"v1.1.0-rc1", "v1.1.0-rc2"}, nil); got != "v1.1.0-rc2" {
 		t.Fatalf("with only pre-releases, highest = %q, want v1.1.0-rc2", got)
 	}
-	if got := highestSemverTag([]string{"main", "not-a-tag"}); got != "" {
+	if got := highestSemverTag([]string{"main", "not-a-tag"}, nil); got != "" {
 		t.Fatalf("no semver tags should yield empty, got %q", got)
 	}
 }
