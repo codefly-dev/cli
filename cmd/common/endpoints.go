@@ -156,3 +156,19 @@ func Reachable(hostPort string) bool {
 	_ = conn.Close()
 	return true
 }
+
+// WaitReachable polls hostPort every 100ms until it accepts a TCP connection
+// or timeout elapses, returning whether it became reachable in time. Used to
+// delay opening a browser tab until the dashboard is actually serving.
+func WaitReachable(hostPort string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if Reachable(hostPort) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}

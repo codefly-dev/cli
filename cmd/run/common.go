@@ -3,6 +3,10 @@ package run
 // Run codefly frontend companion
 var withCLIServer bool
 
+// Open the dashboard in the default browser once the CLI server is up.
+// Requires --cli-server.
+var openDashboard bool
+
 // Headless mode: no TUI, plain log output (auto-enabled when no TTY)
 var headless bool
 

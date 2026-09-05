@@ -38,6 +38,19 @@ func TestHeadlessServiceCommandRejectsAmbiguousWorkspaceContext(t *testing.T) {
 	}
 }
 
+func TestRunServiceOpenRequiresCLIServer(t *testing.T) {
+	err := validateOpenDashboardFlag(true, false)
+	if err == nil || err.Error() != "--open requires --cli-server" {
+		t.Fatalf("validateOpenDashboardFlag(open, no cli-server) = %v, want %q", err, "--open requires --cli-server")
+	}
+	if err := validateOpenDashboardFlag(true, true); err != nil {
+		t.Fatalf("validateOpenDashboardFlag(open, cli-server) = %v, want nil", err)
+	}
+	if err := validateOpenDashboardFlag(false, false); err != nil {
+		t.Fatalf("validateOpenDashboardFlag(no open, no cli-server) = %v, want nil", err)
+	}
+}
+
 func TestSetupOnlyRunsDoNotWait(t *testing.T) {
 	tests := []struct {
 		name     string
