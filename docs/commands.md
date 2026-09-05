@@ -555,9 +555,10 @@ codefly agent ci --skip-conformance               # Source/build/drift debugging
 Generate client code from service APIs.
 
 ```bash
-codefly generate grpc                                        # Generate gRPC client code
-codefly generate openapi                                     # Generate OpenAPI/Swagger client code
-codefly generate proto --proto ../proto --output ./generated  # Generate code from local proto files (Docker)
+codefly generate grpc --service api --language go --destination ./clients/api-go       # Typed gRPC client from the service's gRPC endpoints
+codefly generate openapi --service api --language typescript --destination ./clients/api-ts  # Typed OpenAPI client from the service's REST endpoints
+codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files (Docker)
+codefly generate proto --proto ../proto --output ./generated --local                     # Same, with locally installed pinned plugins
 ```
 
 **`generate proto` flags:**
@@ -566,6 +567,16 @@ codefly generate proto --proto ../proto --output ./generated  # Generate code fr
 |------|-------------|
 | `--proto` | Path to proto directory |
 | `--output` | Output directory for generated code |
+
+**`generate grpc` / `generate openapi` flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--service` | Service to generate the client for (`module/service` or an unambiguous service name) |
+| `--language` | Target language (default `go`); values accepted by `core/languages.FromString` |
+| `--destination` | Output directory; created if missing |
+
+Both client generators load the service's Builder over gRPC to read the endpoint contract, then run buf inside the `codeflydev/proto` companion image. Docker must be running.
 
 ---
 

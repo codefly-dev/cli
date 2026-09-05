@@ -16,9 +16,10 @@ import (
 
 // OpenAPICmd represents the deploy command
 var OpenAPICmd = &cobra.Command{
-	Use:   "openAPI",
-	Short: "Generate a typed OpenAPI client for a service endpoint",
-	Args:  cobra.NoArgs,
+	Use:     "openapi",
+	Aliases: []string{"openAPI", "swagger"},
+	Short:   "Generate a typed OpenAPI client for a service endpoint",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
