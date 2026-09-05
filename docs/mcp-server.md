@@ -74,6 +74,12 @@ Add to your project's `.mcp.json` or global MCP config:
 | `list_agents` | List available agent types | -- |
 | `list_jobs` | List jobs (optionally filtered by module) | `module` (optional) |
 
+### Mutation Tools
+
+| Tool | Description | Required Args |
+|------|-------------|---------------|
+| `add_service` | Create a service via the agent's Create flow | `module`, `name`, `agent`; optional `description` |
+
 ### Per-Service Tools
 
 These tools operate on a specific service within a module.
