@@ -24,15 +24,18 @@ func NewHttpServer(c *Configuration, impl *Server) (*HttpServer, error) {
 	return server, nil
 }
 
+// Address is the REST endpoint this server binds, e.g. "127.0.0.1:10001".
+func (s *HttpServer) Address() string {
+	return s.config.EndpointRest
+}
+
 func (s *HttpServer) Run(ctx context.Context) error {
-	golor.Template(s.config).Println(`#(blue,bold)[🚀 Starting codefly REST server at]: #(italic,white)[{{ .EndpointRest }}]`)
+	golor.Template(s.config).Println(`#(blue,bold)[Dashboard:] #(italic,white)[http://{{ .EndpointRest }}]`)
 
 	handler, err := s.handler()
 	if err != nil {
 		return err
 	}
-
-	golor.Println(`Serving #(bold,blue)[codefly] webserver at http://localhost:10001`)
 
 	srv := &http.Server{Addr: s.config.EndpointRest, Handler: handler}
 	lis, err := net.Listen("tcp", s.config.EndpointRest)

@@ -65,6 +65,11 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 	}, nil
 }
 
+// DashboardURL is the browser address of the embedded dashboard.
+func (server *CodeflyServer) DashboardURL() string {
+	return "http://" + server.rest.Address()
+}
+
 func loopbackEndpoint(port uint16) string {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
 }

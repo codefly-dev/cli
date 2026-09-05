@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -51,6 +53,18 @@ type Server struct {
 	// registered by the caller, resolved via activeFlow() — so two flows in
 	// one process can never alias each other through a shared global.
 	flows *engine.FlowManager
+	// history keeps the most recent log lines so a dashboard opened after the run
+	// started (or reloaded) can backfill. Bounded; oldest lines are dropped.
+	history *logHistory
+}
+
+// workspaceFor prefers the workspace this server was constructed with and only
+// falls back to the process cwd when the server was built without one.
+func (s *Server) workspaceFor(ctx context.Context) (*resources.Workspace, error) {
+	if s.workspace != nil {
+		return s.workspace, nil
+	}
+	return common.LoadWorkspace(ctx)
 }
 
 // activeFlow resolves the host-owned active flow, or nil if none is running.
@@ -205,7 +219,7 @@ func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*cli.Acti
 }
 
 func (s *Server) ActiveLogHistory(ctx context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
-	return nil, status.Error(codes.Internal, "TBI")
+	return s.logHistoryResponse(request), nil
 }
 
 /* Overall information */
@@ -224,7 +238,7 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentI
 }
 
 func (s *Server) GetWorkspaceInventory(ctx context.Context, request *emptypb.Empty) (*basev0.Workspace, error) {
-	workspace, err := common.LoadWorkspace(ctx)
+	workspace, err := s.workspaceFor(ctx)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -235,12 +249,54 @@ func (s *Server) GetWorkspaceInventory(ctx context.Context, request *emptypb.Emp
 	return view, nil
 }
 
-func (s *Server) GetWorkspaceServiceDependencyGraph(ctx context.Context, request *emptypb.Empty) (*observabilityv0.GraphResponse, error) {
-	return &observabilityv0.GraphResponse{}, nil
+func (s *Server) GetWorkspaceServiceDependencyGraph(ctx context.Context, _ *emptypb.Empty) (*observabilityv0.GraphResponse, error) {
+	workspace, err := s.workspaceFor(ctx)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	deps, err := architecture.NewServiceDependencies(ctx, workspace)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return serviceGraphResponse(deps), nil
+}
+
+// serviceGraphResponse renders a ServiceDependencies graph as the dashboard's
+// GraphNode/GraphEdge shape: one MODULE node per distinct module prefix, one
+// SERVICE node per service, an edge from each module to its services, and an
+// edge for each service dependency. Sorted so output is deterministic.
+func serviceGraphResponse(deps *architecture.ServiceDependencies) *observabilityv0.GraphResponse {
+	resp := &observabilityv0.GraphResponse{}
+	seenModule := make(map[string]bool)
+	for _, svc := range deps.Services() {
+		module, _, _ := strings.Cut(svc.Unique, "/")
+		if !seenModule[module] {
+			seenModule[module] = true
+			resp.Nodes = append(resp.Nodes, &observabilityv0.GraphNode{Id: module, Type: observabilityv0.GraphNode_MODULE})
+		}
+		resp.Nodes = append(resp.Nodes, &observabilityv0.GraphNode{Id: svc.Unique, Type: observabilityv0.GraphNode_SERVICE})
+		resp.Edges = append(resp.Edges, &observabilityv0.GraphEdge{From: module, To: svc.Unique})
+	}
+	for _, dep := range deps.Dependencies() {
+		resp.Edges = append(resp.Edges, &observabilityv0.GraphEdge{From: dep.From.Unique, To: dep.To.Unique})
+	}
+	sort.Slice(resp.Nodes, func(i, j int) bool {
+		if resp.Nodes[i].Type != resp.Nodes[j].Type {
+			return resp.Nodes[i].Type < resp.Nodes[j].Type
+		}
+		return resp.Nodes[i].Id < resp.Nodes[j].Id
+	})
+	sort.Slice(resp.Edges, func(i, j int) bool {
+		if resp.Edges[i].From != resp.Edges[j].From {
+			return resp.Edges[i].From < resp.Edges[j].From
+		}
+		return resp.Edges[i].To < resp.Edges[j].To
+	})
+	return resp
 }
 
 func (s *Server) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, request *emptypb.Empty) (*cli.MultiGraphResponse, error) {
-	workspace, err := common.LoadWorkspace(ctx)
+	workspace, err := s.workspaceFor(ctx)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -256,7 +312,15 @@ func (s *Server) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, r
 }
 
 func (s *Server) LogHistory(ctx context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
-	return nil, nil
+	return s.logHistoryResponse(request), nil
+}
+
+func (s *Server) logHistoryResponse(req *observabilityv0.LogRequest) *observabilityv0.LogResponse {
+	var from, to *timestamppb.Timestamp
+	if req != nil {
+		from, to = req.From, req.To
+	}
+	return &observabilityv0.LogResponse{Groups: []*observabilityv0.LogSessionGroup{{Logs: s.history.Snapshot(from, to)}}}
 }
 
 // removeANSICodes strips ANSI escape codes from the input string.
@@ -286,12 +350,19 @@ func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 		Message: removeANSICodes(log.String()),
 		Kind:    source.Kind,
 	}
+	s.recordLog(logEntry)
+}
+
+// recordLog is split out from ProcessWithSource so tests can inject log
+// entries directly without constructing wool types.
+func (s *Server) recordLog(entry *observabilityv0.Log) {
+	s.history.Add(entry)
 	// Non-blocking send. The previous `go func(){ ch <- entry }()` spawned a
 	// goroutine per log line; when no Logs consumer is attached (headless/CI),
 	// the buffered channel fills and every such goroutine blocks forever —
 	// an unbounded leak. Drop the line instead when the buffer is full.
 	select {
-	case s.logChannel <- logEntry:
+	case s.logChannel <- entry:
 	default:
 	}
 }
@@ -322,6 +393,7 @@ func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManag
 		logChannel: make(chan *observabilityv0.Log, bufferSize),
 		Terminal:   NewTerminalServer(workspaceDir),
 		flows:      flows,
+		history:    newLogHistory(5000),
 	}
 	cli.RegisterCLIServer(grpcServer, &s)
 	cli.RegisterTerminalServiceServer(grpcServer, s.Terminal)
