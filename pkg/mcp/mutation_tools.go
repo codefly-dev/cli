@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,32 +8,23 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/core/resources"
-	runnersbase "github.com/codefly-dev/core/runners/base"
 )
 
-// synchronizedBuffer is an io.Writer whose snapshots are safe while a child
-// process is still writing. bytes.Buffer itself cannot be read concurrently
-// with exec.Cmd's stdout/stderr copy goroutines.
-type synchronizedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (b *synchronizedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.b.Write(p)
-}
-
-func (b *synchronizedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.b.String()
+// currentCLI resolves the codefly binary running this MCP server, so
+// subprocess tools invoke the exact build in use rather than whatever
+// `codefly` happens to resolve to on PATH.
+func currentCLI() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve codefly binary: %w", err)
+	}
+	return filepath.EvalSymlinks(exe)
 }
 
 // registerMutationTools adds tools that modify the workspace (create services, add deps, etc.)
@@ -82,13 +72,16 @@ func (s *Server) registerMutationTools() {
 
 	s.RegisterTool(Tool{
 		Name:        "run_service",
-		Description: "Run a service with all its dependencies (equivalent to 'codefly run service'). Returns when the service is ready.",
+		Description: "Run a service with its dependency graph in-process (same orchestration as 'codefly run service --headless'). Returns once the flow is running unless wait=false.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module containing the service"},
-				"service": {Type: "string", Description: "Service to run"},
-				"debug":   {Type: "string", Description: "Enable debug mode (true/false, default false)"},
+				"module":          {Type: "string", Description: "Module containing the service"},
+				"service":         {Type: "string", Description: "Service to run"},
+				"runtime_context": {Type: "string", Description: "Runtime context: native, nix, container, or free"},
+				"profile":         {Type: "string", Description: "Named run profile from workspace.codefly.yaml"},
+				"wait":            {Type: "string", Description: "Block until the flow is running (true/false, default true)"},
+				"timeout_seconds": {Type: "string", Description: "Max seconds to wait for readiness (default 300)"},
 			},
 			Required: []string{"module", "service"},
 		},
@@ -100,12 +93,35 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module containing the service"},
-				"service": {Type: "string", Description: "Service to test"},
+				"module":          {Type: "string", Description: "Module containing the service"},
+				"service":         {Type: "string", Description: "Service to test"},
+				"suite":           {Type: "string", Description: "Test suite to run (optional)"},
+				"filter":          {Type: "string", Description: "Test filter (optional)"},
+				"runtime_context": {Type: "string", Description: "Runtime context: native, nix, container, or free"},
 			},
 			Required: []string{"module", "service"},
 		},
 	}, s.testService)
+
+	s.RegisterTool(Tool{
+		Name:        "flow_status",
+		Description: "Report the state of the flow started by run_service (idle, starting, running, stopped, failed) and its services.",
+		InputSchema: InputSchema{
+			Type:       "object",
+			Properties: map[string]PropertySchema{},
+		},
+	}, s.flowStatus)
+
+	s.RegisterTool(Tool{
+		Name:        "stop_flow",
+		Description: "Stop the flow started by run_service. Set destroy=true to also remove stateful containers (databases lose data).",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"destroy": {Type: "string", Description: "Also remove stateful containers, e.g. databases (true/false, default false)"},
+			},
+		},
+	}, s.stopFlow)
 
 	s.RegisterTool(Tool{
 		Name:        "install_agent",
@@ -298,8 +314,11 @@ func (s *Server) generateProto(ctx context.Context, args map[string]string) ([]C
 	protoDir := path.Join(serviceDir, "proto")
 	outputDir := path.Join(serviceDir, "code/pkg/gen")
 
-	// Run codefly generate proto
-	cmd := exec.CommandContext(ctx, "codefly", "generate", "proto",
+	cli, err := currentCLI()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, cli, "generate", "proto",
 		"--proto", protoDir, "--output", outputDir)
 	cmd.Dir = serviceDir
 	output, err := cmd.CombinedOutput()
@@ -310,101 +329,133 @@ func (s *Server) generateProto(ctx context.Context, args map[string]string) ([]C
 	return []Content{TextContent(fmt.Sprintf("Proto generated successfully for %s/%s\n%s", moduleName, serviceName, string(output)))}, nil
 }
 
+// runService starts service and its dependency graph through the control
+// plane. The flow is registered under s.runCtx, not the per-call ctx: the
+// per-call context ends when the JSON-RPC response is written, which would
+// stop the stack the moment this handler returns.
 func (s *Server) runService(ctx context.Context, args map[string]string) ([]Content, error) {
-	ws, err := s.requireWorkspace()
-	if err != nil {
+	if _, err := s.requireWorkspace(); err != nil {
 		return nil, err
 	}
-
-	moduleName := args["module"]
-	serviceName := args["service"]
-	debug := args["debug"] == "true"
-
-	mod, err := ws.LoadModuleFromName(ctx, moduleName)
+	if args["module"] == "" || args["service"] == "" {
+		return []Content{TextContent("module and service are required")}, nil
+	}
+	ref := serviceRef(args)
+	wait := args["wait"] != "false"
+	handle, err := s.plane.Run(s.runCtx, control.RunRequest{
+		Service:        ref,
+		RuntimeContext: args["runtime_context"],
+		Profile:        args["profile"],
+		Headless:       true,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("module not found: %s", moduleName)
+		return []Content{TextContent(fmt.Sprintf("run %s failed: %v", ref, err))}, nil
 	}
 
-	svc, err := mod.LoadServiceFromName(ctx, serviceName)
-	if err != nil {
-		return nil, fmt.Errorf("service not found: %s/%s", moduleName, serviceName)
+	if wait {
+		timeout := 300 * time.Second
+		if raw := args["timeout_seconds"]; raw != "" {
+			if secs, convErr := strconv.Atoi(raw); convErr == nil && secs > 0 {
+				timeout = time.Duration(secs) * time.Second
+			}
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		if err := s.waitFlowRunning(waitCtx); err != nil {
+			return nil, err
+		}
 	}
 
-	cmdArgs := []string{"run", "service", "--headless"}
-	if debug {
-		cmdArgs = append(cmdArgs, "-d")
+	status, _ := s.plane.FlowStatus(ctx)
+	result := map[string]any{
+		"flow_id": handle.FlowID,
+		"state":   string(status.State),
+		"note":    "Use flow_status to poll readiness, get endpoints with service_info, and stop_flow to stop.",
 	}
+	data, _ := json.MarshalIndent(result, "", "  ")
+	return []Content{TextContent(string(data))}, nil
+}
 
-	// `codefly run service` is a long-running process — it does NOT return
-	// once the service is up. Using exec.CommandContext + CombinedOutput
-	// would block the MCP handler until the service is stopped, which
-	// defeats the point (the AI tool would hang for the entire session).
-	//
-	// Instead: spawn detached, wait briefly for the subprocess to show
-	// it's running, then return a handle. The caller can use status/logs
-	// tools to check on it afterward. Process lifetime is bounded by the
-	// user via the complementary stop tool.
-	cmd := exec.Command("codefly", cmdArgs...)
-	cmd.Dir = path.Join(svc.Dir(), "code")
-	var outBuf synchronizedBuffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
-	// Start through Core's authenticated process-group boundary. It publishes
-	// the durable identity record before releasing the child, so a dead MCP
-	// owner can be recovered without ever signaling a reused PID/group.
-	group, err := runnersbase.StartTrackedProcessGroup(cmd)
-	if err != nil {
-		return []Content{TextContent(fmt.Sprintf("run failed to start: %v", err))}, nil
+// waitFlowRunning polls s.plane.FlowStatus until the flow is running, it fails
+// or stops, or ctx is done. The flow itself keeps running under s.runCtx
+// regardless of how this wait ends — cancelling ctx only stops the poll.
+func (s *Server) waitFlowRunning(ctx context.Context) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status, err := s.plane.FlowStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if status.State == control.FlowRunning || status.State == control.FlowFailed || status.State == control.FlowStopped {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
 	}
-	// Reap the subprocess in a background goroutine so it doesn't become
-	// a zombie if/when it exits. We don't wait — the caller just needs
-	// to know it's launched.
-	pid := cmd.Process.Pid
-	go func() {
-		_ = cmd.Wait()
-		_ = group.RemoveIfDead()
-	}()
-
-	// Sample the initial output briefly so the caller gets a meaningful
-	// confirmation (port binding, error, etc.) rather than an empty string.
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(500 * time.Millisecond):
-	}
-
-	return []Content{TextContent(fmt.Sprintf(
-		"Service %s/%s launched (pid=%d). Initial output:\n%s",
-		moduleName, serviceName, pid, outBuf.String()))}, nil
 }
 
 func (s *Server) testService(ctx context.Context, args map[string]string) ([]Content, error) {
-	ws, err := s.requireWorkspace()
-	if err != nil {
+	if _, err := s.requireWorkspace(); err != nil {
 		return nil, err
 	}
-
-	moduleName := args["module"]
-	serviceName := args["service"]
-
-	mod, err := ws.LoadModuleFromName(ctx, moduleName)
-	if err != nil {
-		return nil, fmt.Errorf("module not found: %s", moduleName)
+	if args["module"] == "" || args["service"] == "" {
+		return []Content{TextContent("module and service are required")}, nil
 	}
-
-	svc, err := mod.LoadServiceFromName(ctx, serviceName)
+	result, err := s.plane.Test(ctx, control.TestRequest{
+		Service:        serviceRef(args),
+		Suite:          args["suite"],
+		Filter:         args["filter"],
+		RuntimeContext: args["runtime_context"],
+	})
 	if err != nil {
-		return nil, fmt.Errorf("service not found: %s/%s", moduleName, serviceName)
+		return []Content{TextContent(fmt.Sprintf("test failed to run: %v", err))}, nil
 	}
+	if !result.Passed {
+		return []Content{TextContent("FAILED\n" + result.Output)}, nil
+	}
+	return []Content{TextContent("PASSED\n" + result.Output)}, nil
+}
 
-	cmd := exec.CommandContext(ctx, "codefly", "test", "service")
-	cmd.Dir = path.Join(svc.Dir(), "code")
-	output, err := cmd.CombinedOutput()
+// flowStatus reports the state of the flow started by run_service.
+func (s *Server) flowStatus(ctx context.Context, _ map[string]string) ([]Content, error) {
+	status, err := s.plane.FlowStatus(ctx)
 	if err != nil {
-		return []Content{TextContent(fmt.Sprintf("test failed: %s\n%s", err, string(output)))}, nil
+		return nil, fmt.Errorf("flow status: %w", err)
 	}
+	type serviceStatus struct {
+		Name    string `json:"name"`
+		State   string `json:"state"`
+		Healthy bool   `json:"healthy"`
+	}
+	services := make([]serviceStatus, 0, len(status.Services))
+	for _, svc := range status.Services {
+		services = append(services, serviceStatus{Name: svc.Name, State: string(svc.State), Healthy: svc.Healthy})
+	}
+	result := map[string]any{
+		"state":    string(status.State),
+		"services": services,
+	}
+	data, _ := json.MarshalIndent(result, "", "  ")
+	return []Content{TextContent(string(data))}, nil
+}
 
-	return []Content{TextContent(string(output))}, nil
+// stopFlow stops the flow started by run_service.
+func (s *Server) stopFlow(ctx context.Context, args map[string]string) ([]Content, error) {
+	before, err := s.plane.FlowStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("flow status: %w", err)
+	}
+	if before.State == control.FlowIdle {
+		return []Content{TextContent("nothing running")}, nil
+	}
+	if err := s.plane.Stop(ctx, control.StopRequest{Destroy: args["destroy"] == "true"}); err != nil {
+		return nil, fmt.Errorf("stop flow: %w", err)
+	}
+	return []Content{TextContent("stopped")}, nil
 }
 
 func (s *Server) installAgent(ctx context.Context, args map[string]string) ([]Content, error) {
@@ -419,7 +470,11 @@ func (s *Server) installAgent(ctx context.Context, args map[string]string) ([]Co
 		cmdArgs = append(cmdArgs, "--version", version)
 	}
 
-	cmd := exec.CommandContext(ctx, "codefly", cmdArgs...)
+	cli, err := currentCLI()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, cli, cmdArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return []Content{TextContent(fmt.Sprintf("install failed: %s\n%s", err, string(output)))}, nil

@@ -35,6 +35,10 @@ type Server struct {
 	resources map[string]ResourceHandler
 	resDefs   []Resource
 	version   string
+	// runCtx governs flows started by run_service. It outlives any single tool call
+	// and is cancelled by Close, so a stack started over MCP stops with the server.
+	runCtx    context.Context
+	cancelRun context.CancelFunc
 }
 
 // WithVFS sets the VFS for file operations. If not set, falls back to os calls.
@@ -67,6 +71,7 @@ func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Ser
 		resDefs:   []Resource{},
 		version:   version,
 	}
+	s.runCtx, s.cancelRun = context.WithCancel(context.WithoutCancel(ctx))
 	for _, o := range opts {
 		o(s)
 	}
@@ -107,6 +112,9 @@ func (s *Server) Toolbox() *toolbox.Registry {
 func (s *Server) Close() error {
 	if s == nil {
 		return nil
+	}
+	if s.cancelRun != nil {
+		s.cancelRun()
 	}
 	var planeErr, hostErr error
 	if s.plane != nil {
