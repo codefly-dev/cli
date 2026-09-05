@@ -4,10 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
+	"github.com/blang/semver"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
+
+// agentKindArg is the JSON/schema key used for an agent's kind, shared by the
+// list_agents filter argument, service_info/describe's agent object, and the
+// list_agents entry shape.
+const agentKindArg = "kind"
 
 // registerTools sets up all available MCP tools
 func (s *Server) registerTools() {
@@ -84,10 +94,16 @@ func (s *Server) registerTools() {
 
 	s.RegisterTool(Tool{
 		Name:        "list_agents",
-		Description: "List available service agents (templates for creating services)",
+		Description: "List agents known to this machine: agents pinned by workspace services plus agents installed in the local cache. Offline; for languages, protocols and capabilities call agent_info.",
 		InputSchema: InputSchema{
-			Type:       "object",
-			Properties: map[string]PropertySchema{},
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				agentKindArg: {
+					Type:        "string",
+					Description: "Filter by agent kind",
+					Enum:        []string{"service", "job", "application", "module", "toolbox", "provider", "solution"},
+				},
+			},
 		},
 	}, s.listAgents)
 
@@ -328,10 +344,10 @@ func (s *Server) serviceInfo(ctx context.Context, args map[string]string) ([]Con
 		"description": svc.Description,
 		"version":     svc.Version,
 		"agent": map[string]string{
-			"name":      svc.Agent.Name,
-			"kind":      string(svc.Agent.Kind),
-			"publisher": svc.Agent.Publisher,
-			"version":   svc.Agent.Version,
+			"name":       svc.Agent.Name,
+			agentKindArg: string(svc.Agent.Kind),
+			"publisher":  svc.Agent.Publisher,
+			"version":    svc.Agent.Version,
 		},
 	}
 
@@ -401,24 +417,142 @@ func (s *Server) serviceDependencies(ctx context.Context, args map[string]string
 	return []Content{TextContent(string(data))}, nil
 }
 
-// listAgents returns available service agents
+// agentListEntry is one entry of the list_agents result: an agent identity
+// (publisher, name, kind) unioned across workspace pins and the local cache.
+type agentListEntry struct {
+	Name              string   `json:"name"`
+	Publisher         string   `json:"publisher"`
+	Kind              string   `json:"kind"`
+	InstalledVersions []string `json:"installed_versions"`
+	PinnedVersions    []string `json:"pinned_versions"`
+	PinnedBy          []string `json:"pinned_by"`
+}
+
+// listAgentsKindByArg maps the list_agents "kind" filter argument to the
+// corresponding resources.AgentKind.
+var listAgentsKindByArg = map[string]resources.AgentKind{
+	"service":     resources.ServiceAgent,
+	"job":         resources.JobAgent,
+	"application": resources.ApplicationAgent,
+	"module":      resources.ModuleAgent,
+	"toolbox":     resources.ToolboxAgent,
+	"provider":    resources.ProviderAgent,
+	"solution":    resources.SolutionAgent,
+}
+
+// listAgents unions agents pinned by workspace services with agents installed
+// in the local cache. It makes no network calls.
 func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Content, error) {
-	// These are the known agents from the agents directory
-	agents := []map[string]any{
-		{"name": "go-grpc", "description": "Go gRPC service", "languages": []string{"Go"}, "protocols": []string{"gRPC", "REST"}},
-		{"name": "python-grpc", "description": "Python gRPC service", "languages": []string{"Python"}, "protocols": []string{"gRPC"}},
-		{"name": "python-fastapi", "description": "Python FastAPI service", "languages": []string{"Python"}, "protocols": []string{"REST"}},
-		{"name": "nextjs", "description": "Next.js frontend application", "languages": []string{"TypeScript", "JavaScript"}, "protocols": []string{"HTTP"}},
-		{"name": "rails", "description": "Ruby on Rails application", "languages": []string{"Ruby"}, "protocols": []string{"REST"}},
-		{"name": "krakend", "description": "KrakenD API Gateway", "languages": []string{}, "protocols": []string{"REST", "gRPC"}},
-		{"name": "postgres", "description": "PostgreSQL database", "languages": []string{}, "protocols": []string{"TCP"}},
-		{"name": "mysql", "description": "MySQL database", "languages": []string{}, "protocols": []string{"TCP"}},
-		{"name": "redis", "description": "Redis cache/database", "languages": []string{}, "protocols": []string{"TCP"}},
-		{"name": "minio", "description": "MinIO object storage", "languages": []string{}, "protocols": []string{"HTTP"}},
+	type agentKey struct {
+		publisher string
+		name      string
+		kind      string
+	}
+	entries := make(map[agentKey]*agentListEntry)
+	getEntry := func(publisher, name, kind string) *agentListEntry {
+		key := agentKey{publisher, name, kind}
+		entry, ok := entries[key]
+		if !ok {
+			entry = &agentListEntry{
+				Name:              name,
+				Publisher:         publisher,
+				Kind:              kind,
+				InstalledVersions: []string{},
+				PinnedVersions:    []string{},
+				PinnedBy:          []string{},
+			}
+			entries[key] = entry
+		}
+		return entry
 	}
 
-	data, _ := json.MarshalIndent(agents, "", "  ")
+	if s.workspace != nil {
+		modules, _ := s.workspace.LoadModules(ctx)
+		for _, mod := range modules {
+			services, _ := mod.LoadServices(ctx)
+			for _, svc := range services {
+				if svc.Agent == nil {
+					continue
+				}
+				entry := getEntry(svc.Agent.Publisher, svc.Agent.Name, string(svc.Agent.Kind))
+				entry.PinnedBy = append(entry.PinnedBy, mod.Name+"/"+svc.Name)
+				entry.PinnedVersions = append(entry.PinnedVersions, svc.Agent.Version)
+			}
+		}
+	}
+
+	registry := resources.AgentKindRegistry()
+	for i := range registry {
+		reg := &registry[i]
+		if !reg.Operations.List || reg.InstallSubdirectory == "" {
+			continue
+		}
+		base := filepath.Join(resources.AgentBase(ctx), "agents", reg.InstallSubdirectory)
+		publishers, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, pub := range publishers {
+			publisherDir := filepath.Join(base, pub.Name())
+			installs, err := os.ReadDir(publisherDir)
+			if err != nil {
+				continue
+			}
+			for _, install := range installs {
+				name, version, ok := strings.Cut(install.Name(), "__")
+				if !ok {
+					continue
+				}
+				if _, err := semver.Parse(version); err != nil {
+					continue
+				}
+				entry := getEntry(pub.Name(), name, string(reg.Resource))
+				entry.InstalledVersions = append(entry.InstalledVersions, version)
+			}
+		}
+	}
+
+	var kindFilter string
+	if raw := args[agentKindArg]; raw != "" {
+		mapped, ok := listAgentsKindByArg[raw]
+		if !ok {
+			data, _ := json.MarshalIndent([]agentListEntry{}, "", "  ")
+			return []Content{TextContent(string(data))}, nil
+		}
+		kindFilter = string(mapped)
+	}
+
+	result := make([]agentListEntry, 0, len(entries))
+	for _, entry := range entries {
+		if kindFilter != "" && entry.Kind != kindFilter {
+			continue
+		}
+		sortVersionsDescending(entry.InstalledVersions)
+		sortVersionsDescending(entry.PinnedVersions)
+		result = append(result, *entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Publisher != result[j].Publisher {
+			return result[i].Publisher < result[j].Publisher
+		}
+		return result[i].Name < result[j].Name
+	})
+
+	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
+}
+
+// sortVersionsDescending sorts versions newest-first by semver, falling back
+// to a string comparison for any value that isn't valid semver.
+func sortVersionsDescending(versions []string) {
+	sort.Slice(versions, func(i, j int) bool {
+		vi, erri := semver.Parse(versions[i])
+		vj, errj := semver.Parse(versions[j])
+		if erri == nil && errj == nil {
+			return vi.GT(vj)
+		}
+		return versions[i] > versions[j]
+	})
 }
 
 // listJobs returns jobs, optionally filtered by module

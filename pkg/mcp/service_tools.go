@@ -49,12 +49,17 @@ func (s *Server) describe(ctx context.Context, args map[string]string) ([]Conten
 		return nil, err
 	}
 	info := map[string]any{
-		"name":     svc.Name,
-		"module":   args["module"],
-		"language": "go",
+		"name":   svc.Name,
+		"module": args["module"],
 	}
 	if svc.Agent != nil {
-		info["agent"] = svc.Agent.Name
+		info["agent"] = map[string]string{
+			"name":       svc.Agent.Name,
+			"publisher":  svc.Agent.Publisher,
+			"version":    svc.Agent.Version,
+			agentKindArg: string(svc.Agent.Kind),
+		}
+		info["hint"] = "call agent_info with this agent for languages, protocols and capabilities"
 	}
 	files, _ := fileList(svc.Dir())
 	info["files"] = files

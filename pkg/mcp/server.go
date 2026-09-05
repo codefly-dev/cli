@@ -72,6 +72,7 @@ func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Ser
 	}
 
 	s.registerTools()
+	s.registerAgentTools()
 	s.registerMutationTools()
 	s.registerTerminalTools()
 	s.registerResources()
