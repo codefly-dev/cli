@@ -100,6 +100,8 @@ Resources provide read-only access to workspace configurations.
 | `codefly://service/{module}/{service}` | Service configuration | `application/x-yaml` |
 | `codefly://endpoints/{module}/{service}` | Service endpoint definitions | `application/json` |
 
+`resources/list` enumerates the concrete module, service and endpoint resources of the loaded workspace; `resources/templates/list` returns the URI templates.
+
 ---
 
 ## Protocol Details
@@ -129,6 +131,7 @@ All messages follow JSON-RPC 2.0:
 | `tools/list` | List available tools |
 | `tools/call` | Invoke a tool |
 | `resources/list` | List available resources |
+| `resources/templates/list` | List resource URI templates |
 | `resources/read` | Read a resource |
 | `ping` | Health check |
 
@@ -151,6 +154,7 @@ The server advertises:
 | -32601 | Method not found |
 | -32602 | Invalid params |
 | -32603 | Internal error |
+| -32002 | Resource not found |
 
 ### Tool Errors
 

@@ -29,12 +29,13 @@ type Server struct {
 	host      *engine.WorkspaceHost
 	// plane is the workspace facade over the same host used by the tool registry
 	// and service-agent behavior.
-	plane     control.Plane
-	vfs       corecode.VFS
-	toolbox   *toolbox.Registry
-	resources map[string]ResourceHandler
-	resDefs   []Resource
-	version   string
+	plane             control.Plane
+	vfs               corecode.VFS
+	toolbox           *toolbox.Registry
+	resources         map[string]ResourceHandler
+	resDefs           []Resource
+	resourceTemplates []ResourceTemplate
+	version           string
 }
 
 // WithVFS sets the VFS for file operations. If not set, falls back to os calls.
@@ -221,6 +222,8 @@ func (s *Server) handleRequest(ctx context.Context, req *JSONRPCRequest) *JSONRP
 		return s.handleCallTool(ctx, req)
 	case "resources/list":
 		return s.handleListResources(ctx, req)
+	case "resources/templates/list":
+		return s.handleListResourceTemplates(ctx, req)
 	case "resources/read":
 		return s.handleReadResource(ctx, req)
 	case "ping":
@@ -281,7 +284,14 @@ func (s *Server) handleCallTool(ctx context.Context, req *JSONRPCRequest) *JSONR
 
 func (s *Server) handleListResources(ctx context.Context, req *JSONRPCRequest) *JSONRPCResponse {
 	result := ListResourcesResult{
-		Resources: s.resDefs,
+		Resources: s.listConcreteResources(ctx),
+	}
+	return s.successResponse(req.ID, result)
+}
+
+func (s *Server) handleListResourceTemplates(ctx context.Context, req *JSONRPCRequest) *JSONRPCResponse {
+	result := ListResourceTemplatesResult{
+		ResourceTemplates: s.resourceTemplates,
 	}
 	return s.successResponse(req.ID, result)
 }
@@ -292,13 +302,16 @@ func (s *Server) handleReadResource(ctx context.Context, req *JSONRPCRequest) *J
 		return s.errorResponse(req.ID, InvalidParams, "Invalid params")
 	}
 
-	handler, ok := s.resources[params.URI]
+	handler, ok := s.resolveResource(params.URI)
 	if !ok {
-		return s.errorResponse(req.ID, InvalidParams, fmt.Sprintf("Unknown resource: %s", params.URI))
+		return s.errorResponse(req.ID, ResourceNotFound, fmt.Sprintf("Resource not found: %s", params.URI))
 	}
 
 	contents, err := handler(ctx)
 	if err != nil {
+		if errors.Is(err, errResourceNotFound) {
+			return s.errorResponse(req.ID, ResourceNotFound, err.Error())
+		}
 		return s.errorResponse(req.ID, InternalError, err.Error())
 	}
 
