@@ -13,10 +13,11 @@ func TestGenerateSubcommandsResolveLowercaseAndAliases(t *testing.T) {
 	for input, want := range cases {
 		found, _, err := GenerateCmd.Find([]string{input})
 		if err != nil {
-			t.Fatalf("generate %s: %v", input, err)
+			t.Errorf("generate %s: %v", input, err)
+			continue
 		}
 		if found.Name() != want {
-			t.Fatalf("generate %s resolved to %q, want %q", input, found.Name(), want)
+			t.Errorf("generate %s resolved to %q, want %q", input, found.Name(), want)
 		}
 	}
 }
