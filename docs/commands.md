@@ -473,7 +473,7 @@ List workspace resources.
 ```bash
 codefly list project      # List projects in workspace
 codefly list module       # List modules (alias: application)
-codefly list libraries    # List libraries
+codefly list libraries    # Not implemented yet (hidden command; see cmd/list/libraries.go)
 codefly list jobs         # List jobs
 ```
 
@@ -500,11 +500,7 @@ codefly login
 
 ### `codefly install library [name]`
 
-Install a library.
-
-```bash
-codefly install library auth-utils
-```
+Not implemented yet. The command exists as a hidden stub (`cmd/install/library.go`) and returns an error. Libraries are currently linked locally with `codefly add library-dependency` and `codefly sync library-dependencies`.
 
 ---
 

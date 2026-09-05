@@ -237,7 +237,8 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 Create configuration for Claude Desktop:
 
 ```json
-// ~/.claude/claude_desktop_config.json
+// macOS: ~/Library/Application Support/Claude/claude_desktop_config.json
+// Windows: %APPDATA%\Claude\claude_desktop_config.json
 {
     "mcpServers": {
         "codefly": {

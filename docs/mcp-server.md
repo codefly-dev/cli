@@ -30,7 +30,10 @@ codefly mcp tools    # List available tools
 
 ### Configure Claude Desktop
 
-Add to `~/.claude/claude_desktop_config.json`:
+Add to your Claude Desktop config file:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -45,7 +48,13 @@ Add to `~/.claude/claude_desktop_config.json`:
 
 ### Configure Claude Code
 
-Add to your project's `.mcp.json` or global MCP config:
+Register the server with the CLI:
+
+```bash
+claude mcp add codefly -- codefly mcp serve
+```
+
+Or add to your project's `.mcp.json` or global MCP config:
 
 ```json
 {
@@ -61,6 +70,8 @@ Add to your project's `.mcp.json` or global MCP config:
 ---
 
 ## Available Tools
+
+`codefly mcp tools` prints the authoritative list for the installed version.
 
 ### Workspace Tools
 
