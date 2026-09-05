@@ -1,5 +1,0 @@
-{
-  "application": "counter-go-grpc-nextjs-postgres",
-  "service": "backend",
-  "endpoint": "rest"
-}
