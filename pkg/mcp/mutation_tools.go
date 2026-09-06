@@ -16,6 +16,10 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
+// flowIDArg is the shared "flow_id" tool argument name: the value run_service
+// returns and flow_status/stop_flow accept to target that specific run.
+const flowIDArg = "flow_id"
+
 // currentCLI resolves the codefly binary running this MCP server, so
 // subprocess tools invoke the exact build in use rather than whatever
 // `codefly` happens to resolve to on PATH.
@@ -103,24 +107,24 @@ func (s *Server) registerMutationTools() {
 		},
 	}, s.testService)
 
-	s.RegisterTool(Tool{
+	_ = s.RegisterTool(Tool{
 		Name:        "flow_status",
 		Description: "Report the state of a flow started by run_service (idle, starting, running, stopped, failed) and its services. Without flow_id, reports the most recently started run — pass the flow_id from run_service's response if more than one run may be active, otherwise you may see a different run's state.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"flow_id": {Type: "string", Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
+				flowIDArg: {Type: "string", Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
 			},
 		},
 	}, s.flowStatus)
 
-	s.RegisterTool(Tool{
+	_ = s.RegisterTool(Tool{
 		Name:        "stop_flow",
 		Description: "Stop a flow started by run_service. Without flow_id, stops the most recently started run — pass the flow_id from run_service's response if more than one run may be active, otherwise you may stop the wrong one. Set destroy=true to also remove stateful containers (databases lose data).",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"flow_id": {Type: "string", Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
+				flowIDArg: {Type: "string", Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
 				"destroy": {Type: "string", Description: "Also remove stateful containers, e.g. databases (true/false, default false)"},
 			},
 		},
@@ -379,7 +383,7 @@ func (s *Server) runService(ctx context.Context, args map[string]string) ([]Cont
 	// this would report that other flow's state instead of this run's.
 	status, _ := s.plane.FlowStatus(ctx, handle.FlowID)
 	result := map[string]any{
-		"flow_id": handle.FlowID,
+		flowIDArg: handle.FlowID,
 		"state":   string(status.State),
 		"note":    "Use flow_status/stop_flow with flow_id=\"" + handle.FlowID + "\" to target this run specifically if others are active.",
 	}
@@ -440,7 +444,7 @@ func (s *Server) flowStatus(ctx context.Context, args map[string]string) ([]Cont
 	// flow_id scopes the query to one run (its flow_id, from run_service's
 	// response) instead of "whichever flow is currently active" — needed as
 	// soon as more than one run_service call is in flight at once.
-	status, err := s.plane.FlowStatus(ctx, args["flow_id"])
+	status, err := s.plane.FlowStatus(ctx, args[flowIDArg])
 	if err != nil {
 		return nil, fmt.Errorf("flow status: %w", err)
 	}
@@ -471,7 +475,7 @@ func (s *Server) stopFlow(ctx context.Context, args map[string]string) ([]Conten
 	// check beforehand would race: the flow can exit on its own in the gap
 	// between that check and this call, which would otherwise make stop_flow
 	// falsely report "stopped" for a flow that had already ended.
-	stopped, err := s.plane.Stop(ctx, control.StopRequest{FlowID: args["flow_id"], Destroy: args["destroy"] == "true"})
+	stopped, err := s.plane.Stop(ctx, control.StopRequest{FlowID: args[flowIDArg], Destroy: args["destroy"] == "true"})
 	if err != nil {
 		return nil, fmt.Errorf("stop flow: %w", err)
 	}

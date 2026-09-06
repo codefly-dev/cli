@@ -240,7 +240,7 @@ func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan err
 // most-recently-started flow when FlowID is empty. It reports whether
 // anything was actually stopped. NameFilter remains a service-level filter
 // and is not yet supported by orchestration.
-func (p *planeImpl) Stop(ctx context.Context, req StopRequest) (bool, error) {
+func (p *planeImpl) Stop(_ context.Context, req StopRequest) (bool, error) {
 	if p.host == nil || p.host.Flows() == nil {
 		return false, nil
 	}
