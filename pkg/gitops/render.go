@@ -123,7 +123,7 @@ func loadInventory(path, label string) (Inventory, error) {
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
-	if inventory.SchemaVersion != SchemaVersion {
+	if inventory.SchemaVersion != SchemaVersion && inventory.SchemaVersion != priorSchemaVersion {
 		return Inventory{}, fmt.Errorf("unsupported %s inventory schema %d", label, inventory.SchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
@@ -154,7 +154,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 		Module: inventory.Module, Unit: inventory.Unit,
 		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
-		AppProject: project, Promotable: promotable,
+		AppProject: project, Promotable: promotable, Package: inventory.Package,
 		CheckUnitDirectories: inventory.Unit == "",
 	}
 	for _, unit := range inventory.Units {
@@ -222,7 +222,7 @@ func ValidateServiceSnapshot(root string) error {
 		Module: inventory.Module, UnitNames: names,
 		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
-		AppProject: inventory.AppProject, Promotable: true,
+		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package,
 	}
 	actual, err := buildInventory(root, opts)
 	if err != nil {
@@ -286,6 +286,9 @@ func validateInventoryUnits(inventory *Inventory) error {
 		if unit.Name == "" || unit.Module != inventory.Module {
 			return fmt.Errorf("render inventory contains invalid unit graph entry %q/%q", unit.Module, unit.Name)
 		}
+		if err := validateInventoryContracts(&unit); err != nil {
+			return err
+		}
 		directory, ok := unitDirectory(unit.Kind)
 		if !ok {
 			return fmt.Errorf("render inventory unit %s has unknown kind %q", unit.Name, unit.Kind)
@@ -318,6 +321,28 @@ func validateInventoryUnits(inventory *Inventory) error {
 		}
 		if err := validateInventoryKubernetesOutput(unit.Name, unit.Output); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateInventoryContracts checks the structural well-formedness of a unit's
+// recorded contract provenance: a known role and a well-formed digest. Cross-
+// module resolution (whether a consumed contract is actually satisfied by the
+// exposing module) needs the target GitOps checkout and lives in plan/publish.
+func validateInventoryContracts(unit *InventoryUnit) error {
+	for i := range unit.Contracts {
+		contract := &unit.Contracts[i]
+		switch contract.Role {
+		case ContractRoleExposes, ContractRoleConsumes:
+		default:
+			return fmt.Errorf("unit %s contract for %s/%s has unknown role %q", unit.Name, contract.Service, contract.Endpoint, contract.Role)
+		}
+		if contract.Module == "" || contract.Service == "" || contract.Endpoint == "" {
+			return fmt.Errorf("unit %s contract is missing module, service, or endpoint", unit.Name)
+		}
+		if !digestPattern.MatchString(contract.Digest) {
+			return fmt.Errorf("unit %s contract for %s/%s has invalid digest %q", unit.Name, contract.Service, contract.Endpoint, contract.Digest)
 		}
 	}
 	return nil
@@ -1094,8 +1119,8 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
-		ModulePath: filepath.ToSlash(opts.ModulePath),
-		Units:      append([]InventoryUnit(nil), opts.Units...),
+		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
+		Units: append([]InventoryUnit(nil), opts.Units...),
 	}
 	if len(inventory.Units) == 0 {
 		serviceDir, _ := unitDirectory(UnitKindService)

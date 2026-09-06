@@ -384,6 +384,7 @@ func publishRequest(module string) gitops.PublishRequest {
 		Module: module, Environment: gitOpsEnv,
 		PromotionBranch: gitOpsBranch, CommitMessage: gitOpsMessage,
 		Title: gitOpsTitle, Body: gitOpsBody, Local: gitOpsLocal,
+		AllowUnresolvedContracts: gitOpsAllowUnresolvedContracts,
 	}
 }
 
@@ -423,24 +424,35 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	for _, path := range plan.Changed {
 		cli.Info("  %s", path)
 	}
+	if len(plan.ContractChecks) > 0 {
+		cli.Info("Contract checks:")
+		for _, check := range plan.ContractChecks {
+			line := fmt.Sprintf("  [%s] %s consumes %s/%s/%s", check.Status, check.Unit, check.Module, check.Service, check.Endpoint)
+			if check.Message != "" {
+				line += ": " + check.Message
+			}
+			cli.Info("%s", line)
+		}
+	}
 	if plan.Diff != "" {
 		cli.Info("%s", plan.Diff)
 	}
 }
 
 var (
-	gitOpsEnv              string
-	gitOpsProject          string
-	gitOpsBranch           string
-	gitOpsMessage          string
-	gitOpsTitle            string
-	gitOpsBody             string
-	gitOpsRevision         string
-	gitOpsRollbackRevision string
-	gitOpsApplications     []string
-	gitOpsTimeout          time.Duration
-	gitOpsYes              bool
-	gitOpsLocal            bool
+	gitOpsEnv                      string
+	gitOpsProject                  string
+	gitOpsBranch                   string
+	gitOpsMessage                  string
+	gitOpsTitle                    string
+	gitOpsBody                     string
+	gitOpsRevision                 string
+	gitOpsRollbackRevision         string
+	gitOpsApplications             []string
+	gitOpsTimeout                  time.Duration
+	gitOpsYes                      bool
+	gitOpsLocal                    bool
+	gitOpsAllowUnresolvedContracts bool
 )
 
 func init() {
@@ -454,6 +466,10 @@ func init() {
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsBranch, "promotion-branch", "", "Promotion branch (deterministic default when empty)")
 		command.Flags().BoolVar(&gitOpsLocal, "local", false, "Use a disposable local file Git remote for k3d qualification")
+	}
+	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd} {
+		command.Flags().BoolVar(&gitOpsAllowUnresolvedContracts, "allow-unresolved-contracts", false,
+			"Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering")
 	}
 	for _, command := range []*cobra.Command{gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsMessage, "message", "", "Signed commit message")

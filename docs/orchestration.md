@@ -202,6 +202,13 @@ Used for `codefly deploy service`:
 BuilderBegin → BuilderLoad → BuilderInit → BuilderBuild → BuilderDeploy → done
 ```
 
+For a full module GitOps render (`codefly deploy gitops render`), the render
+inventory's contract provenance — a service's exposed API contracts (from the
+module's `contracts/api/catalog.codefly.json`) and its package identity (from
+`module.package.codefly.yaml`) — is assembled outside this Flow, in
+`pkg/gitops.renderModuleTree` (`pkg/gitops/orchestrate.go`), once per module
+render, after each service's `Flow` has produced its deployment output.
+
 ### SyncPolicy
 
 Used for `codefly sync service`:

@@ -85,6 +85,9 @@ func Publish(ctx context.Context, workspace *resources.Workspace, mutation *Publ
 	if prepared.plan.ID != mutation.PlanID {
 		return PublishResult{}, fmt.Errorf("publish plan changed while advertising its snapshot: prepared %s, current %s", mutation.PlanID, prepared.plan.ID)
 	}
+	if violation := firstContractViolation(prepared.plan.ContractChecks); violation != "" {
+		return PublishResult{}, fmt.Errorf("gitops publish blocked by contract admission: %s", violation)
+	}
 	return commitAndPublish(ctx, workspace, prepared, &mutation.Request)
 }
 
@@ -223,6 +226,10 @@ func preparePublish(
 	if _, err := gitCommand(ctx, repo, "add", "-A", "--", targetPath); err != nil {
 		return fail(err)
 	}
+	contractChecks := applyAllowUnresolvedContracts(
+		checkContracts(inventory, resolveGitopsModuleInventory(repo, pathRoot)),
+		request.AllowUnresolvedContracts,
+	)
 	changed, err := stagedPathsSince(ctx, repo, startRevision, targetPath)
 	if err != nil {
 		return fail(err)
@@ -243,7 +250,7 @@ func preparePublish(
 		ExistingCommit: branchRevision,
 		Module:         request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
-		Changed: changed, Diff: diff,
+		Changed: changed, Diff: diff, ContractChecks: contractChecks,
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -252,6 +259,50 @@ func preparePublish(
 	return &preparedRepository{
 		dir: repo, cleanup: cleanup, plan: plan,
 	}, nil
+}
+
+// resolveGitopsModuleInventory resolves a consumed contract's exposing module
+// against its rendered inventory in the target GitOps checkout, at
+// <gitopsPath>/deployments/modules/<module>/.codefly-render.json.
+func resolveGitopsModuleInventory(repo, gitopsPath string) func(module string) (*Inventory, error) {
+	return func(module string) (*Inventory, error) {
+		dir := filepath.Join(repo, filepath.FromSlash(gitopsPath), "deployments", "modules", module)
+		inventory, err := LoadInventory(dir)
+		if err != nil {
+			return nil, err
+		}
+		return &inventory, nil
+	}
+}
+
+// applyAllowUnresolvedContracts downgrades a violation whose exposing module is
+// not deployed in the target GitOps tree to a skipped check, for bootstrap
+// ordering. Every other violation (a stale endpoint, an unsatisfied version, a
+// digest mismatch) is unaffected by the flag.
+func applyAllowUnresolvedContracts(checks []ContractCheck, allow bool) []ContractCheck {
+	if !allow {
+		return checks
+	}
+	downgraded := make([]ContractCheck, len(checks))
+	for i, check := range checks {
+		if check.Status == ContractCheckViolation && strings.Contains(check.Message, "is not deployed") {
+			check.Status = ContractCheckSkipped
+		}
+		downgraded[i] = check
+	}
+	return downgraded
+}
+
+// firstContractViolation returns the message of the first unresolved contract
+// violation, or "" when every check passed, was skipped, or drifted onto a
+// compatible newer host.
+func firstContractViolation(checks []ContractCheck) string {
+	for _, check := range checks {
+		if check.Status == ContractCheckViolation {
+			return check.Message
+		}
+	}
+	return ""
 }
 
 func loadPublicationInventory(
@@ -465,6 +516,7 @@ func prepareServicePublication(
 		OwnedPath:            targetPath,
 		ModulePath:           renderedInventory.ModulePath,
 		Units:                renderedInventory.Units,
+		Package:              renderedInventory.Package,
 		Environment:          renderedInventory.Environment,
 		Namespace:            renderedInventory.Namespace,
 		AppProject:           renderedInventory.AppProject,
@@ -547,6 +599,7 @@ func prepareServiceSnapshot(
 		OwnedPath:   targetPath,
 		ModulePath:  renderedInventory.ModulePath,
 		Units:       renderedInventory.Units,
+		Package:     renderedInventory.Package,
 		Environment: renderedInventory.Environment,
 		Namespace:   renderedInventory.Namespace,
 		AppProject:  renderedInventory.AppProject,

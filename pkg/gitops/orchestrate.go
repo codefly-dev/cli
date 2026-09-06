@@ -63,6 +63,15 @@ func renderModuleTree(
 			}
 			services = append(services, service)
 		}
+		pkg, err := modulePackage(module.Dir())
+		if err != nil {
+			return err
+		}
+		options.Package = pkg
+		catalog, err := loadContractCatalog(module.Dir())
+		if err != nil {
+			return err
+		}
 		roots, err := moduleRenderRoots(module.Name, services)
 		if err != nil {
 			return err
@@ -104,10 +113,11 @@ func renderModuleTree(
 		for _, service := range services {
 			managedService, managed := env.ManagedServices[service.Name]
 			entry := InventoryUnit{
-				Kind:    UnitKindService,
-				Module:  module.Name,
-				Name:    service.Name,
-				Managed: managed,
+				Kind:      UnitKindService,
+				Module:    module.Name,
+				Name:      service.Name,
+				Managed:   managed,
+				Contracts: catalog.exposedContracts(module.Name, service.Name),
 			}
 			if managed {
 				bootstrap, bundleErr := retainManagedBundle(

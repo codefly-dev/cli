@@ -202,6 +202,89 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	}
 }
 
+func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	seedHostModuleInventory(t, remote, "environments", "saas", hostInventory("0.1.0", testContractDigestA))
+
+	workspace := loadGitopsWorkspace(t, remote)
+	graph := promotableServiceGraph("payments", []string{"api"})
+	graph[0].Contracts = []InventoryContract{{
+		Role: ContractRoleConsumes, Module: "saas", Service: "accounts", Endpoint: "connect",
+		Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0",
+	}}
+	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	_, err := RenderOwnedTree(ctx, &RenderOptions{
+		Destination: destination, Module: "payments", UnitNames: []string{"api"},
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		Units:       graph,
+		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
+	}, func(_ context.Context, stage string) error {
+		return writePublishServiceFixture(stage, "production", "api")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanPublish(ctx, workspace, &PublishRequest{Module: "payments", Environment: "production", Local: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.ContractChecks) != 1 || plan.ContractChecks[0].Status != ContractCheckOK {
+		t.Fatalf("contract checks = %+v", plan.ContractChecks)
+	}
+}
+
+func TestPublishRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	configureSSHSigning(t)
+
+	graph := promotableServiceGraph("payments", []string{"api"})
+	graph[0].Contracts = []InventoryContract{{
+		Role: ContractRoleConsumes, Module: "saas", Service: "accounts", Endpoint: "connect",
+		Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0",
+	}}
+	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	_, err := RenderOwnedTree(ctx, &RenderOptions{
+		Destination: destination, Module: "payments", UnitNames: []string{"api"},
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		Units:       graph,
+		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
+	}, func(_ context.Context, stage string) error {
+		return writePublishServiceFixture(stage, "production", "api")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.ContractChecks) != 1 || plan.ContractChecks[0].Status != ContractCheckViolation {
+		t.Fatalf("plan contract checks = %+v", plan.ContractChecks)
+	}
+	if _, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit); err == nil ||
+		!strings.Contains(err.Error(), "is not deployed") {
+		t.Fatalf("publish with unresolved contract error = %v", err)
+	}
+
+	request.AllowUnresolvedContracts = true
+	plan, err = PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.ContractChecks) != 1 || plan.ContractChecks[0].Status != ContractCheckSkipped {
+		t.Fatalf("allowed plan contract checks = %+v", plan.ContractChecks)
+	}
+	if _, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit); err != nil {
+		t.Fatalf("publish with --allow-unresolved-contracts: %v", err)
+	}
+}
+
 func TestBootstrapApplicationsRequireTheImmutableServiceSnapshot(t *testing.T) {
 	root := t.TempDir()
 	application := `apiVersion: argoproj.io/v1alpha1
@@ -1074,6 +1157,28 @@ func createBareRepository(t *testing.T) string {
 	gitRun(t, work, "commit", "-m", "initial")
 	gitRun(t, work, "push", "origin", "main")
 	return remote
+}
+
+// seedHostModuleInventory commits a host module's rendered inventory directly
+// onto main of the bare GitOps repository, so a consumer publication's
+// contract admission can resolve it as an already-deployed exposing module.
+func seedHostModuleInventory(t *testing.T, remote, gitopsPath, module string, inventory Inventory) {
+	t.Helper()
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	dir := filepath.Join(work, filepath.FromSlash(gitopsPath), "deployments", "modules", module)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCanonicalInventory(filepath.Join(dir, InventoryFilename), &inventory); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", "-A")
+	gitRun(t, work, "commit", "-m", "seed host module inventory")
+	gitRun(t, work, "push", "origin", "main")
 }
 
 func loadGitopsWorkspace(t *testing.T, remote string) *resources.Workspace {
