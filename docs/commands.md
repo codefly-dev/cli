@@ -386,6 +386,34 @@ committed config resolves on every worktree and in CI. `codefly doctor
 workspace` flags an unresolved reference with the `module_reference_unresolved`
 diagnostic.
 
+A `pinned` (committed `source` + `version`) reference resolves through the
+producer's verified module package rather than a git clone: `run` fetches the
+signed release from GitHub, verifies its signature and artifact digest against
+the workspace's `module-trust` policy, and extracts it into
+`.codefly/cache/modules/<digest>/` — a moved or unsigned tag is rejected, not
+silently trusted. Declare which repositories and signers are trusted in
+`workspace.codefly.yaml`:
+
+```yaml
+module-trust:
+  repositories:
+    codefly/saas-starter: https://github.com/codefly-dev/module-saas-starter
+  signers:
+    <signature identity written into provenance.json>: <base64 ed25519 public key>
+```
+
+A repository is looked up by its `source`; when `module-trust.repositories`
+maps more than one package ID to the same repository, add `package: <id>` to
+that module's entry in `workspace.codefly.yaml` to disambiguate.
+
+A workspace with no `module-trust` block cannot verify a pinned module at all,
+so `run` errors for every `source@version` reference instead of falling back
+to an unverified clone; `codefly doctor workspace` flags this ahead of time
+with the `module_trust_missing` diagnostic. The escape hatch is per module:
+`resolve.<name>.git: true` in `codefly.local.yaml` keeps that one module on
+the unverified git clone (`run` prints `unverified git clone for <name>` once
+per run when it does).
+
 **`add service` flags:**
 
 | Flag | Description |
