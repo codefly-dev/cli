@@ -172,7 +172,7 @@ func TestImportPreservesOperatorFields(t *testing.T) {
 		t.Errorf("ingress routes = %d, want 2", len(env.Ingress))
 	}
 	mapping, ok := env.ServiceSecrets.Services["accounts"]
-	if !ok || mapping.RemoteKeys["db-password"] != "accounts/db-password" {
+	if !ok || mapping.RemoteKeys["db-password"].Key != "accounts/db-password" {
 		t.Errorf("service-secrets.services.accounts.remote-keys not preserved: %+v", env.ServiceSecrets.Services)
 	}
 	store := env.ManagedServices["store"]
