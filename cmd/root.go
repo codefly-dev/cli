@@ -11,6 +11,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	configcmd "github.com/codefly-dev/cli/cmd/config"
 	"github.com/codefly-dev/cli/cmd/endpoint"
+	"github.com/codefly-dev/cli/cmd/environment"
 	providercmd "github.com/codefly-dev/cli/cmd/provider"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/actions/actions"
@@ -317,6 +318,9 @@ func init() {
 	// not hand-assemble configurations/<profile>/*.env themselves.
 	RootCmd.AddCommand(configcmd.Cmd)
 	RootCmd.AddCommand(providercmd.Cmd)
+
+	// Declare and inspect deploy environments (import a cell contract, show).
+	RootCmd.AddCommand(environment.Cmd)
 
 	// Static help plus optional workspace-aware AI guidance.
 	RootCmd.AddCommand(ExplainCmd)
