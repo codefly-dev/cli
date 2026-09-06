@@ -123,7 +123,7 @@ func versionTag(version string) string {
 }
 
 func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordinates) (Published, error) {
-	if c.Language != LanguageGo {
+	if c.Language != LanguageGo && c.Language != LanguagePython {
 		return Published{}, fmt.Errorf("librarystore: publishing %s libraries is not implemented yet", c.Language)
 	}
 	if err := s.validateTarget(c.Name); err != nil {
@@ -144,11 +144,17 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	importPath := goModulePath(remote)
 	tag := versionTag(c.Version)
 
-	// The product promise is that consumers run `go get <importPath>@<tag>`. That
-	// only works when the published go.mod declares exactly that module path, so a
-	// mismatch must fail here, at publish time — after the tag lands the version
-	// is immutable and a broken release could never be corrected.
-	if err = validateGoModulePath(artifactDir, importPath); err != nil {
+	// The product promise is that a Go consumer runs `go get <importPath>@<tag>`.
+	// That only works when the published go.mod declares exactly that module
+	// path, so a mismatch must fail here, at publish time — after the tag lands
+	// the version is immutable and a broken release could never be corrected.
+	// Python has no equivalent module-path identity to validate against; it only
+	// needs a pyproject.toml at the artifact root.
+	if c.Language == LanguageGo {
+		if err = validateGoModulePath(artifactDir, importPath); err != nil {
+			return Published{}, err
+		}
+	} else if err = validatePythonArtifact(artifactDir); err != nil {
 		return Published{}, err
 	}
 
@@ -232,6 +238,15 @@ func validateGoModulePath(artifactDir, importPath string) error {
 			declared,
 			importPath,
 		)
+	}
+	return nil
+}
+
+// validatePythonArtifact requires a pyproject.toml at the artifact root — the
+// distribution's identity for a Python export, the way go.mod is for Go.
+func validatePythonArtifact(artifactDir string) error {
+	if _, err := os.Stat(filepath.Join(artifactDir, "pyproject.toml")); err != nil {
+		return fmt.Errorf("librarystore: a Python library export must contain a pyproject.toml: %w", err)
 	}
 	return nil
 }
@@ -339,7 +354,7 @@ func parseGoModulePath(data []byte) (string, error) {
 }
 
 func (s *GitHubStore) Resolve(ctx context.Context, language Language, name, constraint string) (Published, error) {
-	if language != LanguageGo {
+	if language != LanguageGo && language != LanguagePython {
 		return Published{}, fmt.Errorf("librarystore: resolving %s libraries is not implemented yet", language)
 	}
 	if err := s.validateTarget(name); err != nil {
@@ -379,7 +394,7 @@ func (s *GitHubStore) Resolve(ctx context.Context, language Language, name, cons
 }
 
 func (s *GitHubStore) List(ctx context.Context, language Language, name string) ([]string, error) {
-	if language != LanguageGo {
+	if language != LanguageGo && language != LanguagePython {
 		return nil, fmt.Errorf("librarystore: listing %s libraries is not implemented yet", language)
 	}
 	if err := s.validateTarget(name); err != nil {
@@ -486,13 +501,17 @@ func (s *GitHubStore) digestAtTag(ctx context.Context, remote, tag string) (stri
 func (s *GitHubStore) published(c Coordinates, remote, ref, digest string) Published {
 	importPath := goModulePath(remote)
 	tag := versionTag(c.Version)
+	installHint := fmt.Sprintf("go get %s@%s", importPath, tag)
+	if c.Language == LanguagePython {
+		installHint = fmt.Sprintf("pip install \"git+%s@%s\"", strings.TrimSuffix(remote, ".git"), tag)
+	}
 	return Published{
 		Coordinates: c,
 		ImportPath:  importPath,
 		Ref:         ref,
 		Location:    remote,
 		Digest:      digest,
-		InstallHint: fmt.Sprintf("go get %s@%s", importPath, tag),
+		InstallHint: installHint,
 	}
 }
 

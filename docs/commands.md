@@ -474,7 +474,7 @@ List workspace resources.
 ```bash
 codefly list project      # List projects in workspace
 codefly list module       # List modules (alias: application)
-codefly list libraries    # Not implemented yet (hidden command; see cmd/list/libraries.go)
+codefly list libraries    # List workspace libraries (--remote for published versions, --json for machine output)
 codefly list jobs         # List jobs
 ```
 
@@ -499,9 +499,38 @@ Authenticate with the codefly platform.
 codefly login
 ```
 
-### `codefly install library [name]`
+### `codefly publish library <name>`
 
-Not implemented yet. The command exists as a hidden stub (`cmd/install/library.go`) and returns an error. Libraries are currently linked locally with `codefly add library-dependency` and `codefly sync library-dependencies`.
+Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: publishing the same version twice fails.
+
+```bash
+codefly publish library authkit --dry-run           # show what would be published, touch nothing
+codefly publish library authkit --version 1.2.0
+codefly publish library authkit --language go,python
+```
+
+Configure `workspace.codefly.yaml`:
+
+```yaml
+libraries:
+  publish:
+    go: {owner: codefly-dev}                                              # github.com/<owner>/<name>-go
+    typescript: {registry: https://npm.pkg.github.com, scope: "@codefly-dev"}
+    python: {owner: codefly-dev}                                          # github.com/<owner>/<name>-python
+```
+
+Publish credentials (`GITHUB_TOKEN`/`GH_TOKEN` or `gh auth token`; `NPM_TOKEN`/`NODE_AUTH_TOKEN` or, for `npm.pkg.github.com`, `gh auth token`) belong in release CI, never in a runtime.
+
+If a language export publishes and a later one in the same run fails, the command stops and reports which languages already published — those versions are immutable and are never rolled back.
+
+### `codefly install library <name>@<constraint>`
+
+Resolve the highest published version of a library export satisfying a semantic version constraint, via the store `codefly publish library` published it to, and print the durable install handle (import path, install command, ref, digest). With `--destination`, also runs the language's native install command there (`go get`, `npm install`, or `pip install`). It never vendors source — the registry decision is that consumers pin an immutable handle, not a local copy.
+
+```bash
+codefly install library authkit@^1.0.0 --language go
+codefly install library authkit@^1.0.0 --language go --destination ./services/api
+```
 
 ---
 

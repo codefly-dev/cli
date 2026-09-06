@@ -5,7 +5,13 @@
 // implementation is the first (and, for now, only) backend.
 package librarystore
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/Masterminds/semver"
+)
 
 // Language identifies a library's language export.
 type Language string
@@ -37,13 +43,88 @@ type Published struct {
 	Ref string
 	// Location is the backing URL.
 	Location string
-	// Digest is the sha256 over the published artifact tree ("sha256:<hex>"),
+	// Digest is a content hash over the published artifact ("<algorithm>:<hex-or-base64>"),
 	// set by Publish from the source tree and by Resolve from the published
 	// content at the resolved version. The two agree for a store-published
-	// version.
+	// version. The algorithm is backend-specific: the GitHub-backed stores use
+	// "sha256"; the npm store uses whatever algorithm the registry's tarball
+	// integrity reports (typically "sha512").
 	Digest string
 	// InstallHint is a copy-pasteable native install command.
 	InstallHint string
+}
+
+// StoreConfig configures the per-language store backends. It mirrors a
+// workspace's `libraries.publish` configuration block.
+type StoreConfig struct {
+	// GoOwner is the GitHub owner Go exports publish under: github.com/<GoOwner>/<name>-go.
+	GoOwner string
+	// NpmRegistry is the npm-compatible registry TypeScript exports publish to.
+	NpmRegistry string
+	// NpmScope is the npm scope (including the leading "@") TypeScript exports
+	// publish under: <NpmScope>/<name>.
+	NpmScope string
+	// PythonOwner is the GitHub owner Python exports publish under:
+	// github.com/<PythonOwner>/<name>-python.
+	PythonOwner string
+}
+
+// NewStoreFor returns the Store backend for language, configured from cfg.
+func NewStoreFor(language Language, cfg StoreConfig) (Store, error) {
+	switch language {
+	case LanguageGo:
+		if cfg.GoOwner == "" {
+			return nil, fmt.Errorf("librarystore: no GitHub owner configured for go libraries (workspace libraries.publish.go.owner)")
+		}
+		return NewGitHubStore(cfg.GoOwner), nil
+	case LanguagePython:
+		if cfg.PythonOwner == "" {
+			return nil, fmt.Errorf("librarystore: no GitHub owner configured for python libraries (workspace libraries.publish.python.owner)")
+		}
+		return NewGitHubStore(cfg.PythonOwner), nil
+	case LanguageTypeScript:
+		if cfg.NpmRegistry == "" || cfg.NpmScope == "" {
+			return nil, fmt.Errorf("librarystore: no npm registry/scope configured for typescript libraries (workspace libraries.publish.typescript)")
+		}
+		return NewNpmStore(cfg.NpmRegistry, cfg.NpmScope), nil
+	default:
+		return nil, fmt.Errorf("librarystore: unsupported language %q", language)
+	}
+}
+
+// PreviewIdentity returns the import path and install hint the store
+// NewStoreFor(language, cfg) would publish name@version under, without making
+// any network call. It is what `codefly publish library --dry-run` shows, and
+// what a caller compares a library manifest's declared export identity
+// against before publishing anything.
+func PreviewIdentity(language Language, cfg StoreConfig, name, version string) (importPath, installHint string, err error) {
+	v, err := semver.NewVersion(strings.TrimPrefix(version, "v"))
+	if err != nil {
+		return "", "", fmt.Errorf("librarystore: %q is not a semantic version: %w", version, err)
+	}
+	tag := versionTag(v.String())
+	switch language {
+	case LanguageGo:
+		if cfg.GoOwner == "" {
+			return "", "", fmt.Errorf("librarystore: no GitHub owner configured for go libraries (workspace libraries.publish.go.owner)")
+		}
+		importPath = fmt.Sprintf("github.com/%s/%s", cfg.GoOwner, repositoryName(language, name))
+		return importPath, fmt.Sprintf("go get %s@%s", importPath, tag), nil
+	case LanguagePython:
+		if cfg.PythonOwner == "" {
+			return "", "", fmt.Errorf("librarystore: no GitHub owner configured for python libraries (workspace libraries.publish.python.owner)")
+		}
+		importPath = fmt.Sprintf("github.com/%s/%s", cfg.PythonOwner, repositoryName(language, name))
+		return importPath, fmt.Sprintf("pip install \"git+https://%s@%s\"", importPath, tag), nil
+	case LanguageTypeScript:
+		if cfg.NpmRegistry == "" || cfg.NpmScope == "" {
+			return "", "", fmt.Errorf("librarystore: no npm registry/scope configured for typescript libraries (workspace libraries.publish.typescript)")
+		}
+		importPath = cfg.NpmScope + "/" + name
+		return importPath, fmt.Sprintf("npm install %s@%s", importPath, v.String()), nil
+	default:
+		return "", "", fmt.Errorf("librarystore: unsupported language %q", language)
+	}
 }
 
 // Store publishes and resolves library exports through some backend.

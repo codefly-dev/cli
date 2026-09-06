@@ -536,10 +536,21 @@ proto/
    - Git tags as primary source
    - library.codefly.yaml version field synced from tags?
 
-3. **Publishing/Distribution**
-   - Local only (git submodules)
-   - Registry (like npm/pypi but for codefly libraries)
-   - Both?
+3. **Publishing/Distribution** — answered: `codefly publish library` (`pkg/librarystore`)
+   publishes each language export through its native package manager rather than a
+   codefly-specific registry:
+   - **Go**: a GitHub repository (`github.com/<owner>/<name>-go`) tagged at an
+     immutable semver version — resolvable by `go get`/GOPROXY with no codefly
+     toolchain.
+   - **TypeScript**: an npm-compatible registry (GitHub Packages under
+     `codefly-dev`, or a workspace-configured BYO feed) — resolvable by `npm install`.
+   - **Python**: a GitHub repository (`github.com/<owner>/<name>-python`) tagged the
+     same way as Go — resolvable by `pip install git+...@vX.Y.Z`. A PyPI-style feed
+     is a later decision.
+
+   Git submodules remain the local-linking mechanism (`codefly add library --git`);
+   publishing is the separate, opt-in path for sharing a library outside the
+   workspace it was authored in.
 
 4. **Cross-workspace sharing**
    - How to share libraries between workspaces?
