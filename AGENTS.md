@@ -34,6 +34,7 @@ runbook whenever you do a multi-step operational task a second time.
 ### Extending the CLI
 - **Add a new command** (Cobra wiring, help, MCP exposure) → [docs/runbooks/add-a-command.md](docs/runbooks/add-a-command.md)
 - **Rebuild the CLI and agents from local source** → [docs/runbooks/update-agents.md](docs/runbooks/update-agents.md)
+- **Point a workspace at a cell** (import a `codefly/cell/v1` contract instead of hand-typing cell facts) → [docs/commands.md#codefly-environment](docs/commands.md)
 
 ### Reference (deep dives, not step-by-step)
 - **All CLI commands, by category** → [docs/commands.md](docs/commands.md)
