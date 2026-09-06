@@ -2,10 +2,12 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Masterminds/semver"
@@ -557,6 +559,69 @@ func TestRunFallsBackToGitOnlyWhenOptedIn(t *testing.T) {
 			t.Fatalf("cloned module dir missing %s: %v", resources.ModuleConfigurationName, err)
 		}
 	})
+}
+
+// Concurrent `codefly run` invocations against the same workspace (e.g. `run
+// service` and `run job` triggering materialization at the same time) must
+// not lose each other's overlay entries: each call loads the overlay,
+// computes its own full desired resolve map, and writes the whole thing
+// back, so without serialization the last writer's full-map write silently
+// clobbers whatever an earlier concurrent writer had just added.
+// A real interleaving of the underlying lost-update race is inherently
+// timing-dependent (see TestWithFileLockSerializesConcurrentCallers in
+// pkg/composition for a deterministic test of the primitive the fix relies
+// on); this is the integration-level smoke test that concurrent `codefly
+// run` invocations against the same workspace (e.g. `run service` and `run
+// job` triggering materialization at the same time) at least converge on a
+// complete, consistent overlay rather than crashing or racing the on-disk
+// file (run with -race in CI).
+func TestMaterializePinnedModulesConcurrentRunsConvergeOnAConsistentOverlay(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	const count = 8
+	modules := make([]*resources.ModuleReference, count)
+	for i := range count {
+		source := initModuleRepo(t, "", "v0.0.1")
+		modules[i] = &resources.ModuleReference{Name: fmt.Sprintf("mod%d", i), Source: source, Version: "v0.0.1"}
+	}
+	workspaceDir := t.TempDir()
+	var overlayDoc strings.Builder
+	overlayDoc.WriteString("resolve:\n")
+	for i := range count {
+		fmt.Fprintf(&overlayDoc, "  mod%d:\n    git: true\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceDir, resources.LocalOverlayConfigurationName), []byte(overlayDoc.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &resources.Workspace{Name: "wiki", Modules: modules}
+	workspace.WithDir(workspaceDir)
+
+	var wg sync.WaitGroup
+	errs := make([]error, count)
+	for i := range count {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = materializePinnedModules(context.Background(), workspace)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent materialize %d: %v", i, err)
+		}
+	}
+
+	overlay, err := resources.LoadLocalOverlay(context.Background(), workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range count {
+		name := fmt.Sprintf("mod%d", i)
+		directive := overlay.Resolve[name]
+		if directive == nil || directive.Path == "" {
+			t.Fatalf("entry for %s was lost to concurrent writes: %+v", name, overlay.Resolve)
+		}
+	}
 }
 
 // An auto-managed cache entry for a module no longer composed is pruned, so a

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -88,6 +89,20 @@ func (fixture *pinnedFixture) addPlainRelease(tag string) {
 // would republish. Used to simulate the remote moving an immutable tag.
 func (fixture *pinnedFixture) addReleaseAt(t *testing.T, version, commit, content string) {
 	t.Helper()
+	fixture.addReleaseTagged(t, "v"+version, version, commit, content)
+}
+
+// addPrefixedRelease registers a release under the literal
+// "module-package/v"+version tag some producers use instead of a plain
+// "v"+version tag, exercising fetchPackageRelease's Fetch fallback (Resolve
+// can only ever fetch a plain "v"+version tag).
+func (fixture *pinnedFixture) addPrefixedRelease(t *testing.T, version, commit, content string) {
+	t.Helper()
+	fixture.addReleaseTagged(t, modulePackageTagPrefix+version, version, commit, content)
+}
+
+func (fixture *pinnedFixture) addReleaseTagged(t *testing.T, tag, version, commit, content string) {
+	t.Helper()
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "services"), 0o755))
 	manifest := fmt.Sprintf(`kind: %s
@@ -105,7 +120,6 @@ contracts:
 
 	archive, digest, err := corecomposition.CanonicalArchive(root)
 	require.NoError(t, err)
-	tag := "v" + version
 	provenance := &corecomposition.Provenance{
 		Schema: corecomposition.ProvenanceSchema, Package: testPackageID, Version: version,
 		Repository: testRepositoryURL(), Ref: tag, Commit: commit,
@@ -248,7 +262,40 @@ func allowTempDirCleanup(t *testing.T, root string) {
 	})
 }
 
+// A workspace author writing the repository with a trailing ".git" (the
+// exact form PinnedSourceURL itself produces for a bare "owner/repo" source
+// elsewhere in this codebase) must still verify successfully: the producer's
+// provenance.Repository never carries ".git", so an un-normalized trust
+// config would resolve the package identity (matching loosely) and then fail
+// VerifyRelease's byte-for-byte comparison (matching strictly) — a
+// self-contradictory, confusing failure for what is really the same
+// repository.
+func TestResolvePinnedModuleAcceptsGitSuffixedTrustRepository(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	fixture := newPinnedFixture(t)
+	fixture.addRelease(t, "0.1.0")
+	useFixtureGitHub(t, fixture)
+
+	workspaceDir := t.TempDir()
+	allowTempDirCleanup(t, workspaceDir)
+	doc := fmt.Sprintf(`name: wiki
+layout: modules
+module-trust:
+  repositories:
+    %s: %s.git
+  signers:
+    %s: %q
+`, testPackageID, testRepositoryURL(), testSigner, fixture.signerKeyBase64())
+	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, resources.WorkspaceConfigurationName), []byte(doc), 0o644))
+	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+
+	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(resolved.Dir, corecomposition.PackageManifestFileName))
+}
+
 func TestResolvePinnedModuleVerifiesAndMaterializes(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	fixture := newPinnedFixture(t)
 	fixture.addRelease(t, "0.1.0")
 	useFixtureGitHub(t, fixture)
@@ -271,7 +318,73 @@ func TestResolvePinnedModuleVerifiesAndMaterializes(t *testing.T) {
 	require.Equal(t, requestsAfterFirst, fixture.requests.Load(), "a cached exact version must not hit the network again")
 }
 
+// A `module:` field naming a subpath the package doesn't actually contain
+// must fail immediately with a clear error, both when the package is fetched
+// fresh and when it is served from the no-network cache hit — not succeed
+// with a PinnedResolution pointing at a directory that doesn't exist, which
+// would only surface as a much less specific failure later when `run`
+// actually tries to load the module.
+func TestResolvePinnedModuleRejectsMissingModuleSubpath(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	fixture := newPinnedFixture(t)
+	fixture.addRelease(t, "0.1.0")
+	useFixtureGitHub(t, fixture)
+
+	workspaceDir := t.TempDir()
+	allowTempDirCleanup(t, workspaceDir)
+	writeWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0", Module: "does-not-exist"}
+
+	_, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
+	require.ErrorContains(t, err, "module subpath")
+
+	// The package itself verified and materialized fine — only ref.Module is
+	// wrong — so the second attempt must raise the same error from the
+	// no-network cache-hit path rather than re-fetching from GitHub.
+	requestsAfterFirst := fixture.requests.Load()
+	_, err = ResolvePinnedModule(context.Background(), workspaceDir, ref)
+	require.ErrorContains(t, err, "module subpath")
+	require.Equal(t, requestsAfterFirst, fixture.requests.Load(), "the cached, already-verified package must not be re-fetched")
+}
+
+// The no-network fast path must not trust a cached directory on manifest
+// identity alone: content modified after materialization (bypassing the
+// read-only permissions Materialize leaves the tree with, exactly as
+// corruption or a local compromise would) must be detected and force a real
+// re-verification, restoring the genuine content, rather than being served
+// silently forever.
+func TestResolvePinnedModuleDetectsCacheTampering(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	fixture := newPinnedFixture(t)
+	fixture.addRelease(t, "0.1.0")
+	useFixtureGitHub(t, fixture)
+
+	workspaceDir := t.TempDir()
+	allowTempDirCleanup(t, workspaceDir)
+	writeWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+
+	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
+	require.NoError(t, err)
+
+	tamperedFile := filepath.Join(resolved.Dir, "services", "frontend.txt")
+	require.NoError(t, os.Chmod(filepath.Dir(tamperedFile), 0o755))
+	require.NoError(t, os.Chmod(tamperedFile, 0o644))
+	require.NoError(t, os.WriteFile(tamperedFile, []byte("tampered"), 0o644))
+
+	requestsBeforeSecond := fixture.requests.Load()
+	resolved2, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
+	require.NoError(t, err)
+	require.Greater(t, fixture.requests.Load(), requestsBeforeSecond,
+		"a tampered cache entry must not be trusted without a network re-verification")
+
+	content, err := os.ReadFile(filepath.Join(resolved2.Dir, "services", "frontend.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "frontend", string(content), "the tampered file must be restored to the verified content")
+}
+
 func TestResolvePinnedModuleRejectsUntrustedSigner(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	fixture := newPinnedFixture(t)
 	fixture.addRelease(t, "0.1.0")
 	useFixtureGitHub(t, fixture)
@@ -296,6 +409,7 @@ module-trust:
 }
 
 func TestResolvePinnedModuleRejectsMovedTag(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	fixture := newPinnedFixture(t)
 	fixture.addRelease(t, "0.1.0")
 	useFixtureGitHub(t, fixture)
@@ -329,6 +443,7 @@ func TestResolvePinnedModuleRejectsMovedTag(t *testing.T) {
 // module-package version, even when its version number would otherwise
 // satisfy the constraint and numerically outrank every real candidate.
 func TestResolvePinnedModuleConstraintPicksHighestPackageTrack(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	fixture := newPinnedFixture(t)
 	fixture.addRelease(t, "0.1.0")
 	fixture.addRelease(t, "0.2.0")
@@ -343,4 +458,107 @@ func TestResolvePinnedModuleConstraintPicksHighestPackageTrack(t *testing.T) {
 	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
 	require.Equal(t, "0.2.0", resolved.Version)
+}
+
+// Two concurrent resolutions of *different* package versions must not lose
+// either one's entry: a naive read-whole-map/set-one-key/write-whole-map
+// cycle with no locking would let the second writer's full-map write clobber
+// whatever the first had just added, silently disabling moved-tag detection
+// for the lost entry.
+func TestWriteResolvedIndexConcurrentWritesDoNotLoseEntries(t *testing.T) {
+	root := t.TempDir()
+	const count = 20
+	var wg sync.WaitGroup
+	for i := range count {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			packageID := fmt.Sprintf("owner/pkg%d", i)
+			err := writeResolvedIndex(context.Background(), root, packageID, "1.0.0", resolvedEntry{
+				Digest: fmt.Sprintf("sha256:%064d", i),
+				Commit: strings.Repeat("a", 40),
+			})
+			require.NoError(t, err)
+		}(i)
+	}
+	wg.Wait()
+
+	for i := range count {
+		packageID := fmt.Sprintf("owner/pkg%d", i)
+		entry, ok := readResolvedIndex(root, packageID, "1.0.0")
+		if !ok {
+			t.Fatalf("entry for %s@1.0.0 was lost to a concurrent write", packageID)
+		}
+		require.Equal(t, fmt.Sprintf("sha256:%064d", i), entry.Digest)
+	}
+}
+
+// Some producers publish the module-package track under a literal
+// "module-package/v"+version tag rather than a plain "v"+version tag with the
+// package assets attached — GitHubResolver.Resolve can only ever fetch the
+// latter, so ResolvePinnedModule must still succeed against the former via
+// its Fetch fallback, both for an exact pin and for constraint/latest
+// resolution (which must also list literally-prefixed releases as
+// candidates).
+func TestResolvePinnedModuleFetchesModulePackagePrefixedTag(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	fixture := newPinnedFixture(t)
+	fixture.addPrefixedRelease(t, "0.3.0", testCommit, "prefixed")
+	useFixtureGitHub(t, fixture)
+
+	workspaceDir := t.TempDir()
+	allowTempDirCleanup(t, workspaceDir)
+	writeWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.3.0"}
+
+	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(resolved.Dir, corecomposition.PackageManifestFileName))
+}
+
+func TestResolvePinnedModuleConstraintListsModulePackagePrefixedTags(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	fixture := newPinnedFixture(t)
+	fixture.addRelease(t, "0.1.0")
+	fixture.addPrefixedRelease(t, "0.4.0", testCommit, "prefixed")
+	useFixtureGitHub(t, fixture)
+
+	workspaceDir := t.TempDir()
+	allowTempDirCleanup(t, workspaceDir)
+	writeWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: ">=0.1.0"}
+
+	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
+	require.NoError(t, err)
+	require.Equal(t, "0.4.0", resolved.Version)
+}
+
+// A moved tag must be caught the first time a *different* workspace (or, in
+// practice, a different git worktree of the same solution) resolves the same
+// package version — not just in the workspace that happened to resolve it
+// first — since the resolved-version index is global rather than scoped to
+// the materializer's per-workspace cache directory.
+func TestResolvePinnedModuleMovedTagDetectedAcrossWorkspaces(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	fixture := newPinnedFixture(t)
+	fixture.addRelease(t, "0.1.0")
+	useFixtureGitHub(t, fixture)
+
+	firstWorkspace := t.TempDir()
+	allowTempDirCleanup(t, firstWorkspace)
+	writeWorkspace(t, firstWorkspace, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+	_, err := ResolvePinnedModule(context.Background(), firstWorkspace, ref)
+	require.NoError(t, err)
+
+	// The remote re-tags v0.1.0 at a different, internally self-consistent
+	// commit and content.
+	fixture.addReleaseAt(t, "0.1.0", strings.Repeat("b", 40), "retagged")
+
+	secondWorkspace := t.TempDir()
+	allowTempDirCleanup(t, secondWorkspace)
+	writeWorkspace(t, secondWorkspace, fixture)
+	_, err = ResolvePinnedModule(context.Background(), secondWorkspace, ref)
+	require.Error(t, err)
+	require.ErrorIs(t, err, corecomposition.ErrMovedTag)
 }

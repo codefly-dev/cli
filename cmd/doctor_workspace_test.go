@@ -209,6 +209,58 @@ func TestDoctorWorkspaceModuleTrustDeclaredIsNotFlagged(t *testing.T) {
 	requireNoCode(t, report, codeModuleTrustMissing)
 }
 
+// A module-trust block that exists but does not cover a *particular* pinned
+// module's repository must still flag that module: `run` will fail on it
+// with "no module-trust.repositories entry matches" even though some other
+// module's trust is fine, so doctor reporting "no module_trust_missing" here
+// (the coarse "any module-trust exists" check this replaced would have) is a
+// false clear.
+func TestDoctorWorkspaceFlagsPartiallyCoveredModuleTrust(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n" +
+			"    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n" +
+			"    - name: blog\n      source: owner/blog\n      version: \"0.1.0\"\n" +
+			"module-trust:\n    repositories:\n        owner/blog: https://github.com/owner/blog\n    signers:\n        signer: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeModuleTrustMissing, "fail")
+	if !strings.Contains(diag.Message, "saas") {
+		t.Fatalf("diagnostic should name the uncovered module saas: %+v", diag)
+	}
+	for _, d := range report.Checks {
+		if d.Code == codeModuleTrustMissing && strings.Contains(d.Name, "blog") {
+			t.Fatalf("blog is covered by module-trust and must not be flagged: %+v", d)
+		}
+	}
+}
+
+// A `resolve.<name>.git: true` opt-out declared in an *ancestor*
+// codefly.local.yaml (the shared-monorepo layout `run` itself honors via the
+// same ancestor search) must suppress the diagnostic exactly as one in the
+// workspace's own directory would — checking only ws.Dir() would false-flag
+// a module `run` actually resolves fine.
+func TestDoctorWorkspaceModuleTrustAncestorGitOptOutIsNotFlagged(t *testing.T) {
+	parent := t.TempDir()
+	workspaceDir := filepath.Join(parent, "solution")
+	files := map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+	}
+	for rel, content := range files {
+		p := filepath.Join(workspaceDir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(parent, "codefly.local.yaml"), []byte("resolve:\n    saas:\n        git: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report := runReadiness(t, workspaceReadinessOptions{dir: workspaceDir})
+	requireNoCode(t, report, codeModuleTrustMissing)
+}
+
 func TestDoctorWorkspaceMalformedWorkspace(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: [unclosed\n  bad yaml::\n",

@@ -224,29 +224,36 @@ func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report
 
 // checkModuleTrust reports every module pinned by `source@version` that a run
 // would refuse to resolve: composition.ResolvePinnedModule fails closed when
-// the workspace declares no `module-trust` and the module has not opted into
-// the unverified git-clone fallback (`resolve.<name>.git: true`). Without
-// this check that failure only surfaces mid-run; here it is named against the
-// workspace manifest directly, before a run is attempted.
+// the workspace's module-trust doesn't cover the module's repository (whether
+// because no module-trust is declared at all, or because it exists but names
+// a different repository/package), and the module has not opted into the
+// unverified git-clone fallback (`resolve.<name>.git: true`, honored from the
+// nearest ancestor codefly.local.yaml exactly as `run` resolves it — not just
+// the workspace's own directory). Without this check that failure only
+// surfaces mid-run; here it is named against the workspace manifest directly,
+// before a run is attempted. A read/parse error in workspace.codefly.yaml
+// itself is reported once rather than once per pinned module.
 func checkModuleTrust(ws *resources.Workspace, report *workspaceReadinessReport) {
-	trust, _, err := composition.LoadModuleTrust(ws.Dir())
-	if err != nil {
+	if _, _, err := composition.LoadModuleTrust(ws.Dir()); err != nil {
 		report.add(codeModuleTrustMissing, "module-trust", "fail",
 			fmt.Sprintf("cannot read module-trust from %s: %v", resources.WorkspaceConfigurationName, err),
 			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
 		return
 	}
-	if trust != nil {
-		return
+	overlayDir := ws.Dir()
+	if dir := composition.NearestOverlayDir(ws.Dir()); dir != "" {
+		overlayDir = dir
 	}
-	gitFallbacks := composition.GitFallbackOptOuts(ws.Dir())
+	gitFallbacks := composition.GitFallbackOptOuts(overlayDir)
 	for _, ref := range ws.Modules {
 		if ref.Source == "" || ref.PathOverride != nil || gitFallbacks[ref.Name] {
 			continue
 		}
-		report.add(codeModuleTrustMissing, "module-trust for "+ref.Name, "fail",
-			fmt.Sprintf("module %q is pinned but workspace declares no module-trust", ref.Name),
-			fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))
+		if err := composition.CheckModuleTrustCoverage(ws.Dir(), ref); err != nil {
+			report.add(codeModuleTrustMissing, "module-trust for "+ref.Name, "fail",
+				fmt.Sprintf("module %q is pinned but not resolvable under module-trust: %v", ref.Name, err),
+				fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,11 +38,34 @@ import (
 // proceeds — a single broken composed module never blocks an otherwise-bootable
 // solution.
 func materializePinnedModules(ctx context.Context, workspace *resources.Workspace) error {
+	writeDir := workspace.Dir()
+	if dir := composition.NearestOverlayDir(workspace.Dir()); dir != "" {
+		writeDir = dir
+	}
+	// The whole read-decide-write cycle below (load the overlay, decide what
+	// changed, save it back) must run as one critical section: two concurrent
+	// `codefly run` processes targeting the same overlay file (e.g. `run
+	// service` and `run job` in one workspace) would otherwise each load a
+	// stale snapshot, compute their own full desired overlay.Resolve map, and
+	// the second writer's full-map write would silently clobber whatever the
+	// first writer had just added. A cross-process lock keyed on writeDir
+	// serializes that cycle instead.
+	lockPath := filepath.Join(resources.CodeflyHomeDir(), "locks", fmt.Sprintf("%x.overlay.lock", sha256.Sum256([]byte(filepath.Clean(writeDir)))))
+	return composition.WithFileLock(lockPath, 5*time.Minute, func() error {
+		return materializePinnedModulesLocked(ctx, workspace, writeDir)
+	})
+}
+
+// materializePinnedModulesLocked is materializePinnedModules' body, run while
+// composition.WithFileLock holds the overlay lock for writeDir.
+func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Workspace, writeDir string) error {
 	// Resolve against the same overlay core will use: LoadLocalOverlay searches
 	// upward, so a directive in an ancestor codefly.local.yaml (the shared-monorepo
 	// layout) is honored here instead of being silently shadowed by a fresh
 	// workspace-local file. Writes go back to that same file so its other entries
-	// are preserved.
+	// are preserved. Reading it fresh here (rather than reusing a snapshot read
+	// before the lock was acquired) is what makes the lock actually prevent lost
+	// updates instead of merely serializing writes of stale data.
 	overlay, err := resources.LoadLocalOverlay(ctx, workspace.Dir())
 	if err != nil {
 		return fmt.Errorf("cannot load local overlay: %w", err)
@@ -51,10 +75,6 @@ func materializePinnedModules(ctx context.Context, workspace *resources.Workspac
 	}
 	if overlay.Resolve == nil {
 		overlay.Resolve = map[string]*resources.ModuleResolveDirective{}
-	}
-	writeDir := workspace.Dir()
-	if dir := nearestOverlayDir(workspace.Dir()); dir != "" {
-		writeDir = dir
 	}
 	// A `resolve.<name>.git: true` directive opts a module out of verified
 	// resolution back to the unverified clone. core's ModuleResolveDirective has
@@ -95,7 +115,7 @@ func materializePinnedModules(ctx context.Context, workspace *resources.Workspac
 	if err := resources.SaveLocalOverlay(ctx, writeDir, overlay); err != nil {
 		return fmt.Errorf("cannot save local overlay: %w", err)
 	}
-	if err := composition.PreserveGitFallbackDirectives(writeDir, gitFallbacks); err != nil {
+	if err := composition.PreserveGitFallbackDirectives(ctx, writeDir, gitFallbacks); err != nil {
 		return fmt.Errorf("cannot preserve git fallback directives: %w", err)
 	}
 	if err := ensurePinnedOverlayIgnored(writeDir); err != nil {
@@ -392,24 +412,6 @@ func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
 
 func pinnedModuleCacheRoot() string {
 	return filepath.Join(resources.CodeflyHomeDir(), "modules")
-}
-
-// nearestOverlayDir returns the directory of the codefly.local.yaml core would
-// load from start (searching upward, nearest first), or "" when none exists. It
-// mirrors resources.LoadLocalOverlay's search so a write lands in the file core
-// reads rather than a shadowing new one.
-func nearestOverlayDir(start string) string {
-	cur := start
-	for {
-		if _, err := os.Stat(filepath.Join(cur, resources.LocalOverlayConfigurationName)); err == nil {
-			return cur
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return ""
-		}
-		cur = parent
-	}
 }
 
 // underDir reports whether path is dir itself or nested inside it.
