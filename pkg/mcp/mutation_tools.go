@@ -91,7 +91,7 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":        {Type: "string", Description: moduleContainingServiceDesc},
+				fieldModule:     {Type: "string", Description: moduleContainingServiceDesc},
 				serviceSegment:  {Type: "string", Description: "Service to add the dependency to"},
 				fieldDependency: {Type: "string", Description: "Name of the service to depend on"},
 			},
