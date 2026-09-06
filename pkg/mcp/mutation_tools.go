@@ -91,11 +91,11 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				fieldModule:     {Type: "string", Description: moduleContainingServiceDesc},
-				serviceSegment:  {Type: "string", Description: "Service to add the dependency to"},
-				fieldDependency: {Type: "string", Description: "Name of the service to depend on"},
+				fieldModule:     {Type: schemaTypeString, Description: moduleContainingServiceDesc},
+				serviceSegment:  {Type: schemaTypeString, Description: "Service to add the dependency to"},
+				fieldDependency: {Type: schemaTypeString, Description: "Name of the service to depend on"},
 			},
-			Required: []string{"module", "service", "dependency"},
+			Required: []string{fieldModule, serviceSegment, fieldDependency},
 		},
 	}, s.addDependency)
 
@@ -105,10 +105,10 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module containing the service"},
-				"service": {Type: "string", Description: "Service with proto files"},
+				fieldModule:    {Type: schemaTypeString, Description: moduleContainingServiceDesc},
+				serviceSegment: {Type: schemaTypeString, Description: "Service with proto files"},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, serviceSegment},
 		},
 	}, s.generateProto)
 
@@ -118,14 +118,14 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":          {Type: "string", Description: "Module containing the service"},
-				"service":         {Type: "string", Description: "Service to run"},
-				"runtime_context": {Type: "string", Description: "Runtime context: native, nix, container, or free"},
-				"profile":         {Type: "string", Description: "Named run profile from workspace.codefly.yaml"},
-				"wait":            {Type: "string", Description: "Block until the flow is running (true/false, default true)"},
-				"timeout_seconds": {Type: "string", Description: "Max seconds to wait for readiness (default 300)"},
+				fieldModule:       {Type: schemaTypeString, Description: moduleContainingServiceDesc},
+				serviceSegment:    {Type: schemaTypeString, Description: "Service to run"},
+				"runtime_context": {Type: schemaTypeString, Description: "Runtime context: native, nix, container, or free"},
+				"profile":         {Type: schemaTypeString, Description: "Named run profile from workspace.codefly.yaml"},
+				"wait":            {Type: schemaTypeString, Description: "Block until the flow is running (true/false, default true)"},
+				"timeout_seconds": {Type: schemaTypeString, Description: "Max seconds to wait for readiness (default 300)"},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, serviceSegment},
 		},
 	}, s.runService)
 
@@ -135,13 +135,13 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":          {Type: "string", Description: "Module containing the service"},
-				"service":         {Type: "string", Description: "Service to test"},
-				"suite":           {Type: "string", Description: "Test suite to run (optional)"},
-				"filter":          {Type: "string", Description: "Test filter (optional)"},
-				"runtime_context": {Type: "string", Description: "Runtime context: native, nix, container, or free"},
+				fieldModule:       {Type: schemaTypeString, Description: moduleContainingServiceDesc},
+				serviceSegment:    {Type: schemaTypeString, Description: "Service to test"},
+				"suite":           {Type: schemaTypeString, Description: "Test suite to run (optional)"},
+				"filter":          {Type: schemaTypeString, Description: "Test filter (optional)"},
+				"runtime_context": {Type: schemaTypeString, Description: "Runtime context: native, nix, container, or free"},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, serviceSegment},
 		},
 	}, s.testService)
 
@@ -151,7 +151,7 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				flowIDArg: {Type: "string", Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
+				flowIDArg: {Type: schemaTypeString, Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
 			},
 		},
 	}, s.flowStatus)
@@ -162,8 +162,8 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				flowIDArg: {Type: "string", Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
-				"destroy": {Type: "string", Description: "Also remove stateful containers, e.g. databases (true/false, default false)"},
+				flowIDArg: {Type: schemaTypeString, Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
+				"destroy": {Type: schemaTypeString, Description: "Also remove stateful containers, e.g. databases (true/false, default false)"},
 			},
 		},
 	}, s.stopFlow)
@@ -174,10 +174,10 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"name":    {Type: "string", Description: "Agent name (e.g. go-grpc)"},
-				"version": {Type: "string", Description: "Version to install (optional, defaults to latest)"},
+				fieldName: {Type: schemaTypeString, Description: "Agent name (e.g. go-grpc)"},
+				"version": {Type: schemaTypeString, Description: "Version to install (optional, defaults to latest)"},
 			},
-			Required: []string{"name"},
+			Required: []string{fieldName},
 		},
 	}, s.installAgent)
 }
