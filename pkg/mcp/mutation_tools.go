@@ -31,6 +31,19 @@ const trustedAgentPublisher = "codefly.dev"
 // call or a slow agent would freeze the whole server indefinitely.
 const addServiceTimeout = 10 * time.Minute
 
+// add_service field names and its schema's "string" property type. Each of
+// these strings recurs often enough elsewhere in this package that
+// golangci-lint's goconst check flags a bare literal wherever one of these
+// lines changes.
+const (
+	fieldModule      = "module"
+	fieldName        = "name"
+	fieldAgent       = "agent"
+	fieldDescription = "description"
+	fieldPath        = "path"
+	schemaTypeString = "string"
+)
+
 // synchronizedBuffer is an io.Writer whose snapshots are safe while a child
 // process is still writing. bytes.Buffer itself cannot be read concurrently
 // with exec.Cmd's stdout/stderr copy goroutines.
@@ -59,10 +72,10 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module":      {Type: "string", Description: "Module to add the service to"},
-				"name":        {Type: "string", Description: "Service name (kebab-case)"},
-				"agent":       {Type: "string", Description: `Agent reference: "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16". Version defaults to latest (local cache first, then GitHub releases). Publisher must be "codefly.dev" (or omitted) — other publishers are rejected.`},
-				"description": {Type: "string", Description: "Short service description written to service.codefly.yaml"},
+				fieldModule:      {Type: schemaTypeString, Description: "Module to add the service to"},
+				fieldName:        {Type: schemaTypeString, Description: "Service name (kebab-case)"},
+				fieldAgent:       {Type: schemaTypeString, Description: `Agent reference: "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16". Version defaults to latest (local cache first, then GitHub releases). Publisher must be "codefly.dev" (or omitted) — other publishers are rejected.`},
+				fieldDescription: {Type: schemaTypeString, Description: "Short service description written to service.codefly.yaml"},
 			},
 			Required: []string{"module", "name", "agent"},
 		},
@@ -249,7 +262,7 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 		"module":  moduleName,
 		"service": serviceName,
 		"agent":   agent.Identifier(),
-		"path":    svc.Dir(),
+		fieldPath: svc.Dir(),
 		"readme":  truncate(output.ReadMe, 4000),
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
