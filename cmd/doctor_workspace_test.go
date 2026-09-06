@@ -177,6 +177,38 @@ func TestDoctorWorkspaceFlagsUnresolvedReferencedModule(t *testing.T) {
 	}
 }
 
+func TestDoctorWorkspaceFlagsMissingModuleTrust(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeModuleTrustMissing, "fail")
+	if !strings.Contains(diag.Message, "saas") {
+		t.Fatalf("diagnostic should name the pinned module: %+v", diag)
+	}
+	if report.Status != readinessStatusNotReady {
+		t.Fatalf("status = %q, want not_ready", report.Status)
+	}
+}
+
+func TestDoctorWorkspaceModuleTrustGitOptOutIsNotFlagged(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":     "resolve:\n    saas:\n        git: true\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleTrustMissing)
+}
+
+func TestDoctorWorkspaceModuleTrustDeclaredIsNotFlagged(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n" +
+			"module-trust:\n    repositories:\n        owner/saas: https://github.com/owner/saas\n    signers:\n        signer: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleTrustMissing)
+}
+
 func TestDoctorWorkspaceMalformedWorkspace(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: [unclosed\n  bad yaml::\n",

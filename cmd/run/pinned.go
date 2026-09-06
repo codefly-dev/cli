@@ -12,6 +12,7 @@ import (
 
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -55,14 +56,27 @@ func materializePinnedModules(ctx context.Context, workspace *resources.Workspac
 	if dir := nearestOverlayDir(workspace.Dir()); dir != "" {
 		writeDir = dir
 	}
+	// A `resolve.<name>.git: true` directive opts a module out of verified
+	// resolution back to the unverified clone. core's ModuleResolveDirective has
+	// no Git field, so the typed overlay above already dropped it; it can only be
+	// read from the raw document.
+	gitFallbacks := composition.GitFallbackOptOuts(writeDir)
 
 	cacheRoot := pinnedModuleCacheRoot()
+	verifiedCacheRoot := verifiedPinnedModuleCacheRoot(workspace.Dir())
 	changed := false
 	for _, ref := range workspace.Modules {
-		if !pinnedManaged(ref, overlay.Resolve[ref.Name], cacheRoot) {
+		directive := overlay.Resolve[ref.Name]
+		if gitFallbacks[ref.Name] && directive != nil && directive.Path == "" && directive.Worktree == "" && !directive.Pinned {
+			// A directive that selects nothing but git:true is a resolution-strategy
+			// hint, not a location override: treat it as no directive at all so
+			// pinnedManaged still recognizes the module as CLI-managed.
+			directive = nil
+		}
+		if !pinnedManaged(ref, directive, cacheRoot, verifiedCacheRoot) {
 			continue
 		}
-		dir, err := ensurePinnedArtifact(ctx, ref, cacheRoot)
+		dir, err := resolvePinnedModuleDir(ctx, workspace.Dir(), ref, cacheRoot, gitFallbacks[ref.Name])
 		if err != nil {
 			cli.Warning("cannot pull pinned module <%s>: %v (it will be resolved when the run loads it, if needed)", ref.Name, err)
 			continue
@@ -72,7 +86,7 @@ func materializePinnedModules(ctx context.Context, workspace *resources.Workspac
 			changed = true
 		}
 	}
-	if pruneStalePinnedEntries(overlay.Resolve, workspace.Modules, cacheRoot) {
+	if pruneStalePinnedEntries(overlay.Resolve, workspace.Modules, cacheRoot, verifiedCacheRoot) {
 		changed = true
 	}
 	if !changed {
@@ -81,10 +95,38 @@ func materializePinnedModules(ctx context.Context, workspace *resources.Workspac
 	if err := resources.SaveLocalOverlay(ctx, writeDir, overlay); err != nil {
 		return fmt.Errorf("cannot save local overlay: %w", err)
 	}
+	if err := composition.PreserveGitFallbackDirectives(writeDir, gitFallbacks); err != nil {
+		return fmt.Errorf("cannot preserve git fallback directives: %w", err)
+	}
 	if err := ensurePinnedOverlayIgnored(writeDir); err != nil {
 		return fmt.Errorf("cannot gitignore %s: %w", resources.LocalOverlayConfigurationName, err)
 	}
 	return nil
+}
+
+// resolvePinnedModuleDir resolves ref to a module directory: through the
+// verified module package (composition.ResolvePinnedModule) by default, or
+// through the unverified git clone when the workspace has opted this module
+// out via `resolve.<name>.git: true`.
+func resolvePinnedModuleDir(ctx context.Context, workspaceDir string, ref *resources.ModuleReference, cacheRoot string, gitFallback bool) (string, error) {
+	if gitFallback {
+		cli.Warning("unverified git clone for %s", ref.Name)
+		return ensurePinnedArtifact(ctx, ref, cacheRoot)
+	}
+	resolved, err := composition.ResolvePinnedModule(ctx, workspaceDir, ref)
+	if err != nil {
+		return "", err
+	}
+	return resolved.Dir, nil
+}
+
+// verifiedPinnedModuleCacheRoot is the workspace-scoped, content-addressed
+// module cache composition.NewMaterializer(workspaceDir) writes into. Cache
+// roots are workspace-scoped (a workspace-relative digest tree), while the
+// git-clone fallback's cache root is process-global (pinnedModuleCacheRoot);
+// both are recognized when deciding whether an overlay path is CLI-managed.
+func verifiedPinnedModuleCacheRoot(workspaceDir string) string {
+	return filepath.Join(workspaceDir, ".codefly", "cache", "modules")
 }
 
 // pruneStalePinnedEntries drops auto-managed cache entries whose module is no
@@ -92,7 +134,7 @@ func materializePinnedModules(ctx context.Context, workspace *resources.Workspac
 // pointer at a stale checkout. Only entries the CLI itself wrote (a path under the
 // cache) are removed; user directives are never touched. Reports whether it
 // changed the map.
-func pruneStalePinnedEntries(resolve map[string]*resources.ModuleResolveDirective, modules []*resources.ModuleReference, cacheRoot string) bool {
+func pruneStalePinnedEntries(resolve map[string]*resources.ModuleResolveDirective, modules []*resources.ModuleReference, cacheRoots ...string) bool {
 	present := make(map[string]bool, len(modules))
 	for _, ref := range modules {
 		present[ref.Name] = true
@@ -102,7 +144,7 @@ func pruneStalePinnedEntries(resolve map[string]*resources.ModuleResolveDirectiv
 		if present[name] {
 			continue
 		}
-		if directive != nil && directive.Path != "" && underDir(cacheRoot, directive.Path) {
+		if directive != nil && directive.Path != "" && underAnyDir(cacheRoots, directive.Path) {
 			delete(resolve, name)
 			changed = true
 		}
@@ -116,7 +158,7 @@ func pruneStalePinnedEntries(resolve map[string]*resources.ModuleResolveDirectiv
 // overlay directive, an explicit `pinned: true`, or a `path` the CLI itself wrote
 // into the cache (which it refreshes). A user's own `path`/`worktree` directive —
 // the "I am editing this module" case — is left alone.
-func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleResolveDirective, cacheRoot string) bool {
+func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleResolveDirective, cacheRoots ...string) bool {
 	if ref.Source == "" || ref.PathOverride != nil {
 		return false
 	}
@@ -126,7 +168,7 @@ func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleRe
 	if directive.Worktree != "" {
 		return false
 	}
-	return directive.Path != "" && underDir(cacheRoot, directive.Path)
+	return directive.Path != "" && underAnyDir(cacheRoots, directive.Path)
 }
 
 // ensurePinnedArtifact resolves ref's version to an immutable tag, pulls the
@@ -135,7 +177,7 @@ func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleRe
 // A concrete version consults only the cache — no network — when the checkout is
 // already present, so a cached solution boots offline.
 func ensurePinnedArtifact(ctx context.Context, ref *resources.ModuleReference, cacheRoot string) (string, error) {
-	url := pinnedSourceURL(ref.Source)
+	url := composition.PinnedSourceURL(ref.Source)
 	sourceCache := filepath.Join(cacheRoot, filepath.FromSlash(ref.Source))
 	tag, err := resolvePinnedTag(ctx, url, ref.Version, sourceCache)
 	if err != nil {
@@ -348,16 +390,6 @@ func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// pinnedSourceURL turns a committed source identity into a clonable git URL. A
-// bare "owner/repo" slug (how `add module` records identity) becomes a GitHub
-// HTTPS URL; a source that is already a URL is used verbatim.
-func pinnedSourceURL(source string) string {
-	if strings.Contains(source, "://") || strings.Contains(source, "@") {
-		return source
-	}
-	return "https://github.com/" + source + ".git"
-}
-
 func pinnedModuleCacheRoot() string {
 	return filepath.Join(resources.CodeflyHomeDir(), "modules")
 }
@@ -387,6 +419,18 @@ func underDir(dir, path string) bool {
 		return false
 	}
 	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
+}
+
+// underAnyDir reports whether path is under any of dirs (empty entries are
+// skipped). Used to recognize both the git-clone fallback's cache root and the
+// verified-package materializer's workspace-scoped cache root as CLI-managed.
+func underAnyDir(dirs []string, path string) bool {
+	for _, dir := range dirs {
+		if dir != "" && underDir(dir, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func dirPopulated(dir string) bool {

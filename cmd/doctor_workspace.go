@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	hostprovider "github.com/codefly-dev/cli/pkg/provider"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -43,6 +44,7 @@ const (
 	codePlaintextNotAllowed       = "plaintext_not_allowed"
 	codeReferenceSchemeUnknown    = "reference_scheme_unknown"
 	codeModuleReferenceUnresolved = "module_reference_unresolved"
+	codeModuleTrustMissing        = "module_trust_missing"
 	codeTimeout                   = "timeout"
 )
 
@@ -114,6 +116,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	}
 
 	checkReferencedModules(ctx, ws, report)
+	checkModuleTrust(ws, report)
 
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
@@ -216,6 +219,34 @@ func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report
 			continue
 		}
 		report.add("", "referenced module "+ref.Name, "ok", fmt.Sprintf("%s → %s", ref.Name, resolved), "")
+	}
+}
+
+// checkModuleTrust reports every module pinned by `source@version` that a run
+// would refuse to resolve: composition.ResolvePinnedModule fails closed when
+// the workspace declares no `module-trust` and the module has not opted into
+// the unverified git-clone fallback (`resolve.<name>.git: true`). Without
+// this check that failure only surfaces mid-run; here it is named against the
+// workspace manifest directly, before a run is attempted.
+func checkModuleTrust(ws *resources.Workspace, report *workspaceReadinessReport) {
+	trust, _, err := composition.LoadModuleTrust(ws.Dir())
+	if err != nil {
+		report.add(codeModuleTrustMissing, "module-trust", "fail",
+			fmt.Sprintf("cannot read module-trust from %s: %v", resources.WorkspaceConfigurationName, err),
+			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
+		return
+	}
+	if trust != nil {
+		return
+	}
+	gitFallbacks := composition.GitFallbackOptOuts(ws.Dir())
+	for _, ref := range ws.Modules {
+		if ref.Source == "" || ref.PathOverride != nil || gitFallbacks[ref.Name] {
+			continue
+		}
+		report.add(codeModuleTrustMissing, "module-trust for "+ref.Name, "fail",
+			fmt.Sprintf("module %q is pinned but workspace declares no module-trust", ref.Name),
+			fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))
 	}
 }
 
@@ -763,7 +794,7 @@ With --json, a versioned report is printed to stdout:
 
 Stable diagnostic codes: workspace_not_found, workspace_invalid,
 environment_not_found, service_not_found, module_reference_unresolved,
-configuration_directory_missing, configuration_missing,
+module_trust_missing, configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,
 provider_resolution_failed, plaintext_not_allowed, reference_scheme_unknown,
