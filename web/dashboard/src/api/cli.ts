@@ -139,5 +139,12 @@ export const cli = {
     unary<GetNetworkMappingsResponse>("GetDependenciesNetworkMappings", ref, signal),
   stopFlow: (signal?: AbortSignal) => unary<object>("StopFlow", {}, signal),
   destroyFlow: (signal?: AbortSignal) => unary<object>("DestroyFlow", {}, signal),
-  streamLogs: (signal?: AbortSignal) => serverStream<Log>("Logs", {}, signal),
+  // Logs() replays the full history before switching to a live tail
+  // (pkg/web/go-grpc/server.go), so it is LogsView's only log source; do not
+  // also merge in a separate activeLogHistory() fetch — that reintroduces the
+  // duplicate-line bug the replay-then-live design fixed, since a line
+  // recorded in the race window between the two independent requests would
+  // be counted twice.
+  streamLogs: (signal?: AbortSignal, onConnect?: () => void) =>
+    serverStream<Log>("Logs", {}, signal, onConnect),
 };

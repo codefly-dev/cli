@@ -43,6 +43,37 @@ func TestHandlerServesConnectUnary(t *testing.T) {
 	if strings.TrimSpace(string(body)) != "{}" {
 		t.Fatalf("Ping over Connect: unexpected body %q", body)
 	}
+
+	graphServer, err := NewServer(&Configuration{EndpointGrpc: "127.0.0.1:0"}, loadGraphWorkspace(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphHandler, err := (&HttpServer{config: &Configuration{}, impl: graphServer}).handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphSrv := httptest.NewServer(graphHandler)
+	defer graphSrv.Close()
+
+	graphReq, err := http.NewRequest(http.MethodPost, graphSrv.URL+"/codefly.cli.v0.CLI/GetWorkspaceServiceDependencyGraph", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphReq.Header.Set("Content-Type", "application/json")
+	graphReq.Header.Set("Connect-Protocol-Version", "1")
+
+	graphRes, err := http.DefaultClient.Do(graphReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer graphRes.Body.Close()
+	graphBody, _ := io.ReadAll(graphRes.Body)
+	if graphRes.StatusCode != http.StatusOK {
+		t.Fatalf("GetWorkspaceServiceDependencyGraph over Connect: status %d, body %s", graphRes.StatusCode, graphBody)
+	}
+	if !strings.Contains(string(graphBody), "backend/api") {
+		t.Fatalf("GetWorkspaceServiceDependencyGraph over Connect: body missing %q; got %s", "backend/api", graphBody)
+	}
 }
 
 // TestHandlerServesDashboard verifies the embedded dashboard build is served at

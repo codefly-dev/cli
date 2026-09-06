@@ -30,7 +30,10 @@ codefly mcp tools    # List available tools
 
 ### Configure Claude Desktop
 
-Add to `~/.claude/claude_desktop_config.json`:
+Add to your Claude Desktop config file:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -45,7 +48,13 @@ Add to `~/.claude/claude_desktop_config.json`:
 
 ### Configure Claude Code
 
-Add to your project's `.mcp.json` or global MCP config:
+Register the server with the CLI:
+
+```bash
+claude mcp add codefly -- codefly mcp serve
+```
+
+Or add to your project's `.mcp.json` or global MCP config:
 
 ```json
 {
@@ -62,6 +71,8 @@ Add to your project's `.mcp.json` or global MCP config:
 
 ## Available Tools
 
+`codefly mcp tools` prints the authoritative list for the installed version.
+
 ### Workspace Tools
 
 | Tool | Description | Required Args |
@@ -73,6 +84,12 @@ Add to your project's `.mcp.json` or global MCP config:
 | `service_dependencies` | Get service dependencies with endpoints | `module`, `service` |
 | `list_agents` | List available agent types | -- |
 | `list_jobs` | List jobs (optionally filtered by module) | `module` (optional) |
+
+### Mutation Tools
+
+| Tool | Description | Required Args |
+|------|-------------|---------------|
+| `add_service` | Create a service via the agent's Create flow | `module`, `name`, `agent`; optional `description` |
 
 ### Per-Service Tools
 
@@ -120,6 +137,8 @@ Resources provide read-only access to workspace configurations.
 | `codefly://service/{module}/{service}` | Service configuration | `application/x-yaml` |
 | `codefly://endpoints/{module}/{service}` | Service endpoint definitions | `application/json` |
 
+`resources/list` enumerates the concrete module, service and endpoint resources of the loaded workspace; `resources/templates/list` returns the URI templates.
+
 ---
 
 ## Protocol Details
@@ -149,6 +168,7 @@ All messages follow JSON-RPC 2.0:
 | `tools/list` | List available tools |
 | `tools/call` | Invoke a tool |
 | `resources/list` | List available resources |
+| `resources/templates/list` | List resource URI templates |
 | `resources/read` | Read a resource |
 | `ping` | Health check |
 
@@ -171,6 +191,7 @@ The server advertises:
 | -32601 | Method not found |
 | -32602 | Invalid params |
 | -32603 | Internal error |
+| -32002 | Resource not found |
 
 ### Tool Errors
 

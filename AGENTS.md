@@ -40,6 +40,7 @@ runbook whenever you do a multi-step operational task a second time.
 - **Orchestration engine** → [docs/orchestration.md](docs/orchestration.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
 - **Daemon** → [docs/daemon.md](docs/daemon.md)
+- **Dashboard** → [docs/dashboard.md](docs/dashboard.md)
 - **MCP server** → [docs/mcp-server.md](docs/mcp-server.md)
 - **Contributing / dev setup** → [docs/development.md](docs/development.md)
 - **Design docs** → [docs/design/](docs/design/)
@@ -78,7 +79,7 @@ Each command with subcommands has a `cmd/<name>/` package. See
 | `build` / `deploy` / `test` | Build images/binaries, deploy, run tests |
 | `add` / `delete` / `initialize` | Create/remove workspace, module, service, endpoint |
 | `generate` | Generate code (proto, grpc, swagger, templates) |
-| `install` / `update` / `upgrade` / `agents` | Agent + library management |
+| `install` / `update` / `upgrade` / `agents` | Agent management (`codefly agent …`); library commands are partially implemented, see docs/commands.md |
 | `list` / `show` / `status` / `explain` | Inspect resources and get help |
 | `import` / `sync` / `expose` / `open` | Import projects, sync config, expose/open endpoints |
 | `login` | Authenticate with the codefly platform |

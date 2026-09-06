@@ -118,7 +118,7 @@ codefly run service api --exclude-root            # Only run dependencies, not t
 codefly run service api --profile local           # Use a named workspace run profile
 codefly run service api --exclude-dependency infra/temporal  # Omit optional dependency
 codefly run service api --silent backend/db       # Suppress log output for a dependency
-codefly run service api --with-server             # Run with web companion UI
+codefly run service api --cli-server --open       # Run headless with the local dashboard and open it
 ```
 
 **Key flags:**
@@ -138,7 +138,8 @@ codefly run service api --with-server             # Run with web companion UI
 | `--output-env-service` | Export a specific running service (`module/service`) instead of the root |
 | `--load-only` | Stop after Load phase |
 | `--init-only` | Stop after Init phase |
-| `--with-server` | Start the web companion server |
+| `--cli-server` | Start the CLI gRPC/Connect server and the embedded dashboard (implies headless output) |
+| `--open` | Open the dashboard in the browser (requires `--cli-server`) |
 
 Run profiles define intentional local runtime shapes in
 `workspace.codefly.yaml`:
@@ -473,7 +474,7 @@ List workspace resources.
 ```bash
 codefly list project      # List projects in workspace
 codefly list module       # List modules (alias: application)
-codefly list libraries    # List libraries
+codefly list libraries    # Not implemented yet (hidden command; see cmd/list/libraries.go)
 codefly list jobs         # List jobs
 ```
 
@@ -500,11 +501,7 @@ codefly login
 
 ### `codefly install library [name]`
 
-Install a library.
-
-```bash
-codefly install library auth-utils
-```
+Not implemented yet. The command exists as a hidden stub (`cmd/install/library.go`) and returns an error. Libraries are currently linked locally with `codefly add library-dependency` and `codefly sync library-dependencies`.
 
 ---
 
@@ -555,9 +552,10 @@ codefly agent ci --skip-conformance               # Source/build/drift debugging
 Generate client code from service APIs.
 
 ```bash
-codefly generate grpc                                        # Generate gRPC client code
-codefly generate openapi                                     # Generate OpenAPI/Swagger client code
-codefly generate proto --proto ../proto --output ./generated  # Generate code from local proto files (Docker)
+codefly generate grpc --service api --language go --destination ./clients/api-go       # Typed gRPC client from the service's gRPC endpoints
+codefly generate openapi --service api --language typescript --destination ./clients/api-ts  # Typed OpenAPI client from the service's REST endpoints
+codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files (Docker)
+codefly generate proto --proto ../proto --output ./generated --local                     # Same, with locally installed pinned plugins
 ```
 
 **`generate proto` flags:**
@@ -566,6 +564,16 @@ codefly generate proto --proto ../proto --output ./generated  # Generate code fr
 |------|-------------|
 | `--proto` | Path to proto directory |
 | `--output` | Output directory for generated code |
+
+**`generate grpc` / `generate openapi` flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--service` | Service to generate the client for (`module/service` or an unambiguous service name) |
+| `--language` | Target language (default `go`); values accepted by `core/languages.FromString` |
+| `--destination` | Output directory; created if missing |
+
+Both client generators load the service's Builder over gRPC to read the endpoint contract, then run buf inside the `codeflydev/proto` companion image. Docker must be running.
 
 ---
 
@@ -637,10 +645,19 @@ Use `--json` on any lifecycle command for the typed result.
 
 ### `codefly server`
 
-Start the codefly web companion server (for workspace visualization).
+Serve the local dashboard for the current workspace. Has two modes:
+
+- **Attach**: if `codefly run service <name> --cli-server` is already serving
+  this workspace's dashboard, `codefly server` prints its URL and exits
+  instead of starting a second server (which would fail with "address
+  already in use").
+- **Inventory-only**: otherwise, it starts a dashboard showing declared
+  workspace inventory; the Services, Logs and Config tabs have no live
+  runtime state until a `--cli-server` run is attached.
 
 ```bash
-codefly server
+codefly server              # Attach to a running dashboard, or serve inventory only
+codefly server --open       # Same, and open the dashboard in the browser
 ```
 
 ### `codefly expose service [name]`

@@ -1,6 +1,0 @@
-{
-  "runtimeContext": {
-    "kind": "Practical Metal Shoes Parkway",
-    "name": "{{ faker.name.last_name }}"
-  }
-}

@@ -21,7 +21,9 @@ This allows AI assistants like Claude to interact with your codefly workspace,
 query services, and perform development operations.
 
 Usage with Claude Desktop:
-  Add to ~/.claude/claude_desktop_config.json:
+  Add to your Claude Desktop config file:
+    macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json
+    Windows: %APPDATA%\Claude\claude_desktop_config.json
   {
     "mcpServers": {
       "codefly": {
