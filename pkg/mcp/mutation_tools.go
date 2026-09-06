@@ -5,16 +5,43 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/codefly-dev/cli/pkg/cli/communicate"
+	actionsservice "github.com/codefly-dev/core/actions/service"
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	runnersbase "github.com/codefly-dev/core/runners/base"
+	"github.com/codefly-dev/core/services"
+)
+
+// trustedAgentPublisher is the only agent publisher add_service will resolve,
+// download, and execute non-interactively. install_agent (below) hardcodes
+// the same publisher for the same reason: unlike the interactive CLI, there
+// is no human confirming the exact agent reference before it runs.
+const trustedAgentPublisher = "codefly.dev"
+
+// addServiceTimeout bounds agent resolution/download and the agent's own
+// Create-flow scaffolding. The MCP server handles one request at a time on a
+// single goroutine (see ServeIO), so without a deadline a stalled network
+// call or a slow agent would freeze the whole server indefinitely.
+const addServiceTimeout = 10 * time.Minute
+
+// add_service field names and its schema's "string" property type. Each of
+// these strings recurs often enough elsewhere in this package that
+// golangci-lint's goconst check flags a bare literal wherever one of these
+// lines changes.
+const (
+	fieldModule      = "module"
+	fieldName        = "name"
+	fieldAgent       = "agent"
+	fieldDescription = "description"
+	fieldPath        = "path"
+	schemaTypeString = "string"
 )
 
 // synchronizedBuffer is an io.Writer whose snapshots are safe while a child
@@ -41,13 +68,14 @@ func (b *synchronizedBuffer) String() string {
 func (s *Server) registerMutationTools() {
 	s.RegisterTool(Tool{
 		Name:        "add_service",
-		Description: "Create a new service in the workspace using a codefly agent template. Scaffolds all files non-interactively.",
+		Description: "Create a new service in a module by running the agent's Create flow (same as 'codefly add service'). Scaffolds the service directory and manifest non-interactively using the agent's declared defaults.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module": {Type: "string", Description: "Module to add the service to"},
-				"name":   {Type: "string", Description: "Service name (kebab-case)"},
-				"agent":  {Type: "string", Description: "Agent name (e.g. go-grpc, nextjs, postgres, vault)"},
+				fieldModule:      {Type: schemaTypeString, Description: "Module to add the service to"},
+				fieldName:        {Type: schemaTypeString, Description: "Service name (kebab-case)"},
+				fieldAgent:       {Type: schemaTypeString, Description: `Agent reference: "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16". Version defaults to latest (local cache first, then GitHub releases). Publisher must be "codefly.dev" (or omitted) — other publishers are rejected.`},
+				fieldDescription: {Type: schemaTypeString, Description: "Short service description written to service.codefly.yaml"},
 			},
 			Required: []string{"module", "name", "agent"},
 		},
@@ -124,9 +152,12 @@ func (s *Server) registerMutationTools() {
 // isSafeAgentName allows only the conservative identifier set used by real
 // agent names (letters, digits, hyphen, underscore, dot). Anything else is
 // rejected so attacker-controlled input can never reach a shell or escape a
-// glob/path.
+// glob/path. "." and ".." are rejected outright even though '.' is otherwise
+// allowed: a value of exactly one of those is a path-traversal token when
+// later joined into a filesystem path (e.g. agent.Publisher in
+// manager.FindLocalLatest's filepath.Join), not a real agent/service name.
 func isSafeAgentName(name string) bool {
-	if name == "" || len(name) > 100 {
+	if name == "" || name == "." || name == ".." || len(name) > 100 {
 		return false
 	}
 	for _, r := range name {
@@ -146,11 +177,8 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 		return nil, err
 	}
 
-	moduleName := args["module"]
-	serviceName := args["name"]
-	agentName := args["agent"]
-
-	if moduleName == "" || serviceName == "" || agentName == "" {
+	moduleName, serviceName, agentInput := args["module"], args["name"], args["agent"]
+	if moduleName == "" || serviceName == "" || agentInput == "" {
 		return []Content{TextContent("module, name, and agent are required")}, nil
 	}
 	// serviceName is joined into a filesystem path below — reject anything that
@@ -159,69 +187,100 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 		return []Content{TextContent(fmt.Sprintf("invalid service name %q", serviceName))}, nil
 	}
 
-	// Find the module
 	mod, err := ws.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
 		return nil, fmt.Errorf("module not found: %s", moduleName)
 	}
-
-	// Check service doesn't already exist
-	existing, _ := mod.LoadServiceFromName(ctx, serviceName)
-	if existing != nil {
+	if mod.ExistsService(ctx, serviceName) {
 		return []Content{TextContent(fmt.Sprintf("service %s already exists in module %s", serviceName, moduleName))}, nil
 	}
 
-	// Create service directory and service.codefly.yaml
-	serviceDir := path.Join(mod.Dir(), "services", serviceName)
-	if err := os.MkdirAll(serviceDir, 0755); err != nil {
-		return nil, fmt.Errorf("cannot create service directory: %w", err)
+	// Agent identity: accepts "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16".
+	// ParseAgent applies the default publisher and "latest" when omitted.
+	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, agentInput)
+	if err != nil {
+		return []Content{TextContent(fmt.Sprintf("invalid agent %q: %v", agentInput, err))}, nil
+	}
+	// agent.Name/Publisher come from attacker-controllable MCP input; keep them
+	// restricted to the safe identifier set even though ParseAgent validates shape.
+	if !isSafeAgentName(agent.Name) || !isSafeAgentName(agent.Publisher) {
+		return []Content{TextContent(fmt.Sprintf("invalid agent %q", agentInput))}, nil
+	}
+	// Unlike the interactive CLI (which requires a human to type the exact
+	// --agent value and confirm), this tool runs headlessly with no
+	// confirmation step. ParseAgent/manager.Download impose no publisher
+	// allow-list, so an unrestricted publisher would let any MCP caller point
+	// this at an arbitrary GitHub org and have its release binary downloaded
+	// and executed with full host authority. Pin to the same trusted
+	// publisher install_agent already hardcodes below.
+	if agent.Publisher != trustedAgentPublisher {
+		return []Content{TextContent(fmt.Sprintf("agent publisher %q is not allowed for non-interactive service creation; only %q is permitted", agent.Publisher, trustedAgentPublisher))}, nil
 	}
 
-	// Reject agent names with anything but the safe identifier set. agentName
-	// is attacker-controllable (MCP tool argument); it used to be interpolated
-	// into `sh -c "... %s ..."` — a command-injection hole. We also no longer
-	// shell out: filepath.Glob does the lookup natively.
-	if !isSafeAgentName(agentName) {
-		return []Content{TextContent(fmt.Sprintf("invalid agent name %q", agentName))}, nil
-	}
+	// Resolution, download, and the agent's own Create flow can involve
+	// network I/O and long-running scaffolding (package installs, docker
+	// pulls). The MCP server processes one JSON-RPC request at a time on a
+	// single goroutine, so an unbounded call here would freeze the entire
+	// server, including unrelated tool calls, for as long as it hangs.
+	addCtx, cancel := context.WithTimeout(ctx, addServiceTimeout)
+	defer cancel()
 
-	// Determine agent version from installed agents (last match wins).
-	agentVersion := "0.0.1"
-	pattern := filepath.Join(os.Getenv("HOME"), ".codefly", "agents", "services", "codefly.dev", agentName+"__*")
-	if dirs, globErr := filepath.Glob(pattern); globErr == nil && len(dirs) > 0 {
-		last := dirs[len(dirs)-1]
-		parts := strings.Split(filepath.Base(last), "__")
-		if len(parts) == 2 {
-			agentVersion = parts[1]
+	if _, resolveErr := manager.ResolveLatest(addCtx, agent); resolveErr != nil {
+		return nil, fmt.Errorf("resolve agent %s: %w", agent.Identifier(), resolveErr)
+	}
+	downloaded, err := manager.Downloaded(addCtx, agent)
+	if err != nil {
+		return nil, fmt.Errorf("check agent %s: %w", agent.Identifier(), err)
+	}
+	if !downloaded {
+		if downloadErr := manager.Download(addCtx, agent); downloadErr != nil {
+			return nil, fmt.Errorf("download agent %s: %w", agent.Identifier(), downloadErr)
 		}
 	}
+	agentProto, err := agent.Proto()
+	if err != nil {
+		return nil, fmt.Errorf("agent %s: %w", agent.Identifier(), err)
+	}
 
-	// Write service.codefly.yaml
-	svcYAML := fmt.Sprintf(`name: %s
-version: 0.0.0
-agent:
-    kind: codefly:service
-    name: %s
-    version: %s
-    publisher: codefly.dev
-`, serviceName, agentName, agentVersion)
+	input := &actionsservice.AddService{
+		Name:        serviceName,
+		Agent:       agentProto,
+		Description: args["description"],
+	}
+	output, err := services.Add(addCtx, ws, mod, input, communicate.NewHeadlessPrompt())
+	if err != nil {
+		return nil, fmt.Errorf("add service %s/%s: %w", moduleName, serviceName, err)
+	}
 
-	yamlPath := path.Join(serviceDir, "service.codefly.yaml")
-	if err := os.WriteFile(yamlPath, []byte(svcYAML), 0644); err != nil {
-		return nil, fmt.Errorf("cannot write service.codefly.yaml: %w", err)
+	svc, err := mod.LoadServiceFromName(ctx, serviceName)
+	if err != nil {
+		return nil, fmt.Errorf("service created but cannot be reloaded: %w", err)
 	}
 
 	result := map[string]any{
 		"status":  "created",
-		"service": serviceName,
 		"module":  moduleName,
-		"agent":   agentName,
-		"path":    serviceDir,
-		"note":    "Service directory and service.codefly.yaml created. Run 'codefly run service' to scaffold the full template via the agent's Create flow.",
+		"service": serviceName,
+		"agent":   agent.Identifier(),
+		fieldPath: svc.Dir(),
+		"readme":  truncate(output.ReadMe, 4000),
 	}
-
 	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
+}
+
+// truncate cuts s to at most n bytes, walking back to the nearest UTF-8 rune
+// boundary first so a multi-byte character straddling byte n is never split
+// (a raw s[:n] would corrupt the final character into replacement bytes).
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n… (truncated)"
 }
 
 func (s *Server) addDependency(ctx context.Context, args map[string]string) ([]Content, error) {
