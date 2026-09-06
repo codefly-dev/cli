@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -45,7 +44,7 @@ attached.`,
 		restHostPort := fmt.Sprintf("127.0.0.1:%d", restPort)
 		url := fmt.Sprintf("http://%s", restHostPort)
 
-		if common.Reachable(restHostPort) {
+		if common.DashboardAttached(ctx, workspace.Name) {
 			cli.Info("Dashboard already served by a running codefly for workspace %s: %s", workspace.Name, url)
 			if openDashboardOnServer {
 				if openErr := common.OpenBrowser(url); openErr != nil {
@@ -60,18 +59,8 @@ attached.`,
 			return fmt.Errorf("cannot create web server: %w", err)
 		}
 
-		cli.Info("Dashboard: %s", url)
 		cli.Warning("No run is attached: the Services, Logs and Config tabs show declared inventory only. Start a run with `codefly run service <name> --cli-server` to see live state.")
-
-		if openDashboardOnServer {
-			go func() {
-				if common.WaitReachable(restHostPort, 5*time.Second) {
-					if openErr := common.OpenBrowser(url); openErr != nil {
-						cli.Warning("cannot open browser: %v", openErr)
-					}
-				}
-			}()
-		}
+		common.AnnounceDashboardWhenReady(ctx, url, openDashboardOnServer)
 
 		if err := server.Start(ctx); err != nil {
 			return fmt.Errorf("server failed: %w", err)

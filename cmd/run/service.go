@@ -187,17 +187,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 				cancelRun()
 			}
 		}()
-		cli.Info("Dashboard: %s", server.DashboardURL())
-		if openDashboard {
-			dashboardHostPort := strings.TrimPrefix(server.DashboardURL(), "http://")
-			go func() {
-				if common.WaitReachable(dashboardHostPort, 5*time.Second) {
-					if openErr := common.OpenBrowser(server.DashboardURL()); openErr != nil {
-						cli.Warning("cannot open browser: %v", openErr)
-					}
-				}
-			}()
-		}
+		common.AnnounceDashboardWhenReady(ctx, server.DashboardURL(), openDashboard)
 	}
 
 	// stopFresh tears down whatever the flow started, using a FRESH context

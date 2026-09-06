@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/core/resources"
 )
@@ -26,6 +27,55 @@ func TestReachable(t *testing.T) {
 	}
 	if Reachable("") {
 		t.Error("Reachable(\"\") = true; want false")
+	}
+}
+
+func TestWaitReachableSucceedsOnceListenerIsUp(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	if !WaitReachable(context.Background(), ln.Addr().String(), time.Second) {
+		t.Errorf("WaitReachable(%s) = false for an open listener", ln.Addr().String())
+	}
+}
+
+func TestWaitReachableTimesOutWhenNothingListens(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	start := time.Now()
+	if WaitReachable(context.Background(), addr, 300*time.Millisecond) {
+		t.Errorf("WaitReachable(%s) = true; nothing is listening", addr)
+	}
+	if elapsed := time.Since(start); elapsed < 300*time.Millisecond {
+		t.Errorf("WaitReachable returned after %v, before its own 300ms timeout", elapsed)
+	}
+}
+
+// TestWaitReachableReturnsFalseWhenContextCanceled is the regression test for
+// a wait loop that ignored cancellation entirely: a canceled context must cut
+// the wait short well before the timeout, so a shutdown in progress doesn't
+// keep polling — and potentially still fire an action like opening a browser
+// tab — after the caller has already been asked to stop.
+func TestWaitReachableReturnsFalseWhenContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	if WaitReachable(ctx, "127.0.0.1:1", 10*time.Second) {
+		t.Fatal("WaitReachable = true; nothing is listening on port 1")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("WaitReachable took %v to honor a canceled context with a 10s timeout", elapsed)
 	}
 }
 

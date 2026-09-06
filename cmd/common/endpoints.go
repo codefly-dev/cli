@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
@@ -157,12 +158,18 @@ func Reachable(hostPort string) bool {
 	return true
 }
 
-// WaitReachable polls hostPort every 100ms until it accepts a TCP connection
-// or timeout elapses, returning whether it became reachable in time. Used to
-// delay opening a browser tab until the dashboard is actually serving.
-func WaitReachable(hostPort string, timeout time.Duration) bool {
+// WaitReachable polls hostPort every 100ms until it accepts a TCP connection,
+// ctx is canceled, or timeout elapses, returning whether it became reachable
+// in time. ctx cancellation is checked so a caller waiting to react to
+// reachability (e.g. opening a browser tab) stops promptly on shutdown
+// instead of continuing to poll — and potentially firing — after the command
+// has already been asked to exit.
+func WaitReachable(ctx context.Context, hostPort string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
+		if ctx.Err() != nil {
+			return false
+		}
 		if Reachable(hostPort) {
 			return true
 		}
@@ -171,4 +178,27 @@ func WaitReachable(hostPort string, timeout time.Duration) bool {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// AnnounceDashboardWhenReady prints dashboardURL once it is confirmed
+// reachable, and opens it in the default browser too when open is set. Both
+// share the same reachability gate — printing the URL unconditionally right
+// after starting a server races the actual bind: on a startup failure the
+// user would see a "Dashboard:" line for a server that never came up. The
+// wait also stops as soon as ctx is canceled, so a fast shutdown (Ctrl-C
+// during the initial wait) cannot still open a browser tab against a server
+// that's already being torn down.
+func AnnounceDashboardWhenReady(ctx context.Context, dashboardURL string, open bool) {
+	hostPort := strings.TrimPrefix(dashboardURL, "http://")
+	go func() {
+		if !WaitReachable(ctx, hostPort, 5*time.Second) {
+			return
+		}
+		cli.Info("Dashboard: %s", dashboardURL)
+		if open {
+			if openErr := OpenBrowser(dashboardURL); openErr != nil {
+				cli.Warning("cannot open browser: %v", openErr)
+			}
+		}
+	}()
 }
