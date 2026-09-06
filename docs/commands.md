@@ -858,16 +858,7 @@ output.
 ## Available Agents
 
 Agents are gRPC plugin processes that implement service operations (run, build, test, deploy).
-
-| Agent | Language | Protocols | Description |
-|-------|----------|-----------|-------------|
-| `go-grpc` | Go | gRPC, REST | Go gRPC service |
-| `python-grpc` | Python | gRPC | Python gRPC service |
-| `python-fastapi` | Python | REST | Python FastAPI service |
-| `nextjs` | TypeScript | HTTP | Next.js frontend |
-| `rails` | Ruby | REST | Ruby on Rails application |
-| `krakend` | - | REST, gRPC | KrakenD API Gateway |
-| `postgres` | - | TCP | PostgreSQL database |
-| `external-mysql` | - | TCP | MySQL database |
-| `redis` | - | TCP | Redis cache/database |
-| `minio` | - | HTTP | MinIO object storage |
+The set of agents evolves, so it isn't reproduced here: run `codefly agent list` to see every
+agent known to your machine, `codefly agent versions <publisher/name>` (e.g. `go-grpc`, `nextjs`,
+`postgres`) for its available versions, or call the MCP `list_agents` tool for the same
+information from an AI assistant.

@@ -75,15 +75,16 @@ Or add to your project's `.mcp.json` or global MCP config:
 
 ### Workspace Tools
 
-| Tool | Description | Required Args |
-|------|-------------|---------------|
-| `workspace_info` | Get workspace name, description, modules, and services | -- |
-| `list_modules` | List all modules with descriptions | -- |
-| `list_services` | List services (optionally filtered by module) | `module` (optional) |
-| `service_info` | Detailed service info: agent, endpoints, dependencies | `module`, `service` |
-| `service_dependencies` | Get service dependencies with endpoints | `module`, `service` |
-| `list_agents` | List available agent types | -- |
-| `list_jobs` | List jobs (optionally filtered by module) | `module` (optional) |
+| Tool | Description | Required Args | Optional Args |
+|------|-------------|---------------|----------------|
+| `workspace_info` | Get workspace name, description, modules, and services | -- | -- |
+| `list_modules` | List all modules with descriptions | -- | -- |
+| `list_services` | List services (optionally filtered by module) | -- | `module` |
+| `service_info` | Detailed service info: agent, endpoints, dependencies | `module`, `service` | -- |
+| `service_dependencies` | Get service dependencies with endpoints | `module`, `service` | -- |
+| `list_agents` | List agents known to this machine: agents pinned by workspace services plus agents installed in the local cache | -- | `kind` |
+| `agent_info` | Get an agent's real manifest: capabilities, protocols, languages, backends, toolchains, validation contract, configuration docs, techniques and README | `agent` | `kind` (default `service`), `include_prompts` |
+| `list_jobs` | List jobs (optionally filtered by module) | -- | `module` |
 
 ### Mutation Tools
 
@@ -93,16 +94,39 @@ Or add to your project's `.mcp.json` or global MCP config:
 
 ### Per-Service Tools
 
-These tools operate on a specific service within a module.
+These tools operate on a specific service within a module (all take `module`, `service`).
 
-| Tool | Description | Required Args |
-|------|-------------|---------------|
-| `describe` | Service metadata: name, type, agent, file list | `module`, `service` |
-| `read_file` | Read a file from the service directory | `module`, `service`, `path` |
-| `write_file` | Write content to a file in the service directory | `module`, `service`, `path`, `content` |
-| `build` | Build the service via the agent's builder | `module`, `service` |
-| `run_checks` | Run a command in the service directory | `module`, `service`, `command` (optional, default: `go test ./...`) |
-| `stop` | Stop the service runtime | `module`, `service` |
+| Tool | Description | Required Args | Optional Args |
+|------|-------------|---------------|----------------|
+| `describe` | Service metadata: name, agent, file list | `module`, `service` | -- |
+| `read_file` | Read a file from the service directory | `module`, `service`, `path` | -- |
+| `write_file` | Write content to a file in the service directory | `module`, `service`, `path`, `content` | -- |
+| `build` | Build the service via the agent's builder | `module`, `service` | -- |
+| `run_checks` | Run a command in the service directory | `module`, `service` | `command` (default: `go test ./...`) |
+| `stop` | Stop the service runtime | `module`, `service` | -- |
+| `list_service_commands` | List commands available on a service agent | `module`, `service` | -- |
+| `run_service_command` | Run a command on a service agent | `module`, `service`, `command` | `args` |
+
+### Mutation Tools
+
+| Tool | Description | Required Args | Optional Args |
+|------|-------------|---------------|----------------|
+| `add_service` | Create a new service from a codefly agent template | `module`, `name`, `agent` | -- |
+| `add_dependency` | Add a service dependency to a service's service.codefly.yaml | `module`, `service`, `dependency` | -- |
+| `generate_proto` | Regenerate code from proto files | `module`, `service` | -- |
+| `run_service` | Run a service with all its dependencies | `module`, `service` | `debug` |
+| `test_service` | Run tests for a service with all dependencies started | `module`, `service` | -- |
+| `install_agent` | Install or update a codefly agent | `name` | `version` |
+
+### Terminal Tools
+
+| Tool | Description | Required Args | Optional Args |
+|------|-------------|---------------|----------------|
+| `open_terminal` | Open a new terminal session scoped to a module/service directory | -- | `module`, `service`, `shell` |
+| `send_terminal_input` | Send input to a terminal session and return output | `session_id`, `input` | -- |
+| `read_terminal_output` | Read latest output from a terminal session | `session_id` | -- |
+| `close_terminal` | Close a terminal session | `session_id` | -- |
+| `list_terminals` | List active terminal sessions | -- | -- |
 
 ### Run & Test Tools
 
@@ -238,7 +262,7 @@ Server → [{"name": "api", "agent": "go-grpc", "endpoints": [...]}, ...]
 
 ```
 AI → tools/call: describe {module: "backend", service: "api"}
-Server → {"name": "api", "agent": "go-grpc", "files": ["main.go", "handler.go", ...]}
+Server → {"name": "api", "agent": {"name": "go-grpc", "publisher": "codefly.dev", "version": "0.0.16"}, "files": ["main.go", "handler.go", ...]}
 
 AI → tools/call: read_file {module: "backend", service: "api", path: "handler.go"}
 Server → <file contents>

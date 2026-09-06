@@ -4,10 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
+	"github.com/Masterminds/semver"
+	blangsemver "github.com/blang/semver"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
+
+// agentKindArg is the JSON/schema key used for an agent's kind, shared by the
+// list_agents filter argument, service_info/describe's agent object, and the
+// list_agents entry shape.
+const agentKindArg = "kind"
 
 // registerTools sets up all available MCP tools
 func (s *Server) registerTools() {
@@ -84,10 +95,16 @@ func (s *Server) registerTools() {
 
 	s.RegisterTool(Tool{
 		Name:        "list_agents",
-		Description: "List available service agents (templates for creating services)",
+		Description: "List agents known to this machine: agents pinned by workspace services plus agents installed in the local cache. Offline; for languages, protocols and capabilities call agent_info.",
 		InputSchema: InputSchema{
-			Type:       "object",
-			Properties: map[string]PropertySchema{},
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				agentKindArg: {
+					Type:        "string",
+					Description: "Filter by agent kind",
+					Enum:        agentKindEnumValues,
+				},
+			},
 		},
 	}, s.listAgents)
 
@@ -401,24 +418,209 @@ func (s *Server) serviceDependencies(ctx context.Context, args map[string]string
 	return []Content{TextContent(string(data))}, nil
 }
 
-// listAgents returns available service agents
+// agentListEntry is one entry of the list_agents result: an agent identity
+// (publisher, name, kind) unioned across workspace pins and the local cache.
+type agentListEntry struct {
+	Name              string   `json:"name"`
+	Publisher         string   `json:"publisher"`
+	Kind              string   `json:"kind"`
+	InstalledVersions []string `json:"installed_versions"`
+	PinnedVersions    []string `json:"pinned_versions"`
+	PinnedBy          []string `json:"pinned_by"`
+}
+
+// listAgentsKindByArg maps the "kind" argument (list_agents' filter, or
+// agent_info's kind override) to the corresponding resources.AgentKind.
+var listAgentsKindByArg = map[string]resources.AgentKind{
+	"service":     resources.ServiceAgent,
+	"job":         resources.JobAgent,
+	"application": resources.ApplicationAgent,
+	"module":      resources.ModuleAgent,
+	"toolbox":     resources.ToolboxAgent,
+	"provider":    resources.ProviderAgent,
+	"solution":    resources.SolutionAgent,
+}
+
+// agentKindEnumValues is the ordered set of valid "kind" argument values,
+// shared by list_agents' and agent_info's schemas so the two tools can't
+// silently drift into advertising different kind vocabularies.
+var agentKindEnumValues = []string{"service", "job", "application", "module", "toolbox", "provider", "solution"}
+
+// legacyServiceAgentKinds recognizes the pre-migration agent.kind spelling
+// used throughout every service.codefly.yaml in this codebase (agent: kind:
+// runtime::service/builder::service/code::service) — none of which
+// resources.AgentKindRegistrationFor recognizes as an alias of ServiceAgent
+// (it only knows "codefly:service:runtime" etc). Without this, a pinned
+// service's raw kind can never be canonicalized to resources.ServiceAgent,
+// so it never lines up with the canonical kind recorded for the same agent
+// found in the local cache, and list_agents shows two rows for one agent
+// instead of merging them (and the kind filter drops every pinned agent).
+var legacyServiceAgentKinds = map[string]bool{
+	"runtime::service": true,
+	"builder::service": true,
+	"code::service":    true,
+}
+
+// canonicalAgentKind normalizes a raw agent.kind value (from a workspace pin
+// or the cache's resources.AgentKindRegistry) to the canonical
+// resources.AgentKind string used as both the list_agents merge key and the
+// kind filter's comparison value. It falls back to the raw value when it
+// cannot be resolved, so an unrecognized kind still groups consistently with
+// itself instead of being dropped.
+func canonicalAgentKind(raw string) string {
+	if reg, err := resources.AgentKindRegistrationFor(resources.AgentKind(raw)); err == nil {
+		return string(reg.Resource)
+	}
+	if legacyServiceAgentKinds[raw] {
+		return string(resources.ServiceAgent)
+	}
+	return raw
+}
+
+// listAgents unions agents pinned by workspace services with agents installed
+// in the local cache. It makes no network calls.
 func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Content, error) {
-	// These are the known agents from the agents directory
-	agents := []map[string]any{
-		{"name": "go-grpc", "description": "Go gRPC service", "languages": []string{"Go"}, "protocols": []string{"gRPC", "REST"}},
-		{"name": "python-grpc", "description": "Python gRPC service", "languages": []string{"Python"}, "protocols": []string{"gRPC"}},
-		{"name": "python-fastapi", "description": "Python FastAPI service", "languages": []string{"Python"}, "protocols": []string{"REST"}},
-		{"name": "nextjs", "description": "Next.js frontend application", "languages": []string{"TypeScript", "JavaScript"}, "protocols": []string{"HTTP"}},
-		{"name": "rails", "description": "Ruby on Rails application", "languages": []string{"Ruby"}, "protocols": []string{"REST"}},
-		{"name": "krakend", "description": "KrakenD API Gateway", "languages": []string{}, "protocols": []string{"REST", "gRPC"}},
-		{"name": "postgres", "description": "PostgreSQL database", "languages": []string{}, "protocols": []string{"TCP"}},
-		{"name": "mysql", "description": "MySQL database", "languages": []string{}, "protocols": []string{"TCP"}},
-		{"name": "redis", "description": "Redis cache/database", "languages": []string{}, "protocols": []string{"TCP"}},
-		{"name": "minio", "description": "MinIO object storage", "languages": []string{}, "protocols": []string{"HTTP"}},
+	type agentKey struct {
+		publisher string
+		name      string
+		kind      string
+	}
+	entries := make(map[agentKey]*agentListEntry)
+	getEntry := func(publisher, name, kind string) *agentListEntry {
+		key := agentKey{publisher, name, kind}
+		entry, ok := entries[key]
+		if !ok {
+			entry = &agentListEntry{
+				Name:              name,
+				Publisher:         publisher,
+				Kind:              kind,
+				InstalledVersions: []string{},
+				PinnedVersions:    []string{},
+				PinnedBy:          []string{},
+			}
+			entries[key] = entry
+		}
+		return entry
 	}
 
-	data, _ := json.MarshalIndent(agents, "", "  ")
+	if s.workspace != nil {
+		modules, _ := s.workspace.LoadModules(ctx)
+		for _, mod := range modules {
+			services, _ := mod.LoadServices(ctx)
+			for _, svc := range services {
+				if svc.Agent == nil {
+					continue
+				}
+				entry := getEntry(svc.Agent.Publisher, svc.Agent.Name, canonicalAgentKind(string(svc.Agent.Kind)))
+				entry.PinnedBy = append(entry.PinnedBy, mod.Name+"/"+svc.Name)
+				entry.PinnedVersions = append(entry.PinnedVersions, svc.Agent.Version)
+			}
+		}
+	}
+
+	registry := resources.AgentKindRegistry()
+	for i := range registry {
+		reg := &registry[i]
+		if !reg.Operations.List || reg.InstallSubdirectory == "" {
+			continue
+		}
+		base := filepath.Join(resources.AgentBase(ctx), "agents", reg.InstallSubdirectory)
+		publishers, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, pub := range publishers {
+			publisherDir := filepath.Join(base, pub.Name())
+			installs, err := os.ReadDir(publisherDir)
+			if err != nil {
+				continue
+			}
+			for _, install := range installs {
+				name, version, ok := strings.Cut(install.Name(), "__")
+				if !ok {
+					continue
+				}
+				if _, err := blangsemver.Parse(version); err != nil {
+					continue
+				}
+				entry := getEntry(pub.Name(), name, canonicalAgentKind(string(reg.Resource)))
+				entry.InstalledVersions = append(entry.InstalledVersions, version)
+			}
+		}
+	}
+
+	var kindFilter string
+	if raw := args[agentKindArg]; raw != "" {
+		mapped, ok := listAgentsKindByArg[raw]
+		if !ok {
+			data, _ := json.MarshalIndent([]agentListEntry{}, "", "  ")
+			return []Content{TextContent(string(data))}, nil
+		}
+		kindFilter = string(mapped)
+	}
+
+	result := make([]agentListEntry, 0, len(entries))
+	for _, entry := range entries {
+		if kindFilter != "" && entry.Kind != kindFilter {
+			continue
+		}
+		sortVersionsDescending(entry.InstalledVersions)
+		sortVersionsDescending(entry.PinnedVersions)
+		result = append(result, *entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Publisher != result[j].Publisher {
+			return result[i].Publisher < result[j].Publisher
+		}
+		return result[i].Name < result[j].Name
+	})
+
+	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
+}
+
+// sortVersionsDescending sorts versions newest-first by semver. Versions come
+// from two different sources with different rigor: cache directory names are
+// pre-validated strict semver (MAJOR.MINOR.PATCH), but a workspace pin's
+// agent.version is a free-form YAML string (e.g. "1.10", missing its patch
+// component) — blang/semver rejects that outright. Comparing per-pair
+// ("if both parse, semver-compare; else string-compare") is not a
+// transitive order: whether a given pair falls back to string comparison
+// depends on that pair's own parseability, so e.g. ["2.0.0", "1.10",
+// "1.9.0"] can come out with 1.10 sorted below 1.9.0 even though 1.10 is
+// the newer version. Using Masterminds/semver (which accepts a missing
+// minor/patch) as a lenient fallback, and computing each element's sort key
+// once up front, makes every pairwise comparison consistent: version-like
+// strings always sort by their real numeric value, and only strings that
+// aren't version-shaped at all fall back to a lexical order among
+// themselves (ranked below every version-shaped string, not interleaved
+// with them).
+func sortVersionsDescending(versions []string) {
+	type key struct {
+		parsed *semver.Version
+		raw    string
+	}
+	keys := make([]key, len(versions))
+	for i, v := range versions {
+		parsed, err := semver.NewVersion(v)
+		if err != nil {
+			parsed = nil
+		}
+		keys[i] = key{parsed: parsed, raw: v}
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.parsed != nil && b.parsed != nil {
+			return a.parsed.GreaterThan(b.parsed)
+		}
+		if (a.parsed != nil) != (b.parsed != nil) {
+			return a.parsed != nil
+		}
+		return a.raw > b.raw
+	})
+	for i, k := range keys {
+		versions[i] = k.raw
+	}
 }
 
 // listJobs returns jobs, optionally filtered by module
