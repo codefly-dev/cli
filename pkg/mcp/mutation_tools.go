@@ -9,6 +9,7 @@ import (
 	"path"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codefly-dev/cli/pkg/cli/communicate"
 	actionsservice "github.com/codefly-dev/core/actions/service"
@@ -17,6 +18,18 @@ import (
 	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/services"
 )
+
+// trustedAgentPublisher is the only agent publisher add_service will resolve,
+// download, and execute non-interactively. install_agent (below) hardcodes
+// the same publisher for the same reason: unlike the interactive CLI, there
+// is no human confirming the exact agent reference before it runs.
+const trustedAgentPublisher = "codefly.dev"
+
+// addServiceTimeout bounds agent resolution/download and the agent's own
+// Create-flow scaffolding. The MCP server handles one request at a time on a
+// single goroutine (see ServeIO), so without a deadline a stalled network
+// call or a slow agent would freeze the whole server indefinitely.
+const addServiceTimeout = 10 * time.Minute
 
 // synchronizedBuffer is an io.Writer whose snapshots are safe while a child
 // process is still writing. bytes.Buffer itself cannot be read concurrently
@@ -48,7 +61,7 @@ func (s *Server) registerMutationTools() {
 			Properties: map[string]PropertySchema{
 				"module":      {Type: "string", Description: "Module to add the service to"},
 				"name":        {Type: "string", Description: "Service name (kebab-case)"},
-				"agent":       {Type: "string", Description: `Agent reference: "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16". Version defaults to latest (local cache first, then GitHub releases).`},
+				"agent":       {Type: "string", Description: `Agent reference: "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16". Version defaults to latest (local cache first, then GitHub releases). Publisher must be "codefly.dev" (or omitted) — other publishers are rejected.`},
 				"description": {Type: "string", Description: "Short service description written to service.codefly.yaml"},
 			},
 			Required: []string{"module", "name", "agent"},
@@ -126,9 +139,12 @@ func (s *Server) registerMutationTools() {
 // isSafeAgentName allows only the conservative identifier set used by real
 // agent names (letters, digits, hyphen, underscore, dot). Anything else is
 // rejected so attacker-controlled input can never reach a shell or escape a
-// glob/path.
+// glob/path. "." and ".." are rejected outright even though '.' is otherwise
+// allowed: a value of exactly one of those is a path-traversal token when
+// later joined into a filesystem path (e.g. agent.Publisher in
+// manager.FindLocalLatest's filepath.Join), not a real agent/service name.
 func isSafeAgentName(name string) bool {
-	if name == "" || len(name) > 100 {
+	if name == "" || name == "." || name == ".." || len(name) > 100 {
 		return false
 	}
 	for _, r := range name {
@@ -177,15 +193,34 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 	if !isSafeAgentName(agent.Name) || !isSafeAgentName(agent.Publisher) {
 		return []Content{TextContent(fmt.Sprintf("invalid agent %q", agentInput))}, nil
 	}
-	if _, resolveErr := manager.ResolveLatest(ctx, agent); resolveErr != nil {
+	// Unlike the interactive CLI (which requires a human to type the exact
+	// --agent value and confirm), this tool runs headlessly with no
+	// confirmation step. ParseAgent/manager.Download impose no publisher
+	// allow-list, so an unrestricted publisher would let any MCP caller point
+	// this at an arbitrary GitHub org and have its release binary downloaded
+	// and executed with full host authority. Pin to the same trusted
+	// publisher install_agent already hardcodes below.
+	if agent.Publisher != trustedAgentPublisher {
+		return []Content{TextContent(fmt.Sprintf("agent publisher %q is not allowed for non-interactive service creation; only %q is permitted", agent.Publisher, trustedAgentPublisher))}, nil
+	}
+
+	// Resolution, download, and the agent's own Create flow can involve
+	// network I/O and long-running scaffolding (package installs, docker
+	// pulls). The MCP server processes one JSON-RPC request at a time on a
+	// single goroutine, so an unbounded call here would freeze the entire
+	// server, including unrelated tool calls, for as long as it hangs.
+	addCtx, cancel := context.WithTimeout(ctx, addServiceTimeout)
+	defer cancel()
+
+	if _, resolveErr := manager.ResolveLatest(addCtx, agent); resolveErr != nil {
 		return nil, fmt.Errorf("resolve agent %s: %w", agent.Identifier(), resolveErr)
 	}
-	downloaded, err := manager.Downloaded(ctx, agent)
+	downloaded, err := manager.Downloaded(addCtx, agent)
 	if err != nil {
 		return nil, fmt.Errorf("check agent %s: %w", agent.Identifier(), err)
 	}
 	if !downloaded {
-		if downloadErr := manager.Download(ctx, agent); downloadErr != nil {
+		if downloadErr := manager.Download(addCtx, agent); downloadErr != nil {
 			return nil, fmt.Errorf("download agent %s: %w", agent.Identifier(), downloadErr)
 		}
 	}
@@ -199,7 +234,7 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 		Agent:       agentProto,
 		Description: args["description"],
 	}
-	output, err := services.Add(ctx, ws, mod, input, communicate.NewHeadlessPrompt())
+	output, err := services.Add(addCtx, ws, mod, input, communicate.NewHeadlessPrompt())
 	if err != nil {
 		return nil, fmt.Errorf("add service %s/%s: %w", moduleName, serviceName, err)
 	}
@@ -221,11 +256,18 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 	return []Content{TextContent(string(data))}, nil
 }
 
+// truncate cuts s to at most n bytes, walking back to the nearest UTF-8 rune
+// boundary first so a multi-byte character straddling byte n is never split
+// (a raw s[:n] would corrupt the final character into replacement bytes).
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "\n… (truncated)"
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n… (truncated)"
 }
 
 func (s *Server) addDependency(ctx context.Context, args map[string]string) ([]Content, error) {
