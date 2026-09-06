@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,30 @@ func TestManagedSecretProjectionRendersExternalSecret(t *testing.T) {
 	}
 	if projection.Spec.Data[0].SecretKey != "client-id" || projection.Spec.Data[0].RemoteRef.Key != "workos/client-id" {
 		t.Fatalf("projection first entry = %+v", projection.Spec.Data[0])
+	}
+}
+
+// A managed reference that names a property must render remoteRef.property
+// alongside remoteRef.key, so a managed service backed by a store of structured
+// documents resolves the field inside the remote entry.
+func TestManagedSecretProjectionCarriesProperty(t *testing.T) {
+	store := resources.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
+	refs := []resources.EnvironmentManagedSecretReference{
+		{Name: "store-connection", RemoteKey: "lodestar-accounts", Property: "store_read_write_connection", SecretStore: store},
+	}
+	projection, err := managedSecretProjection("store", "lodestar", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := projection.Spec.Data[0]; got.RemoteRef.Key != "lodestar-accounts" || got.RemoteRef.Property != "store_read_write_connection" {
+		t.Fatalf("managed entry = %+v", got)
+	}
+	encoded, err := yaml.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "property: store_read_write_connection") {
+		t.Fatalf("rendered YAML missing property:\n%s", encoded)
 	}
 }
 
@@ -400,24 +425,82 @@ func remoteRefsBySecretKey(data []externalSecretData) map[string]externalSecretR
 	return byKey
 }
 
+// writeServiceTreeReferencingKeys lays down a base+overlay service tree whose
+// Deployment references each of keys from secret-<service> via a non-optional
+// secretKeyRef — the same shape serviceSecretKeys discovers in production.
+func writeServiceTreeReferencingKeys(t *testing.T, root, environment, namespace, service string, keys []string) {
+	t.Helper()
+	base := filepath.Join(root, "base")
+	overlay := filepath.Join(root, "overlays", environment)
+	for _, dir := range []string{base, overlay} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var envVars strings.Builder
+	for _, key := range keys {
+		fmt.Fprintf(&envVars, "            - name: %s\n"+
+			"              valueFrom:\n"+
+			"                secretKeyRef:\n"+
+			"                  name: secret-%s\n"+
+			"                  key: %s\n", key, service, key)
+	}
+	deployment := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + service +
+		"\n  namespace: " + namespace + "\nspec:\n  template:\n    spec:\n      containers:\n" +
+		"        - name: " + service + "\n          image: registry.example.com/" + service +
+		"@sha256:" + strings.Repeat("a", 64) + "\n          env:\n" + envVars.String()
+	if err := os.WriteFile(filepath.Join(base, "deployment.yaml"), []byte(deployment), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // codefly reproduces infra-base's hand-authored secret-accounts ExternalSecret
-// data block from a lodestar-side service-secrets declaration: the same secretKey
-// → {key, property} set, compared order-insensitively.
+// data block end to end: a service tree references the 20 keys, the production
+// projectServiceSecrets discovers them from that tree and renders the
+// ExternalSecret from a lodestar-side declaration, and the written manifest's
+// spec.data set-equals the infra-base golden. The keys are discovered from the
+// tree, not read from the golden, so the projection — not a map echo — is under
+// test.
 func TestServiceSecretProjectionReproducesInfraBaseAccounts(t *testing.T) {
 	golden := loadGoldenExternalSecretData(t, filepath.Join("testdata", "lodestar-accounts-externalsecret.yaml"))
+
+	// The only hand-authored input: the lodestar-side declaration mapping each
+	// rendered secret key to its remote {key, property}.
 	remoteKeys := make(map[string]resources.EnvironmentSecretRemoteRef, len(golden))
 	keys := make([]string, 0, len(golden))
 	for _, entry := range golden {
 		remoteKeys[entry.SecretKey] = resources.EnvironmentSecretRemoteRef{Key: entry.RemoteRef.Key, Property: entry.RemoteRef.Property}
 		keys = append(keys, entry.SecretKey)
 	}
-	projection, err := serviceSecretProjection("accounts", "lodestar", cellServiceSecrets(
-		resources.EnvironmentServiceSecretMapping{RemoteKeys: remoteKeys},
-	), keys)
+	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{RemoteKeys: remoteKeys})
+
+	root := filepath.Join(t.TempDir(), "accounts")
+	writeServiceTreeReferencingKeys(t, root, "prod", "lodestar", "accounts", keys)
+
+	projected, err := projectServiceSecrets(root, "accounts", "prod", "lodestar", secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := remoteRefsBySecretKey(projection.Spec.Data)
+	if !projected {
+		t.Fatal("service referencing secret-accounts was not projected")
+	}
+
+	written, err := os.ReadFile(filepath.Join(root, "overlays", "prod", "external-secret.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered externalSecret
+	if err := yaml.Unmarshal(written, &rendered); err != nil {
+		t.Fatal(err)
+	}
+
+	got := remoteRefsBySecretKey(rendered.Spec.Data)
 	want := remoteRefsBySecretKey(golden)
 	if len(got) != len(want) {
 		t.Fatalf("projected %d keys, golden has %d", len(got), len(want))
