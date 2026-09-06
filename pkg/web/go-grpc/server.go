@@ -43,12 +43,11 @@ type Configuration struct {
 
 type Server struct {
 	cli.UnsafeCLIServer
-	config     *Configuration
-	gRPC       *grpc.Server
-	logChannel chan *observabilityv0.Log
-	workspace  *resources.Workspace
-	Wool       *wool.Wool
-	Terminal   *TerminalServer
+	config    *Configuration
+	gRPC      *grpc.Server
+	workspace *resources.Workspace
+	Wool      *wool.Wool
+	Terminal  *TerminalServer
 	// flows owns the orchestration flow(s) this server observes/controls —
 	// registered by the caller, resolved via activeFlow() — so two flows in
 	// one process can never alias each other through a shared global.
@@ -357,28 +356,41 @@ func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 // entries directly without constructing wool types.
 func (s *Server) recordLog(entry *observabilityv0.Log) {
 	s.history.Add(entry)
-	// Non-blocking send. The previous `go func(){ ch <- entry }()` spawned a
-	// goroutine per log line; when no Logs consumer is attached (headless/CI),
-	// the buffered channel fills and every such goroutine blocks forever —
-	// an unbounded leak. Drop the line instead when the buffer is full.
-	select {
-	case s.logChannel <- entry:
-	default:
-	}
 }
 
+// Logs streams the full log history followed by a live tail. Subscribing to
+// history and registering for live entries happens atomically (logHistory.
+// Subscribe), so every entry is delivered exactly once — as part of the
+// initial snapshot or over the live channel, never both — and every stream,
+// including concurrent ones from multiple dashboard tabs, gets its own
+// independent copy of the live feed instead of racing others for lines off a
+// single shared channel.
 func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {
-	for logEntry := range s.logChannel {
-		if err := server.Send(logEntry); err != nil {
+	const liveBuffer = 1000
+	snapshot, live, unsubscribe := s.history.Subscribe(liveBuffer)
+	defer unsubscribe()
+
+	for _, entry := range snapshot {
+		if err := server.Send(entry); err != nil {
 			return err
 		}
 	}
-	return nil
+
+	ctx := server.Context()
+	for {
+		select {
+		case entry := <-live:
+			if err := server.Send(entry); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return nil
+		}
+	}
 }
 
 func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManager) (*Server, error) {
 	grpcServer := grpc.NewServer()
-	bufferSize := 10000
 
 	// Resolve workspace directory for terminal sessions
 	workspaceDir := "."
@@ -387,13 +399,12 @@ func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManag
 	}
 
 	s := Server{
-		config:     c,
-		workspace:  w,
-		gRPC:       grpcServer,
-		logChannel: make(chan *observabilityv0.Log, bufferSize),
-		Terminal:   NewTerminalServer(workspaceDir),
-		flows:      flows,
-		history:    newLogHistory(5000),
+		config:    c,
+		workspace: w,
+		gRPC:      grpcServer,
+		Terminal:  NewTerminalServer(workspaceDir),
+		flows:     flows,
+		history:   newLogHistory(5000),
 	}
 	cli.RegisterCLIServer(grpcServer, &s)
 	cli.RegisterTerminalServiceServer(grpcServer, s.Terminal)
