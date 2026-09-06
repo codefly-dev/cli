@@ -301,6 +301,21 @@ session; observation uses the active authenticated `argocd` context. Rollback
 refuses a target revision unless a prior Healthy reviewed evidence receipt
 links that revision.
 
+**Contract admission.** `.codefly-render.json` records, per unit, the API
+contracts it exposes (from the module's `contracts/api/catalog.codefly.json`)
+and consumes (from its libraries' generated-client provenance), plus the
+module's own package identity when it has a `module.package.codefly.yaml`.
+At `plan` and `publish`, every consumed contract is checked against the
+exposing module's own `.codefly-render.json` in the same GitOps path: the
+module must be deployed there, still expose the endpoint, and its package
+version must satisfy the consumer's pinned version or declared semver
+constraint, with a matching contract digest (a compatible newer host with a
+different digest is reported as drift, not a violation). `plan` prints the
+resulting checks as a table; `publish` refuses when any check is a violation.
+Pass `--allow-unresolved-contracts` to downgrade a violation caused by the
+exposing module not being deployed yet to a skipped check, for bootstrap
+ordering — every other violation still blocks publication.
+
 Locally there is no reachable Git host for Argo to fetch from, so the CLI owns a
 reproducible read-only fetch remote on the private k3d network:
 

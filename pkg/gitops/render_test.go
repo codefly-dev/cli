@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,6 +199,144 @@ func TestRenderInventoryRecordsOwnedUnitGraph(t *testing.T) {
 		inventory.Units[0].Kind != UnitKindService || inventory.Units[1].Kind != UnitKindService ||
 		!inventory.Units[1].Managed {
 		t.Fatalf("inventory = %+v", inventory)
+	}
+}
+
+func TestLoadInventoryAcceptsPriorSchemaVersion(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "owned")
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
+	}, func(_ context.Context, root string) error {
+		return os.WriteFile(filepath.Join(root, "deployment.yaml"), []byte(pinnedDeployment), 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(destination, InventoryFilename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downgraded := strings.Replace(string(data), `"schemaVersion": 5`, `"schemaVersion": 4`, 1)
+	if downgraded == string(data) {
+		t.Fatal("rendered inventory did not carry the current schema version")
+	}
+	if err := os.WriteFile(path, []byte(downgraded), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := LoadInventory(destination)
+	if err != nil {
+		t.Fatalf("prior schema version rejected: %v", err)
+	}
+	if inventory.SchemaVersion != priorSchemaVersion {
+		t.Fatalf("inventory.SchemaVersion = %d, want %d", inventory.SchemaVersion, priorSchemaVersion)
+	}
+}
+
+// moduleWithPackageAndCatalog writes a minimal module.package.codefly.yaml and
+// contracts/api/catalog.codefly.json into a fresh module directory, mirroring
+// what `codefly generate contracts` and `module.package.codefly.yaml` produce.
+func moduleWithPackageAndCatalog(t *testing.T, digest string) string {
+	t.Helper()
+	moduleDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(moduleDir, "services"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `kind: module-package
+schema: codefly/module-package/v2
+id: codefly/saas-starter
+version: 0.1.0
+minimum-codefly-version: ">=0.0.0"
+artifact-roots:
+  - services
+contracts:
+  composition: ">=1.0"
+`
+	if err := os.WriteFile(filepath.Join(moduleDir, "module.package.codefly.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalogDir := filepath.Join(moduleDir, "contracts", "api")
+	if err := os.MkdirAll(catalogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	catalog := fmt.Sprintf(`{"services":[{"service":"accounts","endpoints":[{"endpoint":"connect","package":"saas.accounts.v1","digest":%q}]}]}`, digest)
+	if err := os.WriteFile(filepath.Join(catalogDir, "catalog.codefly.json"), []byte(catalog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return moduleDir
+}
+
+func TestRenderRecordsExposedContractsAndPackageFromModuleCatalog(t *testing.T) {
+	moduleDir := moduleWithPackageAndCatalog(t, testContractDigestA)
+
+	pkg, err := modulePackage(moduleDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := loadContractCatalog(moduleDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	destination := filepath.Join(t.TempDir(), "deployments", "modules", "saas")
+	_, err = RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: destination, Module: "saas", Environment: "production", Promotable: true,
+		OwnedPath: "deployments/modules/saas", Package: pkg,
+		Units: []InventoryUnit{
+			{
+				Kind: UnitKindService, Module: "saas", Name: "accounts", Path: "services/accounts",
+				Contracts: catalog.exposedContracts("saas", "accounts"),
+			},
+		},
+	}, func(_ context.Context, root string) error {
+		service := filepath.Join(root, "services", "accounts")
+		if err := os.MkdirAll(service, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(pinnedDeployment), 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := LoadInventory(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Package == nil || inventory.Package.ID != "codefly/saas-starter" || inventory.Package.Version != "0.1.0" {
+		t.Fatalf("inventory.Package = %+v", inventory.Package)
+	}
+	if len(inventory.Units) != 1 || len(inventory.Units[0].Contracts) != 1 {
+		t.Fatalf("inventory.Units = %+v", inventory.Units)
+	}
+	exposed := inventory.Units[0].Contracts[0]
+	if exposed.Role != ContractRoleExposes || exposed.Endpoint != "connect" || exposed.Package != "saas.accounts.v1" || exposed.Digest != testContractDigestA {
+		t.Fatalf("exposed contract = %+v", exposed)
+	}
+}
+
+// TestValidateInventoryContractsRejectsUnsafeModulePathComponent is the
+// render-time regression test for the path-traversal bug in
+// resolveGitopsModuleInventory: a consumed contract's Module is later joined
+// onto a filesystem path when admission resolves the exposing module's
+// inventory, so a render must never be allowed to produce (or accept) an
+// inventory whose contract.Module isn't a safe, single path component.
+func TestValidateInventoryContractsRejectsUnsafeModulePathComponent(t *testing.T) {
+	for _, module := range []string{"../escape", "a/b", "..", ""} {
+		inventory := &Inventory{
+			Module: "lastlogin",
+			Units: []InventoryUnit{
+				{
+					Kind: UnitKindSolution, Module: "lastlogin", Name: "lastlogin",
+					Contracts: []InventoryContract{
+						{Role: ContractRoleConsumes, Module: module, Service: "accounts", Endpoint: "connect", Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0"},
+					},
+				},
+			},
+		}
+		if err := validateInventoryUnits(inventory); err == nil {
+			t.Fatalf("contract module %q was accepted", module)
+		}
 	}
 }
 

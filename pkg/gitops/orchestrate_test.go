@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -173,5 +174,85 @@ name: infra
 
 	if _, err := RenderModule(ctx, workspace, module, env, "", nil); err != nil {
 		t.Fatalf("registry-less render of a service-less module failed: %v", err)
+	}
+}
+
+// TestRenderServicePropagatesModulePackageManifestError is the regression test
+// for RenderService not reading the module's package manifest, unlike
+// RenderModule/RenderModuleSnapshot (renderModuleTree): it plants an invalid
+// module.package.codefly.yaml and asserts RenderService surfaces that error,
+// proving it now loads the manifest at all. RenderService always calls
+// prepareSnapshotRegistry and a real deploy Flow (unlike RenderModule, which
+// can skip both for a service-less module), so a full happy-path assertion
+// would need a real agent; making the manifest invalid instead fails fast,
+// before that machinery, while still exercising the new call.
+func TestRenderServicePropagatesModulePackageManifestError(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		resources.WorkspaceConfigurationName: `name: platform
+layout: modules
+modules:
+  - name: web
+environments:
+  - name: prod
+    namespace: platform
+`,
+		filepath.Join("modules", "web", resources.ModuleConfigurationName): `kind: module
+name: web
+services:
+    - name: web
+`,
+		filepath.Join("modules", "web", "services", "web", resources.ServiceConfigurationName): `kind: service
+name: web
+version: 0.0.0
+agent:
+  kind: runtime::service
+  name: go-grpc
+  version: 0.0.1
+  publisher: codefly.ai
+`,
+		// schema is deliberately v1, not the required v2, so LoadPackageManifest
+		// fails validation before RenderService ever reaches prepareSnapshotRegistry.
+		filepath.Join("modules", "web", "module.package.codefly.yaml"): `kind: module-package
+schema: codefly/module-package/v1
+id: codefly/web
+version: 0.1.0
+minimum-codefly-version: ">=0.0.0"
+artifact-roots:
+  - services
+contracts:
+  composition: ">=1.0"
+`,
+	}
+	for rel, content := range files {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := workspace.LoadModuleFromName(ctx, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := module.LoadServiceFromName(ctx, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := workspace.FindEnvironment("prod")
+	if env == nil {
+		t.Fatal("prod environment did not load")
+	}
+
+	_, err = RenderService(ctx, workspace, module, service, env, "", false, nil)
+	if err == nil || !strings.Contains(err.Error(), "module package manifest") {
+		t.Fatalf("RenderService error = %v, want it to surface the invalid module package manifest", err)
 	}
 }

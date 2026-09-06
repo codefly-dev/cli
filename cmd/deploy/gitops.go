@@ -1,8 +1,11 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -384,6 +387,7 @@ func publishRequest(module string) gitops.PublishRequest {
 		Module: module, Environment: gitOpsEnv,
 		PromotionBranch: gitOpsBranch, CommitMessage: gitOpsMessage,
 		Title: gitOpsTitle, Body: gitOpsBody, Local: gitOpsLocal,
+		AllowUnresolvedContracts: gitOpsAllowUnresolvedContracts,
 	}
 }
 
@@ -412,6 +416,21 @@ func printSizingReport(report gitops.SizingReport) {
 	}
 }
 
+// formatContractChecks renders the plan's contract admission checks as an
+// aligned table (STATUS, UNIT, the module/service/endpoint being consumed,
+// and MESSAGE), matching the "prints them as a table" behavior documented in
+// docs/commands.md rather than a flat bulleted list.
+func formatContractChecks(checks []gitops.ContractCheck) string {
+	var buf bytes.Buffer
+	writer := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "STATUS\tUNIT\tCONTRACT\tMESSAGE")
+	for _, check := range checks {
+		fmt.Fprintf(writer, "%s\t%s\t%s/%s/%s\t%s\n", check.Status, check.Unit, check.Module, check.Service, check.Endpoint, check.Message)
+	}
+	_ = writer.Flush()
+	return strings.TrimRight(buf.String(), "\n")
+}
+
 func printPublishPlan(plan *gitops.PublishPlan) {
 	cli.Info("Plan %s", plan.ID)
 	cli.Info("Repository %s", plan.Repository)
@@ -423,24 +442,29 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	for _, path := range plan.Changed {
 		cli.Info("  %s", path)
 	}
+	if len(plan.ContractChecks) > 0 {
+		cli.Info("Contract checks:")
+		cli.Info("%s", formatContractChecks(plan.ContractChecks))
+	}
 	if plan.Diff != "" {
 		cli.Info("%s", plan.Diff)
 	}
 }
 
 var (
-	gitOpsEnv              string
-	gitOpsProject          string
-	gitOpsBranch           string
-	gitOpsMessage          string
-	gitOpsTitle            string
-	gitOpsBody             string
-	gitOpsRevision         string
-	gitOpsRollbackRevision string
-	gitOpsApplications     []string
-	gitOpsTimeout          time.Duration
-	gitOpsYes              bool
-	gitOpsLocal            bool
+	gitOpsEnv                      string
+	gitOpsProject                  string
+	gitOpsBranch                   string
+	gitOpsMessage                  string
+	gitOpsTitle                    string
+	gitOpsBody                     string
+	gitOpsRevision                 string
+	gitOpsRollbackRevision         string
+	gitOpsApplications             []string
+	gitOpsTimeout                  time.Duration
+	gitOpsYes                      bool
+	gitOpsLocal                    bool
+	gitOpsAllowUnresolvedContracts bool
 )
 
 func init() {
@@ -454,6 +478,10 @@ func init() {
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsBranch, "promotion-branch", "", "Promotion branch (deterministic default when empty)")
 		command.Flags().BoolVar(&gitOpsLocal, "local", false, "Use a disposable local file Git remote for k3d qualification")
+	}
+	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
+		command.Flags().BoolVar(&gitOpsAllowUnresolvedContracts, "allow-unresolved-contracts", false,
+			"Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering")
 	}
 	for _, command := range []*cobra.Command{gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsMessage, "message", "", "Signed commit message")
