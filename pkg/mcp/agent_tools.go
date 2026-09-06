@@ -24,6 +24,11 @@ func (s *Server) registerAgentTools() {
 					Type:        "string",
 					Description: `Agent reference: "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16". "latest" resolves from the local cache first, then GitHub releases.`,
 				},
+				agentKindArg: {
+					Type:        "string",
+					Description: "Agent kind (default: service) — must match the kind list_agents reported for this agent",
+					Enum:        agentKindEnumValues,
+				},
 				"include_prompts": {
 					Type:        "string",
 					Description: `Include techniques[].prompt in the output when "true" (omitted by default)`,
@@ -36,11 +41,27 @@ func (s *Server) registerAgentTools() {
 
 // agentInfo loads the named agent and returns its GetAgentInformation manifest as JSON.
 func (s *Server) agentInfo(ctx context.Context, args map[string]string) ([]Content, error) {
-	conf, err := resources.ParseAgent(ctx, resources.ServiceAgent, args["agent"])
+	kind := resources.ServiceAgent
+	if raw := args[agentKindArg]; raw != "" {
+		mapped, ok := listAgentsKindByArg[raw]
+		if !ok {
+			return nil, fmt.Errorf("unknown agent kind %q", raw)
+		}
+		kind = mapped
+	}
+
+	conf, err := resources.ParseAgent(ctx, kind, args["agent"])
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse agent: %w", err)
 	}
-	if !isSafeAgentName(conf.Name) || !isSafeAgentName(conf.Publisher) {
+	// conf.Version is attacker-reachable (an MCP tool argument) and, unlike
+	// Name/Publisher, carries no length or charset constraint in the Agent
+	// proto. resources.Agent.Path() builds the on-disk binary path by string
+	// concatenation ("<publisher>/<name>__<version>") before path.Join, so an
+	// unvalidated "../../etc/passwd"-style version escapes the agent cache
+	// directory entirely and manager.Load then exec.Command()s whatever it
+	// finds there.
+	if !isSafeAgentName(conf.Name) || !isSafeAgentName(conf.Publisher) || !isSafeAgentName(conf.Version) {
 		return nil, fmt.Errorf("invalid agent reference %q", args["agent"])
 	}
 
@@ -50,7 +71,18 @@ func (s *Server) agentInfo(ctx context.Context, args map[string]string) ([]Conte
 		}
 	}
 
-	loaded, err := services.LoadAgent(ctx, conf, "")
+	// Load under a cache key namespaced to this tool, never a bare
+	// conf.Unique() or a service identity: ServiceCacheKey falls back to
+	// Agent.Unique() when a service has no identity, so sharing that key
+	// space risks a pure introspection call evicting (via the cleanup below)
+	// a connection a running service still depends on. The dedicated key
+	// also means agent_info's own process is torn down right after the call
+	// instead of staying resident for the rest of the (long-lived) MCP
+	// server's life for every distinct agent ever inspected.
+	cacheKey := "mcp-agent-info::" + conf.Unique()
+	defer services.ClearAgent(cacheKey)
+
+	loaded, err := services.LoadAgent(ctx, conf, cacheKey)
 	if err != nil {
 		return nil, fmt.Errorf("cannot load agent: %w", err)
 	}

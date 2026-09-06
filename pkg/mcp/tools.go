@@ -9,7 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/blang/semver"
+	"github.com/Masterminds/semver"
+	blangsemver "github.com/blang/semver"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -101,7 +102,7 @@ func (s *Server) registerTools() {
 				agentKindArg: {
 					Type:        "string",
 					Description: "Filter by agent kind",
-					Enum:        []string{"service", "job", "application", "module", "toolbox", "provider", "solution"},
+					Enum:        agentKindEnumValues,
 				},
 			},
 		},
@@ -344,10 +345,10 @@ func (s *Server) serviceInfo(ctx context.Context, args map[string]string) ([]Con
 		"description": svc.Description,
 		"version":     svc.Version,
 		"agent": map[string]string{
-			"name":       svc.Agent.Name,
-			agentKindArg: string(svc.Agent.Kind),
-			"publisher":  svc.Agent.Publisher,
-			"version":    svc.Agent.Version,
+			"name":      svc.Agent.Name,
+			"kind":      string(svc.Agent.Kind),
+			"publisher": svc.Agent.Publisher,
+			"version":   svc.Agent.Version,
 		},
 	}
 
@@ -428,8 +429,8 @@ type agentListEntry struct {
 	PinnedBy          []string `json:"pinned_by"`
 }
 
-// listAgentsKindByArg maps the list_agents "kind" filter argument to the
-// corresponding resources.AgentKind.
+// listAgentsKindByArg maps the "kind" argument (list_agents' filter, or
+// agent_info's kind override) to the corresponding resources.AgentKind.
 var listAgentsKindByArg = map[string]resources.AgentKind{
 	"service":     resources.ServiceAgent,
 	"job":         resources.JobAgent,
@@ -438,6 +439,42 @@ var listAgentsKindByArg = map[string]resources.AgentKind{
 	"toolbox":     resources.ToolboxAgent,
 	"provider":    resources.ProviderAgent,
 	"solution":    resources.SolutionAgent,
+}
+
+// agentKindEnumValues is the ordered set of valid "kind" argument values,
+// shared by list_agents' and agent_info's schemas so the two tools can't
+// silently drift into advertising different kind vocabularies.
+var agentKindEnumValues = []string{"service", "job", "application", "module", "toolbox", "provider", "solution"}
+
+// legacyServiceAgentKinds recognizes the pre-migration agent.kind spelling
+// used throughout every service.codefly.yaml in this codebase (agent: kind:
+// runtime::service/builder::service/code::service) — none of which
+// resources.AgentKindRegistrationFor recognizes as an alias of ServiceAgent
+// (it only knows "codefly:service:runtime" etc). Without this, a pinned
+// service's raw kind can never be canonicalized to resources.ServiceAgent,
+// so it never lines up with the canonical kind recorded for the same agent
+// found in the local cache, and list_agents shows two rows for one agent
+// instead of merging them (and the kind filter drops every pinned agent).
+var legacyServiceAgentKinds = map[string]bool{
+	"runtime::service": true,
+	"builder::service": true,
+	"code::service":    true,
+}
+
+// canonicalAgentKind normalizes a raw agent.kind value (from a workspace pin
+// or the cache's resources.AgentKindRegistry) to the canonical
+// resources.AgentKind string used as both the list_agents merge key and the
+// kind filter's comparison value. It falls back to the raw value when it
+// cannot be resolved, so an unrecognized kind still groups consistently with
+// itself instead of being dropped.
+func canonicalAgentKind(raw string) string {
+	if reg, err := resources.AgentKindRegistrationFor(resources.AgentKind(raw)); err == nil {
+		return string(reg.Resource)
+	}
+	if legacyServiceAgentKinds[raw] {
+		return string(resources.ServiceAgent)
+	}
+	return raw
 }
 
 // listAgents unions agents pinned by workspace services with agents installed
@@ -474,7 +511,7 @@ func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Cont
 				if svc.Agent == nil {
 					continue
 				}
-				entry := getEntry(svc.Agent.Publisher, svc.Agent.Name, string(svc.Agent.Kind))
+				entry := getEntry(svc.Agent.Publisher, svc.Agent.Name, canonicalAgentKind(string(svc.Agent.Kind)))
 				entry.PinnedBy = append(entry.PinnedBy, mod.Name+"/"+svc.Name)
 				entry.PinnedVersions = append(entry.PinnedVersions, svc.Agent.Version)
 			}
@@ -503,10 +540,10 @@ func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Cont
 				if !ok {
 					continue
 				}
-				if _, err := semver.Parse(version); err != nil {
+				if _, err := blangsemver.Parse(version); err != nil {
 					continue
 				}
-				entry := getEntry(pub.Name(), name, string(reg.Resource))
+				entry := getEntry(pub.Name(), name, canonicalAgentKind(string(reg.Resource)))
 				entry.InstalledVersions = append(entry.InstalledVersions, version)
 			}
 		}
@@ -542,17 +579,48 @@ func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Cont
 	return []Content{TextContent(string(data))}, nil
 }
 
-// sortVersionsDescending sorts versions newest-first by semver, falling back
-// to a string comparison for any value that isn't valid semver.
+// sortVersionsDescending sorts versions newest-first by semver. Versions come
+// from two different sources with different rigor: cache directory names are
+// pre-validated strict semver (MAJOR.MINOR.PATCH), but a workspace pin's
+// agent.version is a free-form YAML string (e.g. "1.10", missing its patch
+// component) — blang/semver rejects that outright. Comparing per-pair
+// ("if both parse, semver-compare; else string-compare") is not a
+// transitive order: whether a given pair falls back to string comparison
+// depends on that pair's own parseability, so e.g. ["2.0.0", "1.10",
+// "1.9.0"] can come out with 1.10 sorted below 1.9.0 even though 1.10 is
+// the newer version. Using Masterminds/semver (which accepts a missing
+// minor/patch) as a lenient fallback, and computing each element's sort key
+// once up front, makes every pairwise comparison consistent: version-like
+// strings always sort by their real numeric value, and only strings that
+// aren't version-shaped at all fall back to a lexical order among
+// themselves (ranked below every version-shaped string, not interleaved
+// with them).
 func sortVersionsDescending(versions []string) {
-	sort.Slice(versions, func(i, j int) bool {
-		vi, erri := semver.Parse(versions[i])
-		vj, errj := semver.Parse(versions[j])
-		if erri == nil && errj == nil {
-			return vi.GT(vj)
+	type key struct {
+		parsed *semver.Version
+		raw    string
+	}
+	keys := make([]key, len(versions))
+	for i, v := range versions {
+		parsed, err := semver.NewVersion(v)
+		if err != nil {
+			parsed = nil
 		}
-		return versions[i] > versions[j]
+		keys[i] = key{parsed: parsed, raw: v}
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.parsed != nil && b.parsed != nil {
+			return a.parsed.GreaterThan(b.parsed)
+		}
+		if (a.parsed != nil) != (b.parsed != nil) {
+			return a.parsed != nil
+		}
+		return a.raw > b.raw
 	})
+	for i, k := range keys {
+		versions[i] = k.raw
+	}
 }
 
 // listJobs returns jobs, optionally filtered by module

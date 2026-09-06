@@ -83,7 +83,7 @@ Or add to your project's `.mcp.json` or global MCP config:
 | `service_info` | Detailed service info: agent, endpoints, dependencies | `module`, `service` | -- |
 | `service_dependencies` | Get service dependencies with endpoints | `module`, `service` | -- |
 | `list_agents` | List agents known to this machine: agents pinned by workspace services plus agents installed in the local cache | -- | `kind` |
-| `agent_info` | Get an agent's real manifest: capabilities, protocols, languages, backends, toolchains, validation contract, configuration docs, techniques and README | `agent` | `include_prompts` |
+| `agent_info` | Get an agent's real manifest: capabilities, protocols, languages, backends, toolchains, validation contract, configuration docs, techniques and README | `agent` | `kind` (default `service`), `include_prompts` |
 | `list_jobs` | List jobs (optionally filtered by module) | -- | `module` |
 
 ### Per-Service Tools
