@@ -55,6 +55,7 @@ const flowIDArg = "flow_id"
 const (
 	moduleContainingServiceDesc = "Module containing the service"
 	fieldDependency             = "dependency"
+	fieldVersion                = "version"
 )
 
 // currentCLI resolves the codefly binary running this MCP server, so
@@ -174,8 +175,8 @@ func (s *Server) registerMutationTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				fieldName: {Type: schemaTypeString, Description: "Agent name (e.g. go-grpc)"},
-				"version": {Type: schemaTypeString, Description: "Version to install (optional, defaults to latest)"},
+				fieldName:    {Type: schemaTypeString, Description: "Agent name (e.g. go-grpc)"},
+				fieldVersion: {Type: schemaTypeString, Description: "Version to install (optional, defaults to latest)"},
 			},
 			Required: []string{fieldName},
 		},
@@ -553,8 +554,8 @@ func (s *Server) stopFlow(ctx context.Context, args map[string]string) ([]Conten
 }
 
 func (s *Server) installAgent(ctx context.Context, args map[string]string) ([]Content, error) {
-	agentName := args["name"]
-	version := args["version"]
+	agentName := args[fieldName]
+	version := args[fieldVersion]
 	if !isSafeAgentName(agentName) {
 		return []Content{TextContent(fmt.Sprintf("invalid agent name %q", agentName))}, nil
 	}
