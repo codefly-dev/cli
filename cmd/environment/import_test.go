@@ -233,3 +233,152 @@ func TestImportRestampsProvenanceComment(t *testing.T) {
 		t.Fatalf("provenance comment count = %d, want 1\n%s", n, content)
 	}
 }
+
+// TestImportPreservesSurroundingBytes is the regression test for the whole-file
+// reflow and for the splice-span ordering bug: importing one environment must
+// leave every byte outside that environment's item untouched (other
+// environments, top-level keys, blank lines, comments) and must not strand the
+// original egress-cidrs lines it replaced.
+func TestImportPreservesSurroundingBytes(t *testing.T) {
+	src := `name: acme
+layout: modules
+
+modules:
+    - name: backend
+
+environments:
+    - name: prod
+      description: production
+      cluster:
+          kind: eks
+          context: prod-ctx
+    - name: azure
+      description: staging
+      managed-services:
+          store:
+              kind: azure-postgres-flexible
+              external-name: old.example
+              egress-cidrs:
+                  - 10.0.0.0/28
+`
+	dir := writeWorkspace(t, src)
+	doImport(t, dir, importOptions{})
+	got := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+
+	// Everything up to the azure item — the blank lines, modules, and the whole
+	// prod environment — must be byte-identical.
+	prefix := src[:strings.Index(src, "    - name: azure")]
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("surrounding bytes were reflowed.\nwant prefix:\n%q\n\ngot:\n%q", prefix, got)
+	}
+	if strings.Contains(got, "10.0.0.0/28") {
+		t.Errorf("stale egress CIDR survived (stranded splice):\n%s", got)
+	}
+	if !strings.Contains(got, "10.20.11.0/28") {
+		t.Errorf("egress CIDR not updated:\n%s", got)
+	}
+	ws := loadWorkspace(t, dir)
+	if p := ws.FindEnvironment("prod"); p == nil || p.Cluster.Kind != "eks" {
+		t.Errorf("prod environment altered: %+v", p)
+	}
+}
+
+// TestImportUpdatesManagedServiceUnderOperatorKey covers the finding that
+// ToEnvironment's fixed "store" key must not be forced onto a file whose
+// operator declared the database under the service name it replaces — updating
+// in place instead of adding a stale duplicate that keeps the wrong egress CIDR.
+func TestImportUpdatesManagedServiceUnderOperatorKey(t *testing.T) {
+	src := `name: acme
+layout: modules
+environments:
+    - name: azure
+      managed-services:
+          platform:
+              kind: azure-postgres-flexible
+              external-name: old.example
+              egress-cidrs:
+                  - 10.0.0.0/28
+`
+	dir := writeWorkspace(t, src)
+	doImport(t, dir, importOptions{})
+	ws := loadWorkspace(t, dir)
+	env := ws.FindEnvironment("azure")
+	if _, dup := env.ManagedServices["store"]; dup {
+		t.Errorf("added a duplicate 'store' entry instead of updating 'platform': %v", env.ManagedServices)
+	}
+	if len(env.ManagedServices) != 1 {
+		t.Fatalf("expected exactly one managed service, got %d: %v", len(env.ManagedServices), env.ManagedServices)
+	}
+	p, ok := env.ManagedServices["platform"]
+	if !ok || !reflect.DeepEqual(p.EgressCIDRs, []string{"10.20.11.0/28"}) {
+		t.Errorf("platform entry not updated in place: %+v", env.ManagedServices)
+	}
+}
+
+func TestImportRejectsAmbiguousManagedServices(t *testing.T) {
+	src := `name: acme
+layout: modules
+environments:
+    - name: azure
+      managed-services:
+          db-a:
+              kind: azure-postgres-flexible
+              external-name: a.example
+              egress-cidrs:
+                  - 10.0.0.0/28
+          db-b:
+              kind: azure-postgres-flexible
+              external-name: b.example
+              egress-cidrs:
+                  - 10.0.1.0/28
+`
+	dir := writeWorkspace(t, src)
+	path := filepath.Join(dir, resources.WorkspaceConfigurationName)
+	before := readFile(t, path)
+	err := runImport(context.Background(), &importOptions{
+		dir: dir, envName: "azure", contractData: []byte(fixtureContract),
+		now: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC), stdout: &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "managed services") {
+		t.Fatalf("err = %v, want an ambiguity error mentioning managed services", err)
+	}
+	if readFile(t, path) != before {
+		t.Error("file was modified despite the ambiguity error")
+	}
+}
+
+// TestImportGitopsPathUsesNamespace pins the decision behind finding #4: the
+// gitops path follows core's ToEnvironment, which derives it from the namespace
+// (not the workspace name). They coincide by default; this asserts the
+// namespace wins when --namespace makes them differ.
+func TestImportGitopsPathUsesNamespace(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
+	doImport(t, dir, importOptions{namespace: "prod-azure", namespaceSet: true})
+	ws := loadWorkspace(t, dir)
+	env := ws.FindEnvironment("azure")
+	if env.Gitops.Path != "workloads/hosted/staging/prod-azure" {
+		t.Errorf("gitops path = %q, want namespace-based workloads/hosted/staging/prod-azure", env.Gitops.Path)
+	}
+	if env.Namespace != "prod-azure" {
+		t.Errorf("namespace = %q, want prod-azure", env.Namespace)
+	}
+}
+
+func TestImportAppendsToExistingEnvironments(t *testing.T) {
+	src := `name: acme
+layout: modules
+environments:
+    - name: local
+      description: dev
+`
+	dir := writeWorkspace(t, src)
+	doImport(t, dir, importOptions{})
+	got := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	if !strings.Contains(got, "    - name: local\n      description: dev\n") {
+		t.Errorf("existing local env not preserved byte-for-byte:\n%s", got)
+	}
+	ws := loadWorkspace(t, dir)
+	if ws.FindEnvironment("local") == nil || ws.FindEnvironment("azure") == nil {
+		t.Errorf("expected both local and azure environments; got %d", len(ws.Environments))
+	}
+}

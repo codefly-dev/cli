@@ -60,6 +60,35 @@ func SetMapValue(node *yaml.Node, key string, value *yaml.Node) {
 		value)
 }
 
+// MapKeys returns the keys of a mapping node in document order.
+func MapKeys(node *yaml.Node) []string {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	keys := make([]string, 0, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keys = append(keys, node.Content[i].Value)
+	}
+	return keys
+}
+
+// EndLine returns the last 1-based source line the node's subtree occupies —
+// the maximum Line over the node and all its descendants. It lets a caller
+// splice exactly the text a node spans back into the original document instead
+// of re-serializing the whole file. It does not account for a trailing
+// FootComment (which has no node of its own); callers that re-render a node
+// must clear its foot comments so the preserved original copy is not
+// duplicated.
+func EndLine(node *yaml.Node) int {
+	end := node.Line
+	for _, child := range node.Content {
+		if e := EndLine(child); e > end {
+			end = e
+		}
+	}
+	return end
+}
+
 // EnsureMap returns the mapping value node for key, creating an empty mapping
 // and setting it when the key is absent (or holds a non-mapping value).
 func EnsureMap(node *yaml.Node, key string) *yaml.Node {

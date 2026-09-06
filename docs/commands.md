@@ -501,8 +501,12 @@ readiness validation as `codefly doctor workspace --env <env>` runs and its
 result is printed.
 
 **Ownership.** An import replaces only the fields the contract owns and
-preserves everything else byte-for-byte, comments included, by editing the
-environment's YAML node rather than round-tripping the struct:
+preserves everything else byte-for-byte, comments included: it re-serializes
+only the single environment item being imported and splices it back into the
+original file, so other environments, top-level keys, blank lines, and comments
+outside that item are never reflowed. (A whole-file round-trip through the YAML
+library would strip blank lines and normalize indentation across the whole
+document, burying the one line that changed.)
 
 - *Contract-owned* (replaced on every import): `cluster`, `registry`,
   `namespace` (only when `--namespace` is given), `gitops.repo-url` and
@@ -525,9 +529,13 @@ environments:
 ```
 
 The consumer maps a single cluster, registry, database and secret store per
-cell (core's `ParseCellContract` rejects more); the managed database is mapped
-under the `store` key. Vector stores in the descriptor are ignored until core
-models them.
+cell (core's `ParseCellContract` rejects more). core maps the managed database
+under the `store` key by default, but an existing environment that already
+declares the database under a different service name (the name the deploy path
+matches) is updated in place under that name — the import never adds a second
+`store` entry beside it. An environment with two or more managed services and no
+exact `store` match is ambiguous and refused rather than silently leaving a
+stale one. Vector stores in the descriptor are ignored until core models them.
 
 #### `codefly environment show`
 
