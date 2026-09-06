@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"gopkg.in/yaml.v3"
 )
@@ -18,10 +19,46 @@ const (
 	endpointTemplate = "codefly://endpoints/{module}/{service}"
 )
 
+// Description and MimeType are identical for a template (resources/templates/list)
+// and every concrete instance of that template (resources/list), so both call
+// sites read from here instead of repeating the literals independently.
+const (
+	moduleDescription    = "module.codefly.yaml for one module"
+	moduleMimeType       = "application/x-yaml"
+	serviceDescription   = "service.codefly.yaml for one service"
+	serviceMimeType      = "application/x-yaml"
+	endpointsDescription = "Declared endpoints (name, api, visibility) for one service"
+	endpointsMimeType    = "application/json"
+)
+
 // errResourceNotFound is wrapped by handlers when a requested module or
 // service is missing, so the dispatcher can tell a not-found from a genuine
 // internal error without string-matching messages.
 var errResourceNotFound = errors.New("resource not found")
+
+// moduleReferenced reports whether name is declared among the workspace's
+// module references. A load failure for a declared module (e.g. a pinned
+// composition dependency that hasn't been pulled locally) is a real error,
+// not a "not found" — the module exists, it just isn't loadable right now.
+func moduleReferenced(refs []*resources.ModuleReference, name string) bool {
+	for _, ref := range refs {
+		if resources.ReferenceMatch(ref.Name, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// serviceReferenced reports whether name is declared among a module's
+// service references, for the same reason moduleReferenced exists.
+func serviceReferenced(refs []*resources.ServiceReference, name string) bool {
+	for _, ref := range refs {
+		if resources.ReferenceMatch(ref.Name, name) {
+			return true
+		}
+	}
+	return false
+}
 
 // registerResources sets up all available MCP resources
 func (s *Server) registerResources() {
@@ -33,9 +70,9 @@ func (s *Server) registerResources() {
 	}, s.workspaceResource)
 
 	s.resourceTemplates = []ResourceTemplate{
-		{URITemplate: moduleTemplate, Name: "Module Configuration", Description: "module.codefly.yaml for one module", MimeType: "application/x-yaml"},
-		{URITemplate: serviceTemplate, Name: "Service Configuration", Description: "service.codefly.yaml for one service", MimeType: "application/x-yaml"},
-		{URITemplate: endpointTemplate, Name: "Service Endpoints", Description: "Declared endpoints (name, api, visibility) for one service", MimeType: "application/json"},
+		{URITemplate: moduleTemplate, Name: "Module Configuration", Description: moduleDescription, MimeType: moduleMimeType},
+		{URITemplate: serviceTemplate, Name: "Service Configuration", Description: serviceDescription, MimeType: serviceMimeType},
+		{URITemplate: endpointTemplate, Name: "Service Endpoints", Description: endpointsDescription, MimeType: endpointsMimeType},
 	}
 }
 
@@ -71,7 +108,12 @@ func (s *Server) resolveResource(uri string) (ResourceHandler, bool) {
 }
 
 // listConcreteResources enumerates the static resources plus, when a
-// workspace is loaded, one resource per module and per service.
+// workspace is loaded, one resource per module and per service. Modules and
+// services are loaded one reference at a time (not via LoadModules/
+// LoadServices, which abort the entire list on the first failing reference)
+// so that one unloadable module (e.g. a pinned composition dependency that
+// hasn't been pulled locally) only drops that module, not every module in
+// the workspace.
 func (s *Server) listConcreteResources(ctx context.Context) []Resource {
 	w := wool.Get(ctx).In("mcp.listConcreteResources")
 
@@ -80,38 +122,38 @@ func (s *Server) listConcreteResources(ctx context.Context) []Resource {
 		return out
 	}
 
-	mods, err := s.workspace.LoadModules(ctx)
-	if err != nil {
-		w.Debug("failed to load modules", wool.ErrField(err))
-		return out
-	}
+	for _, ref := range s.workspace.Modules {
+		mod, err := s.workspace.LoadModuleFromReference(ctx, ref)
+		if err != nil {
+			w.Debug("failed to load module", wool.Field("module", ref.Name), wool.ErrField(err))
+			continue
+		}
 
-	for _, mod := range mods {
 		out = append(out, Resource{
 			URI:         fmt.Sprintf("codefly://module/%s", mod.Name),
 			Name:        fmt.Sprintf("Module %s", mod.Name),
-			Description: "module.codefly.yaml for one module",
-			MimeType:    "application/x-yaml",
+			Description: moduleDescription,
+			MimeType:    moduleMimeType,
 		})
 
-		svcs, err := mod.LoadServices(ctx)
-		if err != nil {
-			w.Debug("failed to load services", wool.Field("module", mod.Name), wool.ErrField(err))
-			continue
-		}
-		for _, svc := range svcs {
+		for _, svcRef := range mod.ServiceReferences {
+			svc, err := mod.LoadServiceFromReference(ctx, svcRef)
+			if err != nil {
+				w.Debug("failed to load service", wool.Field("module", mod.Name), wool.Field("service", svcRef.Name), wool.ErrField(err))
+				continue
+			}
 			out = append(out,
 				Resource{
 					URI:         fmt.Sprintf("codefly://service/%s/%s", mod.Name, svc.Name),
 					Name:        fmt.Sprintf("Service %s/%s", mod.Name, svc.Name),
-					Description: "service.codefly.yaml for one service",
-					MimeType:    "application/x-yaml",
+					Description: serviceDescription,
+					MimeType:    serviceMimeType,
 				},
 				Resource{
 					URI:         fmt.Sprintf("codefly://endpoints/%s/%s", mod.Name, svc.Name),
 					Name:        fmt.Sprintf("Endpoints %s/%s", mod.Name, svc.Name),
-					Description: "Declared endpoints (name, api, visibility) for one service",
-					MimeType:    "application/json",
+					Description: endpointsDescription,
+					MimeType:    endpointsMimeType,
 				},
 			)
 		}
@@ -153,10 +195,13 @@ func (s *Server) moduleResource(ctx context.Context, moduleName string) ([]Resou
 	if s.workspace == nil {
 		return nil, fmt.Errorf("%w: %s", errResourceNotFound, moduleName)
 	}
+	if !moduleReferenced(s.workspace.Modules, moduleName) {
+		return nil, fmt.Errorf("%w: %s", errResourceNotFound, moduleName)
+	}
 
 	mod, err := s.workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errResourceNotFound, moduleName)
+		return nil, fmt.Errorf("module %q is declared but failed to load: %w", moduleName, err)
 	}
 
 	data, err := yaml.Marshal(mod)
@@ -179,15 +224,21 @@ func (s *Server) serviceResource(ctx context.Context, moduleName, serviceName st
 	if s.workspace == nil {
 		return nil, fmt.Errorf("%w: %s/%s", errResourceNotFound, moduleName, serviceName)
 	}
+	if !moduleReferenced(s.workspace.Modules, moduleName) {
+		return nil, fmt.Errorf("%w: %s/%s", errResourceNotFound, moduleName, serviceName)
+	}
 
 	mod, err := s.workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errResourceNotFound, moduleName)
+		return nil, fmt.Errorf("module %q is declared but failed to load: %w", moduleName, err)
+	}
+	if !serviceReferenced(mod.ServiceReferences, serviceName) {
+		return nil, fmt.Errorf("%w: %s/%s", errResourceNotFound, moduleName, serviceName)
 	}
 
 	svc, err := mod.LoadServiceFromName(ctx, serviceName)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s/%s", errResourceNotFound, moduleName, serviceName)
+		return nil, fmt.Errorf("service %q in module %q is declared but failed to load: %w", serviceName, moduleName, err)
 	}
 
 	data, err := yaml.Marshal(svc)
@@ -208,15 +259,21 @@ func (s *Server) endpointsResource(ctx context.Context, moduleName, serviceName 
 	if s.workspace == nil {
 		return nil, fmt.Errorf("%w: %s/%s", errResourceNotFound, moduleName, serviceName)
 	}
+	if !moduleReferenced(s.workspace.Modules, moduleName) {
+		return nil, fmt.Errorf("%w: %s/%s", errResourceNotFound, moduleName, serviceName)
+	}
 
 	mod, err := s.workspace.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errResourceNotFound, moduleName)
+		return nil, fmt.Errorf("module %q is declared but failed to load: %w", moduleName, err)
+	}
+	if !serviceReferenced(mod.ServiceReferences, serviceName) {
+		return nil, fmt.Errorf("%w: %s/%s", errResourceNotFound, moduleName, serviceName)
 	}
 
 	svc, err := mod.LoadServiceFromName(ctx, serviceName)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s/%s", errResourceNotFound, moduleName, serviceName)
+		return nil, fmt.Errorf("service %q in module %q is declared but failed to load: %w", serviceName, moduleName, err)
 	}
 
 	endpoints := make([]map[string]any, 0)
