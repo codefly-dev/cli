@@ -49,11 +49,16 @@ export async function unary<Res>(
 // serverStream consumes a Connect server-streaming response. Each message is an
 // enveloped frame: a 5-byte header (1 flag byte + big-endian uint32 length)
 // followed by the JSON payload. The end-of-stream frame has the 0b10 flag set
-// and carries trailing metadata or an error.
+// and carries trailing metadata or an error. onConnect, if given, fires once
+// the response headers arrive (before any frame is read), so a caller can
+// distinguish "still connecting" from "connected but no messages yet" —
+// nothing in the frame stream itself signals that when the server has
+// nothing to send.
 export async function* serverStream<Res>(
   method: string,
   request: unknown,
   signal?: AbortSignal,
+  onConnect?: () => void,
 ): AsyncGenerator<Res> {
   const res = await fetch(`${SERVICE}/${method}`, {
     method: "POST",
@@ -67,6 +72,7 @@ export async function* serverStream<Res>(
   if (!res.ok || !res.body) {
     throw new ConnectError(`http_${res.status}`, res.statusText);
   }
+  onConnect?.();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
