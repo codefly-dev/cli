@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -85,6 +87,9 @@ func Publish(ctx context.Context, workspace *resources.Workspace, mutation *Publ
 	if prepared.plan.ID != mutation.PlanID {
 		return PublishResult{}, fmt.Errorf("publish plan changed while advertising its snapshot: prepared %s, current %s", mutation.PlanID, prepared.plan.ID)
 	}
+	if violation := firstContractViolation(prepared.plan.ContractChecks); violation != "" {
+		return PublishResult{}, fmt.Errorf("gitops publish blocked by contract admission: %s", violation)
+	}
 	return commitAndPublish(ctx, workspace, prepared, &mutation.Request)
 }
 
@@ -111,6 +116,9 @@ func Rollback(ctx context.Context, workspace *resources.Workspace, mutation *Rol
 	defer prepared.cleanup()
 	if prepared.plan.ID != mutation.PlanID {
 		return PublishResult{}, fmt.Errorf("rollback plan is stale: prepared %s, current %s", mutation.PlanID, prepared.plan.ID)
+	}
+	if violation := firstContractViolation(prepared.plan.ContractChecks); violation != "" {
+		return PublishResult{}, fmt.Errorf("gitops rollback blocked by contract admission: %s", violation)
 	}
 	request := mutation.Request.PublishRequest
 	if request.CommitMessage == "" {
@@ -223,6 +231,7 @@ func preparePublish(
 	if _, err := gitCommand(ctx, repo, "add", "-A", "--", targetPath); err != nil {
 		return fail(err)
 	}
+	contractChecks := checkContracts(inventory, resolveGitopsModuleInventory(ctx, repo, baseBranch, pathRoot), request.AllowUnresolvedContracts)
 	changed, err := stagedPathsSince(ctx, repo, startRevision, targetPath)
 	if err != nil {
 		return fail(err)
@@ -243,7 +252,7 @@ func preparePublish(
 		ExistingCommit: branchRevision,
 		Module:         request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
-		Changed: changed, Diff: diff,
+		Changed: changed, Diff: diff, ContractChecks: contractChecks,
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -252,6 +261,207 @@ func preparePublish(
 	return &preparedRepository{
 		dir: repo, cleanup: cleanup, plan: plan,
 	}, nil
+}
+
+// resolveGitopsModuleInventory resolves a consumed contract's exposing module
+// against its rendered inventory at
+// <gitopsPath>/deployments/modules/<module>/.codefly-render.json, read from
+// the base branch (refs/remotes/origin/baseBranch) rather than repo's checked-
+// out working tree. The working tree is the promotion branch, which is
+// long-lived and reused across every publish for the module owning it
+// (clonePromotionRepository checks it out as-is when it already exists); only
+// the one module path actively being republished ever gets refreshed from
+// history, so any *other* module's working-tree copy can be arbitrarily stale
+// relative to main. Reading the git blob directly from the base branch is the
+// only way to see the exposing module's true, currently-reviewed state.
+//
+// module is untrusted — it comes from contract provenance that ultimately
+// traces back to a library a service depends on — so it is validated as a
+// safe path component before being used to build the blob's tree path; unlike
+// a filesystem path, a git tree pathspec has no ".." escape to confine, but
+// the same validation keeps the error message meaningful and rejects
+// injection of ":" or "/" that could otherwise be mistaken for ref syntax.
+func resolveGitopsModuleInventory(ctx context.Context, repo, baseBranch, gitopsPath string) func(module string) (*Inventory, error) {
+	return func(module string) (*Inventory, error) {
+		if err := validatePathComponent("consumed contract module", module); err != nil {
+			return nil, err
+		}
+		relative := filepath.ToSlash(filepath.Join(gitopsPath, "deployments", "modules", module, InventoryFilename))
+		blob := "refs/remotes/origin/" + baseBranch + ":" + relative
+		if _, err := gitCommand(ctx, repo, "cat-file", "-e", blob); err != nil {
+			return nil, fmt.Errorf("module %s has no inventory on %s: %w", module, baseBranch, os.ErrNotExist)
+		}
+		data, err := gitCommandBytes(ctx, repo, "show", blob)
+		if err != nil {
+			return nil, err
+		}
+		inventory, err := decodeInventory(data, "render")
+		if err != nil {
+			return nil, err
+		}
+		return &inventory, nil
+	}
+}
+
+// checkContracts admits every consumed contract carried by the consumer
+// inventory's units against the exposing module's inventory, resolved through
+// resolve. It is pure and side-effect free: resolve is the only way it reaches
+// outside the consumer inventory, which is what lets tests exercise it against
+// hand-built inventories without a real GitOps checkout. allowUnresolved
+// downgrades a consumed contract to skipped only when the exposing module
+// genuinely has no inventory yet (resolve's error satisfies
+// errors.Is(err, os.ErrNotExist)) — every other resolve failure (an unsafe
+// module name, a corrupt or non-canonical host inventory, an unsupported
+// schema) stays a hard violation and carries resolve's real error text,
+// regardless of the flag.
+func checkContracts(consumer Inventory, resolve func(module string) (*Inventory, error), allowUnresolved bool) []ContractCheck { //nolint:gocritic // by-value consumer keeps this the pure, hand-buildable admission entry point tests exercise directly
+	var checks []ContractCheck
+	for _, unit := range consumer.Units {
+		for _, contract := range unit.Contracts { //nolint:gocritic // admission runs once per publish over a small unit/contract graph, not a hot path
+			if contract.Role != ContractRoleConsumes {
+				continue
+			}
+			checks = append(checks, checkContract(unit.Name, contract, resolve, allowUnresolved))
+		}
+	}
+	return checks
+}
+
+func checkContract(unitName string, contract InventoryContract, resolve func(string) (*Inventory, error), allowUnresolved bool) ContractCheck { //nolint:gocritic // called once per consumed contract in checkContracts' loop, not a hot path
+	check := ContractCheck{Unit: unitName, Module: contract.Module, Service: contract.Service, Endpoint: contract.Endpoint}
+	host, err := resolve(contract.Module)
+	if err == nil && host == nil {
+		err = fmt.Errorf("resolver returned no inventory for module %s", contract.Module)
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if allowUnresolved {
+				check.Status = ContractCheckSkipped
+				check.Message = fmt.Sprintf(
+					"consumes %s/%s/%s: module %s is not deployed yet in the target GitOps tree (allowed by --allow-unresolved-contracts)",
+					contract.Module, contract.Service, contract.Endpoint, contract.Module,
+				)
+				return check
+			}
+			check.Status = ContractCheckViolation
+			check.Message = fmt.Sprintf(
+				"consumes %s/%s/%s but module %s is not deployed in the target GitOps tree",
+				contract.Module, contract.Service, contract.Endpoint, contract.Module,
+			)
+			return check
+		}
+		check.Status = ContractCheckViolation
+		check.Message = fmt.Sprintf(
+			"consumes %s/%s/%s but module %s's inventory could not be resolved: %v",
+			contract.Module, contract.Service, contract.Endpoint, contract.Module, err,
+		)
+		return check
+	}
+	var exposed *InventoryContract
+	for _, hostUnit := range host.Units {
+		if hostUnit.Name != contract.Service {
+			continue
+		}
+		for i := range hostUnit.Contracts {
+			candidate := hostUnit.Contracts[i]
+			if candidate.Role == ContractRoleExposes && candidate.Endpoint == contract.Endpoint {
+				exposed = &candidate
+				break
+			}
+		}
+	}
+	if exposed == nil {
+		check.Status = ContractCheckViolation
+		check.Message = fmt.Sprintf("module %s no longer exposes %s/%s", contract.Module, contract.Service, contract.Endpoint)
+		return check
+	}
+	if exposed.Package != contract.Package {
+		check.Status = ContractCheckViolation
+		check.Message = fmt.Sprintf(
+			"module %s now exposes %s/%s as proto package %s, not the consumed package %s",
+			contract.Module, contract.Service, contract.Endpoint, exposed.Package, contract.Package,
+		)
+		return check
+	}
+	if host.Package == nil {
+		check.Status = ContractCheckViolation
+		check.Message = fmt.Sprintf(
+			"module %s has no package version recorded and does not satisfy consumed contract %s/%s",
+			contract.Module, contract.Service, contract.Endpoint,
+		)
+		return check
+	}
+	compatibleNewerHost := false
+	if contract.Constraint != "" {
+		constraint, err := semver.NewConstraint(contract.Constraint)
+		if err != nil {
+			check.Status = ContractCheckViolation
+			check.Message = fmt.Sprintf("consumed constraint %q is invalid: %v", contract.Constraint, err)
+			return check
+		}
+		hostVersion, err := semver.NewVersion(host.Package.Version)
+		if err != nil {
+			check.Status = ContractCheckViolation
+			check.Message = fmt.Sprintf("module %s package version %q is invalid", contract.Module, host.Package.Version)
+			return check
+		}
+		if !constraint.Check(hostVersion) {
+			check.Status = ContractCheckViolation
+			check.Message = fmt.Sprintf(
+				"module %s package %s does not satisfy consumed constraint %s",
+				contract.Module, host.Package.Version, contract.Constraint,
+			)
+			return check
+		}
+		pinnedVersion, err := semver.NewVersion(contract.Version)
+		if err != nil {
+			check.Status = ContractCheckViolation
+			check.Message = fmt.Sprintf("consumed pinned version %q is invalid", contract.Version)
+			return check
+		}
+		// Only a host that is semantically newer than the version the client was
+		// generated from is "drift" (a compatible upgrade the client hasn't caught
+		// up to yet). A host that is the same version or older with a different
+		// digest is inconsistent data, not a benign upgrade, and stays a violation.
+		compatibleNewerHost = hostVersion.GreaterThan(pinnedVersion)
+	} else if host.Package.Version != contract.Version {
+		check.Status = ContractCheckViolation
+		check.Message = fmt.Sprintf(
+			"module %s package %s does not satisfy pinned version %s",
+			contract.Module, host.Package.Version, contract.Version,
+		)
+		return check
+	}
+	if exposed.Digest != contract.Digest {
+		if compatibleNewerHost {
+			check.Status = ContractCheckDrift
+			check.Message = fmt.Sprintf(
+				"module %s package %s satisfies %s but the client was generated from an older contract",
+				contract.Module, host.Package.Version, contract.Constraint,
+			)
+			return check
+		}
+		check.Status = ContractCheckViolation
+		check.Message = fmt.Sprintf(
+			"module %s contract digest %s does not match consumed digest %s",
+			contract.Module, exposed.Digest, contract.Digest,
+		)
+		return check
+	}
+	check.Status = ContractCheckOK
+	return check
+}
+
+// firstContractViolation returns the message of the first unresolved contract
+// violation, or "" when every check passed, was skipped, or drifted onto a
+// compatible newer host.
+func firstContractViolation(checks []ContractCheck) string {
+	for _, check := range checks {
+		if check.Status == ContractCheckViolation {
+			return check.Message
+		}
+	}
+	return ""
 }
 
 func loadPublicationInventory(
@@ -465,6 +675,7 @@ func prepareServicePublication(
 		OwnedPath:            targetPath,
 		ModulePath:           renderedInventory.ModulePath,
 		Units:                renderedInventory.Units,
+		Package:              renderedInventory.Package,
 		Environment:          renderedInventory.Environment,
 		Namespace:            renderedInventory.Namespace,
 		AppProject:           renderedInventory.AppProject,
@@ -547,6 +758,7 @@ func prepareServiceSnapshot(
 		OwnedPath:   targetPath,
 		ModulePath:  renderedInventory.ModulePath,
 		Units:       renderedInventory.Units,
+		Package:     renderedInventory.Package,
 		Environment: renderedInventory.Environment,
 		Namespace:   renderedInventory.Namespace,
 		AppProject:  renderedInventory.AppProject,
@@ -1113,6 +1325,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 		RenderDigest: prepared.plan.RenderDigest, SnapshotRevision: prepared.plan.SnapshotRevision,
 		Commit: commit, Tree: tree, Signed: true,
 		PullRequest: prURL, PullRequestID: prID,
+		ContractChecks: prepared.plan.ContractChecks,
 	}
 	if err := writeReceipt(workspace.Dir(), "publications", request.Module+"-"+request.Environment+jsonExtension, result); err != nil {
 		return PublishResult{}, err

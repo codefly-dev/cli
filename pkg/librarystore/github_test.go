@@ -374,7 +374,7 @@ func TestGitHubStoreRejectsNonSemverAndUnsupportedLanguages(t *testing.T) {
 	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0+build.1"})
 	require.ErrorContains(t, err, "build metadata")
 
-	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguagePython, Name: "authkit", Version: "1.0.0"})
+	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
 	require.ErrorContains(t, err, "not implemented")
 }
 

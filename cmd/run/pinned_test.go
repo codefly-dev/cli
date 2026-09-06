@@ -2,10 +2,12 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Masterminds/semver"
@@ -121,11 +123,49 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// writeGitFallbackOverlay writes a codefly.local.yaml opting the named modules
+// out of verified resolution back to the unverified git clone. Verified
+// resolution needs a `module-trust` policy these lightweight fixtures don't
+// declare, so tests exercising the clone mechanics opt in explicitly; a real
+// workspace without module-trust errors instead (TestRunFallsBackToGitOnlyWhenOptedIn).
+func writeGitFallbackOverlay(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	var buf strings.Builder
+	buf.WriteString("resolve:\n")
+	for _, name := range names {
+		buf.WriteString("  " + name + ":\n    git: true\n")
+	}
+	if err := os.WriteFile(filepath.Join(dir, resources.LocalOverlayConfigurationName), []byte(buf.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// addGitFallbackEntry appends a `git: true`-only resolve entry for name to an
+// already-existing codefly.local.yaml in dir (written by resources.SaveLocalOverlay,
+// hence the 4-space indent that marshal produces), without disturbing its
+// other entries.
+func addGitFallbackEntry(t *testing.T, dir, name string) {
+	t.Helper()
+	path := filepath.Join(dir, resources.LocalOverlayConfigurationName)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		content = append(content, '\n')
+	}
+	content = append(content, []byte("    "+name+":\n        git: true\n")...)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMaterializePinnedModulesPullsAndWritesOverlay(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	source := initModuleRepo(t, "module", "v0.0.1")
 
 	workspaceDir := t.TempDir()
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
 	workspace := &resources.Workspace{
 		Name:    "wiki",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Module: "module", Version: "v0.0.1"}},
@@ -176,6 +216,7 @@ func TestMaterializePinnedModulesLatestResolvesHighestTag(t *testing.T) {
 	source := initModuleRepo(t, "", "v0.0.1", "v0.1.0", "v0.0.9")
 
 	workspaceDir := t.TempDir()
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
 	workspace := &resources.Workspace{
 		Name:    "wiki",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "latest"}},
@@ -380,6 +421,7 @@ func TestMaterializePinnedModulesBestEffortOnPullFailure(t *testing.T) {
 	dead := "file://" + filepath.Join(t.TempDir(), "gone")
 
 	workspaceDir := t.TempDir()
+	writeGitFallbackOverlay(t, workspaceDir, "good", "broken")
 	workspace := &resources.Workspace{
 		Name: "wiki",
 		Modules: []*resources.ModuleReference{
@@ -399,8 +441,11 @@ func TestMaterializePinnedModulesBestEffortOnPullFailure(t *testing.T) {
 	if overlay == nil || overlay.Resolve["good"] == nil || overlay.Resolve["good"].Path == "" {
 		t.Fatalf("pullable module was not materialized: %+v", overlay)
 	}
-	if overlay.Resolve["broken"] != nil {
-		t.Fatalf("broken module must have no overlay entry, got %+v", overlay.Resolve["broken"])
+	// "broken" keeps its pre-existing git-fallback marker entry (the CLI never
+	// deletes a directive it did not itself write) but must gain no path: a
+	// failed pull must not be recorded as resolved.
+	if broken := overlay.Resolve["broken"]; broken != nil && broken.Path != "" {
+		t.Fatalf("broken module must have no resolved path, got %+v", broken)
 	}
 }
 
@@ -425,6 +470,10 @@ func TestMaterializePinnedModulesHonorsAncestorOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	blog := initModuleRepo(t, "", "v0.0.1")
+	// "blog" has no location override, so it is CLI-managed; opt it into the
+	// git-clone fallback (verified resolution needs a module-trust policy this
+	// lightweight fixture doesn't declare).
+	addGitFallbackEntry(t, parent, "blog")
 
 	workspace := &resources.Workspace{
 		Name: "solution",
@@ -456,6 +505,122 @@ func TestMaterializePinnedModulesHonorsAncestorOverlay(t *testing.T) {
 	}
 	if overlay.Resolve["blog"] == nil || overlay.Resolve["blog"].Path == "" {
 		t.Fatalf("pinned module was not materialized into the ancestor overlay: %+v", overlay.Resolve["blog"])
+	}
+}
+
+// Without an explicit `resolve.<name>.git: true` opt-out, a workspace that
+// declares no module-trust must fail closed rather than silently trust
+// whatever the tag points to today. With the opt-out, the unverified clone
+// path is used and warned about.
+func TestRunFallsBackToGitOnlyWhenOptedIn(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1")
+
+	t.Run("no module-trust and no opt-out errors", func(t *testing.T) {
+		workspaceDir := t.TempDir()
+		workspace := &resources.Workspace{
+			Name:    "wiki",
+			Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
+		}
+		workspace.WithDir(workspaceDir)
+
+		if err := materializePinnedModules(context.Background(), workspace); err != nil {
+			t.Fatalf("a failed pinned resolution must not abort materialize: %v", err)
+		}
+		overlay, err := resources.LoadLocalOverlay(context.Background(), workspaceDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if overlay != nil && overlay.Resolve["saas"] != nil && overlay.Resolve["saas"].Path != "" {
+			t.Fatalf("module must not resolve without module-trust or an opt-out: %+v", overlay.Resolve["saas"])
+		}
+	})
+
+	t.Run("git opt-out uses the unverified clone", func(t *testing.T) {
+		workspaceDir := t.TempDir()
+		writeGitFallbackOverlay(t, workspaceDir, "saas")
+		workspace := &resources.Workspace{
+			Name:    "wiki",
+			Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
+		}
+		workspace.WithDir(workspaceDir)
+
+		if err := materializePinnedModules(context.Background(), workspace); err != nil {
+			t.Fatalf("materialize: %v", err)
+		}
+		overlay, err := resources.LoadLocalOverlay(context.Background(), workspaceDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if overlay == nil || overlay.Resolve["saas"] == nil || overlay.Resolve["saas"].Path == "" {
+			t.Fatalf("opted-out module must resolve via the git clone: %+v", overlay)
+		}
+		if _, err := os.Stat(filepath.Join(overlay.Resolve["saas"].Path, resources.ModuleConfigurationName)); err != nil {
+			t.Fatalf("cloned module dir missing %s: %v", resources.ModuleConfigurationName, err)
+		}
+	})
+}
+
+// Concurrent `codefly run` invocations against the same workspace (e.g. `run
+// service` and `run job` triggering materialization at the same time) must
+// not lose each other's overlay entries: each call loads the overlay,
+// computes its own full desired resolve map, and writes the whole thing
+// back, so without serialization the last writer's full-map write silently
+// clobbers whatever an earlier concurrent writer had just added.
+// A real interleaving of the underlying lost-update race is inherently
+// timing-dependent (see TestWithFileLockSerializesConcurrentCallers in
+// pkg/composition for a deterministic test of the primitive the fix relies
+// on); this is the integration-level smoke test that concurrent `codefly
+// run` invocations against the same workspace (e.g. `run service` and `run
+// job` triggering materialization at the same time) at least converge on a
+// complete, consistent overlay rather than crashing or racing the on-disk
+// file (run with -race in CI).
+func TestMaterializePinnedModulesConcurrentRunsConvergeOnAConsistentOverlay(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	const count = 8
+	modules := make([]*resources.ModuleReference, count)
+	for i := range count {
+		source := initModuleRepo(t, "", "v0.0.1")
+		modules[i] = &resources.ModuleReference{Name: fmt.Sprintf("mod%d", i), Source: source, Version: "v0.0.1"}
+	}
+	workspaceDir := t.TempDir()
+	var overlayDoc strings.Builder
+	overlayDoc.WriteString("resolve:\n")
+	for i := range count {
+		fmt.Fprintf(&overlayDoc, "  mod%d:\n    git: true\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceDir, resources.LocalOverlayConfigurationName), []byte(overlayDoc.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &resources.Workspace{Name: "wiki", Modules: modules}
+	workspace.WithDir(workspaceDir)
+
+	var wg sync.WaitGroup
+	errs := make([]error, count)
+	for i := range count {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = materializePinnedModules(context.Background(), workspace)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent materialize %d: %v", i, err)
+		}
+	}
+
+	overlay, err := resources.LoadLocalOverlay(context.Background(), workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range count {
+		name := fmt.Sprintf("mod%d", i)
+		directive := overlay.Resolve[name]
+		if directive == nil || directive.Path == "" {
+			t.Fatalf("entry for %s was lost to concurrent writes: %+v", name, overlay.Resolve)
+		}
 	}
 }
 

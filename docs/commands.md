@@ -301,6 +301,21 @@ session; observation uses the active authenticated `argocd` context. Rollback
 refuses a target revision unless a prior Healthy reviewed evidence receipt
 links that revision.
 
+**Contract admission.** `.codefly-render.json` records, per unit, the API
+contracts it exposes (from the module's `contracts/api/catalog.codefly.json`)
+and consumes (from its libraries' generated-client provenance), plus the
+module's own package identity when it has a `module.package.codefly.yaml`.
+At `plan` and `publish`, every consumed contract is checked against the
+exposing module's own `.codefly-render.json` in the same GitOps path: the
+module must be deployed there, still expose the endpoint, and its package
+version must satisfy the consumer's pinned version or declared semver
+constraint, with a matching contract digest (a compatible newer host with a
+different digest is reported as drift, not a violation). `plan` prints the
+resulting checks as a table; `publish` refuses when any check is a violation.
+Pass `--allow-unresolved-contracts` to downgrade a violation caused by the
+exposing module not being deployed yet to a skipped check, for bootstrap
+ordering — every other violation still blocks publication.
+
 #### Service secrets
 
 When the environment declares `service-secrets`, render projects each service's
@@ -420,6 +435,34 @@ committed config resolves on every worktree and in CI. `codefly doctor
 workspace` flags an unresolved reference with the `module_reference_unresolved`
 diagnostic.
 
+A `pinned` (committed `source` + `version`) reference resolves through the
+producer's verified module package rather than a git clone: `run` fetches the
+signed release from GitHub, verifies its signature and artifact digest against
+the workspace's `module-trust` policy, and extracts it into
+`.codefly/cache/modules/<digest>/` — a moved or unsigned tag is rejected, not
+silently trusted. Declare which repositories and signers are trusted in
+`workspace.codefly.yaml`:
+
+```yaml
+module-trust:
+  repositories:
+    codefly/saas-starter: https://github.com/codefly-dev/module-saas-starter
+  signers:
+    <signature identity written into provenance.json>: <base64 ed25519 public key>
+```
+
+A repository is looked up by its `source`; when `module-trust.repositories`
+maps more than one package ID to the same repository, add `package: <id>` to
+that module's entry in `workspace.codefly.yaml` to disambiguate.
+
+A workspace with no `module-trust` block cannot verify a pinned module at all,
+so `run` errors for every `source@version` reference instead of falling back
+to an unverified clone; `codefly doctor workspace` flags this ahead of time
+with the `module_trust_missing` diagnostic. The escape hatch is per module:
+`resolve.<name>.git: true` in `codefly.local.yaml` keeps that one module on
+the unverified git clone (`run` prints `unverified git clone for <name>` once
+per run when it does).
+
 **`add service` flags:**
 
 | Flag | Description |
@@ -501,6 +544,85 @@ codefly sync module saas --restore-code \
 The source must match the service-code hashes already owned by the target base
 manifest; a newer or locally modified source is rejected.
 
+### `codefly environment`
+
+Declare and inspect the deploy environments in `workspace.codefly.yaml`.
+
+```bash
+codefly environment import <env> --cell-contract <file|-> [--namespace <ns>] [--dry-run]
+codefly environment show <env> [--json]
+```
+
+#### `codefly environment import`
+
+Point an environment at a *cell* by consuming its `codefly/cell/v1` contract,
+so cell facts are sourced from the platform instead of hand-typed. Hand-typing
+an egress CIDR wrong silently drops all database traffic — the exact bug the
+contract prevents.
+
+The descriptor is produced on the platform side. For obin cells, infra-base's
+`obinctl` emits it:
+
+```bash
+obinctl cell-contract <coordinate> > cell.json
+codefly environment import azure --cell-contract cell.json
+
+# Or stream it straight in and preview the change:
+obinctl cell-contract hosted-eastus2 | codefly environment import azure --cell-contract - --dry-run
+```
+
+The namespace defaults to the environment's existing namespace, or the
+workspace name when the environment is new; override it with `--namespace`.
+`--dry-run` prints the unified diff and writes nothing. After a write, the same
+readiness validation as `codefly doctor workspace --env <env>` runs and its
+result is printed.
+
+**Ownership.** An import replaces only the fields the contract owns and
+preserves everything else byte-for-byte, comments included: it re-serializes
+only the single environment item being imported and splices it back into the
+original file, so other environments, top-level keys, blank lines, and comments
+outside that item are never reflowed. (A whole-file round-trip through the YAML
+library would strip blank lines and normalize indentation across the whole
+document, burying the one line that changed.)
+
+- *Contract-owned* (replaced on every import): `cluster`, `registry`,
+  `namespace` (only when `--namespace` is given), `gitops.repo-url` and
+  `gitops.path` (path = `<workloads_path_prefix>/<namespace>`), each managed
+  database's `managed-services.<name>` `kind` / `external-name` /
+  `egress-cidrs`, `service-secrets.secret-store`, and `dns`.
+- *Operator-owned* (never touched): `description`, `fixture`, `ingress`,
+  `resource-quota`, `secrets`, `configuration-profile`, `gitops.branch`, a
+  managed service's `secret-references`, `service-secrets.services` mappings,
+  and any other declared field.
+
+A provenance comment is stamped above the environment item and replaced (not
+stacked) on re-import:
+
+```yaml
+environments:
+    # imported from cell contract hosted-eastus2 (hosted-eastus2) on 2026-09-06T12:00:00Z; re-run: codefly environment import azure --cell-contract …
+    - name: azure
+      ...
+```
+
+The consumer maps a single cluster, registry, database and secret store per
+cell (core's `ParseCellContract` rejects more). core maps the managed database
+under the `store` key by default, but an existing environment that already
+declares the database under a different service name (the name the deploy path
+matches) is updated in place under that name — the import never adds a second
+`store` entry beside it. An environment with two or more managed services and no
+exact `store` match is ambiguous and refused rather than silently leaving a
+stale one. Vector stores in the descriptor are ignored until core models them.
+
+#### `codefly environment show`
+
+Print the resolved `resources.Environment` as YAML (default) or `--json`.
+
+```bash
+codefly environment show azure
+codefly environment show azure --json
+```
+
 ### `codefly list`
 
 List workspace resources.
@@ -508,7 +630,7 @@ List workspace resources.
 ```bash
 codefly list project      # List projects in workspace
 codefly list module       # List modules (alias: application)
-codefly list libraries    # Not implemented yet (hidden command; see cmd/list/libraries.go)
+codefly list libraries    # List workspace libraries (--remote for published versions, --json for machine output)
 codefly list jobs         # List jobs
 ```
 
@@ -533,9 +655,38 @@ Authenticate with the codefly platform.
 codefly login
 ```
 
-### `codefly install library [name]`
+### `codefly publish library <name>`
 
-Not implemented yet. The command exists as a hidden stub (`cmd/install/library.go`) and returns an error. Libraries are currently linked locally with `codefly add library-dependency` and `codefly sync library-dependencies`.
+Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: publishing the same version twice fails.
+
+```bash
+codefly publish library authkit --dry-run           # show what would be published, touch nothing
+codefly publish library authkit --version 1.2.0
+codefly publish library authkit --language go,python
+```
+
+Configure `workspace.codefly.yaml`:
+
+```yaml
+libraries:
+  publish:
+    go: {owner: codefly-dev}                                              # github.com/<owner>/<name>-go
+    typescript: {registry: https://npm.pkg.github.com, scope: "@codefly-dev"}
+    python: {owner: codefly-dev}                                          # github.com/<owner>/<name>-python
+```
+
+Publish credentials (`GITHUB_TOKEN`/`GH_TOKEN` or `gh auth token`; `NPM_TOKEN`/`NODE_AUTH_TOKEN` or, for `npm.pkg.github.com`, `gh auth token`) belong in release CI, never in a runtime.
+
+If a language export publishes and a later one in the same run fails, the command stops and reports which languages already published — those versions are immutable and are never rolled back.
+
+### `codefly install library <name>@<constraint>`
+
+Resolve the highest published version of a library export satisfying a semantic version constraint, via the store `codefly publish library` published it to, and print the durable install handle (import path, install command, ref, digest). With `--destination`, also runs the language's native install command there (`go get`, `npm install`, or `pip install`). It never vendors source — the registry decision is that consumers pin an immutable handle, not a local copy.
+
+```bash
+codefly install library authkit@^1.0.0 --language go
+codefly install library authkit@^1.0.0 --language go --destination ./services/api
+```
 
 ---
 

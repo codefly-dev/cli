@@ -46,6 +46,13 @@ jobs:
         if: matrix.gate == 'coverage' || matrix.gate == 'race'
         uses: astral-sh/setup-uv@v9.0.0
 
+      # pkg/librarystore's npm backend shells out to the real npm CLI (npm pack,
+      # npm publish) against an httptest registry rather than mocking the store;
+      # those tests need node/npm on the runner.
+      - name: Set up Node
+        if: matrix.gate == 'coverage' || matrix.gate == 'race'
+        uses: actions/setup-node@v7
+
       # Restore before the bootstrap action: that action compiles the CLI, so
       # restoring afterward would make its cache permanently ineffective.
       # Cache only compiled artifacts. Caching GOMODCACHE alongside a Go
