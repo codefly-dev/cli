@@ -14,14 +14,18 @@ import (
 
 // registerAgentTools adds tools that report an agent's real manifest.
 func (s *Server) registerAgentTools() {
-	s.RegisterTool(Tool{
+	// Schema literals below ("object"/"string"/"agent") already recur ~25
+	// times across this package's other tool registrations; deduplicating
+	// them here alone would be a package-wide refactor out of scope for
+	// this change.
+	err := s.RegisterTool(Tool{
 		Name:        "agent_info",
 		Description: "Get an agent's real manifest: capabilities, protocols, languages, supported backends, toolchains, validation contract, configuration docs, techniques and README (from GetAgentInformation).",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: "object", //nolint:goconst
 			Properties: map[string]PropertySchema{
-				"agent": {
-					Type:        "string",
+				"agent": { //nolint:goconst
+					Type:        "string", //nolint:goconst
 					Description: `Agent reference: "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16". "latest" resolves from the local cache first, then GitHub releases.`,
 				},
 				agentKindArg: {
@@ -37,6 +41,9 @@ func (s *Server) registerAgentTools() {
 			Required: []string{"agent"},
 		},
 	}, s.agentInfo)
+	if err != nil {
+		panic(fmt.Errorf("register agent_info tool: %w", err))
+	}
 }
 
 // agentInfo loads the named agent and returns its GetAgentInformation manifest as JSON.

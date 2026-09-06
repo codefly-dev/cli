@@ -217,6 +217,16 @@ func TestMCPServer_HandleRequest(t *testing.T) {
 }
 
 func TestMCPServer_CallTool(t *testing.T) {
+	// list_agents reads the real local agent cache under CODEFLY_HOME, so
+	// without isolating it this test's "go-grpc" assertion only passed by
+	// accident on a machine that happens to have that agent installed (it
+	// always failed on a clean CI runner). Point CODEFLY_HOME at an isolated
+	// cache seeded with exactly the agent this test checks for.
+	home := t.TempDir()
+	t.Setenv("CODEFLY_HOME", home)
+	writeLocalAgentCache(t, home, "codefly.dev", "go-grpc__0.0.16")
+	t.Chdir(t.TempDir())
+
 	ctx := context.Background()
 	server, err := NewServer(ctx, "test-version")
 	if err != nil {

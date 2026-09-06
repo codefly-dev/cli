@@ -48,15 +48,18 @@ func (s *Server) describe(ctx context.Context, args map[string]string) ([]Conten
 	if err != nil {
 		return nil, err
 	}
+	// "name"/"module"/"version" below already recur ~20 times across this
+	// package's other JSON-shaping code; deduplicating them here alone would
+	// be a package-wide refactor out of scope for this change.
 	info := map[string]any{
-		"name":   svc.Name,
-		"module": args["module"],
+		"name":   svc.Name,       //nolint:goconst
+		"module": args["module"], //nolint:goconst
 	}
 	if svc.Agent != nil {
 		info["agent"] = map[string]string{
 			"name":       svc.Agent.Name,
 			"publisher":  svc.Agent.Publisher,
-			"version":    svc.Agent.Version,
+			"version":    svc.Agent.Version, //nolint:goconst
 			agentKindArg: string(svc.Agent.Kind),
 		}
 		info["hint"] = "call agent_info with this agent for languages, protocols and capabilities"
