@@ -17,18 +17,24 @@ const (
 	moduleTemplate   = "codefly://module/{module}"
 	serviceTemplate  = "codefly://service/{module}/{service}"
 	endpointTemplate = "codefly://endpoints/{module}/{service}"
+
+	moduleSegment    = "module"
+	serviceSegment   = "service"
+	endpointsSegment = "endpoints"
 )
 
-// Description and MimeType are identical for a template (resources/templates/list)
-// and every concrete instance of that template (resources/list), so both call
+// Description is identical for a template (resources/templates/list) and
+// every concrete instance of that template (resources/list), so both call
 // sites read from here instead of repeating the literals independently.
+// yamlMimeType covers the workspace, module, and service resources, which
+// all serve back the matching *.codefly.yaml file verbatim.
 const (
+	yamlMimeType = "application/x-yaml"
+	jsonMimeType = "application/json"
+
 	moduleDescription    = "module.codefly.yaml for one module"
-	moduleMimeType       = "application/x-yaml"
 	serviceDescription   = "service.codefly.yaml for one service"
-	serviceMimeType      = "application/x-yaml"
 	endpointsDescription = "Declared endpoints (name, api, visibility) for one service"
-	endpointsMimeType    = "application/json"
 )
 
 // errResourceNotFound is wrapped by handlers when a requested module or
@@ -66,13 +72,13 @@ func (s *Server) registerResources() {
 		URI:         workspaceURI,
 		Name:        "Workspace Configuration",
 		Description: "The workspace.codefly.yaml configuration file",
-		MimeType:    "application/x-yaml",
+		MimeType:    yamlMimeType,
 	}, s.workspaceResource)
 
 	s.resourceTemplates = []ResourceTemplate{
-		{URITemplate: moduleTemplate, Name: "Module Configuration", Description: moduleDescription, MimeType: moduleMimeType},
-		{URITemplate: serviceTemplate, Name: "Service Configuration", Description: serviceDescription, MimeType: serviceMimeType},
-		{URITemplate: endpointTemplate, Name: "Service Endpoints", Description: endpointsDescription, MimeType: endpointsMimeType},
+		{URITemplate: moduleTemplate, Name: "Module Configuration", Description: moduleDescription, MimeType: yamlMimeType},
+		{URITemplate: serviceTemplate, Name: "Service Configuration", Description: serviceDescription, MimeType: yamlMimeType},
+		{URITemplate: endpointTemplate, Name: "Service Endpoints", Description: endpointsDescription, MimeType: jsonMimeType},
 	}
 }
 
@@ -94,13 +100,13 @@ func (s *Server) resolveResource(uri string) (ResourceHandler, bool) {
 		}
 	}
 	switch {
-	case parts[0] == "module" && len(parts) == 2:
+	case parts[0] == moduleSegment && len(parts) == 2:
 		name := parts[1]
 		return func(ctx context.Context) ([]ResourceContents, error) { return s.moduleResource(ctx, name) }, true
-	case parts[0] == "service" && len(parts) == 3:
+	case parts[0] == serviceSegment && len(parts) == 3:
 		mod, svc := parts[1], parts[2]
 		return func(ctx context.Context) ([]ResourceContents, error) { return s.serviceResource(ctx, mod, svc) }, true
-	case parts[0] == "endpoints" && len(parts) == 3:
+	case parts[0] == endpointsSegment && len(parts) == 3:
 		mod, svc := parts[1], parts[2]
 		return func(ctx context.Context) ([]ResourceContents, error) { return s.endpointsResource(ctx, mod, svc) }, true
 	}
@@ -133,7 +139,7 @@ func (s *Server) listConcreteResources(ctx context.Context) []Resource {
 			URI:         fmt.Sprintf("codefly://module/%s", mod.Name),
 			Name:        fmt.Sprintf("Module %s", mod.Name),
 			Description: moduleDescription,
-			MimeType:    moduleMimeType,
+			MimeType:    yamlMimeType,
 		})
 
 		for _, svcRef := range mod.ServiceReferences {
@@ -147,13 +153,13 @@ func (s *Server) listConcreteResources(ctx context.Context) []Resource {
 					URI:         fmt.Sprintf("codefly://service/%s/%s", mod.Name, svc.Name),
 					Name:        fmt.Sprintf("Service %s/%s", mod.Name, svc.Name),
 					Description: serviceDescription,
-					MimeType:    serviceMimeType,
+					MimeType:    yamlMimeType,
 				},
 				Resource{
 					URI:         fmt.Sprintf("codefly://endpoints/%s/%s", mod.Name, svc.Name),
 					Name:        fmt.Sprintf("Endpoints %s/%s", mod.Name, svc.Name),
 					Description: endpointsDescription,
-					MimeType:    endpointsMimeType,
+					MimeType:    jsonMimeType,
 				},
 			)
 		}

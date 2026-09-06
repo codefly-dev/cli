@@ -289,7 +289,7 @@ func (s *Server) handleListResources(ctx context.Context, req *JSONRPCRequest) *
 	return s.successResponse(req.ID, result)
 }
 
-func (s *Server) handleListResourceTemplates(ctx context.Context, req *JSONRPCRequest) *JSONRPCResponse {
+func (s *Server) handleListResourceTemplates(_ context.Context, req *JSONRPCRequest) *JSONRPCResponse {
 	result := ListResourceTemplatesResult{
 		ResourceTemplates: s.resourceTemplates,
 	}
