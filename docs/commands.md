@@ -301,6 +301,40 @@ session; observation uses the active authenticated `argocd` context. Rollback
 refuses a target revision unless a prior Healthy reviewed evidence receipt
 links that revision.
 
+#### Service secrets
+
+When the environment declares `service-secrets`, render projects each service's
+`secret-<service>` as an `ExternalSecret` that materializes exactly the keys the
+service's manifests reference — no secret value ever enters git. A key resolves
+to its remote location in one of three ways:
+
+```yaml
+service-secrets:
+  secret-store:
+    name: cell-secrets
+    kind: ClusterSecretStore
+  services:
+    accounts:
+      remote-keys:
+        # scalar: the remote key, for a store of bare scalars
+        SOME_KEY: some-remote-key
+        # key + property: address a field inside a structured remote document
+        # (an Azure Key Vault JSON secret, a Vault KV path)
+        CODEFLY__…__IDENTITY_CLIENT_SECRET:
+          key: lodestar-identity
+          property: client_secret
+      # defaults template: applies to every key not listed above; "{service}"
+      # and "{key}" are substituted
+      defaults:
+        key: lodestar-{service}
+        property: "{key}"
+```
+
+A key with no matching `remote-keys` entry and no `defaults` falls back to the
+`<service>/<key>` store path. The rendered `ExternalSecret` is the single
+source; the platform side seeds the store and does not hand-author
+ExternalSecrets.
+
 Locally there is no reachable Git host for Argo to fetch from, so the CLI owns a
 reproducible read-only fetch remote on the private k3d network:
 

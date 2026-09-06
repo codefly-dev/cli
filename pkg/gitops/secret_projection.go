@@ -70,7 +70,8 @@ type externalSecretData struct {
 }
 
 type externalSecretRemote struct {
-	Key string `yaml:"key"`
+	Key      string `yaml:"key"`
+	Property string `yaml:"property,omitempty"`
 }
 
 // managedSecretProjection renders the ExternalSecret that materializes a managed
@@ -99,7 +100,7 @@ func managedSecretProjection(service, namespace string, refs []resources.Environ
 		}
 		data = append(data, externalSecretData{
 			SecretKey: ref.Name,
-			RemoteRef: externalSecretRemote{Key: ref.RemoteKey},
+			RemoteRef: externalSecretRemote{Key: ref.RemoteKey, Property: ref.Property},
 		})
 	}
 	return externalSecretProjection(service, namespace, store, data)
@@ -127,16 +128,31 @@ func serviceSecretProjection(service, namespace string, secrets *resources.Envir
 	}
 	data := make([]externalSecretData, 0, len(keys))
 	for _, key := range keys {
-		remoteKey := mapping.RemoteKeys[key]
-		if remoteKey == "" {
-			remoteKey = service + "/" + key
-		}
 		data = append(data, externalSecretData{
 			SecretKey: key,
-			RemoteRef: externalSecretRemote{Key: remoteKey},
+			RemoteRef: resolveRemoteRef(service, key, mapping),
 		})
 	}
 	return externalSecretProjection(service, namespace, store, data)
+}
+
+// resolveRemoteRef locates one secret key in the remote store. An explicit
+// RemoteKeys entry wins; else a Defaults template (with "{service}"/"{key}"
+// substituted) applies; else the key falls back to the "<service>/<key>" store
+// path. Property rides along in the first two cases so a store of structured
+// documents can name the field inside the remote entry.
+func resolveRemoteRef(service, key string, mapping resources.EnvironmentServiceSecretMapping) externalSecretRemote {
+	if remote, ok := mapping.RemoteKeys[key]; ok {
+		return externalSecretRemote{Key: remote.Key, Property: remote.Property}
+	}
+	if mapping.Defaults != nil {
+		substitute := strings.NewReplacer("{service}", service, "{key}", key)
+		return externalSecretRemote{
+			Key:      substitute.Replace(mapping.Defaults.Key),
+			Property: substitute.Replace(mapping.Defaults.Property),
+		}
+	}
+	return externalSecretRemote{Key: service + "/" + key}
 }
 
 // externalSecretProjection assembles the ExternalSecret shared by the managed- and

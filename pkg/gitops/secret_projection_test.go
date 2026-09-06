@@ -191,7 +191,7 @@ func azureServiceSecrets() *resources.EnvironmentServiceSecrets {
 	return &resources.EnvironmentServiceSecrets{
 		SecretStore: resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"},
 		Services: map[string]resources.EnvironmentServiceSecretMapping{
-			"accounts": {RemoteKeys: map[string]string{"workos-client-secret": "workos/prod/client-secret"}},
+			"accounts": {RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{"workos-client-secret": {Key: "workos/prod/client-secret"}}},
 		},
 	}
 }
@@ -266,6 +266,166 @@ func TestServiceSecretProjectionRejectsInvalidStore(t *testing.T) {
 	valid := azureServiceSecrets()
 	if _, err := serviceSecretProjection("accounts", "", valid, []string{"api-key"}); err == nil {
 		t.Fatal("expected error for missing namespace")
+	}
+}
+
+func cellServiceSecrets(mapping resources.EnvironmentServiceSecretMapping) *resources.EnvironmentServiceSecrets {
+	return &resources.EnvironmentServiceSecrets{
+		SecretStore: resources.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"},
+		Services:    map[string]resources.EnvironmentServiceSecretMapping{"accounts": mapping},
+	}
+}
+
+// A mapping that names a property renders remoteRef.key AND remoteRef.property,
+// which is how a store of structured documents (a Key Vault JSON secret) is
+// addressed — the shape infra-base maintains by hand today.
+func TestServiceSecretProjectionUsesProperty(t *testing.T) {
+	const key = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_SECRET"
+	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{
+		RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{
+			key: {Key: "lodestar-identity", Property: "client_secret"},
+		},
+	})
+	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := projection.Spec.Data[0]; got.SecretKey != key || got.RemoteRef.Key != "lodestar-identity" || got.RemoteRef.Property != "client_secret" {
+		t.Fatalf("entry = %+v", got)
+	}
+	encoded, err := yaml.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "key: lodestar-identity") || !strings.Contains(string(encoded), "property: client_secret") {
+		t.Fatalf("rendered YAML missing key/property:\n%s", encoded)
+	}
+}
+
+// A remote key with no property (the scalar declaration form) renders only key,
+// leaving property absent so a store of bare scalars is addressed unchanged.
+func TestServiceSecretProjectionScalarFormStillWorks(t *testing.T) {
+	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{
+		RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{"K": {Key: "some-key"}},
+	})
+	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{"K"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := projection.Spec.Data[0]; got.RemoteRef.Key != "some-key" || got.RemoteRef.Property != "" {
+		t.Fatalf("entry = %+v", got)
+	}
+	encoded, err := yaml.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "property:") {
+		t.Fatalf("scalar form must emit no property:\n%s", encoded)
+	}
+}
+
+// A defaults template applies to every key not listed in RemoteKeys, with
+// "{service}" and "{key}" substituted in both key and property.
+func TestServiceSecretProjectionDefaultsTemplate(t *testing.T) {
+	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{
+		Defaults: &resources.EnvironmentSecretRemoteRef{Key: "lodestar-{service}", Property: "{key}"},
+	})
+	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{"K"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := projection.Spec.Data[0]; got.RemoteRef.Key != "lodestar-accounts" || got.RemoteRef.Property != "K" {
+		t.Fatalf("defaulted entry = %+v", got)
+	}
+}
+
+// A rendered ExternalSecret whose remoteRef.property names a credential-shaped
+// field (client_secret, gateway_token) must pass promotable validation: property
+// is a store address, not a secret value, so the credential-key heuristic that
+// guards manifest values must not trip on it.
+func TestRenderAcceptsExternalSecretWithProperty(t *testing.T) {
+	const (
+		clientSecret = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_SECRET"
+		gatewayToken = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_GATEWAY_TOKEN"
+	)
+	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{
+		RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{
+			clientSecret: {Key: "lodestar-identity", Property: "client_secret"},
+			gatewayToken: {Key: "lodestar-internal-auth", Property: "gateway_token"},
+		},
+	})
+	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{clientSecret, gatewayToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := yaml.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifests, _, err := decodeYAML("external-secret.yaml", encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateManifest(manifests[0], nil, true); err != nil {
+		t.Fatalf("ExternalSecret with credential-shaped property rejected: %v", err)
+	}
+}
+
+// goldenExternalSecretData is the decoded spec.data of a testdata ExternalSecret.
+type goldenExternalSecretData struct {
+	Data []externalSecretData `yaml:"data"`
+}
+
+func loadGoldenExternalSecretData(t *testing.T, path string) []externalSecretData {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden goldenExternalSecretData
+	if err := yaml.Unmarshal(raw, &golden); err != nil {
+		t.Fatal(err)
+	}
+	if len(golden.Data) == 0 {
+		t.Fatalf("golden %s has no data entries", path)
+	}
+	return golden.Data
+}
+
+func remoteRefsBySecretKey(data []externalSecretData) map[string]externalSecretRemote {
+	byKey := make(map[string]externalSecretRemote, len(data))
+	for _, entry := range data {
+		byKey[entry.SecretKey] = entry.RemoteRef
+	}
+	return byKey
+}
+
+// codefly reproduces infra-base's hand-authored secret-accounts ExternalSecret
+// data block from a lodestar-side service-secrets declaration: the same secretKey
+// → {key, property} set, compared order-insensitively.
+func TestServiceSecretProjectionReproducesInfraBaseAccounts(t *testing.T) {
+	golden := loadGoldenExternalSecretData(t, filepath.Join("testdata", "lodestar-accounts-externalsecret.yaml"))
+	remoteKeys := make(map[string]resources.EnvironmentSecretRemoteRef, len(golden))
+	keys := make([]string, 0, len(golden))
+	for _, entry := range golden {
+		remoteKeys[entry.SecretKey] = resources.EnvironmentSecretRemoteRef{Key: entry.RemoteRef.Key, Property: entry.RemoteRef.Property}
+		keys = append(keys, entry.SecretKey)
+	}
+	projection, err := serviceSecretProjection("accounts", "lodestar", cellServiceSecrets(
+		resources.EnvironmentServiceSecretMapping{RemoteKeys: remoteKeys},
+	), keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := remoteRefsBySecretKey(projection.Spec.Data)
+	want := remoteRefsBySecretKey(golden)
+	if len(got) != len(want) {
+		t.Fatalf("projected %d keys, golden has %d", len(got), len(want))
+	}
+	for key, wantRef := range want {
+		if got[key] != wantRef {
+			t.Fatalf("secretKey %q: projected %+v, golden %+v", key, got[key], wantRef)
+		}
 	}
 }
 

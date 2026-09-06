@@ -84,11 +84,15 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 					mapping.SecretStore = &secretStore
 				}
 				if len(mapping.RemoteKeys) > 0 {
-					remoteKeys := make(map[string]string, len(mapping.RemoteKeys))
+					remoteKeys := make(map[string]resources.EnvironmentSecretRemoteRef, len(mapping.RemoteKeys))
 					for key, remote := range mapping.RemoteKeys {
 						remoteKeys[key] = remote
 					}
 					mapping.RemoteKeys = remoteKeys
+				}
+				if mapping.Defaults != nil {
+					defaults := *mapping.Defaults
+					mapping.Defaults = &defaults
 				}
 				serviceSecrets.Services[name] = mapping
 			}
