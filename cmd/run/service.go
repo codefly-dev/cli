@@ -36,6 +36,10 @@ var ServiceCmd = &cobra.Command{
 }
 
 func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
+	if err := validateOpenDashboardFlag(openDashboard, withCLIServer); err != nil {
+		return err
+	}
+
 	ctx, done := common.NewContext()
 	defer done()
 
@@ -183,6 +187,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 				cancelRun()
 			}
 		}()
+		common.AnnounceDashboardWhenReady(ctx, server.DashboardURL(), openDashboard)
 	}
 
 	// stopFresh tears down whatever the flow started, using a FRESH context
@@ -547,6 +552,13 @@ func shouldWaitForRun(loadOnly, initOnly bool) bool {
 	return !loadOnly && !initOnly
 }
 
+func validateOpenDashboardFlag(open, cliServer bool) error {
+	if open && !cliServer {
+		return errors.New("--open requires --cli-server")
+	}
+	return nil
+}
+
 // orFirst returns a when it is non-nil, otherwise b. Used to keep the first
 // (more meaningful) error when draining a secondary error source.
 func orFirst(a, b error) error {
@@ -803,6 +815,7 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 
 func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
+	ServiceCmd.Flags().BoolVar(&openDashboard, "open", false, "Open the dashboard in the default browser (requires --cli-server)")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free picks the first advertised backend)")
 	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", namingScopeUsage)
 	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, temporaryPortsUsage)

@@ -118,7 +118,7 @@ codefly run service api --exclude-root            # Only run dependencies, not t
 codefly run service api --profile local           # Use a named workspace run profile
 codefly run service api --exclude-dependency infra/temporal  # Omit optional dependency
 codefly run service api --silent backend/db       # Suppress log output for a dependency
-codefly run service api --with-server             # Run with web companion UI
+codefly run service api --cli-server --open       # Run headless with the local dashboard and open it
 ```
 
 **Key flags:**
@@ -138,7 +138,8 @@ codefly run service api --with-server             # Run with web companion UI
 | `--output-env-service` | Export a specific running service (`module/service`) instead of the root |
 | `--load-only` | Stop after Load phase |
 | `--init-only` | Stop after Init phase |
-| `--with-server` | Start the web companion server |
+| `--cli-server` | Start the CLI gRPC/Connect server and the embedded dashboard (implies headless output) |
+| `--open` | Open the dashboard in the browser (requires `--cli-server`) |
 
 Run profiles define intentional local runtime shapes in
 `workspace.codefly.yaml`:
@@ -644,10 +645,19 @@ Use `--json` on any lifecycle command for the typed result.
 
 ### `codefly server`
 
-Start the codefly web companion server (for workspace visualization).
+Serve the local dashboard for the current workspace. Has two modes:
+
+- **Attach**: if `codefly run service <name> --cli-server` is already serving
+  this workspace's dashboard, `codefly server` prints its URL and exits
+  instead of starting a second server (which would fail with "address
+  already in use").
+- **Inventory-only**: otherwise, it starts a dashboard showing declared
+  workspace inventory; the Services, Logs and Config tabs have no live
+  runtime state until a `--cli-server` run is attached.
 
 ```bash
-codefly server
+codefly server              # Attach to a running dashboard, or serve inventory only
+codefly server --open       # Same, and open the dashboard in the browser
 ```
 
 ### `codefly expose service [name]`
