@@ -208,6 +208,7 @@ func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {
 	seedHostModuleInventory(t, remote, "environments", "saas", hostInventory("0.1.0", testContractDigestA))
 
 	workspace := loadGitopsWorkspace(t, remote)
+	configureSSHSigning(t)
 	graph := promotableServiceGraph("payments", []string{"api"})
 	graph[0].Contracts = []InventoryContract{{
 		Role: ContractRoleConsumes, Module: "saas", Service: "accounts", Endpoint: "connect",
@@ -226,12 +227,84 @@ func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := PlanPublish(ctx, workspace, &PublishRequest{Module: "payments", Environment: "production", Local: true})
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true}
+	plan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.ContractChecks) != 1 || plan.ContractChecks[0].Status != ContractCheckOK {
 		t.Fatalf("contract checks = %+v", plan.ContractChecks)
+	}
+
+	// The admission outcome must survive into the durable publication record,
+	// not just the ephemeral plan: an operator inspecting a past publish (e.g.
+	// after a --allow-unresolved-contracts run) needs to see what was checked.
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ContractChecks) != 1 || result.ContractChecks[0].Status != ContractCheckOK {
+		t.Fatalf("publish result contract checks = %+v", result.ContractChecks)
+	}
+	receipt, err := LoadPublishResult(workspace.Dir(), "payments", "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.ContractChecks) != 1 || receipt.ContractChecks[0].Status != ContractCheckOK {
+		t.Fatalf("persisted receipt contract checks = %+v", receipt.ContractChecks)
+	}
+}
+
+// TestResolveGitopsModuleInventoryRejectsPathTraversal is the defense-in-depth
+// regression test for the path-traversal bug: even if an unsafe module name
+// somehow reached the resolver directly (bypassing the render-time
+// validateInventoryContracts guard), it must still be rejected rather than
+// being used to build a git tree pathspec or ref string.
+func TestResolveGitopsModuleInventoryRejectsPathTraversal(t *testing.T) {
+	remote := createBareRepository(t)
+	seedHostModuleInventory(t, remote, "environments", "saas", hostInventory("0.1.0", testContractDigestA))
+	repo := t.TempDir()
+	gitRun(t, "", "clone", "--quiet", remote, repo)
+
+	resolve := resolveGitopsModuleInventory(context.Background(), repo, "main", "environments")
+	for _, module := range []string{"../../../../etc", "a/b", "..", "main:../secret"} {
+		if _, err := resolve(module); err == nil {
+			t.Fatalf("module %q was accepted", module)
+		}
+	}
+
+	// A normal, safe module name still resolves correctly, straight from the
+	// base branch rather than whatever happens to be checked out.
+	inventory, err := resolve("saas")
+	if err != nil || inventory.Module != "saas" {
+		t.Fatalf("resolve(\"saas\") = %+v, %v", inventory, err)
+	}
+}
+
+// TestResolveGitopsModuleInventoryReadsBaseBranchNotWorkingTree is the
+// regression test for admission reading a stale promotion-branch working-tree
+// copy of a sibling module instead of the module's true state on the base
+// branch: it checks out a branch whose working tree still has the module's
+// OLD inventory, while the base branch (main) has moved on, and asserts the
+// resolver reports the base branch's current content.
+func TestResolveGitopsModuleInventoryReadsBaseBranchNotWorkingTree(t *testing.T) {
+	remote := createBareRepository(t)
+	seedHostModuleInventory(t, remote, "environments", "saas", hostInventory("0.1.0", testContractDigestA))
+	repo := t.TempDir()
+	gitRun(t, "", "clone", "--quiet", remote, repo)
+	gitRun(t, repo, "checkout", "-b", "stale-promotion-branch")
+
+	// main moves on (a new saas version) after the promotion branch forked.
+	seedHostModuleInventory(t, remote, "environments", "saas", hostInventory("0.2.0", testContractDigestB))
+	gitRun(t, repo, "fetch", "--quiet", "origin")
+
+	resolve := resolveGitopsModuleInventory(context.Background(), repo, "main", "environments")
+	inventory, err := resolve("saas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Package == nil || inventory.Package.Version != "0.2.0" {
+		t.Fatalf("resolve(\"saas\").Package = %+v, want version 0.2.0 from the base branch, not the stale checked-out branch", inventory.Package)
 	}
 }
 
@@ -1041,6 +1114,93 @@ func TestRollbackRePromotesPriorReviewedTree(t *testing.T) {
 	}
 }
 
+// TestRollbackRefusesUnresolvedConsumedContractUnlessAllowed is the regression
+// test for Rollback silently skipping the same contract admission Publish
+// enforces: it reviews and publishes payments while it still consumes a
+// deployed saas/accounts/connect, then simulates saas being torn down before
+// the rollback runs, proving Rollback (not just Publish) refuses to
+// re-promote against a now-violated consumed contract, and that
+// --allow-unresolved-contracts still lets a legitimate bootstrap-ordering
+// rollback through.
+func TestRollbackRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	seedHostModuleInventory(t, remote, "environments", "saas", hostInventory("0.1.0", testContractDigestA))
+	workspace := loadGitopsWorkspace(t, remote)
+	configureSSHSigning(t)
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	graph := promotableServiceGraph("payments", []string{"api"})
+	graph[0].Contracts = []InventoryContract{{
+		Role: ContractRoleConsumes, Module: "saas", Service: "accounts", Endpoint: "connect",
+		Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0",
+	}}
+	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	_, err := RenderOwnedTree(ctx, &RenderOptions{
+		Destination: destination, Module: "payments", UnitNames: []string{"api"},
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		Units:       graph,
+		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
+	}, func(_ context.Context, stage string) error {
+		return writePublishServiceFixture(stage, "production", "api")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergePromotionToMain(t, remote, request.PromotionBranch)
+	if err := writeReceipt(workspace.Dir(), "evidence", "first.json", Evidence{
+		SchemaVersion: EvidenceSchemaVersion, Module: "payments", Environment: "production",
+		RenderDigest: published.RenderDigest, SignedCommit: published.Commit, Tree: published.Tree,
+		ArgoRevision: published.Commit, Cluster: "local-k3d", Health: "Healthy",
+		Review: ReviewEvidence{
+			URL: published.PullRequest, State: "LOCAL_REVIEW_REF",
+			ReviewDecision: "LOCAL_QUALIFIED", MergeCommit: published.Commit,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// saas is torn down after payments was reviewed and published against it.
+	removeGitopsPath(t, remote, "environments/deployments/modules/saas")
+
+	rollbackRequest := RollbackRequest{PublishRequest: request, ToRevision: published.Commit}
+	rollbackPlan, err := PlanRollback(ctx, workspace, &rollbackRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollbackPlan.ContractChecks) != 1 || rollbackPlan.ContractChecks[0].Status != ContractCheckViolation {
+		t.Fatalf("rollback plan contract checks = %+v", rollbackPlan.ContractChecks)
+	}
+	if _, err := Rollback(ctx, workspace, &RollbackMutation{Request: rollbackRequest, PlanID: rollbackPlan.ID}, preparedPermit); err == nil ||
+		!strings.Contains(err.Error(), "is not deployed") {
+		t.Fatalf("rollback with unresolved contract error = %v", err)
+	}
+
+	rollbackRequest.AllowUnresolvedContracts = true
+	rollbackPlan, err = PlanRollback(ctx, workspace, &rollbackRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rollbackPlan.ContractChecks) != 1 || rollbackPlan.ContractChecks[0].Status != ContractCheckSkipped {
+		t.Fatalf("allowed rollback plan contract checks = %+v", rollbackPlan.ContractChecks)
+	}
+	if _, err := Rollback(ctx, workspace, &RollbackMutation{Request: rollbackRequest, PlanID: rollbackPlan.ID}, preparedPermit); err != nil {
+		t.Fatalf("rollback with --allow-unresolved-contracts: %v", err)
+	}
+}
+
 func TestRollbackRequiresEvidenceForSelectedModuleAndEnvironment(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
@@ -1178,6 +1338,21 @@ func seedHostModuleInventory(t *testing.T, remote, gitopsPath, module string, in
 	}
 	gitRun(t, work, "add", "-A")
 	gitRun(t, work, "commit", "-m", "seed host module inventory")
+	gitRun(t, work, "push", "origin", "main")
+}
+
+// removeGitopsPath commits the removal of a path directly onto main of the
+// bare GitOps repository, simulating an exposing module being torn down after
+// a consumer already published against it.
+func removeGitopsPath(t *testing.T, remote, relative string) {
+	t.Helper()
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	gitRun(t, work, "rm", "-r", relative)
+	gitRun(t, work, "commit", "-m", "remove host module")
 	gitRun(t, work, "push", "origin", "main")
 }
 

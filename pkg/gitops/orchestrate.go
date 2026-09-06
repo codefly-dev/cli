@@ -278,6 +278,10 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 	}
 	serviceDir, _ := unitDirectory(UnitKindService)
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, serviceDir, module.Name, service.Name)
+	pkg, err := modulePackage(module.Dir())
+	if err != nil {
+		return RenderResult{}, err
+	}
 	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination,
 		Module:      module.Name,
@@ -286,6 +290,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		Namespace:   env.Namespace,
 		AppProject:  project,
 		Promotable:  true,
+		Package:     pkg,
 	}, func(ctx context.Context, stage string) error {
 		if err := prepareSnapshotRegistry(ctx, env); err != nil {
 			return err

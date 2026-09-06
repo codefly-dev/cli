@@ -1,8 +1,11 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -413,6 +416,21 @@ func printSizingReport(report gitops.SizingReport) {
 	}
 }
 
+// formatContractChecks renders the plan's contract admission checks as an
+// aligned table (STATUS, UNIT, the module/service/endpoint being consumed,
+// and MESSAGE), matching the "prints them as a table" behavior documented in
+// docs/commands.md rather than a flat bulleted list.
+func formatContractChecks(checks []gitops.ContractCheck) string {
+	var buf bytes.Buffer
+	writer := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "STATUS\tUNIT\tCONTRACT\tMESSAGE")
+	for _, check := range checks {
+		fmt.Fprintf(writer, "%s\t%s\t%s/%s/%s\t%s\n", check.Status, check.Unit, check.Module, check.Service, check.Endpoint, check.Message)
+	}
+	_ = writer.Flush()
+	return strings.TrimRight(buf.String(), "\n")
+}
+
 func printPublishPlan(plan *gitops.PublishPlan) {
 	cli.Info("Plan %s", plan.ID)
 	cli.Info("Repository %s", plan.Repository)
@@ -426,13 +444,7 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	}
 	if len(plan.ContractChecks) > 0 {
 		cli.Info("Contract checks:")
-		for _, check := range plan.ContractChecks {
-			line := fmt.Sprintf("  [%s] %s consumes %s/%s/%s", check.Status, check.Unit, check.Module, check.Service, check.Endpoint)
-			if check.Message != "" {
-				line += ": " + check.Message
-			}
-			cli.Info("%s", line)
-		}
+		cli.Info("%s", formatContractChecks(plan.ContractChecks))
 	}
 	if plan.Diff != "" {
 		cli.Info("%s", plan.Diff)
@@ -467,7 +479,7 @@ func init() {
 		command.Flags().StringVar(&gitOpsBranch, "promotion-branch", "", "Promotion branch (deterministic default when empty)")
 		command.Flags().BoolVar(&gitOpsLocal, "local", false, "Use a disposable local file Git remote for k3d qualification")
 	}
-	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd} {
+	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().BoolVar(&gitOpsAllowUnresolvedContracts, "allow-unresolved-contracts", false,
 			"Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering")
 	}

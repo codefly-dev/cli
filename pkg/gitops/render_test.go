@@ -315,6 +315,31 @@ func TestRenderRecordsExposedContractsAndPackageFromModuleCatalog(t *testing.T) 
 	}
 }
 
+// TestValidateInventoryContractsRejectsUnsafeModulePathComponent is the
+// render-time regression test for the path-traversal bug in
+// resolveGitopsModuleInventory: a consumed contract's Module is later joined
+// onto a filesystem path when admission resolves the exposing module's
+// inventory, so a render must never be allowed to produce (or accept) an
+// inventory whose contract.Module isn't a safe, single path component.
+func TestValidateInventoryContractsRejectsUnsafeModulePathComponent(t *testing.T) {
+	for _, module := range []string{"../escape", "a/b", "..", ""} {
+		inventory := &Inventory{
+			Module: "lastlogin",
+			Units: []InventoryUnit{
+				{
+					Kind: UnitKindSolution, Module: "lastlogin", Name: "lastlogin",
+					Contracts: []InventoryContract{
+						{Role: ContractRoleConsumes, Module: module, Service: "accounts", Endpoint: "connect", Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0"},
+					},
+				},
+			},
+		}
+		if err := validateInventoryUnits(inventory); err == nil {
+			t.Fatalf("contract module %q was accepted", module)
+		}
+	}
+}
+
 func TestValidateInventoryUnitsRejectsUnknownKind(t *testing.T) {
 	inventory := &Inventory{
 		Module: "users",

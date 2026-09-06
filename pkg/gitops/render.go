@@ -119,6 +119,17 @@ func loadInventory(path, label string) (Inventory, error) {
 	if err != nil {
 		return Inventory{}, fmt.Errorf("read %s inventory: %w", label, err)
 	}
+	return decodeInventory(data, label)
+}
+
+// decodeInventory validates and decodes an inventory's already-read bytes. It
+// is the reusable half of loadInventory: admission resolves an exposing
+// module's inventory from a git blob (git show <baseBranch>:<path>) rather
+// than a working-tree file, since a long-lived promotion branch only ever
+// refreshes the one module path it is republishing — every sibling module's
+// working-tree copy can be stale relative to the base branch — so it needs
+// the exact same canonical/schema validation without going through a path.
+func decodeInventory(data []byte, label string) (Inventory, error) {
 	var inventory Inventory
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
@@ -340,6 +351,14 @@ func validateInventoryContracts(unit *InventoryUnit) error {
 		}
 		if contract.Module == "" || contract.Service == "" || contract.Endpoint == "" {
 			return fmt.Errorf("unit %s contract is missing module, service, or endpoint", unit.Name)
+		}
+		// contract.Module names a foreign module and, for a consumed contract, is
+		// used to build a filesystem path when admission resolves it against the
+		// target GitOps checkout (resolveGitopsModuleInventory). Rejecting an
+		// unsafe value here, at render time, means a render can never even produce
+		// an inventory a later admission bypass could exploit.
+		if err := validatePathComponent("contract module", contract.Module); err != nil {
+			return fmt.Errorf("unit %s contract for %s/%s: %w", unit.Name, contract.Service, contract.Endpoint, err)
 		}
 		if !digestPattern.MatchString(contract.Digest) {
 			return fmt.Errorf("unit %s contract for %s/%s has invalid digest %q", unit.Name, contract.Service, contract.Endpoint, contract.Digest)

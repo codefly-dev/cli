@@ -243,18 +243,19 @@ type PublishMutation struct {
 }
 
 type PublishResult struct {
-	PlanID           string `json:"planId"`
-	Repository       string `json:"repository"`
-	Path             string `json:"path"`
-	BaseBranch       string `json:"baseBranch"`
-	PromotionBranch  string `json:"promotionBranch"`
-	RenderDigest     string `json:"renderDigest"`
-	SnapshotRevision string `json:"snapshotRevision"`
-	Commit           string `json:"commit"`
-	Tree             string `json:"tree"`
-	Signed           bool   `json:"signed"`
-	PullRequest      string `json:"pullRequest"`
-	PullRequestID    int    `json:"pullRequestId,omitempty"`
+	PlanID           string          `json:"planId"`
+	Repository       string          `json:"repository"`
+	Path             string          `json:"path"`
+	BaseBranch       string          `json:"baseBranch"`
+	PromotionBranch  string          `json:"promotionBranch"`
+	RenderDigest     string          `json:"renderDigest"`
+	SnapshotRevision string          `json:"snapshotRevision"`
+	Commit           string          `json:"commit"`
+	Tree             string          `json:"tree"`
+	Signed           bool            `json:"signed"`
+	PullRequest      string          `json:"pullRequest"`
+	PullRequestID    int             `json:"pullRequestId,omitempty"`
+	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"`
 }
 
 type RollbackRequest struct {
