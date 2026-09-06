@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver"
 )
@@ -38,22 +39,37 @@ type NpmStore struct {
 	// against an httptest registry, exercising the actual pack/publish
 	// behavior rather than a mock of the store.
 	runNpm func(ctx context.Context, dir string, env []string, args ...string) (string, error)
+	// publishConfirmAttempts/publishConfirmDelay bound how long Publish
+	// retries the packument GET after a successful `npm publish` before
+	// falling back to the conventional tarball URL (see
+	// confirmTarballAfterPublish). Tests shrink the delay to keep
+	// registry-lag scenarios fast.
+	publishConfirmAttempts int
+	publishConfirmDelay    time.Duration
 }
 
 // NewNpmStore returns a store publishing scope-scoped packages to registry.
 func NewNpmStore(registry, scope string) *NpmStore {
 	registry = strings.TrimSuffix(registry, "/")
-	s := &NpmStore{Registry: registry, Scope: scope, httpClient: http.DefaultClient}
-	s.token = func() string { return npmToken(registry) }
+	s := &NpmStore{
+		Registry:               registry,
+		Scope:                  scope,
+		httpClient:             http.DefaultClient,
+		publishConfirmAttempts: 5,
+		publishConfirmDelay:    200 * time.Millisecond,
+	}
+	s.token = func() string { return NpmToken(registry) }
 	s.runNpm = runNpmCommand
 	return s
 }
 
-// npmToken resolves the registry credential from NPM_TOKEN, then
+// NpmToken resolves the registry credential from NPM_TOKEN, then
 // NODE_AUTH_TOKEN, then — for a GitHub Packages registry only — the `gh` CLI's
 // stored credential, mirroring githubToken's fallback shape for the GitHub
-// case.
-func npmToken(registry string) string {
+// case. Exported so a caller that runs `npm install` directly (rather than
+// through this store, e.g. `codefly install library --destination`) can
+// authenticate the same way this store does.
+func NpmToken(registry string) string {
 	if t := strings.TrimSpace(os.Getenv("NPM_TOKEN")); t != "" {
 		return t
 	}
@@ -204,15 +220,48 @@ func (s *NpmStore) Publish(ctx context.Context, artifactDir string, c Coordinate
 	if err = s.publishToRegistry(ctx, work); err != nil {
 		return Published{}, err
 	}
-	published, err := s.fetchPackument(ctx, c.Name)
-	if err != nil {
-		return Published{}, err
+	// npm publish already succeeded and is irreversible: a package version,
+	// once published, is immutable. What happens next only decides which
+	// Ref we report, never whether Publish reports success — some
+	// npm-compatible registries (GitHub Packages in particular) do not
+	// guarantee a packument GET reflects a publish immediately, so treating
+	// a lagging or even briefly-404ing read as a publish failure would be a
+	// false negative for something that already happened and can't be undone.
+	tarball := s.confirmTarballAfterPublish(ctx, c.Name, c.Version, name)
+	return s.published(c, name, tarball, integrity), nil
+}
+
+// confirmTarballAfterPublish polls the registry for the version npm publish
+// just wrote and returns its dist.tarball. If the registry still hasn't
+// caught up after the retry budget, it falls back to npm's own tarball URL
+// convention (<registry>/<scopedName>/-/<scopedName>-<version>.tgz, the exact
+// shape npm's own publish payload proposes) rather than returning an error:
+// the write already happened, so this only ever affects the reported Ref,
+// never whether the publish is reported as successful.
+func (s *NpmStore) confirmTarballAfterPublish(ctx context.Context, rawName, version, scopedName string) string {
+	delay := s.publishConfirmDelay
+	for attempt := 0; attempt < s.publishConfirmAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return s.conventionalTarballURL(scopedName, version)
+			case <-time.After(delay):
+			}
+			delay *= 2
+		}
+		packument, err := s.fetchPackument(ctx, rawName)
+		if err != nil || packument == nil {
+			continue
+		}
+		if dist, ok := packument.Versions[version]; ok && dist.Dist.Tarball != "" {
+			return dist.Dist.Tarball
+		}
 	}
-	dist, ok := published.Versions[c.Version]
-	if !ok {
-		return Published{}, fmt.Errorf("librarystore: %s %s published but the registry does not report it yet", c.Name, c.Version)
-	}
-	return s.published(c, name, dist.Dist.Tarball, integrity), nil
+	return s.conventionalTarballURL(scopedName, version)
+}
+
+func (s *NpmStore) conventionalTarballURL(scopedName, version string) string {
+	return fmt.Sprintf("%s/%s/-/%s-%s.tgz", s.Registry, scopedName, scopedName, version)
 }
 
 // pack runs `npm pack --json` in dir, which builds the publish tarball from
@@ -245,22 +294,59 @@ func (s *NpmStore) pack(ctx context.Context, dir string) (integrity string, err 
 }
 
 // publishToRegistry writes a project-local .npmrc scoping Registry to Scope
-// and authenticating it, then runs `npm publish`. The token is passed both
-// through .npmrc (for npm's own registry resolution) and NODE_AUTH_TOKEN (the
-// variable npm's config conventionally interpolates `${NODE_AUTH_TOKEN}`
-// from) so it matches how npm.pkg.github.com publishing is documented.
+// and authenticating it, then runs `npm publish`.
 func (s *NpmStore) publishToRegistry(ctx context.Context, dir string) error {
 	token := s.token()
 	if token == "" {
 		return fmt.Errorf("librarystore: no npm credential (set NPM_TOKEN, NODE_AUTH_TOKEN, or authenticate `gh`)")
 	}
-	npmrc := fmt.Sprintf("%s:registry=%s\n//%s/:_authToken=%s\n", s.Scope, s.Registry, registryHost(s.Registry), token)
-	if err := os.WriteFile(filepath.Join(dir, ".npmrc"), []byte(npmrc), 0o600); err != nil {
-		return fmt.Errorf("librarystore: write .npmrc: %w", err)
+	if err := WriteNpmrc(dir, s.Scope, s.Registry); err != nil {
+		return err
 	}
 	env := []string{"NODE_AUTH_TOKEN=" + token}
 	if _, err := s.runNpm(ctx, dir, env, "publish", "--registry", s.Registry, "--access", "public"); err != nil {
 		return fmt.Errorf("librarystore: npm publish: %w", err)
+	}
+	return nil
+}
+
+// WriteNpmrc ensures dir has an .npmrc mapping scope's packages to registry,
+// authenticated via the NODE_AUTH_TOKEN environment variable at npm's
+// run-time (the file never carries a literal secret, so it is safe to leave
+// behind in a real project directory — not just a throwaway temp one — the
+// way `codefly install library --destination` does). Existing content is
+// preserved: the mapping is appended only if dir's .npmrc doesn't already
+// declare a registry for scope; it is a conflict error, not a silent
+// overwrite, if it already maps scope to a different registry.
+func WriteNpmrc(dir, scope, registry string) error {
+	path := filepath.Join(dir, ".npmrc")
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("librarystore: read %s: %w", path, err)
+	}
+	registryLine := fmt.Sprintf("%s:registry=%s", scope, registry)
+	for _, line := range strings.Split(string(existing), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, scope+":registry=") {
+			continue
+		}
+		if trimmed == registryLine {
+			return nil
+		}
+		return fmt.Errorf("librarystore: %s already maps %s to %q; refusing to overwrite with %q",
+			path, scope, strings.TrimPrefix(trimmed, scope+":registry="), registry)
+	}
+	content := string(existing)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += registryLine + "\n" + fmt.Sprintf("//%s/:_authToken=${NODE_AUTH_TOKEN}\n", registryHost(registry))
+	//nolint:gosec // dir is a workspace-relative library export directory or a
+	// caller-chosen `install --destination`, the same trust boundary as any
+	// CLI accepting a destination path (e.g. `git clone <repo> <dir>`), not
+	// attacker-controlled input.
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("librarystore: write %s: %w", path, err)
 	}
 	return nil
 }
@@ -330,7 +416,7 @@ func (s *NpmStore) published(c Coordinates, name, tarball, integrity string) Pub
 		Ref:         tarball,
 		Location:    s.Registry,
 		Digest:      npmDigest(integrity),
-		InstallHint: fmt.Sprintf("npm install %s@%s", name, c.Version),
+		InstallHint: npmInstallHint(name, c.Version),
 	}
 }
 

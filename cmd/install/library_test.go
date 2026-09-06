@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/librarystore"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -55,6 +57,33 @@ func TestInstallLibraryMissingWorkspaceReturnsError(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cmd, _ := newInstallTestCmd()
 	require.Error(t, installLibrary(cmd, "authkit@^1.0.0"))
+}
+
+// TestInstallIntoTypeScriptConfiguresRegistryBeforeInvokingNpm proves the
+// --destination install path for a TypeScript export wires the store's
+// registry/scope (and, implicitly, its credential) into destination before
+// running npm — a bare `npm install <pkg>@<version>` would otherwise resolve
+// against whatever registry destination's ambient npm config points at
+// (typically registry.npmjs.org), not the registry (GitHub Packages by
+// default, which requires authentication even to read a public package) the
+// package was actually published to. Exercises prepareNpmDestination
+// directly — the exact step installInto's TypeScript branch runs before
+// invoking npm — rather than shelling out to the real npm CLI against an
+// unreachable registry, which would pass but take a minute-plus of npm's own
+// network-error retries to do so.
+func TestInstallIntoTypeScriptConfiguresRegistryBeforeInvokingNpm(t *testing.T) {
+	dir := t.TempDir()
+	cfg := librarystore.StoreConfig{NpmRegistry: "https://npm.pkg.github.com", NpmScope: "@codefly-dev"}
+
+	env, err := prepareNpmDestination(dir, cfg)
+	require.NoError(t, err)
+	require.Len(t, env, 1)
+	require.True(t, strings.HasPrefix(env[0], "NODE_AUTH_TOKEN="), "env %v must carry NODE_AUTH_TOKEN for npm to authenticate", env)
+
+	data, err := os.ReadFile(filepath.Join(dir, ".npmrc"))
+	require.NoError(t, err, "the TypeScript install path must configure destination's registry mapping before running npm")
+	require.Contains(t, string(data), "@codefly-dev:registry=https://npm.pkg.github.com")
+	require.Contains(t, string(data), "_authToken=${NODE_AUTH_TOKEN}")
 }
 
 func TestInstallLibraryUnconfiguredLanguageReturnsErrorBeforeNetwork(t *testing.T) {

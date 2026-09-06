@@ -102,29 +102,56 @@ func PreviewIdentity(language Language, cfg StoreConfig, name, version string) (
 	if err != nil {
 		return "", "", fmt.Errorf("librarystore: %q is not a semantic version: %w", version, err)
 	}
-	tag := versionTag(v.String())
 	switch language {
 	case LanguageGo:
 		if cfg.GoOwner == "" {
 			return "", "", fmt.Errorf("librarystore: no GitHub owner configured for go libraries (workspace libraries.publish.go.owner)")
 		}
 		importPath = fmt.Sprintf("github.com/%s/%s", cfg.GoOwner, repositoryName(language, name))
-		return importPath, fmt.Sprintf("go get %s@%s", importPath, tag), nil
+		return importPath, goInstallHint(importPath, v.String()), nil
 	case LanguagePython:
 		if cfg.PythonOwner == "" {
 			return "", "", fmt.Errorf("librarystore: no GitHub owner configured for python libraries (workspace libraries.publish.python.owner)")
 		}
 		importPath = fmt.Sprintf("github.com/%s/%s", cfg.PythonOwner, repositoryName(language, name))
-		return importPath, fmt.Sprintf("pip install \"git+https://%s@%s\"", importPath, tag), nil
+		return importPath, pythonInstallHint(importPath, v.String()), nil
 	case LanguageTypeScript:
 		if cfg.NpmRegistry == "" || cfg.NpmScope == "" {
 			return "", "", fmt.Errorf("librarystore: no npm registry/scope configured for typescript libraries (workspace libraries.publish.typescript)")
 		}
 		importPath = cfg.NpmScope + "/" + name
-		return importPath, fmt.Sprintf("npm install %s@%s", importPath, v.String()), nil
+		return importPath, npmInstallHint(importPath, v.String()), nil
 	default:
 		return "", "", fmt.Errorf("librarystore: unsupported language %q", language)
 	}
+}
+
+// goInstallHint, pythonInstallHint, and npmInstallHint are each backend's
+// single source of truth for its InstallHint format string. Both
+// PreviewIdentity (the --dry-run / pre-flight preview, which never touches
+// the network) and the real Published a store's Publish/Resolve returns call
+// through these, so the two can never drift apart the way two independently
+// maintained copies of the same format string could.
+func goInstallHint(importPath, version string) string {
+	return fmt.Sprintf("go get %s@%s", importPath, versionTag(version))
+}
+
+func pythonInstallHint(importPath, version string) string {
+	return fmt.Sprintf("pip install %q", PipGitArgument(importPath, version))
+}
+
+// PipGitArgument returns the pip install argument for a GitHub-backed Python
+// export: git+https://<importPath>@v<version>. Exposed so a caller invoking
+// pip directly (codefly install library --destination) builds the exact
+// argument pythonInstallHint's InstallHint documents from Published.ImportPath,
+// instead of re-deriving a git URL from Published.Location and risking the
+// two diverge.
+func PipGitArgument(importPath, version string) string {
+	return fmt.Sprintf("git+https://%s@%s", importPath, versionTag(version))
+}
+
+func npmInstallHint(importPath, version string) string {
+	return fmt.Sprintf("npm install %s@%s", importPath, version)
 }
 
 // Store publishes and resolves library exports through some backend.

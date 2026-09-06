@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -43,6 +44,12 @@ type fakeNpmRegistry struct {
 	mu       sync.Mutex
 	docs     map[string]map[string]npmDist
 	putCount int
+	// hideNextVersionForGETs, when > 0, omits the version most recently
+	// written by a PUT from that many subsequent GET responses before it
+	// becomes visible — simulating a registry (GitHub Packages, notably) that
+	// does not guarantee a packument GET reflects a publish immediately.
+	hideNextVersionForGETs int
+	hiddenVersion          string
 }
 
 func newFakeNpmRegistry() *fakeNpmRegistry {
@@ -65,15 +72,24 @@ func (f *fakeNpmRegistry) handler() http.HandlerFunc {
 		case http.MethodGet:
 			f.mu.Lock()
 			versions, ok := f.docs[name]
+			doc := npmPackument{Name: name, Versions: map[string]npmVersionMeta{}}
+			for v, dist := range versions {
+				if f.hideNextVersionForGETs > 0 && v == f.hiddenVersion {
+					continue
+				}
+				doc.Versions[v] = npmVersionMeta{Version: v, Dist: dist}
+			}
+			if f.hiddenVersion != "" && f.hideNextVersionForGETs > 0 {
+				f.hideNextVersionForGETs--
+				if f.hideNextVersionForGETs == 0 {
+					f.hiddenVersion = ""
+				}
+			}
 			f.mu.Unlock()
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"error":"not found"}`))
 				return
-			}
-			doc := npmPackument{Name: name, Versions: map[string]npmVersionMeta{}}
-			for v, dist := range versions {
-				doc.Versions[v] = npmVersionMeta{Version: v, Dist: dist}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(doc)
@@ -92,6 +108,9 @@ func (f *fakeNpmRegistry) handler() http.HandlerFunc {
 			}
 			for v, meta := range payload.Versions {
 				f.docs[name][v] = meta.Dist
+				if f.hideNextVersionForGETs > 0 {
+					f.hiddenVersion = v
+				}
 			}
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusCreated)
@@ -159,6 +178,51 @@ func TestNpmStorePublishRejectsDifferentBytesAtSameVersion(t *testing.T) {
 	_, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
 	require.ErrorContains(t, err, "different bytes")
 	require.Equal(t, 0, registry.putCount, "a conflicting version must never be pushed to the registry")
+}
+
+// TestNpmStorePublishSurvivesTransientRegistryLagAfterPublish reproduces the
+// GitHub-Packages-style eventual-consistency window: npm publish succeeds,
+// but the very next packument GET (and the next few after it) still don't
+// report the version. Publish must not fail — the write already happened and
+// is irreversible — and must not panic on the nil packument a 404 produces
+// mid-window; it must retry until the registry catches up.
+func TestNpmStorePublishSurvivesTransientRegistryLagAfterPublish(t *testing.T) {
+	requireNpm(t)
+	ctx := context.Background()
+	registry := newFakeNpmRegistry()
+	registry.seed("@codefly-dev/authkit", "0.9.0", npmDist{Integrity: "sha512-old=="})
+	registry.hideNextVersionForGETs = 3
+	store := newTestNpmStore(t, registry)
+	store.publishConfirmDelay = time.Millisecond
+
+	artifact := npmPackageDir(t, "@codefly-dev/authkit", "1.0.0")
+	published, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	require.NoError(t, err, "a publish that already succeeded at the registry must not be reported as a failure")
+	require.Equal(t, 1, registry.putCount)
+	require.Equal(t, "@codefly-dev/authkit", published.ImportPath)
+	require.NotEmpty(t, published.Ref, "Ref must be populated even though the registry lagged behind the publish")
+	require.True(t, strings.HasPrefix(published.Digest, "sha512:"))
+}
+
+// TestNpmStorePublishFallsBackWhenRegistryNeverConfirms covers the case where
+// the registry never catches up within the retry budget: Publish must still
+// report success (npm publish already committed the write) using its own
+// conventional tarball URL, rather than erroring out or panicking on a nil
+// packument.
+func TestNpmStorePublishFallsBackWhenRegistryNeverConfirms(t *testing.T) {
+	requireNpm(t)
+	ctx := context.Background()
+	registry := newFakeNpmRegistry()
+	registry.hideNextVersionForGETs = 1000 // never resolves within the retry budget
+	store := newTestNpmStore(t, registry)
+	store.publishConfirmAttempts = 3
+	store.publishConfirmDelay = time.Millisecond
+
+	artifact := npmPackageDir(t, "@codefly-dev/authkit", "1.0.0")
+	published, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	require.NoError(t, err)
+	require.Equal(t, 1, registry.putCount)
+	require.Equal(t, store.Registry+"/@codefly-dev/authkit/-/@codefly-dev/authkit-1.0.0.tgz", published.Ref)
 }
 
 func TestNpmStorePublishRejectsPackageNameOrVersionMismatch(t *testing.T) {
@@ -236,11 +300,43 @@ func TestRegistryHost(t *testing.T) {
 func TestNpmTokenPrefersNpmTokenOverNodeAuthToken(t *testing.T) {
 	t.Setenv("NPM_TOKEN", "from-npm-token")
 	t.Setenv("NODE_AUTH_TOKEN", "from-node-auth-token")
-	require.Equal(t, "from-npm-token", npmToken("https://registry.npmjs.org"))
+	require.Equal(t, "from-npm-token", NpmToken("https://registry.npmjs.org"))
 }
 
 func TestNpmTokenFallsBackToNodeAuthToken(t *testing.T) {
 	t.Setenv("NPM_TOKEN", "")
 	t.Setenv("NODE_AUTH_TOKEN", "from-node-auth-token")
-	require.Equal(t, "from-node-auth-token", npmToken("https://registry.npmjs.org"))
+	require.Equal(t, "from-node-auth-token", NpmToken("https://registry.npmjs.org"))
+}
+
+func TestWriteNpmrcCreatesMappingWithoutALiteralSecret(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, WriteNpmrc(dir, "@codefly-dev", "https://npm.pkg.github.com"))
+
+	data, err := os.ReadFile(filepath.Join(dir, ".npmrc"))
+	require.NoError(t, err)
+	require.Contains(t, string(data), "@codefly-dev:registry=https://npm.pkg.github.com")
+	require.Contains(t, string(data), "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}")
+	require.NotContains(t, string(data), "s3cr3t", "the file must never carry a literal token")
+}
+
+func TestWriteNpmrcIsIdempotentAndPreservesExistingContent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".npmrc"), []byte("save-exact=true\n"), 0o644))
+
+	require.NoError(t, WriteNpmrc(dir, "@codefly-dev", "https://npm.pkg.github.com"))
+	require.NoError(t, WriteNpmrc(dir, "@codefly-dev", "https://npm.pkg.github.com"))
+
+	data, err := os.ReadFile(filepath.Join(dir, ".npmrc"))
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(string(data), "@codefly-dev:registry="), "a second call must not duplicate the mapping")
+	require.Contains(t, string(data), "save-exact=true", "pre-existing, unrelated npmrc content must be preserved")
+}
+
+func TestWriteNpmrcRefusesToOverwriteAConflictingScopeMapping(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, WriteNpmrc(dir, "@codefly-dev", "https://npm.pkg.github.com"))
+
+	err := WriteNpmrc(dir, "@codefly-dev", "https://registry.example.com")
+	require.ErrorContains(t, err, "already maps")
 }

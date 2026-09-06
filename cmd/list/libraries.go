@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/librarystore"
 	"github.com/spf13/cobra"
 )
@@ -69,6 +70,18 @@ func listLibraries(cmd *cobra.Command) error {
 		}
 	}
 
+	// storesByLanguage caches one store per language across every library:
+	// NewStoreFor builds a fresh backend per call (a fresh *GitHubStore re-runs
+	// its own token resolution, shelling out to `gh auth token` again), so
+	// reusing one instance per language avoids re-resolving credentials once
+	// per (library, language) pair, and a config error for a language is
+	// reported once instead of once per library that declares it.
+	type storeLookup struct {
+		store librarystore.Store
+		err   error
+	}
+	storesByLanguage := map[librarystore.Language]storeLookup{}
+
 	entries := make([]libraryListEntry, 0, len(libs))
 	for _, lib := range libs {
 		languages := make([]string, 0, len(lib.Languages))
@@ -79,13 +92,28 @@ func listLibraries(cmd *cobra.Command) error {
 		if listLibrariesRemote {
 			for _, lang := range lib.Languages {
 				language := librarystore.Language(lang.Name)
-				store, err := librarystore.NewStoreFor(language, cfg)
-				if err != nil {
-					return err
+				lookup, cached := storesByLanguage[language]
+				if !cached {
+					store, err := librarystore.NewStoreFor(language, cfg)
+					if err != nil {
+						// A library that has never been published yet, or a
+						// language the workspace hasn't configured for
+						// publishing, must not hide every other library's
+						// listing — a brand-new local library is exactly this
+						// state, and is the common case right after this
+						// feature ships. Warn and keep going.
+						cli.Warning("cannot resolve store for %s libraries: %v", language, err)
+					}
+					lookup = storeLookup{store: store, err: err}
+					storesByLanguage[language] = lookup
 				}
-				versions, err := store.List(ctx, language, lib.Name)
+				if lookup.err != nil {
+					continue
+				}
+				versions, err := lookup.store.List(ctx, language, lib.Name)
 				if err != nil {
-					return fmt.Errorf("list published versions of %s (%s): %w", lib.Name, lang.Name, err)
+					cli.Warning("cannot list published versions of %s (%s): %v", lib.Name, lang.Name, err)
+					continue
 				}
 				for _, version := range versions {
 					entry.Published = append(entry.Published, fmt.Sprintf("%s@%s", lang.Name, version))

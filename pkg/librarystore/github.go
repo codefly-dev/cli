@@ -500,10 +500,9 @@ func (s *GitHubStore) digestAtTag(ctx context.Context, remote, tag string) (stri
 
 func (s *GitHubStore) published(c Coordinates, remote, ref, digest string) Published {
 	importPath := goModulePath(remote)
-	tag := versionTag(c.Version)
-	installHint := fmt.Sprintf("go get %s@%s", importPath, tag)
+	installHint := goInstallHint(importPath, c.Version)
 	if c.Language == LanguagePython {
-		installHint = fmt.Sprintf("pip install \"git+%s@%s\"", strings.TrimSuffix(remote, ".git"), tag)
+		installHint = pythonInstallHint(importPath, c.Version)
 	}
 	return Published{
 		Coordinates: c,

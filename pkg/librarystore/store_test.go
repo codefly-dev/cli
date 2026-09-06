@@ -36,6 +36,16 @@ func TestPreviewIdentityRequiresConfiguration(t *testing.T) {
 	require.ErrorContains(t, err, "semantic version")
 }
 
+// TestPipGitArgumentMatchesPythonInstallHint proves the argument a caller
+// invoking `pip install` directly (codefly install library --destination)
+// would pass is exactly the URL@tag pythonInstallHint documents in
+// InstallHint — the same value, not two independently derived copies of it.
+func TestPipGitArgumentMatchesPythonInstallHint(t *testing.T) {
+	arg := PipGitArgument("github.com/codefly-dev/authkit-python", "1.0.0")
+	require.Equal(t, "git+https://github.com/codefly-dev/authkit-python@v1.0.0", arg)
+	require.Equal(t, `pip install "`+arg+`"`, pythonInstallHint("github.com/codefly-dev/authkit-python", "1.0.0"))
+}
+
 func TestNewStoreForRequiresConfiguration(t *testing.T) {
 	_, err := NewStoreFor(LanguageGo, StoreConfig{})
 	require.Error(t, err)

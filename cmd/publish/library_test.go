@@ -118,6 +118,55 @@ languages:
 	require.Contains(t, buf.String(), "npm install @codefly-dev/authkit@1.0.0")
 }
 
+// TestReadPyprojectVersionIgnoresTrailingComments guards against a version
+// line or table header carrying a trailing "# comment" (an entirely ordinary
+// pyproject.toml style) being fused into the extracted value — e.g.
+// `version = "1.0.0"  # keep in sync` must yield "1.0.0", not
+// `1.0.0"  # keep in sync`.
+func TestReadPyprojectVersionIgnoresTrailingComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pyproject.toml")
+
+	require.NoError(t, os.WriteFile(path, []byte(
+		"[project]  # PEP 621 metadata\n"+
+			"name = \"authkit\"\n"+
+			"version = \"1.0.0\"  # keep in sync with lib.Version\n"), 0o644))
+	version, err := readPyprojectVersion(path)
+	require.NoError(t, err)
+	require.Equal(t, "1.0.0", version)
+
+	// A "#" inside the quoted value itself is not a comment.
+	require.NoError(t, os.WriteFile(path, []byte("[project]\nversion = \"1.0.0#not-a-comment\"\n"), 0o644))
+	version, err = readPyprojectVersion(path)
+	require.NoError(t, err)
+	require.Equal(t, "1.0.0#not-a-comment", version)
+}
+
+// TestPublishLibraryDryRunAcceptsPyprojectVersionWithTrailingComment is the
+// end-to-end regression test for the same bug: a Python export whose
+// pyproject.toml already has the correct version, annotated with a trailing
+// comment, must pass pre-flight instead of failing with a false "bump
+// pyproject.toml" error.
+func TestPublishLibraryDryRunAcceptsPyprojectVersionWithTrailingComment(t *testing.T) {
+	t.Cleanup(resetPublishLibraryFlags)
+	dir := writeWorkspaceWithLibrary(t, `kind: library
+name: authkit
+version: 1.0.0
+languages:
+  - name: python
+    path: python/
+`, map[string]string{
+		"python/pyproject.toml": "[project]\nname = \"authkit\"\nversion = \"1.0.0\"  # keep in sync with lib.Version\n",
+	})
+	t.Chdir(dir)
+
+	publishLibraryDryRun = true
+	cmd, buf := newTestCmd()
+	err := publishLibrary(cmd, "authkit")
+	require.NoError(t, err)
+	require.Contains(t, buf.String(), "pip install")
+}
+
 func TestPublishLibraryRejectsExportIdentityMismatch(t *testing.T) {
 	t.Cleanup(resetPublishLibraryFlags)
 	dir := writeWorkspaceWithLibrary(t, `kind: library

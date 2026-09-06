@@ -81,26 +81,49 @@ func installLibrary(cmd *cobra.Command, spec string) error {
 	if destination == "" {
 		return nil
 	}
-	return installInto(ctx, language, &published, destination)
+	return installInto(ctx, language, &published, cfg, destination)
 }
 
-func installInto(ctx context.Context, language librarystore.Language, published *librarystore.Published, destination string) error {
+func installInto(ctx context.Context, language librarystore.Language, published *librarystore.Published, cfg librarystore.StoreConfig, destination string) error {
 	switch language {
 	case librarystore.LanguageGo:
-		return runInDir(ctx, destination, "go", "get", fmt.Sprintf("%s@v%s", published.ImportPath, published.Version))
+		return runInDir(ctx, destination, nil, "go", "get", fmt.Sprintf("%s@v%s", published.ImportPath, published.Version))
 	case librarystore.LanguageTypeScript:
-		return runInDir(ctx, destination, "npm", "install", fmt.Sprintf("%s@%s", published.ImportPath, published.Version))
+		env, err := prepareNpmDestination(destination, cfg)
+		if err != nil {
+			return err
+		}
+		return runInDir(ctx, destination, env, "npm", "install", fmt.Sprintf("%s@%s", published.ImportPath, published.Version))
 	case librarystore.LanguagePython:
-		return runInDir(ctx, destination, "pip", "install", fmt.Sprintf("git+%s@v%s", strings.TrimSuffix(published.Location, ".git"), published.Version))
+		return runInDir(ctx, destination, nil, "pip", "install", librarystore.PipGitArgument(published.ImportPath, published.Version))
 	default:
 		return fmt.Errorf("install: unsupported language %q", language)
 	}
 }
 
-func runInDir(ctx context.Context, dir, name string, args ...string) error {
+// prepareNpmDestination wires destination up to authenticate against cfg's
+// registry before npm ever runs there. A bare `npm install <pkg>@<version>`
+// resolves against whatever registry destination's ambient npm config points
+// at — by default registry.npmjs.org, not the store this package was
+// actually published to. The scoped registry this store's language is
+// configured for (GitHub Packages by default, which requires authentication
+// even to read a public package) must be wired into destination the same way
+// `codefly publish library` wires it for npm publish, or the install
+// 404s/401s regardless of how the package was resolved.
+func prepareNpmDestination(destination string, cfg librarystore.StoreConfig) ([]string, error) {
+	if err := librarystore.WriteNpmrc(destination, cfg.NpmScope, cfg.NpmRegistry); err != nil {
+		return nil, err
+	}
+	return []string{"NODE_AUTH_TOKEN=" + librarystore.NpmToken(cfg.NpmRegistry)}, nil
+}
+
+func runInDir(ctx context.Context, dir string, env []string, name string, args ...string) error {
 	//nolint:gosec // name/args are store-controlled coordinates (import path, version), never a shell.
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

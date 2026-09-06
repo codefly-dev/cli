@@ -251,13 +251,13 @@ func readPyprojectVersion(path string) (string, error) {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
 	inProject := false
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(stripTOMLComment(rawLine))
 		if strings.HasPrefix(trimmed, "[") {
 			inProject = trimmed == "[project]"
 			continue
 		}
-		if !inProject {
+		if !inProject || trimmed == "" {
 			continue
 		}
 		key, value, ok := strings.Cut(trimmed, "=")
@@ -267,4 +267,27 @@ func readPyprojectVersion(path string) (string, error) {
 		return strings.Trim(strings.TrimSpace(value), `"'`), nil
 	}
 	return "", fmt.Errorf("%s: no version field in [project]", path)
+}
+
+// stripTOMLComment removes a trailing, unquoted "#" comment from a TOML
+// line — mirroring how parseGoModulePath strips "//" from a go.mod line — so
+// a table header or value followed by a comment (`[project]  # PEP 621` or
+// `version = "1.0.0"  # keep in sync`) is matched correctly instead of
+// leaving the comment text fused onto the extracted value. A "#" inside a
+// quoted string is left alone.
+func stripTOMLComment(line string) string {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '#':
+			return line[:i]
+		}
+	}
+	return line
 }
