@@ -104,6 +104,26 @@ These tools operate on a specific service within a module.
 | `run_checks` | Run a command in the service directory | `module`, `service`, `command` (optional, default: `go test ./...`) |
 | `stop` | Stop the service runtime | `module`, `service` |
 
+### Run & Test Tools
+
+`run_service` and `test_service` drive the same in-process orchestration as `codefly run`/`codefly
+test`, through the control plane rather than a subprocess. Runs started over MCP live as long as
+the MCP server process; they are stopped when the client disconnects. Use `stop_flow` to stop
+earlier.
+
+`run_service` can be called more than once for different services, so more than one run can be
+active at a time. Its response includes `flow_id`; pass that same value as `flow_id` to
+`flow_status`/`stop_flow` to target that specific run. Without `flow_id`, both tools fall back to
+the most recently started run — fine when only one run is active, but they will report on or stop
+the wrong run if another is active and no `flow_id` is given.
+
+| Tool | Description | Required Args | Optional Args |
+|------|-------------|----------------|----------------|
+| `run_service` | Run a service with its dependency graph in-process. Returns once the flow is running unless `wait=false`. | `module`, `service` | `runtime_context`, `profile`, `wait` (default `true`), `timeout_seconds` (default `300`) |
+| `test_service` | Run tests for a service with all dependencies started | `module`, `service` | `suite`, `filter`, `runtime_context` |
+| `flow_status` | Report the state of a run (`idle`, `starting`, `running`, `stopped`, `failed`), its services, and — when failed — the error | -- | `flow_id` (defaults to the most recently started run) |
+| `stop_flow` | Stop a run | -- | `flow_id` (defaults to the most recently started run), `destroy` (also removes stateful containers, e.g. databases — default `false`) |
+
 ---
 
 ## Available Resources

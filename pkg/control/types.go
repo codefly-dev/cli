@@ -66,6 +66,8 @@ const (
 type FlowStatus struct {
 	State    FlowState
 	Services []ServiceStatus
+	// Error explains why State is FlowFailed. Empty for every other state.
+	Error string
 }
 
 // ServiceStatus is one service's state within a flow.
@@ -172,6 +174,9 @@ type RunHandle struct {
 
 // StopRequest stops the active flow.
 type StopRequest struct {
+	// FlowID selects a specific flow (as returned in RunHandle.FlowID by
+	// Run); when empty, Stop acts on the most-recently-started flow.
+	FlowID     string
 	NameFilter []string
 	Destroy    bool // also remove stateful containers
 }

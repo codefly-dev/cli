@@ -26,7 +26,11 @@ func TestBuildRejectsPush(t *testing.T) {
 
 func TestStopIsNoopWhenNothingRunning(t *testing.T) {
 	// A fresh plane owns an empty flow registry, so Stop is a no-op.
-	if err := New().Stop(context.Background(), StopRequest{}); err != nil {
+	stopped, err := New().Stop(context.Background(), StopRequest{})
+	if err != nil {
 		t.Fatalf("Stop with nothing running = %v, want nil", err)
+	}
+	if stopped {
+		t.Fatal("Stop with nothing running reported stopped = true")
 	}
 }

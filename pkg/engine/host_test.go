@@ -276,6 +276,35 @@ func TestFlowManagerRestoresPreviousActiveFlow(t *testing.T) {
 	}
 }
 
+func TestFlowManagerStopReportsWhetherAFlowWasFound(t *testing.T) {
+	manager := NewFlowManager()
+	flow := &inertManagedFlow{}
+	if err := manager.Register("module/service", flow); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := manager.Stop("module/service", false)
+	if err != nil {
+		t.Fatalf("Stop() = %v", err)
+	}
+	if !stopped {
+		t.Fatal("Stop() on a registered flow reported stopped = false")
+	}
+	if _, active := manager.Active(); active != nil {
+		t.Fatalf("Active() after Stop() = %p, want nil", active)
+	}
+}
+
+func TestFlowManagerStopOnUnknownIDReportsNotFound(t *testing.T) {
+	manager := NewFlowManager()
+	stopped, err := manager.Stop("no-such-flow", false)
+	if err != nil {
+		t.Fatalf("Stop() = %v", err)
+	}
+	if stopped {
+		t.Fatal("Stop() on an unregistered id reported stopped = true")
+	}
+}
+
 func TestTransientAgentErrorsDoNotReplayInternalFailures(t *testing.T) {
 	if !isTransientAgentError(status.Error(codes.Unavailable, "connection lost")) {
 		t.Fatal("Unavailable should reconnect once")

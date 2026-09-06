@@ -29,6 +29,43 @@ type planeImpl struct {
 	terminals *terminalManager
 	closeOnce sync.Once
 	closeErr  error
+	// runMu guards lastRun, which records how the most recently active flow
+	// ended after it is no longer in the flow registry (FlowManager forgets a
+	// flow the instant it stops, so this is the only place FlowStatus can find
+	// FlowFailed/FlowStopped once the flow is gone). See lifecycle.go's Run.
+	runMu   sync.Mutex
+	lastRun *runOutcome
+}
+
+// runOutcome is how a flow, once no longer the registry's active flow, ended.
+type runOutcome struct {
+	flowID string
+	state  FlowState
+	err    error
+}
+
+// recordRunOutcome remembers how a flow ended after Run's background goroutine
+// releases it from the registry, so a later FlowStatus call can still report
+// FlowFailed/FlowStopped instead of falling back to FlowIdle.
+func (p *planeImpl) recordRunOutcome(flowID string, state FlowState, err error) {
+	p.runMu.Lock()
+	defer p.runMu.Unlock()
+	p.lastRun = &runOutcome{flowID: flowID, state: state, err: err}
+}
+
+// clearRunOutcome discards any remembered outcome. Called when a new Run
+// starts, so a stale failure from a previous, unrelated run never leaks into
+// the new run's FlowStatus before it has reported anything itself.
+func (p *planeImpl) clearRunOutcome() {
+	p.runMu.Lock()
+	defer p.runMu.Unlock()
+	p.lastRun = nil
+}
+
+func (p *planeImpl) runOutcome() *runOutcome {
+	p.runMu.Lock()
+	defer p.runMu.Unlock()
+	return p.lastRun
 }
 
 // New returns a control plane rooted at the current directory as observed once,
@@ -267,13 +304,25 @@ func (p *planeImpl) DependencyGraph(ctx context.Context, service string) (Depend
 // only an overall Ready bool (there is no per-service health getter), so the
 // per-service list currently carries just the origin service. Richer per-service
 // state requires accumulating orchestration StateListener events — a later lift.
-func (p *planeImpl) FlowStatus(ctx context.Context) (FlowStatus, error) {
+func (p *planeImpl) FlowStatus(ctx context.Context, flowID string) (FlowStatus, error) {
 	if p.host == nil || p.host.Flows() == nil {
 		return FlowStatus{State: FlowIdle}, nil
 	}
-	_, managed := p.host.Flows().Active()
+	var managed engine.ManagedFlow
+	if flowID != "" {
+		managed = p.host.Flows().Get(flowID)
+	} else {
+		_, managed = p.host.Flows().Active()
+	}
 	flow, _ := managed.(*orchestration.Flow)
 	if flow == nil {
+		if outcome := p.runOutcome(); outcome != nil && (flowID == "" || outcome.flowID == flowID) {
+			status := FlowStatus{State: outcome.state}
+			if outcome.err != nil {
+				status.Error = outcome.err.Error()
+			}
+			return status, nil
+		}
 		return FlowStatus{State: FlowIdle}, nil
 	}
 	state := FlowStarting

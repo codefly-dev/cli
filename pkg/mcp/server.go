@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
@@ -36,6 +37,10 @@ type Server struct {
 	resDefs           []Resource
 	resourceTemplates []ResourceTemplate
 	version           string
+	// runCtx governs flows started by run_service. It outlives any single tool call
+	// and is cancelled by Close, so a stack started over MCP stops with the server.
+	runCtx    context.Context
+	cancelRun context.CancelFunc
 }
 
 // WithVFS sets the VFS for file operations. If not set, falls back to os calls.
@@ -68,6 +73,7 @@ func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Ser
 		resDefs:   []Resource{},
 		version:   version,
 	}
+	s.runCtx, s.cancelRun = context.WithCancel(context.WithoutCancel(ctx))
 	for _, o := range opts {
 		o(s)
 	}
@@ -109,6 +115,9 @@ func (s *Server) Close() error {
 	if s == nil {
 		return nil
 	}
+	if s.cancelRun != nil {
+		s.cancelRun()
+	}
 	var planeErr, hostErr error
 	if s.plane != nil {
 		planeErr = s.plane.Close()
@@ -121,8 +130,20 @@ func (s *Server) Close() error {
 	return errors.Join(planeErr, hostErr)
 }
 
-// ServeIO runs the MCP server with custom IO (for testing)
-func (s *Server) ServeIO(ctx context.Context, in io.Reader, out io.Writer) error {
+// ServeIO runs the MCP server with custom IO (for testing).
+//
+// Requests are dispatched to their own goroutine rather than handled inline:
+// a tool call is free to block for a long time (run_service's wait, for
+// instance), and this server has exactly one stdio stream per client, so
+// handling requests one at a time would leave every other tool — including
+// flow_status/stop_flow, whose entire purpose is to be usable *while*
+// run_service is still working — unreachable until the blocking call
+// returns. Writes to out are serialized with writeMu since concurrent
+// handlers now write to the same stream. ServeIO waits for every dispatched
+// goroutine to finish before returning, so Close() (always invoked by Serve
+// only after ServeIO returns) never races a handler that is still reading
+// s.plane/s.host.
+func (s *Server) ServeIO(ctx context.Context, in io.Reader, out io.Writer) (retErr error) {
 	w := wool.Get(ctx).In("mcp.Serve")
 
 	type scanResult struct {
@@ -151,12 +172,39 @@ func (s *Server) ServeIO(ctx context.Context, in io.Reader, out io.Writer) error
 		}
 	}()
 
+	var writeMu sync.Mutex
+	writeResponse := func(resp *JSONRPCResponse) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return s.writeResponse(out, resp)
+	}
+
+	// writeErrs carries the first fatal write failure from a request
+	// goroutine back to this loop, preserving the prior behavior of ServeIO
+	// returning that error. Buffered by one: only the first failure matters.
+	writeErrs := make(chan error, 1)
+
+	var wg sync.WaitGroup
+	defer func() {
+		// Drain in-flight handlers before returning, then let a write failure
+		// any of them hit override whatever this loop already decided to
+		// return (e.g. nil from a clean EOF that raced the failure).
+		wg.Wait()
+		select {
+		case err := <-writeErrs:
+			retErr = err
+		default:
+		}
+	}()
+
 	for {
 		var scanned scanResult
 		var ok bool
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-writeErrs:
+			return err
 		case scanned, ok = <-results:
 			if !ok {
 				return nil
@@ -174,23 +222,30 @@ func (s *Server) ServeIO(ctx context.Context, in io.Reader, out io.Writer) error
 		if err := json.Unmarshal(line, &req); err != nil {
 			w.Debug("failed to parse request", wool.ErrField(err))
 			resp := s.errorResponse(nil, ParseError, "Parse error")
-			if err := s.writeResponse(out, resp); err != nil {
+			if err := writeResponse(resp); err != nil {
 				return err
 			}
 			continue
 		}
 
-		resp := s.handleRequest(ctx, &req)
-		// JSON-RPC notifications deliberately omit an id and MUST NOT receive a
-		// response, even when the method is unknown or the handler reports an
-		// error. The handler still runs so notification side effects are kept.
-		if req.ID == nil {
-			continue
-		}
-		if err := s.writeResponse(out, resp); err != nil {
-			w.Error("failed to write response", wool.ErrField(err))
-			return err
-		}
+		wg.Add(1)
+		go func(req JSONRPCRequest) {
+			defer wg.Done()
+			resp := s.handleRequest(ctx, &req)
+			// JSON-RPC notifications deliberately omit an id and MUST NOT receive a
+			// response, even when the method is unknown or the handler reports an
+			// error. The handler still runs so notification side effects are kept.
+			if req.ID == nil {
+				return
+			}
+			if err := writeResponse(resp); err != nil {
+				w.Error("failed to write response", wool.ErrField(err))
+				select {
+				case writeErrs <- err:
+				default:
+				}
+			}
+		}(req)
 	}
 }
 

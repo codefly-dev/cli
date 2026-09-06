@@ -114,7 +114,7 @@ func TestNewAtKeepsExplicitRootAfterWorkingDirectoryChanges(t *testing.T) {
 func TestFlowStatusIdleWhenNothingRunning(t *testing.T) {
 	plane := New()
 	t.Cleanup(func() { _ = plane.Close() })
-	status, err := plane.FlowStatus(context.Background())
+	status, err := plane.FlowStatus(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func assertRunRejected(t *testing.T, plane Plane, request RunRequest, want strin
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Run error = %v, want %q", err, want)
 	}
-	status, statusErr := plane.FlowStatus(context.Background())
+	status, statusErr := plane.FlowStatus(context.Background(), "")
 	if statusErr != nil {
 		t.Fatal(statusErr)
 	}
