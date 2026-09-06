@@ -98,18 +98,27 @@ func (m *FlowManager) Release(id string, flow ManagedFlow) bool {
 	return true
 }
 
-// Stop stops and releases one host-owned flow.
-func (m *FlowManager) Stop(id string, destroy bool) error {
+// Stop stops and releases one host-owned flow. It reports whether a flow was
+// actually found and stopped: false means nothing was registered under id
+// (already exited on its own, or never existed). The existence check and the
+// removal happen under the same lock acquisition, so a caller does not need a
+// separate, racy "is anything running" check before calling Stop — such a
+// check could still see a flow that exits on its own before this call runs.
+func (m *FlowManager) Stop(id string, destroy bool) (bool, error) {
 	if m == nil {
-		return nil
+		return false, nil
 	}
 	m.mu.Lock()
 	flow := m.flows[id]
-	if !nilManagedFlow(flow) {
+	found := !nilManagedFlow(flow)
+	if found {
 		m.removeLocked(id)
 	}
 	m.mu.Unlock()
-	return teardownFlow(flow, destroy)
+	if !found {
+		return false, nil
+	}
+	return true, teardownFlow(flow, destroy)
 }
 
 // Close stops every flow owned by the manager. It is idempotent.

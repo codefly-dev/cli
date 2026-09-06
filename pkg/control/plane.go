@@ -60,8 +60,14 @@ type Introspector interface {
 	// DependencyGraph returns the startup-ordered dependency graph rooted at
 	// service (or the whole workspace when service is empty).
 	DependencyGraph(ctx context.Context, service string) (DependencyGraph, error)
-	// FlowStatus reports the state of the currently running flow, if any.
-	FlowStatus(ctx context.Context) (FlowStatus, error)
+	// FlowStatus reports the state of one flow. flowID selects a specific flow
+	// (as returned in RunHandle.FlowID by Run); when empty, it reports the
+	// most-recently-started flow, for callers that only ever run one at a
+	// time. Two flows can be registered concurrently (Run keys them by
+	// service), so a caller that starts more than one MUST pass flowID —
+	// otherwise it may observe a different flow's state than the one it
+	// started.
+	FlowStatus(ctx context.Context, flowID string) (FlowStatus, error)
 	// Addresses resolves the reachable endpoints for service.
 	Addresses(ctx context.Context, service string) ([]Endpoint, error)
 	// Configurations returns the service's own configuration plus the
@@ -87,9 +93,13 @@ type Lifecycle interface {
 	// Run starts service and its dependency graph, returning once the flow is
 	// started (or, when req.Wait is set, once it is healthy).
 	Run(ctx context.Context, req RunRequest) (RunHandle, error)
-	// Stop stops the active flow, preserving stateful containers unless
-	// req.Destroy is set.
-	Stop(ctx context.Context, req StopRequest) error
+	// Stop stops the flow named by req.FlowID (or the most-recently-started
+	// flow when empty), preserving stateful containers unless req.Destroy is
+	// set. It reports whether a flow was actually stopped, atomically with
+	// the existence check — a caller must use this return value rather than
+	// checking FlowStatus first, since the flow can exit on its own between
+	// two separate calls.
+	Stop(ctx context.Context, req StopRequest) (bool, error)
 	// Deploy ships service/module to an environment. It MUST be authorized
 	// through MutationAuthority (see PrepareMutation) before it will execute.
 	Deploy(ctx context.Context, req DeployRequest) (DeployResult, error)

@@ -315,7 +315,8 @@ func (s *serviceScope) RunCommand(ctx context.Context, command string, args []st
 
 func (s *serviceScope) Stop(ctx context.Context) error {
 	if s.behavior == nil {
-		return s.plane.Stop(ctx, StopRequest{})
+		_, err := s.plane.Stop(ctx, StopRequest{})
+		return err
 	}
 	_, err := s.behavior.Stop(ctx, &runtimev0.StopRequest{})
 	return err

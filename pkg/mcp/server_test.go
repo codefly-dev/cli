@@ -7,9 +7,109 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// testSyncBuffer is a bytes.Buffer safe for one writer goroutine and one
+// polling reader goroutine, needed because ServeIO now dispatches concurrent
+// request handlers that can write to the same output stream.
+type testSyncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *testSyncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *testSyncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func writeLine(t *testing.T, w io.Writer, line string) {
+	t.Helper()
+	if _, err := io.WriteString(w, line+"\n"); err != nil {
+		t.Fatalf("write %q: %v", line, err)
+	}
+}
+
+// TestServeIOHandlesRequestsConcurrentlySoASlowToolDoesNotBlockOthers proves
+// ServeIO no longer processes JSON-RPC requests one at a time: a tool call
+// blocked mid-handler must not prevent a second, independent request from
+// being read and answered. Before this fix, run_service's blocking wait
+// (default up to 300s) froze the entire server — including flow_status and
+// stop_flow, which exist specifically to be usable while a run is in
+// progress.
+func TestServeIOHandlesRequestsConcurrentlySoASlowToolDoesNotBlockOthers(t *testing.T) {
+	server, err := NewServer(context.Background(), "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	if err := server.RegisterTool(Tool{Name: "blocking_tool"}, func(_ context.Context, _ map[string]string) ([]Content, error) {
+		close(entered)
+		<-release
+		return []Content{TextContent("slow done")}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.RegisterTool(Tool{Name: "fast_tool"}, func(_ context.Context, _ map[string]string) ([]Content, error) {
+		return []Content{TextContent("fast done")}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, writer := io.Pipe()
+	var out testSyncBuffer
+	done := make(chan error, 1)
+	go func() { done <- server.ServeIO(context.Background(), reader, &out) }()
+
+	writeLine(t, writer, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"blocking_tool","arguments":{}}}`)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking_tool handler was never entered")
+	}
+
+	writeLine(t, writer, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fast_tool","arguments":{}}}`)
+
+	deadline := time.After(2 * time.Second)
+	for !strings.Contains(out.String(), `"id":2`) {
+		select {
+		case <-deadline:
+			t.Fatal("fast_tool's response never arrived while blocking_tool was still blocked — requests are still serialized")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if strings.Contains(out.String(), "slow done") {
+		t.Fatal("blocking_tool's response arrived before it was released")
+	}
+
+	close(release)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ServeIO returned error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeIO did not return after both requests completed")
+	}
+	if !strings.Contains(out.String(), "slow done") {
+		t.Fatal("blocking_tool's response never arrived after it was released")
+	}
+}
 
 func TestMCPServer_Initialize(t *testing.T) {
 	ctx := context.Background()

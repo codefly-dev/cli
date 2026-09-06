@@ -73,6 +73,44 @@ func TestStopFlowWhenNothingRunning(t *testing.T) {
 	}
 }
 
+// flow_status/stop_flow must accept an explicit flow_id (the flow_id a
+// run_service response returns) rather than only ever inferring "whichever
+// flow is currently active" — the latter silently targets the wrong flow the
+// moment more than one run_service call is in flight (run_service's
+// wait="false" option makes that reachable). These are hermetic plumbing
+// checks; pkg/control's TestFlowStatusWithExplicitFlowIDDoesNotLeakADifferentFlowsOutcome
+// covers the actual cross-flow isolation, since exercising two real
+// concurrently-running flows here would require Docker/installed agents.
+func TestFlowStatusAcceptsExplicitFlowID(t *testing.T) {
+	t.Chdir(writeMCPWorkspace(t))
+	ctx := context.Background()
+	server, err := NewServer(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	text := callTool(t, server, ctx, "flow_status", `{"flow_id":"backend/api"}`).Content[0].Text
+	if !strings.Contains(text, `"state": "idle"`) {
+		t.Errorf("flow_status with an explicit flow_id and nothing running = %q, want idle", text)
+	}
+}
+
+func TestStopFlowAcceptsExplicitFlowID(t *testing.T) {
+	t.Chdir(writeMCPWorkspace(t))
+	ctx := context.Background()
+	server, err := NewServer(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	text := callTool(t, server, ctx, "stop_flow", `{"flow_id":"backend/api"}`).Content[0].Text
+	if text != "nothing running" {
+		t.Errorf("stop_flow with an explicit flow_id and nothing running = %q, want %q", text, "nothing running")
+	}
+}
+
 func TestCloseCancelsRunContext(t *testing.T) {
 	t.Chdir(writeMCPWorkspace(t))
 	ctx := context.Background()

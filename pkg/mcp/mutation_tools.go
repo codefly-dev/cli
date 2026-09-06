@@ -105,19 +105,22 @@ func (s *Server) registerMutationTools() {
 
 	s.RegisterTool(Tool{
 		Name:        "flow_status",
-		Description: "Report the state of the flow started by run_service (idle, starting, running, stopped, failed) and its services.",
+		Description: "Report the state of a flow started by run_service (idle, starting, running, stopped, failed) and its services. Without flow_id, reports the most recently started run — pass the flow_id from run_service's response if more than one run may be active, otherwise you may see a different run's state.",
 		InputSchema: InputSchema{
-			Type:       "object",
-			Properties: map[string]PropertySchema{},
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"flow_id": {Type: "string", Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
+			},
 		},
 	}, s.flowStatus)
 
 	s.RegisterTool(Tool{
 		Name:        "stop_flow",
-		Description: "Stop the flow started by run_service. Set destroy=true to also remove stateful containers (databases lose data).",
+		Description: "Stop a flow started by run_service. Without flow_id, stops the most recently started run — pass the flow_id from run_service's response if more than one run may be active, otherwise you may stop the wrong one. Set destroy=true to also remove stateful containers (databases lose data).",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
+				"flow_id": {Type: "string", Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
 				"destroy": {Type: "string", Description: "Also remove stateful containers, e.g. databases (true/false, default false)"},
 			},
 		},
@@ -330,9 +333,13 @@ func (s *Server) generateProto(ctx context.Context, args map[string]string) ([]C
 }
 
 // runService starts service and its dependency graph through the control
-// plane. The flow is registered under s.runCtx, not the per-call ctx: the
-// per-call context ends when the JSON-RPC response is written, which would
-// stop the stack the moment this handler returns.
+// plane. The flow is registered under s.runCtx — a context scoped to the
+// server's own lifetime and cancelled only by Close — rather than ctx: ctx is
+// shared by every request this server handles (ServeIO dispatches them
+// concurrently; see its comment) and, below, this handler derives a further
+// waitCtx from it that it cancels on return. The flow must not be tied to
+// either — it has to keep running after this call returns, stopping only
+// when the server itself does.
 func (s *Server) runService(ctx context.Context, args map[string]string) ([]Content, error) {
 	if _, err := s.requireWorkspace(); err != nil {
 		return nil, err
@@ -361,29 +368,37 @@ func (s *Server) runService(ctx context.Context, args map[string]string) ([]Cont
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		if err := s.waitFlowRunning(waitCtx); err != nil {
+		if err := s.waitFlowRunning(waitCtx, handle.FlowID); err != nil {
 			return nil, err
 		}
 	}
 
-	status, _ := s.plane.FlowStatus(ctx)
+	// Scoped to handle.FlowID, not "whatever is active": Run keys flows by
+	// service, so a second run_service call for a different service can be
+	// registered while this one is still starting/running. Without the ID,
+	// this would report that other flow's state instead of this run's.
+	status, _ := s.plane.FlowStatus(ctx, handle.FlowID)
 	result := map[string]any{
 		"flow_id": handle.FlowID,
 		"state":   string(status.State),
-		"note":    "Use flow_status to poll readiness, get endpoints with service_info, and stop_flow to stop.",
+		"note":    "Use flow_status/stop_flow with flow_id=\"" + handle.FlowID + "\" to target this run specifically if others are active.",
+	}
+	if status.Error != "" {
+		result["error"] = status.Error
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
 }
 
-// waitFlowRunning polls s.plane.FlowStatus until the flow is running, it fails
-// or stops, or ctx is done. The flow itself keeps running under s.runCtx
-// regardless of how this wait ends — cancelling ctx only stops the poll.
-func (s *Server) waitFlowRunning(ctx context.Context) error {
+// waitFlowRunning polls s.plane.FlowStatus(ctx, flowID) until that flow is
+// running, it fails or stops, or ctx is done. The flow itself keeps running
+// under s.runCtx regardless of how this wait ends — cancelling ctx only stops
+// the poll.
+func (s *Server) waitFlowRunning(ctx context.Context, flowID string) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		status, err := s.plane.FlowStatus(ctx)
+		status, err := s.plane.FlowStatus(ctx, flowID)
 		if err != nil {
 			return err
 		}
@@ -421,8 +436,11 @@ func (s *Server) testService(ctx context.Context, args map[string]string) ([]Con
 }
 
 // flowStatus reports the state of the flow started by run_service.
-func (s *Server) flowStatus(ctx context.Context, _ map[string]string) ([]Content, error) {
-	status, err := s.plane.FlowStatus(ctx)
+func (s *Server) flowStatus(ctx context.Context, args map[string]string) ([]Content, error) {
+	// flow_id scopes the query to one run (its flow_id, from run_service's
+	// response) instead of "whichever flow is currently active" — needed as
+	// soon as more than one run_service call is in flight at once.
+	status, err := s.plane.FlowStatus(ctx, args["flow_id"])
 	if err != nil {
 		return nil, fmt.Errorf("flow status: %w", err)
 	}
@@ -439,21 +457,26 @@ func (s *Server) flowStatus(ctx context.Context, _ map[string]string) ([]Content
 		"state":    string(status.State),
 		"services": services,
 	}
+	if status.Error != "" {
+		result["error"] = status.Error
+	}
 	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
 }
 
 // stopFlow stops the flow started by run_service.
 func (s *Server) stopFlow(ctx context.Context, args map[string]string) ([]Content, error) {
-	before, err := s.plane.FlowStatus(ctx)
+	// Stop reports whether it found and stopped anything, checked and cleared
+	// atomically under the flow registry's own lock. A separate FlowStatus
+	// check beforehand would race: the flow can exit on its own in the gap
+	// between that check and this call, which would otherwise make stop_flow
+	// falsely report "stopped" for a flow that had already ended.
+	stopped, err := s.plane.Stop(ctx, control.StopRequest{FlowID: args["flow_id"], Destroy: args["destroy"] == "true"})
 	if err != nil {
-		return nil, fmt.Errorf("flow status: %w", err)
-	}
-	if before.State == control.FlowIdle {
-		return []Content{TextContent("nothing running")}, nil
-	}
-	if err := s.plane.Stop(ctx, control.StopRequest{Destroy: args["destroy"] == "true"}); err != nil {
 		return nil, fmt.Errorf("stop flow: %w", err)
+	}
+	if !stopped {
+		return []Content{TextContent("nothing running")}, nil
 	}
 	return []Content{TextContent("stopped")}, nil
 }

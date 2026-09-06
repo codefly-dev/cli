@@ -270,7 +270,7 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 				t.Fatalf("Run: %v", err)
 			}
 			defer func() {
-				if err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
+				if _, err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
 					t.Errorf("Stop: %v", err)
 				}
 			}()

@@ -179,6 +179,10 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		stopFlow(flow)
 		return RunHandle{}, err
 	}
+	// A fresh run supersedes whatever an earlier, unrelated run left behind;
+	// otherwise a stale failure could be reported for a run that hasn't
+	// reported anything of its own yet.
+	p.clearRunOutcome()
 	// Buffered so the final Start result never blocks the goroutine, even when
 	// nobody is waiting (req.Wait == false).
 	started := make(chan error, 1)
@@ -187,12 +191,23 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		started <- err
 		if flows.Release(flowID, flow) {
 			stopFlow(flow)
+			// The flow is no longer in the registry, so FlowStatus can no
+			// longer see it at all (Active() would just report FlowIdle,
+			// indistinguishable from "nothing was ever run"). Record how it
+			// ended so a caller polling FlowStatus — e.g. run_service's
+			// wait loop — observes FlowFailed/FlowStopped instead of hanging
+			// until it times out waiting for a state that will never come.
+			state := FlowStopped
+			if err != nil {
+				state = FlowFailed
+			}
+			p.recordRunOutcome(flowID, state, err)
 		}
 	}()
 
 	if req.Wait {
 		if err := waitReady(ctx, flow, started); err != nil {
-			_ = flows.Stop(flowID, false)
+			_, _ = flows.Stop(flowID, false)
 			return RunHandle{}, err
 		}
 	}
@@ -221,18 +236,24 @@ func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan err
 	}
 }
 
-// Stop stops the host-owned active flow. NameFilter remains a service-level
-// filter and is not yet supported by orchestration.
-func (p *planeImpl) Stop(ctx context.Context, req StopRequest) error {
+// Stop stops one host-owned flow: the one named by req.FlowID, or the
+// most-recently-started flow when FlowID is empty. It reports whether
+// anything was actually stopped. NameFilter remains a service-level filter
+// and is not yet supported by orchestration.
+func (p *planeImpl) Stop(ctx context.Context, req StopRequest) (bool, error) {
 	if p.host == nil || p.host.Flows() == nil {
-		return nil
+		return false, nil
 	}
-	id, flow := p.host.Flows().Active()
-	if flow == nil {
-		return nil // nothing running
+	id := req.FlowID
+	if id == "" {
+		id, _ = p.host.Flows().Active()
+		if id == "" {
+			return false, nil // nothing running
+		}
 	}
-	if err := p.host.Flows().Stop(id, req.Destroy); err != nil {
-		return fmt.Errorf("stop flow: %w", err)
+	stopped, err := p.host.Flows().Stop(id, req.Destroy)
+	if err != nil {
+		return stopped, fmt.Errorf("stop flow: %w", err)
 	}
-	return nil
+	return stopped, nil
 }
