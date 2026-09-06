@@ -40,6 +40,10 @@ const (
 	MethodNotFound = -32601
 	InvalidParams  = -32602
 	InternalError  = -32603
+
+	// ResourceNotFound is the MCP-specified code for resources/read on an
+	// unknown URI (distinct from InvalidParams, which means a malformed request).
+	ResourceNotFound = -32002
 )
 
 // MCP Initialize types
@@ -129,6 +133,19 @@ type ResourceContents struct {
 	MimeType string `json:"mimeType,omitempty"`
 	Text     string `json:"text,omitempty"`
 	Blob     string `json:"blob,omitempty"`
+}
+
+// ResourceTemplate advertises a family of resources addressable by URI template
+// (RFC 6570 level 1: simple {var} expansion), per MCP resources/templates/list.
+type ResourceTemplate struct {
+	URITemplate string `json:"uriTemplate"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+type ListResourceTemplatesResult struct {
+	ResourceTemplates []ResourceTemplate `json:"resourceTemplates"`
 }
 
 // Content types
