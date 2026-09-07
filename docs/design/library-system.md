@@ -516,6 +516,43 @@ proto/
         └── library.proto
 ```
 
+## Generated client libraries
+
+`codefly generate client` (see `docs/commands.md`) is the library system's first
+real producer: it turns an API contract (a local service, a composed module
+package, or a `generate contracts` export) into a library under
+`libraries/<name>/<language>/` — generated bindings plus a generated
+gateway-bound facade — with the same `libraries/<name>/library.codefly.yaml`
+this design describes, extended with a `source:` block:
+
+```yaml
+source:
+  package: codefly/saas-starter      # or "local" for a live service
+  version: 0.1.0
+  module: saas-starter
+  service: accounts
+  endpoint: connect
+  contract-digest: sha256:…
+generated-by:
+  codefly: 0.1.140
+  companion: codeflydev/proto:0.0.13
+  facade: true
+```
+
+`source.contract-digest` is the drift signal: it is the digest of the contract
+(protobuf descriptor set or OpenAPI document) the library was generated from.
+Re-running `generate client` against an unchanged contract regenerates in
+place (idempotent, byte-identical output); against a changed one, it refuses
+to overwrite the library unless `--force` is given, so a stale generated
+library is always an explicit choice, never a silent one.
+
+This complements, rather than replaces, the git-submodule and hand-authored
+paths above: a generated library still lives at `libraries/<name>/`, is loaded
+by `resources.Library` like any other (the `source:`/`generated-by:` fields
+are additive — a plain YAML decode ignores fields it does not declare), and
+flows through `add library-dependency`, `sync library-dependencies`, and
+`publish library` unchanged.
+
 ## Migration Path
 
 1. **Phase 1**: Proto definitions + core types

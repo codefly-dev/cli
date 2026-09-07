@@ -742,8 +742,9 @@ codefly agent ci --skip-conformance               # Source/build/drift debugging
 Generate client code from service APIs.
 
 ```bash
-codefly generate grpc --service api --language go --destination ./clients/api-go       # Typed gRPC client from the service's gRPC endpoints
-codefly generate openapi --service api --language typescript --destination ./clients/api-ts  # Typed OpenAPI client from the service's REST endpoints
+codefly generate client --from billing/api/grpc --language go --output libraries/billing-api-client  # A codefly library from a live local service
+codefly generate client --from package:codefly/saas-starter@0.1.0 --language go,typescript --services AuditService  # From a composed module package's contract
+codefly generate client --from contracts:module-saas-starter/contracts/api --language python --no-facade  # From a `generate contracts` export, bindings only
 codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files (Docker)
 codefly generate proto --proto ../proto --output ./generated --local                     # Same, with locally installed pinned plugins
 codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
@@ -757,15 +758,60 @@ codefly generate contracts saas-starter --check                                 
 | `--proto` | Path to proto directory |
 | `--output` | Output directory for generated code |
 
-**`generate grpc` / `generate openapi` flags:**
+#### generate client
+
+`codefly generate client` produces a **codefly library** — generated bindings plus
+a generated facade — under `libraries/<name>/<language>/`, with a
+`library.codefly.yaml` recording the contract it was generated from. It replaces
+`generate grpc`/`generate openapi` (kept as hidden, deprecated aliases that print a
+warning and delegate to `generate client --no-facade`), which produced loose files
+with no caller and no way to detect drift.
 
 | Flag | Description |
 |------|-------------|
-| `--service` | Service to generate the client for (`module/service` or an unambiguous service name) |
-| `--language` | Target language (default `go`); values accepted by `core/languages.FromString` |
-| `--destination` | Output directory; created if missing |
+| `--from` | Required. Contract source: `module/service[/endpoint]` (a local workspace service), `package:<id>@<version>` (a composed module package), or `contracts:<dir>` (a `generate contracts` export) |
+| `--language` | Required, repeatable or comma-separated: `go`, `typescript`, `python` |
+| `--services` | Restrict the facade to these protobuf services (protobuf contracts only; not supported when `--from` resolves through a descriptor set — see below) |
+| `--endpoint` | Select an endpoint when `--from package:`/`contracts:` resolves to more than one: `service/endpoint` |
+| `--name` | Library name (default `<module>-<service>-client`) |
+| `--module-name` | Facade entry-point name (default: derived from the contract's proto package) |
+| `--no-facade` | Bindings only |
+| `--output` | Output directory (default `<workspace>/libraries/<name>`) |
+| `--force` | Overwrite an existing library whose `source.contract-digest` differs |
+| `--go-module` | Go module path for `go/` (default `github.com/codefly-dev/<name>-go`) |
+| `--npm-scope` | npm package name for `typescript/` (default `@codefly-dev/<name>`) |
 
-Both client generators load the service's Builder over gRPC to read the endpoint contract, then run buf inside the `codeflydev/proto` companion image. Docker must be running.
+Re-running `generate client` for the same library regenerates in place when the
+contract is unchanged (idempotent); it refuses to overwrite a library whose
+recorded `source.contract-digest` differs, unless `--force` is given — the digest
+is the drift signal between a library and the contract it was generated from.
+
+`--from module/service[/endpoint]` loads the service's Builder to build a
+one-entry contract in memory (the same way `generate contracts` does) and
+generates from the service's own proto sources. `--from package:`/`contracts:`
+read an already-persisted contract (a `contract.binpb`/`openapi.json` plus
+catalog entry) and generate from its descriptor bytes — a known upstream
+limitation in the facade plugin currently means `--services` filtering does not
+work over a multi-file descriptor set from these two sources; use the local
+source, or omit `--services` to generate the full contract's facade.
+
+##### Library layout
+
+```
+libraries/saas-starter-accounts-client/
+  library.codefly.yaml
+  contract/
+    catalog.codefly.json         # the endpoint's catalog entry (subset if --services)
+    contract.binpb | openapi.json
+  go/        go.mod, gen/…, accounts_facade.pb.go
+  typescript/ package.json, src/gen/…, src/accounts_facade.ts
+  python/    pyproject.toml, <pkg>/_gen/…, <pkg>/accounts.py
+```
+
+Use `codefly sync library-dependencies` to link a generated library into a
+service locally, and `codefly publish library <name>` to distribute it.
+
+Generation runs buf inside the `codeflydev/proto` companion image; Docker must be running.
 
 #### generate contracts
 
