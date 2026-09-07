@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
+	"github.com/codefly-dev/core/standards"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -433,4 +434,76 @@ func TestGenerateContractsCheckDetectsDrift(t *testing.T) {
 	if err := ContractsCmd.RunE(ContractsCmd, []string{"billing"}); err != nil {
 		t.Fatalf("--check after restoring the contract should exit 0: %v", err)
 	}
+}
+
+func TestEndpointCarriesContract(t *testing.T) {
+	for _, api := range []string{standards.GRPC, standards.CONNECT, standards.REST} {
+		if !endpointCarriesContract(api) {
+			t.Errorf("endpointCarriesContract(%q) = false, want true", api)
+		}
+	}
+	for _, api := range []string{standards.HTTP, standards.TCP} {
+		if endpointCarriesContract(api) {
+			t.Errorf("endpointCarriesContract(%q) = true, want false", api)
+		}
+	}
+}
+
+func TestServiceContractPackage(t *testing.T) {
+	// protoDir holds the service's own files; imports buf pulls in live
+	// elsewhere and must be ignored even when they declare services.
+	protoDir := t.TempDir()
+	for _, rel := range []string{"saas/acct/v1/api.proto", "saas/shared/v1/types.proto"} {
+		full := filepath.Join(protoDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("syntax = \"proto3\";\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	file := func(name, pkg string, withService bool) *descriptorpb.FileDescriptorProto {
+		f := &descriptorpb.FileDescriptorProto{Name: googleproto.String(name), Package: googleproto.String(pkg)}
+		if withService {
+			f.Service = []*descriptorpb.ServiceDescriptorProto{{Name: googleproto.String("Svc")}}
+		}
+		return f
+	}
+
+	t.Run("single service package, ignoring message-only packages and imports", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+			file("saas/shared/v1/types.proto", "saas.shared.v1", false),
+			// an import: has a service but is not one of the service's own files.
+			file("google/protobuf/descriptor.proto", "google.protobuf", true),
+		}}
+		pkg, err := serviceContractPackage(set, protoDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pkg != "saas.acct.v1" {
+			t.Fatalf("pkg = %q, want saas.acct.v1", pkg)
+		}
+	})
+
+	t.Run("no own file declares a service is an error", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", false),
+			file("saas/shared/v1/types.proto", "saas.shared.v1", false),
+		}}
+		if _, err := serviceContractPackage(set, protoDir); err == nil {
+			t.Fatal("expected an error when no own file declares a service")
+		}
+	})
+
+	t.Run("services across multiple own packages is an error", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+			file("saas/shared/v1/types.proto", "saas.shared.v1", true),
+		}}
+		if _, err := serviceContractPackage(set, protoDir); err == nil {
+			t.Fatal("expected an error when services span multiple packages")
+		}
+	})
 }
