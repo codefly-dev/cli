@@ -9,9 +9,10 @@ func TestGenerateCommandsReturnErrorsThroughCobra(t *testing.T) {
 		runE bool
 		args bool
 	}{
-		"proto":   {runE: ProtoCmd.RunE != nil, args: ProtoCmd.Args != nil},
-		"grpc":    {runE: GRPCCmd.RunE != nil, args: GRPCCmd.Args != nil},
-		"openapi": {runE: OpenAPICmd.RunE != nil, args: OpenAPICmd.Args != nil},
+		"proto":     {runE: ProtoCmd.RunE != nil, args: ProtoCmd.Args != nil},
+		"grpc":      {runE: GRPCCmd.RunE != nil, args: GRPCCmd.Args != nil},
+		"openapi":   {runE: OpenAPICmd.RunE != nil, args: OpenAPICmd.Args != nil},
+		"contracts": {runE: ContractsCmd.RunE != nil, args: ContractsCmd.Args != nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !command.runE {

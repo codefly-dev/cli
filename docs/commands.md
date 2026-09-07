@@ -746,6 +746,8 @@ codefly generate grpc --service api --language go --destination ./clients/api-go
 codefly generate openapi --service api --language typescript --destination ./clients/api-ts  # Typed OpenAPI client from the service's REST endpoints
 codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files (Docker)
 codefly generate proto --proto ../proto --output ./generated --local                     # Same, with locally installed pinned plugins
+codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
+codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
 ```
 
 **`generate proto` flags:**
@@ -764,6 +766,26 @@ codefly generate proto --proto ../proto --output ./generated --local            
 | `--destination` | Output directory; created if missing |
 
 Both client generators load the service's Builder over gRPC to read the endpoint contract, then run buf inside the `codeflydev/proto` companion image. Docker must be running.
+
+#### generate contracts
+
+`codefly generate contracts [module]` exports the API contract of every endpoint a
+module's `interface` declares (`module.codefly.yaml`'s `interface:` block) into
+`contracts/api` and writes `contracts/api/catalog.codefly.json`. gRPC and connect
+endpoints get a serialized `FileDescriptorSet` (`contract.binpb`) plus a copy of
+the service's proto sources; REST endpoints get their OpenAPI document
+(`openapi.json`). HTTP and TCP endpoints have no machine-readable contract and are
+skipped. When the module has a `module.package.codefly.yaml`, its
+`services[*].api-contracts` are updated to match.
+
+Run it before `module-package build`; the package carries the result. `--check`
+is the CI drift gate.
+
+| Flag | Description |
+|------|-------------|
+| `--output` | Output directory (default: `<module dir>/contracts/api`) |
+| `--check` | Do not write; exit 1 if the on-disk catalog differs from what would be generated |
+| `--format` | `text` (default) or `json`; `json` prints the catalog to stdout |
 
 ---
 
