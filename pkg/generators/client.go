@@ -448,9 +448,10 @@ func writeContractFiles(ctx context.Context, outputDir string, entries []Contrac
 		return err
 	}
 	if len(entries) == 1 {
-		return writeOneContractDir(ctx, contractRoot, entries[0])
+		return writeOneContractDir(ctx, contractRoot, &entries[0])
 	}
-	for _, entry := range entries {
+	for i := range entries {
+		entry := &entries[i]
 		dir := filepath.Join(contractRoot, contractEntryDirName(entry))
 		if err := writeOneContractDir(ctx, dir, entry); err != nil {
 			return err
@@ -459,7 +460,7 @@ func writeContractFiles(ctx context.Context, outputDir string, entries []Contrac
 	return nil
 }
 
-func contractEntryDirName(entry ContractEntry) string {
+func contractEntryDirName(entry *ContractEntry) string {
 	module := entry.ModuleName
 	if module == "" {
 		module = localPackageID
@@ -467,7 +468,7 @@ func contractEntryDirName(entry ContractEntry) string {
 	return fmt.Sprintf("%s-%s-%s", module, entry.Endpoint.Service, entry.Endpoint.Endpoint)
 }
 
-func writeOneContractDir(ctx context.Context, contractDir string, entry ContractEntry) error {
+func writeOneContractDir(ctx context.Context, contractDir string, entry *ContractEntry) error {
 	if err := os.MkdirAll(contractDir, 0o755); err != nil {
 		return err
 	}
@@ -532,7 +533,8 @@ func writeLibraryManifest(ctx context.Context, outputDir, name string, entries [
 	}
 
 	sources := make([]librarySource, 0, len(entries))
-	for _, entry := range entries {
+	for i := range entries {
+		entry := &entries[i]
 		packageID := entry.PackageID
 		if packageID == "" {
 			packageID = localPackageID
@@ -581,8 +583,8 @@ func writeLibraryManifest(ctx context.Context, outputDir, name string, entries [
 }
 
 func anyProtobuf(entries []ContractEntry) bool {
-	for _, entry := range entries {
-		if entry.Endpoint.Kind == composition.APIContractKindProtobuf {
+	for i := range entries {
+		if entries[i].Endpoint.Kind == composition.APIContractKindProtobuf {
 			return true
 		}
 	}

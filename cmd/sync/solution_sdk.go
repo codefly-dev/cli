@@ -131,7 +131,8 @@ func runSyncSolutionSDK(ctx context.Context) error {
 // contract catalog, version-checked and services-validated.
 func resolveConsumedContracts(ctx context.Context, workspace *resources.Workspace, solutionManifest *manifest.Manifest) ([]generators.ContractEntry, error) {
 	var entries []generators.ContractEntry
-	for _, consume := range solutionManifest.API.Consumes {
+	for i := range solutionManifest.API.Consumes {
+		consume := &solutionManifest.API.Consumes[i]
 		if consume.Module == "" {
 			continue
 		}
@@ -162,13 +163,13 @@ func resolveConsumedContracts(ctx context.Context, workspace *resources.Workspac
 		}
 
 		if strings.TrimSpace(consume.Version) != "" {
-			constraint, err := semver.NewConstraint(consume.Version)
-			if err != nil {
-				return nil, fmt.Errorf("consume %s/%s: invalid version constraint %q: %w", consume.Module, consume.Service, consume.Version, err)
+			constraint, constraintErr := semver.NewConstraint(consume.Version)
+			if constraintErr != nil {
+				return nil, fmt.Errorf("consume %s/%s: invalid version constraint %q: %w", consume.Module, consume.Service, consume.Version, constraintErr)
 			}
-			composedVersion, err := semver.NewVersion(pkgManifest.Version)
-			if err != nil {
-				return nil, fmt.Errorf("module %s package version %q is invalid: %w", consume.Module, pkgManifest.Version, err)
+			composedVersion, versionErr := semver.NewVersion(pkgManifest.Version)
+			if versionErr != nil {
+				return nil, fmt.Errorf("module %s package version %q is invalid: %w", consume.Module, pkgManifest.Version, versionErr)
 			}
 			if !constraint.Check(composedVersion) {
 				return nil, fmt.Errorf("composed %s@%s does not satisfy %s", pkgManifest.ID, pkgManifest.Version, consume.Version)
@@ -274,7 +275,8 @@ func missingServiceDependencies(service *resources.Service, entries []generators
 		existing[[2]string{dep.Name, dep.Module}] = true
 	}
 	var missing []missingDependency
-	for _, entry := range entries {
+	for i := range entries {
+		entry := &entries[i]
 		if existing[[2]string{entry.Endpoint.Service, entry.ModuleName}] {
 			continue
 		}
@@ -302,7 +304,7 @@ func applyServiceDependencies(service *resources.Service, missing []missingDepen
 
 	items := make([]*yaml.Node, 0, len(missing))
 	for _, m := range missing {
-		item, err := yamledit.Encode(struct {
+		item, encodeErr := yamledit.Encode(struct {
 			Name      string              `yaml:"name"`
 			Module    string              `yaml:"module"`
 			Endpoints []map[string]string `yaml:"endpoints"`
@@ -311,8 +313,8 @@ func applyServiceDependencies(service *resources.Service, missing []missingDepen
 			Module:    m.Module,
 			Endpoints: []map[string]string{{"name": m.Endpoint}},
 		})
-		if err != nil {
-			return err
+		if encodeErr != nil {
+			return encodeErr
 		}
 		items = append(items, item)
 	}
@@ -362,8 +364,8 @@ func runSolutionSDKCheck(ctx context.Context, name, outputDir string, entries []
 		}
 		defer func() { _ = os.RemoveAll(tempDir) }()
 
-		if err := generateSolutionSDKInto(ctx, name, tempDir, entries); err != nil {
-			return err
+		if genErr := generateSolutionSDKInto(ctx, name, tempDir, entries); genErr != nil {
+			return genErr
 		}
 		diffs, err := diffTrees(tempDir, outputDir)
 		if err != nil {
@@ -458,7 +460,8 @@ func listRelativeFiles(root string) (map[string][]byte, error) {
 }
 
 func printResolvedEntries(entries []generators.ContractEntry) {
-	for _, entry := range entries {
+	for i := range entries {
+		entry := &entries[i]
 		services := "all"
 		if len(entry.Services) > 0 {
 			services = strings.Join(entry.Services, ", ")
