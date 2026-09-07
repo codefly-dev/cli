@@ -526,6 +526,12 @@ func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
 	}
 	runner.WithMount(tmpDir, "/workspace")
 	runner.WithWorkDir("/workspace")
+	// Run buf as the host user so the descriptor and buf.lock it writes into the
+	// bind-mounted tmp dir are owned by this process, not root. Without this the
+	// container writes root-owned files that a non-root CI runner cannot read
+	// back or clean up ("permission denied"); the proto companion sets HOME=/tmp
+	// precisely so it runs as an arbitrary UID. Mirrors core's runBuf.
+	runner.WithUser(fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
 	runner.WithPause()
 	defer func() {
 		cleanupCtx := context.WithoutCancel(ctx)
