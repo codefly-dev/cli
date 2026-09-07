@@ -2,10 +2,13 @@ package generate
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -80,7 +83,7 @@ func init() {
 	ClientCmd.Flags().BoolVar(&clientNoFacade, "no-facade", false, "generate bindings only, no facade")
 	ClientCmd.Flags().StringVar(&clientOutput, "output", "", "output directory (default: <workspace>/libraries/<name>)")
 	ClientCmd.Flags().BoolVar(&clientForce, "force", false, "overwrite an existing library with a different contract digest")
-	ClientCmd.Flags().StringVar(&clientEndpoint, "endpoint", "", "select an endpoint when --from resolves to more than one: service/endpoint")
+	ClientCmd.Flags().StringVar(&clientEndpoint, "endpoint", "", "select an endpoint when --from package:/contracts: resolves to more than one: service/endpoint (a local --from names its endpoint as its own third segment instead)")
 	ClientCmd.Flags().StringVar(&clientGoModule, "go-module", "", "Go module path for the generated go/ library (default: github.com/codefly-dev/<name>-go)")
 	ClientCmd.Flags().StringVar(&clientNpmScope, "npm-scope", "", "npm package name for the generated typescript/ library (default: @codefly-dev/<name>)")
 }
@@ -136,12 +139,42 @@ func runGenerateClient(ctx context.Context) error {
 		return fmt.Errorf("cannot resolve output path: %w", err)
 	}
 
+	// The whole read-decide-write cycle (check the existing digest and
+	// language list, then generate and write) is one critical section: two
+	// concurrent `generate client` invocations targeting the same output
+	// directory would otherwise each read a stale snapshot and race to
+	// remove/repopulate the same gen/ subtrees, producing a corrupted
+	// interleaved library. A cross-process lock keyed on outputDir serializes
+	// it, the same pattern `codefly run`'s pinned-module materialization uses
+	// for the analogous shared-output-directory hazard.
+	lockPath := filepath.Join(resources.CodeflyHomeDir(), "locks", fmt.Sprintf("%x.generate-client.lock", sha256.Sum256([]byte(filepath.Clean(outputDir)))))
+	return clicomposition.WithFileLock(lockPath, 5*time.Minute, func() error {
+		return generateClientLocked(ctx, source, langs, name, outputDir)
+	})
+}
+
+// generateClientLocked is runGenerateClient's write phase, run while
+// WithFileLock holds outputDir's lock.
+func generateClientLocked(ctx context.Context, source *resolvedContractSource, langs []languages.Language, name, outputDir string) error {
 	existingDigest, hasExisting, err := readExistingLibraryDigest(outputDir)
 	if err != nil {
 		return err
 	}
 	if hasExisting && existingDigest != source.endpoint.Digest && !clientForce {
 		return fmt.Errorf("library %s already exists with a different contract (digest %s, generating %s); use --force to overwrite", name, existingDigest, source.endpoint.Digest)
+	}
+	// Only carry a previously-declared language forward when this run's
+	// contract is the same one that produced it (an unchanged digest, or a
+	// brand new library). A --force digest override means the contract
+	// changed: a language directory this run does not touch is now stale
+	// relative to it, so the manifest must stop vouching for it rather than
+	// claim it matches a digest it was never generated against.
+	var existingLanguages []generatedLanguageExport
+	if !hasExisting || existingDigest == source.endpoint.Digest {
+		existingLanguages, err = readExistingLanguageExports(outputDir)
+		if err != nil {
+			return err
+		}
 	}
 
 	moduleName := strings.TrimSpace(clientModuleName)
@@ -169,6 +202,9 @@ func runGenerateClient(ctx context.Context) error {
 
 	var langExports []generatedLanguageExport
 	for _, lang := range langs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		export, genErr := generateLanguage(ctx, lang, outputDir, moduleName, clientServices, !clientNoFacade, source, goModule, npmPackage, pyPackage)
 		if genErr != nil {
 			return fmt.Errorf("cannot generate %s client: %w", lang, genErr)
@@ -176,6 +212,8 @@ func runGenerateClient(ctx context.Context) error {
 		langExports = append(langExports, export)
 		cli.Info("generated %s client at %s", lang, filepath.Join(outputDir, string(lang)))
 	}
+
+	langExports = mergeLanguageExports(existingLanguages, langExports, langs)
 
 	if err := writeLibraryManifest(ctx, outputDir, name, source, langExports, !clientNoFacade); err != nil {
 		return fmt.Errorf("cannot write %s: %w", resources.LibraryConfigurationName, err)
@@ -262,6 +300,14 @@ func resolveClientSource(ctx context.Context, workspace *resources.Workspace, fr
 	case strings.HasPrefix(from, "contracts:"):
 		return resolveContractsDirSource(ctx, strings.TrimPrefix(from, "contracts:"), endpointHint)
 	default:
+		// A local --from names its endpoint as --from's own third segment
+		// (module/service/endpoint), not --endpoint: --endpoint disambiguates
+		// a catalog with more than one entry, which a local source (always
+		// exactly one live service) never has. Silently accepting --endpoint
+		// here would look like it worked while doing nothing.
+		if endpointHint != "" {
+			return nil, fmt.Errorf("--endpoint does not apply to --from %q; append /<endpoint> to --from instead (module/service/endpoint)", from)
+		}
 		return resolveLocalSource(ctx, workspace, from)
 	}
 }
@@ -452,13 +498,24 @@ func resolvePackageSource(ctx context.Context, workspace *resources.Workspace, s
 	}
 	id, version := spec[:idx], spec[idx+1:]
 
+	var problems []string
 	for _, ref := range workspace.Modules {
 		dir, resolveErr := resolveComposedModuleDir(ctx, workspace, ref)
 		if resolveErr != nil {
+			// Not necessarily "this ref isn't the package" — it may be the
+			// right one, unresolvable (a network/auth failure pulling a
+			// pinned artifact, a moved tag). Report it below rather than
+			// silently reporting the wrong module reference isn't composed
+			// at all when the real cause is that it couldn't be checked.
+			problems = append(problems, fmt.Sprintf("%s: cannot resolve: %v", ref.Name, resolveErr))
 			continue
 		}
 		manifest, manifestErr := composition.LoadPackageManifest(dir)
-		if manifestErr != nil || manifest.ID != id {
+		if manifestErr != nil {
+			problems = append(problems, fmt.Sprintf("%s: cannot load package manifest: %v", ref.Name, manifestErr))
+			continue
+		}
+		if manifest.ID != id {
 			continue
 		}
 		if manifest.Version != version {
@@ -489,6 +546,9 @@ func resolvePackageSource(ctx context.Context, workspace *resources.Workspace, s
 			facadeModuleDefault: defaultFacadeModuleName(entry),
 		}, nil
 	}
+	if len(problems) > 0 {
+		return nil, fmt.Errorf("workspace does not compose package %q, and %d module reference(s) could not be checked: %s", id, len(problems), strings.Join(problems, "; "))
+	}
 	return nil, fmt.Errorf("workspace does not compose package %q", id)
 }
 
@@ -518,11 +578,20 @@ func resolveContractsDirSource(ctx context.Context, dir, endpointHint string) (*
 	if err != nil {
 		return nil, fmt.Errorf("cannot resolve %s: %w", dir, err)
 	}
+	// dir may be the module dir itself or its contracts/api subdirectory
+	// directly; try structurally (does a catalog actually load from here)
+	// rather than guessing from path segment names, which a module dir that
+	// coincidentally ends in .../contracts/api for unrelated reasons could
+	// fool into stripping two levels too many.
 	moduleDir := dir
-	if filepath.Base(moduleDir) == "api" && filepath.Base(filepath.Dir(moduleDir)) == "contracts" {
-		moduleDir = filepath.Dir(filepath.Dir(moduleDir))
-	}
 	catalog, err := composition.LoadAPIContractCatalog(moduleDir)
+	if err != nil {
+		if asExportDir := filepath.Dir(filepath.Dir(dir)); asExportDir != dir {
+			if fromParent, parentErr := composition.LoadAPIContractCatalog(asExportDir); parentErr == nil {
+				moduleDir, catalog, err = asExportDir, fromParent, nil
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot load API contract catalog: %w", err)
 	}
@@ -657,6 +726,55 @@ func readExistingLibraryDigest(libraryDir string) (digest string, exists bool, e
 		return "", true, fmt.Errorf("cannot parse existing %s: %w", resources.LibraryConfigurationName, err)
 	}
 	return doc.Source.ContractDigest, true, nil
+}
+
+// readExistingLanguageExports reads the languages: entries an existing
+// libraries/<name>/library.codefly.yaml already declares, if any.
+func readExistingLanguageExports(libraryDir string) ([]generatedLanguageExport, error) {
+	data, err := os.ReadFile(filepath.Join(libraryDir, resources.LibraryConfigurationName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var doc struct {
+		Languages []generatedLanguageExport `yaml:"languages"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("cannot parse existing %s: %w", resources.LibraryConfigurationName, err)
+	}
+	return doc.Languages, nil
+}
+
+// mergeLanguageExports combines this run's freshly generated exports with an
+// existing manifest's, so requesting a subset of languages (e.g. --language
+// go to refresh just one binding) does not silently drop the declaration of
+// languages generated by an earlier run and left untouched by this one —
+// their directories are still there (generateLanguage no longer wipes a
+// language it wasn't asked to touch), so the manifest must keep saying so.
+// A language actually requested this run always comes from fresh, never the
+// prior entry, since fresh reflects what was just (re)generated.
+func mergeLanguageExports(existing, fresh []generatedLanguageExport, requested []languages.Language) []generatedLanguageExport {
+	requestedNames := make(map[string]bool, len(requested))
+	for _, l := range requested {
+		requestedNames[string(l)] = true
+	}
+	merged := make([]generatedLanguageExport, 0, len(existing)+len(fresh))
+	seen := make(map[string]bool, len(existing)+len(fresh))
+	for _, e := range fresh {
+		merged = append(merged, e)
+		seen[e.Name] = true
+	}
+	for _, e := range existing {
+		if requestedNames[e.Name] || seen[e.Name] {
+			continue
+		}
+		merged = append(merged, e)
+		seen[e.Name] = true
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
+	return merged
 }
 
 // writeContractFiles writes a generated library's contract/ directory: the

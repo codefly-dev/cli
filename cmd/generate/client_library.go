@@ -44,11 +44,19 @@ type generatedLanguageExport struct {
 // generateLanguage generates one language's export for the library: the
 // per-language directory, bindings under gen/ (or _gen/ for python), the
 // facade hoisted alongside it, and the language's own package scaffolding.
+//
+// langDir itself is never wiped: it is not a purely generated directory — the
+// facade and scaffold files (go.mod, package.json, pyproject.toml,
+// tsconfig.json) live at its root by design, exactly where a developer would
+// naturally add a README, a license, or a hand-edit to a scaffold file (a
+// bumped dependency, a private registry setting). Only the pieces this
+// command knows are entirely its own — the gen/ (_gen/ for python)
+// subdirectory and the single, by-name-identified facade file — are removed
+// and rewritten; scaffold files are written once and never touched again
+// once present (see writeFileIfMissing), so a hand-edit survives a rerun,
+// including an idempotent one where nothing about the contract changed.
 func generateLanguage(ctx context.Context, lang languages.Language, outputDir, moduleName string, servicesFilter []string, facade bool, source *resolvedContractSource, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
 	langDir := filepath.Join(outputDir, string(lang))
-	if err := os.RemoveAll(langDir); err != nil {
-		return generatedLanguageExport{}, err
-	}
 	if err := os.MkdirAll(langDir, 0o755); err != nil {
 		return generatedLanguageExport{}, err
 	}
@@ -106,7 +114,7 @@ func generateProtobufLanguage(ctx context.Context, lang languages.Language, lang
 		}
 		return export, writeTypeScriptScaffold(langDir, npmPackage)
 	case languages.PYTHON:
-		return assemblePythonLibrary(langDir, raw, pyPackage)
+		return assemblePythonLibrary(langDir, raw, moduleName, pyPackage)
 	default:
 		return generatedLanguageExport{}, fmt.Errorf("language %s is not supported for client generation", lang)
 	}
@@ -122,6 +130,9 @@ func generateOpenAPILanguage(ctx context.Context, lang languages.Language, langD
 	}
 
 	genDir := filepath.Join(langDir, "gen")
+	if err := os.RemoveAll(genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		return generatedLanguageExport{}, err
 	}
@@ -137,7 +148,13 @@ func generateOpenAPILanguage(ctx context.Context, lang languages.Language, langD
 	}
 
 	if lang == languages.GO {
-		if err := writeGoModule(genDir, goModule); err != nil {
+		// go.mod lives at langDir, not genDir: genDir is fully regenerated
+		// every run (it is proto.GenerateOpenAPI's own output), but go.mod is
+		// a scaffold file a developer may hand-edit (an added dependency, a
+		// replace directive) and findModRoot walks up from genDir to find it
+		// either way, so placing it one level up costs nothing and makes it
+		// write-once like the protobuf path's go.mod.
+		if err := writeGoModule(langDir, goModule); err != nil {
 			return generatedLanguageExport{}, err
 		}
 	}
@@ -146,7 +163,7 @@ func generateOpenAPILanguage(ctx context.Context, lang languages.Language, langD
 	}
 
 	if lang == languages.GO {
-		bestEffortGoModTidy(genDir)
+		bestEffortGoModTidy(langDir)
 		return generatedLanguageExport{Name: "go", Path: "go/", Exports: []string{goModule}}, nil
 	}
 	if err := writeTypeScriptScaffold(langDir, npmPackage); err != nil {
@@ -235,6 +252,18 @@ func assembleGoLibrary(langDir, raw, moduleName, goModule string) (generatedLang
 	}
 
 	genDir := filepath.Join(langDir, "gen")
+	if err := os.RemoveAll(genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	// A prior run's facade file(s), if --module-name changed since (a
+	// different basename), would otherwise linger at langDir's root
+	// alongside the new one: langDir itself is no longer wiped wholesale
+	// (see generateLanguage), so any generated-facade leftover needs its own
+	// explicit cleanup, scoped by the one filename shape this command ever
+	// writes there.
+	if err := removeMatching(langDir, "*_facade.pb.go"); err != nil {
+		return generatedLanguageExport{}, err
+	}
 	if err := moveTreeSplitBySuffix(raw, genDir, langDir, "_facade.pb.go"); err != nil {
 		return generatedLanguageExport{}, err
 	}
@@ -251,6 +280,14 @@ func assembleGoLibrary(langDir, raw, moduleName, goModule string) (generatedLang
 // gen/ instead.
 func assembleTypeScriptLibrary(langDir, raw, npmPackage string) (generatedLanguageExport, error) {
 	srcDir := filepath.Join(langDir, "src")
+	// Unlike go/ and python/, the scaffold files here (package.json,
+	// tsconfig.json) live at langDir's root, not under src/: src/ in its
+	// entirety is this command's own output, so it is safe (and simplest) to
+	// wipe the whole subtree rather than track a facade filename that can
+	// change across runs.
+	if err := os.RemoveAll(srcDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
 	genDir := filepath.Join(srcDir, "gen")
 	facadeFiles, err := moveTreeSplitBySuffixWithRelDir(raw, genDir, srcDir, "_facade.ts")
 	if err != nil {
@@ -270,30 +307,66 @@ func assembleTypeScriptLibrary(langDir, raw, npmPackage string) (generatedLangua
 	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
 }
 
-// assemblePythonLibrary moves raw's package-path bindings under
-// pyPackage/_gen/, hoists the facade file (written at raw's root) to
-// pyPackage/, and rewrites both the facade's and the bindings' own absolute
-// `import <proto.package>...`/`from <proto.package>...` references to go
+// assemblePythonLibrary moves raw's bindings under pyPackage/_gen/, hoists
+// the facade file (proto.GenerateClient's Python facade plugin always writes
+// it at destination root, named "<moduleName>.py") to pyPackage/, and
+// rewrites both the facade's and the bindings' own import references to go
 // through pyPackage._gen instead.
-func assemblePythonLibrary(langDir, raw, pyPackage string) (generatedLanguageExport, error) {
+func assemblePythonLibrary(langDir, raw, moduleName, pyPackage string) (generatedLanguageExport, error) {
 	pkgDir := filepath.Join(langDir, pyPackage)
 	genDir := filepath.Join(pkgDir, "_gen")
-	if err := moveTreeSplitByDepth(raw, genDir, pkgDir); err != nil {
+	facadeFileName := moduleName + ".py"
+	if err := os.RemoveAll(genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	// A prior run's facade, if --module-name changed since (a different
+	// basename), would otherwise linger at pkgDir's root: nothing else this
+	// command writes there matches "*.py" other than __init__.py, so this
+	// only ever removes a stale generated facade, never a hand-added module.
+	if err := removeMatching(pkgDir, "*.py", "__init__.py"); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	if err := movePythonTree(raw, genDir, pkgDir, facadeFileName); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	if err := writePythonInitFiles(genDir); err != nil {
 		return generatedLanguageExport{}, err
 	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "__init__.py"), nil, 0o644); err != nil { //nolint:gosec
+	if err := writeFileIfMissing(filepath.Join(pkgDir, "__init__.py"), nil); err != nil {
 		return generatedLanguageExport{}, err
 	}
-	if err := rewritePythonImportPrefix(pkgDir, findPythonProtoPackages(raw), pyPackage+"._gen"); err != nil {
+	if err := rewritePythonImportPrefix(pkgDir, findPythonImportRoots(raw, facadeFileName), pyPackage+"._gen"); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	if err := writePythonScaffold(langDir, pyPackage); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	return generatedLanguageExport{Name: "python", Path: "python/", Exports: []string{pyPackage}}, nil
+}
+
+// movePythonTree moves raw's tree into dst (preserving each file's relative
+// path, whatever its depth) except the exact facade file, which moves to
+// flatDst. Depth cannot distinguish "the facade" from "a binding": a proto
+// file with no package-derived directory of its own (e.g. a service scaffold
+// whose .proto declares no versioned package, so its *_pb2.py lands at raw's
+// root too) previously made every top-level file look like the facade,
+// leaving bindings never moved into _gen/ and the facade's own `import
+// <binding>` (now a sibling, not a package member) unresolvable at runtime —
+// confirmed as ModuleNotFoundError, not just a layout nit.
+func movePythonTree(src, dst, flatDst, facadeFileName string) error {
+	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		if rel == facadeFileName {
+			return copyFile(p, filepath.Join(flatDst, rel))
+		}
+		return copyFile(p, filepath.Join(dst, rel))
+	})
 }
 
 // moveTreeSplitBySuffix moves every file under src into dst (preserving
@@ -330,57 +403,41 @@ func moveTreeSplitBySuffixWithRelDir(src, dst, flatDst, suffix string) (map[stri
 	return hoisted, err
 }
 
-// moveTreeSplitByDepth moves every top-level file directly under src into
-// flatDst (the python facade, which proto.GenerateClient's facade plugin
-// always writes at destination root) and every nested file into dst
-// (preserving its relative path) — the generated bindings, which always live
-// under a proto-package-derived subdirectory.
-func moveTreeSplitByDepth(src, dst, flatDst string) error {
-	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, err := filepath.Rel(src, p)
-		if err != nil {
-			return err
-		}
-		if !strings.Contains(rel, string(filepath.Separator)) {
-			return copyFile(p, filepath.Join(flatDst, rel))
-		}
-		return copyFile(p, filepath.Join(dst, rel))
-	})
-}
-
-// findPythonProtoPackages returns the dotted proto package names implied by
-// every top-level directory tree in raw (e.g. "saas/accounts/v1" -> nothing;
-// it is the *_pb2.py files' own package, discovered from their directory
-// path): every directory that directly contains a .py file, expressed as a
-// dotted path. Used to scope the import-prefix rewrite to exactly the
-// packages this generation produced, not any substring match.
-func findPythonProtoPackages(raw string) []string {
+// findPythonImportRoots returns the import roots the facade/bindings
+// generated in raw actually use: for a binding under a proto-package
+// directory (e.g. "saas/accounts/v1/audit_pb2.py"), the dotted directory
+// ("saas.accounts.v1"); for a binding with no directory component of its own
+// (a proto file with no package-derived subdirectory, e.g. "api_pb2.py" at
+// raw's root), its own module name ("api_pb2") — the flat `import api_pb2`
+// form the facade uses in that case. facadeFileName is excluded: nothing
+// imports the facade module by name. Used to scope the import-prefix
+// rewrite to exactly the modules this generation produced, not any
+// substring match.
+func findPythonImportRoots(raw, facadeFileName string) []string {
 	seen := map[string]bool{}
-	var packages []string
+	var roots []string
 	_ = filepath.WalkDir(raw, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".py") {
 			return nil
 		}
 		rel, err := filepath.Rel(raw, p)
-		if err != nil {
+		if err != nil || rel == facadeFileName {
 			return nil
 		}
-		dir := filepath.Dir(rel)
-		if dir == "." {
-			return nil
+		var root string
+		if dir := filepath.Dir(rel); dir == "." {
+			root = strings.TrimSuffix(filepath.Base(rel), ".py")
+		} else {
+			root = strings.ReplaceAll(filepath.ToSlash(dir), "/", ".")
 		}
-		dotted := strings.ReplaceAll(filepath.ToSlash(dir), "/", ".")
-		if !seen[dotted] {
-			seen[dotted] = true
-			packages = append(packages, dotted)
+		if !seen[root] {
+			seen[root] = true
+			roots = append(roots, root)
 		}
 		return nil
 	})
-	sort.Strings(packages)
-	return packages
+	sort.Strings(roots)
+	return roots
 }
 
 // pythonImportLineRe matches a single "import <pkg>..." or "from <pkg> ..."
@@ -460,6 +517,46 @@ func copyFile(src, dst string) error {
 	return err
 }
 
+// removeMatching removes every file directly in dir (non-recursive) whose
+// basename matches pattern, except any name listed in keep. Used to clear a
+// stale generated artifact (e.g. a facade file left over from a
+// --module-name that has since changed) before writing its replacement,
+// without touching anything else in a directory this command does not fully
+// own.
+func removeMatching(dir, pattern string, keep ...string) error {
+	matches, err := filepath.Glob(filepath.Join(dir, pattern))
+	if err != nil {
+		return err
+	}
+	kept := make(map[string]bool, len(keep))
+	for _, k := range keep {
+		kept[filepath.Join(dir, k)] = true
+	}
+	for _, m := range matches {
+		if kept[m] {
+			continue
+		}
+		if err := os.Remove(m); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeFileIfMissing writes content to path only if no file is already
+// there, so a hand-edited scaffold file (an added dependency, a private
+// registry setting, license text) survives a later regenerate instead of
+// being silently reset to the template on every run — including a run where
+// the contract did not change at all.
+func writeFileIfMissing(path string, content []byte) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, content, 0o644) //nolint:gosec
+}
+
 func writeGoModule(dir, goModule string) error {
 	content := fmt.Sprintf(`module %s
 
@@ -470,7 +567,7 @@ require (
 	google.golang.org/protobuf %s
 )
 `, goModule, goLanguageVersion, pinnedConnectVersion, pinnedProtobufVersion)
-	return os.WriteFile(filepath.Join(dir, "go.mod"), []byte(content), 0o644) //nolint:gosec
+	return writeFileIfMissing(filepath.Join(dir, "go.mod"), []byte(content))
 }
 
 // bestEffortGoModTidy runs `go mod tidy` if go is on PATH, so the checked-in
@@ -512,7 +609,7 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
   }
 }
 `, npmPackage)
-	if err := os.WriteFile(filepath.Join(langDir, "package.json"), []byte(packageJSON), 0o644); err != nil { //nolint:gosec
+	if err := writeFileIfMissing(filepath.Join(langDir, "package.json"), []byte(packageJSON)); err != nil {
 		return err
 	}
 	tsconfig := `{
@@ -529,7 +626,7 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
   "include": ["src"]
 }
 `
-	return os.WriteFile(filepath.Join(langDir, "tsconfig.json"), []byte(tsconfig), 0o644) //nolint:gosec
+	return writeFileIfMissing(filepath.Join(langDir, "tsconfig.json"), []byte(tsconfig))
 }
 
 func writePythonScaffold(langDir, pyPackage string) error {
@@ -545,7 +642,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = [%q, %q]
 `, strings.ReplaceAll(pyPackage, "_", "-"), pyPackage, pyPackage+".*")
-	return os.WriteFile(filepath.Join(langDir, "pyproject.toml"), []byte(pyproject), 0o644) //nolint:gosec
+	return writeFileIfMissing(filepath.Join(langDir, "pyproject.toml"), []byte(pyproject))
 }
 
 // writeLibraryManifest writes library.codefly.yaml. It is written directly
