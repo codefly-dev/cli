@@ -48,8 +48,8 @@ module package carries the contract.
 
 gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
-document (openapi.json). HTTP and TCP endpoints have no machine-readable
-contract and are skipped.
+document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
+contract and are skipped, as is a connect endpoint whose service has no proto.
 
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
@@ -159,14 +159,14 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 	for _, serviceName := range serviceNames {
 		exported := byService[serviceName]
 
-		needsBuilder := false
+		hasContractAPI := false
 		for _, endpoint := range exported {
 			if endpointCarriesContract(endpoint.Api) {
-				needsBuilder = true
+				hasContractAPI = true
 				break
 			}
 		}
-		if !needsBuilder {
+		if !hasContractAPI {
 			for _, endpoint := range exported {
 				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
 			}
@@ -177,6 +177,31 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		if loadErr != nil {
 			return nil, fmt.Errorf("cannot load service %s: %w", serviceName, loadErr)
 		}
+
+		// A connect endpoint is HTTP-shaped and only carries a protobuf
+		// contract when its service is proto-backed; core does not guarantee it
+		// is. A connect endpoint on a service with no proto therefore has no
+		// machine-readable contract and is skipped like http/tcp, instead of
+		// failing the whole export when the descriptor build has nothing to
+		// compile. grpc and rest always carry a contract, so a missing proto
+		// there stays a hard error (surfaced by writeProtobufContract).
+		serviceHasProto, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), "proto", "buf.yaml"))
+
+		var carriers []*basev0.Endpoint
+		for _, endpoint := range exported {
+			switch {
+			case !endpointCarriesContract(endpoint.Api):
+				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
+			case endpoint.Api == standards.CONNECT && !serviceHasProto:
+				cli.Info("endpoint %s/%s (api connect) has no proto; skipped", serviceName, endpoint.Name)
+			default:
+				carriers = append(carriers, endpoint)
+			}
+		}
+		if len(carriers) == 0 {
+			continue
+		}
+
 		loaded, loadErr := generators.LoadServiceEndpoints(ctx, workspace, module, service)
 		if loadErr != nil {
 			return nil, fmt.Errorf("cannot load endpoints for service %s: %w", serviceName, loadErr)
@@ -186,11 +211,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			loadedByName[endpoint.Name] = endpoint
 		}
 
-		for _, endpoint := range exported {
-			if !endpointCarriesContract(endpoint.Api) {
-				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
-				continue
-			}
+		for _, endpoint := range carriers {
 			actual, ok := loadedByName[endpoint.Name]
 			if !ok {
 				return nil, fmt.Errorf("service %s does not report endpoint %q at Builder.Load", serviceName, endpoint.Name)
@@ -361,12 +382,14 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 		return "", walkErr
 	}
 
+	matchedOwn := false
 	seen := map[string]struct{}{}
 	var packages []string
 	for _, file := range set.GetFile() {
 		if _, ok := own[file.GetName()]; !ok {
 			continue
 		}
+		matchedOwn = true
 		if len(file.GetService()) == 0 {
 			continue
 		}
@@ -381,6 +404,15 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 
 	switch len(packages) {
 	case 0:
+		// buf always includes the service's own files in the descriptor set,
+		// so matching none of them means buf named them differently than their
+		// path under protoDir — a buf module `path:` or v1beta1 `roots:` entry
+		// that strips a prefix. Report that cause rather than the misleading
+		// "no services", which would send the reader hunting for services that
+		// are in fact declared.
+		if len(own) > 0 && !matchedOwn {
+			return "", fmt.Errorf("none of the service's own proto files under %s appear in the built descriptor set under the same path; a buf module path or roots entry may be remapping file names", protoDir)
+		}
 		return "", fmt.Errorf("proto declares no services; nothing to export")
 	case 1:
 		return packages[0], nil

@@ -219,6 +219,51 @@ func TestGenerateContractsSkipsNonContractEndpoints(t *testing.T) {
 	}
 }
 
+// A connect endpoint whose service has no proto carries no machine-readable
+// contract. It must be skipped like http/tcp — a single such endpoint must not
+// fail the whole export, and it must not even reach the Docker-backed
+// descriptor build (so this runs without Docker).
+func TestGenerateContractsSkipsConnectWithoutProto(t *testing.T) {
+	ctx := context.Background()
+	root, _ := saveFixtureWorkspace(t, ctx, "billing",
+		&resources.ModuleInterface{
+			Endpoints: []*resources.InterfaceEndpoint{
+				{Service: "api", Endpoint: "connect", Visibility: resources.VisibilityPublic},
+			},
+		},
+		&resources.Service{
+			Name:    "api",
+			Version: "0.0.1",
+			Endpoints: []*resources.Endpoint{
+				{Name: "connect", API: "connect", Visibility: resources.VisibilityPublic},
+			},
+		},
+	)
+
+	t.Chdir(root)
+	resetContractsFlags(t)
+	contractsFormat = "json"
+
+	out, err := captureStdout(t, func() error {
+		return ContractsCmd.RunE(ContractsCmd, []string{"billing"})
+	})
+	if err != nil {
+		t.Fatalf("RunE: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "api connect) has no proto; skipped") {
+		t.Fatalf("output missing connect skip notice:\n%s", out)
+	}
+
+	var catalog composition.APIContractCatalog
+	decoder := json.NewDecoder(strings.NewReader(out[strings.Index(out, "{"):]))
+	if err := decoder.Decode(&catalog); err != nil {
+		t.Fatalf("cannot parse catalog JSON: %v\noutput:\n%s", err, out)
+	}
+	if len(catalog.Endpoints) != 0 {
+		t.Fatalf("catalog.Endpoints = %+v, want none", catalog.Endpoints)
+	}
+}
+
 // The tests below scaffold a real go-grpc service and run buf inside the
 // proto companion, so they need Docker and network access. Gated like the
 // other agent-backed qualification tests (see docs/commands.md
@@ -504,6 +549,23 @@ func TestServiceContractPackage(t *testing.T) {
 		}}
 		if _, err := serviceContractPackage(set, protoDir); err == nil {
 			t.Fatal("expected an error when services span multiple packages")
+		}
+	})
+
+	t.Run("descriptor names not matching own paths reports a layout remap, not 'no services'", func(t *testing.T) {
+		// buf stripped a "saas/" prefix (a module path or roots entry), so no
+		// descriptor file name equals its path under protoDir even though the
+		// service does declare one.
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("acct/v1/api.proto", "saas.acct.v1", true),
+			file("shared/v1/types.proto", "saas.shared.v1", false),
+		}}
+		_, err := serviceContractPackage(set, protoDir)
+		if err == nil {
+			t.Fatal("expected an error when no descriptor file matches an own path")
+		}
+		if !strings.Contains(err.Error(), "remapping file names") {
+			t.Fatalf("error = %v, want it to name the file-name remap cause", err)
 		}
 	})
 }
