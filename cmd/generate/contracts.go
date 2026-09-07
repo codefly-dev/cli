@@ -48,8 +48,8 @@ module package carries the contract.
 
 gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
-document (openapi.json). HTTP and TCP endpoints have no machine-readable
-contract and are skipped.
+document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
+contract and are skipped, as is a connect endpoint whose service has no proto.
 
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
@@ -159,14 +159,14 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 	for _, serviceName := range serviceNames {
 		exported := byService[serviceName]
 
-		needsBuilder := false
+		hasContractAPI := false
 		for _, endpoint := range exported {
-			if endpoint.Api == standards.GRPC || endpoint.Api == standards.REST {
-				needsBuilder = true
+			if endpointCarriesContract(endpoint.Api) {
+				hasContractAPI = true
 				break
 			}
 		}
-		if !needsBuilder {
+		if !hasContractAPI {
 			for _, endpoint := range exported {
 				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
 			}
@@ -177,6 +177,31 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		if loadErr != nil {
 			return nil, fmt.Errorf("cannot load service %s: %w", serviceName, loadErr)
 		}
+
+		// A connect endpoint is HTTP-shaped and only carries a protobuf
+		// contract when its service is proto-backed; core does not guarantee it
+		// is. A connect endpoint on a service with no proto therefore has no
+		// machine-readable contract and is skipped like http/tcp, instead of
+		// failing the whole export when the descriptor build has nothing to
+		// compile. grpc and rest always carry a contract, so a missing proto
+		// there stays a hard error (surfaced by writeProtobufContract).
+		serviceHasProto, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), "proto", "buf.yaml"))
+
+		var carriers []*basev0.Endpoint
+		for _, endpoint := range exported {
+			switch {
+			case !endpointCarriesContract(endpoint.Api):
+				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
+			case endpoint.Api == standards.CONNECT && !serviceHasProto:
+				cli.Info("endpoint %s/%s (api connect) has no proto; skipped", serviceName, endpoint.Name)
+			default:
+				carriers = append(carriers, endpoint)
+			}
+		}
+		if len(carriers) == 0 {
+			continue
+		}
+
 		loaded, loadErr := generators.LoadServiceEndpoints(ctx, workspace, module, service)
 		if loadErr != nil {
 			return nil, fmt.Errorf("cannot load endpoints for service %s: %w", serviceName, loadErr)
@@ -186,11 +211,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			loadedByName[endpoint.Name] = endpoint
 		}
 
-		for _, endpoint := range exported {
-			if endpoint.Api != standards.GRPC && endpoint.Api != standards.REST {
-				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
-				continue
-			}
+		for _, endpoint := range carriers {
 			actual, ok := loadedByName[endpoint.Name]
 			if !ok {
 				return nil, fmt.Errorf("service %s does not report endpoint %q at Builder.Load", serviceName, endpoint.Name)
@@ -255,6 +276,13 @@ func resolvePackageIdentity(module *resources.Module) (string, string, *composit
 	return manifest.ID, manifest.Version, manifest, nil
 }
 
+// endpointCarriesContract reports whether an endpoint's API can be exported as
+// a machine-readable contract: grpc and connect resolve to a protobuf
+// FileDescriptorSet, rest to an OpenAPI document. http and tcp have none.
+func endpointCarriesContract(api string) bool {
+	return api == standards.GRPC || api == standards.CONNECT || api == standards.REST
+}
+
 // writeEndpointContract writes one endpoint's contract files and returns its
 // catalog entry.
 func writeEndpointContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, opts generateOptions) (*composition.APIContractEndpoint, error) {
@@ -267,16 +295,22 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 		return nil, err
 	}
 
-	if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil {
-		return writeGRPCContract(ctx, module, service, endpoint, grpc, physicalDir, canonicalDir)
+	if endpoint.Api == standards.CONNECT || resources.IsGRPC(ctx, endpoint) != nil {
+		return writeProtobufContract(ctx, module, service, endpoint, physicalDir, canonicalDir)
 	}
 	if rest := resources.IsRest(ctx, endpoint); rest != nil {
 		return writeRestContract(ctx, module, endpoint, rest, physicalDir, canonicalDir)
 	}
-	return nil, fmt.Errorf("endpoint %s reports neither a grpc nor a rest contract", endpoint.Name)
+	return nil, fmt.Errorf("endpoint %s reports neither a grpc/connect nor a rest contract", endpoint.Name)
 }
 
-func writeGRPCContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, grpc *basev0.GrpcAPI, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
+// writeProtobufContract builds and writes the FileDescriptorSet contract for a
+// protobuf-backed endpoint. It serves both grpc and connect endpoints: connect
+// shares the service's proto with grpc, but core models a connect endpoint as
+// an HTTP-shaped endpoint that carries no GrpcAPI, so the package and services
+// are derived from the built descriptor set rather than from endpoint API
+// details.
+func writeProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
 	protoDir := filepath.Join(service.Dir(), "proto")
 	if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
 		return nil, fmt.Errorf("service %s has no proto/buf.yaml; cannot build a descriptor set for endpoint %s", service.Name, endpoint.Name)
@@ -287,17 +321,22 @@ func writeGRPCContract(ctx context.Context, module *resources.Module, service *r
 		return nil, fmt.Errorf("cannot build descriptor set: %w", err)
 	}
 
+	var set descriptorpb.FileDescriptorSet
+	if err = googleproto.Unmarshal(descriptorSet, &set); err != nil {
+		return nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
+	}
+
+	pkg, err := serviceContractPackage(&set, protoDir)
+	if err != nil {
+		return nil, fmt.Errorf("service %s endpoint %s: %w", service.Name, endpoint.Name, err)
+	}
+
 	contractPath := filepath.Join(physicalDir, "contract.binpb")
 	if err = shared.WriteFileAtomic(ctx, contractPath, descriptorSet, 0o644); err != nil {
 		return nil, err
 	}
 	if err = copyTree(protoDir, filepath.Join(physicalDir, "proto")); err != nil {
 		return nil, fmt.Errorf("cannot copy proto sources: %w", err)
-	}
-
-	var set descriptorpb.FileDescriptorSet
-	if err = googleproto.Unmarshal(descriptorSet, &set); err != nil {
-		return nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
 	}
 
 	relPath, err := relativeContractPath(module, filepath.Join(canonicalDir, "contract.binpb"))
@@ -310,11 +349,76 @@ func writeGRPCContract(ctx context.Context, module *resources.Module, service *r
 		Endpoint: endpoint.Name,
 		API:      endpoint.Api,
 		Kind:     composition.APIContractKindProtobuf,
-		Package:  grpc.Package,
+		Package:  pkg,
 		Path:     relPath,
 		Digest:   composition.APIContractDigest(descriptorSet),
-		Services: composition.ProtobufServices(&set, grpc.Package),
+		Services: composition.ProtobufServices(&set, pkg),
 	}, nil
+}
+
+// serviceContractPackage returns the single proto package that the service's
+// own proto files — those physically under protoDir, not the transitive
+// imports buf pulls in — use to declare services. A codefly service declares
+// all of its RPC services in one package; message-only packages contributed
+// alongside it (composed settings, shared types) carry no service to expose in
+// a client contract and are ignored.
+func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string) (string, error) {
+	own := map[string]struct{}{}
+	walkErr := filepath.WalkDir(protoDir, func(p string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(p) != ".proto" {
+			return nil
+		}
+		rel, relErr := filepath.Rel(protoDir, p)
+		if relErr != nil {
+			return relErr
+		}
+		own[filepath.ToSlash(rel)] = struct{}{}
+		return nil
+	})
+	if walkErr != nil {
+		return "", walkErr
+	}
+
+	matchedOwn := false
+	seen := map[string]struct{}{}
+	var packages []string
+	for _, file := range set.GetFile() {
+		if _, ok := own[file.GetName()]; !ok {
+			continue
+		}
+		matchedOwn = true
+		if len(file.GetService()) == 0 {
+			continue
+		}
+		pkg := file.GetPackage()
+		if _, dup := seen[pkg]; dup {
+			continue
+		}
+		seen[pkg] = struct{}{}
+		packages = append(packages, pkg)
+	}
+	sort.Strings(packages)
+
+	switch len(packages) {
+	case 0:
+		// buf always includes the service's own files in the descriptor set,
+		// so matching none of them means buf named them differently than their
+		// path under protoDir — a buf module `path:` or v1beta1 `roots:` entry
+		// that strips a prefix. Report that cause rather than the misleading
+		// "no services", which would send the reader hunting for services that
+		// are in fact declared.
+		if len(own) > 0 && !matchedOwn {
+			return "", fmt.Errorf("none of the service's own proto files under %s appear in the built descriptor set under the same path; a buf module path or roots entry may be remapping file names", protoDir)
+		}
+		return "", fmt.Errorf("proto declares no services; nothing to export")
+	case 1:
+		return packages[0], nil
+	default:
+		return "", fmt.Errorf("proto declares services in multiple packages %v; a contract endpoint must be single-package", packages)
+	}
 }
 
 func writeRestContract(ctx context.Context, module *resources.Module, endpoint *basev0.Endpoint, rest *basev0.RestAPI, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {

@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
+	"github.com/codefly-dev/core/standards"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -206,6 +207,51 @@ func TestGenerateContractsSkipsNonContractEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(out, "no contract; skipped") {
 		t.Fatalf("output missing skip notice:\n%s", out)
+	}
+
+	var catalog composition.APIContractCatalog
+	decoder := json.NewDecoder(strings.NewReader(out[strings.Index(out, "{"):]))
+	if err := decoder.Decode(&catalog); err != nil {
+		t.Fatalf("cannot parse catalog JSON: %v\noutput:\n%s", err, out)
+	}
+	if len(catalog.Endpoints) != 0 {
+		t.Fatalf("catalog.Endpoints = %+v, want none", catalog.Endpoints)
+	}
+}
+
+// A connect endpoint whose service has no proto carries no machine-readable
+// contract. It must be skipped like http/tcp — a single such endpoint must not
+// fail the whole export, and it must not even reach the Docker-backed
+// descriptor build (so this runs without Docker).
+func TestGenerateContractsSkipsConnectWithoutProto(t *testing.T) {
+	ctx := context.Background()
+	root, _ := saveFixtureWorkspace(t, ctx, "billing",
+		&resources.ModuleInterface{
+			Endpoints: []*resources.InterfaceEndpoint{
+				{Service: "api", Endpoint: "connect", Visibility: resources.VisibilityPublic},
+			},
+		},
+		&resources.Service{
+			Name:    "api",
+			Version: "0.0.1",
+			Endpoints: []*resources.Endpoint{
+				{Name: "connect", API: "connect", Visibility: resources.VisibilityPublic},
+			},
+		},
+	)
+
+	t.Chdir(root)
+	resetContractsFlags(t)
+	contractsFormat = "json"
+
+	out, err := captureStdout(t, func() error {
+		return ContractsCmd.RunE(ContractsCmd, []string{"billing"})
+	})
+	if err != nil {
+		t.Fatalf("RunE: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "api connect) has no proto; skipped") {
+		t.Fatalf("output missing connect skip notice:\n%s", out)
 	}
 
 	var catalog composition.APIContractCatalog
@@ -433,4 +479,93 @@ func TestGenerateContractsCheckDetectsDrift(t *testing.T) {
 	if err := ContractsCmd.RunE(ContractsCmd, []string{"billing"}); err != nil {
 		t.Fatalf("--check after restoring the contract should exit 0: %v", err)
 	}
+}
+
+func TestEndpointCarriesContract(t *testing.T) {
+	for _, api := range []string{standards.GRPC, standards.CONNECT, standards.REST} {
+		if !endpointCarriesContract(api) {
+			t.Errorf("endpointCarriesContract(%q) = false, want true", api)
+		}
+	}
+	for _, api := range []string{standards.HTTP, standards.TCP} {
+		if endpointCarriesContract(api) {
+			t.Errorf("endpointCarriesContract(%q) = true, want false", api)
+		}
+	}
+}
+
+func TestServiceContractPackage(t *testing.T) {
+	// protoDir holds the service's own files; imports buf pulls in live
+	// elsewhere and must be ignored even when they declare services.
+	protoDir := t.TempDir()
+	for _, rel := range []string{"saas/acct/v1/api.proto", "saas/shared/v1/types.proto"} {
+		full := filepath.Join(protoDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("syntax = \"proto3\";\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	file := func(name, pkg string, withService bool) *descriptorpb.FileDescriptorProto {
+		f := &descriptorpb.FileDescriptorProto{Name: googleproto.String(name), Package: googleproto.String(pkg)}
+		if withService {
+			f.Service = []*descriptorpb.ServiceDescriptorProto{{Name: googleproto.String("Svc")}}
+		}
+		return f
+	}
+
+	t.Run("single service package, ignoring message-only packages and imports", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+			file("saas/shared/v1/types.proto", "saas.shared.v1", false),
+			// an import: has a service but is not one of the service's own files.
+			file("google/protobuf/descriptor.proto", "google.protobuf", true),
+		}}
+		pkg, err := serviceContractPackage(set, protoDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pkg != "saas.acct.v1" {
+			t.Fatalf("pkg = %q, want saas.acct.v1", pkg)
+		}
+	})
+
+	t.Run("no own file declares a service is an error", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", false),
+			file("saas/shared/v1/types.proto", "saas.shared.v1", false),
+		}}
+		if _, err := serviceContractPackage(set, protoDir); err == nil {
+			t.Fatal("expected an error when no own file declares a service")
+		}
+	})
+
+	t.Run("services across multiple own packages is an error", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+			file("saas/shared/v1/types.proto", "saas.shared.v1", true),
+		}}
+		if _, err := serviceContractPackage(set, protoDir); err == nil {
+			t.Fatal("expected an error when services span multiple packages")
+		}
+	})
+
+	t.Run("descriptor names not matching own paths reports a layout remap, not 'no services'", func(t *testing.T) {
+		// buf stripped a "saas/" prefix (a module path or roots entry), so no
+		// descriptor file name equals its path under protoDir even though the
+		// service does declare one.
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("acct/v1/api.proto", "saas.acct.v1", true),
+			file("shared/v1/types.proto", "saas.shared.v1", false),
+		}}
+		_, err := serviceContractPackage(set, protoDir)
+		if err == nil {
+			t.Fatal("expected an error when no descriptor file matches an own path")
+		}
+		if !strings.Contains(err.Error(), "remapping file names") {
+			t.Fatalf("error = %v, want it to name the file-name remap cause", err)
+		}
+	})
 }
