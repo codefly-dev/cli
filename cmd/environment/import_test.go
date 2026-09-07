@@ -382,3 +382,133 @@ environments:
 		t.Errorf("expected both local and azure environments; got %d", len(ws.Environments))
 	}
 }
+
+// TestImportPreservesClusterKubeconfig is the regression test for the finding
+// that importing replaced the cluster node wholesale, dropping the operator's
+// kubeconfig path — a local fact the cell contract never carries. kind/context
+// must update; kubeconfig must survive.
+func TestImportPreservesClusterKubeconfig(t *testing.T) {
+	src := `name: acme
+layout: modules
+environments:
+    - name: azure
+      cluster:
+          kind: aks
+          context: old-context
+          kubeconfig: /home/op/.kube/prod-config
+`
+	dir := writeWorkspace(t, src)
+	doImport(t, dir, importOptions{})
+	ws := loadWorkspace(t, dir)
+	env := ws.FindEnvironment("azure")
+	if env.Cluster == nil || env.Cluster.Kubeconfig != "/home/op/.kube/prod-config" {
+		t.Fatalf("cluster.kubeconfig dropped: %+v", env.Cluster)
+	}
+	if env.Cluster.Context != "hosted-eastus2" {
+		t.Errorf("cluster.context = %q, want updated hosted-eastus2", env.Cluster.Context)
+	}
+}
+
+// TestImportLeavesUnrelatedSoleManagedService is the regression test for the
+// finding that a single managed service of a different kind (a cache) was
+// silently rewritten as the contract's postgres database. The cache must be
+// left intact and the database inserted beside it.
+func TestImportLeavesUnrelatedSoleManagedService(t *testing.T) {
+	src := `name: acme
+layout: modules
+environments:
+    - name: azure
+      managed-services:
+          cache:
+              kind: azure-redis
+              external-name: cache.redis.example
+              egress-cidrs:
+                  - 10.99.0.0/28
+`
+	dir := writeWorkspace(t, src)
+	doImport(t, dir, importOptions{})
+	ws := loadWorkspace(t, dir)
+	env := ws.FindEnvironment("azure")
+	cache, ok := env.ManagedServices["cache"]
+	if !ok {
+		t.Fatalf("cache entry vanished: %v", env.ManagedServices)
+	}
+	if cache.Kind != "azure-redis" || cache.ExternalName != "cache.redis.example" {
+		t.Errorf("unrelated cache was rewritten: %+v", cache)
+	}
+	store, ok := env.ManagedServices["store"]
+	if !ok {
+		t.Fatalf("database not inserted beside the cache; got %v", env.ManagedServices)
+	}
+	if store.Kind != "azure-postgres-flexible" {
+		t.Errorf("inserted store has wrong kind: %+v", store)
+	}
+}
+
+// TestImportIntoEmptyFlowSequence is the regression test for the finding that
+// importing into `environments: []` appended a block sequence under the inline
+// value, producing YAML that no longer loaded.
+func TestImportIntoEmptyFlowSequence(t *testing.T) {
+	for _, empty := range []string{"environments: []", "environments:"} {
+		src := "name: acme\nlayout: modules\n" + empty + "\n"
+		dir := writeWorkspace(t, src)
+		doImport(t, dir, importOptions{})
+		ws := loadWorkspace(t, dir) // fails the test if the written file is unparseable
+		if ws.FindEnvironment("azure") == nil {
+			t.Errorf("azure env not found after import into %q:\n%s", empty,
+				readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)))
+		}
+	}
+}
+
+// TestImportPreservesBlockScalarLastField is the regression test for EndLine
+// under-counting a multi-line literal block scalar: when the imported item's
+// last field is a `|` block, the splice must not strand or duplicate its lines
+// and must leave the following environment intact.
+func TestImportPreservesBlockScalarLastField(t *testing.T) {
+	src := `name: acme
+layout: modules
+environments:
+    - name: azure
+      description: |
+          first line
+          second line
+    - name: prod
+      description: production
+`
+	dir := writeWorkspace(t, src)
+	doImport(t, dir, importOptions{})
+	got := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	if n := strings.Count(got, "second line"); n != 1 {
+		t.Errorf("block scalar line count = %d, want 1 (stranded/duplicated splice):\n%s", n, got)
+	}
+	ws := loadWorkspace(t, dir)
+	if p := ws.FindEnvironment("prod"); p == nil || p.Description != "production" {
+		t.Errorf("following prod environment corrupted: %+v", p)
+	}
+	if a := ws.FindEnvironment("azure"); a == nil || a.Cluster == nil || a.Cluster.Kind != "aks" {
+		t.Errorf("azure not imported over the block scalar: %+v", a)
+	}
+}
+
+// TestImportWritesResolvedNamespace is the regression test for the finding that
+// gitops.path baked in a namespace the file never declared: the resolved
+// namespace must be persisted so path and namespace can never disagree.
+func TestImportWritesResolvedNamespace(t *testing.T) {
+	src := `name: acme
+layout: modules
+environments:
+    - name: azure
+      description: staging
+`
+	dir := writeWorkspace(t, src)
+	doImport(t, dir, importOptions{}) // no --namespace: defaults to workspace name "acme"
+	ws := loadWorkspace(t, dir)
+	env := ws.FindEnvironment("azure")
+	if env.Namespace != "acme" {
+		t.Errorf("namespace = %q, want the resolved workspace name acme", env.Namespace)
+	}
+	if !strings.HasSuffix(env.Gitops.Path, "/"+env.Namespace) {
+		t.Errorf("gitops.path %q does not agree with namespace %q", env.Gitops.Path, env.Namespace)
+	}
+}

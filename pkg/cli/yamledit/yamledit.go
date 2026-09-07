@@ -9,6 +9,7 @@ package yamledit
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -80,7 +81,16 @@ func MapKeys(node *yaml.Node) []string {
 // must clear its foot comments so the preserved original copy is not
 // duplicated.
 func EndLine(node *yaml.Node) int {
-	end := node.Line
+	// A scalar can occupy more than its start line: a literal/double-quoted block
+	// scalar keeps its newlines in Value, so each embedded newline is one extra
+	// source line. Counting them is exact for newline-preserving styles (|, |-,
+	// |+, double-quoted) and never over-counts for folded/plain-wrapped styles
+	// (which fold physical newlines into spaces, leaving fewer newlines in Value
+	// than lines on disk). Under-counting can only ever duplicate a trailing line
+	// on splice, never strand following content — so a scalar the count cannot
+	// fully measure still fails visibly rather than deleting bytes. Non-scalar
+	// nodes carry an empty Value, so this adds nothing for them.
+	end := node.Line + strings.Count(node.Value, "\n")
 	for _, child := range node.Content {
 		if e := EndLine(child); e > end {
 			end = e

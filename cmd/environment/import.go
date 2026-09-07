@@ -172,7 +172,7 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		// EndLine after the edit would under-count and strand the original's
 		// trailing lines.
 		endLine := yamledit.EndLine(envNode)
-		if aerr := applyContractFields(envNode, env, opts.envName, opts.namespaceSet); aerr != nil {
+		if aerr := applyContractFields(envNode, env, opts.envName); aerr != nil {
 			return aerr
 		}
 		stampProvenance(envNode, contract, opts)
@@ -280,9 +280,13 @@ func insertEnvironment(original []byte, root, envs, item *yaml.Node) ([]byte, er
 		return nil, err
 	}
 	if envs != nil {
-		// environments: present but empty — insert items right after its key.
+		// environments: present but carrying no items — a null value, a flow-empty
+		// `[]`, or `{}`. Replace the whole key line rather than inserting block
+		// items after it: appending a block sequence under an inline value like
+		// `environments: []` produces invalid YAML that no longer loads.
 		key := environmentsKeyLine(root)
-		return spliceLines(lines, key+1, key+1, rendered), nil
+		block := append([]string{"environments:"}, rendered...)
+		return spliceLines(lines, key, key+1, block), nil
 	}
 	// No environments: key — append a fresh section at end of file.
 	ins := len(lines)
@@ -364,17 +368,28 @@ func clearFootComments(node *yaml.Node) {
 
 // applyContractFields overwrites the environment's contract-owned fields from
 // env (the resources.Environment ToEnvironment produced) via node edits, leaving
-// every other field and comment untouched. writeNamespace controls whether
-// namespace is rewritten — only when --namespace was given (a new environment
-// takes the whole ToEnvironment result elsewhere).
-func applyContractFields(envNode *yaml.Node, env *resources.Environment, envName string, writeNamespace bool) error {
-	if writeNamespace {
+// every other field and comment untouched. A new environment takes the whole
+// ToEnvironment result elsewhere; this path only runs for an existing item.
+func applyContractFields(envNode *yaml.Node, env *resources.Environment, envName string) error {
+	// Persist the namespace ToEnvironment used to derive gitops.path and the
+	// managed secret's remote-key, so the file can never disagree with those
+	// derived values. env.Namespace is the resolved namespace (--namespace if
+	// given, else the item's existing namespace, else the workspace name) and is
+	// guaranteed non-empty — ToEnvironment rejects an empty namespace before we
+	// get here. Write it only when absent (the item defaulted to the workspace
+	// name, so make that explicit) or actually changing (--namespace); an
+	// unchanged value is left alone to keep any inline comment on its line.
+	if n := yamledit.MapValue(envNode, "namespace"); n == nil || n.Value != env.Namespace {
 		yamledit.SetMapValue(envNode, "namespace", yamledit.Scalar(env.Namespace))
 	}
 	if env.Cluster != nil {
-		if err := setEncoded(envNode, "cluster", env.Cluster); err != nil {
-			return err
-		}
+		// Edit cluster field-by-field rather than replacing the node wholesale:
+		// kind and context are contract facts, but kubeconfig is an operator-owned
+		// local path the contract never carries, so a whole-node replace would
+		// silently drop it (and any inline comments in the block).
+		cluster := yamledit.EnsureMap(envNode, "cluster")
+		yamledit.SetMapValue(cluster, "kind", yamledit.Scalar(env.Cluster.Kind))
+		yamledit.SetMapValue(cluster, "context", yamledit.Scalar(env.Cluster.Context))
 	}
 	if env.Registry != nil {
 		if err := setEncoded(envNode, "registry", env.Registry); err != nil {
@@ -415,11 +430,11 @@ func applyContractFields(envNode *yaml.Node, env *resources.Environment, envName
 // but an operator may already declare it under the service name it replaces —
 // and that name, not "store", is what the deploy path matches. So the update
 // targets an existing entry regardless of its key (an exact "store" match
-// first, then the sole existing entry) and only inserts "store" when none
-// exists. Two or more existing entries with no exact match is ambiguous and
-// refused, rather than silently leaving a stale entry — with its stale, possibly
-// wrong, egress CIDR, the outage this contract exists to prevent — beside a new
-// one.
+// first, then the sole existing entry when it is the same kind of database) and
+// only inserts "store" when none matches. Two or more existing entries with no
+// exact match is ambiguous and refused, rather than silently leaving a stale
+// entry — with its stale, possibly wrong, egress CIDR, the outage this contract
+// exists to prevent — beside a new one.
 func applyManagedServices(envNode *yaml.Node, services map[string]resources.EnvironmentManagedService, envName string) error {
 	for contractKey, svc := range services {
 		managed := yamledit.MapValue(envNode, "managed-services")
@@ -440,7 +455,22 @@ func applyManagedServices(envNode *yaml.Node, services map[string]resources.Envi
 				}
 				continue
 			case 1:
-				target = yamledit.MapValue(managed, keys[0])
+				// Adopt the sole existing entry only when it is the same kind of
+				// service the contract maps — i.e. the operator declared this
+				// database under a different name. An entry of another kind (a
+				// cache, a queue) is an unrelated managed service: overwriting it
+				// would destroy its config and repoint its slot at the database,
+				// the exact silent-egress corruption this contract prevents. Insert
+				// the database beside it instead.
+				sole := yamledit.MapValue(managed, keys[0])
+				if k := yamledit.MapValue(sole, "kind"); k != nil && k.Value == svc.Kind {
+					target = sole
+				} else {
+					if err := setEncoded(managed, contractKey, svc); err != nil {
+						return err
+					}
+					continue
+				}
 			default:
 				return fmt.Errorf("environment %q declares %d managed services (%s) but the cell contract maps one; rename the database's entry to %q or remove the extras so import can update it unambiguously",
 					envName, len(keys), strings.Join(keys, ", "), contractKey)
