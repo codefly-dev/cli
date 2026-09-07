@@ -95,7 +95,7 @@ func TestSelectEnvironmentDeclaredLocalKeepsEveryField(t *testing.T) {
 	require.Equal(t, "ecr", env.Registry.Auth)
 	require.Equal(t, "default-secrets", env.ServiceSecrets.SecretStore.Name)
 	require.Equal(t, "api-secrets", env.ServiceSecrets.Services["api"].SecretStore.Name)
-	require.Equal(t, "api/token", env.ServiceSecrets.Services["api"].RemoteKeys["TOKEN"])
+	require.Equal(t, "api/token", env.ServiceSecrets.Services["api"].RemoteKeys["TOKEN"].Key)
 	require.Len(t, env.Secrets, 1)
 	require.Equal(t, "1password", env.Secrets[0].Kind)
 	require.Equal(t, "acme-dev", env.Secrets[0].Account)
@@ -142,7 +142,7 @@ func TestSelectEnvironmentOverridesDoNotMutateWorkspace(t *testing.T) {
 	env.ServiceSecrets.SecretStore.Name = "other-default"
 	apiSecrets := env.ServiceSecrets.Services["api"]
 	apiSecrets.SecretStore.Name = "other-api"
-	apiSecrets.RemoteKeys["TOKEN"] = "other/token"
+	apiSecrets.RemoteKeys["TOKEN"] = resources.EnvironmentSecretRemoteRef{Key: "other/token"}
 	env.ServiceSecrets.Services["api"] = apiSecrets
 	env.Secrets[0].Account = "other-account"
 
@@ -153,7 +153,7 @@ func TestSelectEnvironmentOverridesDoNotMutateWorkspace(t *testing.T) {
 	require.Equal(t, "localhost:5001", declared.Registry.URL)
 	require.Equal(t, "default-secrets", declared.ServiceSecrets.SecretStore.Name)
 	require.Equal(t, "api-secrets", declared.ServiceSecrets.Services["api"].SecretStore.Name)
-	require.Equal(t, "api/token", declared.ServiceSecrets.Services["api"].RemoteKeys["TOKEN"])
+	require.Equal(t, "api/token", declared.ServiceSecrets.Services["api"].RemoteKeys["TOKEN"].Key)
 	require.Equal(t, "acme-dev", declared.Secrets[0].Account)
 
 	fresh, err := SelectEnvironment(workspace, LocalEnvironmentName)
