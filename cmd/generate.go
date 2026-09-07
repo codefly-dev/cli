@@ -15,5 +15,6 @@ func init() {
 	GenerateCmd.AddCommand(generate.GRPCCmd)
 	GenerateCmd.AddCommand(generate.OpenAPICmd)
 	GenerateCmd.AddCommand(generate.ProtoCmd)
+	GenerateCmd.AddCommand(generate.ContractsCmd)
 	GenerateCmd.AddCommand(generate.TenantOverlaysCmd)
 }

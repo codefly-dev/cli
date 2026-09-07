@@ -7,7 +7,6 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/languages"
 	resources "github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -26,22 +25,13 @@ func GRPC(ctx context.Context, workspace *resources.Workspace, module *resources
 
 func getGRPCEndpoints(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) ([]*basev0.Endpoint, error) {
 	w := wool.Get(ctx).In("getGRPCEndpoints")
-	// Use the Builder
-	instance, err := services.Load(ctx, workspace, module, service)
+	loaded, err := LoadServiceEndpoints(ctx, workspace, module, service)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load builder")
-	}
-	err = instance.LoadBuilder(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot load builder")
-	}
-	res, err := instance.Builder.Load(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot load builder")
+		return nil, err
 	}
 	// filter-out gRPC
 	var endpoints []*basev0.Endpoint
-	for _, endpoint := range res.Endpoints {
+	for _, endpoint := range loaded {
 		if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil {
 			endpoints = append(endpoints, endpoint)
 		}
