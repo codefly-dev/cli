@@ -551,15 +551,18 @@ outside that item are never reflowed. (A whole-file round-trip through the YAML
 library would strip blank lines and normalize indentation across the whole
 document, burying the one line that changed.)
 
-- *Contract-owned* (replaced on every import): `cluster`, `registry`,
-  `namespace` (only when `--namespace` is given), `gitops.repo-url` and
+- *Contract-owned* (replaced on every import): `cluster.kind` and
+  `cluster.context`, `registry`, `namespace` (set to the resolved namespace —
+  `--namespace` if given, else the existing one, else the workspace name — so
+  it can never disagree with the derived `gitops.path`), `gitops.repo-url` and
   `gitops.path` (path = `<workloads_path_prefix>/<namespace>`), each managed
   database's `managed-services.<name>` `kind` / `external-name` /
   `egress-cidrs`, `service-secrets.secret-store`, and `dns`.
 - *Operator-owned* (never touched): `description`, `fixture`, `ingress`,
-  `resource-quota`, `secrets`, `configuration-profile`, `gitops.branch`, a
-  managed service's `secret-references`, `service-secrets.services` mappings,
-  and any other declared field.
+  `resource-quota`, `secrets`, `configuration-profile`, `gitops.branch`,
+  `cluster.kubeconfig` (a local path, not a cell fact), a managed service's
+  `secret-references`, `service-secrets.services` mappings, and any other
+  declared field.
 
 A provenance comment is stamped above the environment item and replaced (not
 stacked) on re-import:
@@ -574,11 +577,13 @@ environments:
 The consumer maps a single cluster, registry, database and secret store per
 cell (core's `ParseCellContract` rejects more). core maps the managed database
 under the `store` key by default, but an existing environment that already
-declares the database under a different service name (the name the deploy path
-matches) is updated in place under that name — the import never adds a second
-`store` entry beside it. An environment with two or more managed services and no
-exact `store` match is ambiguous and refused rather than silently leaving a
-stale one. Vector stores in the descriptor are ignored until core models them.
+declares the database of the same kind under a different service name (the name
+the deploy path matches) is updated in place under that name — the import never
+adds a second `store` entry beside it. A sole existing managed service of a
+different kind (a cache, a queue) is left untouched and the database is inserted
+beside it. An environment with two or more managed services and no exact `store`
+match is ambiguous and refused rather than silently leaving a stale one. Object
+stores in the descriptor are ignored until core models them.
 
 #### `codefly environment show`
 
