@@ -139,3 +139,106 @@ func Marshal(doc *yaml.Node) ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
+
+// RenderItem serializes a single sequence item (scalar or mapping) and
+// left-pads every line to indent spaces, reproducing the project's canonical
+// block-sequence style ("- key: value").
+func RenderItem(item *yaml.Node, indent int) ([]string, error) {
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{item}}
+	b, err := Marshal(&yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{seq}})
+	if err != nil {
+		return nil, err
+	}
+	pad := strings.Repeat(" ", indent)
+	raw := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	out := make([]string, len(raw))
+	for i, l := range raw {
+		if l == "" {
+			out[i] = ""
+			continue
+		}
+		out[i] = pad + l
+	}
+	return out, nil
+}
+
+// LineIndent counts the leading spaces of a line.
+func LineIndent(line string) int {
+	n := 0
+	for n < len(line) && line[n] == ' ' {
+		n++
+	}
+	return n
+}
+
+// SpliceLines returns lines with [start,end) replaced by repl.
+func SpliceLines(lines []string, start, end int, repl []string) []byte {
+	out := make([]string, 0, len(lines)-(end-start)+len(repl))
+	out = append(out, lines[:start]...)
+	out = append(out, repl...)
+	out = append(out, lines[end:]...)
+	return []byte(strings.Join(out, "\n"))
+}
+
+// keyLineIndex returns the 0-based line index of key's own line within
+// parent, or the line just past parent's mapping when key is absent
+// (unreachable for a caller that only reaches here after confirming key
+// exists).
+func keyLineIndex(parent *yaml.Node, key string) int {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			return parent.Content[i].Line - 1
+		}
+	}
+	return len(parent.Content)
+}
+
+// AppendSequenceItems appends items to key's block sequence under parent (the
+// document's top-level mapping node, from Document) in original, preserving
+// every other byte: existing items, comments, blank lines, and unrelated keys
+// are re-serialized only where an item is actually inserted.
+//
+// key already holding a non-empty block sequence gets items appended after
+// its last element; key present but empty or inline (`key: []`, `key:`) is
+// replaced with a fresh block sequence; key entirely absent gets a new
+// "key:" section appended at end of file.
+func AppendSequenceItems(original []byte, parent *yaml.Node, key string, items []*yaml.Node) ([]byte, error) {
+	if len(items) == 0 {
+		return original, nil
+	}
+	lines := strings.Split(string(original), "\n")
+	seq := MapValue(parent, key)
+
+	if seq != nil && seq.Kind == yaml.SequenceNode && len(seq.Content) > 0 {
+		indent := LineIndent(lines[seq.Content[0].Line-1])
+		var rendered []string
+		for _, item := range items {
+			r, err := RenderItem(item, indent)
+			if err != nil {
+				return nil, err
+			}
+			rendered = append(rendered, r...)
+		}
+		last := seq.Content[len(seq.Content)-1]
+		ins := EndLine(last)
+		return SpliceLines(lines, ins, ins, rendered), nil
+	}
+
+	rendered := []string{key + ":"}
+	for _, item := range items {
+		r, err := RenderItem(item, 4)
+		if err != nil {
+			return nil, err
+		}
+		rendered = append(rendered, r...)
+	}
+	if seq != nil {
+		line := keyLineIndex(parent, key)
+		return SpliceLines(lines, line, line+1, rendered), nil
+	}
+	ins := len(lines)
+	if ins > 0 && lines[ins-1] == "" {
+		ins--
+	}
+	return SpliceLines(lines, ins, ins, rendered), nil
+}

@@ -1,4 +1,4 @@
-package generate
+package generators
 
 import (
 	"bytes"
@@ -14,15 +14,9 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	coreproto "github.com/codefly-dev/core/companions/proto"
-	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/languages"
-	resources "github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/standards"
-	googleproto "google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/descriptorpb"
-	"gopkg.in/yaml.v3"
 )
 
 // Versions pinned to the same values `generate contracts`/`generate grpc` use
@@ -34,97 +28,136 @@ const (
 	goLanguageVersion     = "1.24"
 )
 
-// generatedLanguageExport is one languages: entry of library.codefly.yaml.
-type generatedLanguageExport struct {
-	Name    string
-	Path    string
-	Exports []string
+// langDir itself is never wiped by any of the wipe*/merge*/finalize*
+// functions below: it is not a purely generated directory — the facade and
+// scaffold files (go.mod, package.json, pyproject.toml, tsconfig.json) live
+// at its root by design, exactly where a developer would naturally add a
+// README, a license, or a hand-edit to a scaffold file (a bumped dependency,
+// a private registry setting). Only the pieces this command knows are
+// entirely its own — the gen/ (_gen/ for python) subdirectory and the
+// by-name-identified facade file(s) — are removed and rewritten; scaffold
+// files are written once and never touched again once present (see
+// writeFileIfMissing), so a hand-edit survives a rerun, including an
+// idempotent one where nothing about the contract changed.
+
+// wipeGoLibrary clears langDir's generated content once, before any entry is
+// merged in.
+func wipeGoLibrary(langDir string) error {
+	if err := os.RemoveAll(filepath.Join(langDir, "gen")); err != nil {
+		return err
+	}
+	return removeMatching(langDir, "*_facade.pb.go")
 }
 
-// generateLanguage generates one language's export for the library: the
-// per-language directory, bindings under gen/ (or _gen/ for python), the
-// facade hoisted alongside it, and the language's own package scaffolding.
-//
-// langDir itself is never wiped: it is not a purely generated directory — the
-// facade and scaffold files (go.mod, package.json, pyproject.toml,
-// tsconfig.json) live at its root by design, exactly where a developer would
-// naturally add a README, a license, or a hand-edit to a scaffold file (a
-// bumped dependency, a private registry setting). Only the pieces this
-// command knows are entirely its own — the gen/ (_gen/ for python)
-// subdirectory and the single, by-name-identified facade file — are removed
-// and rewritten; scaffold files are written once and never touched again
-// once present (see writeFileIfMissing), so a hand-edit survives a rerun,
-// including an idempotent one where nothing about the contract changed.
-func generateLanguage(ctx context.Context, lang languages.Language, outputDir, moduleName string, servicesFilter []string, facade bool, source *resolvedContractSource, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
-	langDir := filepath.Join(outputDir, string(lang))
-	if err := os.MkdirAll(langDir, 0o755); err != nil {
+// mergeGoEntry rewrites raw's hardcoded import prefix to goModule/gen (keyed
+// to this entry's own facade module name) and moves it into langDir: the
+// *_facade.pb.go file(s) to the go/ root, everything else to go/gen/.
+func mergeGoEntry(langDir, raw, moduleName, goModule string) error {
+	service := moduleName
+	if service == "" {
+		service = defaultFacadeModule
+	}
+	oldPrefix := "github.com/codefly-dev/cli/pkg/builder/clients/" + service
+	if err := rewriteGoImportPrefix(raw, oldPrefix, goModule+"/gen"); err != nil {
+		return fmt.Errorf("cannot rewrite generated import paths: %w", err)
+	}
+	genDir := filepath.Join(langDir, "gen")
+	return moveTreeSplitBySuffix(raw, genDir, langDir, "_facade.pb.go")
+}
+
+// finalizeGoLibrary writes go.mod (if absent) and best-effort tidies it, once
+// every entry has been merged in.
+func finalizeGoLibrary(langDir, goModule string) (generatedLanguageExport, error) {
+	if err := writeGoModule(langDir, goModule); err != nil {
 		return generatedLanguageExport{}, err
 	}
-
-	if source.endpoint.Kind == composition.APIContractKindOpenAPI {
-		return generateOpenAPILanguage(ctx, lang, langDir, source, goModule, npmPackage)
-	}
-	return generateProtobufLanguage(ctx, lang, langDir, moduleName, servicesFilter, facade, source, goModule, npmPackage, pyPackage)
+	bestEffortGoModTidy(langDir)
+	return generatedLanguageExport{Name: "go", Path: "go/", Exports: []string{goModule}}, nil
 }
 
-// generateProtobufLanguage runs proto.GenerateClient into a scratch
-// directory, then reshapes its output into the library layout: generated
-// bindings under gen/ (python: <pkg>/_gen/), the generated facade hoisted
-// alongside it, and the language's own package scaffolding.
-func generateProtobufLanguage(ctx context.Context, lang languages.Language, langDir, moduleName string, servicesFilter []string, facade bool, source *resolvedContractSource, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
-	raw, err := os.MkdirTemp("", "codefly-client-raw")
+// wipeTypeScriptLibrary clears langDir's src/ wholesale: unlike go/ and
+// python/, TypeScript's scaffold files (package.json, tsconfig.json) live at
+// langDir's root, not under src/, so src/ in its entirety is this command's
+// own output and safe to wipe rather than track per-entry facade filenames
+// that can change across runs.
+func wipeTypeScriptLibrary(langDir string) error {
+	return os.RemoveAll(filepath.Join(langDir, "src"))
+}
+
+// mergeTypeScriptEntry moves raw's tree under src/gen/, hoists the
+// *_facade.ts file(s) to src/, and rewrites the facade's same-directory
+// relative import ("./x") to reach into its new location under gen/ instead.
+func mergeTypeScriptEntry(langDir, raw string) error {
+	srcDir := filepath.Join(langDir, "src")
+	genDir := filepath.Join(srcDir, "gen")
+	facadeFiles, err := moveTreeSplitBySuffixWithRelDir(raw, genDir, srcDir, "_facade.ts")
 	if err != nil {
-		return generatedLanguageExport{}, err
+		return err
 	}
-	defer func() { _ = os.RemoveAll(raw) }()
-
-	req := coreproto.ClientRequest{
-		Language:    lang,
-		Destination: raw,
-		Module:      moduleName,
-		Services:    servicesFilter,
-		Facade:      facade,
-	}
-	if len(source.protoSources) > 0 {
-		// See resolvedContractSource.protoSources: generating from the
-		// original files instead of the descriptor set sidesteps a core bug
-		// where a --services subset over a multi-file descriptor set reports
-		// the target service as undeclared.
-		req.Sources = source.protoSources
-	} else {
-		var set descriptorpb.FileDescriptorSet
-		if err := googleproto.Unmarshal(source.contractBytes, &set); err != nil {
-			return generatedLanguageExport{}, fmt.Errorf("cannot parse contract descriptor set: %w", err)
-		}
-		req.DescriptorSet = source.contractBytes
-		req.TargetFiles = targetFilesForPackage(&set, source.endpoint.Package)
-	}
-
-	if err := coreproto.GenerateClient(ctx, req); err != nil {
-		return generatedLanguageExport{}, err
-	}
-
-	switch lang {
-	case languages.GO:
-		return assembleGoLibrary(langDir, raw, moduleName, goModule)
-	case languages.TYPESCRIPT:
-		export, err := assembleTypeScriptLibrary(langDir, raw, npmPackage)
+	relImportRe := regexp.MustCompile(`(from\s+")\.\/`)
+	for facadePath, relDir := range facadeFiles {
+		data, err := os.ReadFile(facadePath) //nolint:gosec // facadePath is a file this command just wrote
 		if err != nil {
-			return export, err
+			return err
 		}
-		return export, writeTypeScriptScaffold(langDir, npmPackage)
-	case languages.PYTHON:
-		return assemblePythonLibrary(langDir, raw, moduleName, pyPackage)
-	default:
-		return generatedLanguageExport{}, fmt.Errorf("language %s is not supported for client generation", lang)
+		rewritten := relImportRe.ReplaceAll(data, []byte(`${1}./gen/`+filepath.ToSlash(relDir)+`/`))
+		if err := os.WriteFile(facadePath, rewritten, 0o644); err != nil { //nolint:gosec
+			return err
+		}
 	}
+	return nil
 }
 
-// generateOpenAPILanguage synthesizes a basev0.Endpoint carrying the raw
+func finalizeTypeScriptLibrary(langDir, npmPackage string) (generatedLanguageExport, error) {
+	if err := writeTypeScriptScaffold(langDir, npmPackage); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
+}
+
+// wipePythonLibrary clears pkgDir's generated content once, before any entry
+// is merged in.
+func wipePythonLibrary(pkgDir string) error {
+	if err := os.RemoveAll(filepath.Join(pkgDir, "_gen")); err != nil {
+		return err
+	}
+	return removeMatching(pkgDir, "*.py", "__init__.py")
+}
+
+// mergePythonEntry moves raw's bindings under pkgDir/_gen/, hoists the facade
+// file (proto.GenerateClient's Python facade plugin always writes it at
+// destination root, named "<moduleName>.py") to pkgDir/, and rewrites both
+// the facade's and the bindings' own import references to go through
+// pyPackage._gen instead.
+func mergePythonEntry(pkgDir, raw, moduleName, pyPackage string) error {
+	genDir := filepath.Join(pkgDir, "_gen")
+	facadeFileName := moduleName + ".py"
+	if err := movePythonTree(raw, genDir, pkgDir, facadeFileName); err != nil {
+		return err
+	}
+	return rewritePythonImportPrefix(pkgDir, findPythonImportRoots(raw, facadeFileName), pyPackage+"._gen")
+}
+
+func finalizePythonLibrary(langDir, pyPackage string) (generatedLanguageExport, error) {
+	pkgDir := filepath.Join(langDir, pyPackage)
+	genDir := filepath.Join(pkgDir, "_gen")
+	if err := writePythonInitFiles(genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	if err := writeFileIfMissing(filepath.Join(pkgDir, "__init__.py"), nil); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	if err := writePythonScaffold(langDir, pyPackage); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	return generatedLanguageExport{Name: "python", Path: "python/", Exports: []string{pyPackage}}, nil
+}
+
+// assembleOpenAPILibrary synthesizes a basev0.Endpoint carrying the raw
 // OpenAPI document (the only thing proto.GenerateOpenAPI reads) and runs it.
 // OpenAPI clients have no facade: proto.GenerateOpenAPI's contract-derived
 // codegen is a plain typed HTTP client.
-func generateOpenAPILanguage(ctx context.Context, lang languages.Language, langDir string, source *resolvedContractSource, goModule, npmPackage string) (generatedLanguageExport, error) {
+func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, goModule, npmPackage string) (generatedLanguageExport, error) {
 	if lang != languages.GO && lang != languages.TYPESCRIPT {
 		return generatedLanguageExport{}, fmt.Errorf("openapi clients support go or typescript, not %s", lang)
 	}
@@ -138,12 +171,12 @@ func generateOpenAPILanguage(ctx context.Context, lang languages.Language, langD
 	}
 
 	endpoint := &basev0.Endpoint{
-		Name:    source.endpoint.Endpoint,
-		Service: source.endpoint.Service,
+		Name:    entry.Endpoint.Endpoint,
+		Service: entry.Endpoint.Service,
 		Module:  defaultFacadeModule,
 		Api:     standards.REST,
 		ApiDetails: &basev0.API{
-			Value: &basev0.API_Rest{Rest: &basev0.RestAPI{Openapi: source.contractBytes}},
+			Value: &basev0.API_Rest{Rest: &basev0.RestAPI{Openapi: entry.ContractBytes}},
 		},
 	}
 
@@ -170,20 +203,6 @@ func generateOpenAPILanguage(ctx context.Context, lang languages.Language, langD
 		return generatedLanguageExport{}, err
 	}
 	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
-}
-
-// targetFilesForPackage returns the names of the files in set whose proto
-// package is pkg — the module's own files, as opposed to shared imports —
-// which proto.GenerateClient's TargetFiles needs for a Python facade.
-func targetFilesForPackage(set *descriptorpb.FileDescriptorSet, pkg string) []string {
-	var files []string
-	for _, f := range set.GetFile() {
-		if f.GetPackage() == pkg {
-			files = append(files, f.GetName())
-		}
-	}
-	sort.Strings(files)
-	return files
 }
 
 // goFacadeImportRe matches a single Go import line ("ident? \"path\"") whose
@@ -236,112 +255,6 @@ func rewriteGoImportPrefix(root, oldPrefix, newPrefix string) error {
 		}
 		return os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0o644) //nolint:gosec
 	})
-}
-
-// assembleGoLibrary rewrites raw's hardcoded import prefix to goModule/gen,
-// moves the *_facade.pb.go file(s) to the go/ root, everything else to
-// go/gen/, and writes go.mod.
-func assembleGoLibrary(langDir, raw, moduleName, goModule string) (generatedLanguageExport, error) {
-	service := moduleName
-	if service == "" {
-		service = defaultFacadeModule
-	}
-	oldPrefix := "github.com/codefly-dev/cli/pkg/builder/clients/" + service
-	if err := rewriteGoImportPrefix(raw, oldPrefix, goModule+"/gen"); err != nil {
-		return generatedLanguageExport{}, fmt.Errorf("cannot rewrite generated import paths: %w", err)
-	}
-
-	genDir := filepath.Join(langDir, "gen")
-	if err := os.RemoveAll(genDir); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	// A prior run's facade file(s), if --module-name changed since (a
-	// different basename), would otherwise linger at langDir's root
-	// alongside the new one: langDir itself is no longer wiped wholesale
-	// (see generateLanguage), so any generated-facade leftover needs its own
-	// explicit cleanup, scoped by the one filename shape this command ever
-	// writes there.
-	if err := removeMatching(langDir, "*_facade.pb.go"); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if err := moveTreeSplitBySuffix(raw, genDir, langDir, "_facade.pb.go"); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if err := writeGoModule(langDir, goModule); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	bestEffortGoModTidy(langDir)
-	return generatedLanguageExport{Name: "go", Path: "go/", Exports: []string{goModule}}, nil
-}
-
-// assembleTypeScriptLibrary moves raw's tree under typescript/src/gen/, hoists
-// the *_facade.ts file(s) to typescript/src/, and rewrites the facade's
-// same-directory relative import ("./x") to reach into its new location under
-// gen/ instead.
-func assembleTypeScriptLibrary(langDir, raw, npmPackage string) (generatedLanguageExport, error) {
-	srcDir := filepath.Join(langDir, "src")
-	// Unlike go/ and python/, the scaffold files here (package.json,
-	// tsconfig.json) live at langDir's root, not under src/: src/ in its
-	// entirety is this command's own output, so it is safe (and simplest) to
-	// wipe the whole subtree rather than track a facade filename that can
-	// change across runs.
-	if err := os.RemoveAll(srcDir); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	genDir := filepath.Join(srcDir, "gen")
-	facadeFiles, err := moveTreeSplitBySuffixWithRelDir(raw, genDir, srcDir, "_facade.ts")
-	if err != nil {
-		return generatedLanguageExport{}, err
-	}
-	relImportRe := regexp.MustCompile(`(from\s+")\.\/`)
-	for facadePath, relDir := range facadeFiles {
-		data, err := os.ReadFile(facadePath) //nolint:gosec // facadePath is a file this command just wrote
-		if err != nil {
-			return generatedLanguageExport{}, err
-		}
-		rewritten := relImportRe.ReplaceAll(data, []byte(`${1}./gen/`+filepath.ToSlash(relDir)+`/`))
-		if err := os.WriteFile(facadePath, rewritten, 0o644); err != nil { //nolint:gosec
-			return generatedLanguageExport{}, err
-		}
-	}
-	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
-}
-
-// assemblePythonLibrary moves raw's bindings under pyPackage/_gen/, hoists
-// the facade file (proto.GenerateClient's Python facade plugin always writes
-// it at destination root, named "<moduleName>.py") to pyPackage/, and
-// rewrites both the facade's and the bindings' own import references to go
-// through pyPackage._gen instead.
-func assemblePythonLibrary(langDir, raw, moduleName, pyPackage string) (generatedLanguageExport, error) {
-	pkgDir := filepath.Join(langDir, pyPackage)
-	genDir := filepath.Join(pkgDir, "_gen")
-	facadeFileName := moduleName + ".py"
-	if err := os.RemoveAll(genDir); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	// A prior run's facade, if --module-name changed since (a different
-	// basename), would otherwise linger at pkgDir's root: nothing else this
-	// command writes there matches "*.py" other than __init__.py, so this
-	// only ever removes a stale generated facade, never a hand-added module.
-	if err := removeMatching(pkgDir, "*.py", "__init__.py"); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if err := movePythonTree(raw, genDir, pkgDir, facadeFileName); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if err := writePythonInitFiles(genDir); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if err := writeFileIfMissing(filepath.Join(pkgDir, "__init__.py"), nil); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if err := rewritePythonImportPrefix(pkgDir, findPythonImportRoots(raw, facadeFileName), pyPackage+"._gen"); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if err := writePythonScaffold(langDir, pyPackage); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	return generatedLanguageExport{Name: "python", Path: "python/", Exports: []string{pyPackage}}, nil
 }
 
 // movePythonTree moves raw's tree into dst (preserving each file's relative
@@ -452,7 +365,10 @@ func pythonImportLineRe(pkg string) *regexp.Regexp {
 // rewritePythonImportPrefix rewrites every "import <pkg>..."/"from <pkg> ..."
 // line under root, for every pkg in pkgs, to use newPrefix+"."+pkg instead —
 // the bindings moved from being importable at their proto-package path to
-// living under pyPackage._gen.
+// living under pyPackage._gen. Idempotent: a line already rewritten to
+// newPrefix.<pkg>... no longer starts with a bare pkg, so a second pass over
+// the same file (each entry's merge rewrites the whole package directory) is
+// a no-op for lines an earlier entry already touched.
 func rewritePythonImportPrefix(root string, pkgs []string, newPrefix string) error {
 	matchers := make([]*regexp.Regexp, 0, len(pkgs))
 	for _, pkg := range pkgs {
@@ -643,88 +559,4 @@ build-backend = "setuptools.build_meta"
 include = [%q, %q]
 `, strings.ReplaceAll(pyPackage, "_", "-"), pyPackage, pyPackage+".*")
 	return writeFileIfMissing(filepath.Join(langDir, "pyproject.toml"), []byte(pyproject))
-}
-
-// writeLibraryManifest writes library.codefly.yaml. It is written directly
-// (not through resources.Library, whose fields are a subset of this schema)
-// so the source: and generated-by: provenance survives; resources.Library
-// still loads the file fine, since a plain YAML decode ignores fields it does
-// not declare.
-func writeLibraryManifest(ctx context.Context, outputDir, name string, source *resolvedContractSource, langExports []generatedLanguageExport, facade bool) error {
-	type languageEntry struct {
-		Name    string   `yaml:"name"`
-		Path    string   `yaml:"path"`
-		Exports []string `yaml:"exports"`
-	}
-	type sourceEntry struct {
-		Package        string   `yaml:"package"`
-		Version        string   `yaml:"version"`
-		Module         string   `yaml:"module,omitempty"`
-		Service        string   `yaml:"service"`
-		Endpoint       string   `yaml:"endpoint"`
-		ContractDigest string   `yaml:"contract-digest"`
-		Services       []string `yaml:"services,omitempty"`
-	}
-	type generatedByEntry struct {
-		Codefly   string `yaml:"codefly"`
-		Companion string `yaml:"companion,omitempty"`
-		Facade    bool   `yaml:"facade"`
-	}
-	type manifest struct {
-		Kind        string           `yaml:"kind"`
-		Name        string           `yaml:"name"`
-		Version     string           `yaml:"version"`
-		Languages   []languageEntry  `yaml:"languages"`
-		Source      sourceEntry      `yaml:"source"`
-		GeneratedBy generatedByEntry `yaml:"generated-by"`
-	}
-
-	languageEntries := make([]languageEntry, 0, len(langExports))
-	for _, export := range langExports {
-		languageEntries = append(languageEntries, languageEntry(export))
-	}
-
-	codeflyVersion, _ := cli.GetCurrentVersion()
-	companion := ""
-	if image, err := coreproto.CompanionImage(ctx); err == nil {
-		companion = image.Name + ":" + image.Tag
-	}
-
-	doc := manifest{
-		Kind:      "library",
-		Name:      name,
-		Version:   source.packageVersion,
-		Languages: languageEntries,
-		Source: sourceEntry{
-			Package:        source.packageID,
-			Version:        source.packageVersion,
-			Module:         source.moduleName,
-			Service:        source.endpoint.Service,
-			Endpoint:       source.endpoint.Endpoint,
-			ContractDigest: source.endpoint.Digest,
-			Services:       protobufServiceNames(source.endpoint.Services),
-		},
-		GeneratedBy: generatedByEntry{
-			Codefly:   codeflyVersion,
-			Companion: companion,
-			Facade:    facade && source.endpoint.Kind == composition.APIContractKindProtobuf,
-		},
-	}
-
-	data, err := yaml.Marshal(doc)
-	if err != nil {
-		return err
-	}
-	return shared.WriteFileAtomic(ctx, filepath.Join(outputDir, resources.LibraryConfigurationName), data, 0o644)
-}
-
-func protobufServiceNames(services []composition.APIContractService) []string {
-	if len(services) == 0 {
-		return nil
-	}
-	names := make([]string, len(services))
-	for i, s := range services {
-		names[i] = s.Name
-	}
-	return names
 }

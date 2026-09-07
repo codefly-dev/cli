@@ -16,7 +16,31 @@ import (
 	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
+	"gopkg.in/yaml.v3"
 )
+
+// readManifestLanguageNames reads the languages: entries' names from an
+// existing libraries/<name>/library.codefly.yaml.
+func readManifestLanguageNames(t *testing.T, libraryDir string) map[string]bool {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(libraryDir, resources.LibraryConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Languages []struct {
+			Name string `yaml:"name"`
+		} `yaml:"languages"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	names := make(map[string]bool, len(doc.Languages))
+	for _, l := range doc.Languages {
+		names[l.Name] = true
+	}
+	return names
+}
 
 func resetClientFlags(t *testing.T) {
 	t.Helper()
@@ -284,16 +308,9 @@ func TestGenerateClientPartialLanguageRerunKeepsManifest(t *testing.T) {
 		t.Fatalf("second RunE: %v", err)
 	}
 
-	exports, err := readExistingLanguageExports(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := make(map[string]bool, len(exports))
-	for _, e := range exports {
-		names[e.Name] = true
-	}
+	names := readManifestLanguageNames(t, output)
 	if !names["go"] || !names["typescript"] {
-		t.Fatalf("manifest languages = %+v, want both go and typescript still declared", exports)
+		t.Fatalf("manifest languages = %+v, want both go and typescript still declared", names)
 	}
 	if _, err := os.Stat(filepath.Join(output, "typescript", "package.json")); err != nil {
 		t.Fatalf("typescript/ was removed even though it was not requested: %v", err)
@@ -327,7 +344,7 @@ func TestGenerateClientRefusesDigestChangeWithoutForce(t *testing.T) {
 	fixtureDir := writeSyntheticContractsFixture(t)
 
 	libDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(libDir, resources.LibraryConfigurationName), []byte("kind: library\nname: x\nversion: 0.1.0\nsource:\n  contract-digest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(libDir, resources.LibraryConfigurationName), []byte("kind: library\nname: x\nversion: 0.1.0\nsources:\n  - service: api\n    endpoint: grpc\n    contract-digest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
