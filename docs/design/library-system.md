@@ -523,35 +523,85 @@ real producer: it turns an API contract (a local service, a composed module
 package, or a `generate contracts` export) into a library under
 `libraries/<name>/<language>/` — generated bindings plus a generated
 gateway-bound facade — with the same `libraries/<name>/library.codefly.yaml`
-this design describes, extended with a `source:` block:
+this design describes, extended with a `sources:` list (always a list, even
+for `generate client`'s single contract, so it shares one schema with
+`sync solution-sdk`'s aggregated libraries below):
 
 ```yaml
-source:
-  package: codefly/saas-starter      # or "local" for a live service
-  version: 0.1.0
-  module: saas-starter
-  service: accounts
-  endpoint: connect
-  contract-digest: sha256:…
+sources:
+  - package: codefly/saas-starter      # or "local" for a live service
+    version: 0.1.0
+    module: saas-starter
+    service: accounts
+    endpoint: connect
+    contract-digest: sha256:…
 generated-by:
   codefly: 0.1.140
   companion: codeflydev/proto:0.0.13
   facade: true
 ```
 
-`source.contract-digest` is the drift signal: it is the digest of the contract
-(protobuf descriptor set or OpenAPI document) the library was generated from.
-Re-running `generate client` against an unchanged contract regenerates in
-place (idempotent, byte-identical output); against a changed one, it refuses
-to overwrite the library unless `--force` is given, so a stale generated
-library is always an explicit choice, never a silent one.
+`sources[].contract-digest` is the drift signal: it is the digest of the
+contract (protobuf descriptor set or OpenAPI document) the library was
+generated from. Re-running `generate client` against an unchanged contract
+regenerates in place (idempotent, byte-identical output); against a changed
+one, it refuses to overwrite the library unless `--force` is given, so a stale
+generated library is always an explicit choice, never a silent one.
 
 This complements, rather than replaces, the git-submodule and hand-authored
 paths above: a generated library still lives at `libraries/<name>/`, is loaded
-by `resources.Library` like any other (the `source:`/`generated-by:` fields
+by `resources.Library` like any other (the `sources:`/`generated-by:` fields
 are additive — a plain YAML decode ignores fields it does not declare), and
 flows through `add library-dependency`, `sync library-dependencies`, and
 `publish library` unchanged.
+
+### Solution SDKs
+
+A solution declares what it consumes once, in `api.consumes` on
+`solution.codefly.yaml` (core's `solution/manifest` package) — module, service,
+endpoint, an optional version constraint, an optional services subset, and an
+optional facade entry-point override (`as`). `codefly sync solution-sdk`
+aggregates every module-bound entry into **one** library per solution,
+`libraries/<solution module>-sdk/`, sharing this same schema and the same
+generator `pkg/generators.GenerateClientLibrary` as `generate client` —
+`generate client` calls it with one contract entry, `sync solution-sdk` with
+one per bound `api.consumes` entry, all targeting the same output root so
+every language shares one `go.mod`/`package.json`/`pyproject.toml`:
+
+```yaml
+sources:
+  - package: codefly/saas-starter
+    version: 0.1.0
+    module: saas-starter
+    service: accounts
+    endpoint: connect
+    contract-digest: sha256:…
+    services: [AuditService]
+  - package: codefly/other-module
+    version: 0.2.1
+    module: other-module
+    service: billing
+    endpoint: connect
+    contract-digest: sha256:…
+```
+
+Two entries whose contracts share a protobuf package at different digests are
+rejected as a diamond, the same rule `pkg/composition/coherence.go` enforces
+for a service's transitive library closure, applied here to the contracts one
+generation aggregates.
+
+This single declaration drives three outputs, kept in step by the same
+command: the generated SDK above; the entry service's runtime
+`service-dependencies` (`--apply-dependencies` adds any entry missing there,
+never removing an existing one); and the `SolutionBundle`'s
+`platform.consumes`, which lodestar derives from the same manifest. Before
+`api.consumes`, a solution declared what it consumed in up to four
+disconnected places — `service-dependencies`, a vendored `solution-sdk.yaml`,
+a `go.mod` replace pin, and a hand-written `Manifest{}` struct for host
+registration — that could silently drift apart; `sync solution-sdk` replaces
+the vendoring path (`solution-sdk.yaml` + a fetched `_sdk/` directory) with a
+fail-closed one: a composed module that ships no API contract catalog
+(`generate contracts` not yet run) is an error, not a stale fetch.
 
 ## Migration Path
 

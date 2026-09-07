@@ -498,6 +498,7 @@ codefly sync library-dependencies       # Sync library dependencies
 codefly sync module saas                # Preview the first or next pinned base update
 codefly sync module saas --apply        # Apply the pinned base update
 codefly sync module saas --restore-code # Restore missing module-owned service code
+codefly sync solution-sdk --language python --apply-dependencies  # Aggregate api.consumes into one solution SDK
 ```
 
 For agent-backed modules, run `codefly add module --agent ...` before the first
@@ -543,6 +544,50 @@ codefly sync module saas --restore-code \
 
 The source must match the service-code hashes already owned by the target base
 manifest; a newer or locally modified source is rejected.
+
+#### sync solution-sdk
+
+```bash
+codefly sync solution-sdk --language python                      # Generate/refresh the solution's library
+codefly sync solution-sdk --language go,python --apply-dependencies  # Also wire up service-dependencies
+codefly sync solution-sdk --language python --check               # CI drift gate
+```
+
+Run from a solution workspace (`workspace.codefly.yaml` plus a module whose
+`service-entry` is the solution backend, as in `core-solutions/solutions/*`).
+Reads the single declaration `api.consumes` in `solution.codefly.yaml` (the
+solution manifest core's `solution/manifest` package defines) and aggregates
+every module-bound entry — `{module, service, endpoint, version, services, as}`
+— into **one** library, `libraries/<solution module>-sdk/`, generated from the
+composed module packages' API contract catalogs (the same generator
+`generate client` uses, aggregating N contract entries into one library
+instead of one). This is the **one declaration, three outputs** rule: the same
+`api.consumes` entries drive the generated SDK, the runtime
+`service-dependencies` (below), and the `SolutionBundle` `platform.consumes`
+lodestar derives from the manifest.
+
+| Flag | Description |
+|------|-------------|
+| `--language` | Required, repeatable or comma-separated: `go`, `typescript`, `python` |
+| `--check` | Do not write; exit 1 if the library or `service-dependencies` are out of date |
+| `--apply-dependencies` | Add any `service-dependencies` entry missing for a bound consume entry to the entry service's `service.codefly.yaml`; without it, missing entries are printed as a warning. Existing entries are never removed. |
+
+Each bound entry is resolved against the workspace's own composition: the
+composed module named by `module` (workspace `add module` first), its
+`module.package.codefly.yaml` and `contracts/api/catalog.codefly.json` (from
+`generate contracts`), `version` checked as a semver constraint against the
+composed package version, and `services` validated against the endpoint's
+declared protobuf services. Two entries whose contracts share a proto package
+at different digests (a diamond) are rejected.
+
+If a `solution-sdk.yaml` (the pre-`api.consumes` declaration this command
+replaces) sits next to the manifest, its dependencies must be migrated into
+`api.consumes` by hand — `source.repo`/`ref` there has no equivalent, since the
+workspace's own composition pin replaces it — and the file deleted; the
+vendored `_sdk/` directory it produced is replaced by `libraries/<name>-sdk/`.
+
+Use `codefly sync library-dependencies --service <entry service>` (printed as
+the next step) to link the generated library into the entry service locally.
 
 ### `codefly environment`
 
@@ -777,14 +822,17 @@ with no caller and no way to detect drift.
 | `--module-name` | Facade entry-point name (default: derived from the contract's proto package) |
 | `--no-facade` | Bindings only |
 | `--output` | Output directory (default `<workspace>/libraries/<name>`) |
-| `--force` | Overwrite an existing library whose `source.contract-digest` differs |
+| `--force` | Overwrite an existing library whose recorded contract digest differs |
 | `--go-module` | Go module path for `go/` (default `github.com/codefly-dev/<name>-go`) |
 | `--npm-scope` | npm package name for `typescript/` (default `@codefly-dev/<name>`) |
 
 Re-running `generate client` for the same library regenerates in place when the
 contract is unchanged (idempotent); it refuses to overwrite a library whose
-recorded `source.contract-digest` differs, unless `--force` is given — the digest
-is the drift signal between a library and the contract it was generated from.
+recorded `sources[].contract-digest` differs, unless `--force` is given — the
+digest is the drift signal between a library and the contract it was generated
+from. `library.codefly.yaml` always carries a `sources:` list (one element for
+`generate client`, one per aggregated contract for `sync solution-sdk` below) so
+both commands share one schema.
 
 `--from module/service[/endpoint]` loads the service's Builder to build a
 one-entry contract in memory (the same way `generate contracts` does) and

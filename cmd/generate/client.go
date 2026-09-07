@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -23,7 +22,6 @@ import (
 	"github.com/codefly-dev/core/shared"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
-	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/cobra"
 )
@@ -139,6 +137,28 @@ func runGenerateClient(ctx context.Context) error {
 		return fmt.Errorf("cannot resolve output path: %w", err)
 	}
 
+	moduleName := strings.TrimSpace(clientModuleName)
+	goModule := strings.TrimSpace(clientGoModule)
+	if goModule == "" {
+		goModule = "github.com/codefly-dev/" + name + "-go"
+	}
+	npmPackage := strings.TrimSpace(clientNpmScope)
+	if npmPackage == "" {
+		npmPackage = "@codefly-dev/" + name
+	}
+
+	entry := generators.ContractEntry{
+		Endpoint:            source.endpoint,
+		ContractBytes:       source.contractBytes,
+		PackageID:           source.packageID,
+		PackageVersion:      source.packageVersion,
+		ModuleName:          source.moduleName,
+		FacadeModuleDefault: source.facadeModuleDefault,
+		ProtoSources:        source.protoSources,
+		Services:            clientServices,
+		As:                  moduleName,
+	}
+
 	// The whole read-decide-write cycle (check the existing digest and
 	// language list, then generate and write) is one critical section: two
 	// concurrent `generate client` invocations targeting the same output
@@ -149,79 +169,21 @@ func runGenerateClient(ctx context.Context) error {
 	// for the analogous shared-output-directory hazard.
 	lockPath := filepath.Join(resources.CodeflyHomeDir(), "locks", fmt.Sprintf("%x.generate-client.lock", sha256.Sum256([]byte(filepath.Clean(outputDir)))))
 	return clicomposition.WithFileLock(lockPath, 5*time.Minute, func() error {
-		return generateClientLocked(ctx, source, langs, name, outputDir)
+		if err := generators.GenerateClientLibrary(ctx, &generators.ClientLibraryRequest{
+			Name:       name,
+			Output:     outputDir,
+			Languages:  langs,
+			Entries:    []generators.ContractEntry{entry},
+			NoFacade:   clientNoFacade,
+			Force:      clientForce,
+			GoModule:   goModule,
+			NpmPackage: npmPackage,
+		}); err != nil {
+			return err
+		}
+		cli.Info("next: codefly publish library %s", name)
+		return nil
 	})
-}
-
-// generateClientLocked is runGenerateClient's write phase, run while
-// WithFileLock holds outputDir's lock.
-func generateClientLocked(ctx context.Context, source *resolvedContractSource, langs []languages.Language, name, outputDir string) error {
-	existingDigest, hasExisting, err := readExistingLibraryDigest(outputDir)
-	if err != nil {
-		return err
-	}
-	if hasExisting && existingDigest != source.endpoint.Digest && !clientForce {
-		return fmt.Errorf("library %s already exists with a different contract (digest %s, generating %s); use --force to overwrite", name, existingDigest, source.endpoint.Digest)
-	}
-	// Only carry a previously-declared language forward when this run's
-	// contract is the same one that produced it (an unchanged digest, or a
-	// brand new library). A --force digest override means the contract
-	// changed: a language directory this run does not touch is now stale
-	// relative to it, so the manifest must stop vouching for it rather than
-	// claim it matches a digest it was never generated against.
-	var existingLanguages []generatedLanguageExport
-	if !hasExisting || existingDigest == source.endpoint.Digest {
-		existingLanguages, err = readExistingLanguageExports(outputDir)
-		if err != nil {
-			return err
-		}
-	}
-
-	moduleName := strings.TrimSpace(clientModuleName)
-	if moduleName == "" {
-		moduleName = source.facadeModuleDefault
-	}
-	if moduleName == "" {
-		moduleName = defaultFacadeModule
-	}
-
-	contractDir := filepath.Join(outputDir, "contract")
-	if err := writeContractFiles(ctx, contractDir, &source.endpoint, source.contractBytes, source.packageID, source.packageVersion); err != nil {
-		return fmt.Errorf("cannot write contract: %w", err)
-	}
-
-	goModule := strings.TrimSpace(clientGoModule)
-	if goModule == "" {
-		goModule = "github.com/codefly-dev/" + name + "-go"
-	}
-	npmPackage := strings.TrimSpace(clientNpmScope)
-	if npmPackage == "" {
-		npmPackage = "@codefly-dev/" + name
-	}
-	pyPackage := strings.ReplaceAll(name, "-", "_")
-
-	var langExports []generatedLanguageExport
-	for _, lang := range langs {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		export, genErr := generateLanguage(ctx, lang, outputDir, moduleName, clientServices, !clientNoFacade, source, goModule, npmPackage, pyPackage)
-		if genErr != nil {
-			return fmt.Errorf("cannot generate %s client: %w", lang, genErr)
-		}
-		langExports = append(langExports, export)
-		cli.Info("generated %s client at %s", lang, filepath.Join(outputDir, string(lang)))
-	}
-
-	langExports = mergeLanguageExports(existingLanguages, langExports, langs)
-
-	if err := writeLibraryManifest(ctx, outputDir, name, source, langExports, !clientNoFacade); err != nil {
-		return fmt.Errorf("cannot write %s: %w", resources.LibraryConfigurationName, err)
-	}
-
-	cli.Header(1, "Library %s generated at %s", name, outputDir)
-	cli.Info("next: codefly publish library %s", name)
-	return nil
 }
 
 // runLegacyClientAlias backs the hidden `generate grpc`/`generate openapi`
@@ -360,7 +322,7 @@ func resolveLocalSource(ctx context.Context, workspace *resources.Workspace, fro
 		packageID:           "local",
 		packageVersion:      version,
 		moduleName:          module.Name,
-		facadeModuleDefault: defaultFacadeModuleName(contractEndpoint),
+		facadeModuleDefault: generators.DefaultFacadeModuleName(contractEndpoint),
 		protoSources:        protoSources,
 	}, nil
 }
@@ -500,7 +462,7 @@ func resolvePackageSource(ctx context.Context, workspace *resources.Workspace, s
 
 	var problems []string
 	for _, ref := range workspace.Modules {
-		dir, resolveErr := resolveComposedModuleDir(ctx, workspace, ref)
+		dir, resolveErr := clicomposition.ResolveComposedModuleDir(ctx, workspace, ref)
 		if resolveErr != nil {
 			// Not necessarily "this ref isn't the package" — it may be the
 			// right one, unresolvable (a network/auth failure pulling a
@@ -529,7 +491,7 @@ func resolvePackageSource(ctx context.Context, workspace *resources.Workspace, s
 		if err != nil {
 			return nil, err
 		}
-		contractBytes, err := readCatalogContractBytes(dir, entry)
+		contractBytes, err := generators.ReadCatalogContractBytes(dir, entry)
 		if err != nil {
 			return nil, err
 		}
@@ -543,32 +505,13 @@ func resolvePackageSource(ctx context.Context, workspace *resources.Workspace, s
 			packageID:           manifest.ID,
 			packageVersion:      manifest.Version,
 			moduleName:          moduleName,
-			facadeModuleDefault: defaultFacadeModuleName(entry),
+			facadeModuleDefault: generators.DefaultFacadeModuleName(entry),
 		}, nil
 	}
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("workspace does not compose package %q, and %d module reference(s) could not be checked: %s", id, len(problems), strings.Join(problems, "; "))
 	}
 	return nil, fmt.Errorf("workspace does not compose package %q", id)
-}
-
-// resolveComposedModuleDir resolves a composed module reference to its local
-// directory, materializing a pinned reference through the verified module
-// package (the same path `codefly run` uses) rather than requiring it
-// already be checked out.
-func resolveComposedModuleDir(ctx context.Context, workspace *resources.Workspace, ref *resources.ModuleReference) (string, error) {
-	resolution, err := workspace.ResolveModule(ctx, ref)
-	if err != nil {
-		return "", err
-	}
-	if resolution.Kind == resources.ResolutionPinned {
-		pinned, pinnedErr := clicomposition.ResolvePinnedModule(ctx, workspace.Dir(), ref)
-		if pinnedErr != nil {
-			return "", pinnedErr
-		}
-		return pinned.Dir, nil
-	}
-	return resolution.Dir, nil
 }
 
 // resolveContractsDirSource handles --from contracts:<dir>: dir may be either
@@ -599,7 +542,7 @@ func resolveContractsDirSource(ctx context.Context, dir, endpointHint string) (*
 	if err != nil {
 		return nil, err
 	}
-	contractBytes, err := readCatalogContractBytes(moduleDir, entry)
+	contractBytes, err := generators.ReadCatalogContractBytes(moduleDir, entry)
 	if err != nil {
 		return nil, err
 	}
@@ -613,7 +556,7 @@ func resolveContractsDirSource(ctx context.Context, dir, endpointHint string) (*
 		packageID:           catalog.Package,
 		packageVersion:      catalog.Version,
 		moduleName:          moduleName,
-		facadeModuleDefault: defaultFacadeModuleName(entry),
+		facadeModuleDefault: generators.DefaultFacadeModuleName(entry),
 	}, nil
 }
 
@@ -647,50 +590,6 @@ func pickCatalogEndpoint(catalog *composition.APIContractCatalog, hint string) (
 	return &catalog.Endpoints[0], nil
 }
 
-// readCatalogContractBytes reads an entry's contract file off disk and
-// verifies it still matches the catalog's recorded digest, so a corrupted or
-// stale contract file never silently gets baked into a generated library.
-func readCatalogContractBytes(moduleDir string, entry *composition.APIContractEndpoint) ([]byte, error) {
-	data, err := os.ReadFile(filepath.Join(moduleDir, filepath.FromSlash(entry.Path)))
-	if err != nil {
-		return nil, fmt.Errorf("cannot read contract file %s: %w", entry.Path, err)
-	}
-	if digest := composition.APIContractDigest(data); digest != entry.Digest {
-		return nil, fmt.Errorf("contract file %s digest %s does not match catalog digest %s", entry.Path, digest, entry.Digest)
-	}
-	return data, nil
-}
-
-// defaultFacadeModuleName replicates the facade plugins' own default (the
-// last non-version segment of the proto package), so the CLI knows the exact
-// facade file name it must locate after generation without forcing the user
-// to pass --module-name. Empty for an OpenAPI contract, which has no facade.
-func defaultFacadeModuleName(entry *composition.APIContractEndpoint) string {
-	if entry.Kind != composition.APIContractKindProtobuf {
-		return ""
-	}
-	segments := strings.Split(entry.Package, ".")
-	for len(segments) > 1 && isProtoVersionSegment(segments[len(segments)-1]) {
-		segments = segments[:len(segments)-1]
-	}
-	if len(segments) == 0 {
-		return ""
-	}
-	return segments[len(segments)-1]
-}
-
-func isProtoVersionSegment(s string) bool {
-	if len(s) < 2 || s[0] != 'v' {
-		return false
-	}
-	for _, r := range s[1:] {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
 func defaultLibraryName(source *resolvedContractSource) string {
 	module := source.moduleName
 	if module == "" {
@@ -702,113 +601,4 @@ func defaultLibraryName(source *resolvedContractSource) string {
 func lastPathSegment(s string) string {
 	parts := strings.Split(s, "/")
 	return parts[len(parts)-1]
-}
-
-// readExistingLibraryDigest reports the source.contract-digest recorded in an
-// existing libraries/<name>/library.codefly.yaml, if any. It reads the
-// document generically (rather than through resources.Library, which does
-// not carry this field) since the file may not exist yet, may have been
-// hand-authored, or may carry the extended schema this command writes.
-func readExistingLibraryDigest(libraryDir string) (digest string, exists bool, err error) {
-	data, err := os.ReadFile(filepath.Join(libraryDir, resources.LibraryConfigurationName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, err
-	}
-	var doc struct {
-		Source struct {
-			ContractDigest string `yaml:"contract-digest"`
-		} `yaml:"source"`
-	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return "", true, fmt.Errorf("cannot parse existing %s: %w", resources.LibraryConfigurationName, err)
-	}
-	return doc.Source.ContractDigest, true, nil
-}
-
-// readExistingLanguageExports reads the languages: entries an existing
-// libraries/<name>/library.codefly.yaml already declares, if any.
-func readExistingLanguageExports(libraryDir string) ([]generatedLanguageExport, error) {
-	data, err := os.ReadFile(filepath.Join(libraryDir, resources.LibraryConfigurationName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var doc struct {
-		Languages []generatedLanguageExport `yaml:"languages"`
-	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("cannot parse existing %s: %w", resources.LibraryConfigurationName, err)
-	}
-	return doc.Languages, nil
-}
-
-// mergeLanguageExports combines this run's freshly generated exports with an
-// existing manifest's, so requesting a subset of languages (e.g. --language
-// go to refresh just one binding) does not silently drop the declaration of
-// languages generated by an earlier run and left untouched by this one —
-// their directories are still there (generateLanguage no longer wipes a
-// language it wasn't asked to touch), so the manifest must keep saying so.
-// A language actually requested this run always comes from fresh, never the
-// prior entry, since fresh reflects what was just (re)generated.
-func mergeLanguageExports(existing, fresh []generatedLanguageExport, requested []languages.Language) []generatedLanguageExport {
-	requestedNames := make(map[string]bool, len(requested))
-	for _, l := range requested {
-		requestedNames[string(l)] = true
-	}
-	merged := make([]generatedLanguageExport, 0, len(existing)+len(fresh))
-	seen := make(map[string]bool, len(existing)+len(fresh))
-	for _, e := range fresh {
-		merged = append(merged, e)
-		seen[e.Name] = true
-	}
-	for _, e := range existing {
-		if requestedNames[e.Name] || seen[e.Name] {
-			continue
-		}
-		merged = append(merged, e)
-		seen[e.Name] = true
-	}
-	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
-	return merged
-}
-
-// writeContractFiles writes a generated library's contract/ directory: the
-// raw contract bytes (contract.binpb or openapi.json) plus the one-entry
-// catalog.codefly.json describing them.
-func writeContractFiles(ctx context.Context, contractDir string, endpoint *composition.APIContractEndpoint, contractBytes []byte, packageID, packageVersion string) error {
-	if err := os.RemoveAll(contractDir); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(contractDir, 0o755); err != nil {
-		return err
-	}
-	filename := "contract.binpb"
-	if endpoint.Kind == composition.APIContractKindOpenAPI {
-		filename = "openapi.json"
-	}
-	if err := shared.WriteFileAtomic(ctx, filepath.Join(contractDir, filename), contractBytes, 0o644); err != nil {
-		return err
-	}
-
-	entry := *endpoint
-	entry.Path = filename
-	catalog := &composition.APIContractCatalog{
-		Schema:    composition.APIContractCatalogSchema,
-		Package:   packageID,
-		Version:   packageVersion,
-		Endpoints: []composition.APIContractEndpoint{entry},
-	}
-	if err := catalog.Validate(); err != nil {
-		return fmt.Errorf("generated catalog is invalid: %w", err)
-	}
-	data, err := catalog.CanonicalBytes()
-	if err != nil {
-		return err
-	}
-	return shared.WriteFileAtomic(ctx, filepath.Join(contractDir, "catalog.codefly.json"), data, 0o644)
 }
