@@ -282,7 +282,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 		return w.Wrapf(err, "cannot get companion image")
 	}
 
-	w.Info("Using proto companion image", wool.Field("image", fmt.Sprintf("%s:%s", image.Name, image.Tag)))
+	w.Info("Using proto companion image", wool.Field("image", image.FullName()))
 
 	// buf.gen.yaml lives in the proto dir — that's where buf runs from.
 	bufGenPath := filepath.Join(protoDir, "buf.gen.yaml")

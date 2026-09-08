@@ -2,7 +2,9 @@ package companion
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -36,9 +38,10 @@ With no argument it verifies every image companion under
 any tag is missing, listing the missing tags — wire it into CI so a bump
 that references an unpublished tag fails fast instead of at runtime.
 
-Detecting a missing tag on a namespaced repo needs registry auth, so run
-"docker login" first (CI does); anonymously Docker Hub reports a missing
-tag as an auth error, which verify surfaces rather than guessing.
+The check runs with no stored docker credentials, so it sees exactly what
+an anonymous puller (agents, CI, other developers) sees — a package an
+operator can see only because they're logged in locally would otherwise
+pass verify and still 401 for everyone else.
 
 Examples:
   codefly companion verify
@@ -76,9 +79,9 @@ func runVerify(cmd *cobra.Command, args []string) error {
 
 	var missing []string
 	for _, c := range targets {
-		ok, err := manifestExists(c.Tag())
+		ok, err := manifestExists(c.Name, c.Tag())
 		if err != nil {
-			return fmt.Errorf("verify %s: %w", c.Tag(), err)
+			return err
 		}
 		if ok {
 			fmt.Printf("    ok       %s\n", c.Tag())
@@ -110,26 +113,27 @@ func imageCompanions(in []*Companion) []*Companion {
 }
 
 // manifestExists reports whether tag resolves to a manifest in the
-// registry. It shells out to `docker manifest inspect` and treats a
-// manifest-not-found failure as absent, propagating any other failure as a
-// real error so a flaky or unauthenticated registry can't be mistaken for a
-// missing tag.
-//
-// Authentication matters: for a namespaced repo, Docker Hub answers a
-// missing tag with "manifest unknown" only when authenticated; anonymously
-// it returns "unauthorized"/"denied", which we deliberately surface as an
-// error rather than guessing. Run `docker login` first (CI does) so a
-// genuinely missing tag is reported as missing, not as an auth failure.
-func manifestExists(tag string) (bool, error) {
-	out, err := exec.Command("docker", "manifest", "inspect", tag).CombinedOutput()
-	if err == nil {
+// registry, checked anonymously (see anonymousManifestInspect) so the
+// result matches what any puller without local credentials sees. A
+// manifest-not-found response is treated as "absent"; any other failure
+// (private package, unreachable registry, ...) is a real error, since a
+// flaky or access-denied registry must not be mistaken for a missing tag.
+func manifestExists(name, tag string) (bool, error) {
+	ok, out, err := anonymousManifestInspect(tag)
+	if err != nil {
+		return false, fmt.Errorf("verify %s: %w", tag, err)
+	}
+	if ok {
 		return true, nil
 	}
-	if isManifestNotFound(string(out)) {
+	if isManifestNotFound(out) {
 		return false, nil
 	}
-	return false, fmt.Errorf("docker manifest inspect %s failed (run `docker login` if this is an auth error): %s",
-		tag, strings.TrimSpace(string(out)))
+	return false, fmt.Errorf(`verify %s: docker manifest inspect failed anonymously: %s
+possible causes:
+  - the tag was never pushed: run "codefly companion publish %s"
+  - the package is private: %s`,
+		tag, strings.TrimSpace(out), name, registryPrivacyHint(name, tag))
 }
 
 // isManifestNotFound classifies `docker manifest inspect` failure output as
@@ -141,4 +145,28 @@ func isManifestNotFound(output string) bool {
 	lower := strings.ToLower(output)
 	return strings.Contains(lower, "no such manifest") ||
 		strings.Contains(lower, "manifest unknown")
+}
+
+// anonymousManifestInspect runs `docker manifest inspect <tag>` with
+// DOCKER_CONFIG pointed at a throwaway directory holding an empty config,
+// so the lookup carries no stored credentials regardless of what the
+// operator is logged into locally. ok reports whether the command
+// succeeded; output is its combined stdout+stderr for callers to classify
+// (isManifestNotFound) or report. err is only set for failures unrelated
+// to the docker command's own exit status (e.g. can't create the temp
+// config dir).
+func anonymousManifestInspect(tag string) (ok bool, output string, err error) {
+	configDir, err := os.MkdirTemp("", "codefly-companion-anon-docker-*")
+	if err != nil {
+		return false, "", fmt.Errorf("create anonymous docker config dir: %w", err)
+	}
+	defer os.RemoveAll(configDir)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte("{}"), 0o600); err != nil {
+		return false, "", fmt.Errorf("write anonymous docker config: %w", err)
+	}
+
+	cmd := exec.Command("docker", "manifest", "inspect", tag)
+	cmd.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	out, runErr := cmd.CombinedOutput()
+	return runErr == nil, string(out), nil
 }

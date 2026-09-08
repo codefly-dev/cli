@@ -19,6 +19,11 @@ compose them.
    ```bash
    codefly publish patch        # bumps version/info.codefly.yaml, tags, pushes
    ```
+   If this change touched any `companions/*/info.codefly.yaml`, wait for
+   `companions-publish.yml` to finish pushing the bumped tags, then run
+   `codefly companion verify` before moving on — a companion version bump
+   that isn't backed by a pushed, publicly pullable image breaks every
+   Codefly-native build at the companion pull, not just this release.
 2. **CLI** — pin to the new core and release:
    ```bash
    GOWORK=off go get github.com/codefly-dev/core@vX.Y.Z && go mod tidy
@@ -65,6 +70,8 @@ compose them.
 ## Checklist
 
 - [ ] Core tagged and fetchable (`git ls-remote --tags <core> vX.Y.Z`)
+- [ ] If companion versions changed: `companions-publish.yml` finished and
+      `codefly companion verify` passes
 - [ ] CLI pinned to the core tag, released, and reinstalled (`codefly version`)
 - [ ] Every agent re-pinned and published (service / module / toolbox / provider)
 - [ ] `module-saas-starter` refreshed and published after its agents

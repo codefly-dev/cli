@@ -1,12 +1,91 @@
 package companion
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// writeFakeDocker installs a fake `docker` executable at the front of PATH
+// for the duration of the test. body is the shell script run for every
+// invocation, regardless of subcommand.
+func writeFakeDocker(t *testing.T, body string) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" + body
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "docker"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestAnonymousManifestInspect_RunsWithEmptyDockerConfig(t *testing.T) {
+	recordPath := filepath.Join(t.TempDir(), "record.txt")
+	writeFakeDocker(t, fmt.Sprintf(`
+{
+  echo "argv: $@"
+  echo "DOCKER_CONFIG=$DOCKER_CONFIG"
+  cat "$DOCKER_CONFIG/config.json"
+} >> %q
+echo '{}'
+exit 0
+`, recordPath))
+
+	ok, _, err := anonymousManifestInspect("ghcr.io/codefly-dev/proto:0.0.13")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	record, err := os.ReadFile(recordPath)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimRight(string(record), "\n"), "\n")
+	require.Len(t, lines, 3, "record: %q", record)
+	require.Equal(t, "argv: manifest inspect ghcr.io/codefly-dev/proto:0.0.13", lines[0])
+	require.True(t, strings.HasPrefix(lines[1], "DOCKER_CONFIG="), "record: %q", record)
+	require.NotEmpty(t, strings.TrimPrefix(lines[1], "DOCKER_CONFIG="), "DOCKER_CONFIG must be set to a real path")
+	require.Equal(t, "{}", lines[2], "docker must run against an empty, credential-free config")
+}
+
+func TestManifestExists_PrivatePackagePrintsBothCauses(t *testing.T) {
+	writeFakeDocker(t, `
+echo "denied: requested access to the resource is denied" 1>&2
+exit 1
+`)
+	ok, err := manifestExists("proto", "ghcr.io/codefly-dev/proto:0.0.13")
+	require.False(t, ok)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "codefly companion publish proto")
+	require.Contains(t, err.Error(), "https://github.com/orgs/codefly-dev/packages/container/proto/settings")
+}
+
+// TestManifestExists_PrivatePackagePrintsDockerHubHint is the case the
+// original PR's tests never exercised: Companion.Tag() still produces a
+// Docker Hub tag (codeflydev/<name>:<version>), not a ghcr.io one, so the
+// "make it public" hint must not point at GitHub Packages for this — the
+// package doesn't exist there.
+func TestManifestExists_PrivatePackagePrintsDockerHubHint(t *testing.T) {
+	writeFakeDocker(t, `
+echo "denied: requested access to the resource is denied" 1>&2
+exit 1
+`)
+	ok, err := manifestExists("proto", "codeflydev/proto:0.0.13")
+	require.False(t, ok)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "codefly companion publish proto")
+	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/codeflydev/proto/general")
+	require.NotContains(t, err.Error(), "github.com/orgs")
+}
+
+func TestManifestExists_NotFoundIsAbsentNotError(t *testing.T) {
+	writeFakeDocker(t, `
+echo "manifest unknown" 1>&2
+exit 1
+`)
+	ok, err := manifestExists("proto", "ghcr.io/codefly-dev/proto:0.0.13")
+	require.NoError(t, err)
+	require.False(t, ok)
+}
 
 func writeManifest(t *testing.T, root, name, version string, dockerfile, flake bool) {
 	t.Helper()
