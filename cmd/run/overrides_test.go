@@ -75,3 +75,46 @@ func TestParseSetOverrides(t *testing.T) {
 		})
 	}
 }
+
+// The solution-derived injection and an operator's --set can name the same key
+// on the same service. --set must win because it is layered last, not because
+// parseSetOverrides happens to let the final duplicate entry overwrite the
+// earlier one — reorder that loop and the operator would silently lose.
+func TestMergeOverridesLetsSetWinOverDerived(t *testing.T) {
+	derived := map[string]map[string]string{
+		"wiki/backend": {"CODEFLY__API_CONSUMES": "derived", "CODEFLY__KEPT": "yes"},
+	}
+	set := map[string]map[string]string{
+		"wiki/backend": {"CODEFLY__API_CONSUMES": "pinned-by-hand"},
+		"warden":       {"CODEFLY__FIXTURE": "dogfood"},
+	}
+
+	got := mergeOverrides(derived, set)
+	want := map[string]map[string]string{
+		"wiki/backend": {"CODEFLY__API_CONSUMES": "pinned-by-hand", "CODEFLY__KEPT": "yes"},
+		"warden":       {"CODEFLY__FIXTURE": "dogfood"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mergeOverrides() = %v, want %v", got, want)
+	}
+}
+
+// A flow with no overrides must be indistinguishable from one that never had
+// any: parseSetOverrides returns nil for no entries, so merging nothing must
+// too rather than handing the flow an empty non-nil map.
+func TestMergeOverridesEmptyIsNil(t *testing.T) {
+	if got := mergeOverrides(nil, nil); got != nil {
+		t.Fatalf("mergeOverrides(nil, nil) = %v, want nil", got)
+	}
+}
+
+// mergeOverrides must not write through into its inputs: derivedOverrides is a
+// package var reassigned per run, and a merge that aliased it would let one
+// run's --set leak into the next.
+func TestMergeOverridesDoesNotMutateInputs(t *testing.T) {
+	derived := map[string]map[string]string{"wiki/backend": {"K": "derived"}}
+	mergeOverrides(derived, map[string]map[string]string{"wiki/backend": {"K": "set"}})
+	if derived["wiki/backend"]["K"] != "derived" {
+		t.Fatalf("mergeOverrides mutated its input: %v", derived)
+	}
+}

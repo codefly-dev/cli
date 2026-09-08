@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -22,6 +23,7 @@ import (
 	postgresipc "github.com/codefly-dev/core/runners/base"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/services"
+	"github.com/codefly-dev/core/solution/manifest"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
@@ -142,6 +144,12 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 
 	serviceName := resources.WithUnique(service).Unique()
+
+	derived, derivedErr := solutionDerivedOverrides(workspace, module, service, serviceName)
+	if derivedErr != nil {
+		return derivedErr
+	}
+	derivedOverrides = derived
 
 	var flow *orchestration.Flow
 
@@ -700,7 +708,10 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	flow.WithOverrides(overrides)
+	// --set is layered last so an operator pinning a key by hand is
+	// authoritative by construction, rather than by parseSetOverrides happening
+	// to let the final duplicate entry win.
+	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
 	flow.WithRemotes(remoteServices)
 	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
 	if err != nil {
@@ -766,6 +777,49 @@ func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
 		out[service][key] = value
 	}
 	return out, nil
+}
+
+// solutionDerivedOverrides resolves the CODEFLY__API_CONSUMES injection for the
+// service being run. It lives on the shared run path so `run service <entry>`
+// and `run solution` inject identically, and it announces what it sent: the
+// value rides Start overrides, which each service agent chooses to honor, so an
+// operator debugging dead federation must be able to see that the CLI supplied
+// it before suspecting the manifest.
+func solutionDerivedOverrides(workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (map[string]map[string]string, error) {
+	consumed, value, err := solutionEntryConsumes(workspace, module, service)
+	if err != nil {
+		return nil, err
+	}
+	if len(consumed) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(consumed))
+	for i := range consumed {
+		ids = append(ids, consumed[i].ID)
+	}
+	cli.Info("injecting %s into %s: %s", manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))
+	return map[string]map[string]string{
+		serviceName: {manifest.APIConsumesEnvironmentVariable: value},
+	}, nil
+}
+
+// mergeOverrides layers per-service override maps, later layers winning key by
+// key. Returns nil when nothing is set, so a flow with no overrides is
+// indistinguishable from one that never had any.
+func mergeOverrides(layers ...map[string]map[string]string) map[string]map[string]string {
+	merged := make(map[string]map[string]string)
+	for _, layer := range layers {
+		for service, values := range layer {
+			if merged[service] == nil {
+				merged[service] = make(map[string]string, len(values))
+			}
+			maps.Copy(merged[service], values)
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }
 
 func parseRemote(workspace *resources.Workspace, remotes []string) ([]*orchestration.Remote, error) {
