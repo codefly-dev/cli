@@ -1,9 +1,12 @@
 package run
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solution/manifest"
 )
 
 func strptr(s string) *string { return &s }
@@ -102,3 +105,131 @@ func TestSolutionRootRef(t *testing.T) {
 		})
 	}
 }
+
+// A solution declaring api.consumes must boot its backend with
+// CODEFLY__API_CONSUMES populated: the solution runtime reads it to register
+// each consumed module's upstream with the gateway, so an absent variable
+// silently leaves every consumed route unrouted. The override travels through
+// the same --set seam the run path already parses, so assert it round-trips to
+// the service-entry's environment rather than just eyeballing the string.
+func TestSolutionConsumesOverride(t *testing.T) {
+	dir := t.TempDir()
+	writeSolutionManifest(t, dir, solutionManifestWithConsumes)
+
+	override, err := solutionConsumesOverride(dir, "wiki/backend")
+	if err != nil {
+		t.Fatalf("solutionConsumesOverride: %v", err)
+	}
+	if override == "" {
+		t.Fatal("expected an override for a solution that declares api.consumes")
+	}
+
+	parsed, err := parseSetOverrides([]string{override})
+	if err != nil {
+		t.Fatalf("override %q does not parse as a --set entry: %v", override, err)
+	}
+	value, ok := parsed["backend"][manifest.APIConsumesEnvironmentVariable]
+	if !ok {
+		t.Fatalf("override %q does not target backend's %s, got %v", override, manifest.APIConsumesEnvironmentVariable, parsed)
+	}
+
+	consumed, err := manifest.ParseConsumedAPIs(value)
+	if err != nil {
+		t.Fatalf("cannot decode %s value %q: %v", manifest.APIConsumesEnvironmentVariable, value, err)
+	}
+	if len(consumed) != 1 {
+		t.Fatalf("expected 1 consumed API, got %d (%v)", len(consumed), consumed)
+	}
+	want := manifest.ConsumedAPI{
+		ID: "documents", Module: "documents", Service: "api",
+		Endpoint: "connect", Protocol: "connect", As: "documents",
+	}
+	if consumed[0] != want {
+		t.Fatalf("consumed API mismatch: got %+v, want %+v", consumed[0], want)
+	}
+}
+
+// Solutions that federate nothing must run exactly as before: no manifest at
+// all, or a manifest whose api.consumes names no producing endpoint, injects
+// no variable.
+func TestSolutionConsumesOverrideNoOps(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		manifest string // "" means write no manifest file
+	}{
+		{name: "no solution manifest"},
+		{name: "no api.consumes", manifest: solutionManifestWithoutConsumes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.manifest != "" {
+				writeSolutionManifest(t, dir, tc.manifest)
+			}
+			override, err := solutionConsumesOverride(dir, "wiki/backend")
+			if err != nil {
+				t.Fatalf("solutionConsumesOverride: %v", err)
+			}
+			if override != "" {
+				t.Fatalf("expected no override, got %q", override)
+			}
+		})
+	}
+}
+
+// A solution manifest that does not load is the solution's own identity file
+// being broken: surfacing it beats booting a backend that silently federates
+// nothing, which is the failure this injection exists to prevent.
+func TestSolutionConsumesOverrideRejectsBadManifest(t *testing.T) {
+	dir := t.TempDir()
+	writeSolutionManifest(t, dir, "schema_version: codefly.solution-manifest/v9\n")
+
+	if _, err := solutionConsumesOverride(dir, "wiki/backend"); err == nil {
+		t.Fatal("expected an error for an unloadable solution manifest")
+	}
+}
+
+func writeSolutionManifest(t *testing.T, dir string, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, manifest.FileName), []byte(content), 0o600); err != nil {
+		t.Fatalf("cannot write %s: %v", manifest.FileName, err)
+	}
+}
+
+const solutionManifestWithoutConsumes = `
+schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+agent:
+  kind: codefly:solution
+  publisher: codefly.dev
+  name: wiki
+  version: 0.1.0
+api:
+  exposes:
+    - id: gateway
+      protocol: http
+lifecycle:
+  create: true
+`
+
+const solutionManifestWithConsumes = `
+schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+agent:
+  kind: codefly:solution
+  publisher: codefly.dev
+  name: wiki
+  version: 0.1.0
+api:
+  exposes:
+    - id: gateway
+      protocol: http
+  consumes:
+    - id: documents
+      protocol: connect
+      module: documents
+      service: api
+      endpoint: connect
+      as: documents
+lifecycle:
+  create: true
+`

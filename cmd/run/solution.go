@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solution/manifest"
 	"github.com/spf13/cobra"
 )
 
@@ -47,6 +50,19 @@ var SolutionCmd = &cobra.Command{
 		done()
 		if err != nil {
 			return err
+		}
+		// A solution's api.consumes is what its backend federates: the runtime
+		// reads CODEFLY__API_CONSUMES to register each consumed module's
+		// upstream with the gateway, so without it every consumed route is
+		// unrouted.
+		override, err := solutionConsumesOverride(workspace.Dir(), entry)
+		if err != nil {
+			return err
+		}
+		if override != "" {
+			// Prepend: a later --set for the same key wins, so an operator can
+			// still pin the value by hand.
+			setOverrides = append([]string{override}, setOverrides...)
 		}
 		// Delegate to the run-service path with the resolved entry. It reloads
 		// the workspace and boots the full dependency graph — reusing every run
@@ -119,6 +135,31 @@ func solutionRootRef(workspace *resources.Workspace) *resources.ModuleReference 
 		}
 	}
 	return nil
+}
+
+// solutionConsumesOverride projects the solution manifest's api.consumes into
+// a --set entry that injects CODEFLY__API_CONSUMES into the service-entry's
+// process environment, which is the same environment-variable manager that
+// carries every other CODEFLY__ variable. It returns "" when the solution root
+// has no manifest, or when its api.consumes binds no producing endpoint.
+func solutionConsumesOverride(workspaceDir string, entry string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(workspaceDir, manifest.FileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("cannot read %s: %w", manifest.FileName, err)
+	}
+	solutionManifest, err := manifest.Load(data)
+	if err != nil {
+		return "", fmt.Errorf("cannot load %s: %w", manifest.FileName, err)
+	}
+	value := solutionManifest.ConsumedAPIsEnvValue()
+	if value == "" {
+		return "", nil
+	}
+	_, service, _ := strings.Cut(entry, "/")
+	return fmt.Sprintf("%s:%s=%s", service, manifest.APIConsumesEnvironmentVariable, value), nil
 }
 
 func init() {
