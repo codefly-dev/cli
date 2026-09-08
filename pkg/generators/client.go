@@ -559,7 +559,7 @@ func writeLibraryManifest(ctx context.Context, outputDir, name string, entries [
 	codeflyVersion, _ := cli.GetCurrentVersion()
 	companion := ""
 	if image, err := coreproto.CompanionImage(ctx); err == nil {
-		companion = image.Name + ":" + image.Tag
+		companion = image.FullName()
 	}
 
 	doc := manifest{

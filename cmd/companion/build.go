@@ -203,7 +203,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		// A multi-platform build is pushed atomically by buildx; there is no
 		// single local image for `docker push` to publish afterward.
 		if opts.Push && !(method == "docker" && multiPlatform) {
-			if err := pushImage(c.Tag()); err != nil {
+			if err := pushImage(c.Name, c.Tag()); err != nil {
 				return fmt.Errorf("push %s failed: %w", c.Name, err)
 			}
 			fmt.Printf("    pushed %s\n", c.Tag())
@@ -420,13 +420,55 @@ func buildWithNix(c *Companion) error {
 	return nil
 }
 
-// pushImage runs `docker push <tag>`. Used by --push and by the
-// standalone PushCmd. Same effect as push_companion.sh.
-func pushImage(tag string) error {
-	cmd := exec.Command("docker", "push", tag)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+// pushImage runs `docker push <tag>`, then re-checks the tag anonymously
+// (the same check `verify` runs) so a push that only succeeded because the
+// operator's local daemon is logged in doesn't silently leave the package
+// private for everyone else. Used by --push and by the standalone PushCmd.
+func pushImage(name, tag string) error {
+	host := registryHost(tag)
+	fmt.Printf("    pushing %s to %s\n", tag, host)
+
+	out, runErr := exec.Command("docker", "push", tag).CombinedOutput()
+	os.Stdout.Write(out)
+	if runErr != nil {
+		if isPushDenied(string(out)) {
+			return fmt.Errorf("docker push %s failed: not authenticated for %s\nfix: docker login %s -u <user> -p $(gh auth token)", tag, host, host)
+		}
+		return fmt.Errorf("docker push %s failed: %w", tag, runErr)
+	}
+
+	ok, verifyOut, err := anonymousManifestInspect(tag)
+	if err != nil {
+		return fmt.Errorf("push %s succeeded but the anonymous pull check could not run: %w", tag, err)
+	}
+	if !ok {
+		return fmt.Errorf(`push %s succeeded but is not publicly pullable: %s
+fix: make the package public at https://github.com/orgs/codefly-dev/packages/container/%s/settings`,
+			tag, strings.TrimSpace(verifyOut), name)
+	}
+	return nil
+}
+
+// registryHost extracts the registry host a tag will push to, for status
+// messages and login hints. Following Docker's own reference resolution: the
+// first path segment is a host only when it contains "." or ":" or is
+// "localhost" — otherwise the image is implicitly under docker.io.
+func registryHost(tag string) string {
+	if i := strings.IndexByte(tag, '/'); i >= 0 {
+		first := tag[:i]
+		if strings.ContainsAny(first, ".:") || first == "localhost" {
+			return first
+		}
+	}
+	return "docker.io"
+}
+
+// isPushDenied reports whether `docker push` output indicates the daemon
+// isn't authenticated for the target registry, as opposed to some other
+// failure (network, bad tag, ...) that a login hint wouldn't fix.
+func isPushDenied(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "denied") || strings.Contains(lower, "unauthorized")
 }
 
 // nixOnPath reports whether `nix` is available — controls whether the
