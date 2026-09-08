@@ -86,8 +86,11 @@ type Flow struct {
 	preferences *resources.UserPreferences
 	fixture     string
 
-	// overrides are per-service runtime env-var overrides: serviceName -> KEY -> VAL.
-	// Set via `codefly run ... --set <service>:KEY=VAL`; applied to each runner.
+	// overrides are per-service runtime env-var overrides: KEY -> VAL keyed by
+	// either the module-qualified unique ("<module>/<service>") or the bare
+	// service name. `codefly run ... --set <service>:KEY=VAL` supplies the bare
+	// form; callers that must target exactly one service use the unique, since
+	// two composed modules may each hold a service of the same name.
 	overrides map[string]map[string]string
 
 	// testRequest carries CLI-provided test filtering/suite/extra-args
@@ -1508,7 +1511,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 func (flow *Flow) configureRunner(runner *Runner, service *resources.Service) {
 	runner.WithRuntimeContext(flow.runtimeContextFor(service))
 	runner.WithFixture(flow.fixture)
-	runner.WithOverrides(flow.overrides[service.Name])
+	runner.WithOverrides(flow.overridesFor(service))
 	if flow.exportsRuntimeEnvironmentFor(service) {
 		runner.WithOutputEnv(flow.outputEnvPath)
 	}
@@ -1815,6 +1818,21 @@ func (flow *Flow) WithFixture(fixture string) {
 
 func (flow *Flow) WithOverrides(overrides map[string]map[string]string) {
 	flow.overrides = overrides
+}
+
+// overridesFor returns the runtime overrides targeting service. A
+// module-qualified entry wins over a bare-name one: the bare name is what
+// --set supplies and is ambiguous across composed modules, so an entry that
+// names the module addresses exactly one service and must not be diluted by a
+// same-named service elsewhere in the graph.
+func (flow *Flow) overridesFor(service *resources.Service) map[string]string {
+	if len(flow.overrides) == 0 || service == nil {
+		return nil
+	}
+	if byUnique, ok := flow.overrides[resources.WithUnique(service).Unique()]; ok {
+		return byUnique
+	}
+	return flow.overrides[service.Name]
 }
 
 func (flow *Flow) WithExcludeRoot(excludeRoot bool) {

@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution/manifest"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // SolutionCmd boots a solution as a unit from its root. A solution root is a
@@ -50,19 +51,6 @@ var SolutionCmd = &cobra.Command{
 		done()
 		if err != nil {
 			return err
-		}
-		// A solution's api.consumes is what its backend federates: the runtime
-		// reads CODEFLY__API_CONSUMES to register each consumed module's
-		// upstream with the gateway, so without it every consumed route is
-		// unrouted.
-		override, err := solutionConsumesOverride(workspace.Dir(), entry)
-		if err != nil {
-			return err
-		}
-		if override != "" {
-			// Prepend: a later --set for the same key wins, so an operator can
-			// still pin the value by hand.
-			setOverrides = append([]string{override}, setOverrides...)
 		}
 		// Delegate to the run-service path with the resolved entry. It reloads
 		// the workspace and boots the full dependency graph — reusing every run
@@ -137,29 +125,79 @@ func solutionRootRef(workspace *resources.Workspace) *resources.ModuleReference 
 	return nil
 }
 
-// solutionConsumesOverride projects the solution manifest's api.consumes into
-// a --set entry that injects CODEFLY__API_CONSUMES into the service-entry's
-// process environment, which is the same environment-variable manager that
-// carries every other CODEFLY__ variable. It returns "" when the solution root
-// has no manifest, or when its api.consumes binds no producing endpoint.
-func solutionConsumesOverride(workspaceDir string, entry string) (string, error) {
+// solutionEntryConsumes returns the solution's api.consumes projection when
+// service is the solution root's own service-entry, along with the
+// CODEFLY__API_CONSUMES value carrying it. The solution runtime reads that
+// variable to register each consumed module's upstream with the gateway, so
+// without it every consumed route stays unrouted.
+//
+// The manifest at the workspace root describes the workspace's own module, so
+// the injection is gated on service belonging to that module: when no self-root
+// module exists, resolveSolutionEntry falls back to scanning composed modules,
+// and pairing this manifest with a composed module's service would bind one
+// solution's consumes to another's backend.
+func solutionEntryConsumes(workspace *resources.Workspace, module *resources.Module, service *resources.Service) ([]manifest.ConsumedAPI, string, error) {
+	root := solutionRootRef(workspace)
+	if root == nil || module == nil || service == nil {
+		return nil, "", nil
+	}
+	if root.Name != module.Name || module.ServiceEntry != service.Name {
+		return nil, "", nil
+	}
+	solutionManifest, err := loadSolutionManifestForRun(workspace.Dir())
+	if err != nil || solutionManifest == nil {
+		return nil, "", err
+	}
+	consumed := solutionManifest.ConsumedAPIs()
+	if len(consumed) == 0 {
+		return nil, "", nil
+	}
+	return consumed, solutionManifest.ConsumedAPIsEnvValue(), nil
+}
+
+// loadSolutionManifestForRun decodes the solution manifest leniently: running a
+// solution needs only the api.consumes projection, so a manifest carrying a
+// field from a newer core — or tripping a schema rule unrelated to federation —
+// must not make the solution unrunnable. manifest.Load's strict KnownFields and
+// full Validate remain the gate for `sync` and `package`, which do consume the
+// whole schema. Returns nil when the workspace has no manifest.
+func loadSolutionManifestForRun(workspaceDir string) (*manifest.Manifest, error) {
 	data, err := os.ReadFile(filepath.Join(workspaceDir, manifest.FileName))
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %w", manifest.FileName, err)
+		return nil, fmt.Errorf("cannot read %s: %w", manifest.FileName, err)
 	}
-	solutionManifest, err := manifest.Load(data)
-	if err != nil {
-		return "", fmt.Errorf("cannot load %s: %w", manifest.FileName, err)
+	var solutionManifest manifest.Manifest
+	if err := yaml.Unmarshal(data, &solutionManifest); err != nil {
+		return nil, fmt.Errorf("cannot parse %s: %w", manifest.FileName, err)
 	}
-	value := solutionManifest.ConsumedAPIsEnvValue()
-	if value == "" {
-		return "", nil
+	if err := validateConsumedBindings(solutionManifest.API.Consumes); err != nil {
+		return nil, err
 	}
-	_, service, _ := strings.Cut(entry, "/")
-	return fmt.Sprintf("%s:%s=%s", service, manifest.APIConsumesEnvironmentVariable, value), nil
+	return &solutionManifest, nil
+}
+
+// validateConsumedBindings rejects a partially bound api.consumes entry. The
+// lenient decode above skips manifest.Validate, and ConsumedAPIs() drops only
+// entries with an empty module — so an entry naming a module but no service or
+// endpoint would project into a CODEFLY__ENDPOINT key built from empty
+// segments, which no runtime can resolve.
+func validateConsumedBindings(consumes []manifest.APIDeclaration) error {
+	for i := range consumes {
+		declaration := &consumes[i]
+		bound := 0
+		for _, field := range []string{declaration.Module, declaration.Service, declaration.Endpoint} {
+			if field != "" {
+				bound++
+			}
+		}
+		if bound != 0 && bound != 3 {
+			return fmt.Errorf("%s: api.consumes entry %q binds only part of module/service/endpoint", manifest.FileName, declaration.ID)
+		}
+	}
+	return nil
 }
 
 func init() {

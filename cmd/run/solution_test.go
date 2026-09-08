@@ -3,6 +3,7 @@ package run
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -109,50 +110,82 @@ func TestSolutionRootRef(t *testing.T) {
 // A solution declaring api.consumes must boot its backend with
 // CODEFLY__API_CONSUMES populated: the solution runtime reads it to register
 // each consumed module's upstream with the gateway, so an absent variable
-// silently leaves every consumed route unrouted. The override travels through
-// the same --set seam the run path already parses, so assert it round-trips to
-// the service-entry's environment rather than just eyeballing the string.
-func TestSolutionConsumesOverride(t *testing.T) {
+// silently leaves every consumed route unrouted.
+func TestSolutionEntryConsumes(t *testing.T) {
 	dir := t.TempDir()
 	writeSolutionManifest(t, dir, solutionManifestWithConsumes)
 
-	override, err := solutionConsumesOverride(dir, "wiki/backend")
+	consumed, value, err := solutionEntryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
 	if err != nil {
-		t.Fatalf("solutionConsumesOverride: %v", err)
-	}
-	if override == "" {
-		t.Fatal("expected an override for a solution that declares api.consumes")
-	}
-
-	parsed, err := parseSetOverrides([]string{override})
-	if err != nil {
-		t.Fatalf("override %q does not parse as a --set entry: %v", override, err)
-	}
-	value, ok := parsed["backend"][manifest.APIConsumesEnvironmentVariable]
-	if !ok {
-		t.Fatalf("override %q does not target backend's %s, got %v", override, manifest.APIConsumesEnvironmentVariable, parsed)
-	}
-
-	consumed, err := manifest.ParseConsumedAPIs(value)
-	if err != nil {
-		t.Fatalf("cannot decode %s value %q: %v", manifest.APIConsumesEnvironmentVariable, value, err)
-	}
-	if len(consumed) != 1 {
-		t.Fatalf("expected 1 consumed API, got %d (%v)", len(consumed), consumed)
+		t.Fatalf("solutionEntryConsumes: %v", err)
 	}
 	want := manifest.ConsumedAPI{
 		ID: "documents", Module: "documents", Service: "api",
 		Endpoint: "connect", Protocol: "connect", As: "documents",
 	}
-	if consumed[0] != want {
-		t.Fatalf("consumed API mismatch: got %+v, want %+v", consumed[0], want)
+	if len(consumed) != 1 || consumed[0] != want {
+		t.Fatalf("consumed APIs mismatch: got %+v, want [%+v]", consumed, want)
+	}
+	decoded, err := manifest.ParseConsumedAPIs(value)
+	if err != nil {
+		t.Fatalf("cannot decode %s value %q: %v", manifest.APIConsumesEnvironmentVariable, value, err)
+	}
+	if len(decoded) != 1 || decoded[0] != want {
+		t.Fatalf("env value does not round-trip: got %+v", decoded)
 	}
 }
 
-// Solutions that federate nothing must run exactly as before: no manifest at
-// all, or a manifest whose api.consumes names no producing endpoint, injects
-// no variable.
-func TestSolutionConsumesOverrideNoOps(t *testing.T) {
+// The manifest at the workspace root describes the workspace's own module.
+// Injecting it into any other service binds one solution's consumes to another
+// backend, so every non-entry target must come back empty.
+func TestSolutionEntryConsumesOnlyTargetsTheSelfRootEntry(t *testing.T) {
+	dir := t.TempDir()
+	writeSolutionManifest(t, dir, solutionManifestWithConsumes)
+
+	for _, tc := range []struct {
+		name      string
+		workspace *resources.Workspace
+		module    *resources.Module
+		service   *resources.Service
+	}{
+		{
+			name:      "a non-entry service of the solution root",
+			workspace: wikiWorkspace(dir),
+			module:    wikiModule(),
+			service:   wikiService("worker"),
+		},
+		{
+			name:      "a same-named service in a composed module",
+			workspace: wikiWorkspace(dir),
+			module:    &resources.Module{Name: "documents", ServiceEntry: "backend"},
+			service:   wikiService("backend"),
+		},
+		{
+			name: "no self-root module, so the entry came from a composed module",
+			workspace: workspaceAt(dir, &resources.Workspace{
+				Name: "orphan",
+				Modules: []*resources.ModuleReference{
+					{Name: "saas-starter", PathOverride: strptr("../saas/module")},
+				},
+			}),
+			module:  &resources.Module{Name: "saas-starter", ServiceEntry: "backend"},
+			service: wikiService("backend"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			consumed, value, err := solutionEntryConsumes(tc.workspace, tc.module, tc.service)
+			if err != nil {
+				t.Fatalf("solutionEntryConsumes: %v", err)
+			}
+			if len(consumed) != 0 || value != "" {
+				t.Fatalf("expected no injection, got %+v / %q", consumed, value)
+			}
+		})
+	}
+}
+
+// Solutions that federate nothing must run exactly as before.
+func TestSolutionEntryConsumesNoOps(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		manifest string // "" means write no manifest file
@@ -165,27 +198,86 @@ func TestSolutionConsumesOverrideNoOps(t *testing.T) {
 			if tc.manifest != "" {
 				writeSolutionManifest(t, dir, tc.manifest)
 			}
-			override, err := solutionConsumesOverride(dir, "wiki/backend")
+			consumed, value, err := solutionEntryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
 			if err != nil {
-				t.Fatalf("solutionConsumesOverride: %v", err)
+				t.Fatalf("solutionEntryConsumes: %v", err)
 			}
-			if override != "" {
-				t.Fatalf("expected no override, got %q", override)
+			if len(consumed) != 0 || value != "" {
+				t.Fatalf("expected no injection, got %+v / %q", consumed, value)
 			}
 		})
 	}
 }
 
-// A solution manifest that does not load is the solution's own identity file
-// being broken: surfacing it beats booting a backend that silently federates
-// nothing, which is the failure this injection exists to prevent.
-func TestSolutionConsumesOverrideRejectsBadManifest(t *testing.T) {
-	dir := t.TempDir()
-	writeSolutionManifest(t, dir, "schema_version: codefly.solution-manifest/v9\n")
-
-	if _, err := solutionConsumesOverride(dir, "wiki/backend"); err == nil {
-		t.Fatal("expected an error for an unloadable solution manifest")
+// Running a solution must not require the whole manifest schema: a field from a
+// newer core, or a rule unrelated to federation, cannot be allowed to make the
+// solution unrunnable. Only the api.consumes projection is load-bearing here.
+func TestSolutionEntryConsumesToleratesUnrelatedSchemaDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		manifest string
+	}{
+		{"field from a newer core", solutionManifestWithConsumes + "\nfuture_field:\n  nested: true\n"},
+		{"unknown key inside a consumes entry", strings.Replace(solutionManifestWithConsumes, "      as: documents", "      as: documents\n      timeout: 30s", 1)},
+		{"schema version this CLI predates", strings.Replace(solutionManifestWithConsumes, "codefly.solution-manifest/v0", "codefly.solution-manifest/v1", 1)},
+		{"agent block that would fail strict validation", strings.Replace(solutionManifestWithConsumes, "  version: 0.1.0", "  version: latest", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSolutionManifest(t, dir, tc.manifest)
+			consumed, value, err := solutionEntryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+			if err != nil {
+				t.Fatalf("schema drift must not block the run: %v", err)
+			}
+			if len(consumed) != 1 || value == "" {
+				t.Fatalf("expected the consumes projection to survive, got %+v / %q", consumed, value)
+			}
+		})
 	}
+}
+
+// A half-bound consumes entry names a module but no service or endpoint, which
+// projects into a CODEFLY__ENDPOINT key built from empty segments. The lenient
+// decode skips manifest.Validate, so this is checked here instead.
+func TestSolutionEntryConsumesRejectsPartialBinding(t *testing.T) {
+	dir := t.TempDir()
+	writeSolutionManifest(t, dir, strings.Replace(solutionManifestWithConsumes, "      service: api\n", "", 1))
+
+	if _, _, err := solutionEntryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend")); err == nil {
+		t.Fatal("expected an error for a partially bound api.consumes entry")
+	}
+}
+
+// YAML that does not parse at all is a genuine boundary failure: booting a
+// backend that silently federates nothing is the bug this injection exists to
+// prevent.
+func TestSolutionEntryConsumesRejectsUnparseableManifest(t *testing.T) {
+	dir := t.TempDir()
+	writeSolutionManifest(t, dir, "api:\n\tconsumes: [oops\n")
+
+	if _, _, err := solutionEntryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend")); err == nil {
+		t.Fatal("expected an error for an unparseable solution manifest")
+	}
+}
+
+func wikiWorkspace(dir string) *resources.Workspace {
+	return workspaceAt(dir, &resources.Workspace{
+		Name:    "wiki",
+		Modules: []*resources.ModuleReference{{Name: "wiki", PathOverride: strptr(".")}},
+	})
+}
+
+func workspaceAt(dir string, workspace *resources.Workspace) *resources.Workspace {
+	workspace.WithDir(dir)
+	return workspace
+}
+
+func wikiModule() *resources.Module {
+	return &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+}
+
+func wikiService(name string) *resources.Service {
+	return &resources.Service{Name: name}
 }
 
 func writeSolutionManifest(t *testing.T, dir string, content string) {
