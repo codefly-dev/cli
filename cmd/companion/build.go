@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -420,6 +421,18 @@ func buildWithNix(c *Companion) error {
 	return nil
 }
 
+// pushVerifyAttempts/pushVerifyDelay control the retry of the post-push
+// anonymous pull check below. A tag that was just pushed can take a moment
+// to become anonymously readable (registry propagation, or — per Docker
+// Hub's documented behavior for a namespaced repo — a freshly written tag
+// occasionally reporting an auth-shaped error for the first read or two),
+// so a single failed check right after push is not yet evidence the
+// package is actually private. Package vars so tests can shrink the delay.
+var (
+	pushVerifyAttempts = 3
+	pushVerifyDelay    = time.Second
+)
+
 // pushImage runs `docker push <tag>`, then re-checks the tag anonymously
 // (the same check `verify` runs) so a push that only succeeded because the
 // operator's local daemon is logged in doesn't silently leave the package
@@ -437,16 +450,31 @@ func pushImage(name, tag string) error {
 		return fmt.Errorf("docker push %s failed: %w", tag, runErr)
 	}
 
-	ok, verifyOut, err := anonymousManifestInspect(tag)
+	ok, verifyOut, err := anonymousManifestInspectRetrying(tag)
 	if err != nil {
 		return fmt.Errorf("push %s succeeded but the anonymous pull check could not run: %w", tag, err)
 	}
 	if !ok {
 		return fmt.Errorf(`push %s succeeded but is not publicly pullable: %s
-fix: make the package public at https://github.com/orgs/codefly-dev/packages/container/%s/settings`,
-			tag, strings.TrimSpace(verifyOut), name)
+fix: %s`,
+			tag, strings.TrimSpace(verifyOut), registryPrivacyHint(name, tag))
 	}
 	return nil
+}
+
+// anonymousManifestInspectRetrying retries anonymousManifestInspect up to
+// pushVerifyAttempts times, pausing pushVerifyDelay between attempts, and
+// returns as soon as a check succeeds, errors outright, or the attempts run
+// out — so a transient just-pushed-not-yet-readable response isn't reported
+// as a permanently private package.
+func anonymousManifestInspectRetrying(tag string) (ok bool, output string, err error) {
+	for attempt := 1; ; attempt++ {
+		ok, output, err = anonymousManifestInspect(tag)
+		if err != nil || ok || attempt >= pushVerifyAttempts {
+			return ok, output, err
+		}
+		time.Sleep(pushVerifyDelay)
+	}
 }
 
 // registryHost extracts the registry host a tag will push to, for status
@@ -461,6 +489,22 @@ func registryHost(tag string) string {
 		}
 	}
 	return "docker.io"
+}
+
+// registryPrivacyHint returns registry-appropriate instructions for making
+// a pushed image publicly accessible. Companion.Tag() still produces
+// codeflydev/<name>:<version> (Docker Hub) until the ghcr.io migration in
+// codefly-dev/core#406 lands, so the hint must match the tag's actual
+// registry rather than assuming ghcr.io.
+func registryPrivacyHint(name, tag string) string {
+	switch registryHost(tag) {
+	case "ghcr.io":
+		return fmt.Sprintf("make it public at https://github.com/orgs/codefly-dev/packages/container/%s/settings", name)
+	case "docker.io":
+		return fmt.Sprintf("make it public at https://hub.docker.com/repository/docker/codeflydev/%s/general", name)
+	default:
+		return fmt.Sprintf("check %s's visibility settings in its registry", tag)
+	}
 }
 
 // isPushDenied reports whether `docker push` output indicates the daemon

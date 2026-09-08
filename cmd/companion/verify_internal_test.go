@@ -59,6 +59,24 @@ exit 1
 	require.Contains(t, err.Error(), "https://github.com/orgs/codefly-dev/packages/container/proto/settings")
 }
 
+// TestManifestExists_PrivatePackagePrintsDockerHubHint is the case the
+// original PR's tests never exercised: Companion.Tag() still produces a
+// Docker Hub tag (codeflydev/<name>:<version>), not a ghcr.io one, so the
+// "make it public" hint must not point at GitHub Packages for this — the
+// package doesn't exist there.
+func TestManifestExists_PrivatePackagePrintsDockerHubHint(t *testing.T) {
+	writeFakeDocker(t, `
+echo "denied: requested access to the resource is denied" 1>&2
+exit 1
+`)
+	ok, err := manifestExists("proto", "codeflydev/proto:0.0.13")
+	require.False(t, ok)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "codefly companion publish proto")
+	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/codeflydev/proto/general")
+	require.NotContains(t, err.Error(), "github.com/orgs")
+}
+
 func TestManifestExists_NotFoundIsAbsentNotError(t *testing.T) {
 	writeFakeDocker(t, `
 echo "manifest unknown" 1>&2

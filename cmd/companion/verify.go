@@ -132,8 +132,8 @@ func manifestExists(name, tag string) (bool, error) {
 	return false, fmt.Errorf(`verify %s: docker manifest inspect failed anonymously: %s
 possible causes:
   - the tag was never pushed: run "codefly companion publish %s"
-  - the package is private: make it public at https://github.com/orgs/codefly-dev/packages/container/%s/settings`,
-		tag, strings.TrimSpace(out), name, name)
+  - the package is private: %s`,
+		tag, strings.TrimSpace(out), name, registryPrivacyHint(name, tag))
 }
 
 // isManifestNotFound classifies `docker manifest inspect` failure output as
