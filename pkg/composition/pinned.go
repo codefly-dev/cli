@@ -612,10 +612,11 @@ func decodeTrustSignerKey(encoded string) (ed25519.PublicKey, error) {
 
 // NearestOverlayDir returns the directory of the codefly.local.yaml that
 // resources.LoadLocalOverlay would load starting from start (searching
-// upward, nearest first), or "" when none exists anywhere up the tree. It is
-// where `run`'s materialization writes back, so a directive in an ancestor
-// overlay (the shared-monorepo layout) is updated in place rather than
-// shadowed by a fresh workspace-local file.
+// upward, nearest first), or "" when none exists anywhere up the tree. Both
+// `run`'s materialization and `doctor workspace`'s module-trust check must
+// agree on this search so a directive in an ancestor overlay (the
+// shared-monorepo layout) is honored identically by both, and so both find the
+// GitResolvedRecordName sidecar that annotates that overlay.
 func NearestOverlayDir(start string) string {
 	current := start
 	for {
@@ -628,4 +629,80 @@ func NearestOverlayDir(start string) string {
 		}
 		current = parent
 	}
+}
+
+// GitResolvedRecordName is the machine-local sidecar that records which of the
+// neighbouring codefly.local.yaml's modules resolve through the unverified git
+// clone, and the clone directory each one resolved to. The overlay itself
+// cannot hold that: core admits exactly one of path/worktree/pinned/git per
+// entry, and it cannot load a `git`-only entry at all, so `run` must replace the
+// user's `git: true` with the clone's `path:` — which would otherwise erase both
+// the fact that nothing about that module was verified and the fact that the
+// CLI, not the user, wrote that path.
+//
+// Recording the directory makes it a receipt: an overlay path that matches it is
+// one this CLI wrote and may refresh, and one that does not is the user editing
+// the module in place. That comparison is exact, so it keeps holding when
+// CODEFLY_HOME moves — unlike asking whether the path merely looks like it sits
+// under a cache root.
+const GitResolvedRecordName = "codefly.local.resolved.yaml"
+
+// gitResolvedRecord is the sidecar's document: module name to the clone
+// directory it last resolved to.
+type gitResolvedRecord struct {
+	GitResolved map[string]string `yaml:"git-resolved"`
+}
+
+// LoadGitResolved reads the git-resolved modules recorded beside the overlay in
+// dir, mapping each to the clone directory it last resolved to. An absent
+// sidecar is the normal case and yields an empty map; an unreadable or malformed
+// one is an error, because silently reading it as empty would downgrade a module
+// the user opted out of verification for back into verified resolution and
+// report the failure as missing module-trust.
+func LoadGitResolved(dir string) (map[string]string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, GitResolvedRecordName))
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var record gitResolvedRecord
+	if err := yaml.Unmarshal(data, &record); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", GitResolvedRecordName, err)
+	}
+	if record.GitResolved == nil {
+		record.GitResolved = map[string]string{}
+	}
+	return record.GitResolved, nil
+}
+
+// GitResolutionFor decides whether a module resolves through the unverified git
+// clone or the verified module package. An explicit directive is the user
+// speaking now, so it wins: `git: true` opts in, `pinned: true` revokes a
+// previous opt-in (without it the recorded choice would be sticky, and a user
+// who set up module-trust could never get verified resolution back). Otherwise —
+// a bare reference, or the clone path the CLI wrote in place of `git: true` —
+// the recorded choice stands.
+//
+// `run` and `doctor workspace` must answer this identically, or doctor reports a
+// module as needing module-trust that run resolves by cloning; sharing the
+// predicate is what keeps them in step.
+func GitResolutionFor(directive *resources.ModuleResolveDirective, recorded bool) bool {
+	if directive != nil && directive.Git {
+		return true
+	}
+	if directive != nil && directive.Pinned {
+		return false
+	}
+	return recorded
+}
+
+// SaveGitResolved writes the record as the sidecar beside the overlay in dir.
+func SaveGitResolved(ctx context.Context, dir string, record map[string]string) error {
+	data, err := yaml.Marshal(&gitResolvedRecord{GitResolved: record})
+	if err != nil {
+		return err
+	}
+	return shared.WriteFileAtomic(ctx, filepath.Join(dir, GitResolvedRecordName), data, 0o600)
 }

@@ -45,6 +45,7 @@ const (
 	codeReferenceSchemeUnknown    = "reference_scheme_unknown"
 	codeModuleReferenceUnresolved = "module_reference_unresolved"
 	codeModuleTrustMissing        = "module_trust_missing"
+	codeModuleUnverified          = "module_unverified"
 	codeTimeout                   = "timeout"
 )
 
@@ -226,14 +227,19 @@ func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report
 // would refuse to resolve: composition.ResolvePinnedModule fails closed when
 // the workspace's module-trust doesn't cover the module's repository (whether
 // because no module-trust is declared at all, or because it exists but names
-// a different repository/package), and the overlay does not resolve the module
-// some other way (a `path`/`worktree` checkout, or the unverified git-clone
-// fallback `resolve.<name>.git: true` — read from the nearest ancestor
+// a different repository/package), and the module has not opted into the
+// unverified git-clone fallback (`resolve.<name>.git: true`, or the
+// composition.GitResolvedRecordName record `run` writes when it replaces that
+// directive with the clone's path — both read from the nearest ancestor
 // codefly.local.yaml exactly as `run` resolves it, not just the workspace's own
 // directory). Without this check that failure only surfaces mid-run; here it is
 // named against the workspace manifest directly, before a run is attempted. A
 // read/parse error in workspace.codefly.yaml itself is reported once rather
 // than once per pinned module.
+//
+// An opted-out module is not silently skipped: it is reported as consuming an
+// unverified clone, because after `run` has replaced `git: true` with the
+// resolved path the overlay no longer says so on its own.
 func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
 	if _, _, err := composition.LoadModuleTrust(ws.Dir()); err != nil {
 		report.add(codeModuleTrustMissing, "module-trust", "fail",
@@ -241,10 +247,33 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
 		return
 	}
-	// The workspace loaded, so its overlay already parsed; re-reading it cannot fail.
-	overlay, _ := resources.LoadLocalOverlay(ctx, ws.Dir())
+	overlay, err := resources.LoadLocalOverlay(ctx, ws.Dir())
+	if err != nil {
+		report.add(codeWorkspaceInvalid, "module-trust", "fail",
+			fmt.Sprintf("cannot read %s: %v", resources.LocalOverlayConfigurationName, err),
+			fmt.Sprintf("fix %s near %s", resources.LocalOverlayConfigurationName, ws.Dir()))
+		return
+	}
+	overlayDir := ws.Dir()
+	if dir := composition.NearestOverlayDir(ws.Dir()); dir != "" {
+		overlayDir = dir
+	}
+	gitResolved, err := composition.LoadGitResolved(overlayDir)
+	if err != nil {
+		report.add(codeWorkspaceInvalid, "module-trust", "fail",
+			fmt.Sprintf("cannot read %s: %v", composition.GitResolvedRecordName, err),
+			fmt.Sprintf("fix or delete %s in %s", composition.GitResolvedRecordName, overlayDir))
+		return
+	}
 	for _, ref := range ws.Modules {
-		if ref.Source == "" || ref.PathOverride != nil || overlayResolvesLocation(overlay, ref.Name) {
+		if ref.Source == "" || ref.PathOverride != nil {
+			continue
+		}
+		_, wasCloned := gitResolved[ref.Name]
+		if composition.GitResolutionFor(overlayDirective(overlay, ref.Name), wasCloned) {
+			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
+				fmt.Sprintf("module %q resolves through the unverified git clone: nothing about it is signature- or digest-checked", ref.Name),
+				fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", ref.Name, resources.WorkspaceConfigurationName, composition.GitResolvedRecordName))
 			continue
 		}
 		if err := composition.CheckModuleTrustCoverage(ws.Dir(), ref); err != nil {
@@ -255,17 +284,13 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 	}
 }
 
-// overlayResolvesLocation reports whether the overlay resolves module without
-// pulling a verified artifact — a local `path`/`worktree`, or the `git: true`
-// clone escape hatch (which `run` materializes and then records as the clone's
-// path). Module-trust is irrelevant for those: nothing is verified because
-// nothing is pulled.
-func overlayResolvesLocation(overlay *resources.LocalOverlay, module string) bool {
+// overlayDirective returns module's overlay entry, or nil when there is no
+// overlay at all.
+func overlayDirective(overlay *resources.LocalOverlay, module string) *resources.ModuleResolveDirective {
 	if overlay == nil {
-		return false
+		return nil
 	}
-	directive := overlay.Resolve[module]
-	return directive != nil && (directive.Path != "" || directive.Worktree != "" || directive.Git)
+	return overlay.Resolve[module]
 }
 
 func checkEnvironment(ws *resources.Workspace, name string, report *workspaceReadinessReport) *resources.Environment {

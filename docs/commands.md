@@ -463,8 +463,12 @@ with the `module_trust_missing` diagnostic. The escape hatch is per module:
 the unverified git clone (`run` prints `unverified git clone for <name>` once
 per run when it does). An overlay entry selects exactly one of
 `path`/`worktree`/`pinned`/`git`, so `run` replaces that entry with the
-clone's `path:` once it materializes the module, and keeps refreshing it from
-the clone on later runs.
+clone's `path:` once it materializes the module, and says so when it does. The
+choice itself, and the clone it produced, move to `codefly.local.resolved.yaml`
+beside the overlay (gitignored like it), which is what keeps later runs on the
+clone and lets `codefly doctor workspace` report the module as unverified.
+Setting `resolve.<name>.pinned: true` revokes the opt-out and returns the
+module to verified resolution.
 
 **`add service` flags:**
 
