@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/core/companions"
 	"github.com/stretchr/testify/require"
 )
 
@@ -130,15 +131,16 @@ exit 1
 // the guarantee core's publish matrix gave with fail-fast: false.
 func TestBuildTargets_LeafBuildFailureDoesNotStrandTheRest(t *testing.T) {
 	root := t.TempDir()
-	writeManifest(t, root, "broken", "0.0.1", true, false)
-	writeManifest(t, root, "healthy", "0.0.2", true, false)
+	writeManifest(t, root, baseCompanionName, "0.0.4", true, false)
+	writeManifest(t, root, "proto", "0.0.1", true, false)
+	writeManifest(t, root, "python", "0.0.2", true, false)
 
 	buildLog := filepath.Join(t.TempDir(), "built.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
 if [ "$1" = "build" ]; then
   for arg in "$@"; do
     case "$arg" in
-      *broken*) exit 1 ;;
+      *proto*) exit 1 ;;
     esac
   done
   echo "$@" >> %q
@@ -146,14 +148,14 @@ fi
 exit 0
 `, buildLog))
 
-	broken, err := LoadCompanion(filepath.Join(root, "companions", "broken"))
+	broken, err := LoadCompanion(filepath.Join(root, "companions", "proto"))
 	require.NoError(t, err)
-	healthy, err := LoadCompanion(filepath.Join(root, "companions", "healthy"))
+	healthy, err := LoadCompanion(filepath.Join(root, "companions", "python"))
 	require.NoError(t, err)
 
 	_, err = buildTargets(root, []*Companion{broken, healthy}, BuildOptions{})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "broken")
+	require.Contains(t, err.Error(), "proto")
 
 	built, readErr := os.ReadFile(buildLog)
 	require.NoError(t, readErr)
@@ -213,9 +215,10 @@ exit 0
 // a companion others build on could be ordered after them or treated as a
 // leaf whose failure is survivable.
 func TestBaseCompanionIsTheOneOrderedFirst(t *testing.T) {
-	ordered := sortCompanionsForBuild([]*Companion{
+	ordered, err := sortCompanionsForBuild([]*Companion{
 		{Name: "python"}, {Name: "proto"}, {Name: "codefly"}, {Name: "execution"},
 	})
+	require.NoError(t, err)
 	require.True(t, isBaseCompanion(ordered[0].Name),
 		"the companion built first must be the one the abort rule treats as the base")
 	for _, c := range ordered[1:] {
@@ -293,7 +296,7 @@ func TestRunPublish_NamedAlreadyPublishedTargetFailsLoudly(t *testing.T) {
 func TestRunPublish_ForceRepublishesAnAlreadyPublishedTag(t *testing.T) {
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
-	writeManifest(t, root, "alpha", "0.0.1", true, false)
+	writeManifest(t, root, "execution", "0.0.1", true, false)
 
 	buildLog := filepath.Join(t.TempDir(), "built.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
@@ -305,7 +308,7 @@ exit 0
 	require.NoError(t, publishedAll(t, root, map[string]string{"force": "true"}))
 	built, err := os.ReadFile(buildLog)
 	require.NoError(t, err, "--force must rebuild and overwrite the published tag")
-	require.Contains(t, string(built), "alpha")
+	require.Contains(t, string(built), "execution")
 }
 
 // Provenance attestation consumes this file. It must list what the run pushed
@@ -314,18 +317,18 @@ exit 0
 func TestRunPublish_ManifestRecordsOnlyWhatThisRunPushed(t *testing.T) {
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
-	writeManifest(t, root, "fresh", "0.0.1", true, false)
-	writeManifest(t, root, "stale", "0.0.2", true, false)
+	writeManifest(t, root, "execution", "0.0.1", true, false)
+	writeManifest(t, root, baseCompanionName, "0.0.2", true, false)
 	t.Setenv("DOCKER_CONFIG", "")
 
-	// "stale" already resolves in the registry; "fresh" does not. Only the
-	// authenticated lookup decides that — DOCKER_CONFIG marks the anonymous
-	// probe pushImage runs afterwards, which must see the pushed image.
+	// The codefly tag already resolves in the registry; the execution one does
+	// not. Only the authenticated lookup decides that — DOCKER_CONFIG marks the
+	// anonymous probe pushImage runs afterwards, which must see the pushed image.
 	writeFakeDocker(t, `
 if [ "$1" = "manifest" ] && [ -z "$DOCKER_CONFIG" ]; then
   case "$3" in
-    *stale*) echo '{"schemaVersion":2}'; exit 0 ;;
-    *)       echo "manifest unknown" 1>&2; exit 1 ;;
+    */codefly:*) echo '{"schemaVersion":2}'; exit 0 ;;
+    *)           echo "manifest unknown" 1>&2; exit 1 ;;
   esac
 fi
 echo '{"schemaVersion":2}'
@@ -340,7 +343,7 @@ exit 0
 	var entries []publishedEntry
 	require.NoError(t, json.Unmarshal(raw, &entries))
 	require.Len(t, entries, 1, "a skipped companion must not appear in the attestable set")
-	require.Equal(t, "fresh", entries[0].Companion)
+	require.Equal(t, "execution", entries[0].Companion)
 	require.Equal(t, "0.0.1", entries[0].Version)
 }
 
@@ -366,7 +369,7 @@ func TestRunPublish_ManifestIsWrittenEvenWhenNothingIsPublished(t *testing.T) {
 func writeBaseDependentDockerfile(t *testing.T, root, name, defaultBase string) {
 	t.Helper()
 	body := fmt.Sprintf("ARG %s=%s\nFROM ${%s} AS codeflybase\nFROM alpine\n",
-		baseImageArg, defaultBase, baseImageArg)
+		companions.BaseImageArg, defaultBase, companions.BaseImageArg)
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "companions", name, "Dockerfile"), []byte(body), 0o600))
 }
@@ -396,7 +399,7 @@ exit 0
 
 	built, err := os.ReadFile(buildLog)
 	require.NoError(t, err)
-	require.Contains(t, string(built), "--build-arg "+baseImageArg+"=ghcr.io/codefly-dev/codefly:0.0.5",
+	require.Contains(t, string(built), "--build-arg "+companions.BaseImageArg+"=ghcr.io/codefly-dev/codefly:0.0.5",
 		"the dependent must build on the base version info.codefly.yaml pins now")
 	require.NotContains(t, string(built), "codefly:0.0.4",
 		"the Dockerfile's stale pinned default must never be what gets built")
@@ -428,7 +431,7 @@ exit 0
 
 	built, err := os.ReadFile(buildLog)
 	require.NoError(t, err)
-	require.Contains(t, string(built), baseImageArg+"=ghcr.io/codefly-dev/codefly:0.0.7")
+	require.Contains(t, string(built), companions.BaseImageArg+"=ghcr.io/codefly-dev/codefly:0.0.7")
 }
 
 // A dependent that cannot resolve its base must stop, not quietly build on
@@ -448,13 +451,13 @@ func TestBuildTargets_FailsWhenADependentsBaseCannotBeResolved(t *testing.T) {
 	require.Contains(t, err.Error(), baseCompanionName)
 }
 
-// The base builds itself, and a companion that declares no base argument takes
-// none — passing one would be an unconsumed build-arg on every such image.
+// The base builds itself, and a companion whose spec names no base takes none —
+// passing one would be an unconsumed build-arg on every such image.
 func TestBuildTargets_PassesNoBaseArgumentWhereNoneIsDeclared(t *testing.T) {
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
 	writeManifest(t, root, baseCompanionName, "0.0.5", true, false)
-	writeManifest(t, root, "standalone", "0.0.1", true, false)
+	writeManifest(t, root, "execution", "0.0.1", true, false)
 
 	buildLog := filepath.Join(t.TempDir(), "built.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
@@ -464,13 +467,13 @@ exit 0
 
 	base, err := LoadCompanion(filepath.Join(root, "companions", baseCompanionName))
 	require.NoError(t, err)
-	standalone, err := LoadCompanion(filepath.Join(root, "companions", "standalone"))
+	execution, err := LoadCompanion(filepath.Join(root, "companions", "execution"))
 	require.NoError(t, err)
 
-	_, err = buildTargets(root, []*Companion{base, standalone}, BuildOptions{})
+	_, err = buildTargets(root, []*Companion{base, execution}, BuildOptions{})
 	require.NoError(t, err)
 
 	built, err := os.ReadFile(buildLog)
 	require.NoError(t, err)
-	require.NotContains(t, string(built), baseImageArg)
+	require.NotContains(t, string(built), companions.BaseImageArg)
 }
