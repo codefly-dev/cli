@@ -138,7 +138,7 @@ type Flow struct {
 	// Stop/Shutdown is bounded by this budget times the number of layers.
 	teardownPhaseBudget time.Duration
 	teardownMu          sync.Mutex
-	lastTeardown        *TeardownReceipt
+	lastTeardown        *teardownReceipt
 }
 
 // StateListener observes per-service runtime lifecycle transitions. service is

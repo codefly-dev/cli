@@ -1,0 +1,4 @@
+name: teardown
+layout: modules
+modules:
+    - name: app

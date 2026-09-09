@@ -352,13 +352,16 @@ for exactly the resources whose clean stop matters most. A layer that overruns
 its budget is cancelled and the next layer proceeds -- best-effort cleanup of the
 remaining owned resources rather than an indefinite hang.
 
-**Receipt.** `Flow.LastTeardown()` returns a `TeardownReceipt`: the operation,
-the number of layers, and one `TeardownEntry` per resource with its layer,
-duration, and outcome -- `TeardownStopped` (drained gracefully), `TeardownFailed`
-(the agent answered with an error) or `TeardownTimedOut` (the drain was cut short
-by the budget, so the resource may still be running). Entries are ordered by
-layer, then by hub registration order, regardless of which goroutine finished
-first.
+**Receipt.** Each teardown records a per-resource receipt: the operation, the
+number of layers, and one entry per resource with its layer, duration, and
+outcome -- `stopped` (drained gracefully), `failed` (the agent answered with an
+error) or `timed-out` (the drain was cut short by the budget, so the resource may
+still be running). Entries are ordered by layer, then by hub registration order,
+regardless of which goroutine finished first. The receipt is internal: what
+reaches callers is the aggregated `go-multierror` (which names each failing
+resource) plus an `OutputSink` error line for every resource the budget forced,
+because a forced resource may still be running and some callers -- `pkg/control`'s
+`stopFlow` -- discard the returned error.
 
 Builder-only flows (`BuildMode`, `SyncMode`, `DeployMode`, `SnapshotMode`) have
 no runtime to stop; `Stop()` returns immediately for them.
@@ -367,5 +370,5 @@ no runtime to stop; `Stop()` returns immediately for them.
 
 - **Agent load failure:** The `RunnerLoadManager` captures the error. The policy returns a `Failing` action, which the `PauseManager` handles. The service enters a wait-and-retry loop.
 - **Context cancellation:** All gRPC calls check for `codes.Canceled` and return gracefully.
-- **Partial failures:** Every manager is torn down during `Flow.Stop()`, including ones a partial `InitManagers()` created but never started. Errors are collected via `go-multierror` and returned together, and the structured per-resource result is available from `Flow.LastTeardown()`.
+- **Partial failures:** Every manager is torn down during `Flow.Stop()`, including ones a partial `InitManagers()` created but never started. Errors are collected via `go-multierror` and returned together; a resource the teardown budget forced is additionally narrated through the flow's `OutputSink`, since it may still be running and some callers discard the returned error.
 - **Init failure:** If `Init` returns a non-READY status, the output manager marks the result as failing, triggering a pause and retry from the Load phase.

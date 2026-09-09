@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -226,89 +224,35 @@ func serveTeardownAgent(t *testing.T, unique string, agent *teardownAgent) *Mana
 	return &Manager{service: service, Runner: runner}
 }
 
-// dependencyGraphFor lays a real workspace on disk whose services declare the
-// given edges and loads it through the real architecture package, so these
-// tests barrier on the same graph `codefly run` builds rather than on a
-// hand-assembled stand-in.
-func dependencyGraphFor(t *testing.T, edges []architecture.ServiceDependency) *architecture.ServiceDependencies {
+// teardownDependencies loads testdata/teardown-layout through the real
+// architecture package, so these tests barrier on the same graph `codefly run`
+// builds. The fixture is one module whose api, orders and billing services each
+// depend on its database: a chain for the ordering cases and a fan-in for the
+// concurrency case, with the unused services filtered out by the layering
+// itself because no manager is registered for them.
+func teardownDependencies(t *testing.T) *architecture.ServiceDependencies {
 	t.Helper()
-	requires := map[string][]string{}
-	var modules []string
-	services := map[string][]string{}
-	register := func(unique string) {
-		if _, known := requires[unique]; known {
-			return
-		}
-		requires[unique] = nil
-		info, err := resources.ParseServiceWithOptionalModule(unique)
-		require.NoError(t, err)
-		if _, known := services[info.Module]; !known {
-			modules = append(modules, info.Module)
-		}
-		services[info.Module] = append(services[info.Module], info.Name)
-	}
-	for _, dependency := range edges {
-		register(dependency.From.Unique)
-		register(dependency.To.Unique)
-	}
-	for _, dependency := range edges {
-		requires[dependency.To.Unique] = append(requires[dependency.To.Unique], dependency.From.Unique)
-	}
-
-	root := t.TempDir()
-	workspace := "name: teardown\nlayout: modules\nmodules:\n"
-	for _, module := range modules {
-		workspace += fmt.Sprintf("    - name: %s\n", module)
-	}
-	write := func(relative, content string) {
-		path := filepath.Join(root, relative)
-		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
-	}
-	write("workspace.codefly.yaml", workspace)
-	for _, module := range modules {
-		body := fmt.Sprintf("kind: module\nname: %s\nservices:\n", module)
-		for _, service := range services[module] {
-			body += fmt.Sprintf("    - name: %s\n", service)
-		}
-		write(filepath.Join("modules", module, "module.codefly.yaml"), body)
-	}
-	for unique, dependencies := range requires {
-		info, err := resources.ParseServiceWithOptionalModule(unique)
-		require.NoError(t, err)
-		body := fmt.Sprintf("kind: service\nname: %s\nversion: 0.0.0\nmodule: %s\n"+
-			"agent:\n    kind: codefly:service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n"+
-			"endpoints:\n    - name: tcp\n", info.Name, info.Module)
-		if len(dependencies) > 0 {
-			body += "service-dependencies:\n"
-			for _, dependency := range dependencies {
-				dependencyInfo, err := resources.ParseServiceWithOptionalModule(dependency)
-				require.NoError(t, err)
-				body += fmt.Sprintf("    - name: %s\n      module: %s\n      endpoints:\n          - name: tcp\n",
-					dependencyInfo.Name, dependencyInfo.Module)
-			}
-		}
-		write(filepath.Join("modules", info.Module, "services", info.Name, "service.codefly.yaml"), body)
-	}
-
 	ctx := context.Background()
-	loaded, err := resources.LoadWorkspaceFromDir(ctx, root)
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/teardown-layout")
 	require.NoError(t, err)
-	dependencies, err := architecture.NewServiceDependencies(ctx, loaded)
+	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
 	return dependencies
 }
 
-func teardownFlow(t *testing.T, managers []IManager, edges []architecture.ServiceDependency) *Flow {
+// teardownFlow builds a flow over the given managers. Pass the fixture graph to
+// exercise the dependency barrier, or nil for a flow with no graph at all (the
+// pre-InitManagers shape, which must still collapse to one layer).
+func teardownFlow(t *testing.T, managers []IManager, dependencies *architecture.ServiceDependencies) *Flow {
 	t.Helper()
 	flow := &Flow{hub: &Hub{managers: managers}}
-	if len(edges) > 0 {
-		flow.world = &World{Mode: RunMode, Dependencies: dependencyGraphFor(t, edges)}
+	if dependencies != nil {
+		flow.world = &World{Mode: RunMode, Dependencies: dependencies}
 	}
 	return flow
 }
 
-func entryFor(t *testing.T, receipt *TeardownReceipt, service string) TeardownEntry {
+func entryFor(t *testing.T, receipt *teardownReceipt, service string) teardownEntry {
 	t.Helper()
 	require.NotNil(t, receipt)
 	for _, entry := range receipt.Entries {
@@ -317,7 +261,7 @@ func entryFor(t *testing.T, receipt *TeardownReceipt, service string) TeardownEn
 		}
 	}
 	t.Fatalf("no teardown entry for %s in %+v", service, receipt.Entries)
-	return TeardownEntry{}
+	return teardownEntry{}
 }
 
 // TestFlowStopHoldsTheDatabaseUntilItsConsumerHasDrained is the acceptance
@@ -344,7 +288,7 @@ func TestFlowStopHoldsTheDatabaseUntilItsConsumerHasDrained(t *testing.T) {
 
 	flow := teardownFlow(t,
 		[]IManager{databaseManager, apiManager},
-		[]architecture.ServiceDependency{edge("app/database", "app/api")})
+		teardownDependencies(t))
 
 	require.NoError(t, flow.Stop())
 
@@ -361,11 +305,11 @@ func TestFlowStopHoldsTheDatabaseUntilItsConsumerHasDrained(t *testing.T) {
 	require.True(t, databaseBegan.After(writes[0]),
 		"database stop began at %s, before the api's final write at %s", databaseBegan, writes[0])
 
-	receipt := flow.LastTeardown()
+	receipt := flow.lastTeardownReceipt()
 	require.Equal(t, 2, receipt.Layers)
 	require.Equal(t, 0, entryFor(t, receipt, "app/api").Layer)
 	require.Equal(t, 1, entryFor(t, receipt, "app/database").Layer)
-	require.Equal(t, TeardownStopped, entryFor(t, receipt, "app/database").Outcome)
+	require.Equal(t, teardownStopped, entryFor(t, receipt, "app/database").Outcome)
 }
 
 // TestFlowStopDrainsIndependentConsumersConcurrently covers the other half of
@@ -400,10 +344,7 @@ func TestFlowStopDrainsIndependentConsumersConcurrently(t *testing.T) {
 			serveTeardownAgent(t, "app/orders", orders),
 			serveTeardownAgent(t, "app/billing", billing),
 		},
-		[]architecture.ServiceDependency{
-			edge("app/database", "app/orders"),
-			edge("app/database", "app/billing"),
-		})
+		teardownDependencies(t))
 
 	require.NoError(t, flow.Stop())
 
@@ -434,7 +375,7 @@ func TestFlowStopForcesAStuckConsumerAndStillStopsItsDependency(t *testing.T) {
 			serveTeardownAgent(t, "app/database", database),
 			serveTeardownAgent(t, "app/api", api),
 		},
-		[]architecture.ServiceDependency{edge("app/database", "app/api")})
+		teardownDependencies(t))
 	flow.teardownPhaseBudget = 250 * time.Millisecond
 
 	started := time.Now()
@@ -445,9 +386,9 @@ func TestFlowStopForcesAStuckConsumerAndStillStopsItsDependency(t *testing.T) {
 	require.ErrorContains(t, err, "app/api")
 	require.Less(t, elapsed, 2*time.Second, "teardown ran past its budget")
 
-	receipt := flow.LastTeardown()
-	require.Equal(t, TeardownTimedOut, entryFor(t, receipt, "app/api").Outcome, "err=%v", entryFor(t, receipt, "app/api").Err)
-	require.Equal(t, TeardownStopped, entryFor(t, receipt, "app/database").Outcome)
+	receipt := flow.lastTeardownReceipt()
+	require.Equal(t, teardownTimedOut, entryFor(t, receipt, "app/api").Outcome, "err=%v", entryFor(t, receipt, "app/api").Err)
+	require.Equal(t, teardownStopped, entryFor(t, receipt, "app/database").Outcome)
 
 	databaseBegan, _ := database.window()
 	require.False(t, databaseBegan.IsZero(), "the dependency was never stopped")
@@ -467,8 +408,8 @@ func TestFlowStopRecordsAFailedDrainSeparatelyFromAForcedOne(t *testing.T) {
 	err := flow.Stop()
 	require.ErrorContains(t, err, "still holding a transaction")
 
-	entry := entryFor(t, flow.LastTeardown(), "app/api")
-	require.Equal(t, TeardownFailed, entry.Outcome)
+	entry := entryFor(t, flow.lastTeardownReceipt(), "app/api")
+	require.Equal(t, teardownFailed, entry.Outcome)
 	require.Error(t, entry.Err)
 }
 
@@ -483,7 +424,7 @@ func TestFlowStopAndShutdownAreRepeatable(t *testing.T) {
 			serveTeardownAgent(t, "app/database", database),
 			serveTeardownAgent(t, "app/api", api),
 		},
-		[]architecture.ServiceDependency{edge("app/database", "app/api")})
+		teardownDependencies(t))
 
 	require.NoError(t, flow.Stop())
 	require.NoError(t, flow.Stop())
@@ -497,7 +438,7 @@ func TestFlowStopAndShutdownAreRepeatable(t *testing.T) {
 	require.Equal(t, 2, apiDestroys)
 	require.Equal(t, 2, databaseDestroys)
 
-	receipt := flow.LastTeardown()
+	receipt := flow.lastTeardownReceipt()
 	require.Equal(t, "Shutdown", receipt.Operation)
 	require.Equal(t, 0, entryFor(t, receipt, "app/api").Layer)
 	require.Equal(t, 1, entryFor(t, receipt, "app/database").Layer)
@@ -524,7 +465,7 @@ func TestFlowShutdownDestroysConsumersBeforeDependencies(t *testing.T) {
 			serveTeardownAgent(t, "app/database", &teardownAgent{destroyDrain: record("app/database", 0)}),
 			serveTeardownAgent(t, "app/api", &teardownAgent{destroyDrain: record("app/api", 150*time.Millisecond)}),
 		},
-		[]architecture.ServiceDependency{edge("app/database", "app/api")})
+		teardownDependencies(t))
 
 	require.NoError(t, flow.Shutdown())
 

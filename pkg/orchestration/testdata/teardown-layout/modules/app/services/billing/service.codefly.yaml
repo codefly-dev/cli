@@ -1,0 +1,16 @@
+kind: service
+name: billing
+version: 0.0.0
+module: app
+agent:
+    kind: codefly:service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+    - name: database
+      module: app
+      endpoints:
+          - name: tcp
+endpoints:
+    - name: tcp

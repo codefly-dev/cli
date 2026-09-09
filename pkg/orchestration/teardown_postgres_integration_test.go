@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codefly-dev/core/architecture"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,28 +35,62 @@ func startDisposablePostgres(t *testing.T) string {
 
 	output, err := exec.Command("docker", "run", "--detach", "--rm",
 		"--env", "POSTGRES_PASSWORD=codefly",
-		teardownPostgresImage).CombinedOutput()
+		// initdb's fsyncs dominate container start and swing by 5x under load.
+		// This database is created and destroyed inside one test, so durability
+		// is pure cost; dropping it keeps the step's wall time predictable for
+		// the CI gate that hosts it.
+		"--env", "POSTGRES_INITDB_ARGS=--nosync",
+		"--tmpfs", "/var/lib/postgresql/data:rw",
+		teardownPostgresImage, "-c", "fsync=off").CombinedOutput()
 	require.NoErrorf(t, err, "docker run %s: %s", teardownPostgresImage, output)
 	container := strings.TrimSpace(string(output))
 	t.Cleanup(func() {
 		_ = exec.Command("docker", "rm", "--force", container).Run()
 	})
 
+	waitForPostgres(t, container)
+	_, err = psql(container, `CREATE TABLE drain (id serial primary key, committed_at timestamptz not null)`)
+	require.NoError(t, err)
+	return container
+}
+
+// initCompleteMarker is the line the official image's entrypoint prints after
+// initdb, between shutting down the temporary server it ran the init scripts
+// against and starting the real one.
+const initCompleteMarker = "PostgreSQL init process complete"
+
+// waitForPostgres blocks until the container's REAL server is accepting
+// connections. Waiting on pg_isready alone is not enough: the image brings up a
+// temporary server for initdb and then shuts it down, so pg_isready can answer
+// a server that is about to close and the next statement fails against a
+// restarting database. Gate on the entrypoint's init-complete marker first, so
+// readiness refers to the server that outlives startup.
+func waitForPostgres(t *testing.T, container string) {
+	t.Helper()
 	deadline := time.Now().Add(90 * time.Second)
+	containerLogs := func() string {
+		logs, _ := exec.Command("docker", "logs", container).CombinedOutput()
+		return string(logs)
+	}
+	for !strings.Contains(containerLogs(), initCompleteMarker) {
+		if time.Now().After(deadline) {
+			t.Fatalf("disposable postgres never finished initdb (no %q in its logs): %s",
+				initCompleteMarker, containerLogs())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	for {
 		if err := exec.Command("docker", "exec", container, "pg_isready", "-U", "postgres").Run(); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			logs, _ := exec.Command("docker", "logs", container).CombinedOutput()
-			t.Fatalf("disposable postgres never became ready: %s", logs)
+			t.Fatalf("disposable postgres finished initdb but never accepted connections: %s", containerLogs())
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
-
-	_, err = psql(container, `CREATE TABLE drain (id serial primary key, committed_at timestamptz not null)`)
-	require.NoError(t, err)
-	return container
+	// One real statement: proves the server answering is the one that stays up.
+	_, err := psql(container, `SELECT 1`)
+	require.NoError(t, err, "postgres reported ready but rejected a statement")
 }
 
 // psql runs one statement in the container. It returns an error rather than
@@ -109,7 +142,7 @@ func TestFlowStopHoldsPostgresUntilItsConsumerCommits(t *testing.T) {
 			serveTeardownAgent(t, "app/database", database),
 			serveTeardownAgent(t, "app/api", api),
 		},
-		[]architecture.ServiceDependency{edge("app/database", "app/api")})
+		teardownDependencies(t))
 
 	require.NoError(t, flow.Stop())
 
@@ -127,10 +160,10 @@ func TestFlowStopHoldsPostgresUntilItsConsumerCommits(t *testing.T) {
 	require.Error(t, exec.Command("docker", "exec", container, "pg_isready", "-U", "postgres").Run(),
 		"postgres is still running after teardown")
 
-	receipt := flow.LastTeardown()
+	receipt := flow.lastTeardownReceipt()
 	require.Equal(t, 2, receipt.Layers)
 	require.Equal(t, 0, entryFor(t, receipt, "app/api").Layer)
 	require.Equal(t, 1, entryFor(t, receipt, "app/database").Layer)
-	require.Equal(t, TeardownStopped, entryFor(t, receipt, "app/database").Outcome)
+	require.Equal(t, teardownStopped, entryFor(t, receipt, "app/database").Outcome)
 	t.Logf("api drain ended %s, final commit at %s, postgres stop began %s", apiEnded, committed, databaseBegan)
 }

@@ -28,39 +28,39 @@ const (
 	defaultShutdownPhaseBudget = 30 * time.Second
 )
 
-// TeardownOutcome is what actually happened to one resource during a teardown.
-type TeardownOutcome string
+// teardownOutcome is what actually happened to one resource during a teardown.
+type teardownOutcome string
 
 const (
-	// TeardownStopped is a graceful drain: the agent acknowledged the call.
-	TeardownStopped TeardownOutcome = "stopped"
-	// TeardownFailed is a drain the agent refused or errored out of. The
+	// teardownStopped is a graceful drain: the agent acknowledged the call.
+	teardownStopped teardownOutcome = "stopped"
+	// teardownFailed is a drain the agent refused or errored out of. The
 	// resource answered, so the flow knows its state.
-	TeardownFailed TeardownOutcome = "failed"
-	// TeardownTimedOut is a drain abandoned when its layer's budget ran out.
+	teardownFailed teardownOutcome = "failed"
+	// teardownTimedOut is a drain abandoned when its layer's budget ran out.
 	// The call is cancelled and the flow moves on to the next layer, so the
 	// resource may still be running.
-	TeardownTimedOut TeardownOutcome = "timed-out"
+	teardownTimedOut teardownOutcome = "timed-out"
 )
 
-// TeardownEntry is the per-resource receipt of one teardown operation.
-type TeardownEntry struct {
+// teardownEntry is the per-resource receipt of one teardown operation.
+type teardownEntry struct {
 	Service  string
 	Layer    int
 	Duration time.Duration
-	Outcome  TeardownOutcome
+	Outcome  teardownOutcome
 	Err      error
 }
 
-// TeardownReceipt records what a Stop or Shutdown did, resource by resource.
+// teardownReceipt records what a Stop or Shutdown did, resource by resource.
 // Entries are ordered by layer and, within a layer, by the order the hub
 // registered the resource — deterministic regardless of which goroutine
 // finished first.
-type TeardownReceipt struct {
+type teardownReceipt struct {
 	Operation string
 	Layers    int
 	Duration  time.Duration
-	Entries   []TeardownEntry
+	Entries   []teardownEntry
 }
 
 // teardownUnit is one resource in a layer: the flow-unique service name and
@@ -154,9 +154,10 @@ func (flow *Flow) phaseBudget(fallback time.Duration) time.Duration {
 	return fallback
 }
 
-// LastTeardown returns the receipt of the most recent Stop or Shutdown, or nil
-// if this flow has not been torn down.
-func (flow *Flow) LastTeardown() *TeardownReceipt {
+// lastTeardownReceipt returns the receipt of the most recent Stop or Shutdown,
+// or nil if this flow has not been torn down. The lock guards it against a
+// second Stop/Shutdown running concurrently.
+func (flow *Flow) lastTeardownReceipt() *teardownReceipt {
 	if flow == nil {
 		return nil
 	}
@@ -184,6 +185,16 @@ type teardownTask struct {
 // touching the layer it depends on. Launch order is not completion order, so
 // the barrier — not the iteration direction — is what keeps a database alive
 // until the API draining into it has finished.
+//
+// The barrier is exactly as strong as the agent's Stop contract: it guarantees
+// the consumer's Stop RPC RETURNED before the dependency's began, so an agent
+// that acks Stop before its process has actually exited still leaves a window.
+// Closing that window here — polling the consumer's endpoints until they stop
+// answering — would be worse than the gap: boundNativePorts reports a port held
+// by ANY process, so a zombie from an earlier run squatting the same
+// deterministically hashed port (the case Flow.begun exists to handle) would
+// stall every teardown for a full layer budget. The durable fix belongs in the
+// agent's Stop semantics, not in this loop.
 func (flow *Flow) runTeardown(name string, budget time.Duration, invoke func(IManager, context.Context) (*OutputProperty, error)) error {
 	// Don't call on a possibly Done context
 	stoppedContext, done := flow.newTeardownContext()
@@ -205,7 +216,7 @@ func (flow *Flow) runTeardown(name string, budget time.Duration, invoke func(IMa
 	layers := flow.teardownLayers()
 	budget = flow.phaseBudget(budget)
 	started := time.Now()
-	receipt := &TeardownReceipt{Operation: name, Layers: len(layers)}
+	receipt := &teardownReceipt{Operation: name, Layers: len(layers)}
 
 	var res error
 	for index, layer := range layers {
@@ -254,26 +265,26 @@ func (flow *Flow) runTeardown(name string, budget time.Duration, invoke func(IMa
 		cancelLayer()
 
 		for _, task := range tasks {
-			entry := TeardownEntry{Service: task.unique, Layer: index}
+			entry := teardownEntry{Service: task.unique, Layer: index}
 			task.mu.Lock()
 			switch {
 			case !task.finished || task.forced:
-				entry.Outcome = TeardownTimedOut
+				entry.Outcome = teardownTimedOut
 				entry.Duration = time.Since(layerStarted)
 				entry.Err = fmt.Errorf("%s of %s did not drain within %s and was forced", name, task.unique, budget)
 				if task.err != nil {
 					entry.Err = fmt.Errorf("%w: %w", entry.Err, task.err)
 				}
 			case task.err != nil:
-				entry.Outcome = TeardownFailed
+				entry.Outcome = teardownFailed
 				entry.Duration = task.duration
 				entry.Err = task.err
 			default:
-				entry.Outcome = TeardownStopped
+				entry.Outcome = teardownStopped
 				entry.Duration = task.duration
 			}
 			task.mu.Unlock()
-			if entry.Outcome == TeardownTimedOut {
+			if entry.Outcome == teardownTimedOut {
 				// Callers such as the control plane's stopFlow discard the
 				// returned error, and a forced resource may still be running.
 				// Say so where the user actually looks.
