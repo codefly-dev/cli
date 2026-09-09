@@ -43,6 +43,30 @@ func init() {
 	PublishCmd.Flags().Bool("force-docker", false, "Skip the flake.nix path even when present + nix is installed")
 	PublishCmd.Flags().Bool("pull", false, "Always pull a newer base image (docker build --pull) before building")
 	PublishCmd.Flags().String("platform", "", "Target platform(s) for Docker builds (e.g. linux/amd64,linux/arm64). Multiple platforms publish one manifest with buildx.")
+	PublishCmd.Flags().Bool("force", false, "Republish a companion whose tag is already in the registry, overwriting it")
+}
+
+// alreadyPublished splits targets into those whose pinned tag is already
+// resolvable in the registry and those still to publish.
+//
+// A published tag is what agents have already resolved, so overwriting it
+// swaps the image under every consumer without changing the reference they
+// pin — the reason a version bump is the documented way to ship a companion
+// change. Only a confirmed-present tag is skipped: a lookup that fails is
+// treated as "publish it". A ghcr package that does not exist yet answers
+// "denied" rather than "manifest unknown", so refusing on error would make
+// the first push of a new companion impossible, and an existing package that
+// answers "denied" is private — already unusable to every anonymous puller,
+// so republishing is the repair, not the damage.
+func alreadyPublished(targets []*Companion) (published, pending []*Companion) {
+	for _, c := range targets {
+		if ok, err := manifestExists(c.Name, c.Tag()); err == nil && ok {
+			published = append(published, c)
+			continue
+		}
+		pending = append(pending, c)
+	}
+	return published, pending
 }
 
 func runPublish(cmd *cobra.Command, args []string) error {
@@ -69,6 +93,19 @@ func runPublish(cmd *cobra.Command, args []string) error {
 	// a non-image companion like golang).
 	if !all && !targets[0].ProducesImage() {
 		return fmt.Errorf("companion %q produces no image (no Dockerfile or flake.nix), nothing to publish", targets[0].Name)
+	}
+
+	force, _ := cmd.Flags().GetBool("force")
+	if !force {
+		published, pending := alreadyPublished(targets)
+		for _, c := range published {
+			fmt.Printf("==> Skipping %s (already published — bump companions/%s/info.codefly.yaml, or pass --force to overwrite)\n", c.Tag(), c.Name)
+		}
+		if len(pending) == 0 {
+			fmt.Printf("==> every selected companion tag is already published; nothing to do\n")
+			return nil
+		}
+		targets = pending
 	}
 
 	opts := BuildOptions{Push: true, ForceDocker: forceDocker, Pull: pull, Platform: platform}

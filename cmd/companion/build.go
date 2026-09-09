@@ -176,9 +176,11 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 	// push of a new companion lands in a ghcr package that is private until
 	// someone flips it in the UI, so aborting the loop there would leave the
 	// rest of the fleet unpublished over a condition that has nothing to do
-	// with them. Build failures still abort: language companions COPY --from
-	// the base image, so a failed build genuinely invalidates what follows.
+	// with them. Build failures of a leaf companion are collected for the same
+	// reason: nothing is built from them, so one flaky apk mirror must not
+	// strand every companion ordered after it.
 	var pushFailures []string
+	var buildFailures []string
 
 	for _, c := range targets {
 		// Skip companions that aren't built as images. A directory with an
@@ -206,7 +208,14 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 			buildErr = buildWithDocker(c, coreDir, opts.Pull, platforms, opts.Push)
 		}
 		if buildErr != nil {
-			return fmt.Errorf("build %s failed: %w", c.Name, buildErr)
+			// The base is the one build whose failure invalidates what
+			// follows: every other companion resolves it as their FROM.
+			if isBaseCompanion(c.Name) {
+				return fmt.Errorf("build %s failed, and every other companion builds on it: %w", c.Name, buildErr)
+			}
+			fmt.Printf("    FAILED   %s\n", c.Tag())
+			buildFailures = append(buildFailures, fmt.Sprintf("%s: %v", c.Name, buildErr))
+			continue
 		}
 		fmt.Printf("    built %s\n", c.Tag())
 
@@ -222,11 +231,19 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		}
 	}
 
-	if len(pushFailures) > 0 {
-		return fmt.Errorf("%d companion push(es) failed:\n  %s",
-			len(pushFailures), strings.Join(pushFailures, "\n  "))
+	failures := append(buildFailures, pushFailures...)
+	if len(failures) > 0 {
+		return fmt.Errorf("%d companion build/push(es) failed:\n  %s",
+			len(failures), strings.Join(failures, "\n  "))
 	}
 	return nil
+}
+
+// isBaseCompanion reports whether other companions build on this one. It is
+// the same "codefly first" fact sortCompanionsForBuild orders by, named once
+// so the ordering and the abort rule cannot disagree.
+func isBaseCompanion(name string) bool {
+	return name == "codefly"
 }
 
 // listCompanionsRequired lists every companion under root. The bare

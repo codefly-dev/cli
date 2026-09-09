@@ -36,6 +36,17 @@ jobs:
     # unrelated CLI release.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # Every companion is built and pushed serially in this one job, and the
+    # proto image compiles ~10 Go plugins with its arm64 half under QEMU. The
+    # 360-minute default would kill the run inside the last and slowest image.
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      companions: ${{ steps.plan.outputs.companions }}
     steps:
       - name: Check out cli
         uses: actions/checkout@v5
@@ -71,20 +82,78 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      # Companion tags resolve through resources.ImageRegistry, which is
+      # ghcr.io/codefly-dev — authenticating anywhere else leaves every push
+      # unauthenticated and the whole run publishes nothing.
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Plan the companion set
+        id: plan
+        working-directory: core
+        run: echo "companions=$(go run ./internal/buildspecs)" >> "$GITHUB_OUTPUT"
 
       - name: Publish every companion at its pinned version
         # Publish multi-arch: every language service agent ships linux/arm64, so
         # a companion must too or it can't run a single language service on an
         # arm64 host. One manifest list serves both arches.
-        run: ${{ github.workspace }}/bin/codefly companion publish --all --platform linux/amd64,linux/arm64 --core-dir "${{ github.workspace }}/core"
+        #
+        # --force-docker: proto ships a flake.nix and the nix path cannot emit a
+        # multi-platform manifest, so a runner with nix installed would abort
+        # the run on proto after the earlier companions were already pushed.
+        # --pull: dependents resolve the codefly base by tag, so without this a
+        # cached base from an earlier run is baked in instead of the one this
+        # run just pushed.
+        run: >-
+          ${{ github.workspace }}/bin/codefly companion publish --all
+          --platform linux/amd64,linux/arm64
+          --force-docker
+          --pull
+          --core-dir "${{ github.workspace }}/core"
 
       - name: Verify every embedded tag is in the registry
         run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"
+
+  # Provenance is attested per image because actions/attest-build-provenance
+  # signs one subject at a time. Splitting it out of the publish job keeps the
+  # digests resolved from the registry, so a companion the publish run skipped
+  # as already-published is attested from what is actually there.
+  attest:
+    name: Attest published companion images
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.publish.outputs.companions) }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the published digest
+        id: digest
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/codefly-dev/${{ matrix.companion }}:${{ matrix.version }}"
+          echo "digest=$(docker buildx imagetools inspect "$ref" --format '{{ .Manifest.Digest }}')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/codefly-dev/${{ matrix.companion }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
 
   verify:
     name: Verify embedded companion tags
