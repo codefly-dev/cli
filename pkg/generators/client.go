@@ -304,7 +304,7 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
 			return fmt.Errorf("cannot parse contract descriptor set: %w", err)
 		}
-		image, err := markWellKnownTypesAsImports(&set)
+		image, err := markUpstreamModulesAsImports(&set, lang)
 		if err != nil {
 			return fmt.Errorf("cannot prepare contract descriptor set: %w", err)
 		}
@@ -348,53 +348,130 @@ func generateOpenAPILanguageEntry(ctx context.Context, lang languages.Language, 
 	return assembleOpenAPILibrary(ctx, lang, langDir, entry, goModule, npmPackage)
 }
 
-// A protobuf well-known type is identified by both its file name and its proto
-// package, never the path alone: a module that keeps its own .proto under a
-// google/protobuf/ directory (a vendored copy of the well-known types is the
-// common reason) still declares its own package, and marking such a file as an
-// import would silently drop the bindings this run exists to produce. Their
-// own bindings always come from the protobuf runtime itself: buf's managed mode
-// leaves the well-known types' go_package alone, so generated code imports them
-// from google.golang.org/protobuf/types/known/*.
-const (
-	wellKnownTypePrefix  = "google/protobuf/"
-	wellKnownTypePackage = "google.protobuf"
+// upstreamProtoModule is a shared proto module a persisted contract carries
+// among its imports and that already ships canonical bindings of its own.
+//
+// A module's files are identified by both their path prefix and their proto
+// package, never the path alone: a module that keeps its own .proto under one
+// of these directories (a vendored copy is the common reason) still declares
+// its own package, and marking such a file as an import would silently drop
+// the bindings this run exists to produce.
+type upstreamProtoModule struct {
+	pathPrefix   string
+	protoPackage string
+
+	// bufModule, when set, names the buf.build module publishing these files.
+	// The Go template's managed-mode go_package_prefix.except list names the
+	// same module, so stamping the identity onto the image keeps their
+	// go_package pointing at the canonical Go package instead of being
+	// rewritten to the generated library's own path.
+	bufModule *bufModuleName
+}
+
+// bufModuleName is buf.alpha.module.v1.ModuleName — the module identity buf
+// reads off an image file to resolve managed mode's except list.
+type bufModuleName struct {
+	remote     string
+	owner      string
+	repository string
+}
+
+// upstreamProtoModules are the shared proto modules buf must never vendor
+// into a generated library. Vendoring is only ever correct for the module's
+// own first-party protos.
+//
+// The well-known types hold for every language: each runtime ships them, and
+// buf's managed mode leaves their go_package alone, so generated code imports
+// them from google.golang.org/protobuf/types/known/*.
+//
+// googleapis and protovalidate are mapped for Go only, where the template's
+// managed-mode except list points them back upstream. The TypeScript and
+// Python templates run no managed mode and their bindings import a
+// dependency's local output unconditionally, so dropping these files there
+// would leave the module's own bindings importing nothing.
+var upstreamProtoModules = []upstreamProtoModule{
+	{pathPrefix: "google/protobuf/", protoPackage: "google.protobuf"},
+	{pathPrefix: "google/api/", protoPackage: "google.api", bufModule: googleapisModule},
+	{pathPrefix: "google/rpc/", protoPackage: "google.rpc", bufModule: googleapisModule},
+	{pathPrefix: "google/type/", protoPackage: "google.type", bufModule: googleapisModule},
+	{pathPrefix: "buf/validate/", protoPackage: "buf.validate", bufModule: protovalidateModule},
+}
+
+var (
+	googleapisModule    = &bufModuleName{remote: "buf.build", owner: "googleapis", repository: "googleapis"}
+	protovalidateModule = &bufModuleName{remote: "buf.build", owner: "bufbuild", repository: "protovalidate"}
 )
 
 // buf marks a file that an image carries only to resolve imports with
-// buf.alpha.image.v1.ImageFileExtension.is_import: an extension of
-// FileDescriptorProto at field 8042, carrying is_import at field 1.
+// buf.alpha.image.v1.ImageFileExtension.is_import, and records which buf
+// module it came from in module_info: an extension of FileDescriptorProto at
+// field 8042, carrying is_import at field 1 and module_info at field 2, whose
+// own name field 1 is a ModuleName of remote, owner and repository.
 const (
-	bufImageFileExtensionField = 8042
-	bufImageFileIsImportField  = 1
+	bufImageFileExtensionField   = 8042
+	bufImageFileIsImportField    = 1
+	bufImageFileModuleInfoField  = 2
+	bufModuleInfoNameField       = 1
+	bufModuleNameRemoteField     = 1
+	bufModuleNameOwnerField      = 2
+	bufModuleNameRepositoryField = 3
 )
 
-// markWellKnownTypesAsImports marks every google/protobuf/*.proto file in set
-// as a buf image import, and returns the re-serialized set.
+// markUpstreamModulesAsImports marks every file of an upstream proto module
+// in set as a buf image import — stamping its buf module identity when it has
+// one — and returns the re-serialized set.
 //
 // A persisted contract is a plain FileDescriptorSet — `generate contracts`
 // builds it with `buf build --as-file-descriptor-set`, which deliberately drops
 // buf's image extensions — so buf treats every file it carries as a generation
-// target and emits local bindings for the imports too. For Go that means one
-// gen/google/protobuf directory holding a Go package per well-known type
-// (descriptorpb, durationpb, ...), which the compiler rejects outright; the
-// files are dead on top of that, since the module's own bindings import the
-// well-known types from upstream. Only the well-known types are marked: the
-// other shared imports (google/api, buf.validate) do get their go_package
-// rewritten by managed mode, so the module's bindings reference them at the
-// generated library's own path and their local copies are load-bearing.
-func markWellKnownTypesAsImports(set *descriptorpb.FileDescriptorSet) ([]byte, error) {
-	isImport := protowire.AppendVarint(protowire.AppendTag(nil, bufImageFileIsImportField, protowire.VarintType), 1)
-	extension := protowire.AppendBytes(protowire.AppendTag(nil, bufImageFileExtensionField, protowire.BytesType), isImport)
+// target and emits local bindings for the imports too. That is wrong twice
+// over. For the well-known types it puts one Go package per type (descriptorpb,
+// durationpb, ...) in a single gen/google/protobuf directory, which the
+// compiler rejects outright. For googleapis and protovalidate it compiles, but
+// registers files the upstream Go modules also register: a consumer that links
+// both — anything using buf.build/go/protovalidate, say — panics in init on a
+// duplicate registration of buf/validate/validate.proto.
+func markUpstreamModulesAsImports(set *descriptorpb.FileDescriptorSet, lang languages.Language) ([]byte, error) {
 	for _, file := range set.GetFile() {
-		if !strings.HasPrefix(file.GetName(), wellKnownTypePrefix) || file.GetPackage() != wellKnownTypePackage {
+		module, ok := upstreamModuleFor(file, lang)
+		if !ok {
 			continue
 		}
 		message := file.ProtoReflect()
 		unknown := append(protoreflect.RawFields(nil), message.GetUnknown()...)
-		message.SetUnknown(append(unknown, extension...))
+		message.SetUnknown(append(unknown, bufImageFileExtension(module)...))
 	}
 	return googleproto.Marshal(set)
+}
+
+func upstreamModuleFor(file *descriptorpb.FileDescriptorProto, lang languages.Language) (upstreamProtoModule, bool) {
+	for _, module := range upstreamProtoModules {
+		if module.bufModule != nil && lang != languages.GO {
+			continue
+		}
+		if !strings.HasPrefix(file.GetName(), module.pathPrefix) {
+			continue
+		}
+		// A sub-package of the module's own is still the module's:
+		// protovalidate publishes buf/validate/priv under buf.validate.priv.
+		pkg := file.GetPackage()
+		if pkg == module.protoPackage || strings.HasPrefix(pkg, module.protoPackage+".") {
+			return module, true
+		}
+	}
+	return upstreamProtoModule{}, false
+}
+
+func bufImageFileExtension(module upstreamProtoModule) []byte {
+	extension := protowire.AppendVarint(protowire.AppendTag(nil, bufImageFileIsImportField, protowire.VarintType), 1)
+	if module.bufModule != nil {
+		name := protowire.AppendString(protowire.AppendTag(nil, bufModuleNameRemoteField, protowire.BytesType), module.bufModule.remote)
+		name = protowire.AppendString(protowire.AppendTag(name, bufModuleNameOwnerField, protowire.BytesType), module.bufModule.owner)
+		name = protowire.AppendString(protowire.AppendTag(name, bufModuleNameRepositoryField, protowire.BytesType), module.bufModule.repository)
+		info := protowire.AppendBytes(protowire.AppendTag(nil, bufModuleInfoNameField, protowire.BytesType), name)
+		extension = protowire.AppendBytes(protowire.AppendTag(extension, bufImageFileModuleInfoField, protowire.BytesType), info)
+	}
+	return protowire.AppendBytes(protowire.AppendTag(nil, bufImageFileExtensionField, protowire.BytesType), extension)
 }
 
 // targetFilesForPackage returns the names of the files in set whose proto

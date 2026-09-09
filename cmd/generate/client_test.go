@@ -164,17 +164,21 @@ func TestGenerateClientFromContractsDir(t *testing.T) {
 	assertFileContains(t, tsFacade, "export const")
 }
 
-// TestGenerateClientDoesNotVendorWellKnownTypes guards the descriptor-set
-// path against emitting local bindings for the google/protobuf well-known
-// types: a persisted contract is a plain FileDescriptorSet, so buf takes every
-// file in it — imports included — as a generation target unless told otherwise.
-// For Go that used to put one Go package per well-known type (descriptorpb,
-// durationpb, ...) in a single gen/google/protobuf directory, which does not
-// compile, on top of being dead code the module's own bindings never import.
-func TestGenerateClientDoesNotVendorWellKnownTypes(t *testing.T) {
+// TestGenerateClientDoesNotVendorUpstreamProtoModules guards the
+// descriptor-set path against emitting local bindings for shared proto
+// modules that already ship canonical Go packages: a persisted contract is a
+// plain FileDescriptorSet, so buf takes every file in it — imports included —
+// as a generation target unless told otherwise.
+//
+// For the well-known types that used to put one Go package per type
+// (descriptorpb, durationpb, ...) in a single gen/google/protobuf directory,
+// which does not compile. For googleapis and protovalidate it compiles, and
+// then panics at init in any consumer that also links the upstream module —
+// the same proto file registered twice in the global registry.
+func TestGenerateClientDoesNotVendorUpstreamProtoModules(t *testing.T) {
 	requireQualify(t)
 	ctx := context.Background()
-	contractsDir := writeWellKnownTypesContractsFixture(t)
+	contractsDir := writeUpstreamModulesContractsFixture(t)
 
 	workspace := &resources.Workspace{Name: "qualify-ws", Layout: resources.LayoutKindModules}
 	wsDir := filepath.Join(t.TempDir(), "ws")
@@ -195,21 +199,31 @@ func TestGenerateClientDoesNotVendorWellKnownTypes(t *testing.T) {
 	}
 
 	goDir := filepath.Join(clientOutput, "go")
-	if _, err := os.Stat(filepath.Join(goDir, "gen", "google", "protobuf")); !os.IsNotExist(err) {
-		t.Fatalf("gen/google/protobuf was generated (stat error: %v)", err)
+	for _, vendored := range [][]string{
+		{"google", "protobuf"},
+		{"google", "api"},
+		{"buf", "validate"},
+	} {
+		dir := filepath.Join(append([]string{goDir, "gen"}, vendored...)...)
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("gen/%s was generated (stat error: %v)", strings.Join(vendored, "/"), err)
+		}
 	}
-	assertFileContains(t,
-		filepath.Join(goDir, "gen", "accounts", "v1", "accounts.pb.go"),
-		"google.golang.org/protobuf/types/known/timestamppb")
+
+	bindings := filepath.Join(goDir, "gen", "accounts", "v1", "accounts.pb.go")
+	assertFileContains(t, bindings, "google.golang.org/protobuf/types/known/timestamppb")
+	assertFileContains(t, bindings, "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate")
+	assertFileContains(t, bindings, "google.golang.org/genproto/googleapis/api/annotations")
 	goVetLibrary(t, goDir)
 }
 
-// writeWellKnownTypesContractsFixture compiles a proto importing two
-// well-known types into a real descriptor set (the same companion buf run
-// `generate contracts` uses) and writes it as a module's committed API
-// contract catalog, without needing a service agent to scaffold one. Returns
-// the contracts/api directory `--from contracts:` takes.
-func writeWellKnownTypesContractsFixture(t *testing.T) string {
+// writeUpstreamModulesContractsFixture compiles a proto importing the
+// well-known types, googleapis annotations and protovalidate into a real
+// descriptor set (the same companion buf run `generate contracts` uses) and
+// writes it as a module's committed API contract catalog, without needing a
+// service agent to scaffold one. Returns the contracts/api directory
+// `--from contracts:` takes.
+func writeUpstreamModulesContractsFixture(t *testing.T) string {
 	t.Helper()
 	moduleDir := t.TempDir()
 	protoDir := filepath.Join(moduleDir, "proto", "accounts", "v1")
@@ -217,6 +231,9 @@ func writeWellKnownTypesContractsFixture(t *testing.T) string {
 		t.Fatal(err)
 	}
 	bufYAML := `version: v1
+deps:
+  - buf.build/googleapis/googleapis
+  - buf.build/bufbuild/protovalidate
 lint:
   use:
     - DEFAULT
@@ -228,16 +245,23 @@ lint:
 
 package accounts.v1;
 
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
 message Account {
-  string id = 1;
+  string id = 1 [(buf.validate.field).string.min_len = 1];
   google.protobuf.Timestamp created_at = 2;
 }
 
 service Accounts {
-  rpc Create(Account) returns (google.protobuf.Empty) {}
+  rpc Create(Account) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/accounts"
+      body: "*"
+    };
+  }
 }
 `
 	if err := os.WriteFile(filepath.Join(protoDir, "accounts.proto"), []byte(accounts), 0o644); err != nil {
