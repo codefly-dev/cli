@@ -1,8 +1,10 @@
 package companion
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,6 +175,14 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		}
 	}
 
+	// Push failures are collected rather than returned immediately. A first
+	// push of a new companion lands in a ghcr package that is private until
+	// someone flips it in the UI, so aborting the loop there would leave the
+	// rest of the fleet unpublished over a condition that has nothing to do
+	// with them. Build failures still abort: language companions COPY --from
+	// the base image, so a failed build genuinely invalidates what follows.
+	var pushFailures []string
+
 	for _, c := range targets {
 		// Skip companions that aren't built as images. A directory with an
 		// info.codefly.yaml but neither a Dockerfile nor a flake.nix (e.g.
@@ -206,11 +216,18 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		// A multi-platform build is pushed atomically by buildx; there is no
 		// single local image for `docker push` to publish afterward.
 		if opts.Push && !(method == "docker" && multiPlatform) {
-			if err := pushImage(c.Name, c.Tag()); err != nil {
-				return fmt.Errorf("push %s failed: %w", c.Name, err)
+			if err := pushImage(c.Tag()); err != nil {
+				fmt.Printf("    FAILED   %s\n", c.Tag())
+				pushFailures = append(pushFailures, fmt.Sprintf("%s: %v", c.Name, err))
+				continue
 			}
 			fmt.Printf("    pushed %s\n", c.Tag())
 		}
+	}
+
+	if len(pushFailures) > 0 {
+		return fmt.Errorf("%d companion push(es) failed:\n  %s",
+			len(pushFailures), strings.Join(pushFailures, "\n  "))
 	}
 	return nil
 }
@@ -438,15 +455,21 @@ var (
 // (the same check `verify` runs) so a push that only succeeded because the
 // operator's local daemon is logged in doesn't silently leave the package
 // private for everyone else. Used by --push and by the standalone PushCmd.
-func pushImage(name, tag string) error {
+func pushImage(tag string) error {
 	host := registryHost(tag)
 	fmt.Printf("    pushing %s to %s\n", tag, host)
 
-	out, runErr := exec.Command("docker", "push", tag).CombinedOutput()
-	os.Stdout.Write(out)
+	// Stream to the terminal while capturing a copy for isPushDenied. Buffering
+	// the whole push instead would hide layer progress for the minutes a large
+	// companion takes, which reads as a hang and can trip CI inactivity timeouts.
+	var captured bytes.Buffer
+	cmd := exec.Command("docker", "push", tag)
+	cmd.Stdout = io.MultiWriter(os.Stdout, &captured)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &captured)
+	runErr := cmd.Run()
 	if runErr != nil {
-		if isPushDenied(string(out)) {
-			return fmt.Errorf("docker push %s failed: not authenticated for %s\nfix: docker login %s -u <user> -p $(gh auth token)", tag, host, host)
+		if isPushDenied(captured.String()) {
+			return fmt.Errorf("docker push %s failed: not authenticated for %s\nfix: %s", tag, host, registryLoginHint(tag))
 		}
 		return fmt.Errorf("docker push %s failed: %w", tag, runErr)
 	}
@@ -458,7 +481,7 @@ func pushImage(name, tag string) error {
 	if !ok {
 		return fmt.Errorf(`push %s succeeded but is not publicly pullable: %s
 fix: %s`,
-			tag, strings.TrimSpace(verifyOut), registryPrivacyHint(name, tag))
+			tag, strings.TrimSpace(verifyOut), registryPrivacyHint(tag))
 	}
 	return nil
 }
@@ -493,28 +516,48 @@ func registryHost(tag string) string {
 }
 
 // registryPrivacyHint returns registry-appropriate instructions for making
-// a pushed image publicly accessible. Companion.Tag() only ever produces
-// ghcr.io tags now, but pushImage/manifestExists also accept a bare tag
-// directly, so the hint must match the tag's actual registry rather than
-// assuming ghcr.io.
-func registryPrivacyHint(name, tag string) string {
+// a pushed image publicly accessible. Everything it needs is derived from the
+// reference itself — taking the org or namespace from a separately passed-in
+// name emits a codefly-dev URL for a tag pushed to any other org.
+func registryPrivacyHint(tag string) string {
+	repo := repoPath(tag)
 	switch registryHost(tag) {
 	case "ghcr.io":
-		return fmt.Sprintf("make it public at https://github.com/orgs/codefly-dev/packages/container/%s/settings", name)
+		org, pkg, found := strings.Cut(strings.TrimPrefix(repo, "ghcr.io/"), "/")
+		if !found {
+			break
+		}
+		return fmt.Sprintf("make it public at https://github.com/orgs/%s/packages/container/%s/settings", org, pkg)
 	case "docker.io":
-		return fmt.Sprintf("make it public at https://hub.docker.com/repository/docker/%s/general", dockerHubRepo(tag))
-	default:
-		return fmt.Sprintf("check %s's visibility settings in its registry", tag)
+		return fmt.Sprintf("make it public at https://hub.docker.com/repository/docker/%s/general", repo)
 	}
+	return fmt.Sprintf("check %s's visibility settings in its registry", tag)
 }
 
-// dockerHubRepo strips the tag/version suffix from a docker.io reference,
-// leaving the "<namespace>/<name>" repository path Docker Hub URLs use.
-func dockerHubRepo(tag string) string {
-	if i := strings.LastIndex(tag, ":"); i >= 0 {
-		return tag[:i]
+// repoPath strips the ":tag" or "@digest" suffix from an image reference,
+// leaving the repository path registry URLs are keyed on. A colon before the
+// last "/" is a registry port rather than a tag separator, and a digest's own
+// "sha256:" colon must not be read as one either.
+func repoPath(ref string) string {
+	if i := strings.IndexByte(ref, '@'); i >= 0 {
+		ref = ref[:i]
 	}
-	return tag
+	if i := strings.LastIndexByte(ref, ':'); i > strings.LastIndexByte(ref, '/') {
+		ref = ref[:i]
+	}
+	return ref
+}
+
+// registryLoginHint returns the login command for the registry a tag targets.
+// The credential is registry-specific: ghcr.io accepts a GitHub token, so the
+// exact command can be named. Anywhere else a GitHub token is meaningless, and
+// printing one sends the operator into a login that cannot succeed.
+func registryLoginHint(tag string) string {
+	host := registryHost(tag)
+	if host == "ghcr.io" {
+		return fmt.Sprintf("docker login %s -u <user> -p $(gh auth token)", host)
+	}
+	return fmt.Sprintf("docker login %s", host)
 }
 
 // isPushDenied reports whether `docker push` output indicates the daemon

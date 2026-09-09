@@ -76,11 +76,20 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no image-producing companions to verify under %s/companions/", coreDir)
 	}
 
+	// Both missing tags and hard errors are collected so one run reports the
+	// whole picture. A companion whose ghcr package does not exist at all —
+	// the state a first migration to a new registry leaves every companion in
+	// — comes back as "denied" rather than "manifest unknown", which is a hard
+	// error, so returning on the first one would report a single companion per
+	// run and hide the rest.
 	var missing []string
+	var failures []string
 	for _, c := range targets {
 		ok, err := manifestExists(c.Name, c.Tag())
 		if err != nil {
-			return err
+			fmt.Printf("    ERROR    %s\n", c.Tag())
+			failures = append(failures, err.Error())
+			continue
 		}
 		if ok {
 			fmt.Printf("    ok       %s\n", c.Tag())
@@ -90,6 +99,10 @@ func runVerify(cmd *cobra.Command, args []string) error {
 		missing = append(missing, c.Tag())
 	}
 
+	if len(failures) > 0 {
+		return fmt.Errorf("%d companion tag(s) could not be verified:\n  %s",
+			len(failures), strings.Join(failures, "\n  "))
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%d companion tag(s) not published to the registry: %s\nrun `codefly companion publish --all` to publish them",
 			len(missing), strings.Join(missing, ", "))
@@ -132,7 +145,7 @@ func manifestExists(name, tag string) (bool, error) {
 possible causes:
   - the tag was never pushed: run "codefly companion publish %s"
   - the package is private: %s`,
-		tag, strings.TrimSpace(out), name, registryPrivacyHint(name, tag))
+		tag, strings.TrimSpace(out), name, registryPrivacyHint(tag))
 }
 
 // isManifestNotFound classifies `docker manifest inspect` failure output as
@@ -160,7 +173,12 @@ func anonymousManifestInspect(tag string) (ok bool, output string, err error) {
 		return false, "", fmt.Errorf("create anonymous docker config dir: %w", err)
 	}
 	defer os.RemoveAll(configDir)
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte("{}"), 0o600); err != nil {
+	// Credential-free, but experimental stays enabled: older Docker CLIs gate
+	// `docker manifest` behind that flag, and a bare "{}" would strip it from
+	// under an operator who has it set, turning a working check into an error
+	// that is neither "manifest unknown" nor a real privacy problem.
+	const anonymousConfig = `{"experimental":"enabled"}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(anonymousConfig), 0o600); err != nil {
 		return false, "", fmt.Errorf("write anonymous docker config: %w", err)
 	}
 

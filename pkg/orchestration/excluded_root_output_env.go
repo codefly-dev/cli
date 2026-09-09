@@ -72,8 +72,9 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 		WorkspacePath:       identity.WorkspacePath,
 		RelativeToWorkspace: identity.RelativeToWorkspace,
 	}
-	overrides := make(map[string]string, len(flow.overrides[flow.originService.Name])+1)
-	for key, value := range flow.overrides[flow.originService.Name] {
+	originOverrides := flow.overridesFor(flow.originService)
+	overrides := make(map[string]string, len(originOverrides)+1)
+	for key, value := range originOverrides {
 		overrides[key] = value
 	}
 	if flow.world.Env != nil && flow.world.Env.NamingScope != "" {

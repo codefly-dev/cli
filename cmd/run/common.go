@@ -40,6 +40,12 @@ var environmentName string
 // Per-service runtime overrides: each entry is "service:KEY=VAL".
 var setOverrides []string
 
+// Runtime overrides the run path derives itself, keyed by module-qualified
+// unique so they target exactly one service: <module>/<service> -> KEY -> VAL.
+// Assigned (never appended to) on every run so a repeated in-process
+// invocation cannot carry a previous run's value forward.
+var derivedOverrides map[string]map[string]string
+
 // Scope for the runtime: affect ports to avoid conflict with run
 // Useful for testing/CI
 var namingScope string
