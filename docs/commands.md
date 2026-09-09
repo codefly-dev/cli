@@ -138,8 +138,10 @@ codefly run service api --cli-server --open       # Run headless with the local 
 | `--output-env-service` | Export a specific running service (`module/service`) instead of the root |
 | `--load-only` | Stop after Load phase |
 | `--init-only` | Stop after Init phase |
-| `--cli-server` | Start the CLI gRPC/Connect server and the embedded dashboard (implies headless output) |
+| `--cli-server` | Start the CLI gRPC/Connect server and the embedded dashboard (implies headless output). The address is derived from the workspace name and `--naming-scope`; the run claims it before building the flow and fails if another process holds it |
 | `--open` | Open the dashboard in the browser (requires `--cli-server`) |
+| `--temporary-ports` | Run as a disposable invocation: ephemeral ports plus a generated naming scope isolating the run's agents, containers and runtime state. The Codefly SDK sets it for test-owned dependency stacks; see [disposable invocations](agent-ci-port-isolation.md#disposable-invocations) |
+| `--naming-scope` | Fold a caller-chosen label into port derivation and resource names. Wins over the scope `--temporary-ports` would generate; passing it empty asks for no scope at all |
 
 Run profiles define intentional local runtime shapes in
 `workspace.codefly.yaml`:

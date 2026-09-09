@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"sync"
 
 	connectcors "connectrpc.com/cors"
 	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
@@ -16,6 +17,10 @@ import (
 type HttpServer struct {
 	config *Configuration
 	impl   *Server
+
+	// listenerMu guards listener; see Server.listenerMu.
+	listenerMu sync.Mutex
+	listener   net.Listener
 }
 
 func NewHttpServer(c *Configuration, impl *Server) (*HttpServer, error) {
@@ -29,6 +34,34 @@ func (s *HttpServer) Address() string {
 	return s.config.EndpointRest
 }
 
+// Listen claims the REST address, returning the listener it holds. See
+// Server.Listen for why binding is a separate, callable step.
+func (s *HttpServer) Listen() (net.Listener, error) {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	if s.listener != nil {
+		return s.listener, nil
+	}
+	lis, err := net.Listen("tcp", s.config.EndpointRest)
+	if err != nil {
+		return nil, err
+	}
+	s.listener = lis
+	return lis, nil
+}
+
+// Close releases the claimed address. Safe to call at any point, including
+// while Run is serving on it.
+func (s *HttpServer) Close() {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	if s.listener == nil {
+		return
+	}
+	_ = s.listener.Close()
+	s.listener = nil
+}
+
 func (s *HttpServer) Run(ctx context.Context) error {
 	golor.Template(s.config).Println(`#(blue,bold)[Dashboard:] #(italic,white)[http://{{ .EndpointRest }}]`)
 
@@ -38,10 +71,11 @@ func (s *HttpServer) Run(ctx context.Context) error {
 	}
 
 	srv := &http.Server{Addr: s.config.EndpointRest, Handler: handler}
-	lis, err := net.Listen("tcp", s.config.EndpointRest)
+	lis, err := s.Listen()
 	if err != nil {
 		return err
 	}
+	defer s.Close()
 
 	serveErr := make(chan error, 1)
 	go func() {

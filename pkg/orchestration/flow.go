@@ -1792,6 +1792,27 @@ func (flow *Flow) WithTemporaryPorts(enabled bool) {
 	}
 }
 
+// WithIsolatedInvocation marks this flow as a disposable invocation: it takes a
+// fresh identity and runs under it as its naming scope, which is what agents
+// fold into the container names, runtime state directories and log roots they
+// derive (core's services.Base.UniqueWithWorkspace). Without it two disposable
+// flows in one workspace shared every one of those names, so stopping either
+// destroyed the other's resources.
+//
+// Only a caller that knows its resources are throwaway may ask for this: it is
+// deliberately not implied by temporary ports, which `codefly ci run` uses to
+// isolate a port space inside an already-isolated CODEFLY_HOME.
+//
+// Returns the identity it generated, or empty when the caller already named a
+// scope of its own — that label wins, and nothing is generated over it.
+func (flow *Flow) WithIsolatedInvocation() string {
+	if flow.world == nil || flow.world.Env == nil || flow.world.Env.NamingScope != "" {
+		return ""
+	}
+	flow.world.Env.NamingScope = NewInvocationID()
+	return flow.world.Env.NamingScope
+}
+
 func (flow *Flow) TemporaryPortsEnabled() bool {
 	return flow != nil && flow.temporaryPorts
 }

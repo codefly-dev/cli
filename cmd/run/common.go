@@ -59,7 +59,7 @@ var namingScope string
 // solution` describe the same mechanism identically and cannot drift.
 const (
 	namingScopeUsage    = "Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)"
-	temporaryPortsUsage = "Allocate OS-probed ephemeral ports for this flow — a disjoint, non-deterministic port set (advanced; not previewable via `show network`)"
+	temporaryPortsUsage = "Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via `show network`). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all"
 )
 
 // namingScopeExplicit records whether --naming-scope was passed at all, so an
@@ -67,9 +67,10 @@ const (
 // flag keeps it.
 var namingScopeExplicit bool
 
-// temporaryPorts asks the runtime allocator for OS-probed ephemeral ports.
-// The Codefly SDK enables this for test-owned dependency stacks so independent
-// package test processes cannot collide through the deterministic port hash.
+// temporaryPorts marks this run as a disposable invocation: OS-probed
+// ephemeral ports, and a generated naming scope for every other resource the
+// run owns. The Codefly SDK enables this for test-owned dependency stacks so
+// independent package test processes cannot collide with each other.
 var temporaryPorts bool
 
 // Runtime context

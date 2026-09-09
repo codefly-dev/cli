@@ -70,12 +70,47 @@ func (server *CodeflyServer) DashboardURL() string {
 	return "http://" + server.rest.Address()
 }
 
+// Listen claims this server's control addresses. Callers that own resources
+// beyond the server itself — a run flow with agents and containers — must call
+// it before they provision any of them: the control address is derived, not
+// negotiated, so a second run of the same workspace lands on the same one, and
+// binding late meant the loser had already started agents by the time it
+// found out. Start binds implicitly for callers that own nothing else.
+func (server *CodeflyServer) Listen() error {
+	// Reported flat rather than wrapped: the CLI shows a failure's root cause,
+	// and the root cause here ("address already in use") is the one part of
+	// this that nobody can act on. It says what was observed — the address is
+	// taken — and not by whom: a bind can also fail against an unrelated
+	// process that happens to hash onto this port, or on a permission error,
+	// and naming a codefly that may not exist sends the reader hunting for it.
+	if _, err := server.server.Listen(); err != nil {
+		return fmt.Errorf(
+			"cannot own the codefly control server at %s (%v): this run needs that address to itself — "+
+				"give it a disjoint one with --naming-scope or CODEFLY_CLI_SERVER_PORT, or stop whatever holds it",
+			server.server.Address(), err)
+	}
+	if _, err := server.rest.Listen(); err != nil {
+		server.server.Close()
+		return fmt.Errorf("cannot own the codefly dashboard at %s (%v)", server.rest.Address(), err)
+	}
+	return nil
+}
+
+// Close releases addresses claimed by Listen but never served.
+func (server *CodeflyServer) Close() {
+	server.server.Close()
+	server.rest.Close()
+}
+
 func loopbackEndpoint(port uint16) string {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
 }
 
 func (server *CodeflyServer) Start(ctx context.Context) error {
 	golor.Println(`#(blue)[Starting server...]`)
+	// Releases an address claimed by Listen that a Run returned without
+	// serving, so no early exit can strand the claim in a live process.
+	defer server.Close()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type result struct {
