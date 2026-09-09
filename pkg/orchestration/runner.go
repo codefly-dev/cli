@@ -59,6 +59,11 @@ type Runner struct {
 	// isStarted is written by Stop/Start handlers and read by Follow.
 	isStarted atomic.Bool
 
+	// everStarted latches on the first successful Start and is never cleared.
+	// isStarted cannot answer "has this service ever run", because Stop clears
+	// it before a hot reload re-enters Init.
+	everStarted atomic.Bool
+
 	restartMu       sync.Mutex
 	pendingRestart  ActionType
 	restartInFlight bool
@@ -344,9 +349,17 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return runner.outputPropertyForInit.Process(ctx)
 	}
 
-	runner.networkMappings = resp.NetworkMappings
+	// The agent, not the proposal, decides the addresses this service serves.
+	// The validated accepted set is the only one published: runner, shared
+	// state and the exported environment must never hold different views of
+	// where this service can be reached.
+	accepted, err := acceptNetworkMappings(ctx, runner.instance.Identity, networkMappings, resp.NetworkMappings)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot accept network mappings from %s", runner.instance.Unique())
+	}
+	runner.networkMappings = accepted
 
-	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
+	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, accepted)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
@@ -379,7 +392,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 	w.Debug("init", wool.Field("configuration info", resources.MakeManyConfigurationSummary(resp.RuntimeConfigurations)))
 
-	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: networkMappings, configurations: resp.RuntimeConfigurations})
+	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: accepted, configurations: resp.RuntimeConfigurations})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
@@ -678,6 +691,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 func (runner *Runner) markStarted() {
 	runner.isStarted.Store(true)
+	runner.everStarted.Store(true)
 	runner.restartMu.Lock()
 	runner.restartInFlight = false
 	runner.restartMu.Unlock()
@@ -822,7 +836,12 @@ func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint
 }
 
 func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
-	if runner.isStarted.Load() {
+	// Only the very first Init can see a ghost: once this runner has started
+	// the service, a bound port is its own — either still running (hot reload)
+	// or still releasing after the Stop that precedes a restart. Testing
+	// isStarted alone missed the restart case, because Stop clears it before
+	// the re-Init.
+	if runner.isStarted.Load() || runner.everStarted.Load() {
 		return nil
 	}
 	if held := runner.boundNativePorts(ctx); len(held) > 0 {
