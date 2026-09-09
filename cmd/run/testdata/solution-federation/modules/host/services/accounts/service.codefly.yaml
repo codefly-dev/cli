@@ -1,0 +1,12 @@
+kind: service
+name: accounts
+version: 0.0.0
+module: host
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.1
+    publisher: codefly.dev
+workspace-configuration-dependencies:
+    - federation
+    - identity

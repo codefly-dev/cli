@@ -2,10 +2,14 @@ package run
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -218,4 +222,119 @@ func init() {
 	// usage text as ServiceCmd — one mechanism, one description.
 	SolutionCmd.Flags().StringVar(&namingScope, "naming-scope", "", namingScopeUsage)
 	SolutionCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, temporaryPortsUsage)
+}
+
+// --- Module registration secret provisioning ---
+//
+// The gateway federates a consumed module's /v1/<prefix>/* only against a token
+// accounts signed and bound to that prefix, and accounts issues one only to a
+// caller presenting the secret whose digest the composition declared. Both
+// halves are provisioned here, per run: the plaintext rides a process override
+// to the consuming backend, and the digest is declared into the federation
+// workspace configuration group, so it reaches the registrar on the carrier a
+// service reads by contract. Nothing is written to disk, so the raw secret
+// exists only in the backend's process environment and never outlives the run.
+
+const (
+	// federationConfigurationGroup is the workspace-configuration group a host
+	// declares to receive the federation policy. Naming the group rather than a
+	// service keeps this free of any particular host's service names — whichever
+	// service depends on it is the registrar.
+	federationConfigurationGroup = "federation"
+	// moduleRegistrationSecretsKey is the key inside that group carrying the
+	// `prefix:sha256hex` digests this run declares.
+	// #nosec G101 -- a configuration key name, not a credential
+	moduleRegistrationSecretsKey = "MODULE_REGISTRATION_SECRETS"
+	// moduleRegistrationSecretsEnvironmentVariable carries the plaintext
+	// `prefix:secret` twin to the consuming backend. It is a wire contract with
+	// the solution runtimes, which read it verbatim; its natural home is core's
+	// solution/manifest, next to APIConsumesEnvironmentVariable, once a core
+	// release carries it.
+	// #nosec G101 -- an environment variable name, not a credential
+	moduleRegistrationSecretsEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRETS"
+	// moduleRegistrationSecretBytes is the entropy of one generated secret. It is
+	// hex-encoded, so a secret can never contain the "," or ":" that separate
+	// entries on either side of the exchange.
+	moduleRegistrationSecretBytes = 32
+)
+
+// moduleRegistrationSecrets is one run's provisioning: the plaintext entries the
+// consuming backend presents, and the digest entries the registrar compares them
+// against.
+type moduleRegistrationSecrets struct {
+	// prefixes are the facade prefixes provisioned, in the order both encodings
+	// list them.
+	prefixes []string
+	secrets  string
+	digests  string
+}
+
+// provisionModuleRegistrationSecrets mints a fresh secret for each distinct
+// facade prefix among the consumed APIs. An entry with no facade entry-point is
+// skipped: the runtime refuses to guess a prefix for it, so it will never
+// register and a secret for it would authorize nothing.
+func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*moduleRegistrationSecrets, error) {
+	prefixes := make([]string, 0, len(consumed))
+	for i := range consumed {
+		prefix := consumed[i].As
+		// Distinct prefixes only: two entries sharing a facade are one federated
+		// route, and a repeated prefix is a declaration error the registrar
+		// rejects outright.
+		if prefix == "" || slices.Contains(prefixes, prefix) {
+			continue
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+
+	secrets := make([]string, 0, len(prefixes))
+	digests := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		raw := make([]byte, moduleRegistrationSecretBytes)
+		if _, err := rand.Read(raw); err != nil {
+			return nil, fmt.Errorf("cannot generate a registration secret for %q: %w", prefix, err)
+		}
+		secret := hex.EncodeToString(raw)
+		digest := sha256.Sum256([]byte(secret))
+		secrets = append(secrets, prefix+":"+secret)
+		digests = append(digests, prefix+":"+hex.EncodeToString(digest[:]))
+	}
+	return &moduleRegistrationSecrets{
+		prefixes: prefixes,
+		secrets:  strings.Join(secrets, ","),
+		digests:  strings.Join(digests, ","),
+	}, nil
+}
+
+// federationRegistrars returns the module-qualified uniques of the services
+// declaring a dependency on the federation configuration group — the services
+// that decide whether a module may claim a prefix. The declared digests reach
+// them through that group, so this answers only whether provisioning a run
+// credential can authorize anything at all, and names them for the run log.
+//
+// Modules and services that fail to load are skipped rather than failing the
+// run: this walks the whole workspace, including composed modules that may not
+// resolve locally, and a module the flow cannot load is not one it can run
+// either. A registrar that never appears simply leaves federation unconfigured,
+// which the caller reports.
+func federationRegistrars(ctx context.Context, workspace *resources.Workspace) []string {
+	var registrars []string
+	for _, ref := range workspace.Modules {
+		mod, err := workspace.LoadModuleFromReference(ctx, ref)
+		if err != nil {
+			continue
+		}
+		for _, svcRef := range mod.ServiceReferences {
+			svc, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: svcRef.Name, Module: mod.Name})
+			if err != nil {
+				continue
+			}
+			if slices.Contains(svc.WorkspaceConfigurationDependencies, federationConfigurationGroup) {
+				registrars = append(registrars, resources.ServiceUnique(mod.Name, svc.Name))
+			}
+		}
+	}
+	return registrars
 }

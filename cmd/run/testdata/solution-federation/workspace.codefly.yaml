@@ -1,0 +1,6 @@
+name: wiki
+layout: modules
+modules:
+    - name: wiki
+      path: .
+    - name: host

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -421,7 +423,76 @@ func (world *World) workspaceConfigurationsFor(ctx context.Context, service *res
 		}
 		out = append(out, conf)
 	}
-	return out, nil
+	return world.applyWorkspaceConfigurationValues(out, dependencies), nil
+}
+
+// applyWorkspaceConfigurationValues layers the run's derived values onto the
+// resolved configurations, for the groups this service actually declares. A
+// derived value therefore arrives on the same CODEFLY__WORKSPACE_CONFIGURATION
+// carrier a declared one does, which is the contract a service reads — not a
+// raw process variable it would only see through an incidental os.Getenv
+// fallback.
+//
+// A derived value replaces a declared one for the same key: these are values
+// the run mints for this run (a per-run credential digest), so a stale
+// declaration must not win and leave the run's two halves unable to match.
+func (world *World) applyWorkspaceConfigurationValues(
+	resolved []*basev0.Configuration, dependencies []string,
+) []*basev0.Configuration {
+	if len(world.workspaceConfigurationValues) == 0 {
+		return resolved
+	}
+	for _, group := range dependencies {
+		values := world.workspaceConfigurationValues[group]
+		if len(values) == 0 {
+			continue
+		}
+		resolved = upsertWorkspaceConfigurationValues(resolved, group, values)
+	}
+	return resolved
+}
+
+// upsertWorkspaceConfigurationValues sets values on the named group, adding the
+// group (and the workspace-origin configuration carrying it) when the
+// composition declared none.
+func upsertWorkspaceConfigurationValues(
+	resolved []*basev0.Configuration, group string, values map[string]string,
+) []*basev0.Configuration {
+	for _, conf := range resolved {
+		if conf.Origin != resources.ConfigurationWorkspace {
+			continue
+		}
+		for _, info := range conf.Infos {
+			if info.Name != group {
+				continue
+			}
+			setConfigurationValues(info, values)
+			return resolved
+		}
+	}
+	info := &basev0.ConfigurationInformation{Name: group}
+	setConfigurationValues(info, values)
+	return append(resolved, &basev0.Configuration{
+		Origin: resources.ConfigurationWorkspace,
+		Infos:  []*basev0.ConfigurationInformation{info},
+	})
+}
+
+func setConfigurationValues(info *basev0.ConfigurationInformation, values map[string]string) {
+	for _, key := range slices.Sorted(maps.Keys(values)) {
+		replaced := false
+		for _, existing := range info.ConfigurationValues {
+			if existing.Key == key {
+				existing.Value = values[key]
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			info.ConfigurationValues = append(info.ConfigurationValues,
+				&basev0.ConfigurationValue{Key: key, Value: values[key]})
+		}
+	}
 }
 
 // workspaceConfigurationSeen reports whether every Info name in a resolved
