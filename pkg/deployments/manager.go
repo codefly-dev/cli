@@ -38,9 +38,17 @@ type RenderedTreeEvidence struct {
 	Service   string
 	Digest    string
 	Manifests string
-	// Stage is the furthest completion stage this tree established, never the
-	// stage its caller asked for.
-	Stage       CompletionStage
+	// Stage is the furthest completion stage this tree verified. It never
+	// reflects the stage the caller asked for: a stage beyond rendered is set
+	// only after the apply or the observation that established it returned
+	// successfully.
+	Stage CompletionStage
+	// Mutated records that this tree changed the target, even when it did not
+	// reach StageApplied. A bootstrap barrier that fails has applied the
+	// preparation resources and deliberately withheld the rollout, so the
+	// namespace holds a partial revision an operator has to reconcile; without
+	// this, StageRendered alone would read as "no cluster was contacted".
+	Mutated     bool
 	RenderedAt  time.Time
 	AppliedAt   time.Time
 	ObservedAt  time.Time
@@ -146,6 +154,9 @@ func NewLocalApplyManager(
 			strings.Join(CompletionStageNames()[1:], ", "),
 		)
 	}
+	if completion.Timeout <= 0 {
+		completion.Timeout = DefaultCompletionTimeout
+	}
 	target, err := VerifyLocalK3dTarget(ctx, env)
 	if err != nil {
 		return nil, err
@@ -164,7 +175,61 @@ type LocalApplyManager struct {
 	Env        *resources.Environment
 	target     VerifiedKubernetesTarget
 	completion CompletionCondition
+	budget     observationBudget
 	evidence   evidenceRecorder
+}
+
+// observationBudget is the completion timeout spent across every tree and every
+// stage this manager observes. One manager serves a whole module deploy, so a
+// per-call budget would let a caller's stated timeout be spent once per service
+// per stage instead of once.
+type observationBudget struct {
+	mu    sync.Mutex
+	spent time.Duration
+}
+
+func (l *LocalApplyManager) claimObservation() (time.Duration, error) {
+	l.budget.mu.Lock()
+	defer l.budget.mu.Unlock()
+	remaining := l.completion.Timeout - l.budget.spent
+	if remaining <= 0 {
+		return 0, fmt.Errorf("observation budget of %s is exhausted", l.completion.Timeout)
+	}
+	return remaining, nil
+}
+
+func (l *LocalApplyManager) spendObservation(elapsed time.Duration) {
+	l.budget.mu.Lock()
+	defer l.budget.mu.Unlock()
+	l.budget.spent += elapsed
+}
+
+// observe runs one observation against the deployment-wide budget and records
+// what it read, whether or not the stage was established.
+func (l *LocalApplyManager) observe(
+	ctx context.Context,
+	observer completionObserver,
+	evidence *RenderedTreeEvidence,
+	targets []ownedResource,
+	stage CompletionStage,
+) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	budget, err := l.claimObservation()
+	if err != nil {
+		evidence.Diagnostics = append(evidence.Diagnostics, err.Error())
+		return err
+	}
+	start := time.Now()
+	observed, observeErr := observer.await(ctx, targets, stage, budget)
+	l.spendObservation(time.Since(start))
+	evidence.ObservedAt = time.Now().UTC()
+	evidence.Resources = append(evidence.Resources, observed...)
+	if observeErr != nil {
+		evidence.Diagnostics = append(evidence.Diagnostics, observeErr.Error())
+	}
+	return observeErr
 }
 
 func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error {
@@ -198,11 +263,20 @@ func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Servi
 var _ Manager = &LocalApplyManager{}
 var _ EvidenceProvider = &LocalApplyManager{}
 
+// partialRevision is what an operator has to act on when a bootstrap barrier
+// fails: the preparation resources are live on the target and the workloads that
+// go with them are not.
+const partialRevision = "the preparation resources were applied and the workload rollout was withheld; " +
+	"the target holds a partial revision"
+
 // applyTree takes one rendered tree as far as the caller's completion condition
-// requires, recording what it actually established at every exit. Preparation
-// resources — Jobs included — are applied and, when the caller requires
-// bootstrapping, awaited before any workload rollout is applied, so a consumer
-// never starts against schema preparation that has not finished.
+// requires, recording what it actually established at every exit.
+//
+// A caller that requires bootstrapping gets a barrier: the schema Jobs are
+// applied and awaited before any workload rollout is applied, so a consumer
+// never starts against preparation that has not finished. A caller that requires
+// only StageApplied gets its documents applied exactly as rendered — the barrier
+// reorders resources, and reordering is a behavior change nobody asked for.
 func (l *LocalApplyManager) applyTree(ctx context.Context, module, service, tree, digest, dir string) error {
 	manifests, documents, err := renderKustomize(ctx, tree, digest, dir)
 	if err != nil {
@@ -218,45 +292,52 @@ func (l *LocalApplyManager) applyTree(ctx context.Context, module, service, tree
 	}
 	defer func() { l.evidence.record(&evidence) }()
 
-	owned, err := ownedResources(manifests, l.Env)
-	if err != nil {
-		return err
-	}
-	preparation, rollout, err := partitionDocuments(documents)
+	barrier := l.completion.Stage.AtLeast(StageBootstrapped)
+	plan, err := planApply(documents, l.target.Namespace, barrier)
 	if err != nil {
 		return err
 	}
 	observer := completionObserver{env: l.Env, target: &l.target}
 
-	if err := KubernetesApply(ctx, l.Env, &l.target, preparation...); err != nil {
-		return err
-	}
-	if l.completion.Stage.AtLeast(StageBootstrapped) {
-		observed, observeErr := observer.await(ctx, owned, StageBootstrapped, l.completion.Timeout)
-		evidence.ObservedAt = time.Now().UTC()
-		evidence.Resources = observed
-		if observeErr != nil {
-			evidence.Diagnostics = append(evidence.Diagnostics, observeErr.Error())
-			return observeErr
+	// Mutated is set the moment an apply is attempted with something to apply,
+	// not once it succeeds: KubernetesApply sends resources one at a time, so a
+	// failure partway through has already changed the target. Over-reporting
+	// prompts a check that finds nothing; under-reporting tells an operator to
+	// skip a namespace that needs reconciling.
+	if len(plan.Preparation) > 0 {
+		evidence.Mutated = true
+		if err := KubernetesApply(ctx, l.Env, &l.target, plan.Preparation...); err != nil {
+			return err
 		}
 	}
-	if err := KubernetesApply(ctx, l.Env, &l.target, rollout...); err != nil {
-		return err
+
+	bootstrapped := false
+	if barrier {
+		if err := l.observe(ctx, observer, &evidence, plan.BootstrapJobs, StageBootstrapped); err != nil {
+			evidence.Diagnostics = append(evidence.Diagnostics, partialRevision)
+			return err
+		}
+		bootstrapped = true
+	}
+	if len(plan.Rollout) > 0 {
+		evidence.Mutated = true
+		if err := KubernetesApply(ctx, l.Env, &l.target, plan.Rollout...); err != nil {
+			return err
+		}
 	}
 	evidence.AppliedAt = time.Now().UTC()
 	evidence.Stage = StageApplied
-	if l.completion.Stage.AtLeast(StageBootstrapped) {
+	if bootstrapped {
 		evidence.Stage = StageBootstrapped
 	}
 	if !l.completion.Stage.AtLeast(StageHealthy) {
 		return nil
 	}
-	observed, observeErr := observer.await(ctx, owned, StageHealthy, l.completion.Timeout)
-	evidence.ObservedAt = time.Now().UTC()
-	evidence.Resources = observed
-	if observeErr != nil {
-		evidence.Diagnostics = append(evidence.Diagnostics, observeErr.Error())
-		return observeErr
+	// The bootstrap Jobs are deliberately absent here: their stage is already
+	// established, and re-reading a completed Job that its TTL has since removed
+	// would fail a deployment that succeeded.
+	if err := l.observe(ctx, observer, &evidence, plan.RolloutTargets, StageHealthy); err != nil {
+		return err
 	}
 	evidence.Stage = StageHealthy
 	return nil

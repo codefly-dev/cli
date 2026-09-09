@@ -21,6 +21,16 @@ func (p *planeImpl) Deploy(ctx context.Context, req DeployRequest) (DeployResult
 }
 
 func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployResult, error) {
+	// A dry run contacts no cluster, so it can only ever establish rendered.
+	// Accepting a stronger Completion here would hand the caller a green result
+	// for a stage nothing verified.
+	if req.DryRun && req.Completion != "" && req.Completion != deployments.StageRendered {
+		return DeployResult{}, fmt.Errorf(
+			"a dry run cannot establish %s; it contacts no cluster and completes at %s",
+			req.Completion,
+			deployments.StageRendered,
+		)
+	}
 	if req.Module != "" && req.Service == "" {
 		if !req.DryRun {
 			return DeployResult{}, fmt.Errorf("module-wide direct apply is not supported via the control plane; use a GitOps render")
@@ -132,6 +142,7 @@ func deployResult(succeeded bool, provider deployments.EvidenceProvider) (Deploy
 			Digest:      tree.Digest,
 			Manifests:   tree.Manifests,
 			Stage:       tree.Stage,
+			Mutated:     tree.Mutated,
 			RenderedAt:  tree.RenderedAt,
 			AppliedAt:   tree.AppliedAt,
 			ObservedAt:  tree.ObservedAt,

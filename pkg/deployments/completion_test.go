@@ -10,8 +10,8 @@ import (
 )
 
 // schemaThenConsumer renders a consumer workload ahead of the schema Job it
-// depends on, so a test can prove ordering comes from the kinds rather than
-// from the position of a document in the rendered stream.
+// depends on, so a test can prove ordering comes from the bootstrap marker
+// rather than from the position of a document in the rendered stream.
 const schemaThenConsumer = `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,14 +28,34 @@ kind: Job
 metadata:
   name: schema-migrate
   namespace: backend
+  labels:
+    codefly.dev/bootstrap-service: store
+spec:
+  completions: 1
+`
+
+// verificationJob is an ordinary Job: it exercises the workload it is rendered
+// after, so hoisting it ahead of that workload breaks it.
+const verificationJob = `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke-test
+  namespace: backend
 spec:
   completions: 1
 `
 
 const completeJob = `{"spec":{"completions":1},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
 
-const readyDeployment = `{"metadata":{"generation":1},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"api"}}},` +
+const readyDeployment = `{"metadata":{"generation":1,"uid":"deploy-uid"},"spec":{"replicas":1},` +
 	`"status":{"observedGeneration":1,"replicas":1,"readyReplicas":1,"updatedReplicas":1}}`
+
+const pendingDeployment = `{"metadata":{"generation":1,"uid":"deploy-uid"},"spec":{"replicas":1},` +
+	`"status":{"observedGeneration":1,"replicas":1,"readyReplicas":0,"updatedReplicas":1}}`
+
+// ownedReplicaSet is the ReplicaSet a Deployment owns, the link that makes a pod
+// this Deployment's pod.
+const ownedReplicaSet = `{"items":[{"metadata":{"uid":"rs-uid","ownerReferences":[{"uid":"deploy-uid"}]}}]}`
 
 func TestCompletionStagesAreCumulative(t *testing.T) {
 	require.True(t, StageHealthy.AtLeast(StageApplied))
@@ -68,6 +88,56 @@ func TestNewLocalApplyManagerRejectsACompletionItCannotEstablish(t *testing.T) {
 	require.NoFileExists(t, harness.applyLog)
 }
 
+// Mutated must not be claimed for a phase that had nothing to apply: it is the
+// signal an operator uses to decide whether a namespace needs reconciling.
+func TestNothingToApplyIsNotReportedAsAChangedTarget(t *testing.T) {
+	plan, err := planApply([]string{"", "   \n"}, "backend", true)
+
+	require.NoError(t, err)
+	require.Empty(t, plan.Preparation)
+	require.Empty(t, plan.Rollout)
+}
+
+// A caller that asked only for applied must get its manifests in the order
+// kustomize rendered them: the barrier moves resources, and moving them is a
+// behavior change nobody requested.
+func TestDefaultCompletionAppliesEveryDocumentInRenderedOrder(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	harness.renders(schemaThenConsumer)
+	workspace, module, service := deploymentFixture(t)
+	manager, err := NewLocalApplyManager(
+		context.Background(), workspace, harness.verifiedEnvironment(), DefaultDeployCompletion(),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput()))
+
+	applied := harness.applied()
+	require.Less(t, strings.Index(applied, "kind: Deployment"), strings.Index(applied, "kind: Job"))
+	require.Empty(t, harness.read())
+	require.Equal(t, StageApplied, manager.Evidence().Reached)
+}
+
+// Only a Job marked as schema preparation forms the barrier. An ordinary Job
+// hoisted ahead of the workload it exercises would fail, and a barrier waiting
+// on it would deadlock against a dependency that is still unapplied.
+func TestOrdinaryJobStaysWithTheRolloutEvenUnderABarrier(t *testing.T) {
+	plan, err := planApply(
+		[]string{"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\n", verificationJob},
+		"backend",
+		true,
+	)
+
+	require.NoError(t, err)
+	require.Empty(t, plan.BootstrapJobs)
+	require.Empty(t, plan.Preparation)
+	require.Len(t, plan.Rollout, 2)
+	require.Equal(t, []ownedResource{
+		{kind: "Deployment", namespace: "backend", name: "api"},
+		{kind: "Job", namespace: "backend", name: "smoke-test"},
+	}, plan.RolloutTargets)
+}
+
 func TestLocalApplyManagerAppliesSchemaPreparationBeforeConsumerRollout(t *testing.T) {
 	harness := newKubernetesCommandHarness(t)
 	harness.renders(schemaThenConsumer)
@@ -86,8 +156,8 @@ func TestLocalApplyManagerAppliesSchemaPreparationBeforeConsumerRollout(t *testi
 	evidence := manager.Evidence()
 	require.Equal(t, StageBootstrapped, evidence.Reached)
 	require.Equal(t, StageBootstrapped, evidence.Required)
+	require.True(t, evidence.RenderedTrees[0].Mutated)
 	require.False(t, evidence.RenderedTrees[0].AppliedAt.IsZero())
-	require.False(t, evidence.RenderedTrees[0].ObservedAt.IsZero())
 }
 
 func TestLocalApplyManagerRefusesToApplyConsumersWhenTheSchemaJobFails(t *testing.T) {
@@ -109,18 +179,41 @@ func TestLocalApplyManagerRefusesToApplyConsumersWhenTheSchemaJobFails(t *testin
 	require.NotContains(t, harness.applied(), "kind: Deployment")
 	evidence := manager.Evidence()
 	require.False(t, evidence.Reached.AtLeast(StageBootstrapped))
-	require.Len(t, evidence.RenderedTrees[0].Diagnostics, 1)
 	require.Contains(t, evidence.RenderedTrees[0].Diagnostics[0], "BackoffLimitExceeded")
+}
+
+// A barrier that fails has already applied the preparation resources, so the
+// evidence must say the target was changed. Reporting only StageRendered would
+// tell an operator no cluster was contacted while new config is live there.
+func TestFailedBarrierRecordsThatTheTargetWasChanged(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	harness.renders(schemaThenConsumer)
+	harness.clusterHas("job", "schema-migrate", `{"spec":{"completions":1},"status":{"conditions":[`+
+		`{"type":"Failed","status":"True","reason":"BackoffLimitExceeded"}]}}`)
+	workspace, module, service := deploymentFixture(t)
+	manager, err := NewLocalApplyManager(
+		context.Background(), workspace, harness.verifiedEnvironment(),
+		CompletionCondition{Stage: StageBootstrapped, Timeout: 2 * time.Second},
+	)
+	require.NoError(t, err)
+
+	require.Error(t, manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput()))
+
+	tree := manager.Evidence().RenderedTrees[0]
+	require.Equal(t, StageRendered, tree.Stage)
+	require.True(t, tree.Mutated)
+	require.Contains(t, strings.Join(tree.Diagnostics, " "), "partial revision")
 }
 
 func TestLocalApplyManagerReportsAppliedWhenAnImageCannotBePulled(t *testing.T) {
 	harness := newKubernetesCommandHarness(t)
 	harness.renders(schemaThenConsumer)
 	harness.clusterHas("job", "schema-migrate", completeJob)
-	harness.clusterHas("deployment", "api", `{"metadata":{"generation":1},"spec":{"replicas":1,`+
-		`"selector":{"matchLabels":{"app":"api"}}},"status":{"observedGeneration":1,"replicas":1,"readyReplicas":0,"updatedReplicas":1}}`)
-	harness.clusterHas("pods", "all", `{"items":[{"metadata":{"name":"api-7f9"},"status":{"containerStatuses":[`+
-		`{"name":"api","state":{"waiting":{"reason":"ImagePullBackOff","message":"Back-off pulling image"}}}]}}]}`)
+	harness.clusterHas("deployment", "api", pendingDeployment)
+	harness.clusterHas("replicasets", "all", ownedReplicaSet)
+	harness.clusterHas("pods", "all", `{"items":[{"metadata":{"name":"api-7f9","ownerReferences":[{"uid":"rs-uid"}]},`+
+		`"status":{"containerStatuses":[{"name":"api","state":{"waiting":{"reason":"ImagePullBackOff",`+
+		`"message":"Back-off pulling image"}}}]}}]}`)
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
@@ -136,7 +229,53 @@ func TestLocalApplyManagerReportsAppliedWhenAnImageCannotBePulled(t *testing.T) 
 	evidence := manager.Evidence()
 	require.True(t, evidence.Reached.AtLeast(StageApplied))
 	require.False(t, evidence.Reached.AtLeast(StageHealthy))
-	require.Equal(t, StageHealthy, evidence.Required)
+}
+
+// A pod that merely shares the workload's labels is not the workload's pod.
+// kustomize commonLabels put a selector's labels on resources it does not own,
+// so diagnosing by label would fail a healthy Deployment on a sibling's pod.
+func TestPendingWorkloadIsNotDiagnosedWithAPodItDoesNotOwn(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	harness.renders(schemaThenConsumer)
+	harness.clusterHas("job", "schema-migrate", completeJob)
+	harness.clusterHas("deployment", "api", pendingDeployment)
+	harness.clusterHas("replicasets", "all", ownedReplicaSet)
+	harness.clusterHas("pods", "all", `{"items":[{"metadata":{"name":"other-job-xyz",`+
+		`"ownerReferences":[{"uid":"someone-else"}]},"status":{"containerStatuses":[{"name":"migrate",`+
+		`"state":{"waiting":{"reason":"ImagePullBackOff","message":"Back-off pulling image"}}}]}}]}`)
+	workspace, module, service := deploymentFixture(t)
+	manager, err := NewLocalApplyManager(
+		context.Background(), workspace, harness.verifiedEnvironment(),
+		CompletionCondition{Stage: StageHealthy, Timeout: 600 * time.Millisecond},
+	)
+	require.NoError(t, err)
+
+	err = manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput())
+
+	require.ErrorContains(t, err, "did not reach healthy")
+	require.NotContains(t, err.Error(), "ImagePullBackOff")
+	require.NotContains(t, err.Error(), "other-job-xyz")
+}
+
+// ProgressDeadlineExceeded is not terminal: the controller keeps reconciling and
+// the condition clears when the slow pull finishes. Treating it as a hard
+// failure fails a rollout that would have completed.
+func TestProgressDeadlineExceededExplainsAPendingRolloutInsteadOfFailingIt(t *testing.T) {
+	document := &workloadDocument{}
+	document.Metadata.Generation = 1
+	document.Status.ObservedGeneration = 1
+	document.Status.Replicas = 1
+	document.Status.UpdatedReplicas = 1
+	document.Status.Conditions = []statusCondition{{
+		Type: "Progressing", Status: "False",
+		Reason: "ProgressDeadlineExceeded", Message: `ReplicaSet "api-7f9" has timed out progressing.`,
+	}}
+
+	state, message := deploymentState(document)
+
+	require.Equal(t, ResourcePending, state)
+	require.Contains(t, message, "ProgressDeadlineExceeded")
+	require.Contains(t, message, "0/1 replicas ready")
 }
 
 func TestLocalApplyManagerReachesHealthyWhenEveryOwnedRolloutIsReady(t *testing.T) {
@@ -148,6 +287,28 @@ func TestLocalApplyManagerReachesHealthyWhenEveryOwnedRolloutIsReady(t *testing.
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
 		CompletionCondition{Stage: StageHealthy, Timeout: 2 * time.Second},
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput()))
+
+	require.Equal(t, StageHealthy, manager.Evidence().Reached)
+}
+
+// A schema Job with ttlSecondsAfterFinished is deleted shortly after it
+// completes. Its stage was established at the barrier, so the health observation
+// must not read it again and call the deployment missing.
+func TestCompletedBootstrapJobIsNotReadAgainWhileTheRolloutSettles(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	harness.renders(schemaThenConsumer)
+	// The Job answers the barrier once, then its TTL removes it — exactly the
+	// window between the barrier completing and the rollout settling.
+	harness.clusterHasOnce("job", "schema-migrate", completeJob)
+	harness.clusterHas("deployment", "api", readyDeployment)
+	workspace, module, service := deploymentFixture(t)
+	manager, err := NewLocalApplyManager(
+		context.Background(), workspace, harness.verifiedEnvironment(),
+		CompletionCondition{Stage: StageHealthy, Timeout: 4 * time.Second},
 	)
 	require.NoError(t, err)
 
@@ -183,6 +344,42 @@ metadata:
 	require.NotContains(t, read, "pods")
 }
 
+// A manifest that declares no namespace lands in the namespace the verified
+// context selects, because apply passes no --namespace. Observing it anywhere
+// else finds nothing and burns the whole budget on a deployment that worked.
+func TestOwnedResourcesFallBackToTheNamespaceApplyUses(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	harness.writeSelected(kubeconfigDocumentInNamespace("k3d-dev", "k3d-dev", "k3d-dev", "payments"))
+	harness.writeOwned(kubeconfigDocument("k3d-dev", "k3d-dev", "k3d-dev", "https://127.0.0.1:6443"))
+
+	target, err := VerifyLocalK3dTarget(context.Background(), harness.environment("k3d-dev"))
+	require.NoError(t, err)
+	require.Equal(t, "payments", target.Namespace)
+
+	owned, err := ownedResources("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: migrate\n", target.Namespace)
+	require.NoError(t, err)
+	require.Equal(t, []ownedResource{{kind: "Job", namespace: "payments", name: "migrate"}}, owned)
+}
+
+// The budget is the caller's total, not a fresh allowance per tree: a module
+// deploy must not be able to spend a stated 10m once per service per stage.
+func TestObservationBudgetIsSharedAcrossEveryTree(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	harness.renders(schemaThenConsumer)
+	harness.clusterHas("job", "schema-migrate", `{"spec":{"completions":1},"status":{"succeeded":0}}`)
+	workspace, module, service := deploymentFixture(t)
+	manager, err := NewLocalApplyManager(
+		context.Background(), workspace, harness.verifiedEnvironment(),
+		CompletionCondition{Stage: StageBootstrapped, Timeout: 400 * time.Millisecond},
+	)
+	require.NoError(t, err)
+
+	require.Error(t, manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput()))
+	second := manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput())
+
+	require.ErrorContains(t, second, "observation budget of 400ms is exhausted")
+}
+
 func TestLocalApplyManagerBoundsObservationAndNamesWhatNeverFinished(t *testing.T) {
 	harness := newKubernetesCommandHarness(t)
 	harness.renders(schemaThenConsumer)
@@ -198,6 +395,26 @@ func TestLocalApplyManagerBoundsObservationAndNamesWhatNeverFinished(t *testing.
 
 	require.ErrorContains(t, err, "did not reach bootstrapped within 300ms")
 	require.ErrorContains(t, err, "Job backend/schema-migrate: 0/1 completions")
+}
+
+// An owned resource is applied before observation starts, so one that never
+// reports back is gone, not slow. Waiting out the budget would hide it.
+func TestObservationFailsAResourceTheTargetStopsReporting(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	env := harness.verifiedEnvironment()
+	target, err := VerifyLocalK3dTarget(context.Background(), env)
+	require.NoError(t, err)
+
+	start := time.Now()
+	_, err = completionObserver{env: env, target: &target}.await(
+		context.Background(),
+		[]ownedResource{{kind: "Job", namespace: "backend", name: "schema-migrate"}},
+		StageBootstrapped,
+		time.Minute,
+	)
+
+	require.ErrorContains(t, err, "applied but the target no longer reports it")
+	require.Less(t, time.Since(start), 30*time.Second)
 }
 
 // The budget bounds observation itself: a resource that never finishes returns
@@ -243,21 +460,6 @@ func TestObservationReportsCancellationRatherThanTimeout(t *testing.T) {
 	require.ErrorContains(t, err, "cancelled before reaching bootstrapped")
 }
 
-func TestDefaultCompletionAppliesWithoutContactingTheClusterForStatus(t *testing.T) {
-	harness := newKubernetesCommandHarness(t)
-	harness.renders(schemaThenConsumer)
-	workspace, module, service := deploymentFixture(t)
-	manager, err := NewLocalApplyManager(
-		context.Background(), workspace, harness.verifiedEnvironment(), DefaultDeployCompletion(),
-	)
-	require.NoError(t, err)
-
-	require.NoError(t, manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput()))
-
-	require.Empty(t, harness.read())
-	require.Equal(t, StageApplied, manager.Evidence().Reached)
-}
-
 func TestOwnedResourcesIgnoresManifestsThatCarryNoRolloutOrJob(t *testing.T) {
 	owned, err := ownedResources(schemaThenConsumer+`---
 apiVersion: v1
@@ -265,7 +467,7 @@ kind: ConfigMap
 metadata:
   name: settings
   namespace: backend
-`, nil)
+`, "fallback")
 
 	require.NoError(t, err)
 	require.Equal(t, []ownedResource{

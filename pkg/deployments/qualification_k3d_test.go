@@ -75,7 +75,7 @@ func (q completionQualification) apply(manifests string) {
 
 func (q completionQualification) await(stage CompletionStage, timeout time.Duration, manifests string) ([]ObservedResource, error) {
 	q.t.Helper()
-	owned, err := ownedResources(manifests, q.env)
+	owned, err := ownedResources(manifests, q.target.Namespace)
 	require.NoError(q.t, err)
 	return completionObserver{env: q.env, target: &q.target}.await(context.Background(), owned, stage, timeout)
 }
@@ -117,6 +117,8 @@ kind: Job
 metadata:
   name: ` + name + `
   namespace: ` + namespace + `
+  labels:
+    codefly.dev/bootstrap-service: store
 spec:
   backoffLimit: 0
   template:
@@ -185,17 +187,17 @@ spec:
           image: busybox:1.36
           command: ["sh", "-c", "sleep 3600"]
 `
-	preparation, rollout, err := partitionDocuments([]string{consumer, schema})
+	plan, err := planApply([]string{consumer, schema}, qualification.namespace, true)
 	require.NoError(t, err)
-	require.Len(t, preparation, 1)
-	require.Len(t, rollout, 1)
+	require.Len(t, plan.Preparation, 1)
+	require.Len(t, plan.Rollout, 1)
 
-	qualification.apply(strings.Join(preparation, "\n---\n"))
+	qualification.apply(strings.Join(plan.Preparation, "\n---\n"))
 	observed, err := qualification.await(StageBootstrapped, 180*time.Second, schema)
 	require.NoError(t, err)
 	require.Equal(t, ResourceReady, observed[0].State)
 
-	qualification.apply(strings.Join(rollout, "\n---\n"))
+	qualification.apply(strings.Join(plan.Rollout, "\n---\n"))
 	observed, err = qualification.await(StageHealthy, 180*time.Second, schema+"---\n"+consumer)
 	require.NoError(t, err)
 	for _, resource := range observed {

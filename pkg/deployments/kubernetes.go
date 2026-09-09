@@ -24,6 +24,10 @@ type VerifiedKubernetesTarget struct {
 	Cluster    string
 	APIServer  string
 	K3dCluster string
+	// Namespace is the namespace the verified context selects. Apply passes no
+	// --namespace, so this is where kubectl puts a manifest that declares none,
+	// and therefore where such a resource has to be observed.
+	Namespace string
 	// ClusterIdentity is the digest of the complete kubeconfig cluster entry,
 	// including certificate and routing settings.
 	ClusterIdentity string
@@ -38,7 +42,8 @@ type kubeconfigView struct {
 	Contexts []struct {
 		Name    string `json:"name" yaml:"name"`
 		Context struct {
-			Cluster string `json:"cluster" yaml:"cluster"`
+			Cluster   string `json:"cluster" yaml:"cluster"`
+			Namespace string `json:"namespace" yaml:"namespace"`
 		} `json:"context" yaml:"context"`
 	} `json:"contexts" yaml:"contexts"`
 }
@@ -178,6 +183,7 @@ func verifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (Veri
 		Cluster:         clusterName,
 		APIServer:       apiServer,
 		K3dCluster:      k3dCluster,
+		Namespace:       selected.contextNamespace(kubeContext),
 		ClusterIdentity: clusterIdentity,
 	}, snapshot, nil
 }
@@ -234,6 +240,17 @@ func readK3dKubeconfig(ctx context.Context, cluster string) (kubeconfigView, err
 		return kubeconfigView{}, fmt.Errorf("decode k3d-owned cluster %q kubeconfig: %w", cluster, err)
 	}
 	return config, nil
+}
+
+// contextNamespace is the namespace a context selects, resolved the way kubectl
+// resolves it: an unset namespace means "default".
+func (config kubeconfigView) contextNamespace(contextName string) string {
+	for _, candidate := range config.Contexts {
+		if candidate.Name == contextName && candidate.Context.Namespace != "" {
+			return candidate.Context.Namespace
+		}
+	}
+	return "default"
 }
 
 func (config kubeconfigView) target(contextName string) (string, string, string, error) {

@@ -38,18 +38,37 @@ func (resource ObservedResource) String() string {
 	return fmt.Sprintf("%s %s/%s: %s", resource.Kind, resource.Namespace, resource.Name, resource.Message)
 }
 
+const (
+	kindJob         = "Job"
+	kindDeployment  = "Deployment"
+	kindStatefulSet = "StatefulSet"
+	kindDaemonSet   = "DaemonSet"
+)
+
 // bootstrapKinds are the kinds that must run to completion for
 // StageBootstrapped; rolloutKinds are the workloads that must finish rolling
 // out for StageHealthy.
 var (
-	bootstrapKinds = map[string]bool{"Job": true}
-	rolloutKinds   = map[string]bool{"Deployment": true, "StatefulSet": true, "DaemonSet": true}
+	bootstrapKinds = map[string]bool{kindJob: true}
+	rolloutKinds   = map[string]bool{kindDeployment: true, kindStatefulSet: true, kindDaemonSet: true}
 )
+
+// bootstrapJobLabel marks a Job as schema preparation for a service. Only a Job
+// carrying it forms the barrier a consumer rollout waits behind; an ordinary Job
+// — a smoke test, a post-deploy verification that talks to its own Service —
+// keeps its rendered position after the workloads it exercises.
+const bootstrapJobLabel = "codefly.dev/bootstrap-service"
 
 const (
 	rolloutUnobserved = "rollout not observed by the controller yet"
 	rolloutComplete   = "rollout complete"
 )
+
+// unreadableSweepGrace is how many consecutive sweeps a resource may fail to
+// report before observation calls it failed instead of waiting out the budget.
+// An owned resource was applied before observation started, so a persistent
+// NotFound means it is gone, not that it has yet to appear.
+const unreadableSweepGrace = 3
 
 // terminalWaitingReasons are container waiting reasons a rollout never recovers
 // from on its own, so observation reports them instead of burning the timeout.
@@ -69,8 +88,9 @@ type ownedResource struct {
 type manifestHeader struct {
 	Kind     string `yaml:"kind"`
 	Metadata struct {
-		Name      string `yaml:"name"`
-		Namespace string `yaml:"namespace"`
+		Name      string            `yaml:"name"`
+		Namespace string            `yaml:"namespace"`
+		Labels    map[string]string `yaml:"labels"`
 	} `yaml:"metadata"`
 }
 
@@ -90,25 +110,22 @@ func manifestHeaders(manifests string) ([]manifestHeader, error) {
 	}
 }
 
-// ownedResources lists the Jobs and workloads the rendered manifests own, so
-// observation is bound to the exact deployment evidence rather than to whatever
-// else shares the namespace.
-func ownedResources(manifests string, env *resources.Environment) ([]ownedResource, error) {
-	headers, err := manifestHeaders(manifests)
-	if err != nil {
-		return nil, err
+func isBootstrapJob(header *manifestHeader) bool {
+	return header.Kind == kindJob && header.Metadata.Labels[bootstrapJobLabel] != ""
+}
+
+func ownedResourceOf(header *manifestHeader, namespace string) (ownedResource, bool) {
+	if header.Metadata.Name == "" || (!bootstrapKinds[header.Kind] && !rolloutKinds[header.Kind]) {
+		return ownedResource{}, false
 	}
-	var owned []ownedResource
-	for _, header := range headers {
-		if header.Metadata.Name == "" || (!bootstrapKinds[header.Kind] && !rolloutKinds[header.Kind]) {
-			continue
-		}
-		namespace := header.Metadata.Namespace
-		if namespace == "" {
-			namespace = defaultNamespace(env)
-		}
-		owned = append(owned, ownedResource{kind: header.Kind, namespace: namespace, name: header.Metadata.Name})
+	declared := header.Metadata.Namespace
+	if declared == "" {
+		declared = namespace
 	}
+	return ownedResource{kind: header.Kind, namespace: declared, name: header.Metadata.Name}, true
+}
+
+func sortOwned(owned []ownedResource) {
 	sort.Slice(owned, func(i, j int) bool {
 		if owned[i].kind != owned[j].kind {
 			return owned[i].kind < owned[j].kind
@@ -118,43 +135,89 @@ func ownedResources(manifests string, env *resources.Environment) ([]ownedResour
 		}
 		return owned[i].name < owned[j].name
 	})
-	return owned, nil
 }
 
-func defaultNamespace(env *resources.Environment) string {
-	if env != nil && env.Namespace != "" {
-		return env.Namespace
-	}
-	return "default"
+// applyPlan is the apply order and the observation targets for one rendered
+// tree, derived from a single walk so the two can never disagree about what a
+// phase owns.
+type applyPlan struct {
+	// Preparation is applied before Rollout. Without a barrier every document
+	// stays in Preparation in its rendered order, so a caller that only requires
+	// StageApplied gets exactly the order kustomize emitted.
+	Preparation []string
+	Rollout     []string
+	// BootstrapJobs are the Jobs in Preparation: the barrier waits on these and
+	// never reads them again. RolloutTargets are the workloads and ordinary Jobs
+	// in Rollout, observed for health.
+	BootstrapJobs  []ownedResource
+	RolloutTargets []ownedResource
 }
 
-// partitionDocuments splits rendered documents into the preparation resources a
-// rollout depends on — Jobs included — and the workload rollouts themselves.
-// Position in the rendered stream carries no ordering meaning, so the split is
-// by kind.
-func partitionDocuments(documents []string) ([]string, []string, error) {
-	var preparation, rollout []string
+// planApply splits rendered documents into the schema preparation a rollout
+// waits behind and the rollout itself.
+//
+// barrier is the caller's requested completion, not a property of the tree.
+// Reordering documents changes which resources exist when, so a caller that
+// asked only for StageApplied must get its manifests applied exactly as
+// rendered. Position is overridden only when a barrier was asked for, and then
+// only for the bootstrap Jobs that are the barrier: an ordinary Job stays with
+// the rollout, because a post-deploy verification Job hoisted ahead of the
+// Deployment it exercises would fail, or deadlock the barrier waiting for it.
+func planApply(documents []string, namespace string, barrier bool) (applyPlan, error) {
+	var plan applyPlan
 	for _, document := range documents {
 		if strings.TrimSpace(document) == "" {
 			continue
 		}
 		headers, err := manifestHeaders(document)
 		if err != nil {
-			return nil, nil, err
+			return applyPlan{}, err
 		}
-		isRollout := false
-		for _, header := range headers {
-			if rolloutKinds[header.Kind] {
-				isRollout = true
-			}
-		}
-		if isRollout {
-			rollout = append(rollout, document)
+		if !barrier {
+			plan.Preparation = append(plan.Preparation, document)
 			continue
 		}
-		preparation = append(preparation, document)
+		rollout := false
+		for index := range headers {
+			header := &headers[index]
+			if rolloutKinds[header.Kind] || (header.Kind == kindJob && !isBootstrapJob(header)) {
+				rollout = true
+			}
+		}
+		if rollout {
+			plan.Rollout = append(plan.Rollout, document)
+		} else {
+			plan.Preparation = append(plan.Preparation, document)
+		}
+		for index := range headers {
+			resource, owned := ownedResourceOf(&headers[index], namespace)
+			if !owned {
+				continue
+			}
+			if rollout {
+				plan.RolloutTargets = append(plan.RolloutTargets, resource)
+			} else {
+				plan.BootstrapJobs = append(plan.BootstrapJobs, resource)
+			}
+		}
 	}
-	return preparation, rollout, nil
+	sortOwned(plan.BootstrapJobs)
+	sortOwned(plan.RolloutTargets)
+	return plan, nil
+}
+
+// ownedResources lists every Job and workload the rendered manifests own, so a
+// caller observing a tree it applied elsewhere is bound to the same evidence.
+func ownedResources(manifests, namespace string) ([]ownedResource, error) {
+	plan, err := planApply([]string{manifests}, namespace, true)
+	if err != nil {
+		return nil, err
+	}
+	owned := make([]ownedResource, 0, len(plan.BootstrapJobs)+len(plan.RolloutTargets))
+	owned = append(owned, plan.BootstrapJobs...)
+	owned = append(owned, plan.RolloutTargets...)
+	sortOwned(owned)
+	return owned, nil
 }
 
 // completionObserver watches the resources one applied tree owns on the exact
@@ -164,31 +227,31 @@ type completionObserver struct {
 	target *VerifiedKubernetesTarget
 }
 
-// await blocks until every owned resource relevant to stage is ready, one of
-// them fails terminally, the budget runs out, or the caller cancels. It always
-// returns the last state it read so the caller can record it as evidence.
+// await blocks until every watched resource is ready, one of them fails
+// terminally, the budget runs out, or the caller cancels. The caller passes the
+// exact set to watch: a resource whose stage is already established is never
+// handed back here, because re-reading it can only produce a false negative.
 func (observer completionObserver) await(
 	ctx context.Context,
-	owned []ownedResource,
+	watched []ownedResource,
 	stage CompletionStage,
 	timeout time.Duration,
 ) ([]ObservedResource, error) {
-	var watched []ownedResource
-	for _, resource := range owned {
-		if bootstrapKinds[resource.kind] || (stage.AtLeast(StageHealthy) && rolloutKinds[resource.kind]) {
-			watched = append(watched, resource)
-		}
-	}
 	if len(watched) == 0 {
 		return nil, nil
 	}
 	if timeout <= 0 {
-		timeout = DefaultCompletionTimeout
+		return nil, fmt.Errorf("no observation budget left to establish %s", stage)
 	}
 	interval := observationInterval(timeout)
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// A resource that reached its stage is settled and never read again: a Job
+	// with ttlSecondsAfterFinished disappears shortly after completing, and a
+	// re-read would report the deployment that just succeeded as missing.
+	settled := make(map[ownedResource]ObservedResource, len(watched))
+	unreadable := make(map[ownedResource]int, len(watched))
 	var last []ObservedResource
 	for {
 		kubeconfig, err := verifiedKubeconfigSnapshot(bounded, observer.env, observer.target)
@@ -202,7 +265,23 @@ func (observer completionObserver) await(
 		var failures []string
 		pending := 0
 		for _, resource := range watched {
-			observed := observer.observe(bounded, kubeconfig, resource)
+			if done, established := settled[resource]; established {
+				current = append(current, done)
+				continue
+			}
+			observed, readable := observer.observe(bounded, kubeconfig, resource)
+			if readable {
+				delete(unreadable, resource)
+			} else {
+				unreadable[resource]++
+				if unreadable[resource] > unreadableSweepGrace {
+					observed.State = ResourceFailed
+					observed.Message = "applied but the target no longer reports it: " + observed.Message
+				}
+			}
+			if observed.State == ResourceReady {
+				settled[resource] = observed
+			}
 			current = append(current, observed)
 			switch observed.State {
 			case ResourceFailed:
@@ -271,14 +350,12 @@ type statusCondition struct {
 // given kind does not carry simply decodes to its zero value.
 type workloadDocument struct {
 	Metadata struct {
-		Generation int64 `json:"generation"`
+		Generation int64  `json:"generation"`
+		UID        string `json:"uid"`
 	} `json:"metadata"`
 	Spec struct {
 		Replicas    *int32 `json:"replicas"`
 		Completions *int32 `json:"completions"`
-		Selector    struct {
-			MatchLabels map[string]string `json:"matchLabels"`
-		} `json:"selector"`
 	} `json:"spec"`
 	Status struct {
 		ObservedGeneration     int64             `json:"observedGeneration"`
@@ -316,40 +393,46 @@ func conditionDetail(condition statusCondition) string {
 	return detail
 }
 
-func (observer completionObserver) observe(ctx context.Context, kubeconfig []byte, resource ownedResource) ObservedResource {
+// observe reads one owned resource. The second return reports whether a usable
+// status came back at all, which is what separates "still settling" from "gone".
+func (observer completionObserver) observe(
+	ctx context.Context,
+	kubeconfig []byte,
+	resource ownedResource,
+) (ObservedResource, bool) {
 	observed := ObservedResource{Kind: resource.kind, Namespace: resource.namespace, Name: resource.name}
 	raw, err := runKubectl(ctx, observer.target, kubeconfig, "",
 		"get", strings.ToLower(resource.kind), resource.name, "--namespace", resource.namespace, "-o", "json")
 	if err != nil {
 		observed.State = ResourcePending
-		observed.Message = "not readable yet: " + err.Error()
-		return observed
+		observed.Message = "not readable: " + err.Error()
+		return observed, false
 	}
 	var document workloadDocument
 	if err := json.Unmarshal([]byte(raw), &document); err != nil {
 		observed.State = ResourcePending
 		observed.Message = fmt.Sprintf("cannot decode status: %v", err)
-		return observed
+		return observed, false
 	}
 
 	switch resource.kind {
-	case "Job":
+	case kindJob:
 		observed.State, observed.Message = jobState(&document)
-	case "Deployment":
+	case kindDeployment:
 		observed.State, observed.Message = deploymentState(&document)
-	case "StatefulSet":
+	case kindStatefulSet:
 		observed.State, observed.Message = statefulSetState(&document)
-	case "DaemonSet":
+	case kindDaemonSet:
 		observed.State, observed.Message = daemonSetState(&document)
 	}
 	if observed.State != ResourcePending {
-		return observed
+		return observed, true
 	}
-	if state, message, found := observer.podDiagnostic(ctx, kubeconfig, resource, document.Spec.Selector.MatchLabels); found {
+	if state, message, found := observer.podDiagnostic(ctx, kubeconfig, resource, &document); found {
 		observed.State = state
 		observed.Message = observed.Message + "; " + message
 	}
-	return observed
+	return observed, true
 }
 
 func jobState(document *workloadDocument) (ResourceState, string) {
@@ -373,23 +456,23 @@ func deploymentState(document *workloadDocument) (ResourceState, string) {
 	if document.Status.ObservedGeneration < document.Metadata.Generation {
 		return ResourcePending, rolloutUnobserved
 	}
-	for _, condition := range document.Status.Conditions {
-		if condition.Type == "Progressing" && condition.Status == "False" {
-			return ResourceFailed, "rollout stopped progressing: " + conditionDetail(condition)
-		}
-		if condition.Type == "ReplicaFailure" && condition.Status == "True" {
-			return ResourceFailed, "replicas cannot be created: " + conditionDetail(condition)
-		}
-	}
 	desired := desiredReplicas(document)
 	status := document.Status
 	if status.UpdatedReplicas == desired && status.ReadyReplicas == desired && status.Replicas == desired {
 		return ResourceReady, rolloutComplete
 	}
-	return ResourcePending, fmt.Sprintf(
-		"%d/%d replicas ready, %d updated",
-		status.ReadyReplicas, desired, status.UpdatedReplicas,
-	)
+	message := fmt.Sprintf("%d/%d replicas ready, %d updated", status.ReadyReplicas, desired, status.UpdatedReplicas)
+	// Progressing=False (ProgressDeadlineExceeded) and ReplicaFailure are not
+	// terminal: the Deployment controller keeps reconciling, and both clear on
+	// their own once the slow image pull or the exhausted quota that caused them
+	// resolves. They explain a pending rollout; the caller's budget bounds it.
+	for _, condition := range status.Conditions {
+		if (condition.Type == "Progressing" && condition.Status == "False") ||
+			(condition.Type == "ReplicaFailure" && condition.Status == "True") {
+			message += "; " + condition.Type + " " + conditionDetail(condition)
+		}
+	}
+	return ResourcePending, message
 }
 
 func statefulSetState(document *workloadDocument) (ResourceState, string) {
@@ -430,6 +513,10 @@ func desiredReplicas(document *workloadDocument) int32 {
 	return 1
 }
 
+type ownerReference struct {
+	UID string `json:"uid"`
+}
+
 type podContainerStatus struct {
 	Name  string `json:"name"`
 	State struct {
@@ -440,37 +527,52 @@ type podContainerStatus struct {
 	} `json:"state"`
 }
 
+type podDocument struct {
+	Metadata struct {
+		Name            string           `json:"name"`
+		OwnerReferences []ownerReference `json:"ownerReferences"`
+	} `json:"metadata"`
+	Status struct {
+		ContainerStatuses     []podContainerStatus `json:"containerStatuses"`
+		InitContainerStatuses []podContainerStatus `json:"initContainerStatuses"`
+	} `json:"status"`
+}
+
 type podListDocument struct {
+	Items []podDocument `json:"items"`
+}
+
+// controllerListDocument is the ownership shape of an intermediate controller,
+// currently the ReplicaSets a Deployment owns.
+type controllerListDocument struct {
 	Items []struct {
 		Metadata struct {
-			Name string `json:"name"`
+			UID             string           `json:"uid"`
+			OwnerReferences []ownerReference `json:"ownerReferences"`
 		} `json:"metadata"`
-		Status struct {
-			ContainerStatuses     []podContainerStatus `json:"containerStatuses"`
-			InitContainerStatuses []podContainerStatus `json:"initContainerStatuses"`
-		} `json:"status"`
 	} `json:"items"`
 }
 
 // podDiagnostic explains why an owned workload is still pending, using only the
-// pods that workload's own selector matches. An image the cluster cannot pull
-// is terminal: no amount of waiting fixes it.
+// pods that workload actually owns.
+//
+// Ownership is the ownerReferences chain, never the label selector: kustomize
+// commonLabels routinely stamp a workload's selector labels onto resources it
+// does not own, and a sibling Job's failing pod would then be reported as this
+// Deployment's failure — exactly the cross-talk that binding observation to the
+// applied evidence is meant to prevent.
 func (observer completionObserver) podDiagnostic(
 	ctx context.Context,
 	kubeconfig []byte,
 	resource ownedResource,
-	matchLabels map[string]string,
+	document *workloadDocument,
 ) (ResourceState, string, bool) {
-	if len(matchLabels) == 0 {
+	if document.Metadata.UID == "" {
 		return "", "", false
 	}
-	pairs := make([]string, 0, len(matchLabels))
-	for key, value := range matchLabels {
-		pairs = append(pairs, key+"="+value)
-	}
-	sort.Strings(pairs)
+	owners := observer.podOwners(ctx, kubeconfig, resource, document.Metadata.UID)
 	raw, err := runKubectl(ctx, observer.target, kubeconfig, "",
-		"get", "pods", "--namespace", resource.namespace, "--selector", strings.Join(pairs, ","), "-o", "json")
+		"get", "pods", "--namespace", resource.namespace, "-o", "json")
 	if err != nil {
 		return "", "", false
 	}
@@ -478,21 +580,76 @@ func (observer completionObserver) podDiagnostic(
 	if err := json.Unmarshal([]byte(raw), &pods); err != nil {
 		return "", "", false
 	}
-	for _, pod := range pods.Items {
-		for _, container := range append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...) {
-			waiting := container.State.Waiting
-			if waiting.Reason == "" {
-				continue
+	for index := range pods.Items {
+		pod := &pods.Items[index]
+		if !ownedBy(pod.Metadata.OwnerReferences, owners) {
+			continue
+		}
+		for _, container := range pod.Status.InitContainerStatuses {
+			if state, message, found := containerDiagnostic(pod.Metadata.Name, container); found {
+				return state, message, true
 			}
-			detail := fmt.Sprintf("pod %s container %s is %s", pod.Metadata.Name, container.Name, waiting.Reason)
-			if waiting.Message != "" {
-				detail += ": " + waiting.Message
+		}
+		for _, container := range pod.Status.ContainerStatuses {
+			if state, message, found := containerDiagnostic(pod.Metadata.Name, container); found {
+				return state, message, true
 			}
-			if terminalWaitingReasons[waiting.Reason] {
-				return ResourceFailed, detail, true
-			}
-			return ResourcePending, detail, true
 		}
 	}
 	return "", "", false
+}
+
+// podOwners is the set of uids whose pods belong to this workload. A Deployment
+// owns its pods through the ReplicaSets it owns, so its own uid matches nothing.
+func (observer completionObserver) podOwners(
+	ctx context.Context,
+	kubeconfig []byte,
+	resource ownedResource,
+	uid string,
+) map[string]bool {
+	owners := map[string]bool{uid: true}
+	if resource.kind != kindDeployment {
+		return owners
+	}
+	raw, err := runKubectl(ctx, observer.target, kubeconfig, "",
+		"get", "replicasets", "--namespace", resource.namespace, "-o", "json")
+	if err != nil {
+		return owners
+	}
+	var sets controllerListDocument
+	if err := json.Unmarshal([]byte(raw), &sets); err != nil {
+		return owners
+	}
+	for _, set := range sets.Items {
+		for _, reference := range set.Metadata.OwnerReferences {
+			if reference.UID == uid {
+				owners[set.Metadata.UID] = true
+			}
+		}
+	}
+	return owners
+}
+
+func ownedBy(references []ownerReference, owners map[string]bool) bool {
+	for _, reference := range references {
+		if owners[reference.UID] {
+			return true
+		}
+	}
+	return false
+}
+
+func containerDiagnostic(pod string, container podContainerStatus) (ResourceState, string, bool) {
+	waiting := container.State.Waiting
+	if waiting.Reason == "" {
+		return "", "", false
+	}
+	detail := fmt.Sprintf("pod %s container %s is %s", pod, container.Name, waiting.Reason)
+	if waiting.Message != "" {
+		detail += ": " + waiting.Message
+	}
+	if terminalWaitingReasons[waiting.Reason] {
+		return ResourceFailed, detail, true
+	}
+	return ResourcePending, detail, true
 }

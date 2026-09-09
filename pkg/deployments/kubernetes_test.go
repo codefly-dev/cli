@@ -179,6 +179,7 @@ func TestVerifyLocalK3dTargetBindsExactIdentity(t *testing.T) {
 		Cluster:    "k3d-dev",
 		APIServer:  "https://127.0.0.1:6443",
 		K3dCluster: "dev",
+		Namespace:  "default",
 	}, target)
 }
 
@@ -278,6 +279,7 @@ func TestRenderManagerReturnsRenderedEvidenceWithoutApplying(t *testing.T) {
 		Stage:      StageRendered,
 		RenderedAt: evidence.RenderedTrees[0].RenderedAt,
 	}}, evidence.RenderedTrees)
+	require.False(t, evidence.RenderedTrees[0].Mutated)
 	require.False(t, evidence.RenderedTrees[0].RenderedAt.IsZero())
 	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, evidence.RenderedTrees[0].Digest)
 	require.NoFileExists(t, harness.applyLog)
@@ -434,10 +436,19 @@ case " $* " in
     case "$name" in
       -*) name="all" ;;
     esac
-    printf '%s %s\n' "$kind" "$name" >> "$FAKE_GET_LOG"
+    namespace=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = "--namespace" ]; then namespace="$argument"; fi
+      previous="$argument"
+    done
+    printf '%s %s %s\n' "$kind" "$name" "$namespace" >> "$FAKE_GET_LOG"
     document="$FAKE_RESOURCE_DIR/$kind.$name.json"
     if [ -f "$document" ]; then
       cat "$document"
+      if [ -f "$FAKE_RESOURCE_DIR/$kind.$name.once" ]; then
+        rm -f "$document" "$FAKE_RESOURCE_DIR/$kind.$name.once"
+      fi
       exit 0
     fi
     exit 44
@@ -508,6 +519,15 @@ func (h kubernetesCommandHarness) clusterHas(kind, name, document string) {
 	require.NoError(h.t, os.WriteFile(filepath.Join(h.resourceDir, kind+"."+name+".json"), []byte(document), 0o600))
 }
 
+// clusterHasOnce answers one `kubectl get <kind> <name>` with this document and
+// NotFound after that, the way a Job disappears once its
+// ttlSecondsAfterFinished elapses.
+func (h kubernetesCommandHarness) clusterHasOnce(kind, name, document string) {
+	h.t.Helper()
+	h.clusterHas(kind, name, document)
+	require.NoError(h.t, os.WriteFile(filepath.Join(h.resourceDir, kind+"."+name+".once"), nil, 0o600))
+}
+
 func (h kubernetesCommandHarness) applied() string {
 	h.t.Helper()
 	data, err := os.ReadFile(h.applyLog)
@@ -561,6 +581,31 @@ func kubeconfigDocument(currentContext, contextName, clusterName, apiServer stri
 	return kubeconfigDocumentWithCluster(currentContext, contextName, clusterName, map[string]any{
 		"server": apiServer,
 	})
+}
+
+// kubeconfigDocumentInNamespace is a context that selects a namespace, which is
+// where kubectl puts a manifest that declares none.
+func kubeconfigDocumentInNamespace(currentContext, contextName, clusterName, namespace string) string {
+	document := map[string]any{
+		"apiVersion":      "v1",
+		"current-context": currentContext,
+		"contexts": []any{map[string]any{
+			"name": contextName,
+			"context": map[string]any{
+				"cluster":   clusterName,
+				"namespace": namespace,
+			},
+		}},
+		"clusters": []any{map[string]any{
+			"name":    clusterName,
+			"cluster": map[string]any{"server": "https://127.0.0.1:6443"},
+		}},
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func kubeconfigDocumentWithCluster(currentContext, contextName, clusterName string, cluster map[string]any) string {

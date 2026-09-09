@@ -78,6 +78,10 @@ var ServiceCmd = &cobra.Command{
 			return deployService(ctx, flow)
 		})
 		stopErr := cleanup()
+		// Reported before the error is assembled: which stage failed, and
+		// whether the target was left partially changed, matter most when the
+		// deploy did not succeed.
+		reportCompletion(evidenceProvider)
 		var result []error
 		if deployErr != nil {
 			result = append(result, fmt.Errorf("service deploy failed: %w", deployErr))
@@ -91,7 +95,6 @@ var ServiceCmd = &cobra.Command{
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		reportCompletion(evidenceProvider)
 		cli.Header(1, "Deployment done!")
 		return nil
 	},
@@ -104,6 +107,9 @@ func reportCompletion(provider deployments.EvidenceProvider) {
 	cli.Info("Completion %s (required %s)", evidence.Reached, evidence.Required)
 	for index := range evidence.RenderedTrees {
 		tree := &evidence.RenderedTrees[index]
+		if tree.Mutated && !tree.Stage.AtLeast(deployments.StageApplied) {
+			cli.Info("%s/%s: the target was changed by this tree", tree.Module, tree.Service)
+		}
 		for _, diagnostic := range tree.Diagnostics {
 			cli.Info("%s/%s: %s", tree.Module, tree.Service, diagnostic)
 		}

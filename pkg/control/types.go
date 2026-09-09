@@ -223,7 +223,10 @@ type RenderedTree struct {
 	Manifests string
 	// Stage is the furthest stage this tree established, with the timestamps of
 	// the stages it passed and the terminal diagnostics for the one it failed.
-	Stage       deployments.CompletionStage
+	Stage deployments.CompletionStage
+	// Mutated reports that the target was changed by this tree even when Stage
+	// is short of applied: a failed bootstrap barrier leaves a partial revision.
+	Mutated     bool
 	RenderedAt  time.Time
 	AppliedAt   time.Time
 	ObservedAt  time.Time

@@ -104,6 +104,7 @@ var ModuleCmd = &cobra.Command{
 		for _, ref := range module.ServiceReferences {
 			cli.Header(2, "Deploying service %s", ref.Name)
 			if err := deployOneService(ctx, workspace, module, ref.Name, env, deploymentManager); err != nil {
+				reportCompletion(evidenceProvider)
 				return fmt.Errorf("cannot deploy service %s: %w", ref.Name, err)
 			}
 		}
@@ -114,6 +115,7 @@ var ModuleCmd = &cobra.Command{
 		// scaffolded a deployment/ folder yet.
 		if directApplyRequested() {
 			if err := applyModuleKustomize(ctx, module, env, localApplyManager); err != nil {
+				reportCompletion(evidenceProvider)
 				return fmt.Errorf("cannot apply module-level kustomize: %w", err)
 			}
 		}

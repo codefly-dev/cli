@@ -260,9 +260,10 @@ calling Kubernetes.
 
 `--wait-for` selects the completion stage the deployment must establish before
 it is reported as successful — `applied` (the default: `kubectl apply` succeeded
-and nothing more), `bootstrapped` (the owned Jobs also completed) or `healthy`
+and nothing more), `bootstrapped` (the owned schema-preparation Jobs also completed) or `healthy`
 (the owned workloads also finished rolling out). `--wait-timeout` (default 10m)
-bounds observation. The same flags apply to `codefly deploy module`. See
+is the total observation budget for the command, shared across every service it
+observes. The same flags apply to `codefly deploy module`. See
 [deployment completion stages](deployment-completion.md).
 
 For a complete module promotion, use the GitOps lifecycle:

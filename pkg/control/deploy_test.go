@@ -131,6 +131,24 @@ func TestDeployResultRefusesSuccessShortOfTheRequiredStage(t *testing.T) {
 	require.Equal(t, []string{"Job backend/schema-migrate failed: BackoffLimitExceeded"}, result.RenderedTrees[0].Diagnostics)
 }
 
+// A dry run contacts no cluster, so a caller asking it for health must be
+// refused rather than handed a green result for a stage nothing verified.
+func TestDryRunRefusesACompletionItCannotEstablish(t *testing.T) {
+	plane, err := NewAt(writeWorkspace(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = plane.Close() })
+
+	_, err = plane.Deploy(context.Background(), DeployRequest{
+		Service:    "backend/api",
+		DryRun:     true,
+		Completion: deployments.StageHealthy,
+	})
+
+	require.ErrorContains(t, err, "a dry run cannot establish healthy")
+}
+
 func TestDeployCompletionKeepsAppliedWhenTheCallerNamesNoStage(t *testing.T) {
 	require.Equal(t, deployments.StageApplied, deployCompletion(&DeployRequest{}).Stage)
 	require.Equal(t, deployments.DefaultCompletionTimeout, deployCompletion(&DeployRequest{}).Timeout)
