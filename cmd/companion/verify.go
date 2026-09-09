@@ -159,6 +159,22 @@ func isManifestNotFound(output string) bool {
 		strings.Contains(lower, "manifest unknown")
 }
 
+// authenticatedManifestInspect runs `docker manifest inspect <tag>` with the
+// ambient docker credentials, and is the lookup for deciding whether a tag is
+// already taken.
+//
+// The anonymous probe below cannot answer that question: a package that has
+// never been pushed and a package that exists but is private both come back
+// "denied", so an anonymous caller has to guess, and the safe-looking guess
+// ("assume absent, publish it") is the one that overwrites a live tag. With
+// credentials the two separate — an existing private package resolves, an
+// absent one does not — which is what makes the skip decision sound.
+func authenticatedManifestInspect(tag string) (ok bool, output string) {
+	cmd := exec.Command("docker", "manifest", "inspect", tag)
+	out, runErr := cmd.CombinedOutput()
+	return runErr == nil, string(out)
+}
+
 // anonymousManifestInspect runs `docker manifest inspect <tag>` with
 // DOCKER_CONFIG pointed at a throwaway directory holding an empty config,
 // so the lookup carries no stored credentials regardless of what the

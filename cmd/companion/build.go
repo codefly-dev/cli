@@ -13,6 +13,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// baseCompanionName is the companion every other companion builds on: it
+// is built first and its failure aborts the run.
+const baseCompanionName = "codefly"
+
+// baseImageArg is the build argument a companion Dockerfile declares for the
+// codefly companion image it builds on. core owns the Dockerfile and names the
+// dependency; this CLI is the builder core's BuildSpec.Base delegates to, and
+// resolving that name to a reference is this side of the contract.
+//
+// The Dockerfiles carry a default (ARG CODEFLY_BASE_IMAGE=...:0.0.4) so a bare
+// `docker build` works. That default is a pinned literal, so a build that does
+// not pass this argument silently bakes in whatever base the Dockerfile was
+// last edited against, no matter which version info.codefly.yaml pins now.
+const baseImageArg = "CODEFLY_BASE_IMAGE"
+
 // BuildCmd builds one or more companion Docker images.
 //
 // Order: when --all is in play, the codefly base image is built FIRST.
@@ -79,7 +94,8 @@ func BuildAll(coreDir string, opts BuildOptions) error {
 		return err
 	}
 	targets = sortCompanionsForBuild(targets)
-	return buildTargets(coreDir, targets, opts)
+	_, err = buildTargets(coreDir, targets, opts)
+	return err
 }
 
 func runBuild(cmd *cobra.Command, args []string) error {
@@ -103,7 +119,8 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := BuildOptions{Push: push, ForceDocker: forceDocker, Pull: pull, Platform: platform}
-	return buildTargets(coreDir, targets, opts)
+	_, err = buildTargets(coreDir, targets, opts)
+	return err
 }
 
 // resolveCoreDir turns the --core-dir flag (or, when empty, an upward walk
@@ -150,15 +167,21 @@ func selectTargets(coreDir string, all bool, args []string) ([]*Companion, error
 
 // buildTargets builds the given companions in the order provided. It
 // cross-compiles the linux CLI once up front when any target needs it
-// (language companions COPY it). Returns the first build/push error.
-func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error {
+// (language companions COPY it), and resolves the base companion reference
+// for any dependent that takes one.
+//
+// It returns the companions it actually built and pushed alongside any error,
+// including on a partial failure: the caller records that set for provenance
+// attestation, and losing it would either drop provenance for images that
+// were published or invite attesting the whole declared set instead.
+func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*Companion, error) {
 	platforms, err := resolveDockerPlatforms(opts.Platform)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	multiPlatform := len(platforms) > 1
 	if multiPlatform && !opts.Push {
-		return fmt.Errorf("multi-platform companion builds require --push")
+		return nil, fmt.Errorf("multi-platform companion builds require --push")
 	}
 
 	// Companion Dockerfiles select bin/linux/$TARGETARCH/codefly. Produce
@@ -167,18 +190,42 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 	if needsLinuxCLI(targets) {
 		for _, platform := range platforms {
 			if err := buildLinuxCLI(coreDir, platform.Arch); err != nil {
-				return fmt.Errorf("cross-compile codefly CLI for %s: %w", platform.Value, err)
+				return nil, fmt.Errorf("cross-compile codefly CLI for %s: %w", platform.Value, err)
 			}
 		}
+	}
+
+	// Resolve the base reference once, and only when something actually
+	// consumes it, so a companion set without a base companion still builds.
+	baseImage := ""
+	for _, c := range targets {
+		declares, err := declaresBaseImageArg(c)
+		if err != nil {
+			return nil, err
+		}
+		if !declares || isBaseCompanion(c.Name) {
+			continue
+		}
+		if baseImage, err = resolveBaseImage(coreDir); err != nil {
+			return nil, fmt.Errorf("%s builds on the %s companion: %w", c.Name, baseCompanionName, err)
+		}
+		break
 	}
 
 	// Push failures are collected rather than returned immediately. A first
 	// push of a new companion lands in a ghcr package that is private until
 	// someone flips it in the UI, so aborting the loop there would leave the
 	// rest of the fleet unpublished over a condition that has nothing to do
-	// with them. Build failures still abort: language companions COPY --from
-	// the base image, so a failed build genuinely invalidates what follows.
+	// with them. Build failures of a leaf companion are collected for the same
+	// reason: nothing is built from them, so one flaky apk mirror must not
+	// strand every companion ordered after it.
 	var pushFailures []string
+	var buildFailures []string
+	// Companions this run actually built and pushed. Provenance attestation
+	// must cover these and nothing else: a tag skipped as already published
+	// was produced by some earlier run, and signing it here would attribute
+	// a build to this one that never happened.
+	var published []*Companion
 
 	for _, c := range targets {
 		// Skip companions that aren't built as images. A directory with an
@@ -194,19 +241,32 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 			method = "nix"
 		}
 		if multiPlatform && method == "nix" {
-			return fmt.Errorf("multi-platform companion %s must use Docker; pass --force-docker", c.Name)
+			return published, fmt.Errorf("multi-platform companion %s must use Docker; pass --force-docker", c.Name)
 		}
 		fmt.Printf("==> Building %s (%s) via %s\n", c.Tag(), c.Dir, method)
+
+		// The base builds itself; only its dependents take it as an argument.
+		companionBase := ""
+		if !isBaseCompanion(c.Name) {
+			companionBase = baseImage
+		}
 
 		var buildErr error
 		switch method {
 		case "nix":
 			buildErr = buildWithNix(c)
 		default:
-			buildErr = buildWithDocker(c, coreDir, opts.Pull, platforms, opts.Push)
+			buildErr = buildWithDocker(c, coreDir, opts.Pull, platforms, opts.Push, companionBase)
 		}
 		if buildErr != nil {
-			return fmt.Errorf("build %s failed: %w", c.Name, buildErr)
+			// The base is the one build whose failure invalidates what
+			// follows: every other companion resolves it as their FROM.
+			if isBaseCompanion(c.Name) {
+				return published, fmt.Errorf("build %s failed, and every other companion builds on it: %w", c.Name, buildErr)
+			}
+			fmt.Printf("    FAILED   %s\n", c.Tag())
+			buildFailures = append(buildFailures, fmt.Sprintf("%s: %v", c.Name, buildErr))
+			continue
 		}
 		fmt.Printf("    built %s\n", c.Tag())
 
@@ -220,13 +280,56 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 			}
 			fmt.Printf("    pushed %s\n", c.Tag())
 		}
+		if opts.Push {
+			published = append(published, c)
+		}
 	}
 
-	if len(pushFailures) > 0 {
-		return fmt.Errorf("%d companion push(es) failed:\n  %s",
-			len(pushFailures), strings.Join(pushFailures, "\n  "))
+	failures := make([]string, 0, len(buildFailures)+len(pushFailures))
+	failures = append(failures, buildFailures...)
+	failures = append(failures, pushFailures...)
+	if len(failures) > 0 {
+		return published, fmt.Errorf("%d companion build/push(es) failed:\n  %s",
+			len(failures), strings.Join(failures, "\n  "))
 	}
-	return nil
+	return published, nil
+}
+
+// isBaseCompanion reports whether other companions build on this one. It is
+// the same "codefly first" fact sortCompanionsForBuild orders by, named once
+// so the ordering and the abort rule cannot disagree.
+func isBaseCompanion(name string) bool {
+	return name == baseCompanionName
+}
+
+// declaresBaseImageArg reports whether this companion's Dockerfile takes the
+// base companion image as a build argument. Only those builds need the
+// resolved reference passed, and only they are broken by its absence.
+func declaresBaseImageArg(c *Companion) (bool, error) {
+	if !c.HasDockerfile {
+		return false, nil
+	}
+	content, err := os.ReadFile(filepath.Join(c.Dir, "Dockerfile"))
+	if err != nil {
+		return false, fmt.Errorf("read %s Dockerfile: %w", c.Name, err)
+	}
+	return strings.Contains(string(content), baseImageArg), nil
+}
+
+// resolveBaseImage returns the reference for the base companion at the version
+// currently pinned in its info.codefly.yaml.
+//
+// It reads the base off disk rather than out of the target list on purpose:
+// the base is routinely absent from targets — a single named build, or a
+// publish run that skipped it as already published — and its dependents still
+// have to be built against it. Taking it from the targets would silently fall
+// back to the Dockerfile's pinned default in exactly those runs.
+func resolveBaseImage(coreDir string) (string, error) {
+	base, err := LoadCompanion(filepath.Join(coreDir, "companions", baseCompanionName))
+	if err != nil {
+		return "", fmt.Errorf("resolve the %s base image every other companion builds on: %w", baseCompanionName, err)
+	}
+	return base.Tag(), nil
 }
 
 // listCompanionsRequired lists every companion under root. The bare
@@ -253,7 +356,7 @@ func listCompanionsRequired(root string) ([]*Companion, error) {
 func sortCompanionsForBuild(in []*Companion) []*Companion {
 	priority := func(name string) int {
 		switch name {
-		case "codefly":
+		case baseCompanionName:
 			return 0
 		case "go", "python", "node":
 			return 1
@@ -282,7 +385,7 @@ func sortCompanionsForBuild(in []*Companion) []*Companion {
 func needsLinuxCLI(targets []*Companion) bool {
 	for _, c := range targets {
 		switch c.Name {
-		case "codefly", "go", "python", "node", "execution":
+		case baseCompanionName, "go", "python", "node", "execution":
 			return true
 		}
 	}
@@ -360,7 +463,7 @@ func resolveDockerPlatforms(value string) ([]dockerPlatform, error) {
 
 // buildWithDocker uses the ordinary daemon build for one platform and an
 // atomic buildx manifest push for multiple platforms.
-func buildWithDocker(c *Companion, coreDir string, pull bool, platforms []dockerPlatform, push bool) error {
+func buildWithDocker(c *Companion, coreDir string, pull bool, platforms []dockerPlatform, push bool, baseImage string) error {
 	if !c.HasDockerfile {
 		return fmt.Errorf("no Dockerfile in %s", c.Dir)
 	}
@@ -379,6 +482,13 @@ func buildWithDocker(c *Companion, coreDir string, pull bool, platforms []docker
 		// latest patch, so a rebuild clears upstream base-image CVEs instead
 		// of reusing the cached older layer.
 		dockerArgs = append(dockerArgs, "--pull")
+	}
+	if baseImage != "" {
+		// Without this the Dockerfile's own ARG default wins, and that default
+		// is a pinned literal: bumping companions/codefly/info.codefly.yaml
+		// would publish dependents still built on the previous base, with
+		// nothing in build, push or verify reporting the mismatch.
+		dockerArgs = append(dockerArgs, "--build-arg", baseImageArg+"="+baseImage)
 	}
 	dockerArgs = append(dockerArgs, "-f", dockerfile, "-t", c.Tag())
 	if len(platforms) > 1 {
