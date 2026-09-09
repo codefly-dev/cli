@@ -2,6 +2,7 @@ package generators
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 
 	"github.com/codefly-dev/core/languages"
@@ -32,12 +33,20 @@ func TestMarkUpstreamModulesAsImportsForGo(t *testing.T) {
 				Package: googleproto.String("google.protobuf"),
 			},
 			{
+				Name:    googleproto.String("google/protobuf/compiler/plugin.proto"),
+				Package: googleproto.String("google.protobuf.compiler"),
+			},
+			{
 				Name:    googleproto.String("google/api/annotations.proto"),
 				Package: googleproto.String("google.api"),
 			},
 			{
 				Name:    googleproto.String("google/rpc/status.proto"),
 				Package: googleproto.String("google.rpc"),
+			},
+			{
+				Name:    googleproto.String("google/type/money.proto"),
+				Package: googleproto.String("google.type"),
 			},
 			{
 				Name:    googleproto.String("buf/validate/validate.proto"),
@@ -63,12 +72,14 @@ func TestMarkUpstreamModulesAsImportsForGo(t *testing.T) {
 		},
 	}
 
-	image := markSet(t, set, languages.GO)
+	image, _ := markSet(t, set, languages.GO)
 
 	want := map[string]string{
 		"google/protobuf/timestamp.proto":       "",
+		"google/protobuf/compiler/plugin.proto": "",
 		"google/api/annotations.proto":          "buf.build/googleapis/googleapis",
 		"google/rpc/status.proto":               "buf.build/googleapis/googleapis",
+		"google/type/money.proto":               "buf.build/googleapis/googleapis",
 		"buf/validate/validate.proto":           "buf.build/bufbuild/protovalidate",
 		"buf/validate/priv/private.proto":       "buf.build/bufbuild/protovalidate",
 		"saas/accounts/v1/accounts.proto":       "-",
@@ -91,20 +102,30 @@ func TestMarkUpstreamModulesAsImportsForGo(t *testing.T) {
 		}
 	}
 
-	own := image.GetFile()[5]
+	own := image.GetFile()[7]
 	if len(own.GetDependency()) != 3 {
 		t.Errorf("module file lost its dependencies: %v", own.GetDependency())
 	}
 }
 
-// TestMarkUpstreamModulesAsImportsOnlyMapsGo pins the language gate. Only the
-// Go template runs managed mode, and only it lists googleapis and
-// protovalidate in go_package_prefix.except; the TypeScript and Python
-// bindings import a dependency's own generated output unconditionally, so
-// dropping those files there would leave the module's bindings importing a
-// file buf never wrote. The well-known types are dropped for every language:
-// every runtime ships them.
-func TestMarkUpstreamModulesAsImportsOnlyMapsGo(t *testing.T) {
+// TestMarkUpstreamModulesAsImportsSkipsTypeScript pins the language gate, and
+// pins that it is TypeScript-shaped, not Go-shaped.
+//
+// Go and Python both resolve a dropped file upstream: Go through the
+// go_package managed mode leaves pointing at the canonical package, Python
+// through an absolute `from buf.validate import ...` that only gets rewritten
+// under the library's own package when the tree actually contains that root.
+// Leaving Python vendoring its own copy is not a safe default — a consumer
+// that also installs protovalidate hits the same duplicate registration the Go
+// client used to, as `duplicate file name buf/validate/validate.proto` out of
+// the descriptor pool.
+//
+// TypeScript genuinely cannot: protobuf-es emits a relative import of the
+// dependency's own generated file, which no npm package can satisfy, so
+// dropping the file would leave the bindings importing something buf never
+// wrote. The well-known types are dropped for every language: every runtime
+// ships them.
+func TestMarkUpstreamModulesAsImportsSkipsTypeScript(t *testing.T) {
 	set := &descriptorpb.FileDescriptorSet{
 		File: []*descriptorpb.FileDescriptorProto{
 			{
@@ -122,12 +143,16 @@ func TestMarkUpstreamModulesAsImportsOnlyMapsGo(t *testing.T) {
 		},
 	}
 
-	for _, lang := range []languages.Language{languages.TYPESCRIPT, languages.PYTHON} {
-		image := markSet(t, set, lang)
+	for lang, mapsShared := range map[languages.Language]bool{
+		languages.GO:         true,
+		languages.PYTHON:     true,
+		languages.TYPESCRIPT: false,
+	} {
+		image, _ := markSet(t, set, lang)
 		want := map[string]bool{
 			"google/protobuf/timestamp.proto": true,
-			"buf/validate/validate.proto":     false,
-			"google/api/annotations.proto":    false,
+			"buf/validate/validate.proto":     mapsShared,
+			"google/api/annotations.proto":    mapsShared,
 		}
 		for _, file := range image.GetFile() {
 			isImport, _ := bufImageExtension(t, file)
@@ -135,6 +160,52 @@ func TestMarkUpstreamModulesAsImportsOnlyMapsGo(t *testing.T) {
 				t.Errorf("%s: %s is_import = %v, want %v", lang, file.GetName(), isImport, want[file.GetName()])
 			}
 		}
+	}
+}
+
+// TestMarkUpstreamModulesAsImportsReportsPythonPackages pins the dependency
+// hand-off: a Python library that stops carrying its own copy of a shared
+// module has to declare the distribution that supplies it instead, so the
+// marking step is what names those distributions.
+func TestMarkUpstreamModulesAsImportsReportsPythonPackages(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    googleproto.String("google/protobuf/timestamp.proto"),
+				Package: googleproto.String("google.protobuf"),
+			},
+			{
+				Name:    googleproto.String("google/api/annotations.proto"),
+				Package: googleproto.String("google.api"),
+			},
+			{
+				Name:    googleproto.String("google/rpc/status.proto"),
+				Package: googleproto.String("google.rpc"),
+			},
+			{
+				Name:    googleproto.String("buf/validate/validate.proto"),
+				Package: googleproto.String("buf.validate"),
+			},
+		},
+	}
+
+	_, marked := markSet(t, set, languages.PYTHON)
+	got := pythonPackagesFor(marked)
+	want := []string{"googleapis-common-protos", "protovalidate"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("pythonPackagesFor = %v, want %v", got, want)
+	}
+
+	// The well-known types come from protobuf, which the scaffold already
+	// depends on, so a contract importing only those adds nothing.
+	_, wktOnly := markSet(t, &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{{
+			Name:    googleproto.String("google/protobuf/timestamp.proto"),
+			Package: googleproto.String("google.protobuf"),
+		}},
+	}, languages.PYTHON)
+	if got := pythonPackagesFor(wktOnly); len(got) != 0 {
+		t.Fatalf("pythonPackagesFor(well-known types only) = %v, want none", got)
 	}
 }
 
@@ -158,7 +229,7 @@ func TestMarkUpstreamModulesAsImportsWireFormat(t *testing.T) {
 		},
 	}
 
-	image := markSet(t, set, languages.GO)
+	image, _ := markSet(t, set, languages.GO)
 
 	// Field 8042, length-delimited (0xd2 0xf6 0x03), wrapping is_import=true
 	// (0x08 0x01).
@@ -184,19 +255,30 @@ func TestMarkUpstreamModulesAsImportsWireFormat(t *testing.T) {
 	}
 }
 
-func markSet(t *testing.T, set *descriptorpb.FileDescriptorSet, lang languages.Language) *descriptorpb.FileDescriptorSet {
+func markSet(t *testing.T, set *descriptorpb.FileDescriptorSet, lang languages.Language) (*descriptorpb.FileDescriptorSet, []upstreamProtoModule) {
 	t.Helper()
-	// markUpstreamModulesAsImports mutates the files it marks, so every case
-	// starts from its own copy of the fixture.
-	data, err := markUpstreamModulesAsImports(googleproto.Clone(set).(*descriptorpb.FileDescriptorSet), lang)
+	before, err := googleproto.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, marked, err := markUpstreamModulesAsImports(set, lang)
 	if err != nil {
 		t.Fatalf("markUpstreamModulesAsImports(%s): %v", lang, err)
+	}
+	// The caller keeps reading the parsed contract after marking it (see
+	// targetFilesForPackage), so the marking must not reach back into it.
+	after, err := googleproto.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("markUpstreamModulesAsImports(%s) mutated its argument", lang)
 	}
 	var image descriptorpb.FileDescriptorSet
 	if err := googleproto.Unmarshal(data, &image); err != nil {
 		t.Fatalf("unmarshal marked image: %v", err)
 	}
-	return &image
+	return &image, marked
 }
 
 // bufImageExtension reads back the

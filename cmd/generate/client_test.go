@@ -202,6 +202,8 @@ func TestGenerateClientDoesNotVendorUpstreamProtoModules(t *testing.T) {
 	for _, vendored := range [][]string{
 		{"google", "protobuf"},
 		{"google", "api"},
+		{"google", "rpc"},
+		{"google", "type"},
 		{"buf", "validate"},
 	} {
 		dir := filepath.Join(append([]string{goDir, "gen"}, vendored...)...)
@@ -214,11 +216,70 @@ func TestGenerateClientDoesNotVendorUpstreamProtoModules(t *testing.T) {
 	assertFileContains(t, bindings, "google.golang.org/protobuf/types/known/timestamppb")
 	assertFileContains(t, bindings, "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate")
 	assertFileContains(t, bindings, "google.golang.org/genproto/googleapis/api/annotations")
+	assertFileContains(t, bindings, "google.golang.org/genproto/googleapis/rpc/status")
+	assertFileContains(t, bindings, "google.golang.org/genproto/googleapis/type/money")
 	goVetLibrary(t, goDir)
 }
 
+// TestGenerateClientPythonMapsUpstreamProtoModules covers the one Python shape
+// that still emitted its own copies of the shared modules: a facade run strips
+// them from the image before generating, but --no-facade does not, so the
+// bindings carried a second copy of buf/validate/validate.proto and any
+// consumer that also installed protovalidate hit the same duplicate
+// registration the Go client did, out of the descriptor pool rather than the
+// proto registry.
+//
+// Dropping the files is only half of it — the bindings then import
+// buf.validate.validate_pb2 absolutely, so the library has to declare the
+// distributions that supply those modules.
+func TestGenerateClientPythonMapsUpstreamProtoModules(t *testing.T) {
+	requireQualify(t)
+	ctx := context.Background()
+	contractsDir := writeUpstreamModulesContractsFixture(t)
+
+	workspace := &resources.Workspace{Name: "qualify-ws", Layout: resources.LayoutKindModules}
+	wsDir := filepath.Join(t.TempDir(), "ws")
+	if err := workspace.SaveToDirUnsafe(ctx, wsDir); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(wsDir)
+	resetClientFlags(t)
+	clientFrom = "contracts:" + contractsDir
+	clientLanguages = []string{"python"}
+	clientName = "accounts-client"
+	clientNoFacade = true
+	clientOutput = filepath.Join(t.TempDir(), "lib")
+
+	if err := ClientCmd.RunE(ClientCmd, nil); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+
+	genDir := filepath.Join(clientOutput, "python", "accounts_client", "_gen")
+	for _, vendored := range [][]string{
+		{"google", "protobuf"},
+		{"google", "api"},
+		{"google", "rpc"},
+		{"google", "type"},
+		{"buf", "validate"},
+	} {
+		dir := filepath.Join(append([]string{genDir}, vendored...)...)
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("_gen/%s was generated (stat error: %v)", strings.Join(vendored, "/"), err)
+		}
+	}
+
+	bindings := filepath.Join(genDir, "accounts", "v1", "accounts_pb2.py")
+	assertFileContains(t, bindings, "from buf.validate import validate_pb2")
+	assertFileContains(t, bindings, "from google.api import annotations_pb2")
+
+	pyproject := filepath.Join(clientOutput, "python", "pyproject.toml")
+	assertFileContains(t, pyproject, `"protovalidate"`)
+	assertFileContains(t, pyproject, `"googleapis-common-protos"`)
+}
+
 // writeUpstreamModulesContractsFixture compiles a proto importing the
-// well-known types, googleapis annotations and protovalidate into a real
+// well-known types, three googleapis families and protovalidate into a real
 // descriptor set (the same companion buf run `generate contracts` uses) and
 // writes it as a module's committed API contract catalog, without needing a
 // service agent to scaffold one. Returns the contracts/api directory
@@ -249,10 +310,14 @@ import "buf/validate/validate.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
+import "google/rpc/status.proto";
+import "google/type/money.proto";
 
 message Account {
   string id = 1 [(buf.validate.field).string.min_len = 1];
   google.protobuf.Timestamp created_at = 2;
+  google.type.Money balance = 3;
+  google.rpc.Status last_error = 4;
 }
 
 service Accounts {

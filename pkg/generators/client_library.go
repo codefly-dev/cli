@@ -65,13 +65,15 @@ func mergeGoEntry(langDir, raw, moduleName, goModule string) error {
 	return moveTreeSplitBySuffix(raw, genDir, langDir, "_facade.pb.go")
 }
 
-// finalizeGoLibrary writes go.mod (if absent) and best-effort tidies it, once
-// every entry has been merged in.
+// finalizeGoLibrary writes go.mod (if absent), resolves it and proves the
+// library compiles, once every entry has been merged in.
 func finalizeGoLibrary(langDir, goModule string) (generatedLanguageExport, error) {
 	if err := writeGoModule(langDir, goModule); err != nil {
 		return generatedLanguageExport{}, err
 	}
-	bestEffortGoModTidy(langDir)
+	if err := resolveAndVerifyGoLibrary(langDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
 	return generatedLanguageExport{Name: "go", Path: "go/", Exports: []string{goModule}}, nil
 }
 
@@ -138,7 +140,7 @@ func mergePythonEntry(pkgDir, raw, moduleName, pyPackage string) error {
 	return rewritePythonImportPrefix(pkgDir, findPythonImportRoots(raw, facadeFileName), pyPackage+"._gen")
 }
 
-func finalizePythonLibrary(langDir, pyPackage string) (generatedLanguageExport, error) {
+func finalizePythonLibrary(langDir, pyPackage string, upstreamPackages []string) (generatedLanguageExport, error) {
 	pkgDir := filepath.Join(langDir, pyPackage)
 	genDir := filepath.Join(pkgDir, "_gen")
 	if err := writePythonInitFiles(genDir); err != nil {
@@ -150,7 +152,57 @@ func finalizePythonLibrary(langDir, pyPackage string) (generatedLanguageExport, 
 	if err := writePythonScaffold(langDir, pyPackage); err != nil {
 		return generatedLanguageExport{}, err
 	}
+	if err := ensurePythonDependencies(langDir, upstreamPackages); err != nil {
+		return generatedLanguageExport{}, err
+	}
 	return generatedLanguageExport{Name: "python", Path: "python/", Exports: []string{pyPackage}}, nil
+}
+
+// pyprojectDependenciesRe matches pyproject.toml's single-line project
+// dependencies array, the shape writePythonScaffold writes.
+var pyprojectDependenciesRe = regexp.MustCompile(`(?m)^dependencies = \[([^\]]*)\]$`)
+
+// ensurePythonDependencies adds any missing package to pyproject.toml's
+// dependencies, in place.
+//
+// The scaffold is written once and never overwritten, so a library first
+// generated before its bindings stopped vendoring a shared proto module would
+// otherwise keep a dependency list that no longer covers its own imports: the
+// bindings import `buf.validate.validate_pb2` absolutely, expecting the
+// upstream distribution to supply it. Editing the array rather than rewriting
+// the file keeps every hand-edit around it intact.
+func ensurePythonDependencies(langDir string, packages []string) error {
+	if len(packages) == 0 {
+		return nil
+	}
+	path := filepath.Join(langDir, "pyproject.toml")
+	data, err := os.ReadFile(path) //nolint:gosec // path is a file this command just wrote
+	if err != nil {
+		return err
+	}
+	match := pyprojectDependenciesRe.FindSubmatchIndex(data)
+	if match == nil {
+		return fmt.Errorf("cannot find a dependencies array in %s", path)
+	}
+	existing := string(data[match[2]:match[3]])
+	var missing []string
+	for _, pkg := range packages {
+		if !strings.Contains(existing, `"`+pkg+`"`) {
+			missing = append(missing, `"`+pkg+`"`)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	added := existing
+	if strings.TrimSpace(added) != "" {
+		added += ", "
+	}
+	added += strings.Join(missing, ", ")
+	updated := append([]byte{}, data[:match[2]]...)
+	updated = append(updated, added...)
+	updated = append(updated, data[match[3]:]...)
+	return os.WriteFile(path, updated, 0o644) //nolint:gosec
 }
 
 // assembleOpenAPILibrary synthesizes a basev0.Endpoint carrying the raw
@@ -484,6 +536,38 @@ require (
 )
 `, goModule, goLanguageVersion, pinnedConnectVersion, pinnedProtobufVersion)
 	return writeFileIfMissing(filepath.Join(dir, "go.mod"), []byte(content))
+}
+
+// resolveAndVerifyGoLibrary resolves the generated library's dependencies and
+// compiles it. Both steps are hard failures, because neither the module set
+// nor the import paths of the generated bindings are knowable from writeGoModule
+// alone.
+//
+// The bindings import whatever the contract's shared proto modules resolve to
+// upstream (buf.build/gen/go/..., google.golang.org/genproto/...), which reach
+// go.mod only through `go mod tidy`; and they only resolve at all while buf's
+// managed mode keeps those modules' go_package pointing upstream, which this
+// command asks for by stamping module identities onto the image but cannot
+// itself enforce — the except list lives in the companion's buf.gen.yaml. If
+// either half stops holding, the output is a library that does not compile,
+// and a published library version is immutable. Compiling it here is what
+// turns that into a failed command instead of a broken release.
+func resolveAndVerifyGoLibrary(dir string) error {
+	binary, err := exec.LookPath("go")
+	if err != nil {
+		return fmt.Errorf("go must be on PATH to resolve and verify the generated Go library at %s: %w", dir, err)
+	}
+	for _, args := range [][]string{{"mod", "tidy"}, {"build", "./..."}} {
+		cmd := exec.Command(binary, args...)
+		cmd.Dir = dir
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if runErr := cmd.Run(); runErr != nil {
+			return fmt.Errorf("generated Go library at %s does not build (`go %s`): %w\n%s",
+				dir, strings.Join(args, " "), runErr, out.String())
+		}
+	}
+	return nil
 }
 
 // bestEffortGoModTidy runs `go mod tidy` if go is on PATH, so the checked-in

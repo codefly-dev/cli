@@ -263,11 +263,14 @@ func generateProtobufLanguageEntries(ctx context.Context, lang languages.Languag
 		return generatedLanguageExport{}, fmt.Errorf("language %s is not supported for client generation", lang)
 	}
 
+	var mapped []upstreamProtoModule
 	for i := range entries {
 		entry := &entries[i]
-		if err := generateOneProtobufEntry(ctx, lang, langDir, entry, facade, goModule, pyPackage); err != nil {
+		marked, err := generateOneProtobufEntry(ctx, lang, langDir, entry, facade, goModule, pyPackage)
+		if err != nil {
 			return generatedLanguageExport{}, fmt.Errorf("entry %s/%s/%s: %w", entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint, err)
 		}
+		mapped = append(mapped, marked...)
 	}
 
 	switch lang {
@@ -276,16 +279,19 @@ func generateProtobufLanguageEntries(ctx context.Context, lang languages.Languag
 	case languages.TYPESCRIPT:
 		return finalizeTypeScriptLibrary(langDir, npmPackage)
 	case languages.PYTHON:
-		return finalizePythonLibrary(langDir, pyPackage)
+		return finalizePythonLibrary(langDir, pyPackage, pythonPackagesFor(mapped))
 	default:
 		return generatedLanguageExport{}, fmt.Errorf("language %s is not supported for client generation", lang)
 	}
 }
 
-func generateOneProtobufEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, facade bool, goModule, pyPackage string) error {
+// generateOneProtobufEntry generates one contract entry into langDir and
+// reports the upstream proto modules it dropped from the output, which the
+// library's own dependency declaration must now cover.
+func generateOneProtobufEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, facade bool, goModule, pyPackage string) ([]upstreamProtoModule, error) {
 	raw, err := os.MkdirTemp("", "codefly-client-raw")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(raw) }()
 
@@ -297,33 +303,35 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		Services:    entry.Services,
 		Facade:      facade,
 	}
+	var mapped []upstreamProtoModule
 	if len(entry.ProtoSources) > 0 {
 		req.Sources = entry.ProtoSources
 	} else {
 		var set descriptorpb.FileDescriptorSet
 		if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
-			return fmt.Errorf("cannot parse contract descriptor set: %w", err)
+			return nil, fmt.Errorf("cannot parse contract descriptor set: %w", err)
 		}
-		image, err := markUpstreamModulesAsImports(&set, lang)
+		image, marked, err := markUpstreamModulesAsImports(&set, lang)
 		if err != nil {
-			return fmt.Errorf("cannot prepare contract descriptor set: %w", err)
+			return nil, fmt.Errorf("cannot prepare contract descriptor set: %w", err)
 		}
 		req.DescriptorSet = image
 		req.TargetFiles = targetFilesForPackage(&set, entry.Endpoint.Package)
+		mapped = marked
 	}
 	if err := coreproto.GenerateClient(ctx, req); err != nil {
-		return err
+		return nil, err
 	}
 
 	switch lang {
 	case languages.GO:
-		return mergeGoEntry(langDir, raw, moduleName, goModule)
+		return mapped, mergeGoEntry(langDir, raw, moduleName, goModule)
 	case languages.TYPESCRIPT:
-		return mergeTypeScriptEntry(langDir, raw)
+		return mapped, mergeTypeScriptEntry(langDir, raw)
 	case languages.PYTHON:
-		return mergePythonEntry(filepath.Join(langDir, pyPackage), raw, moduleName, pyPackage)
+		return mapped, mergePythonEntry(filepath.Join(langDir, pyPackage), raw, moduleName, pyPackage)
 	default:
-		return fmt.Errorf("language %s is not supported for client generation", lang)
+		return nil, fmt.Errorf("language %s is not supported for client generation", lang)
 	}
 }
 
@@ -355,17 +363,26 @@ func generateOpenAPILanguageEntry(ctx context.Context, lang languages.Language, 
 // package, never the path alone: a module that keeps its own .proto under one
 // of these directories (a vendored copy is the common reason) still declares
 // its own package, and marking such a file as an import would silently drop
-// the bindings this run exists to produce.
+// the bindings this run exists to produce. A sub-package of the module's own
+// counts as the module's, which covers both protovalidate's buf.validate.priv
+// and google/protobuf/compiler/plugin.proto (package google.protobuf.compiler,
+// a well-known type buf itself resolves from the protobuf runtime).
 type upstreamProtoModule struct {
 	pathPrefix   string
 	protoPackage string
 
-	// bufModule, when set, names the buf.build module publishing these files.
-	// The Go template's managed-mode go_package_prefix.except list names the
-	// same module, so stamping the identity onto the image keeps their
+	// bufModule, when non-zero, names the buf.build module publishing these
+	// files. The Go template's managed-mode go_package_prefix.except list names
+	// the same module, so stamping the identity onto the image keeps their
 	// go_package pointing at the canonical Go package instead of being
 	// rewritten to the generated library's own path.
-	bufModule *bufModuleName
+	bufModule bufModuleName
+
+	// pythonPackage is the PyPI distribution shipping these bindings, which the
+	// generated library must depend on once it stops carrying its own copy.
+	// Empty for the well-known types: protobuf itself ships them, and the
+	// scaffold already depends on protobuf.
+	pythonPackage string
 }
 
 // bufModuleName is buf.alpha.module.v1.ModuleName — the module identity buf
@@ -376,31 +393,43 @@ type bufModuleName struct {
 	repository string
 }
 
-// upstreamProtoModules are the shared proto modules buf must never vendor
-// into a generated library. Vendoring is only ever correct for the module's
-// own first-party protos.
-//
-// The well-known types hold for every language: each runtime ships them, and
-// buf's managed mode leaves their go_package alone, so generated code imports
-// them from google.golang.org/protobuf/types/known/*.
-//
-// googleapis and protovalidate are mapped for Go only, where the template's
-// managed-mode except list points them back upstream. The TypeScript and
-// Python templates run no managed mode and their bindings import a
-// dependency's local output unconditionally, so dropping these files there
-// would leave the module's own bindings importing nothing.
-var upstreamProtoModules = []upstreamProtoModule{
-	{pathPrefix: "google/protobuf/", protoPackage: "google.protobuf"},
-	{pathPrefix: "google/api/", protoPackage: "google.api", bufModule: googleapisModule},
-	{pathPrefix: "google/rpc/", protoPackage: "google.rpc", bufModule: googleapisModule},
-	{pathPrefix: "google/type/", protoPackage: "google.type", bufModule: googleapisModule},
-	{pathPrefix: "buf/validate/", protoPackage: "buf.validate", bufModule: protovalidateModule},
+func (n bufModuleName) isZero() bool { return n.repository == "" }
+
+// identity renders the name the way buf's managed-mode except list spells it.
+func (n bufModuleName) identity() string {
+	return n.remote + "/" + n.owner + "/" + n.repository
 }
 
-var (
-	googleapisModule    = &bufModuleName{remote: "buf.build", owner: "googleapis", repository: "googleapis"}
-	protovalidateModule = &bufModuleName{remote: "buf.build", owner: "bufbuild", repository: "protovalidate"}
+const (
+	googleapisPyPI    = "googleapis-common-protos"
+	protovalidatePyPI = "protovalidate"
 )
+
+var (
+	googleapisModule    = bufModuleName{remote: "buf.build", owner: "googleapis", repository: "googleapis"}
+	protovalidateModule = bufModuleName{remote: "buf.build", owner: "bufbuild", repository: "protovalidate"}
+)
+
+// upstreamProtoModules are the shared proto modules buf must never vendor
+// into a generated library: a local copy registers a proto file the consumer's
+// upstream module registers too, and both Go's and Python's registries abort
+// on the duplicate. Vendoring is only ever correct for the module's own
+// first-party protos.
+//
+// Go and Python resolve a dropped file to its upstream package because their
+// generated bindings reference it by an absolute path — a rewritten go_package
+// for Go, an untouched `from buf.validate import ...` for Python (only the
+// roots actually present in the generated tree get rewritten under the
+// library's own package). TypeScript cannot: protobuf-es emits a relative
+// import of the dependency's own generated file, which no npm package can
+// satisfy, so TypeScript keeps its local copies.
+var upstreamProtoModules = []upstreamProtoModule{
+	{pathPrefix: "google/protobuf/", protoPackage: "google.protobuf"},
+	{pathPrefix: "google/api/", protoPackage: "google.api", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
+	{pathPrefix: "google/rpc/", protoPackage: "google.rpc", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
+	{pathPrefix: "google/type/", protoPackage: "google.type", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
+	{pathPrefix: "buf/validate/", protoPackage: "buf.validate", bufModule: protovalidateModule, pythonPackage: protovalidatePyPI},
+}
 
 // buf marks a file that an image carries only to resolve imports with
 // buf.alpha.image.v1.ImageFileExtension.is_import, and records which buf
@@ -417,9 +446,11 @@ const (
 	bufModuleNameRepositoryField = 3
 )
 
-// markUpstreamModulesAsImports marks every file of an upstream proto module
-// in set as a buf image import — stamping its buf module identity when it has
-// one — and returns the re-serialized set.
+// markUpstreamModulesAsImports returns set re-serialized as a buf image whose
+// upstream-module files are marked as imports — each stamped with its buf
+// module identity when it has one — along with the distinct modules it marked.
+// set itself is left untouched: callers keep reading the parsed contract after
+// this returns.
 //
 // A persisted contract is a plain FileDescriptorSet — `generate contracts`
 // builds it with `buf build --as-file-descriptor-set`, which deliberately drops
@@ -428,32 +459,44 @@ const (
 // over. For the well-known types it puts one Go package per type (descriptorpb,
 // durationpb, ...) in a single gen/google/protobuf directory, which the
 // compiler rejects outright. For googleapis and protovalidate it compiles, but
-// registers files the upstream Go modules also register: a consumer that links
+// registers files the upstream modules also register: a consumer that links
 // both — anything using buf.build/go/protovalidate, say — panics in init on a
 // duplicate registration of buf/validate/validate.proto.
-func markUpstreamModulesAsImports(set *descriptorpb.FileDescriptorSet, lang languages.Language) ([]byte, error) {
-	for _, file := range set.GetFile() {
-		module, ok := upstreamModuleFor(file, lang)
-		if !ok {
+func markUpstreamModulesAsImports(set *descriptorpb.FileDescriptorSet, lang languages.Language) ([]byte, []upstreamProtoModule, error) {
+	image, ok := googleproto.Clone(set).(*descriptorpb.FileDescriptorSet)
+	if !ok {
+		return nil, nil, fmt.Errorf("cannot copy contract descriptor set")
+	}
+	var marked []upstreamProtoModule
+	seen := map[string]bool{}
+	for _, file := range image.GetFile() {
+		module, found := upstreamModuleFor(file, lang)
+		if !found {
 			continue
 		}
 		message := file.ProtoReflect()
 		unknown := append(protoreflect.RawFields(nil), message.GetUnknown()...)
-		message.SetUnknown(append(unknown, bufImageFileExtension(module)...))
+		message.SetUnknown(append(unknown, bufImageFileExtension(&module)...))
+		if key := module.bufModule.identity(); !seen[key] {
+			seen[key] = true
+			marked = append(marked, module)
+		}
 	}
-	return googleproto.Marshal(set)
+	data, err := googleproto.Marshal(image)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, marked, nil
 }
 
 func upstreamModuleFor(file *descriptorpb.FileDescriptorProto, lang languages.Language) (upstreamProtoModule, bool) {
 	for _, module := range upstreamProtoModules {
-		if module.bufModule != nil && lang != languages.GO {
+		if !module.bufModule.isZero() && lang == languages.TYPESCRIPT {
 			continue
 		}
 		if !strings.HasPrefix(file.GetName(), module.pathPrefix) {
 			continue
 		}
-		// A sub-package of the module's own is still the module's:
-		// protovalidate publishes buf/validate/priv under buf.validate.priv.
 		pkg := file.GetPackage()
 		if pkg == module.protoPackage || strings.HasPrefix(pkg, module.protoPackage+".") {
 			return module, true
@@ -462,9 +505,9 @@ func upstreamModuleFor(file *descriptorpb.FileDescriptorProto, lang languages.La
 	return upstreamProtoModule{}, false
 }
 
-func bufImageFileExtension(module upstreamProtoModule) []byte {
+func bufImageFileExtension(module *upstreamProtoModule) []byte {
 	extension := protowire.AppendVarint(protowire.AppendTag(nil, bufImageFileIsImportField, protowire.VarintType), 1)
-	if module.bufModule != nil {
+	if !module.bufModule.isZero() {
 		name := protowire.AppendString(protowire.AppendTag(nil, bufModuleNameRemoteField, protowire.BytesType), module.bufModule.remote)
 		name = protowire.AppendString(protowire.AppendTag(name, bufModuleNameOwnerField, protowire.BytesType), module.bufModule.owner)
 		name = protowire.AppendString(protowire.AppendTag(name, bufModuleNameRepositoryField, protowire.BytesType), module.bufModule.repository)
@@ -472,6 +515,22 @@ func bufImageFileExtension(module upstreamProtoModule) []byte {
 		extension = protowire.AppendBytes(protowire.AppendTag(extension, bufImageFileModuleInfoField, protowire.BytesType), info)
 	}
 	return protowire.AppendBytes(protowire.AppendTag(nil, bufImageFileExtensionField, protowire.BytesType), extension)
+}
+
+// pythonPackagesFor is the set of PyPI distributions the modules dropped from
+// a Python library must now be resolved from.
+func pythonPackagesFor(modules []upstreamProtoModule) []string {
+	var packages []string
+	seen := map[string]bool{}
+	for _, module := range modules {
+		if module.pythonPackage == "" || seen[module.pythonPackage] {
+			continue
+		}
+		seen[module.pythonPackage] = true
+		packages = append(packages, module.pythonPackage)
+	}
+	sort.Strings(packages)
+	return packages
 }
 
 // targetFilesForPackage returns the names of the files in set whose proto
