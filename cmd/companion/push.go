@@ -51,7 +51,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot load companion %q: %w", args[0], err)
 	}
 	fmt.Printf("==> Pushing %s\n", c.Tag())
-	if err := pushImage(c.Tag()); err != nil {
+	if _, err := pushImage(c.Tag()); err != nil {
 		return fmt.Errorf("push failed: %w", err)
 	}
 	fmt.Printf("    pushed %s\n", c.Tag())
@@ -74,7 +74,15 @@ var (
 // (the same check `verify` runs) so a push that only succeeded because the
 // operator's local daemon is logged in doesn't silently leave the package
 // private for everyone else. Used by --push and by the standalone PushCmd.
-func pushImage(tag string) error {
+//
+// It returns the digest docker reported for what it uploaded, so a caller that
+// has to name this exact image later — a dependent pinning its base — can do so
+// without re-reading a tag that may have moved since. A non-empty digest means
+// the image reached the registry, which is true even when the error is
+// non-nil: the visibility checks below run after the upload has landed. The
+// digest is empty when docker reported none, and only a caller that needs the
+// pin can judge whether that absence is fatal.
+func pushImage(tag string) (string, error) {
 	host := registryHost(tag)
 	fmt.Printf("    pushing %s to %s\n", tag, host)
 
@@ -88,21 +96,45 @@ func pushImage(tag string) error {
 	runErr := cmd.Run()
 	if runErr != nil {
 		if isPushDenied(captured.String()) {
-			return fmt.Errorf("docker push %s failed: not authenticated for %s\nfix: %s", tag, host, registryLoginHint(tag))
+			return "", fmt.Errorf("docker push %s failed: not authenticated for %s\nfix: %s", tag, host, registryLoginHint(tag))
 		}
-		return fmt.Errorf("docker push %s failed: %w", tag, runErr)
+		return "", fmt.Errorf("docker push %s failed: %w", tag, runErr)
 	}
+
+	// Read once, here, and return it on every path below: from this point the
+	// image is in the registry, and the checks that follow are about its
+	// visibility, not about whether it was uploaded. A caller pinning to this
+	// image needs the digest even when the run is going to fail on privacy —
+	// the alternative is re-reading the tag, which no longer names only this.
+	digest := reportedPushDigest(captured.String())
 
 	ok, verifyOut, err := anonymousManifestInspectRetrying(tag)
 	if err != nil {
-		return fmt.Errorf("push %s succeeded but the anonymous pull check could not run: %w", tag, err)
+		return digest, fmt.Errorf("push %s succeeded but the anonymous pull check could not run: %w", tag, err)
 	}
 	if !ok {
-		return fmt.Errorf(`push %s succeeded but is not publicly pullable: %s
+		return digest, fmt.Errorf(`push %s succeeded but is not publicly pullable: %s
 fix: %s`,
 			tag, strings.TrimSpace(verifyOut), registryPrivacyHint(tag))
 	}
-	return nil
+	return digest, nil
+}
+
+// reportedPushDigest picks the manifest digest out of `docker push` output,
+// which ends with a "<tag>: digest: sha256:<hex> size: <n>" line. Empty when no
+// such line is present.
+func reportedPushDigest(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		_, rest, found := strings.Cut(line, "digest: ")
+		if !found {
+			continue
+		}
+		digest, _, _ := strings.Cut(strings.TrimSpace(rest), " ")
+		if strings.HasPrefix(digest, "sha256:") {
+			return digest
+		}
+	}
+	return ""
 }
 
 // anonymousManifestInspectRetrying retries anonymousManifestInspect up to

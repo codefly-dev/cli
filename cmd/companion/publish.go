@@ -159,6 +159,15 @@ type publishedEntry struct {
 	Companion string `json:"companion"`
 	Version   string `json:"version"`
 	Image     string `json:"image"`
+	// Base is the reference this image was built on, digest-pinned when the
+	// build resolved one. It is recorded because it cannot be recovered later:
+	// the base tag is mutable, so re-deriving it after the run answers with
+	// whatever that tag names then rather than what this build consumed.
+	// Absent for an image that builds on no companion.
+	Base string `json:"base,omitempty"`
+	// Digest is what the registry holds this image under, as reported by the
+	// push that put it there.
+	Digest string `json:"digest,omitempty"`
 }
 
 // writePublishedManifest records what this run actually published, as the
@@ -175,16 +184,18 @@ type publishedEntry struct {
 // An empty list is written as an empty array, not an absent file: "this run
 // published nothing" and "this run never got far enough to say" are different
 // answers and the consumer has to be able to tell them apart.
-func writePublishedManifest(path string, published []*Companion) error {
+func writePublishedManifest(path string, published []publishedImage) error {
 	if path == "" {
 		return nil
 	}
 	entries := make([]publishedEntry, 0, len(published))
-	for _, c := range published {
+	for _, p := range published {
 		entries = append(entries, publishedEntry{
-			Companion: c.Name,
-			Version:   c.Info.Version,
-			Image:     c.Tag(),
+			Companion: p.Companion.Name,
+			Version:   p.Companion.Info.Version,
+			Image:     p.Companion.Tag(),
+			Base:      p.Base,
+			Digest:    p.Digest,
 		})
 	}
 	encoded, err := json.Marshal(entries)

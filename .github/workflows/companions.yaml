@@ -28,11 +28,10 @@ on:
         required: false
         default: 'main'
 
-# Publishing mutates immutable tags, and the attest job below resolves the
-# digest of what publish pushed. Two overlapping runs would interleave those
-# pushes and could have one run attest the other run's image, claiming its
-# source produced bits it never built. Queue instead of cancelling: a cancelled
-# run would leave the fleet half-published.
+# Publishing mutates immutable tags. Two overlapping runs would interleave those
+# pushes, leaving each tag naming whichever run finished last while both report
+# success. Queue instead of cancelling: a cancelled run would leave the fleet
+# half-published.
 concurrency:
   group: companions-publish
   cancel-in-progress: false
@@ -184,20 +183,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Resolving by tag is sound only because this image was pushed by the run
-      # that produced this matrix entry, and the concurrency group above keeps a
-      # second run from moving the tag in between.
-      - name: Resolve the published digest
-        id: digest
+      # The digest comes from the publish run's own report of what it pushed,
+      # not from resolving the tag here. A tag is mutable and this job runs after
+      # the whole publish job has finished, so re-reading it could attest an
+      # image this workflow run never built — a claim that is then pushed to a
+      # public transparency log, where it cannot be withdrawn.
+      - name: Check the publish run reported a digest
         run: |
           set -euo pipefail
-          digest=$(docker buildx imagetools inspect "${{ matrix.image }}" --format '{{ .Manifest.Digest }}')
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          if [ -z "${{ matrix.digest }}" ]; then
+            echo "publish reported no digest for ${{ matrix.image }}; refusing to attest an image this run cannot name exactly" >&2
+            exit 1
+          fi
 
       - uses: actions/attest-build-provenance@v2
         with:
           subject-name: ghcr.io/codefly-dev/${{ matrix.companion }}
-          subject-digest: ${{ steps.digest.outputs.digest }}
+          subject-digest: ${{ matrix.digest }}
           push-to-registry: true
 
   verify:
