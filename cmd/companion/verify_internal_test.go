@@ -59,21 +59,21 @@ exit 1
 	require.Contains(t, err.Error(), "https://github.com/orgs/codefly-dev/packages/container/proto/settings")
 }
 
-// TestManifestExists_PrivatePackagePrintsDockerHubHint is the case the
-// original PR's tests never exercised: Companion.Tag() still produces a
-// Docker Hub tag (codeflydev/<name>:<version>), not a ghcr.io one, so the
-// "make it public" hint must not point at GitHub Packages for this — the
+// TestManifestExists_PrivatePackagePrintsDockerHubHint covers a
+// non-ghcr.io tag directly (registryPrivacyHint is registry-agnostic, even
+// though Companion.Tag() only ever produces ghcr.io ones now): the "make it
+// public" hint must not point at GitHub Packages for a Docker Hub tag — the
 // package doesn't exist there.
 func TestManifestExists_PrivatePackagePrintsDockerHubHint(t *testing.T) {
 	writeFakeDocker(t, `
 echo "denied: requested access to the resource is denied" 1>&2
 exit 1
 `)
-	ok, err := manifestExists("proto", "codeflydev/proto:0.0.13")
+	ok, err := manifestExists("proto", "acme/proto:0.0.13")
 	require.False(t, ok)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "codefly companion publish proto")
-	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/codeflydev/proto/general")
+	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/acme/proto/general")
 	require.NotContains(t, err.Error(), "github.com/orgs")
 }
 
@@ -115,7 +115,7 @@ func TestImageCompanions_DropsNonImageCompanions(t *testing.T) {
 
 func TestIsManifestNotFound(t *testing.T) {
 	for _, s := range []string{
-		"no such manifest: codeflydev/proto:0.0.11",
+		"no such manifest: ghcr.io/codefly-dev/proto:0.0.11",
 		"manifest unknown",
 		"MANIFEST UNKNOWN: manifest unknown", // case-insensitive
 	} {
@@ -128,7 +128,7 @@ func TestIsManifestNotFound(t *testing.T) {
 		"error during connect: dial tcp: i/o timeout",
 		"unauthorized: authentication required",
 		"denied: requested access to the resource is denied",
-		"repository codeflydev/proto not found",
+		"repository ghcr.io/codefly-dev/proto not found",
 		"",
 	} {
 		require.False(t, isManifestNotFound(s), "%q must not be classified as missing", s)
@@ -155,7 +155,7 @@ func TestSelectTargets_SingleByName(t *testing.T) {
 	got, err := selectTargets(root, false, []string{"proto"})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	require.Equal(t, "codeflydev/proto:0.0.11", got[0].Tag())
+	require.Equal(t, "ghcr.io/codefly-dev/proto:0.0.11", got[0].Tag())
 }
 
 func TestSelectTargets_AllRejectsNameArgument(t *testing.T) {

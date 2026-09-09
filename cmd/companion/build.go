@@ -17,8 +17,9 @@ import (
 // BuildCmd builds one or more companion Docker images.
 //
 // Order: when --all is in play, the codefly base image is built FIRST.
-// Language companions (go, python, node) COPY --from=codeflydev/codefly
-// the cross-compiled CLI; if base isn't built first their build fails.
+// Language companions (go, python, node) COPY --from the codefly base
+// image's tag the cross-compiled CLI; if base isn't built first their
+// build fails.
 // This is the same constraint build_companions.sh enforced; we encode
 // it here in code rather than relying on script ordering.
 var BuildCmd = &cobra.Command{
@@ -35,7 +36,8 @@ info.codefly.yaml (declaring version) and either a Dockerfile, a
 flake.nix, or both. When flake.nix is present AND nix is installed,
 the flake build is preferred (reproducible, layered cache).
 
-The image tag is codeflydev/<name>:<version-from-info.codefly.yaml>.
+The image tag is derived from <name> and the version in info.codefly.yaml;
+see Companion.Tag.
 
 Examples:
   codefly companion build proto
@@ -389,9 +391,8 @@ func buildWithDocker(c *Companion, coreDir string, pull bool, platforms []docker
 //     daemon under whatever tag the flake produced
 //
 // We don't currently re-tag — the flake is responsible for setting
-// the tag to codeflydev/<name>:<version> via streamLayeredImage's
-// name argument. If the user wants a different tag, they should
-// edit the flake.
+// the tag via streamLayeredImage's name argument (matching Companion.Tag).
+// If the user wants a different tag, they should edit the flake.
 func buildWithNix(c *Companion) error {
 	build := exec.Command("nix", "build",
 		"--extra-experimental-features", "nix-command flakes",
@@ -492,19 +493,28 @@ func registryHost(tag string) string {
 }
 
 // registryPrivacyHint returns registry-appropriate instructions for making
-// a pushed image publicly accessible. Companion.Tag() still produces
-// codeflydev/<name>:<version> (Docker Hub) until the ghcr.io migration in
-// codefly-dev/core#406 lands, so the hint must match the tag's actual
-// registry rather than assuming ghcr.io.
+// a pushed image publicly accessible. Companion.Tag() only ever produces
+// ghcr.io tags now, but pushImage/manifestExists also accept a bare tag
+// directly, so the hint must match the tag's actual registry rather than
+// assuming ghcr.io.
 func registryPrivacyHint(name, tag string) string {
 	switch registryHost(tag) {
 	case "ghcr.io":
 		return fmt.Sprintf("make it public at https://github.com/orgs/codefly-dev/packages/container/%s/settings", name)
 	case "docker.io":
-		return fmt.Sprintf("make it public at https://hub.docker.com/repository/docker/codeflydev/%s/general", name)
+		return fmt.Sprintf("make it public at https://hub.docker.com/repository/docker/%s/general", dockerHubRepo(tag))
 	default:
 		return fmt.Sprintf("check %s's visibility settings in its registry", tag)
 	}
+}
+
+// dockerHubRepo strips the tag/version suffix from a docker.io reference,
+// leaving the "<namespace>/<name>" repository path Docker Hub URLs use.
+func dockerHubRepo(tag string) string {
+	if i := strings.LastIndex(tag, ":"); i >= 0 {
+		return tag[:i]
+	}
+	return tag
 }
 
 // isPushDenied reports whether `docker push` output indicates the daemon

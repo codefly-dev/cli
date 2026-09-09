@@ -9,9 +9,8 @@ import (
 )
 
 // PushCmd pushes already-built companion images to the registry.
-// Equivalent to running `docker push codeflydev/<name>:<version>`,
-// but reads the version from info.codefly.yaml so the human can't
-// fat-finger a tag mismatch.
+// Equivalent to running `docker push <tag>`, but reads the version from
+// info.codefly.yaml so the human can't fat-finger a tag mismatch.
 //
 // This is a pure publish step — it does not rebuild. Pair with
 // `companion build --push` if you want one-shot build+push.
@@ -19,7 +18,7 @@ var PushCmd = &cobra.Command{
 	Use:   "push <name>",
 	Short: "Push a previously built companion image to its registry",
 	Long: `Push uses the version in <core>/companions/<name>/info.codefly.yaml
-to compute the tag, then runs "docker push codeflydev/<name>:<version>".
+to compute the tag, then runs "docker push <tag>".
 
 The image must already exist locally. Build it first with
 "codefly companion build <name>".`,

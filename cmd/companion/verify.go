@@ -11,9 +11,9 @@ import (
 )
 
 // VerifyCmd asserts that every companion image core/companions/ defines is
-// actually present in the registry. Each image companion pins its tag
-// (codeflydev/<name>:<version>) via info.codefly.yaml and agents pull it at
-// runtime, but nothing otherwise guarantees a pinned tag was ever pushed —
+// actually present in the registry. Each image companion pins its version
+// via info.codefly.yaml and agents pull it at runtime, but nothing
+// otherwise guarantees a pinned tag was ever pushed —
 // a version bump that references an unpublished tag passes review and only
 // fails later, at the companion pull. Wiring `companion verify` into CI
 // turns that late failure into a fast one. verify is the exact inverse of
@@ -29,9 +29,8 @@ var VerifyCmd = &cobra.Command{
 	Use:   "verify [name]",
 	Short: "Verify companion images defined under core/companions exist in the registry",
 	Long: `Verify resolves the tag each image companion pins in its info.codefly.yaml
-(codeflydev/<name>:<version>) and checks the manifest exists in the
-registry via "docker manifest inspect". It verifies exactly the set
-"companion publish" produces.
+and checks the manifest exists in the registry via "docker manifest
+inspect". It verifies exactly the set "companion publish" produces.
 
 With no argument it verifies every image companion under
 <core>/companions/; pass a name to verify just one. It exits non-zero when

@@ -12,17 +12,16 @@ import (
 // registry — `build --push` does the same for one image, but publishing
 // the whole set is the operation CI and release automation care about.
 //
-// core embeds companion tags (codeflydev/<name>:<version>) via each
-// companion's info.codefly.yaml and agents pull those exact tags at
-// runtime; if a pinned tag was never pushed, Codefly-native builds die at
-// the companion pull. `companion publish --all` is the path that keeps the
-// registry in sync with what core references; `companion verify` asserts
-// it stayed that way.
+// core embeds companion tags via each companion's info.codefly.yaml and
+// agents pull those exact tags at runtime; if a pinned tag was never
+// pushed, Codefly-native builds die at the companion pull. `companion
+// publish --all` is the path that keeps the registry in sync with what
+// core references; `companion verify` asserts it stayed that way.
 var PublishCmd = &cobra.Command{
 	Use:   "publish [name]",
 	Short: "Build and push companion images at their pinned versions",
 	Long: `Publish builds each companion and pushes it to the registry under the
-tag codeflydev/<name>:<version-from-info.codefly.yaml>.
+tag pinned in its info.codefly.yaml.
 
 With a name argument, publishes just that companion. With --all, publishes
 every image companion under <core>/companions/, in dependency order

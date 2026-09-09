@@ -537,7 +537,7 @@ sources:
     contract-digest: sha256:…
 generated-by:
   codefly: 0.1.140
-  companion: codeflydev/proto:0.0.13
+  companion: ghcr.io/codefly-dev/proto:0.0.13
   facade: true
 ```
 

@@ -68,10 +68,10 @@ esac
 	require.Contains(t, err.Error(), "https://github.com/orgs/codefly-dev/packages/container/proto/settings")
 }
 
-// TestPushImage_FailsWhenPushedButPrivate_DockerHub is the case the original
-// PR's tests never exercised: Companion.Tag() still produces a Docker Hub
-// tag (codeflydev/<name>:<version>), not a ghcr.io one, so the "make it
-// public" hint must not point at GitHub Packages for this — the package
+// TestPushImage_FailsWhenPushedButPrivate_DockerHub covers a non-ghcr.io tag
+// directly (pushImage's registry hint is registry-agnostic, even though
+// Companion.Tag() only ever produces ghcr.io ones now): the "make it public"
+// hint must not point at GitHub Packages for a Docker Hub tag — the package
 // doesn't exist there.
 func TestPushImage_FailsWhenPushedButPrivate_DockerHub(t *testing.T) {
 	withFastPushVerifyRetry(t)
@@ -87,10 +87,10 @@ case "$1" in
     ;;
 esac
 `)
-	err := pushImage("proto", "codeflydev/proto:0.0.13")
+	err := pushImage("proto", "acme/proto:0.0.13")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not publicly pullable")
-	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/codeflydev/proto/general")
+	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/acme/proto/general")
 	require.NotContains(t, err.Error(), "github.com/orgs")
 }
 
@@ -136,7 +136,7 @@ esac
 func TestRegistryHost(t *testing.T) {
 	cases := map[string]string{
 		"ghcr.io/codefly-dev/proto:0.0.13": "ghcr.io",
-		"codeflydev/proto:0.0.13":          "docker.io",
+		"acme/proto:0.0.13":                "docker.io",
 		"localhost:5000/proto:0.0.13":      "localhost:5000",
 	}
 	for tag, want := range cases {

@@ -46,9 +46,10 @@ var ProtoCmd = &cobra.Command{
 	Long: `Generate code from local proto files without pushing to buf.build first.
 
 Two modes:
-  (default) Docker companion image — runs buf inside codeflydev/proto, using
-            the buf.gen.yaml in the --proto directory (Go+gRPC via BSR remote
-            plugins, plus gateway/connect/openapi/TS). Needs Docker.
+  (default) Docker companion image — runs buf inside the proto companion
+            image, using the buf.gen.yaml in the --proto directory (Go+gRPC
+            via BSR remote plugins, plus gateway/connect/openapi/TS). Needs
+            Docker.
   --local   Locally-installed, version-pinned plugins (protoc-gen-go,
             -go-grpc, -grpc-gateway, -connect-go) + goimports. Offline and
             byte-reproducible. Replaces core/generated/generate.sh.

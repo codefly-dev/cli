@@ -859,7 +859,7 @@ libraries/saas-starter-accounts-client/
 Use `codefly sync library-dependencies` to link a generated library into a
 service locally, and `codefly publish library <name>` to distribute it.
 
-Generation runs buf inside the `codeflydev/proto` companion image; Docker must be running.
+Generation runs buf inside the `proto` companion image; Docker must be running.
 
 #### generate contracts
 
