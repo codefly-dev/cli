@@ -62,6 +62,12 @@ func TestPinnedManaged(t *testing.T) {
 			directive: &resources.ModuleResolveDirective{Path: inCache},
 			want:      true,
 		},
+		{
+			name:      "git escape hatch names a strategy, not a location",
+			ref:       &resources.ModuleReference{Name: "saas", Source: "owner/repo"},
+			directive: &resources.ModuleResolveDirective{Git: true},
+			want:      true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := pinnedManaged(tc.ref, tc.directive, cacheRoot); got != tc.want {
@@ -646,5 +652,152 @@ func TestPruneStalePinnedEntries(t *testing.T) {
 		if _, ok := resolve[name]; !ok {
 			t.Fatalf("entry <%s> must be preserved", name)
 		}
+	}
+}
+
+func TestGitResolved(t *testing.T) {
+	gitCacheRoot := filepath.Join(t.TempDir(), "modules")
+	for _, tc := range []struct {
+		name      string
+		directive *resources.ModuleResolveDirective
+		want      bool
+	}{
+		{name: "no directive"},
+		{
+			name:      "user opt-out",
+			directive: &resources.ModuleResolveDirective{Git: true},
+			want:      true,
+		},
+		{
+			name:      "path this CLI cloned",
+			directive: &resources.ModuleResolveDirective{Path: filepath.Join(gitCacheRoot, "owner", "repo", "v1.0.0")},
+			want:      true,
+		},
+		{
+			name:      "user checkout elsewhere",
+			directive: &resources.ModuleResolveDirective{Path: filepath.Join(t.TempDir(), "checkout")},
+		},
+		{
+			name:      "verified pin",
+			directive: &resources.ModuleResolveDirective{Pinned: true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gitResolved(tc.directive, gitCacheRoot); got != tc.want {
+				t.Fatalf("gitResolved = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// writeSolutionWorkspace writes a workspace manifest composing a single
+// source-referenced module, so the overlay materialization can be exercised
+// through a real resources.Workspace load — the way `codefly run` sees it.
+func writeSolutionWorkspace(t *testing.T, dir, source, version string) {
+	t.Helper()
+	manifest := fmt.Sprintf("name: wiki\nlayout: modules\nmodules:\n    - name: saas\n      source: %s\n      version: %s\n", source, version)
+	if err := os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The git-clone escape hatch must survive repeated runs. An overlay entry may
+// select only one of path/worktree/pinned/git, so materialization replaces the
+// user's `git: true` with the clone it produced rather than adding the path
+// beside it — an entry carrying both is rejected by core on the next load. The
+// clone remains the resolution strategy across runs: with no module-trust
+// declared, verified resolution cannot resolve the bumped version at all, so a
+// v0.0.2 checkout can only come from the git clone.
+func TestMaterializePinnedModulesGitOptOutSurvivesRepeatedRuns(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1", "v0.0.2")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	if err = materializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatalf("load overlay: %v", err)
+	}
+	directive := overlay.Resolve["saas"]
+	if directive == nil || directive.Path == "" || directive.Git {
+		t.Fatalf("overlay entry must select the clone path alone, got %+v", directive)
+	}
+
+	// The next run reloads the workspace and resolves through core: an entry
+	// selecting both path and git fails validation here.
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatalf("reload workspace: %v", err)
+	}
+	resolution, err := workspace.ResolveModule(ctx, workspace.Modules[0])
+	if err != nil {
+		t.Fatalf("resolve after materialize: %v", err)
+	}
+	if resolution.Kind != resources.ResolutionLocalPath || resolution.Dir != directive.Path {
+		t.Fatalf("resolution = %+v, want the clone at %s", resolution, directive.Path)
+	}
+
+	// Bumping the composed version re-clones: the module is still resolved by
+	// cloning, not by the verified package the workspace declares no trust for.
+	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.2")
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatalf("reload workspace after bump: %v", err)
+	}
+	if err = materializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize after bump: %v", err)
+	}
+	overlay, err = resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatalf("load overlay after bump: %v", err)
+	}
+	bumped := overlay.Resolve["saas"]
+	if bumped == nil || bumped.Git || filepath.Base(bumped.Path) != "v0.0.2" {
+		t.Fatalf("bumped entry must be the v0.0.2 clone alone, got %+v", bumped)
+	}
+}
+
+// An overlay already corrupted by the earlier materialization (both a cache
+// `path` and the original `git: true`) is repaired on the next run rather than
+// left to fail core's validator forever.
+func TestMaterializePinnedModulesRepairsPathAndGitEntry(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
+	corrupted := filepath.Join(pinnedModuleCacheRoot(), filepath.FromSlash(source), "v0.0.1")
+	if err := resources.SaveLocalOverlay(ctx, workspaceDir, &resources.LocalOverlay{
+		Resolve: map[string]*resources.ModuleResolveDirective{"saas": {Path: corrupted, Git: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	if err = materializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directive := overlay.Resolve["saas"]
+	if directive == nil || directive.Git || directive.Path != corrupted {
+		t.Fatalf("entry must be repaired to the clone path alone, got %+v", directive)
 	}
 }

@@ -612,10 +612,10 @@ func decodeTrustSignerKey(encoded string) (ed25519.PublicKey, error) {
 
 // NearestOverlayDir returns the directory of the codefly.local.yaml that
 // resources.LoadLocalOverlay would load starting from start (searching
-// upward, nearest first), or "" when none exists anywhere up the tree. Both
-// `run`'s materialization and `doctor workspace`'s module-trust check must
-// agree on this search so a directive in an ancestor overlay (the
-// shared-monorepo layout) is honored identically by both.
+// upward, nearest first), or "" when none exists anywhere up the tree. It is
+// where `run`'s materialization writes back, so a directive in an ancestor
+// overlay (the shared-monorepo layout) is updated in place rather than
+// shadowed by a fresh workspace-local file.
 func NearestOverlayDir(start string) string {
 	current := start
 	for {
@@ -628,92 +628,4 @@ func NearestOverlayDir(start string) string {
 		}
 		current = parent
 	}
-}
-
-// GitFallbackOptOuts side-parses codefly.local.yaml at overlayDir for
-// `resolve.<name>.git: true` directives. core's ModuleResolveDirective has no
-// Git field, so a plain resources.LoadLocalOverlay silently drops it; reading
-// the raw document here is what lets a workspace opt a module out of verified
-// resolution back to the unverified git clone.
-func GitFallbackOptOuts(overlayDir string) map[string]bool {
-	data, err := os.ReadFile(filepath.Join(overlayDir, resources.LocalOverlayConfigurationName))
-	if err != nil {
-		return nil
-	}
-	var probe struct {
-		Resolve map[string]struct {
-			Git bool `yaml:"git"`
-		} `yaml:"resolve"`
-	}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return nil
-	}
-	optedOut := map[string]bool{}
-	for name, entry := range probe.Resolve {
-		if entry.Git {
-			optedOut[name] = true
-		}
-	}
-	return optedOut
-}
-
-// PreserveGitFallbackDirectives re-adds `git: true` to codefly.local.yaml
-// entries in optedOut after a resources.SaveLocalOverlay write, which would
-// otherwise silently drop it (ModuleResolveDirective has no Git field, so it
-// never survives the typed marshal round trip). It edits the YAML document
-// node-by-node so every other entry and key is left byte-for-byte as
-// SaveLocalOverlay wrote it, and writes atomically so a crash mid-write
-// cannot leave the overlay file truncated.
-func PreserveGitFallbackDirectives(ctx context.Context, overlayDir string, optedOut map[string]bool) error {
-	if len(optedOut) == 0 {
-		return nil
-	}
-	path := filepath.Join(overlayDir, resources.LocalOverlayConfigurationName)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var doc yaml.Node
-	if unmarshalErr := yaml.Unmarshal(data, &doc); unmarshalErr != nil {
-		return unmarshalErr
-	}
-	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil
-	}
-	resolveNode := yamlMapValue(doc.Content[0], "resolve")
-	if resolveNode == nil || resolveNode.Kind != yaml.MappingNode {
-		return nil
-	}
-	changed := false
-	for name := range optedOut {
-		entry := yamlMapValue(resolveNode, name)
-		if entry == nil || entry.Kind != yaml.MappingNode || yamlMapValue(entry, "git") != nil {
-			continue
-		}
-		entry.Content = append(entry.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "git"},
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
-		)
-		changed = true
-	}
-	if !changed {
-		return nil
-	}
-	out, err := yaml.Marshal(&doc)
-	if err != nil {
-		return err
-	}
-	return shared.WriteFileAtomic(ctx, path, out, 0o600)
-}
-
-func yamlMapValue(mapping *yaml.Node, key string) *yaml.Node {
-	if mapping == nil || mapping.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == key {
-			return mapping.Content[i+1]
-		}
-	}
-	return nil
 }

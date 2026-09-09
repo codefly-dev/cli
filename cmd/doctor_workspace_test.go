@@ -200,6 +200,19 @@ func TestDoctorWorkspaceModuleTrustGitOptOutIsNotFlagged(t *testing.T) {
 	requireNoCode(t, report, codeModuleTrustMissing)
 }
 
+// `run` replaces the `git: true` escape hatch with the clone it materialized
+// (an overlay entry selects exactly one thing), so the same workspace must stay
+// unflagged across runs: an overlay that already resolves the module to a local
+// directory pulls no artifact, and so needs no module-trust.
+func TestDoctorWorkspaceModuleTrustOverlayLocationIsNotFlagged(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":     "resolve:\n    saas:\n        path: " + filepath.Join(t.TempDir(), "saas") + "\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleTrustMissing)
+}
+
 func TestDoctorWorkspaceModuleTrustDeclaredIsNotFlagged(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n" +

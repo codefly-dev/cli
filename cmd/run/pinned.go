@@ -76,33 +76,26 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 	if overlay.Resolve == nil {
 		overlay.Resolve = map[string]*resources.ModuleResolveDirective{}
 	}
-	// A `resolve.<name>.git: true` directive opts a module out of verified
-	// resolution back to the unverified clone. core's ModuleResolveDirective has
-	// no Git field, so the typed overlay above already dropped it; it can only be
-	// read from the raw document.
-	gitFallbacks := composition.GitFallbackOptOuts(writeDir)
-
 	cacheRoot := pinnedModuleCacheRoot()
 	verifiedCacheRoot := verifiedPinnedModuleCacheRoot(workspace.Dir())
 	changed := false
 	for _, ref := range workspace.Modules {
 		directive := overlay.Resolve[ref.Name]
-		if gitFallbacks[ref.Name] && directive != nil && directive.Path == "" && directive.Worktree == "" && !directive.Pinned {
-			// A directive that selects nothing but git:true is a resolution-strategy
-			// hint, not a location override: treat it as no directive at all so
-			// pinnedManaged still recognizes the module as CLI-managed.
-			directive = nil
-		}
 		if !pinnedManaged(ref, directive, cacheRoot, verifiedCacheRoot) {
 			continue
 		}
-		dir, err := resolvePinnedModuleDir(ctx, workspace.Dir(), ref, cacheRoot, gitFallbacks[ref.Name])
+		dir, err := resolvePinnedModuleDir(ctx, workspace.Dir(), ref, cacheRoot, gitResolved(directive, cacheRoot))
 		if err != nil {
 			cli.Warning("cannot pull pinned module <%s>: %v (it will be resolved when the run loads it, if needed)", ref.Name, err)
 			continue
 		}
-		if existing := overlay.Resolve[ref.Name]; existing == nil || existing.Path != dir || existing.Pinned {
-			overlay.Resolve[ref.Name] = &resources.ModuleResolveDirective{Path: dir}
+		// The resolved location *replaces* whatever selected the module: core
+		// requires an overlay entry to select exactly one of
+		// path/worktree/pinned/git, so leaving the original `git: true` next to
+		// the path it produced would make the entry un-loadable on the next run.
+		resolved := resources.ModuleResolveDirective{Path: dir}
+		if directive == nil || *directive != resolved {
+			overlay.Resolve[ref.Name] = &resolved
 			changed = true
 		}
 	}
@@ -114,9 +107,6 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 	}
 	if err := resources.SaveLocalOverlay(ctx, writeDir, overlay); err != nil {
 		return fmt.Errorf("cannot save local overlay: %w", err)
-	}
-	if err := composition.PreserveGitFallbackDirectives(ctx, writeDir, gitFallbacks); err != nil {
-		return fmt.Errorf("cannot preserve git fallback directives: %w", err)
 	}
 	if err := ensurePinnedOverlayIgnored(writeDir); err != nil {
 		return fmt.Errorf("cannot gitignore %s: %w", resources.LocalOverlayConfigurationName, err)
@@ -175,20 +165,34 @@ func pruneStalePinnedEntries(resolve map[string]*resources.ModuleResolveDirectiv
 // pinnedManaged reports whether the CLI should resolve ref by pulling its pinned
 // artifact. A reference is managed when it carries a committed identity (source)
 // and the user has not overridden its location: no committed path, and either no
-// overlay directive, an explicit `pinned: true`, or a `path` the CLI itself wrote
-// into the cache (which it refreshes). A user's own `path`/`worktree` directive —
-// the "I am editing this module" case — is left alone.
+// overlay directive, an explicit `pinned: true` or `git: true` (both name a
+// resolution strategy, not a location), or a `path` the CLI itself wrote into the
+// cache (which it refreshes). A user's own `path`/`worktree` directive — the "I am
+// editing this module" case — is left alone.
 func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleResolveDirective, cacheRoots ...string) bool {
 	if ref.Source == "" || ref.PathOverride != nil {
 		return false
 	}
-	if directive == nil || directive.Pinned {
+	if directive == nil || directive.Pinned || directive.Git {
 		return true
 	}
 	if directive.Worktree != "" {
 		return false
 	}
 	return directive.Path != "" && underAnyDir(cacheRoots, directive.Path)
+}
+
+// gitResolved reports whether directive selects the unverified git clone rather
+// than the verified module package: the user's own `git: true`, or a path this
+// CLI already wrote into the git-clone cache. Recognizing the cache path is what
+// makes the choice durable — the resolved path replaces `git: true` in the
+// overlay (an entry may select only one thing), so the cache root is the only
+// record left that the module resolves by cloning.
+func gitResolved(directive *resources.ModuleResolveDirective, gitCacheRoot string) bool {
+	if directive == nil {
+		return false
+	}
+	return directive.Git || (directive.Path != "" && underDir(gitCacheRoot, directive.Path))
 }
 
 // ensurePinnedArtifact resolves ref's version to an immutable tag, pulls the
