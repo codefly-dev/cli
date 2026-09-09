@@ -133,14 +133,16 @@ func TestBuildTargets_LeafBuildFailureDoesNotStrandTheRest(t *testing.T) {
 	root := t.TempDir()
 	writeManifest(t, root, baseCompanionName, "0.0.4", true, false)
 	writeManifest(t, root, "proto", "0.0.1", true, false)
+	writeBaseDependentDockerfile(t, root, "proto", "ghcr.io/codefly-dev/codefly:0.0.3")
 	writeManifest(t, root, "python", "0.0.2", true, false)
+	writeBaseDependentDockerfile(t, root, "python", "ghcr.io/codefly-dev/codefly:0.0.3")
 
 	buildLog := filepath.Join(t.TempDir(), "built.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
 if [ "$1" = "build" ]; then
   for arg in "$@"; do
     case "$arg" in
-      *proto*) exit 1 ;;
+      */proto:*) exit 1 ;;
     esac
   done
   echo "$@" >> %q
@@ -183,7 +185,7 @@ func TestBuildTargets_BaseBuildFailureAbortsTheRun(t *testing.T) {
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
 	writeManifest(t, root, "codefly", "0.0.1", true, false)
-	writeManifest(t, root, "healthy", "0.0.2", true, false)
+	writeManifest(t, root, "execution", "0.0.2", true, false)
 
 	buildLog := filepath.Join(t.TempDir(), "built.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
@@ -200,10 +202,10 @@ exit 0
 
 	base, err := LoadCompanion(filepath.Join(root, "companions", "codefly"))
 	require.NoError(t, err)
-	healthy, err := LoadCompanion(filepath.Join(root, "companions", "healthy"))
+	execution, err := LoadCompanion(filepath.Join(root, "companions", "execution"))
 	require.NoError(t, err)
 
-	_, err = buildTargets(root, []*Companion{base, healthy}, BuildOptions{})
+	_, err = buildTargets(root, []*Companion{base, execution}, BuildOptions{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "every other companion builds on it")
 
@@ -224,6 +226,39 @@ func TestBaseCompanionIsTheOneOrderedFirst(t *testing.T) {
 	for _, c := range ordered[1:] {
 		require.False(t, isBaseCompanion(c.Name), "%s is ordered after the base but treated as one", c.Name)
 	}
+}
+
+// The order a run builds in is core's declaration, not a property of the names.
+// Only a base's position was covered before, so a reordering that put a
+// dependent ahead of the companion it builds on would have gone unseen until a
+// publish run resolved a base that did not exist yet.
+func TestBuildOrderFollowsCoreDeclarationEndToEnd(t *testing.T) {
+	specs, err := companions.BuildSpecs()
+	require.NoError(t, err)
+
+	shuffled := make([]*Companion, 0, len(specs)+1)
+	for i := len(specs) - 1; i >= 0; i-- {
+		shuffled = append(shuffled, &Companion{Name: specs[i].Name})
+	}
+	// A companion core declares no image for carries no ordering constraint.
+	shuffled = append([]*Companion{{Name: "golang"}}, shuffled...)
+
+	ordered, err := sortCompanionsForBuild(shuffled)
+	require.NoError(t, err)
+
+	at := map[string]int{}
+	for i, c := range ordered {
+		at[c.Name] = i
+	}
+	for i, spec := range specs {
+		require.Equalf(t, i, at[spec.Name], "%s is not built where core declares it", spec.Name)
+		if spec.Base != "" {
+			require.Lessf(t, at[spec.Base], at[spec.Name],
+				"%s is built before the %s companion it builds on", spec.Name, spec.Base)
+		}
+	}
+	require.Equal(t, len(specs), at["golang"],
+		"a companion core declares no image for sorts after the declared set")
 }
 
 // publishedAll runs `publish --all` against root with a fake docker already in

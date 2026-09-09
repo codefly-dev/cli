@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codefly-dev/core/companions"
@@ -35,7 +36,10 @@ type buildSpecs struct {
 	order  map[string]int
 }
 
-func loadBuildSpecs() (buildSpecs, error) {
+// loadBuildSpecs resolves core's declaration once per process. It is read-only
+// embedded data, and both the ordering pass and the build itself need it, so
+// resolving it per call would parse the same manifests twice for every run.
+var loadBuildSpecs = sync.OnceValues(func() (buildSpecs, error) {
 	specs, err := companions.BuildSpecs()
 	if err != nil {
 		return buildSpecs{}, fmt.Errorf("read the companion build specs core declares: %w", err)
@@ -49,7 +53,7 @@ func loadBuildSpecs() (buildSpecs, error) {
 		loaded.order[spec.Name] = i
 	}
 	return loaded, nil
-}
+})
 
 // of returns the spec core declares for this companion. A companion core does
 // not build as an image has none: the `golang` companion is a Go package with
@@ -58,6 +62,42 @@ func loadBuildSpecs() (buildSpecs, error) {
 func (s buildSpecs) of(name string) (companions.BuildSpec, bool) {
 	spec, ok := s.byName[name]
 	return spec, ok
+}
+
+// cover checks core's declaration against the tree about to be built: every
+// target carrying a Dockerfile must have a spec, and each must agree with that
+// Dockerfile about the base companion.
+//
+// Both only fail on version skew. The specs are embedded in the core module
+// this CLI pins while the tree comes from --core-dir, and the publish workflow
+// builds core@main against a pinned CLI, so a companion added or given a base
+// since that pin is described here by a spec that no longer matches it.
+//
+// It runs before anything is built so the run stops whole. Left to the build
+// loop, a leaf failure is collected and the run continues, so the same skew
+// reports as a handful of companions published and one that failed — a
+// partial-publish incident to whoever reads it, rather than the pin bump it is.
+func (s buildSpecs) cover(targets []*Companion) error {
+	var undeclared []string
+	for _, c := range targets {
+		if !c.HasDockerfile {
+			continue
+		}
+		spec, ok := s.of(c.Name)
+		if !ok {
+			undeclared = append(undeclared, c.Name)
+			continue
+		}
+		if err := checkBaseAgreesWithTree(c, spec); err != nil {
+			return err
+		}
+	}
+	if len(undeclared) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"core declares no build spec for %s; the CLI's core dependency is older than the tree it was pointed at. Bump it to build these",
+		strings.Join(undeclared, ", "))
 }
 
 // BuildCmd builds one or more companion Docker images.
@@ -212,6 +252,9 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]pu
 	if err != nil {
 		return nil, err
 	}
+	if err = specs.cover(targets); err != nil {
+		return nil, err
+	}
 	platforms, err := resolveDockerPlatforms(opts.Platform)
 	if err != nil {
 		return nil, err
@@ -280,7 +323,10 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]pu
 			if companionBase, err = base.referenceFor(c); err != nil {
 				return published, err
 			}
-			buildDigest, buildErr = buildWithDocker(c, specs, coreDir, opts.Pull, platforms, opts.Push, companionBase)
+			// cover guaranteed a spec for every target with a Dockerfile, and
+			// buildWithDocker rejects one without before reading the spec.
+			spec, _ := specs.of(c.Name)
+			buildDigest, buildErr = buildWithDocker(c, spec, coreDir, opts.Pull, platforms, opts.Push, companionBase)
 		}
 		if buildErr != nil {
 			// The base is the one build whose failure invalidates what
@@ -386,7 +432,7 @@ func (r *baseResolver) recordPush(c *Companion, digest string) {
 // none — the base builds itself, and a companion whose spec names no base would
 // only collect an unconsumed argument.
 func (r *baseResolver) referenceFor(c *Companion) (string, error) {
-	if spec, ok := r.specs.of(c.Name); !ok || spec.Base == "" {
+	if spec, declared := r.specs.of(c.Name); !declared || spec.Base == "" {
 		return "", nil
 	}
 	if r.resolved {
@@ -408,6 +454,44 @@ func (r *baseResolver) referenceFor(c *Companion) (string, error) {
 	r.reference = reference
 	r.resolved = true
 	return reference, nil
+}
+
+// checkBaseAgreesWithTree fails when the spec and the Dockerfile being built
+// disagree about whether this companion takes a base companion image. Run from
+// cover, before anything is built, so the run stops whole rather than after
+// publishing the companions ordered ahead of the mismatch.
+//
+// The specs are embedded in the core module this CLI pins; the Dockerfile is
+// read out of the tree --core-dir points at, and the two are only the same
+// checkout by coincidence — the publish workflow builds core@main against a
+// pinned CLI. Believing the spec alone in that gap is silent either way: a
+// companion the tree gave a base but the pinned spec does not know about gets
+// no --build-arg, so the Dockerfile ARG default — a stale pinned literal —
+// wins and the image publishes built on whatever that tag names now; the
+// reverse passes an argument the Dockerfile never consumes, so the resolved
+// base is not what the image was built on. Neither shows up in the build, in
+// `companion verify`, or in the published manifest, whose base field is
+// omitted rather than contradicted.
+func checkBaseAgreesWithTree(c *Companion, spec companions.BuildSpec) error {
+	if !c.HasDockerfile {
+		return nil
+	}
+	content, err := os.ReadFile(filepath.Join(c.Dir, "Dockerfile"))
+	if err != nil {
+		return fmt.Errorf("read %s Dockerfile: %w", c.Name, err)
+	}
+	declaresArg := strings.Contains(string(content), companions.BaseImageArg)
+	if declaresArg == (spec.Base != "") {
+		return nil
+	}
+	if declaresArg {
+		return fmt.Errorf(
+			"%s declares %s in its Dockerfile but the build spec core declares names no base companion; refusing to build it on the Dockerfile's pinned default. Bump the CLI's core dependency to the tree being built",
+			c.Name, companions.BaseImageArg)
+	}
+	return fmt.Errorf(
+		"the build spec core declares says %s builds on the %s companion, but its Dockerfile declares no %s to receive it; refusing to build it on a base it would ignore. Bump the CLI's core dependency to the tree being built",
+		c.Name, spec.Base, companions.BaseImageArg)
 }
 
 // isBaseCompanion reports whether other companions build on this one. core
@@ -640,17 +724,9 @@ func resolveDockerPlatforms(value string) ([]dockerPlatform, error) {
 // image, and the tag it was pushed under is mutable afterwards. Every other
 // build returns an empty digest — a single-platform image is published by
 // pushImage, which reports its own.
-func buildWithDocker(c *Companion, specs buildSpecs, coreDir string, pull bool, platforms []dockerPlatform, push bool, baseImage string) (string, error) {
+func buildWithDocker(c *Companion, spec companions.BuildSpec, coreDir string, pull bool, platforms []dockerPlatform, push bool, baseImage string) (string, error) {
 	if !c.HasDockerfile {
 		return "", fmt.Errorf("no Dockerfile in %s", c.Dir)
-	}
-	// core declares a spec for every companion directory that carries a
-	// Dockerfile, so one missing here means this CLI is pinned to a core older
-	// than the tree it was pointed at. Guessing the build inputs instead is how
-	// the two drifted apart before.
-	spec, ok := specs.of(c.Name)
-	if !ok {
-		return "", fmt.Errorf("core declares no build spec for the %s companion; bump the CLI's core dependency to the tree being built", c.Name)
 	}
 	platformValues := make([]string, 0, len(platforms))
 	for _, platform := range platforms {

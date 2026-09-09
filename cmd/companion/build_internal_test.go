@@ -28,8 +28,10 @@ func TestNeedsLinuxCLIFollowsTheDeclaredCLIBinary(t *testing.T) {
 }
 
 // core declares the Dockerfile and the context every companion image is built
-// from. Restating them here is how the builder drifted from the specs before,
-// so the invocation has to carry what the spec names.
+// from. The spec is deliberately given values the old name heuristic would
+// never produce — it derived the Dockerfile from the companion name and always
+// built from the core root — so a build that ignored the spec and inferred the
+// paths again fails here.
 func TestBuildWithDockerBuildsWhatTheSpecDeclares(t *testing.T) {
 	root := t.TempDir()
 	writeManifest(t, root, "proto", "0.0.11", true, false)
@@ -37,37 +39,87 @@ func TestBuildWithDockerBuildsWhatTheSpecDeclares(t *testing.T) {
 	dockerLog := filepath.Join(t.TempDir(), "docker.txt")
 	writeFakeDocker(t, fmt.Sprintf("echo \"$@\" >> %q\nexit 0\n", dockerLog))
 
-	specs, err := loadBuildSpecs()
-	require.NoError(t, err)
-	spec, ok := specs.of("proto")
-	require.True(t, ok)
-
+	spec := companions.BuildSpec{
+		Name:       "proto",
+		Dockerfile: "build/proto.Dockerfile",
+		Context:    "companions/proto",
+	}
 	c, err := LoadCompanion(filepath.Join(root, "companions", "proto"))
 	require.NoError(t, err)
-	_, err = buildWithDocker(c, specs, root, false, []dockerPlatform{{Value: "linux/amd64", Arch: "amd64"}}, false, "")
+	_, err = buildWithDocker(c, spec, root, false, []dockerPlatform{{Value: "linux/amd64", Arch: "amd64"}}, false, "")
 	require.NoError(t, err)
 
 	logged := strings.TrimSpace(string(readFile(t, dockerLog)))
-	require.Contains(t, logged, "-f "+spec.Dockerfile)
-	require.True(t, strings.HasSuffix(logged, " "+spec.Context),
+	require.Contains(t, logged, "-f "+filepath.FromSlash(spec.Dockerfile))
+	require.NotContains(t, logged, filepath.Join("companions", "proto", "Dockerfile"),
+		"the Dockerfile must come from the spec, not from the companion name")
+	require.True(t, strings.HasSuffix(logged, " "+filepath.FromSlash(spec.Context)),
 		"the build context must be the one the spec declares; got %q", logged)
 }
 
 // A Dockerfile core declares no spec for has no Dockerfile path and no context
-// to build it with. Inferring them from the directory name is what this
-// builder stopped doing.
-func TestBuildWithDockerRefusesACompanionCoreDoesNotDeclare(t *testing.T) {
+// to build it with. The run stops before anything is built rather than
+// publishing the companions ordered ahead of it and failing on this one, which
+// reads as a partial-publish incident instead of a stale core pin.
+func TestBuildTargetsRefusesTheWholeRunForACompanionCoreDoesNotDeclare(t *testing.T) {
 	root := t.TempDir()
+	writeSiblingCLI(t, root)
+	writeManifest(t, root, baseCompanionName, "0.0.5", true, false)
 	writeManifest(t, root, "invented", "0.0.1", true, false)
+
+	dockerLog := filepath.Join(t.TempDir(), "docker.txt")
+	writeFakeDocker(t, fmt.Sprintf("echo \"$@\" >> %q\nexit 0\n", dockerLog))
+
+	targets, err := selectTargets(root, true, nil)
+	require.NoError(t, err)
+	_, err = buildTargets(root, targets, BuildOptions{Push: true})
+	require.ErrorContains(t, err, "no build spec for invented")
+
+	_, readErr := os.Stat(dockerLog)
+	require.True(t, os.IsNotExist(readErr),
+		"an undeclared companion must stop the run before anything is built or pushed")
+}
+
+// A companion whose spec names no base but whose Dockerfile takes one gets no
+// --build-arg, so the Dockerfile's pinned ARG default wins and the image
+// publishes built on whatever that stale tag names. The specs come from the
+// pinned core module and the Dockerfile from --core-dir, so the two disagree
+// exactly when the CLI's pin trails the tree being built.
+func TestBuildTargetsRefusesWhenTheTreeTakesABaseTheSpecDoesNotDeclare(t *testing.T) {
+	root := t.TempDir()
+	writeSiblingCLI(t, root)
+	writeManifest(t, root, "execution", "0.0.2", true, false)
+	writeBaseDependentDockerfile(t, root, "execution", "ghcr.io/codefly-dev/codefly:0.0.4")
+
+	dockerLog := filepath.Join(t.TempDir(), "docker.txt")
+	writeFakeDocker(t, fmt.Sprintf("echo \"$@\" >> %q\nexit 0\n", dockerLog))
+
+	execution, err := LoadCompanion(filepath.Join(root, "companions", "execution"))
+	require.NoError(t, err)
+
+	_, err = buildTargets(root, []*Companion{execution}, BuildOptions{})
+	require.ErrorContains(t, err, companions.BaseImageArg)
+	require.ErrorContains(t, err, "names no base companion")
+
+	_, readErr := os.Stat(dockerLog)
+	require.True(t, os.IsNotExist(readErr),
+		"a base the spec and the tree disagree on must stop the run before anything is built")
+}
+
+// The mirror image: the spec names a base the Dockerfile has no argument to
+// receive, so the resolved reference is passed and ignored and the image is
+// built on whatever its own FROM says instead.
+func TestBuildTargetsRefusesWhenTheSpecNamesABaseTheTreeCannotReceive(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, baseCompanionName, "0.0.5", true, false)
+	writeManifest(t, root, "go", "0.0.9", true, false)
 	writeFakeDocker(t, "exit 0\n")
 
-	specs, err := loadBuildSpecs()
-	require.NoError(t, err)
-	c, err := LoadCompanion(filepath.Join(root, "companions", "invented"))
+	dependent, err := LoadCompanion(filepath.Join(root, "companions", "go"))
 	require.NoError(t, err)
 
-	_, err = buildWithDocker(c, specs, root, false, []dockerPlatform{{Value: "linux/amd64", Arch: "amd64"}}, false, "")
-	require.ErrorContains(t, err, "no build spec")
+	_, err = buildTargets(root, []*Companion{dependent}, BuildOptions{})
+	require.ErrorContains(t, err, "declares no "+companions.BaseImageArg)
 }
 
 // withFastRegistryRead shrinks the digest-lookup retry delay so tests that
