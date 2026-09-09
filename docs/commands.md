@@ -524,6 +524,17 @@ manifests still carrying the generated marker are refreshed — a service manife
 you have taken over as hand-authored product content (no marker) is left
 untouched, the same ownership boundary `codefly update` honors.
 
+The same apply refreshes the generated `interface` block of the module's own
+`module.codefly.yaml` from the pinned source. That file is generated from
+`deployment/topology.bindings.codefly.yaml`, a base-owned file the sync updates,
+so a base release that adds an interface endpoint would otherwise leave the
+module declaring a contract its own bindings contradict — and the base's
+composition gate then fails in the consumer. Unlike a service manifest it is not
+copied wholesale: only the `interface` block is rewritten, so the consumer's own
+`name`, `description`, added `services`, comments, and formatting are kept
+byte-for-byte. It is refreshed only while both sides still carry the generated
+marker, and the dry-run says when it would be rewritten.
+
 An `--apply` that leaves a service's lockfile out of sync with the pinned base's
 dependencies regenerates it (`npm install --package-lock-only`), so the synced
 workspace stays installable with `npm ci` (for example in a render's frontend

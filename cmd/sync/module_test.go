@@ -364,6 +364,96 @@ func TestSyncModuleRefreshesGeneratedServiceManifestAgentPin(t *testing.T) {
 	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(manifestPath)), upstreamManifest)
 }
 
+// A base release that adds an interface endpoint updates the consumer's
+// base-owned deployment/topology.bindings.codefly.yaml, but the module's own
+// generated module.codefly.yaml is a preserved overlay — so before #602 the
+// module's declared interface silently contradicted its just-updated source and
+// the base's composition gate failed in the consumer. The apply now refreshes
+// that generated interface while keeping the consumer's own name and added
+// services.
+func TestSyncModuleRefreshesGeneratedModuleInterfaceFromSyncedBindings(t *testing.T) {
+	repository := t.TempDir()
+	runGit(t, repository, "init", "--quiet")
+	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
+	runGit(t, repository, "config", "user.name", "Module Sync Test")
+	sourceModule := filepath.Join(repository, "module")
+	bindingsPath := "deployment/topology.bindings.codefly.yaml"
+	generatedHeader := "# Code generated from deployment/topology.bindings.codefly.yaml. DO NOT EDIT.\n"
+	newBindings := "modules:\n  - name: saas\n    expose:\n      - auth-gateway/grpc\n      - accounts/connect\n"
+	writeSyncTestFile(t, filepath.Join(sourceModule, filepath.FromSlash(bindingsPath)), newBindings)
+	writeSyncTestFile(t, filepath.Join(sourceModule, resources.ModuleConfigurationName), generatedHeader+`kind: module
+name: saas-starter
+interface:
+  endpoints:
+    - service: auth-gateway
+      endpoint: grpc
+    - service: accounts
+      endpoint: connect
+      visibility: module
+services:
+  - name: auth-gateway
+  - name: accounts
+`)
+	writeSyncTestFile(t, filepath.Join(sourceModule, "tools", "base-manifest.json"),
+		`{"files":{"`+bindingsPath+`":"`+syncTestDigest(newBindings)+`"}}`)
+	runGit(t, repository, "add", ".")
+	runGit(t, repository, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "base")
+	runGit(t, repository, "-c", "tag.gpgSign=false", "tag", "v0.0.58")
+
+	targetRoot := filepath.Join(t.TempDir(), "saas")
+	oldBindings := "modules:\n  - name: saas\n    expose:\n      - auth-gateway/grpc\n"
+	writeSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(bindingsPath)), oldBindings)
+	writeSyncTestFile(t, filepath.Join(targetRoot, "tools", "base-manifest.json"),
+		`{"files":{"`+bindingsPath+`":"`+syncTestDigest(oldBindings)+`"}}`)
+	writeSyncTestFile(t, filepath.Join(targetRoot, resources.ModuleConfigurationName), generatedHeader+`kind: module
+name: saas
+interface:
+  endpoints:
+    - service: auth-gateway
+      endpoint: grpc
+services:
+  - name: auth-gateway
+  - name: accounts
+  - name: object-storage
+`)
+	for _, service := range []struct{ name, endpoint string }{
+		{"auth-gateway", "grpc"}, {"accounts", "connect"}, {"object-storage", "http"},
+	} {
+		writeSyncTestFile(t, filepath.Join(targetRoot, "services", service.name, resources.ServiceConfigurationName),
+			"name: "+service.name+"\nversion: 0.0.1\nagent:\n  kind: codefly:service\n  name: "+service.name+
+				"\n  publisher: codefly.dev\n  version: 0.0.1\nendpoints:\n  - name: "+service.endpoint+"\n    visibility: module\n")
+	}
+	remote := (&url.URL{Scheme: "file", Path: repository}).String()
+	if err := writeModuleSourceLock(filepath.Join(targetRoot, moduleSourceLockRelativePath), &moduleSourceLock{
+		Schema: moduleSourceLockSchema, Repository: remote, Ref: "v0.0.58",
+		Commit: runGit(t, repository, "rev-parse", "HEAD"), Subdirectory: "module",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target, err := resources.LoadModuleFromDir(context.Background(), targetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncComposedModule(context.Background(), target, &moduleSyncOptions{Apply: true}); err != nil {
+		t.Fatal(err)
+	}
+	assertSyncTestFile(t, filepath.Join(targetRoot, filepath.FromSlash(bindingsPath)), newBindings)
+	assertSyncTestFile(t, filepath.Join(targetRoot, resources.ModuleConfigurationName), generatedHeader+`kind: module
+name: saas
+interface:
+  endpoints:
+    - service: auth-gateway
+      endpoint: grpc
+    - service: accounts
+      endpoint: connect
+      visibility: module
+services:
+  - name: auth-gateway
+  - name: accounts
+  - name: object-storage
+`)
+}
+
 func TestLockfileStaleDetectsDependencyDrift(t *testing.T) {
 	inSync := `{"lockfileVersion":3,"packages":{"":{"name":"frontend","dependencies":{"dep-a":"1.0.0"}}}}`
 	cases := []struct {

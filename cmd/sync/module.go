@@ -283,6 +283,11 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 		return fmt.Errorf("plan service manifest refresh: %w", err)
 	}
 	printServiceManifestRefreshPlan(pendingRefresh, options.Apply)
+	pendingInterface, err := integrity.PlanModuleInterfaceRefresh(resolved.Root, target.Dir())
+	if err != nil {
+		return fmt.Errorf("plan module interface refresh: %w", err)
+	}
+	printModuleInterfaceRefreshPlan(pendingInterface, options.Apply)
 	pendingLocks, err := staleLockfiles(resolved.Root, target.Dir(), &plan)
 	if err != nil {
 		return fmt.Errorf("inspect service lockfiles: %w", err)
@@ -316,6 +321,17 @@ func syncComposedModule(ctx context.Context, target *resources.Module, options *
 			output.Info("  REFRESHED %s", relative)
 		}
 		output.Info("restart any active stack so services load the refreshed agent pins")
+	}
+	// The module manifest is generated from the base-owned topology bindings this
+	// sync just updated, so its interface must be reconciled too — a manifest
+	// still declaring the old contract fails the base's own composition gate in
+	// the consumer.
+	refreshedInterface, err := integrity.RefreshModuleInterface(resolved.Root, target.Dir())
+	if err != nil {
+		return fmt.Errorf("refresh generated module interface: %w", err)
+	}
+	if refreshedInterface {
+		output.Info("✓ refreshed the generated interface in %s from the synced topology bindings", resources.ModuleConfigurationName)
 	}
 	// Regenerate lockfiles last. The base update and manifest refresh are
 	// deterministic filesystem operations; npm resolves against a registry and
@@ -387,6 +403,17 @@ func printServiceManifestRefreshPlan(pending []string, applying bool) {
 		label = "WILL REFRESH GENERATED SERVICE MANIFESTS"
 	}
 	output.Info("  %s (%d): %s", label, len(pending), strings.Join(pending, ", "))
+}
+
+func printModuleInterfaceRefreshPlan(pending, applying bool) {
+	if !pending {
+		return
+	}
+	label := "WOULD REFRESH GENERATED MODULE INTERFACE"
+	if applying {
+		label = "WILL REFRESH GENERATED MODULE INTERFACE"
+	}
+	output.Info("  %s: %s", label, resources.ModuleConfigurationName)
 }
 
 func printLockfileRefreshPlan(labels []string, applying bool) {
