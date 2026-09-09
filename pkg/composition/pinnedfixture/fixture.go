@@ -107,9 +107,11 @@ func New(t *testing.T) *Fixture {
 	t.Helper()
 	seed := strings.Repeat("k", ed25519.SeedSize)
 	privateKey := ed25519.NewKeyFromSeed([]byte(seed))
+	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+	require.True(t, ok, "an ed25519 private key must yield an ed25519 public key")
 	fixture := &Fixture{
 		privateKey: privateKey,
-		publicKey:  privateKey.Public().(ed25519.PublicKey),
+		publicKey:  publicKey,
 		releases:   map[string]releaseAssets{},
 		assetsByID: map[int64][]byte{},
 	}
@@ -201,6 +203,34 @@ func (fixture *Fixture) SignerKeyBase64() string {
 	return base64.StdEncoding.EncodeToString(fixture.publicKey)
 }
 
+// assetPayload and releasePayload are the release shapes this fixture serves.
+// ID and Size are omitted when zero so the release *list* carries assets by
+// name alone, the shape resolvePackageVersion's hasReleaseAsset reads, while
+// the per-tag release carries the full asset records Fetch downloads by ID.
+type assetPayload struct {
+	ID   int64  `json:"id,omitempty"`
+	Name string `json:"name"`
+	Size int    `json:"size,omitempty"`
+}
+
+type releasePayload struct {
+	ID        int64          `json:"id,omitempty"`
+	TagName   string         `json:"tag_name"`
+	Draft     bool           `json:"draft"`
+	Immutable bool           `json:"immutable"`
+	Assets    []assetPayload `json:"assets"`
+}
+
+type gitObjectPayload struct {
+	Type string `json:"type"`
+	SHA  string `json:"sha"`
+}
+
+type gitRefPayload struct {
+	Ref    string           `json:"ref"`
+	Object gitObjectPayload `json:"object"`
+}
+
 // writeJSON serializes payload as the response body. Marshalling rather than
 // formatting request-derived strings into the writer keeps the fixture's
 // responses well-formed whatever a test puts in a tag name.
@@ -213,12 +243,6 @@ func writeJSON(writer http.ResponseWriter, payload any) {
 	_, _ = writer.Write(data)
 }
 
-// writeJSONRaw writes an already-assembled JSON document, for the one response
-// built by concatenating per-release fragments.
-func writeJSONRaw(writer http.ResponseWriter, document string) {
-	_, _ = writer.Write([]byte(document))
-}
-
 func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request) {
 	fixture.requests.Add(1)
 	path := strings.TrimPrefix(request.URL.Path, "/api/v3")
@@ -227,15 +251,16 @@ func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request
 	switch {
 	case path == prefix+"/releases":
 		writer.Header().Set("Content-Type", "application/json")
-		entries := make([]string, 0, len(fixture.releases)+len(fixture.plainTags))
+		entries := make([]releasePayload, 0, len(fixture.releases)+len(fixture.plainTags))
 		for tag := range fixture.releases {
-			entries = append(entries, fmt.Sprintf(
-				`{"tag_name":%q,"assets":[{"name":"module.tar"},{"name":"provenance.json"},{"name":"provenance.sig"}]}`, tag))
+			entries = append(entries, releasePayload{TagName: tag, Assets: []assetPayload{
+				{Name: "module.tar"}, {Name: "provenance.json"}, {Name: "provenance.sig"},
+			}})
 		}
 		for _, tag := range fixture.plainTags {
-			entries = append(entries, fmt.Sprintf(`{"tag_name":%q,"assets":[]}`, tag))
+			entries = append(entries, releasePayload{TagName: tag, Assets: []assetPayload{}})
 		}
-		writeJSONRaw(writer, "["+strings.Join(entries, ",")+"]")
+		writeJSON(writer, entries)
 	case strings.HasPrefix(path, prefix+"/releases/tags/"):
 		tag := strings.TrimPrefix(path, prefix+"/releases/tags/")
 		assets, ok := fixture.releases[tag]
@@ -244,12 +269,12 @@ func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		writeJSON(writer, map[string]any{
-			"id": 1, "tag_name": tag, "draft": false, "immutable": true,
-			"assets": []map[string]any{
-				{"id": assets.archiveID, "name": "module.tar", "size": assets.archiveSize},
-				{"id": assets.provenanceID, "name": "provenance.json", "size": assets.provenanceSize},
-				{"id": assets.signatureID, "name": "provenance.sig", "size": assets.signatureSize},
+		writeJSON(writer, releasePayload{
+			ID: 1, TagName: tag, Draft: false, Immutable: true,
+			Assets: []assetPayload{
+				{ID: assets.archiveID, Name: "module.tar", Size: assets.archiveSize},
+				{ID: assets.provenanceID, Name: "provenance.json", Size: assets.provenanceSize},
+				{ID: assets.signatureID, Name: "provenance.sig", Size: assets.signatureSize},
 			},
 		})
 	case strings.HasPrefix(path, prefix+"/git/ref/tags/"):
@@ -260,9 +285,9 @@ func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		writeJSON(writer, map[string]any{
-			"ref":    "refs/tags/" + tag,
-			"object": map[string]any{"type": "commit", "sha": assets.commit},
+		writeJSON(writer, gitRefPayload{
+			Ref:    "refs/tags/" + tag,
+			Object: gitObjectPayload{Type: "commit", SHA: assets.commit},
 		})
 	case strings.HasPrefix(path, prefix+"/releases/assets/"):
 		var id int64
