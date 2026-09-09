@@ -164,17 +164,21 @@ func TestGenerateClientFromContractsDir(t *testing.T) {
 	assertFileContains(t, tsFacade, "export const")
 }
 
-// TestGenerateClientDoesNotVendorWellKnownTypes guards the descriptor-set
-// path against emitting local bindings for the google/protobuf well-known
-// types: a persisted contract is a plain FileDescriptorSet, so buf takes every
-// file in it — imports included — as a generation target unless told otherwise.
-// For Go that used to put one Go package per well-known type (descriptorpb,
-// durationpb, ...) in a single gen/google/protobuf directory, which does not
-// compile, on top of being dead code the module's own bindings never import.
-func TestGenerateClientDoesNotVendorWellKnownTypes(t *testing.T) {
+// TestGenerateClientDoesNotVendorUpstreamProtoModules guards the
+// descriptor-set path against emitting local bindings for shared proto
+// modules that already ship canonical Go packages: a persisted contract is a
+// plain FileDescriptorSet, so buf takes every file in it — imports included —
+// as a generation target unless told otherwise.
+//
+// For the well-known types that used to put one Go package per type
+// (descriptorpb, durationpb, ...) in a single gen/google/protobuf directory,
+// which does not compile. For googleapis and protovalidate it compiles, and
+// then panics at init in any consumer that also links the upstream module —
+// the same proto file registered twice in the global registry.
+func TestGenerateClientDoesNotVendorUpstreamProtoModules(t *testing.T) {
 	requireQualify(t)
 	ctx := context.Background()
-	contractsDir := writeWellKnownTypesContractsFixture(t)
+	contractsDir := writeUpstreamModulesContractsFixture(t)
 
 	workspace := &resources.Workspace{Name: "qualify-ws", Layout: resources.LayoutKindModules}
 	wsDir := filepath.Join(t.TempDir(), "ws")
@@ -195,21 +199,92 @@ func TestGenerateClientDoesNotVendorWellKnownTypes(t *testing.T) {
 	}
 
 	goDir := filepath.Join(clientOutput, "go")
-	if _, err := os.Stat(filepath.Join(goDir, "gen", "google", "protobuf")); !os.IsNotExist(err) {
-		t.Fatalf("gen/google/protobuf was generated (stat error: %v)", err)
+	for _, vendored := range [][]string{
+		{"google", "protobuf"},
+		{"google", "api"},
+		{"google", "rpc"},
+		{"google", "type"},
+		{"buf", "validate"},
+	} {
+		dir := filepath.Join(append([]string{goDir, "gen"}, vendored...)...)
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("gen/%s was generated (stat error: %v)", strings.Join(vendored, "/"), err)
+		}
 	}
-	assertFileContains(t,
-		filepath.Join(goDir, "gen", "accounts", "v1", "accounts.pb.go"),
-		"google.golang.org/protobuf/types/known/timestamppb")
+
+	bindings := filepath.Join(goDir, "gen", "accounts", "v1", "accounts.pb.go")
+	assertFileContains(t, bindings, "google.golang.org/protobuf/types/known/timestamppb")
+	assertFileContains(t, bindings, "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate")
+	assertFileContains(t, bindings, "google.golang.org/genproto/googleapis/api/annotations")
+	assertFileContains(t, bindings, "google.golang.org/genproto/googleapis/rpc/status")
+	assertFileContains(t, bindings, "google.golang.org/genproto/googleapis/type/money")
 	goVetLibrary(t, goDir)
 }
 
-// writeWellKnownTypesContractsFixture compiles a proto importing two
-// well-known types into a real descriptor set (the same companion buf run
-// `generate contracts` uses) and writes it as a module's committed API
-// contract catalog, without needing a service agent to scaffold one. Returns
-// the contracts/api directory `--from contracts:` takes.
-func writeWellKnownTypesContractsFixture(t *testing.T) string {
+// TestGenerateClientPythonMapsUpstreamProtoModules covers the one Python shape
+// that still emitted its own copies of the shared modules: a facade run strips
+// them from the image before generating, but --no-facade does not, so the
+// bindings carried a second copy of buf/validate/validate.proto and any
+// consumer that also installed protovalidate hit the same duplicate
+// registration the Go client did, out of the descriptor pool rather than the
+// proto registry.
+//
+// Dropping the files is only half of it — the bindings then import
+// buf.validate.validate_pb2 absolutely, so the library has to declare the
+// distributions that supply those modules.
+func TestGenerateClientPythonMapsUpstreamProtoModules(t *testing.T) {
+	requireQualify(t)
+	ctx := context.Background()
+	contractsDir := writeUpstreamModulesContractsFixture(t)
+
+	workspace := &resources.Workspace{Name: "qualify-ws", Layout: resources.LayoutKindModules}
+	wsDir := filepath.Join(t.TempDir(), "ws")
+	if err := workspace.SaveToDirUnsafe(ctx, wsDir); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(wsDir)
+	resetClientFlags(t)
+	clientFrom = "contracts:" + contractsDir
+	clientLanguages = []string{"python"}
+	clientName = "accounts-client"
+	clientNoFacade = true
+	clientOutput = filepath.Join(t.TempDir(), "lib")
+
+	if err := ClientCmd.RunE(ClientCmd, nil); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+
+	genDir := filepath.Join(clientOutput, "python", "accounts_client", "_gen")
+	for _, vendored := range [][]string{
+		{"google", "protobuf"},
+		{"google", "api"},
+		{"google", "rpc"},
+		{"google", "type"},
+		{"buf", "validate"},
+	} {
+		dir := filepath.Join(append([]string{genDir}, vendored...)...)
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("_gen/%s was generated (stat error: %v)", strings.Join(vendored, "/"), err)
+		}
+	}
+
+	bindings := filepath.Join(genDir, "accounts", "v1", "accounts_pb2.py")
+	assertFileContains(t, bindings, "from buf.validate import validate_pb2")
+	assertFileContains(t, bindings, "from google.api import annotations_pb2")
+
+	pyproject := filepath.Join(clientOutput, "python", "pyproject.toml")
+	assertFileContains(t, pyproject, `"protovalidate"`)
+	assertFileContains(t, pyproject, `"googleapis-common-protos"`)
+}
+
+// writeUpstreamModulesContractsFixture compiles a proto importing the
+// well-known types, three googleapis families and protovalidate into a real
+// descriptor set (the same companion buf run `generate contracts` uses) and
+// writes it as a module's committed API contract catalog, without needing a
+// service agent to scaffold one. Returns the contracts/api directory
+// `--from contracts:` takes.
+func writeUpstreamModulesContractsFixture(t *testing.T) string {
 	t.Helper()
 	moduleDir := t.TempDir()
 	protoDir := filepath.Join(moduleDir, "proto", "accounts", "v1")
@@ -217,6 +292,9 @@ func writeWellKnownTypesContractsFixture(t *testing.T) string {
 		t.Fatal(err)
 	}
 	bufYAML := `version: v1
+deps:
+  - buf.build/googleapis/googleapis
+  - buf.build/bufbuild/protovalidate
 lint:
   use:
     - DEFAULT
@@ -228,16 +306,27 @@ lint:
 
 package accounts.v1;
 
+import "buf/validate/validate.proto";
+import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
+import "google/rpc/status.proto";
+import "google/type/money.proto";
 
 message Account {
-  string id = 1;
+  string id = 1 [(buf.validate.field).string.min_len = 1];
   google.protobuf.Timestamp created_at = 2;
+  google.type.Money balance = 3;
+  google.rpc.Status last_error = 4;
 }
 
 service Accounts {
-  rpc Create(Account) returns (google.protobuf.Empty) {}
+  rpc Create(Account) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/accounts"
+      body: "*"
+    };
+  }
 }
 `
 	if err := os.WriteFile(filepath.Join(protoDir, "accounts.proto"), []byte(accounts), 0o644); err != nil {

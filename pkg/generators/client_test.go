@@ -2,25 +2,172 @@ package generators
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 
+	"github.com/codefly-dev/core/languages"
 	"google.golang.org/protobuf/encoding/protowire"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// TestMarkWellKnownTypesAsImports pins which files of a persisted contract buf
-// is told not to generate for: the well-known types only. Marking the module's
-// own files would generate nothing at all, and marking the other shared imports
-// (google/api, buf.validate) would leave the module's bindings importing a
-// package that no longer exists, since managed mode rewrites their go_package
-// to the generated library's own path.
+// TestMarkUpstreamModulesAsImportsForGo pins which files of a persisted
+// contract buf is told not to generate for, and which buf module each is
+// attributed to: the well-known types, googleapis and protovalidate all ship
+// canonical Go packages, so a local copy is at best dead code and at worst a
+// second registration of a proto file the consumer's upstream module already
+// registered. The module identity is what makes the go_package survive: the Go
+// template's managed mode excepts exactly these two modules, so the module's
+// own bindings import them from upstream rather than from a path in the
+// generated library that no longer exists.
 //
 // A file living under google/protobuf/ but declaring the module's own package
 // is the module's, not a well-known type — a vendored copy of the well-known
 // types puts real files at those paths, and it is the package that tells the
 // two apart.
-func TestMarkWellKnownTypesAsImports(t *testing.T) {
+func TestMarkUpstreamModulesAsImportsForGo(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    googleproto.String("google/protobuf/timestamp.proto"),
+				Package: googleproto.String("google.protobuf"),
+			},
+			{
+				Name:    googleproto.String("google/protobuf/compiler/plugin.proto"),
+				Package: googleproto.String("google.protobuf.compiler"),
+			},
+			{
+				Name:    googleproto.String("google/api/annotations.proto"),
+				Package: googleproto.String("google.api"),
+			},
+			{
+				Name:    googleproto.String("google/rpc/status.proto"),
+				Package: googleproto.String("google.rpc"),
+			},
+			{
+				Name:    googleproto.String("google/type/money.proto"),
+				Package: googleproto.String("google.type"),
+			},
+			{
+				Name:    googleproto.String("buf/validate/validate.proto"),
+				Package: googleproto.String("buf.validate"),
+			},
+			{
+				Name:    googleproto.String("buf/validate/priv/private.proto"),
+				Package: googleproto.String("buf.validate.priv"),
+			},
+			{
+				Name:    googleproto.String("saas/accounts/v1/accounts.proto"),
+				Package: googleproto.String("saas.accounts.v1"),
+				Dependency: []string{
+					"google/protobuf/timestamp.proto",
+					"google/api/annotations.proto",
+					"buf/validate/validate.proto",
+				},
+			},
+			{
+				Name:    googleproto.String("google/protobuf/accounts_extras.proto"),
+				Package: googleproto.String("saas.accounts.v1"),
+			},
+		},
+	}
+
+	image, _ := markSet(t, set, languages.GO)
+
+	want := map[string]string{
+		"google/protobuf/timestamp.proto":       "",
+		"google/protobuf/compiler/plugin.proto": "",
+		"google/api/annotations.proto":          "buf.build/googleapis/googleapis",
+		"google/rpc/status.proto":               "buf.build/googleapis/googleapis",
+		"google/type/money.proto":               "buf.build/googleapis/googleapis",
+		"buf/validate/validate.proto":           "buf.build/bufbuild/protovalidate",
+		"buf/validate/priv/private.proto":       "buf.build/bufbuild/protovalidate",
+		"saas/accounts/v1/accounts.proto":       "-",
+		"google/protobuf/accounts_extras.proto": "-",
+	}
+	if len(image.GetFile()) != len(want) {
+		t.Fatalf("marked image has %d files, want %d", len(image.GetFile()), len(want))
+	}
+	for _, file := range image.GetFile() {
+		expected, known := want[file.GetName()]
+		if !known {
+			t.Fatalf("unexpected file %s in marked image", file.GetName())
+		}
+		isImport, moduleIdentity := bufImageExtension(t, file)
+		if isImport != (expected != "-") {
+			t.Errorf("%s: is_import = %v, want %v", file.GetName(), isImport, expected != "-")
+		}
+		if expected != "-" && moduleIdentity != expected {
+			t.Errorf("%s: module identity = %q, want %q", file.GetName(), moduleIdentity, expected)
+		}
+	}
+
+	own := image.GetFile()[7]
+	if len(own.GetDependency()) != 3 {
+		t.Errorf("module file lost its dependencies: %v", own.GetDependency())
+	}
+}
+
+// TestMarkUpstreamModulesAsImportsSkipsTypeScript pins the language gate, and
+// pins that it is TypeScript-shaped, not Go-shaped.
+//
+// Go and Python both resolve a dropped file upstream: Go through the
+// go_package managed mode leaves pointing at the canonical package, Python
+// through an absolute `from buf.validate import ...` that only gets rewritten
+// under the library's own package when the tree actually contains that root.
+// Leaving Python vendoring its own copy is not a safe default — a consumer
+// that also installs protovalidate hits the same duplicate registration the Go
+// client used to, as `duplicate file name buf/validate/validate.proto` out of
+// the descriptor pool.
+//
+// TypeScript genuinely cannot: protobuf-es emits a relative import of the
+// dependency's own generated file, which no npm package can satisfy, so
+// dropping the file would leave the bindings importing something buf never
+// wrote. The well-known types are dropped for every language: every runtime
+// ships them.
+func TestMarkUpstreamModulesAsImportsSkipsTypeScript(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    googleproto.String("google/protobuf/timestamp.proto"),
+				Package: googleproto.String("google.protobuf"),
+			},
+			{
+				Name:    googleproto.String("buf/validate/validate.proto"),
+				Package: googleproto.String("buf.validate"),
+			},
+			{
+				Name:    googleproto.String("google/api/annotations.proto"),
+				Package: googleproto.String("google.api"),
+			},
+		},
+	}
+
+	for lang, mapsShared := range map[languages.Language]bool{
+		languages.GO:         true,
+		languages.PYTHON:     true,
+		languages.TYPESCRIPT: false,
+	} {
+		image, _ := markSet(t, set, lang)
+		want := map[string]bool{
+			"google/protobuf/timestamp.proto": true,
+			"buf/validate/validate.proto":     mapsShared,
+			"google/api/annotations.proto":    mapsShared,
+		}
+		for _, file := range image.GetFile() {
+			isImport, _ := bufImageExtension(t, file)
+			if isImport != want[file.GetName()] {
+				t.Errorf("%s: %s is_import = %v, want %v", lang, file.GetName(), isImport, want[file.GetName()])
+			}
+		}
+	}
+}
+
+// TestMarkUpstreamModulesAsImportsReportsPythonPackages pins the dependency
+// hand-off: a Python library that stops carrying its own copy of a shared
+// module has to declare the distribution that supplies it instead, so the
+// marking step is what names those distributions.
+func TestMarkUpstreamModulesAsImportsReportsPythonPackages(t *testing.T) {
 	set := &descriptorpb.FileDescriptorSet{
 		File: []*descriptorpb.FileDescriptorProto{
 			{
@@ -32,88 +179,153 @@ func TestMarkWellKnownTypesAsImports(t *testing.T) {
 				Package: googleproto.String("google.api"),
 			},
 			{
-				Name:       googleproto.String("saas/accounts/v1/accounts.proto"),
-				Package:    googleproto.String("saas.accounts.v1"),
-				Dependency: []string{"google/protobuf/timestamp.proto", "google/api/annotations.proto"},
+				Name:    googleproto.String("google/rpc/status.proto"),
+				Package: googleproto.String("google.rpc"),
 			},
 			{
-				Name:    googleproto.String("google/protobuf/accounts_extras.proto"),
-				Package: googleproto.String("saas.accounts.v1"),
+				Name:    googleproto.String("buf/validate/validate.proto"),
+				Package: googleproto.String("buf.validate"),
 			},
 		},
 	}
 
-	data, err := markWellKnownTypesAsImports(set)
-	if err != nil {
-		t.Fatalf("markWellKnownTypesAsImports: %v", err)
+	_, marked := markSet(t, set, languages.PYTHON)
+	got := pythonPackagesFor(marked)
+	want := []string{"googleapis-common-protos", "protovalidate"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("pythonPackagesFor = %v, want %v", got, want)
 	}
 
-	var image descriptorpb.FileDescriptorSet
-	if err := googleproto.Unmarshal(data, &image); err != nil {
-		t.Fatalf("unmarshal marked image: %v", err)
-	}
-
-	want := map[string]bool{
-		"google/protobuf/timestamp.proto":       true,
-		"google/api/annotations.proto":          false,
-		"saas/accounts/v1/accounts.proto":       false,
-		"google/protobuf/accounts_extras.proto": false,
-	}
-	if len(image.GetFile()) != len(want) {
-		t.Fatalf("marked image has %d files, want %d", len(image.GetFile()), len(want))
-	}
-	for _, file := range image.GetFile() {
-		expected, known := want[file.GetName()]
-		if !known {
-			t.Fatalf("unexpected file %s in marked image", file.GetName())
-		}
-		if got := bufIsImport(t, file); got != expected {
-			t.Errorf("%s: is_import = %v, want %v", file.GetName(), got, expected)
-		}
-	}
-
-	own := image.GetFile()[2]
-	if len(own.GetDependency()) != 2 {
-		t.Errorf("module file lost its dependencies: %v", own.GetDependency())
-	}
-}
-
-// TestMarkWellKnownTypesAsImportsWireFormat pins the exact bytes buf reads the
-// marker from. Every other assertion in this file is written against the same
-// two field-number constants the marker is built from, so it would keep passing
-// if those drifted from buf.alpha.image.v1's actual schema and buf silently
-// went back to generating the well-known types; this is what catches that.
-// The bytes are field 8042, length-delimited (0xd2 0xf6 0x03 0x02), wrapping
-// is_import=true (0x08 0x01).
-func TestMarkWellKnownTypesAsImportsWireFormat(t *testing.T) {
-	set := &descriptorpb.FileDescriptorSet{
+	// The well-known types come from protobuf, which the scaffold already
+	// depends on, so a contract importing only those adds nothing.
+	_, wktOnly := markSet(t, &descriptorpb.FileDescriptorSet{
 		File: []*descriptorpb.FileDescriptorProto{{
 			Name:    googleproto.String("google/protobuf/timestamp.proto"),
 			Package: googleproto.String("google.protobuf"),
 		}},
+	}, languages.PYTHON)
+	if got := pythonPackagesFor(wktOnly); len(got) != 0 {
+		t.Fatalf("pythonPackagesFor(well-known types only) = %v, want none", got)
+	}
+}
+
+// TestMarkUpstreamModulesAsImportsWireFormat pins the exact bytes buf reads
+// the markers from. Every other assertion in this file is written against the
+// same field-number constants the markers are built from, so it would keep
+// passing if those drifted from buf.alpha.image.v1's actual schema and buf
+// silently went back to generating — and go_package-rewriting — these files;
+// this is what catches that.
+func TestMarkUpstreamModulesAsImportsWireFormat(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    googleproto.String("google/protobuf/timestamp.proto"),
+				Package: googleproto.String("google.protobuf"),
+			},
+			{
+				Name:    googleproto.String("buf/validate/validate.proto"),
+				Package: googleproto.String("buf.validate"),
+			},
+		},
 	}
 
-	data, err := markWellKnownTypesAsImports(set)
+	image, _ := markSet(t, set, languages.GO)
+
+	// Field 8042, length-delimited (0xd2 0xf6 0x03), wrapping is_import=true
+	// (0x08 0x01).
+	wellKnown := []byte{0xd2, 0xf6, 0x03, 0x02, 0x08, 0x01}
+	if got := []byte(image.GetFile()[0].ProtoReflect().GetUnknown()); !bytes.Equal(got, wellKnown) {
+		t.Fatalf("well-known type extension = % x, want % x", got, wellKnown)
+	}
+
+	// The same, plus module_info (field 2) wrapping name (field 1) wrapping
+	// remote/owner/repository (fields 1, 2, 3).
+	var moduleName []byte
+	moduleName = append(moduleName, 0x0a, 0x09)
+	moduleName = append(moduleName, "buf.build"...)
+	moduleName = append(moduleName, 0x12, 0x08)
+	moduleName = append(moduleName, "bufbuild"...)
+	moduleName = append(moduleName, 0x1a, 0x0d)
+	moduleName = append(moduleName, "protovalidate"...)
+	moduleInfo := append([]byte{0x0a, byte(len(moduleName))}, moduleName...)
+	extension := append([]byte{0x08, 0x01, 0x12, byte(len(moduleInfo))}, moduleInfo...)
+	mapped := append([]byte{0xd2, 0xf6, 0x03, byte(len(extension))}, extension...)
+	if got := []byte(image.GetFile()[1].ProtoReflect().GetUnknown()); !bytes.Equal(got, mapped) {
+		t.Fatalf("protovalidate extension = % x, want % x", got, mapped)
+	}
+}
+
+func markSet(t *testing.T, set *descriptorpb.FileDescriptorSet, lang languages.Language) (*descriptorpb.FileDescriptorSet, []upstreamProtoModule) {
+	t.Helper()
+	before, err := googleproto.Marshal(set)
 	if err != nil {
-		t.Fatalf("markWellKnownTypesAsImports: %v", err)
+		t.Fatal(err)
+	}
+	data, marked, err := markUpstreamModulesAsImports(set, lang)
+	if err != nil {
+		t.Fatalf("markUpstreamModulesAsImports(%s): %v", lang, err)
+	}
+	// The caller keeps reading the parsed contract after marking it (see
+	// targetFilesForPackage), so the marking must not reach back into it.
+	after, err := googleproto.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("markUpstreamModulesAsImports(%s) mutated its argument", lang)
 	}
 	var image descriptorpb.FileDescriptorSet
 	if err := googleproto.Unmarshal(data, &image); err != nil {
 		t.Fatalf("unmarshal marked image: %v", err)
 	}
-
-	got := []byte(image.GetFile()[0].ProtoReflect().GetUnknown())
-	want := []byte{0xd2, 0xf6, 0x03, 0x02, 0x08, 0x01}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("image file extension = % x, want % x", got, want)
-	}
+	return &image, marked
 }
 
-// bufIsImport reports whether file carries
-// buf.alpha.image.v1.ImageFileExtension.is_import, which buf reads off a
-// FileDescriptorProto's extension field 8042 to decide a file is in the image
-// only to resolve imports.
-func bufIsImport(t *testing.T, file *descriptorpb.FileDescriptorProto) bool {
+// bufImageExtension reads back the
+// buf.alpha.image.v1.ImageFileExtension buf keeps on a FileDescriptorProto's
+// extension field 8042: is_import, which tells buf the file is in the image
+// only to resolve imports, and the "remote/owner/repository" identity of the
+// buf module it came from, which managed mode's except list matches against.
+func bufImageExtension(t *testing.T, file *descriptorpb.FileDescriptorProto) (bool, string) {
+	t.Helper()
+	extension := bufImageExtensionBytes(t, file)
+	var isImport bool
+	var moduleIdentity string
+	for len(extension) > 0 {
+		number, kind, headerLength := protowire.ConsumeTag(extension)
+		if headerLength < 0 {
+			t.Fatalf("%s: cannot read image file extension tag: %v", file.GetName(), protowire.ParseError(headerLength))
+		}
+		extension = extension[headerLength:]
+		switch {
+		case number == bufImageFileIsImportField && kind == protowire.VarintType:
+			value, length := protowire.ConsumeVarint(extension)
+			if length < 0 {
+				t.Fatalf("%s: cannot read is_import: %v", file.GetName(), protowire.ParseError(length))
+			}
+			isImport = value == 1
+			extension = extension[length:]
+		case number == bufImageFileModuleInfoField && kind == protowire.BytesType:
+			value, length := protowire.ConsumeBytes(extension)
+			if length < 0 {
+				t.Fatalf("%s: cannot read module_info: %v", file.GetName(), protowire.ParseError(length))
+			}
+			moduleIdentity = bufModuleIdentity(t, file.GetName(), value)
+			extension = extension[length:]
+		default:
+			skipped := protowire.ConsumeFieldValue(number, kind, extension)
+			if skipped < 0 {
+				t.Fatalf("%s: cannot skip image file extension field %d: %v", file.GetName(), number, protowire.ParseError(skipped))
+			}
+			extension = extension[skipped:]
+		}
+	}
+	return isImport, moduleIdentity
+}
+
+// bufImageExtensionBytes returns the raw ImageFileExtension bytes carried on
+// file, or nil when it carries none.
+func bufImageExtensionBytes(t *testing.T, file *descriptorpb.FileDescriptorProto) []byte {
 	t.Helper()
 	unknown := []byte(file.ProtoReflect().GetUnknown())
 	for len(unknown) > 0 {
@@ -134,19 +346,35 @@ func bufIsImport(t *testing.T, file *descriptorpb.FileDescriptorProto) bool {
 		if valueLength < 0 {
 			t.Fatalf("%s: cannot read image file extension: %v", file.GetName(), protowire.ParseError(valueLength))
 		}
-		unknown = unknown[valueLength:]
-		fieldNumber, fieldKind, tagLength := protowire.ConsumeTag(extension)
-		if tagLength < 0 {
-			t.Fatalf("%s: cannot read image file extension tag: %v", file.GetName(), protowire.ParseError(tagLength))
-		}
-		if fieldNumber != bufImageFileIsImportField || fieldKind != protowire.VarintType {
-			continue
-		}
-		isImport, importLength := protowire.ConsumeVarint(extension[tagLength:])
-		if importLength < 0 {
-			t.Fatalf("%s: cannot read is_import: %v", file.GetName(), protowire.ParseError(importLength))
-		}
-		return isImport == 1
+		return extension
 	}
-	return false
+	return nil
+}
+
+// bufModuleIdentity renders a buf.alpha.image.v1.ModuleInfo's name as buf
+// writes it in managed mode's except list: "remote/owner/repository".
+func bufModuleIdentity(t *testing.T, fileName string, moduleInfo []byte) string {
+	t.Helper()
+	number, kind, headerLength := protowire.ConsumeTag(moduleInfo)
+	if headerLength < 0 || number != bufModuleInfoNameField || kind != protowire.BytesType {
+		t.Fatalf("%s: module_info does not start with a name field: % x", fileName, moduleInfo)
+	}
+	name, valueLength := protowire.ConsumeBytes(moduleInfo[headerLength:])
+	if valueLength < 0 {
+		t.Fatalf("%s: cannot read module name: %v", fileName, protowire.ParseError(valueLength))
+	}
+	segments := map[protowire.Number]string{}
+	for len(name) > 0 {
+		fieldNumber, fieldKind, tagLength := protowire.ConsumeTag(name)
+		if tagLength < 0 || fieldKind != protowire.BytesType {
+			t.Fatalf("%s: cannot read module name field: % x", fileName, name)
+		}
+		value, length := protowire.ConsumeString(name[tagLength:])
+		if length < 0 {
+			t.Fatalf("%s: cannot read module name field %d: %v", fileName, fieldNumber, protowire.ParseError(length))
+		}
+		segments[fieldNumber] = value
+		name = name[tagLength+length:]
+	}
+	return segments[bufModuleNameRemoteField] + "/" + segments[bufModuleNameOwnerField] + "/" + segments[bufModuleNameRepositoryField]
 }
