@@ -5,14 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net"
-	"net/http"
-	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/dockerstart"
@@ -125,14 +120,15 @@ type Flow struct {
 	// per-service status.
 	stateListener StateListener
 
-	// beganMu guards begun. begun records every service whose runtime lifecycle
-	// THIS run has emitted (via emitState). ServiceReachable consults it so a
-	// readiness probe can only ever confirm a service we actually launched —
-	// never a zombie from a previous run squatting on the same deterministically
-	// hashed port. Written from the orchestration goroutine, read from the UI
-	// poller, hence the lock.
+	// beganMu guards states. states records the last runtime lifecycle state
+	// THIS run has emitted (via emitState) per service. ServiceReachable
+	// consults it so a readiness probe can only ever confirm a service we
+	// actually launched — never a zombie from a previous run squatting on the
+	// same deterministically hashed port — and readiness consults it for the
+	// completed Start a dependency must have reached. Written from the
+	// orchestration goroutine, read from the UI poller, hence the lock.
 	beganMu sync.Mutex
-	begun   map[string]bool
+	states  map[string]tui.ServiceState
 }
 
 // StateListener observes per-service runtime lifecycle transitions. service is
@@ -1003,10 +999,10 @@ func (flow *Flow) emitState(service string, state tui.ServiceState, port int) {
 	// service we are actively orchestrating, so recording unconditionally is
 	// correct regardless of which phase this transition is.
 	flow.beganMu.Lock()
-	if flow.begun == nil {
-		flow.begun = map[string]bool{}
+	if flow.states == nil {
+		flow.states = map[string]tui.ServiceState{}
 	}
-	flow.begun[service] = true
+	flow.states[service] = state
 	flow.beganMu.Unlock()
 
 	if flow.stateListener != nil {
@@ -1020,7 +1016,17 @@ func (flow *Flow) emitState(service string, state tui.ServiceState, port int) {
 func (flow *Flow) beganRun(service string) bool {
 	flow.beganMu.Lock()
 	defer flow.beganMu.Unlock()
-	return flow.begun[service]
+	_, began := flow.states[service]
+	return began
+}
+
+// startedRun reports whether the service's runtime Start completed
+// successfully: the running state is emitted only once the Start call returns
+// without error. An attempted — or still-running — Start is not readiness.
+func (flow *Flow) startedRun(service string) bool {
+	flow.beganMu.Lock()
+	defer flow.beganMu.Unlock()
+	return flow.states[service] == tui.StateRunning
 }
 
 // ServicePort returns a service's primary (first non-zero) port from the
@@ -1044,15 +1050,15 @@ func (flow *Flow) ServicePort(service string) int {
 	return 0
 }
 
-// ServiceReachable reports whether a service's recorded network endpoints are
-// actually accepting connections (a real readiness probe), independent of where
-// the synchronous action loop currently is. The loop emits a dependency's
-// StateRunning only when its RuntimeStart call returns; while the loop is parked
-// inside a long-blocking phase — typically the origin's `go build` — that emit
-// is stuck, so an already-listening dependency keeps showing as "slow". Driving
-// the live status off this probe instead makes it reflect reality, not loop
-// timing. Returns false for services with no probeable endpoints (their status
-// stays driven by the action-loop emit).
+// ServiceReachable reports whether every one of a service's recorded network
+// endpoints answers its declared health predicate (a real readiness probe),
+// independent of where the synchronous action loop currently is. The loop emits
+// a dependency's StateRunning only when its RuntimeStart call returns; while the
+// loop is parked inside a long-blocking phase — typically the origin's `go
+// build` — that emit is stuck, so an already-listening dependency keeps showing
+// as "slow". Driving the live status off this probe instead makes it reflect
+// reality, not loop timing. Returns false for services with no probeable
+// endpoints (their status stays driven by the action-loop emit).
 func (flow *Flow) ServiceReachable(service string) bool {
 	if flow == nil || flow.SharedState == nil {
 		return false
@@ -1068,7 +1074,11 @@ func (flow *Flow) ServiceReachable(service string) bool {
 	if !ok || len(mappings) == 0 {
 		return false
 	}
-	return networkMappingsReachable(mappings)
+	requirements := make([]readinessRequirement, 0, len(mappings))
+	for _, mapping := range mappings {
+		requirements = append(requirements, endpointRequirement(service, mapping))
+	}
+	return evaluateReadinessProbes(context.Background(), requirements) == nil
 }
 
 // PromoteReachable invokes onReady once for each managed dependency (origin
@@ -1597,155 +1607,6 @@ func (flow *Flow) CreateManager(ctx context.Context) error {
 	}
 	flow.hub = &Hub{managers: []IManager{manager}}
 	return nil
-}
-
-func (flow *Flow) Ready(ctx context.Context) bool {
-	if flow == nil || flow.playbook == nil {
-		return false
-	}
-	origin := resources.WithUnique(flow.originService).Unique()
-	executed := flow.playbook.Executed()
-	if !flow.excludeRoot {
-		return runtimeStarted(executed, origin)
-	}
-
-	return flow.dependenciesReady(ctx, origin)
-}
-
-func (flow *Flow) dependenciesReady(ctx context.Context, origin string) bool {
-	if flow.world == nil || flow.world.Dependencies == nil {
-		return true
-	}
-	required, err := flow.world.Dependencies.DirectRequires(ctx, origin)
-	if err != nil {
-		wool.Get(ctx).In("flow.Ready").Debug("cannot resolve dependencies", wool.ErrField(err))
-		return false
-	}
-	if len(required) == 0 {
-		return true
-	}
-	if flow.SharedState == nil {
-		return false
-	}
-	for _, service := range required {
-		svc, err := flow.world.Dependencies.ServiceFromUnique(service.Unique)
-		if err != nil {
-			wool.Get(ctx).In("flow.Ready").Debug("cannot resolve dependency service", wool.ErrField(err))
-			return false
-		}
-		if len(svc.Endpoints) == 0 {
-			continue
-		}
-		mappings, ok := flow.SharedState.GetNetworkMappingsFromUnique(service.Unique)
-		if !ok || len(mappings) == 0 {
-			return false
-		}
-		if !networkMappingsReachable(mappings) {
-			return false
-		}
-	}
-	return true
-}
-
-func networkMappingsReachable(mappings []*basev0.NetworkMapping) bool {
-	byName := make(map[string]*basev0.NetworkMapping)
-	for _, mapping := range mappings {
-		if mapping.Endpoint != nil {
-			byName[mapping.Endpoint.Name] = mapping
-		}
-	}
-	if bolt, hasBolt := byName["bolt"]; hasBolt {
-		if httpMapping, hasHTTP := byName["http"]; hasHTTP {
-			return networkMappingTCPReachable(bolt) && networkMappingHTTPReachable(httpMapping)
-		}
-	}
-
-	anyReachable := false
-	for _, mapping := range mappings {
-		if networkMappingTCPReachable(mapping) {
-			anyReachable = true
-		}
-	}
-	return anyReachable
-}
-
-func networkMappingTCPReachable(mapping *basev0.NetworkMapping) bool {
-	instance := reachableNetworkInstance(mapping.Instances)
-	if instance == nil {
-		return false
-	}
-	address := networkInstanceDialAddress(instance)
-	if address == "" {
-		return false
-	}
-	conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-func networkMappingHTTPReachable(mapping *basev0.NetworkMapping) bool {
-	instance := reachableNetworkInstance(mapping.Instances)
-	if instance == nil {
-		return false
-	}
-	address := networkInstanceDialAddress(instance)
-	if address == "" {
-		return false
-	}
-	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
-		address = "http://" + address
-	}
-	client := &http.Client{Timeout: 300 * time.Millisecond}
-	resp, err := client.Get(address)
-	if err != nil {
-		return false
-	}
-	_ = resp.Body.Close()
-	return true
-}
-
-func reachableNetworkInstance(instances []*basev0.NetworkInstance) *basev0.NetworkInstance {
-	for _, instance := range instances {
-		if instance.GetAccess().GetKind() == resources.NetworkAccessNative {
-			return instance
-		}
-	}
-	for _, instance := range instances {
-		if instance.GetAccess().GetKind() == resources.NetworkAccessPublic {
-			return instance
-		}
-	}
-	if len(instances) == 0 {
-		return nil
-	}
-	return instances[0]
-}
-
-func networkInstanceDialAddress(instance *basev0.NetworkInstance) string {
-	if instance.GetHost() != "" {
-		return instance.GetHost()
-	}
-	if instance.GetHostname() != "" && instance.GetPort() != 0 {
-		return net.JoinHostPort(instance.GetHostname(), strconv.Itoa(int(instance.GetPort())))
-	}
-	address := instance.GetAddress()
-	u, err := url.Parse(address)
-	if err == nil && u.Host != "" {
-		return u.Host
-	}
-	return address
-}
-
-func runtimeStarted(actions []Action, unique string) bool {
-	for _, action := range actions {
-		if action.Service == unique && action.Type == RuntimeStart && !action.Failed {
-			return true
-		}
-	}
-	return false
 }
 
 func (flow *Flow) WithDeploymentManager(manager deployments.Manager) {

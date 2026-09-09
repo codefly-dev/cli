@@ -1,0 +1,7 @@
+name: readiness
+layout: modules
+modules:
+    - name: app
+    - name: data
+    - name: jobs
+    - name: web

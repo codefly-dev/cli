@@ -1,0 +1,17 @@
+kind: service
+name: store
+version: 0.0.0
+module: data
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+    - name: seed
+      module: data
+endpoints:
+    - name: grpc
+      api: grpc
+    - name: admin
+      api: tcp
