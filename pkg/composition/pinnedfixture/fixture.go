@@ -33,10 +33,25 @@ const ModulePackageTagPrefix = "module-package/v"
 func AllowTempDirCleanup(t *testing.T, root string) {
 	t.Helper()
 	t.Cleanup(func() {
+		scoped, err := os.OpenRoot(root)
+		if err != nil {
+			return
+		}
+		defer func() { _ = scoped.Close() }()
 		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-			if err == nil && entry.IsDir() {
-				_ = os.Chmod(path, 0o755)
+			// Best effort: one unreadable entry must not abort the cleanup walk.
+			if err != nil || !entry.IsDir() {
+				return nil
 			}
+			relative, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return nil
+			}
+			if relative == "." {
+				_ = scoped.Chmod(".", 0o755)
+				return nil
+			}
+			_ = scoped.Chmod(relative, 0o755)
 			return nil
 		})
 	})
@@ -149,8 +164,8 @@ artifact-roots:
 contracts:
   composition: ">=2.0 <3.0"
 `, corecomposition.PackageKind, corecomposition.PackageSchema, PackageID, version)
-	require.NoError(t, os.WriteFile(filepath.Join(root, corecomposition.PackageManifestFileName), []byte(manifest), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "services", "frontend.txt"), []byte(content), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, corecomposition.PackageManifestFileName), []byte(manifest), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "services", "frontend.txt"), []byte(content), 0o600))
 
 	archive, digest, err := corecomposition.CanonicalArchive(root)
 	require.NoError(t, err)
@@ -186,6 +201,24 @@ func (fixture *Fixture) SignerKeyBase64() string {
 	return base64.StdEncoding.EncodeToString(fixture.publicKey)
 }
 
+// writeJSON serializes payload as the response body. Marshalling rather than
+// formatting request-derived strings into the writer keeps the fixture's
+// responses well-formed whatever a test puts in a tag name.
+func writeJSON(writer http.ResponseWriter, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, _ = writer.Write(data)
+}
+
+// writeJSONRaw writes an already-assembled JSON document, for the one response
+// built by concatenating per-release fragments.
+func writeJSONRaw(writer http.ResponseWriter, document string) {
+	_, _ = writer.Write([]byte(document))
+}
+
 func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request) {
 	fixture.requests.Add(1)
 	path := strings.TrimPrefix(request.URL.Path, "/api/v3")
@@ -194,7 +227,7 @@ func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request
 	switch {
 	case path == prefix+"/releases":
 		writer.Header().Set("Content-Type", "application/json")
-		var entries []string
+		entries := make([]string, 0, len(fixture.releases)+len(fixture.plainTags))
 		for tag := range fixture.releases {
 			entries = append(entries, fmt.Sprintf(
 				`{"tag_name":%q,"assets":[{"name":"module.tar"},{"name":"provenance.json"},{"name":"provenance.sig"}]}`, tag))
@@ -202,7 +235,7 @@ func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request
 		for _, tag := range fixture.plainTags {
 			entries = append(entries, fmt.Sprintf(`{"tag_name":%q,"assets":[]}`, tag))
 		}
-		fmt.Fprintf(writer, "[%s]", strings.Join(entries, ","))
+		writeJSONRaw(writer, "["+strings.Join(entries, ",")+"]")
 	case strings.HasPrefix(path, prefix+"/releases/tags/"):
 		tag := strings.TrimPrefix(path, prefix+"/releases/tags/")
 		assets, ok := fixture.releases[tag]
@@ -210,14 +243,15 @@ func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request
 			http.NotFound(writer, request)
 			return
 		}
-		immutable := true
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(writer, `{"id":1,"tag_name":%q,"draft":false,"immutable":%t,"assets":[`+
-			`{"id":%d,"name":"module.tar","size":%d},`+
-			`{"id":%d,"name":"provenance.json","size":%d},`+
-			`{"id":%d,"name":"provenance.sig","size":%d}]}`,
-			tag, immutable,
-			assets.archiveID, assets.archiveSize, assets.provenanceID, assets.provenanceSize, assets.signatureID, assets.signatureSize)
+		writeJSON(writer, map[string]any{
+			"id": 1, "tag_name": tag, "draft": false, "immutable": true,
+			"assets": []map[string]any{
+				{"id": assets.archiveID, "name": "module.tar", "size": assets.archiveSize},
+				{"id": assets.provenanceID, "name": "provenance.json", "size": assets.provenanceSize},
+				{"id": assets.signatureID, "name": "provenance.sig", "size": assets.signatureSize},
+			},
+		})
 	case strings.HasPrefix(path, prefix+"/git/ref/tags/"):
 		tag := strings.TrimPrefix(path, prefix+"/git/ref/tags/")
 		assets, ok := fixture.releases[tag]
@@ -226,7 +260,10 @@ func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(writer, `{"ref":"refs/tags/%s","object":{"type":"commit","sha":%q}}`, tag, assets.commit)
+		writeJSON(writer, map[string]any{
+			"ref":    "refs/tags/" + tag,
+			"object": map[string]any{"type": "commit", "sha": assets.commit},
+		})
 	case strings.HasPrefix(path, prefix+"/releases/assets/"):
 		var id int64
 		if _, err := fmt.Sscanf(strings.TrimPrefix(path, prefix+"/releases/assets/"), "%d", &id); err != nil {
@@ -258,7 +295,7 @@ module-trust:
   signers:
     %s: %q
 `, PackageID, RepositoryURL(), Signer, fixture.SignerKeyBase64())
-	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(doc), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(doc), 0o600))
 }
 
 func (fixture *Fixture) UseGitHub(t *testing.T) {

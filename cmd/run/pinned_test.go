@@ -1043,12 +1043,19 @@ func TestMaterializePinnedModulesRejectsStaleGitCheckoutAfterFailedBump(t *testi
 	if directive = overlay.Resolve["saas"]; directive == nil || directive.Path != "" {
 		t.Fatalf("the retry must not re-adopt the stale checkout, got %+v", directive)
 	}
+	// The receipt is kept, not dropped: it is what still identifies the dropped
+	// path as machine output. What must be true is that it answers no current
+	// request, so it makes nothing eligible.
 	receipts, err := composition.LoadResolutionReceipts(workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, present := receipts["saas"]; present {
-		t.Fatalf("a receipt for an unresolved module must be dropped: %+v", receipts)
+	receipt := receipts["saas"]
+	if receipt == nil || receipt.Path != resolvedPath {
+		t.Fatalf("the receipt must keep naming the materialization it wrote: %+v", receipt)
+	}
+	if receipt.Answers(workspace.Modules[0], composition.ResolutionModeGit) {
+		t.Fatalf("the kept receipt must not answer the new request: %+v", receipt)
 	}
 }
 
@@ -1415,5 +1422,136 @@ func TestMaterializePinnedModulesStillMaterializesTheModulesThatResolve(t *testi
 	}
 	if directive := overlay.Resolve["blog"]; directive == nil || directive.Path == "" {
 		t.Fatalf("an unaffected module must stay materialized, got %+v", directive)
+	}
+}
+
+// Invalidation writes the overlay; if that write does not land — a failed
+// .gitignore write, a failed save, a kill — the receipt must still name the
+// materialization. It is the only thing that identifies a clone written before
+// CODEFLY_HOME moved as machine output: without it pinnedManaged reads the
+// surviving overlay path as a checkout the user manages and skips the module
+// forever, silently running the previous version under the new request.
+func TestMaterializePinnedModulesKeepsOwnershipWhenInvalidationDoesNotLand(t *testing.T) {
+	firstHome := t.TempDir()
+	t.Setenv(resources.CodeflyHomeEnv, firstHome)
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = materializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := overlay.Resolve["saas"].Path
+
+	// CODEFLY_HOME moves, so the clone now sits under no cache root and only the
+	// receipt can vouch that the CLI wrote it.
+	secondHome := t.TempDir()
+	t.Setenv(resources.CodeflyHomeEnv, secondHome)
+	writeSolutionWorkspace(t, workspaceDir, source, "v9.9.9")
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = materializePinnedModules(ctx, workspace); err == nil {
+		t.Fatal("a requested version that cannot be resolved must fail closed")
+	}
+
+	// Reinstate the overlay path the invalidation removed: the exact on-disk
+	// state left behind when the receipt file was rewritten but the overlay write
+	// did not land.
+	if err = resources.SaveLocalOverlay(ctx, workspaceDir, &resources.LocalOverlay{
+		Resolve: map[string]*resources.ModuleResolveDirective{"saas": {Path: stale}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = materializePinnedModules(ctx, workspace); err == nil {
+		t.Fatal("the surviving path is still machine output and must be re-invalidated, not adopted as a user checkout")
+	}
+	overlay, err = resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if directive := overlay.Resolve["saas"]; directive != nil && directive.Path == stale {
+		t.Fatalf("the stale checkout was reclassified as a user checkout and kept: %+v", directive)
+	}
+}
+
+// `run service` and `run job` never materialize, so the fail-closed rule has to
+// hold at their load path too: a bumped version whose materialization was never
+// refreshed must refuse to run rather than boot the previous version. The check
+// is a pure receipt comparison — no network, nothing pulled.
+func TestCheckMaterializationsAnswerRequests(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = materializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if err = checkMaterializationsAnswerRequests(ctx, workspace); err != nil {
+		t.Fatalf("a freshly materialized module answers its request: %v", err)
+	}
+
+	// The version is bumped but nothing re-materializes: exactly the state
+	// `codefly run service` sees after an edit.
+	writeSolutionWorkspace(t, workspaceDir, source, "v9.9.9")
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = checkMaterializationsAnswerRequests(ctx, workspace)
+	if err == nil {
+		t.Fatal("a run must refuse a materialization that answers a different request")
+	}
+	for _, want := range []string{"saas", "v9.9.9", "v0.0.1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must name the module and both versions, got: %v", err)
+		}
+	}
+}
+
+// The check must not fire on a checkout the user manages: no committed version
+// governs a path they pointed the overlay at themselves.
+func TestCheckMaterializationsAnswerRequestsIgnoresUserCheckouts(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	userCheckout := t.TempDir()
+	writeSolutionWorkspace(t, workspaceDir, "owner/saas", "v9.9.9")
+	if err := resources.SaveLocalOverlay(ctx, workspaceDir, &resources.LocalOverlay{
+		Resolve: map[string]*resources.ModuleResolveDirective{"saas": {Path: userCheckout}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = checkMaterializationsAnswerRequests(ctx, workspace); err != nil {
+		t.Fatalf("a user checkout must never be judged against a committed version: %v", err)
 	}
 }

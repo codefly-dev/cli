@@ -704,13 +704,20 @@ func (receipt *ResolutionReceipt) ResolvedPath() string {
 	return receipt.Path
 }
 
-// requestedVersion canonicalizes a committed version constraint so the two
-// spellings of "no constraint" — an absent version and an explicit `latest` —
-// compare equal.
+// requestedVersion canonicalizes a committed version constraint so that two
+// spellings of the same request compare equal: an absent version and an
+// explicit `latest`, and a bare semver with or without the conventional "v"
+// prefix (resolvePinnedTag and exactPinnedVersion already resolve those two to
+// the same artifact, so treating them as different requests would invalidate a
+// receipt that does answer the request). A constraint expression is left alone.
 func requestedVersion(version string) string {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		return "latest"
+	}
+	bare := strings.TrimPrefix(version, "v")
+	if _, err := semver.NewVersion(bare); err == nil {
+		return bare
 	}
 	return version
 }
@@ -767,7 +774,7 @@ func SaveResolutionReceipts(ctx context.Context, dir string, receipts map[string
 	return shared.WriteFileAtomic(ctx, filepath.Join(dir, ResolutionRecordName), data, 0o600)
 }
 
-// GitResolutionFor decides whether a module resolves through the unverified git
+// gitResolutionFor decides whether a module resolves through the unverified git
 // clone or the verified module package. An explicit directive is the user
 // speaking now, so it wins: `git: true` opts in, `pinned: true` revokes a
 // previous opt-in (without it the recorded choice would be sticky, and a user
@@ -778,7 +785,7 @@ func SaveResolutionReceipts(ctx context.Context, dir string, receipts map[string
 // `run` and `doctor workspace` must answer this identically, or doctor reports a
 // module as needing module-trust that run resolves by cloning; sharing the
 // predicate is what keeps them in step.
-func GitResolutionFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt) bool {
+func gitResolutionFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt) bool {
 	if directive != nil && directive.Git {
 		return true
 	}
@@ -788,11 +795,11 @@ func GitResolutionFor(directive *resources.ModuleResolveDirective, receipt *Reso
 	return receipt != nil && receipt.Mode == ResolutionModeGit
 }
 
-// ResolutionModeFor is GitResolutionFor's answer expressed as the mode a
+// ResolutionModeFor is gitResolutionFor's answer expressed as the mode a
 // receipt records, so a caller comparing a receipt against the current request
 // and a caller choosing how to materialize cannot drift apart.
 func ResolutionModeFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt) ResolutionMode {
-	if GitResolutionFor(directive, receipt) {
+	if gitResolutionFor(directive, receipt) {
 		return ResolutionModeGit
 	}
 	return ResolutionModeVerified

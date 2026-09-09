@@ -115,7 +115,6 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			// the point of saying so is that the new mode is attempted from here
 			// on, even while it still fails.
 			delete(receipts, ref.Name)
-			receipt = nil
 			recorded = true
 		}
 		resolved, err := resolvePinnedModule(ctx, workspace.Dir(), ref, cacheRoot, gitFallback)
@@ -136,9 +135,15 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			} else {
 				delete(overlay.Resolve, ref.Name)
 			}
-			delete(receipts, ref.Name)
+			// The receipt is deliberately kept. Outside a cache root — a clone
+			// written before CODEFLY_HOME moved — it is the *only* thing that
+			// identifies this path as machine output, so dropping it here would
+			// strand the path as an apparent user checkout the moment the overlay
+			// write below did not land (a failed .gitignore write, a failed save, a
+			// kill), and pinnedManaged would then skip the module forever with the
+			// stale checkout still selected. It answers no current request, so
+			// keeping it makes nothing eligible; it only preserves ownership.
 			changed = true
-			recorded = true
 			continue
 		}
 		if updateReceipt(receipts, ref.Name, &composition.ResolutionReceipt{
@@ -201,12 +206,64 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 // whole failure is that those two disagree and the second was being run as if it
 // answered the first.
 func staleResolutionError(ref *resources.ModuleReference, receipt *composition.ResolutionReceipt, path string, err error) error {
-	previous := "materialization at " + path
-	if receipt != nil && receipt.Version != "" {
-		previous = fmt.Sprintf("resolved version %s at %s", receipt.Version, path)
-	}
 	return fmt.Errorf("module <%s>: cannot resolve requested version %s: %w; its previously %s no longer answers that request and has been dropped from %s",
-		ref.Name, requestedVersionLabel(ref.Version), err, previous, resources.LocalOverlayConfigurationName)
+		ref.Name, requestedVersionLabel(ref.Version), err, previousMaterializationLabel(receipt, path), resources.LocalOverlayConfigurationName)
+}
+
+// previousMaterializationLabel describes what the overlay is currently pointing
+// at, naming the version it resolved to when a receipt records one.
+func previousMaterializationLabel(receipt *composition.ResolutionReceipt, path string) string {
+	if receipt != nil && receipt.Version != "" {
+		return fmt.Sprintf("resolved version %s at %s", receipt.Version, path)
+	}
+	return "materialization at " + path
+}
+
+// checkMaterializationsAnswerRequests fails a run whose overlay selects a
+// materialization the CLI wrote for a different request than the workspace makes
+// now. Only `run solution` materializes, so without this a `run service` after a
+// version bump loads the checkout the *previous* request resolved to and boots
+// it as an ordinary local module — the same stale resolution materialization
+// fails closed on, reached through the entry point that never materializes.
+//
+// It needs no network and pulls nothing: the receipt already records which
+// request its path answered, so this is a pure comparison. Only a path the
+// receipt itself names is judged — any other path is a checkout the user
+// manages, which no committed version governs.
+func checkMaterializationsAnswerRequests(ctx context.Context, workspace *resources.Workspace) error {
+	overlay, err := resources.LoadLocalOverlay(ctx, workspace.Dir())
+	if err != nil {
+		return fmt.Errorf("cannot load local overlay: %w", err)
+	}
+	if overlay == nil {
+		return nil
+	}
+	recordDir := workspace.Dir()
+	if dir := composition.NearestOverlayDir(workspace.Dir()); dir != "" {
+		recordDir = dir
+	}
+	receipts, err := composition.LoadResolutionReceipts(recordDir)
+	if err != nil {
+		return fmt.Errorf("cannot load %s: %w", composition.ResolutionRecordName, err)
+	}
+	var stale []error
+	for _, ref := range workspace.Modules {
+		if ref.Source == "" || ref.PathOverride != nil {
+			continue
+		}
+		directive := overlay.Resolve[ref.Name]
+		receipt := receipts[ref.Name]
+		if directive == nil || directive.Path == "" || directive.Path != receipt.ResolvedPath() {
+			continue
+		}
+		if receipt.Answers(ref, composition.ResolutionModeFor(directive, receipt)) {
+			continue
+		}
+		stale = append(stale, fmt.Errorf("module <%s>: requested version %s has not been resolved; %s still selects its previously %s, which answers a different request — run `codefly run solution` to resolve it",
+			ref.Name, requestedVersionLabel(ref.Version), resources.LocalOverlayConfigurationName,
+			previousMaterializationLabel(receipt, directive.Path)))
+	}
+	return errors.Join(stale...)
 }
 
 func requestedVersionLabel(version string) string {
