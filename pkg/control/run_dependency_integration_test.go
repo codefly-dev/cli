@@ -282,7 +282,7 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 				t.Fatalf("started dependencies = %v, want %v", dependencies, tt.wantDependencies)
 			}
 			for _, dependency := range dependencies {
-				if !flow.ServiceReachable("app/" + dependency) {
+				if !flow.ServiceReachable(ctx, "app/"+dependency) {
 					t.Fatalf("dependency app/%s is not reachable", dependency)
 				}
 			}
