@@ -1,0 +1,6 @@
+kind: module
+name: app
+project: readiness-bad-endpoint
+domain: github.com/codefly-dev/readiness/app
+services:
+    - name: api

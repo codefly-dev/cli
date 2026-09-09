@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -1059,7 +1062,7 @@ func (flow *Flow) ServicePort(service string) int {
 // as "slow". Driving the live status off this probe instead makes it reflect
 // reality, not loop timing. Returns false for services with no probeable
 // endpoints (their status stays driven by the action-loop emit).
-func (flow *Flow) ServiceReachable(service string) bool {
+func (flow *Flow) ServiceReachable(ctx context.Context, service string) bool {
 	if flow == nil || flow.SharedState == nil {
 		return false
 	}
@@ -1074,11 +1077,14 @@ func (flow *Flow) ServiceReachable(service string) bool {
 	if !ok || len(mappings) == 0 {
 		return false
 	}
-	requirements := make([]readinessRequirement, 0, len(mappings))
-	for _, mapping := range mappings {
-		requirements = append(requirements, endpointRequirement(service, mapping))
+	// Judge the service by the same requirements readiness gates on, or the
+	// live status contradicts the run: an endpoint nobody in this run consumes
+	// must not keep a dependency showing as "slow" after the flow is ready.
+	requirements, err := flow.serviceEndpointRequirements(ctx, service)
+	if err != nil || len(requirements) == 0 {
+		return false
 	}
-	return evaluateReadinessProbes(context.Background(), requirements) == nil
+	return evaluateReadinessProbes(ctx, requirements) == nil
 }
 
 // PromoteReachable invokes onReady once for each managed dependency (origin
@@ -1089,7 +1095,7 @@ func (flow *Flow) ServiceReachable(service string) bool {
 // keeps showing as "slow". Polling this from the UI drives status off real
 // readiness instead. promoted dedupes across calls (each dep is reported once)
 // and is owned by the caller's goroutine.
-func (flow *Flow) PromoteReachable(origin string, promoted map[string]bool, onReady func(service string, port int)) {
+func (flow *Flow) PromoteReachable(ctx context.Context, origin string, promoted map[string]bool, onReady func(service string, port int)) {
 	if flow == nil {
 		return
 	}
@@ -1097,7 +1103,7 @@ func (flow *Flow) PromoteReachable(origin string, promoted map[string]bool, onRe
 		if dep == origin || promoted[dep] {
 			continue
 		}
-		if flow.ServiceReachable(dep) {
+		if flow.ServiceReachable(ctx, dep) {
 			promoted[dep] = true
 			onReady(dep, flow.ServicePort(dep))
 		}
@@ -1435,6 +1441,9 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	}
 	// We run in the proper order
 	slices.Reverse(required)
+	if err := flow.validateDependencyEndpointDeclarations(required); err != nil {
+		return w.Wrap(err)
+	}
 	if err := flow.logRunPlan(ctx, required, remotes); err != nil {
 		return w.Wrapf(err, "cannot describe service run plan")
 	}
@@ -1526,6 +1535,59 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	return nil
 }
 
+// validateDependencyEndpointDeclarations rejects a run whose services declare a
+// dependency endpoint the producer does not expose. Nothing validated these
+// before: Workspace.ValidateServiceDependencies exists but is called nowhere,
+// so such a declaration was only discovered by readiness looking for a mapping
+// that can never appear — turning a manifest typo into a run that waits forever
+// instead of an error. It rejects exactly that: a reference nothing can
+// satisfy. A declaration that resolves is left alone even where core's stricter
+// validator would object, because a run that works today must keep working.
+// Only declarations inside this run's service set are checked; one pointing
+// outside it (excluded or remote-cut) is not this run's requirement.
+func (flow *Flow) validateDependencyEndpointDeclarations(uniques []string) error {
+	runSet := make(map[string]bool, len(uniques)+1)
+	for _, unique := range uniques {
+		runSet[unique] = true
+	}
+	consumers := append([]string{}, uniques...)
+	consumers = append(consumers, resources.WithUnique(flow.originService).Unique())
+	for _, unique := range consumers {
+		consumer, err := flow.world.Dependencies.ServiceFromUnique(unique)
+		if err != nil {
+			return err
+		}
+		for _, dependency := range consumer.ServiceDependencies {
+			if !runSet[dependency.Unique()] {
+				continue
+			}
+			producer, err := flow.world.Dependencies.ServiceFromUnique(dependency.Unique())
+			if err != nil {
+				return err
+			}
+			for _, reference := range dependency.Endpoints {
+				if !producerExposesReference(producer, reference) {
+					return fmt.Errorf("service %s declares %s of %s, which exposes no such endpoint",
+						unique, endpointReferenceLabel(reference), dependency.Unique())
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// producerExposesReference reports whether a producer's manifest can ever
+// satisfy one declared reference, through the same name/API matching readiness
+// selects with.
+func producerExposesReference(producer *resources.Service, reference *resources.EndpointReference) bool {
+	for _, endpoint := range producer.Endpoints {
+		if endpointMatchesReference(&basev0.Endpoint{Name: endpoint.Name, Api: endpoint.API}, reference) {
+			return true
+		}
+	}
+	return false
+}
+
 func (flow *Flow) configureRunner(runner *Runner, service *resources.Service) {
 	runner.WithRuntimeContext(flow.runtimeContextFor(service))
 	runner.WithFixture(flow.fixture)
@@ -1607,6 +1669,38 @@ func (flow *Flow) CreateManager(ctx context.Context) error {
 	}
 	flow.hub = &Hub{managers: []IManager{manager}}
 	return nil
+}
+
+func reachableNetworkInstance(instances []*basev0.NetworkInstance) *basev0.NetworkInstance {
+	for _, instance := range instances {
+		if instance.GetAccess().GetKind() == resources.NetworkAccessNative {
+			return instance
+		}
+	}
+	for _, instance := range instances {
+		if instance.GetAccess().GetKind() == resources.NetworkAccessPublic {
+			return instance
+		}
+	}
+	if len(instances) == 0 {
+		return nil
+	}
+	return instances[0]
+}
+
+func networkInstanceDialAddress(instance *basev0.NetworkInstance) string {
+	if instance.GetHost() != "" {
+		return instance.GetHost()
+	}
+	if instance.GetHostname() != "" && instance.GetPort() != 0 {
+		return net.JoinHostPort(instance.GetHostname(), strconv.Itoa(int(instance.GetPort())))
+	}
+	address := instance.GetAddress()
+	u, err := url.Parse(address)
+	if err == nil && u.Host != "" {
+		return u.Host
+	}
+	return address
 }
 
 func (flow *Flow) WithDeploymentManager(manager deployments.Manager) {

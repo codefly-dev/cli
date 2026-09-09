@@ -10,3 +10,5 @@ agent:
 endpoints:
     - name: http
       api: http
+    - name: admin
+      api: http

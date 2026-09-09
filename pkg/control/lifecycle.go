@@ -234,9 +234,15 @@ func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan err
 			}
 			return fmt.Errorf("flow stopped before becoming ready")
 		case <-ticker.C:
-			pending = flow.Readiness(ctx)
-			if pending == nil {
+			failure := flow.Readiness(ctx)
+			if failure == nil {
 				return nil
+			}
+			// A probe interrupted by this very ctx reports the interruption,
+			// not the requirement: keep the last diagnosis made while the
+			// deadline still had room.
+			if ctx.Err() == nil {
+				pending = failure
 			}
 		}
 	}

@@ -132,7 +132,7 @@ func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *re
 	var endpoints []*basev0.Endpoint
 	for _, req := range service.ServiceDependencies {
 		for _, endpoint := range s.endpoints[req.Unique()] {
-			if endpoint == nil || dependencyConsumesEndpoint(req, endpoint.GetName()) {
+			if endpoint == nil || dependencyConsumesEndpoint(req, endpoint) {
 				endpoints = append(endpoints, endpoint)
 			}
 		}
@@ -169,7 +169,7 @@ func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, servi
 	var mappings []*basev0.NetworkMapping
 	for _, req := range service.ServiceDependencies {
 		for _, mapping := range s.networkMappings[req.Unique()] {
-			if mapping == nil || mapping.GetEndpoint() == nil || dependencyConsumesEndpoint(req, mapping.GetEndpoint().GetName()) {
+			if mapping == nil || mapping.GetEndpoint() == nil || dependencyConsumesEndpoint(req, mapping.GetEndpoint()) {
 				mappings = append(mappings, mapping)
 			}
 		}
@@ -181,17 +181,14 @@ func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, servi
 
 // dependencyConsumesEndpoint keeps the runtime capability set faithful to the
 // service manifest. An empty endpoint list is the current contract for all
-// producer endpoints; an explicit list grants only those named capabilities.
-func dependencyConsumesEndpoint(dependency *resources.ServiceDependency, endpointName string) bool {
-	if len(dependency.Endpoints) == 0 {
-		return true
-	}
-	for _, endpoint := range dependency.Endpoints {
-		if endpoint.Name == endpointName {
-			return true
-		}
-	}
-	return false
+// producer endpoints; an explicit list grants only those declared capabilities.
+// It is the single selector for "does this consumer consume this endpoint":
+// readiness gates on exactly what this hands to the consumer, so the two can
+// never disagree about which endpoints matter. Matching is by name and API and
+// never by owning module/service — those fields cross an agent's gRPC boundary,
+// while the mapping list is already scoped to one producer.
+func dependencyConsumesEndpoint(dependency *resources.ServiceDependency, endpoint *basev0.Endpoint) bool {
+	return dependency.ConsumesEndpoint(endpoint.GetName(), endpoint.GetApi())
 }
 
 // RecordNetworkMappings records the network mappings for the given service

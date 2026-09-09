@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
 	observabilityv0 "github.com/codefly-dev/core/generated/go/codefly/observability/v0"
 	"github.com/codefly-dev/core/resources"
@@ -387,5 +389,28 @@ func TestLogsFansOutToEachConcurrentSubscriber(t *testing.T) {
 	}
 	if got := messages(fake2.snapshot()); !equalStrings(got, []string{"broadcast"}) {
 		t.Fatalf("subscriber 2 got %v, want [broadcast]", got)
+	}
+}
+
+// TestGetFlowStatusReportsWhyTheFlowIsNotReady covers the SDK polling path:
+// cli.FlowStatus carries only a bool, so a stack that never becomes ready gave
+// the caller a bare timeout with the reason stranded in this process.
+func TestGetFlowStatusReportsWhyTheFlowIsNotReady(t *testing.T) {
+	server := &Server{}
+	status, err := server.GetFlowStatus(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Ready {
+		t.Fatal("a flow that has not started reported ready")
+	}
+	server.notReadyMu.Lock()
+	reason := server.notReady
+	server.notReadyMu.Unlock()
+	if reason == "" {
+		t.Fatal("no readiness diagnostic was captured for a caller polling the bool")
+	}
+	if !strings.Contains(reason, string(orchestration.PredicateRequirements)) {
+		t.Fatalf("diagnostic %q does not name the failing predicate", reason)
 	}
 }

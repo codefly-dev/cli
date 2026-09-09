@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/core/architecture"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -64,11 +65,11 @@ func newReadinessStack(t *testing.T) *readinessStack {
 
 	mappings := map[string][]*basev0.NetworkMapping{
 		"data/store": {
-			testMapping("data", "store", "grpc", standards.GRPC, storeAddress),
-			testMapping("data", "store", "admin", standards.TCP, admin.Addr().String()),
+			testMapping("grpc", standards.GRPC, storeAddress),
+			testMapping("admin", standards.TCP, admin.Addr().String()),
 		},
 		"web/console": {
-			testHTTPMapping("web", "console", "http", console.URL),
+			testHTTPMapping("http", console.URL),
 		},
 	}
 
@@ -102,19 +103,30 @@ func serveGRPC(t *testing.T, server *grpc.Server) string {
 	return listener.Addr().String()
 }
 
-func testMapping(module, service, endpoint, api, address string) *basev0.NetworkMapping {
+// testMapping deliberately leaves the endpoint's owning module and service
+// empty. Recorded mappings are built from what an agent returns over gRPC, and
+// nothing in the run path guarantees those fields survive that boundary — so
+// readiness must select endpoints without them.
+func testMapping(endpoint, api, address string) *basev0.NetworkMapping {
 	return &basev0.NetworkMapping{
-		Endpoint:  &basev0.Endpoint{Name: endpoint, Module: module, Service: service, Api: api},
+		Endpoint:  &basev0.Endpoint{Name: endpoint, Api: api},
 		Instances: []*basev0.NetworkInstance{nativeTestInstance(address)},
 	}
 }
 
-func testHTTPMapping(module, service, endpoint, target string) *basev0.NetworkMapping {
+func testHTTPMapping(endpoint, target string) *basev0.NetworkMapping {
 	instance := nativeTestInstance("")
 	instance.Address = target
 	return &basev0.NetworkMapping{
-		Endpoint:  &basev0.Endpoint{Name: endpoint, Module: module, Service: service, Api: standards.HTTP},
+		Endpoint:  &basev0.Endpoint{Name: endpoint, Api: standards.HTTP},
 		Instances: []*basev0.NetworkInstance{instance},
+	}
+}
+
+func nativeTestInstance(host string) *basev0.NetworkInstance {
+	return &basev0.NetworkInstance{
+		Access: &basev0.NetworkAccess{Kind: resources.NetworkAccessNative},
+		Host:   host,
 	}
 }
 
@@ -165,7 +177,7 @@ func TestReadinessAcceptsGRPCServerWithoutHealthServiceAsTransportOnly(t *testin
 	// Unimplemented: it declares transport-only readiness, and inventing a
 	// Health requirement for it would break it.
 	legacy := grpc.NewServer()
-	stack.mappings["data/store"][0] = testMapping("data", "store", "grpc", standards.GRPC, serveGRPC(t, legacy))
+	stack.mappings["data/store"][0] = testMapping("grpc", standards.GRPC, serveGRPC(t, legacy))
 	require.Nil(t, stack.flow.Readiness(ctx))
 }
 
@@ -280,6 +292,218 @@ func TestReadinessExcludedRootDoesNotRequireOriginStart(t *testing.T) {
 	require.True(t, stack.flow.Ready(ctx))
 }
 
+func TestReadinessResolvesNamedEndpointWithoutOwningIdentity(t *testing.T) {
+	stack := newReadinessStack(t)
+	ctx := context.Background()
+
+	// app/api declares store's "grpc" endpoint by name. The recorded mapping
+	// carries no owning module or service — the shape an agent may hand back —
+	// and selection must still resolve it in both directions.
+	require.Nil(t, stack.flow.Readiness(ctx))
+
+	stack.mappings["data/store"] = stack.mappings["data/store"][1:]
+	failure := stack.flow.Readiness(ctx)
+	require.NotNil(t, failure)
+	require.Equal(t, "data/store", failure.Service)
+	require.Equal(t, PredicateMapping, failure.Predicate)
+	require.Contains(t, failure.Reason, "grpc")
+}
+
+func TestReadinessAcceptsHealthServerWithoutStatusForCheckedService(t *testing.T) {
+	stack := newReadinessStack(t)
+	ctx := context.Background()
+
+	// The endpoint declares a service the health server publishes no status
+	// for, so Check answers NotFound. The server answered: it publishes nothing
+	// to gate on, which is the transport-only capability — treating NotFound as
+	// a failure would strand it as permanently unready.
+	stack.mappings["data/store"][0].Endpoint.ApiDetails = resources.ToGrpcAPI(&basev0.GrpcAPI{
+		Package: "acme.v1",
+		Rpcs:    []*basev0.RPC{{ServiceName: "Store", Name: "Get"}},
+	})
+	require.Nil(t, stack.flow.Readiness(ctx))
+
+	// It is still a real probe: the endpoint going away is still not ready.
+	stack.store.Stop()
+	failure := stack.flow.Readiness(ctx)
+	require.NotNil(t, failure)
+	require.Equal(t, PredicateGRPCHealth, failure.Predicate)
+}
+
+func TestReadinessChecksDeclaredGRPCServices(t *testing.T) {
+	stack := newReadinessStack(t)
+	ctx := context.Background()
+
+	mapping := stack.mappings["data/store"][0]
+	mapping.Endpoint.ApiDetails = resources.ToGrpcAPI(&basev0.GrpcAPI{
+		Package: "acme.v1",
+		Rpcs:    []*basev0.RPC{{ServiceName: "Store", Name: "Get"}},
+	})
+	stack.health.SetServingStatus("acme.v1.Store", healthv1.HealthCheckResponse_NOT_SERVING)
+
+	// The server-wide status is SERVING; only the consumed service is not.
+	failure := stack.flow.Readiness(ctx)
+	require.NotNil(t, failure)
+	require.Equal(t, PredicateGRPCHealth, failure.Predicate)
+	require.Contains(t, failure.Reason, "acme.v1.Store")
+
+	stack.health.SetServingStatus("acme.v1.Store", healthv1.HealthCheckResponse_SERVING)
+	require.True(t, stack.flow.Ready(ctx))
+}
+
+func TestReadinessUsesDeclaredTransportSecurity(t *testing.T) {
+	stack := newReadinessStack(t)
+	ctx := context.Background()
+	require.True(t, stack.flow.Ready(ctx))
+
+	// The endpoint declares TLS; the server speaks plaintext. The declaration
+	// decides how the endpoint is probed — an address never carries a scheme
+	// for gRPC, so sniffing one would silently probe every secured endpoint in
+	// plaintext instead.
+	mapping := stack.mappings["data/store"][0]
+	mapping.Endpoint.ApiDetails = resources.ToGrpcAPI(&basev0.GrpcAPI{Secured: true})
+	requirement := endpointRequirement("data/store", mapping)
+	require.True(t, requirement.secure)
+
+	failure := stack.flow.Readiness(ctx)
+	require.NotNil(t, failure)
+	require.Equal(t, PredicateGRPCHealth, failure.Predicate)
+}
+
+func TestReadinessAcceptsClientErrorsAndRejectsServerFailures(t *testing.T) {
+	stack := newReadinessStack(t)
+	ctx := context.Background()
+
+	// An endpoint's root is not a health surface: an authenticated or routed
+	// service answering 401/404 has proved it is up and routing.
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		stack.consoleStatus.Store(int64(code))
+		require.Nil(t, stack.flow.Readiness(ctx), "status %d must not block readiness", code)
+	}
+
+	for _, code := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		stack.consoleStatus.Store(int64(code))
+		failure := stack.flow.Readiness(ctx)
+		require.NotNil(t, failure, "status %d must block readiness", code)
+		require.Equal(t, PredicateHTTPStatus, failure.Predicate)
+	}
+}
+
+func TestReadinessDoesNotFollowRedirects(t *testing.T) {
+	ctx := context.Background()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A redirect to a port nothing listens on: readiness judges the
+		// endpoint that was probed, never where it points.
+		http.Redirect(w, r, "http://127.0.0.1:1/elsewhere", http.StatusFound)
+	}))
+	defer server.Close()
+
+	requirements := []readinessRequirement{endpointRequirement("web/console", testHTTPMapping("http", server.URL))}
+	require.Nil(t, evaluateReadinessProbes(ctx, requirements))
+}
+
+func TestServiceReachableIgnoresEndpointNoConsumerDeclares(t *testing.T) {
+	stack := newReadinessStack(t)
+	ctx := context.Background()
+	require.True(t, stack.flow.ServiceReachable(ctx, "data/store"))
+
+	// api consumes store's grpc endpoint only. The live status must not keep
+	// showing the dependency as not up over an endpoint the run never needs.
+	require.NoError(t, stack.admin.Close())
+	require.True(t, stack.flow.ServiceReachable(ctx, "data/store"))
+
+	stack.store.Stop()
+	require.False(t, stack.flow.ServiceReachable(ctx, "data/store"))
+}
+
+func TestReadinessProbesReportFirstFailureWithoutWaitingOnSlowerOnes(t *testing.T) {
+	ctx := context.Background()
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	closedAddress := closed.Addr().String()
+	require.NoError(t, closed.Close())
+
+	// A listener that accepts and never speaks gRPC: its health probe can only
+	// end by timing out.
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = silent.Close() }()
+	go func() {
+		for {
+			conn, acceptErr := silent.Accept()
+			if acceptErr != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+		}
+	}()
+
+	requirements := []readinessRequirement{
+		endpointRequirement("data/store", testMapping("admin", standards.TCP, closedAddress)),
+		endpointRequirement("data/store", testMapping("grpc", standards.GRPC, silent.Addr().String())),
+	}
+	started := time.Now()
+	failure := evaluateReadinessProbes(ctx, requirements)
+	elapsed := time.Since(started)
+	require.NotNil(t, failure)
+	require.Equal(t, "admin", failure.Endpoint)
+	require.Less(t, elapsed, readinessProbeTimeout, "a decided failure must not wait on probes behind it")
+}
+
+func TestReadinessReportsUnplannedFlowAsRequirements(t *testing.T) {
+	failure := (&Flow{}).Readiness(context.Background())
+	require.NotNil(t, failure)
+	require.Equal(t, PredicateRequirements, failure.Predicate)
+}
+
+// TestDependencyEndpointDeclarationsValidatedWhenRunSetIsBuilt covers the
+// manifest error that used to be discovered only by readiness waiting for a
+// mapping that could never appear — a typo that turned into a run stuck in
+// "Starting" instead of an error naming the declaration.
+func TestDependencyEndpointDeclarationsValidatedWhenRunSetIsBuilt(t *testing.T) {
+	ctx := context.Background()
+	for _, test := range []struct {
+		name      string
+		workspace string
+		module    string
+		service   string
+		wantError string
+	}{
+		// web/console exposes two http endpoints and app/api consumes it without
+		// naming any: that resolves at runtime, so it must not fail the run.
+		{name: "resolvable", workspace: "testdata/readiness", module: "app", service: "api"},
+		{name: "undeclared endpoint", workspace: "testdata/readiness-bad-endpoint", module: "app", service: "api", wantError: "gprc"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace, err := resources.LoadWorkspaceFromDir(ctx, test.workspace)
+			require.NoError(t, err)
+			module, err := workspace.LoadModuleFromName(ctx, test.module)
+			require.NoError(t, err)
+			origin, err := module.LoadServiceFromName(ctx, test.service)
+			require.NoError(t, err)
+			dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
+			require.NoError(t, err)
+			flow := &Flow{originService: origin, world: &World{Dependencies: dependencies}}
+
+			order, err := dependencies.OrderTo(ctx, resources.WithUnique(origin).Unique())
+			require.NoError(t, err)
+			var required []string
+			for _, service := range order {
+				required = append(required, service.Unique)
+			}
+
+			err = flow.validateDependencyEndpointDeclarations(required)
+			if test.wantError == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), test.wantError)
+			require.Contains(t, err.Error(), "app/api")
+		})
+	}
+}
+
 // TestReadinessProbesBoltAndHTTPByDeclaredAPI replaces the endpoint-name
 // special case that used to give Neo4j its bolt+http treatment: the same pair
 // is now evaluated from what each endpoint declares, and the HTTP half must
@@ -298,8 +522,8 @@ func TestReadinessProbesBoltAndHTTPByDeclaredAPI(t *testing.T) {
 	defer server.Close()
 
 	requirements := []readinessRequirement{
-		endpointRequirement("graph/neo", testMapping("graph", "neo", "bolt", standards.TCP, bolt.Addr().String())),
-		endpointRequirement("graph/neo", testHTTPMapping("graph", "neo", "http", server.URL)),
+		endpointRequirement("graph/neo", testMapping("bolt", standards.TCP, bolt.Addr().String())),
+		endpointRequirement("graph/neo", testHTTPMapping("http", server.URL)),
 	}
 	require.Equal(t, PredicateTransport, requirements[0].predicate)
 	require.Equal(t, PredicateHTTPStatus, requirements[1].predicate)

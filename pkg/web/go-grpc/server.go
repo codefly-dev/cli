@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -55,6 +56,14 @@ type Server struct {
 	// history keeps the most recent log lines so a dashboard opened after the run
 	// started (or reloaded) can backfill. Bounded; oldest lines are dropped.
 	history *logHistory
+
+	// notReadyMu guards notReady, the last readiness diagnostic reported to a
+	// polling SDK. cli.FlowStatus carries only a bool, so the reason a stack is
+	// still waiting would otherwise never leave this process: the SDK gives up
+	// after its own timeout with nothing but "not ready". Logging it once per
+	// distinct reason puts it in the run's output without a line per poll.
+	notReadyMu sync.Mutex
+	notReady   string
 }
 
 // workspaceFor prefers the workspace this server was constructed with and only
@@ -100,10 +109,29 @@ func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (
 }
 
 func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.FlowStatus, error) {
-	ready := s.activeFlow().Ready(ctx)
+	failure := s.activeFlow().Readiness(ctx)
+	s.reportReadiness(failure)
 	return &cli.FlowStatus{
-		Ready: ready,
+		Ready: failure == nil,
 	}, nil
+}
+
+// reportReadiness surfaces why the flow is not ready yet, once per distinct
+// reason, so a caller polling the bool has the failing predicate in the run's
+// output instead of an unexplained timeout.
+func (s *Server) reportReadiness(failure *orchestration.ReadinessFailure) {
+	reason := ""
+	if failure != nil {
+		reason = failure.String()
+	}
+	s.notReadyMu.Lock()
+	changed := reason != s.notReady
+	s.notReady = reason
+	s.notReadyMu.Unlock()
+	if !changed || reason == "" || s.Wool == nil {
+		return
+	}
+	s.Wool.Info(fmt.Sprintf("waiting for the stack to be ready: %s", reason))
 }
 
 func (s *Server) GetDependenciesNetworkMappings(ctx context.Context, req *cli.GetNetworkMappingsRequest) (*cli.GetNetworkMappingsResponse, error) {
