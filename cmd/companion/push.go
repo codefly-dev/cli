@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/spf13/cobra"
 )
 
@@ -47,7 +48,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot load companion %q: %w", args[0], err)
 	}
 	fmt.Printf("==> Pushing %s\n", c.Tag())
-	if err := pushImage(c.Name, c.Tag()); err != nil {
+	if err := builder.PushImage(c.Name, c.Tag()); err != nil {
 		return fmt.Errorf("push failed: %w", err)
 	}
 	fmt.Printf("    pushed %s\n", c.Tag())

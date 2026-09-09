@@ -1,10 +1,8 @@
 package companion
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -19,32 +17,6 @@ func writeFakeDocker(t *testing.T, body string) {
 	script := "#!/bin/sh\n" + body
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "docker"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-func TestAnonymousManifestInspect_RunsWithEmptyDockerConfig(t *testing.T) {
-	recordPath := filepath.Join(t.TempDir(), "record.txt")
-	writeFakeDocker(t, fmt.Sprintf(`
-{
-  echo "argv: $@"
-  echo "DOCKER_CONFIG=$DOCKER_CONFIG"
-  cat "$DOCKER_CONFIG/config.json"
-} >> %q
-echo '{}'
-exit 0
-`, recordPath))
-
-	ok, _, err := anonymousManifestInspect("ghcr.io/codefly-dev/proto:0.0.13")
-	require.NoError(t, err)
-	require.True(t, ok)
-
-	record, err := os.ReadFile(recordPath)
-	require.NoError(t, err)
-	lines := strings.Split(strings.TrimRight(string(record), "\n"), "\n")
-	require.Len(t, lines, 3, "record: %q", record)
-	require.Equal(t, "argv: manifest inspect ghcr.io/codefly-dev/proto:0.0.13", lines[0])
-	require.True(t, strings.HasPrefix(lines[1], "DOCKER_CONFIG="), "record: %q", record)
-	require.NotEmpty(t, strings.TrimPrefix(lines[1], "DOCKER_CONFIG="), "DOCKER_CONFIG must be set to a real path")
-	require.Equal(t, "{}", lines[2], "docker must run against an empty, credential-free config")
 }
 
 func TestManifestExists_PrivatePackagePrintsBothCauses(t *testing.T) {
@@ -111,28 +83,6 @@ func TestImageCompanions_DropsNonImageCompanions(t *testing.T) {
 	require.Len(t, got, 2)
 	require.Equal(t, "codefly", got[0].Name)
 	require.Equal(t, "proto", got[1].Name)
-}
-
-func TestIsManifestNotFound(t *testing.T) {
-	for _, s := range []string{
-		"no such manifest: codeflydev/proto:0.0.11",
-		"manifest unknown",
-		"MANIFEST UNKNOWN: manifest unknown", // case-insensitive
-	} {
-		require.True(t, isManifestNotFound(s), "%q should be classified as missing", s)
-	}
-	// Anything that isn't an explicit manifest-not-found must be surfaced as
-	// a real error, not silently treated as a missing tag — including
-	// repository/auth failures that merely contain "not found".
-	for _, s := range []string{
-		"error during connect: dial tcp: i/o timeout",
-		"unauthorized: authentication required",
-		"denied: requested access to the resource is denied",
-		"repository codeflydev/proto not found",
-		"",
-	} {
-		require.False(t, isManifestNotFound(s), "%q must not be classified as missing", s)
-	}
 }
 
 func TestResolveCoreDir_ErrorsWhenNoCompanionsDir(t *testing.T) {

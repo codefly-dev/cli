@@ -54,6 +54,13 @@ Requires the gh CLI to be authenticated.
 Module-agent repos run source/build/audit CI and publish the immutable Git tag
 consumed by codefly sync module; they do not publish service-loader assets.
 
+Any agent repo that checks a Dockerfile into its root also publishes a runtime
+image, whatever its kind: publish builds it for linux/amd64 and linux/arm64
+before touching git, pushes it after the tag lands under the reference
+resources.PublishedImage computes, and fails the publish unless the pushed
+image is anonymously pullable. The repo names no registry — see
+docs/runbooks/publish-an-image.md.
+
 Examples:
   codefly publish              # patch bump
   codefly publish minor

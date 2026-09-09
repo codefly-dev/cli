@@ -29,6 +29,7 @@ runbook whenever you do a multi-step operational task a second time.
 ### Shipping
 - **Cut a release** (tag → GoReleaser → Homebrew cask) → [docs/runbooks/cut-a-release.md](docs/runbooks/cut-a-release.md)
 - **Release the whole agent fleet** (re-pin every agent on a new core, publish in dependency order) → [docs/runbooks/release-the-fleet.md](docs/runbooks/release-the-fleet.md)
+- **Publish a container image** (check in a Dockerfile, let `codefly publish` build/tag/push/verify it) → [docs/runbooks/publish-an-image.md](docs/runbooks/publish-an-image.md)
 - **How releases & self-update work** → [docs/cli-updates.md](docs/cli-updates.md)
 
 ### Extending the CLI

@@ -41,20 +41,21 @@ var loaderPlatforms = []platform{
 	{os: "linux", arch: "amd64"},
 }
 
-// checkAgentReleasePreconditions fails fast on the two things that would
+// checkAgentReleasePreconditions fails fast on the things that would
 // otherwise only surface AFTER the expensive CI run (or, in `publish
 // all`, after earlier repos already shipped): a host that can't build
-// every loader platform, and the absence of any GitHub credential to
-// authenticate the release API calls. Both are deterministic and
+// every loader platform, the absence of any GitHub credential to
+// authenticate the release API calls, and a host that can't build the
+// runtime image the repo checked in. All are deterministic and
 // side-effect free, so they are safe to run during the validate phase.
-func checkAgentReleasePreconditions() error {
+func checkAgentReleasePreconditions(agentDir string) error {
 	if err := hostBuildsLoaderPlatforms(); err != nil {
 		return err
 	}
 	if gh.Token() == "" {
 		return fmt.Errorf("a GitHub token is required to publish agent release assets; set GITHUB_TOKEN or GH_TOKEN, or authenticate the gh CLI (gh auth login)")
 	}
-	return nil
+	return checkAgentImagePreconditions(agentDir)
 }
 
 // hostBuildsLoaderPlatforms rejects a host that cannot produce every
@@ -424,6 +425,7 @@ type agentReleaser struct {
 	skipConformance bool
 	publisher       string
 	name            string
+	image           *agentImage // nil when the repo checks in no Dockerfile
 	ciOutput        string
 	stageDir        string
 	assets          []loaderAsset
@@ -467,9 +469,9 @@ func newAgentReleaseGate(agentDir string) (releaseGate, error) {
 	}
 	switch {
 	case loaderAssetKinds[identity.Kind]:
-		return newAgentReleaser(agentDir)
+		return newAgentReleaser(agentDir, identity)
 	case sourceTagKinds[identity.Kind]:
-		return newSourceTagReleaser(agentDir, identity.Kind == string(resources.ModuleAgent))
+		return newSourceTagReleaser(agentDir, identity)
 	default:
 		return nil, unsupportedReleaseKindError(identity.Kind)
 	}
@@ -482,9 +484,9 @@ func checkAgentReleasePreconditionsForManifest(path string) error {
 	}
 	switch {
 	case loaderAssetKinds[identity.Kind]:
-		return checkAgentReleasePreconditions()
+		return checkAgentReleasePreconditions(filepath.Dir(path))
 	case sourceTagKinds[identity.Kind]:
-		return nil
+		return checkAgentImagePreconditions(filepath.Dir(path))
 	default:
 		return unsupportedReleaseKindError(identity.Kind)
 	}
@@ -509,23 +511,19 @@ func unsupportedReleaseKindError(kind string) error {
 	return fmt.Errorf("publish supports %s; got %q", strings.Join(supported, ", "), kind)
 }
 
-func newAgentReleaser(agentDir string) (*agentReleaser, error) {
-	if err := checkAgentReleasePreconditions(); err != nil {
+func newAgentReleaser(agentDir string, identity agentIdentity) (*agentReleaser, error) {
+	if err := checkAgentReleasePreconditions(agentDir); err != nil {
 		return nil, err
 	}
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve codefly executable: %w", err)
 	}
-	identity, err := readAgentIdentity(filepath.Join(agentDir, "agent.codefly.yaml"))
+	reg, err := agentRegistration(identity.Kind)
 	if err != nil {
 		return nil, err
 	}
-	kind := identity.Kind
-	if kind == "" {
-		kind = string(resources.ServiceAgent)
-	}
-	reg, err := resources.AgentKindRegistrationFor(resources.AgentKind(kind))
+	image, err := newAgentImage(agentDir, identity.Kind, identity.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -545,9 +543,19 @@ func newAgentReleaser(agentDir string) (*agentReleaser, error) {
 		skipConformance: reg.Resource != resources.ServiceAgent,
 		publisher:       identity.Publisher,
 		name:            identity.Name,
+		image:           image,
 		ciOutput:        ciOutput,
 		stageDir:        stageDir,
 	}, nil
+}
+
+// agentRegistration resolves the core registration for a manifest kind. A
+// legacy manifest with no kind is a service, matching loaderAssetKinds.
+func agentRegistration(kind string) (resources.AgentKindRegistration, error) {
+	if kind == "" {
+		kind = string(resources.ServiceAgent)
+	}
+	return resources.AgentKindRegistrationFor(resources.AgentKind(kind))
 }
 
 func (r *agentReleaser) attach(engine *Engine) {
@@ -570,6 +578,9 @@ func (r *agentReleaser) beforeCommit(ctx context.Context, newTag string) error {
 		return err
 	}
 	r.assets = assets
+	if r.image != nil {
+		return r.image.build(ctx, version)
+	}
 	return nil
 }
 
@@ -584,7 +595,13 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	if err := createAndUploadRelease(ctx, client, owner, repo, newTag, r.assets); err != nil {
 		return err
 	}
-	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, version, r.assets)
+	if err := verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, version, r.assets); err != nil {
+		return err
+	}
+	if r.image != nil {
+		return r.image.publish(ctx, version)
+	}
+	return nil
 }
 
 // sourceTagReleaser publishes an immutable source release: it runs
@@ -595,35 +612,68 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 // because nothing consumes a module binary; providers are runtime agents whose
 // consumers build the tagged source for linux, so they build every platform to
 // catch a linux-only break before the immutable tag.
+//
+// A source-tag repo publishes a runtime image on exactly the same terms as
+// any other agent repo: check in a Dockerfile and publish builds, pushes,
+// and verifies it. The trigger is the repo's Dockerfile, not the repo's
+// kind — a kind-specific exception would silently ignore a checked-in
+// Dockerfile, which is the failure mode this whole flow exists to remove.
 type sourceTagReleaser struct {
 	self       string
 	agentDir   string
 	output     string
 	nativeOnly bool
+	image      *agentImage // nil when the repo checks in no Dockerfile
 }
 
-func newSourceTagReleaser(agentDir string, nativeOnly bool) (*sourceTagReleaser, error) {
+func newSourceTagReleaser(agentDir string, identity agentIdentity) (*sourceTagReleaser, error) {
+	if err := checkAgentImagePreconditions(agentDir); err != nil {
+		return nil, err
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve codefly executable: %w", err)
+	}
+	image, err := newAgentImage(agentDir, identity.Kind, identity.Name)
+	if err != nil {
+		return nil, err
 	}
 	output, err := os.MkdirTemp("", "codefly-publish-source-ci-*")
 	if err != nil {
 		return nil, err
 	}
-	return &sourceTagReleaser{self: self, agentDir: agentDir, output: output, nativeOnly: nativeOnly}, nil
+	return &sourceTagReleaser{
+		self:       self,
+		agentDir:   agentDir,
+		output:     output,
+		nativeOnly: identity.Kind == string(resources.ModuleAgent),
+		image:      image,
+	}, nil
 }
 
 func (r *sourceTagReleaser) attach(engine *Engine) {
 	engine.BeforeCommit = r.beforeCommit
+	if r.image != nil {
+		engine.AfterPush = r.afterPush
+	}
 }
 
 func (r *sourceTagReleaser) cleanup() {
 	os.RemoveAll(r.output)
 }
 
-func (r *sourceTagReleaser) beforeCommit(ctx context.Context, _ string) error {
-	return runReleaseAgentCI(ctx, r.self, r.agentDir, r.output, r.nativeOnly, true)
+func (r *sourceTagReleaser) beforeCommit(ctx context.Context, newTag string) error {
+	if err := runReleaseAgentCI(ctx, r.self, r.agentDir, r.output, r.nativeOnly, true); err != nil {
+		return err
+	}
+	if r.image != nil {
+		return r.image.build(ctx, strings.TrimPrefix(newTag, "v"))
+	}
+	return nil
+}
+
+func (r *sourceTagReleaser) afterPush(ctx context.Context, newTag string) error {
+	return r.image.publish(ctx, strings.TrimPrefix(newTag, "v"))
 }
 
 func readAgentIdentity(path string) (agentIdentity, error) {
