@@ -348,11 +348,18 @@ func generateOpenAPILanguageEntry(ctx context.Context, lang languages.Language, 
 	return assembleOpenAPILibrary(ctx, lang, langDir, entry, goModule, npmPackage)
 }
 
-// wellKnownTypePrefix is the file-name prefix of the protobuf well-known
-// types, whose bindings always come from the protobuf runtime itself: buf's
-// managed mode leaves their go_package alone, so generated code imports them
+// A protobuf well-known type is identified by both its file name and its proto
+// package, never the path alone: a module that keeps its own .proto under a
+// google/protobuf/ directory (a vendored copy of the well-known types is the
+// common reason) still declares its own package, and marking such a file as an
+// import would silently drop the bindings this run exists to produce. Their
+// own bindings always come from the protobuf runtime itself: buf's managed mode
+// leaves the well-known types' go_package alone, so generated code imports them
 // from google.golang.org/protobuf/types/known/*.
-const wellKnownTypePrefix = "google/protobuf/"
+const (
+	wellKnownTypePrefix  = "google/protobuf/"
+	wellKnownTypePackage = "google.protobuf"
+)
 
 // buf marks a file that an image carries only to resolve imports with
 // buf.alpha.image.v1.ImageFileExtension.is_import: an extension of
@@ -380,7 +387,7 @@ func markWellKnownTypesAsImports(set *descriptorpb.FileDescriptorSet) ([]byte, e
 	isImport := protowire.AppendVarint(protowire.AppendTag(nil, bufImageFileIsImportField, protowire.VarintType), 1)
 	extension := protowire.AppendBytes(protowire.AppendTag(nil, bufImageFileExtensionField, protowire.BytesType), isImport)
 	for _, file := range set.GetFile() {
-		if !strings.HasPrefix(file.GetName(), wellKnownTypePrefix) {
+		if !strings.HasPrefix(file.GetName(), wellKnownTypePrefix) || file.GetPackage() != wellKnownTypePackage {
 			continue
 		}
 		message := file.ProtoReflect()

@@ -1,6 +1,7 @@
 package generators
 
 import (
+	"bytes"
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -14,6 +15,11 @@ import (
 // (google/api, buf.validate) would leave the module's bindings importing a
 // package that no longer exists, since managed mode rewrites their go_package
 // to the generated library's own path.
+//
+// A file living under google/protobuf/ but declaring the module's own package
+// is the module's, not a well-known type — a vendored copy of the well-known
+// types puts real files at those paths, and it is the package that tells the
+// two apart.
 func TestMarkWellKnownTypesAsImports(t *testing.T) {
 	set := &descriptorpb.FileDescriptorSet{
 		File: []*descriptorpb.FileDescriptorProto{
@@ -30,6 +36,10 @@ func TestMarkWellKnownTypesAsImports(t *testing.T) {
 				Package:    googleproto.String("saas.accounts.v1"),
 				Dependency: []string{"google/protobuf/timestamp.proto", "google/api/annotations.proto"},
 			},
+			{
+				Name:    googleproto.String("google/protobuf/accounts_extras.proto"),
+				Package: googleproto.String("saas.accounts.v1"),
+			},
 		},
 	}
 
@@ -44,9 +54,10 @@ func TestMarkWellKnownTypesAsImports(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"google/protobuf/timestamp.proto": true,
-		"google/api/annotations.proto":    false,
-		"saas/accounts/v1/accounts.proto": false,
+		"google/protobuf/timestamp.proto":       true,
+		"google/api/annotations.proto":          false,
+		"saas/accounts/v1/accounts.proto":       false,
+		"google/protobuf/accounts_extras.proto": false,
 	}
 	if len(image.GetFile()) != len(want) {
 		t.Fatalf("marked image has %d files, want %d", len(image.GetFile()), len(want))
@@ -64,6 +75,37 @@ func TestMarkWellKnownTypesAsImports(t *testing.T) {
 	own := image.GetFile()[2]
 	if len(own.GetDependency()) != 2 {
 		t.Errorf("module file lost its dependencies: %v", own.GetDependency())
+	}
+}
+
+// TestMarkWellKnownTypesAsImportsWireFormat pins the exact bytes buf reads the
+// marker from. Every other assertion in this file is written against the same
+// two field-number constants the marker is built from, so it would keep passing
+// if those drifted from buf.alpha.image.v1's actual schema and buf silently
+// went back to generating the well-known types; this is what catches that.
+// The bytes are field 8042, length-delimited (0xd2 0xf6 0x03 0x02), wrapping
+// is_import=true (0x08 0x01).
+func TestMarkWellKnownTypesAsImportsWireFormat(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{{
+			Name:    googleproto.String("google/protobuf/timestamp.proto"),
+			Package: googleproto.String("google.protobuf"),
+		}},
+	}
+
+	data, err := markWellKnownTypesAsImports(set)
+	if err != nil {
+		t.Fatalf("markWellKnownTypesAsImports: %v", err)
+	}
+	var image descriptorpb.FileDescriptorSet
+	if err := googleproto.Unmarshal(data, &image); err != nil {
+		t.Fatalf("unmarshal marked image: %v", err)
+	}
+
+	got := []byte(image.GetFile()[0].ProtoReflect().GetUnknown())
+	want := []byte{0xd2, 0xf6, 0x03, 0x02, 0x08, 0x01}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("image file extension = % x, want % x", got, want)
 	}
 }
 
