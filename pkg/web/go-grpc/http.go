@@ -14,8 +14,9 @@ import (
 )
 
 type HttpServer struct {
-	config *Configuration
-	impl   *Server
+	config   *Configuration
+	impl     *Server
+	listener net.Listener
 }
 
 func NewHttpServer(c *Configuration, impl *Server) (*HttpServer, error) {
@@ -29,6 +30,29 @@ func (s *HttpServer) Address() string {
 	return s.config.EndpointRest
 }
 
+// Listen claims the REST address. See Server.Listen for why binding is a
+// separate, callable step.
+func (s *HttpServer) Listen() error {
+	if s.listener != nil {
+		return nil
+	}
+	lis, err := net.Listen("tcp", s.config.EndpointRest)
+	if err != nil {
+		return err
+	}
+	s.listener = lis
+	return nil
+}
+
+// Close releases an address claimed by Listen but never served.
+func (s *HttpServer) Close() {
+	if s.listener == nil {
+		return
+	}
+	_ = s.listener.Close()
+	s.listener = nil
+}
+
 func (s *HttpServer) Run(ctx context.Context) error {
 	golor.Template(s.config).Println(`#(blue,bold)[Dashboard:] #(italic,white)[http://{{ .EndpointRest }}]`)
 
@@ -38,10 +62,11 @@ func (s *HttpServer) Run(ctx context.Context) error {
 	}
 
 	srv := &http.Server{Addr: s.config.EndpointRest, Handler: handler}
-	lis, err := net.Listen("tcp", s.config.EndpointRest)
-	if err != nil {
+	if err := s.Listen(); err != nil {
 		return err
 	}
+	defer s.Close()
+	lis := s.listener
 
 	serveErr := make(chan error, 1)
 	go func() {

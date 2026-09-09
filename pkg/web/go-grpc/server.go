@@ -45,6 +45,7 @@ type Server struct {
 	cli.UnsafeCLIServer
 	config    *Configuration
 	gRPC      *grpc.Server
+	listener  net.Listener
 	workspace *resources.Workspace
 	Wool      *wool.Wool
 	Terminal  *TerminalServer
@@ -412,21 +413,51 @@ func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManag
 	return &s, nil
 }
 
+// Address is the gRPC endpoint this server binds, e.g. "127.0.0.1:10000".
+func (s *Server) Address() string {
+	return s.config.EndpointGrpc
+}
+
+// Listen claims the gRPC control address. Binding is a separate step from
+// Run so a caller can establish ownership of the control channel — and fail
+// when something else already holds it — before it provisions anything an
+// aborted run would have to strand.
+func (s *Server) Listen() error {
+	if s.listener != nil {
+		return nil
+	}
+	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
+	if err != nil {
+		return err
+	}
+	s.listener = lis
+	return nil
+}
+
+// Close releases an address claimed by Listen but never served.
+func (s *Server) Close() {
+	if s.listener == nil {
+		return
+	}
+	_ = s.listener.Close()
+	s.listener = nil
+}
+
 func (s *Server) Run(ctx context.Context) error {
 	w := wool.Get(ctx).In("cli.Server")
 	s.Wool = w
 	agents.AddProcessor(s)
-	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
-	if err != nil {
+	if err := s.Listen(); err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
+	lis := s.listener
 	// Defensive cleanup: if Serve exits unexpectedly (e.g. transient
 	// listener error), GracefulStop is idempotent and lis.Close is
 	// safe to call after gRPC has already closed it. Without these
 	// the listener would leak the bound port on non-shutdown exits.
 	defer func() {
 		s.gRPC.GracefulStop()
-		_ = lis.Close()
+		s.Close()
 	}()
 	stopped := make(chan struct{})
 	defer close(stopped)

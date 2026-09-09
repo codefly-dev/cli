@@ -188,6 +188,13 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		if err != nil {
 			return fmt.Errorf("cannot create web server: %w", err)
 		}
+		// Own the control channel before the flow exists. A run that loses this
+		// race must not go on to start agents and containers that its own
+		// abort then has to reclaim — and the client driving Stop/Destroy over
+		// that address is talking to whoever won it, not to us.
+		if err := server.Listen(); err != nil {
+			return err
+		}
 		serverResult = make(chan error, 1)
 		go func() {
 			err := server.Start(ctx)

@@ -37,11 +37,19 @@ runs afterwards**, producing failures that look like bugs in the *next* agent.
 
 Both route through the flow into `RuntimeManager` in core:
 
-- **`--temporary-ports`** (used automatically by agent conformance): asks the
-  OS kernel for ephemeral ports (`RuntimeManager.WithTemporaryPorts` →
-  `GetFreePort`). The kernel never re-hands a bound port, so a leak from a prior
-  run cannot collide with a later run. This is the right tool for CI because
-  the harness does not need to know endpoint names ahead of time.
+- **`--temporary-ports`** (used automatically by agent conformance): marks the
+  flow as a **disposable invocation**. Ports come from the OS kernel
+  (`RuntimeManager.WithTemporaryPorts` → `GetFreePort`), which never re-hands a
+  bound port, so a leak from a prior run cannot collide with a later one; and
+  the flow generates a fresh invocation identity (`inv…`, from
+  `orchestration.NewInvocationID`) and uses it as the run's **naming scope**, so
+  the container names, runtime state directories and log roots the agents derive
+  from `services.Base.UniqueWithWorkspace` are unique to the run too. Ports are
+  not the only thing a run allocates: without the scope, two concurrent
+  disposable runs of one workspace got distinct ports but the same container
+  name, and stopping either destroyed the other's. An explicit `--naming-scope`
+  is the caller's own label and still wins. This is the right tool for CI
+  because the harness does not need to know endpoint names ahead of time.
 - **`--override-port endpoint=port`** (repeatable): pins a specific endpoint to
   a chosen host port, keyed by `EndpointDestination`
   (`module/service/endpoint`, e.g. `app/subject/rest=45001`). An override wins
@@ -52,6 +60,23 @@ Both route through the flow into `RuntimeManager` in core:
 
 Both flags are on `codefly ci run`; `codefly run service` also carries
 `--temporary-ports` and `--override-port`.
+
+## Control-channel ownership
+
+`codefly run service --cli-server` serves the CLI control API (and the
+dashboard) on an address derived from the workspace name plus `--naming-scope`
+(`network.CLIServerPort`, overridable with `CODEFLY_CLI_SERVER_PORT`). The
+address is derived, not negotiated, so two checkouts of the same workspace — or
+two test packages that pass no scope — select the same one.
+
+The run claims that address before it builds the flow. A run that cannot claim
+it fails immediately, naming the address and the flags that give it a disjoint
+one, instead of starting agents and containers it must then reclaim. Whoever
+already holds the address keeps it, and keeps serving its own flow.
+
+> The client side of this — the SDK proving that the server it connected to is
+> the child it spawned, rather than a stranger on the same derived port — is
+> core's contract, tracked in codefly-dev/core#416.
 
 > This stops a leak from *propagating* to the next agent. Reliably *reaping*
 > the leaked processes themselves is a separate concern (codefly-dev/cli#429).
