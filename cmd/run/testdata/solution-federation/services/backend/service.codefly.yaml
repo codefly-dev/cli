@@ -1,0 +1,11 @@
+kind: service
+name: backend
+version: 0.0.0
+module: wiki
+agent:
+    publisher: codefly.dev
+    kind: codefly:service
+    name: go
+    version: 0.0.1
+workspace-configuration-dependencies:
+    - internal-auth

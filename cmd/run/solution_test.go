@@ -1,8 +1,12 @@
 package run
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -325,3 +329,214 @@ api:
 lifecycle:
   create: true
 `
+
+// The two halves of the exchange must fit each other: accounts authorizes a
+// module by comparing sha256 of the secret it presented against the digest
+// declared for that prefix, so a provisioning that does not pair digest to
+// plaintext, prefix for prefix, refuses every mint.
+func TestProvisionModuleRegistrationSecretsPairsDigestToPlaintext(t *testing.T) {
+	provisioned, err := provisionModuleRegistrationSecrets([]manifest.ConsumedAPI{
+		{ID: "documents", As: "documents"},
+		{ID: "billing", As: "billing"},
+	})
+	if err != nil {
+		t.Fatalf("provisionModuleRegistrationSecrets: %v", err)
+	}
+	if got := provisioned.prefixes; !reflect.DeepEqual(got, []string{"documents", "billing"}) {
+		t.Fatalf("provisioned prefixes = %v", got)
+	}
+
+	secrets := parsePairs(t, provisioned.secrets)
+	digests := parsePairs(t, provisioned.digests)
+	if len(secrets) != 2 || len(digests) != 2 {
+		t.Fatalf("expected 2 entries per half, got %d secrets / %d digests", len(secrets), len(digests))
+	}
+	for prefix, secret := range secrets {
+		want := sha256.Sum256([]byte(secret))
+		if got := digests[prefix]; got != hex.EncodeToString(want[:]) {
+			t.Errorf("digest for %q = %q, want sha256 of the provisioned secret", prefix, got)
+		}
+		// The registrar splits an entry on its first ":" and the whole projection
+		// on ",", so a secret carrying either would corrupt the declaration.
+		if strings.ContainsAny(secret, ":,") {
+			t.Errorf("secret for %q contains a separator: %q", prefix, secret)
+		}
+	}
+}
+
+// A secret is rotated per run: two runs of the same solution must not share one,
+// so a secret read out of one run's process environment cannot register in the
+// next.
+func TestProvisionModuleRegistrationSecretsRotatePerRun(t *testing.T) {
+	consumed := []manifest.ConsumedAPI{{ID: "documents", As: "documents"}}
+	first, err := provisionModuleRegistrationSecrets(consumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := provisionModuleRegistrationSecrets(consumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.secrets == second.secrets {
+		t.Errorf("two runs provisioned the same secret: %q", first.secrets)
+	}
+}
+
+func TestProvisionModuleRegistrationSecretsSkipsUnfederatableEntries(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		consumed []manifest.ConsumedAPI
+		want     []string
+	}{
+		{
+			// The runtime refuses to invent a prefix for an entry with no facade
+			// entry-point, so it never registers and needs no credential.
+			name:     "no facade entry-point",
+			consumed: []manifest.ConsumedAPI{{ID: "documents"}},
+		},
+		{
+			// The registrar rejects a projection declaring one prefix twice, which
+			// would leave the whole composition unable to federate anything.
+			name: "repeated facade",
+			consumed: []manifest.ConsumedAPI{
+				{ID: "documents.read", As: "documents"},
+				{ID: "documents.write", As: "documents"},
+			},
+			want: []string{"documents"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provisioned, err := provisionModuleRegistrationSecrets(tc.consumed)
+			if err != nil {
+				t.Fatalf("provisionModuleRegistrationSecrets: %v", err)
+			}
+			if len(tc.want) == 0 {
+				if provisioned != nil {
+					t.Fatalf("provisioned %v for entries that can never register", provisioned.prefixes)
+				}
+				return
+			}
+			if !reflect.DeepEqual(provisioned.prefixes, tc.want) {
+				t.Fatalf("provisioned prefixes = %v, want %v", provisioned.prefixes, tc.want)
+			}
+			if len(parsePairs(t, provisioned.digests)) != len(tc.want) {
+				t.Fatalf("digests %q do not match prefixes %v", provisioned.digests, tc.want)
+			}
+		})
+	}
+}
+
+// The registrar is found by the configuration group it depends on, not by a
+// service name, so no host's naming is baked into the CLI. Loaded from a real
+// workspace on disk: the dependency lives in service.codefly.yaml and only the
+// loader knows how to get it from there.
+func TestFederationRegistrars(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+
+	got := federationRegistrars(ctx, workspace)
+	if !reflect.DeepEqual(got, []string{"host/accounts"}) {
+		t.Fatalf("federationRegistrars = %v, want [host/accounts] — the only service declaring %q",
+			got, federationConfigurationGroup)
+	}
+}
+
+// A workspace with no registrar must still run: federation stays dead, but the
+// solution serves its own routes. Composed modules that do not resolve locally
+// are likewise skipped rather than failing the run.
+func TestFederationRegistrarsToleratesAWorkspaceWithout(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	workspace.Modules = append(workspace.Modules,
+		&resources.ModuleReference{Name: "missing", PathOverride: strptr("modules/missing")})
+
+	got := federationRegistrars(ctx, workspace)
+	if !reflect.DeepEqual(got, []string{"host/accounts"}) {
+		t.Fatalf("federationRegistrars = %v, want [host/accounts] despite an unresolvable module", got)
+	}
+}
+
+// The whole injection, end to end on a real workspace: the consuming backend
+// gets the projection plus its plaintext secrets, and the registrar gets the
+// matching digests — each keyed by the module-qualified unique so it lands on
+// exactly one service.
+func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	module := &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+
+	overrides, err := solutionDerivedOverrides(ctx, workspace, module, wikiService("backend"), "wiki/backend")
+	if err != nil {
+		t.Fatalf("solutionDerivedOverrides: %v", err)
+	}
+
+	backend := overrides["wiki/backend"]
+	if backend[manifest.APIConsumesEnvironmentVariable] == "" {
+		t.Errorf("backend did not receive %s", manifest.APIConsumesEnvironmentVariable)
+	}
+	secrets := parsePairs(t, backend[moduleRegistrationSecretsEnvironmentVariable])
+	if len(secrets) != 1 || secrets["documents"] == "" {
+		t.Fatalf("backend %s = %q, want one documents entry",
+			moduleRegistrationSecretsEnvironmentVariable, backend[moduleRegistrationSecretsEnvironmentVariable])
+	}
+
+	digests := parsePairs(t, overrides["host/accounts"][moduleRegistrationSecretsKey])
+	want := sha256.Sum256([]byte(secrets["documents"]))
+	if digests["documents"] != hex.EncodeToString(want[:]) {
+		t.Errorf("registrar digest for documents = %q, does not match the backend's secret", digests["documents"])
+	}
+	// The raw secret belongs only to the backend that presents it.
+	if strings.Contains(overrides["host/accounts"][moduleRegistrationSecretsKey], secrets["documents"]) {
+		t.Error("registrar received the plaintext secret; it must hold only the digest")
+	}
+	if _, leaked := overrides["host/gateway"]; leaked {
+		t.Error("a service not declaring the federation configuration received an override")
+	}
+}
+
+// A solution that federates nothing must run exactly as before: no secrets
+// provisioned, and no override on any host service.
+func TestSolutionDerivedOverridesNoOpsWithoutConsumes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeSolutionManifest(t, dir, solutionManifestWithoutConsumes)
+
+	overrides, err := solutionDerivedOverrides(ctx, wikiWorkspace(dir), wikiModule(), wikiService("backend"), "wiki/backend")
+	if err != nil {
+		t.Fatalf("solutionDerivedOverrides: %v", err)
+	}
+	if overrides != nil {
+		t.Fatalf("expected no overrides, got %+v", overrides)
+	}
+}
+
+func loadTestWorkspace(t *testing.T, dir string) *resources.Workspace {
+	t.Helper()
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), absolute)
+	if err != nil {
+		t.Fatalf("cannot load workspace %s: %v", dir, err)
+	}
+	return workspace
+}
+
+// parsePairs decodes either half of the exchange — both are comma-separated
+// `prefix:value` entries.
+func parsePairs(t *testing.T, raw string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, entry := range strings.Split(raw, ",") {
+		if entry == "" {
+			continue
+		}
+		prefix, value, ok := strings.Cut(entry, ":")
+		if !ok {
+			t.Fatalf("entry %q is not prefix:value", entry)
+		}
+		out[prefix] = value
+	}
+	return out
+}

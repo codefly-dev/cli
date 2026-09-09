@@ -145,7 +145,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 
 	serviceName := resources.WithUnique(service).Unique()
 
-	derived, derivedErr := solutionDerivedOverrides(workspace, module, service, serviceName)
+	derived, derivedErr := solutionDerivedOverrides(ctx, workspace, module, service, serviceName)
 	if derivedErr != nil {
 		return derivedErr
 	}
@@ -779,13 +779,15 @@ func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
 	return out, nil
 }
 
-// solutionDerivedOverrides resolves the CODEFLY__API_CONSUMES injection for the
-// service being run. It lives on the shared run path so `run service <entry>`
-// and `run solution` inject identically, and it announces what it sent: the
-// value rides Start overrides, which each service agent chooses to honor, so an
-// operator debugging dead federation must be able to see that the CLI supplied
-// it before suspecting the manifest.
-func solutionDerivedOverrides(workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (map[string]map[string]string, error) {
+// solutionDerivedOverrides resolves the solution-federation injections for the
+// service being run: the CODEFLY__API_CONSUMES projection, and the registration
+// secrets that let the consuming backend prove which module it is. It lives on
+// the shared run path so `run service <entry>` and `run solution` inject
+// identically, and it announces what it sent: the values ride Start overrides,
+// which each service agent chooses to honor, so an operator debugging dead
+// federation must be able to see that the CLI supplied them before suspecting
+// the manifest.
+func solutionDerivedOverrides(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (map[string]map[string]string, error) {
 	consumed, value, err := solutionEntryConsumes(workspace, module, service)
 	if err != nil {
 		return nil, err
@@ -798,9 +800,37 @@ func solutionDerivedOverrides(workspace *resources.Workspace, module *resources.
 		ids = append(ids, consumed[i].ID)
 	}
 	cli.Info("injecting %s into %s: %s", manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))
-	return map[string]map[string]string{
+	overrides := map[string]map[string]string{
 		serviceName: {manifest.APIConsumesEnvironmentVariable: value},
-	}, nil
+	}
+
+	provisioned, err := provisionModuleRegistrationSecrets(consumed)
+	if err != nil {
+		return nil, err
+	}
+	if provisioned == nil {
+		return overrides, nil
+	}
+	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.secrets
+
+	registrars := federationRegistrars(ctx, workspace)
+	if len(registrars) == 0 {
+		// Without a registrar holding the digests, every mint is refused and every
+		// registration 401s. That is a composition gap, not a reason to refuse to
+		// run, so say so and boot: the solution still serves its own routes.
+		cli.Warning("no service declares the %q workspace configuration: consumed modules (%s) cannot federate",
+			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))
+		return overrides, nil
+	}
+	for _, registrar := range registrars {
+		if overrides[registrar] == nil {
+			overrides[registrar] = map[string]string{}
+		}
+		overrides[registrar][moduleRegistrationSecretsKey] = provisioned.digests
+	}
+	cli.Info("provisioned registration secrets for %s into %s, digests into %s",
+		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))
+	return overrides, nil
 }
 
 // mergeOverrides layers per-service override maps, later layers winning key by
