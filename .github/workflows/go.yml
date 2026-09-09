@@ -165,8 +165,17 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestRunProfilesStartRealDependencyShapesInProcess$' ./pkg/control -v
 
+      # Ordered teardown (F09): the consumer holds its drain open and commits a
+      # final transaction to a disposable Postgres; the database must not begin
+      # stopping until that commit returned. Needs Docker, which the runner has.
+      # It claims no conformance row: the ordering contract is backend-neutral,
+      # so it proves nothing about a docs/supported-matrix.md row.
+      - name: Run the ordered-teardown acceptance proof
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestFlowStopHoldsPostgresUntilItsConsumerCommits$' ./pkg/orchestration -v
+
       # Always-run so a failed or filtered-out test still has to account for
-      # the rows its job claimed.
+      # the rows its job claimed. Keep these last: they audit every step above.
       - name: Verify conformance receipts
         if: always() && matrix.conformance_rows != ''
         run: ./scripts/verify-conformance-receipts.sh
