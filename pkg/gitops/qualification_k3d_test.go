@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -134,14 +135,7 @@ gitops:
 }
 
 func TestLocalK3dDisposableGitQualification(t *testing.T) {
-	if os.Getenv("CODEFLY_GITOPS_K3D_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_GITOPS_K3D_QUALIFY=1 to run the disposable k3d qualification")
-	}
-	for _, binary := range []string{"docker", "k3d", "kubectl", "ssh-keygen"} {
-		if _, err := exec.LookPath(binary); err != nil {
-			t.Fatalf("%s is required: %v", binary, err)
-		}
-	}
+	conformancetest.Gate(t, "linux-amd64-k3d-deploy", "docker", "k3d", "kubectl", "ssh-keygen")
 
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspaceWithServices(t, remote, mindShapedServices)
@@ -287,14 +281,7 @@ exit 2
 // real service path, unchanged, driving a solution unit to the last mile the
 // previous non-service kinds never reached.
 func TestLocalK3dDisposableSolutionQualification(t *testing.T) {
-	if os.Getenv("CODEFLY_GITOPS_K3D_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_GITOPS_K3D_QUALIFY=1 to run the disposable k3d solution qualification")
-	}
-	for _, binary := range []string{"docker", "k3d", "kubectl", "ssh-keygen"} {
-		if _, err := exec.LookPath(binary); err != nil {
-			t.Fatalf("%s is required: %v", binary, err)
-		}
-	}
+	conformancetest.Gate(t, "linux-amd64-k3d-deploy", "docker", "k3d", "kubectl", "ssh-keygen")
 
 	installFakeSolutionExecutor(t, &fakeSolutionExecutor{})
 	remote := createBareRepository(t)
@@ -452,14 +439,7 @@ exit 2
 // exact reviewed revision over container DNS + TLS with declarative CA trust, no
 // leaked private key, and a validated teardown that preserves repository data.
 func TestLocalFetchRemoteLifecycle(t *testing.T) {
-	if os.Getenv("CODEFLY_GITOPS_K3D_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_GITOPS_K3D_QUALIFY=1 to run the disposable k3d fetch-remote qualification")
-	}
-	for _, binary := range []string{"docker", "k3d", "git"} {
-		if _, err := exec.LookPath(binary); err != nil {
-			t.Fatalf("%s is required: %v", binary, err)
-		}
-	}
+	conformancetest.Gate(t, "linux-amd64-k3d-deploy", "docker", "k3d", "git")
 
 	source := createBareRepository(t)
 	revision := runExternal(t, "", nil, "git", "--git-dir", source, "rev-parse", "refs/heads/main")

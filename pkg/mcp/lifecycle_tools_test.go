@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 )
 
 // These lock the behavior of run_service/test_service/flow_status/stop_flow
@@ -189,9 +191,7 @@ func writePostgresQualifyWorkspace(t *testing.T) string {
 // drive a real flow end to end. It spins up an actual postgres container, so
 // it is opt-in and requires Docker.
 func TestRunServiceLifecycleThroughPlane(t *testing.T) {
-	if os.Getenv("CODEFLY_MCP_RUN_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_MCP_RUN_QUALIFY=1 to run the disposable Docker qualification")
-	}
+	conformancetest.Gate(t, "linux-amd64-docker-mcp-run", "docker")
 	t.Chdir(writePostgresQualifyWorkspace(t))
 	ctx := context.Background()
 	server, err := NewServer(ctx, "test")

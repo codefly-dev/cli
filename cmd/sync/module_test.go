@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	output "github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 	"github.com/codefly-dev/cli/pkg/integrity"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -519,9 +520,7 @@ func TestSyncModuleRefreshesManifestsEvenWhenLockRegenFails(t *testing.T) {
 }
 
 func TestSyncModuleRegeneratesStalePackageLock(t *testing.T) {
-	if _, err := exec.LookPath("npm"); err != nil {
-		t.Skip("npm is required to regenerate the lockfile")
-	}
+	conformancetest.Gate(t, "linux-amd64-native-npm", "npm")
 	repository := t.TempDir()
 	runGit(t, repository, "init", "--quiet")
 	runGit(t, repository, "config", "user.email", "module-sync@example.invalid")
