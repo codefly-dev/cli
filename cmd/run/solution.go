@@ -229,10 +229,11 @@ func init() {
 // The gateway federates a consumed module's /v1/<prefix>/* only against a token
 // accounts signed and bound to that prefix, and accounts issues one only to a
 // caller presenting the secret whose digest the composition declared. Both
-// halves are provisioned here, per run: the plaintext goes to the consuming
-// backend, the digest to the service that declares the federation configuration
-// group. Nothing is written to disk, so the raw secret exists only in the
-// backend's process environment and never outlives the run.
+// halves are provisioned here, per run: the plaintext rides a process override
+// to the consuming backend, and the digest is declared into the federation
+// workspace configuration group, so it reaches the registrar on the carrier a
+// service reads by contract. Nothing is written to disk, so the raw secret
+// exists only in the backend's process environment and never outlives the run.
 
 const (
 	// federationConfigurationGroup is the workspace-configuration group a host
@@ -241,7 +242,7 @@ const (
 	// service depends on it is the registrar.
 	federationConfigurationGroup = "federation"
 	// moduleRegistrationSecretsKey is the key inside that group carrying the
-	// declared `prefix:sha256hex` digests.
+	// `prefix:sha256hex` digests this run declares.
 	// #nosec G101 -- a configuration key name, not a credential
 	moduleRegistrationSecretsKey = "MODULE_REGISTRATION_SECRETS"
 	// moduleRegistrationSecretsEnvironmentVariable carries the plaintext
@@ -309,7 +310,9 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 
 // federationRegistrars returns the module-qualified uniques of the services
 // declaring a dependency on the federation configuration group — the services
-// that decide whether a module may claim a prefix.
+// that decide whether a module may claim a prefix. The declared digests reach
+// them through that group, so this answers only whether provisioning a run
+// credential can authorize anything at all, and names them for the run log.
 //
 // Modules and services that fail to load are skipped rather than failing the
 // run: this walks the whole workspace, including composed modules that may not

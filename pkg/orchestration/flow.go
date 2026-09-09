@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -191,6 +192,13 @@ type World struct {
 	SyncRequest *builderv0.SyncRequest
 
 	excludedWorkspaceConfigurations map[string]bool
+
+	// workspaceConfigurationValues are values the run path derives itself,
+	// keyed group -> key -> value. They are layered onto the resolved workspace
+	// configurations of every service declaring that group, so a derived value
+	// reaches a service through the same carrier a declared one does rather
+	// than through a raw process variable the service has no contract to read.
+	workspaceConfigurationValues map[string]map[string]string
 
 	// OutputSink receives narration otherwise printed directly via pkg/cli.
 	// Always non-nil: NewFlow defaults it to a no-op sink.
@@ -1820,19 +1828,42 @@ func (flow *Flow) WithOverrides(overrides map[string]map[string]string) {
 	flow.overrides = overrides
 }
 
-// overridesFor returns the runtime overrides targeting service. A
-// module-qualified entry wins over a bare-name one: the bare name is what
-// --set supplies and is ambiguous across composed modules, so an entry that
-// names the module addresses exactly one service and must not be diluted by a
-// same-named service elsewhere in the graph.
+// WithWorkspaceConfigurationValues sets values the run path derives for named
+// workspace configuration groups (group -> key -> value). They reach only the
+// services that declare a dependency on the group, exactly as a declared value
+// would.
+func (flow *Flow) WithWorkspaceConfigurationValues(values map[string]map[string]string) {
+	if flow.world == nil {
+		return
+	}
+	flow.world.workspaceConfigurationValues = values
+}
+
+// overridesFor returns the runtime overrides targeting service, layering the
+// bare-name entry under the module-qualified one. A module-qualified entry wins
+// KEY BY KEY: the bare name is what --set supplies and is ambiguous across
+// composed modules, so an entry that names the module addresses exactly one
+// service and must not be diluted by a same-named service elsewhere in the
+// graph — but returning only one of the two maps silently dropped every key the
+// other set. The run path derives module-qualified overrides itself, so picking
+// instead of layering made a derived injection suppress an operator's whole
+// --set for that service without a word.
 func (flow *Flow) overridesFor(service *resources.Service) map[string]string {
 	if len(flow.overrides) == 0 || service == nil {
 		return nil
 	}
-	if byUnique, ok := flow.overrides[resources.WithUnique(service).Unique()]; ok {
+	byName := flow.overrides[service.Name]
+	byUnique := flow.overrides[resources.WithUnique(service).Unique()]
+	if byName == nil {
 		return byUnique
 	}
-	return flow.overrides[service.Name]
+	if byUnique == nil {
+		return byName
+	}
+	merged := make(map[string]string, len(byName)+len(byUnique))
+	maps.Copy(merged, byName)
+	maps.Copy(merged, byUnique)
+	return merged
 }
 
 func (flow *Flow) WithExcludeRoot(excludeRoot bool) {

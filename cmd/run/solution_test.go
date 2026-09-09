@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -465,10 +466,11 @@ func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
 	workspace := loadTestWorkspace(t, "testdata/solution-federation")
 	module := &resources.Module{Name: "wiki", ServiceEntry: "backend"}
 
-	overrides, err := solutionDerivedOverrides(ctx, workspace, module, wikiService("backend"), "wiki/backend")
+	derived, err := solutionDerivedRunInputs(ctx, workspace, module, wikiService("backend"), "wiki/backend")
 	if err != nil {
-		t.Fatalf("solutionDerivedOverrides: %v", err)
+		t.Fatalf("solutionDerivedRunInputs: %v", err)
 	}
+	overrides := derived.overrides
 
 	backend := overrides["wiki/backend"]
 	if backend[manifest.APIConsumesEnvironmentVariable] == "" {
@@ -480,17 +482,25 @@ func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
 			moduleRegistrationSecretsEnvironmentVariable, backend[moduleRegistrationSecretsEnvironmentVariable])
 	}
 
-	digests := parsePairs(t, overrides["host/accounts"][moduleRegistrationSecretsKey])
+	// The digest rides the federation workspace configuration group — the carrier
+	// the registrar reads by contract — not a raw process variable it would only
+	// pick up through an incidental os.Getenv fallback.
+	declared := derived.workspaceConfigurations[federationConfigurationGroup]
+	digests := parsePairs(t, declared[moduleRegistrationSecretsKey])
 	want := sha256.Sum256([]byte(secrets["documents"]))
 	if digests["documents"] != hex.EncodeToString(want[:]) {
 		t.Errorf("registrar digest for documents = %q, does not match the backend's secret", digests["documents"])
 	}
 	// The raw secret belongs only to the backend that presents it.
-	if strings.Contains(overrides["host/accounts"][moduleRegistrationSecretsKey], secrets["documents"]) {
+	if strings.Contains(declared[moduleRegistrationSecretsKey], secrets["documents"]) {
 		t.Error("registrar received the plaintext secret; it must hold only the digest")
 	}
-	if _, leaked := overrides["host/gateway"]; leaked {
-		t.Error("a service not declaring the federation configuration received an override")
+	// Nothing about the registrar rides the per-service override seam any more.
+	for service, values := range overrides {
+		if service == "wiki/backend" {
+			continue
+		}
+		t.Errorf("service %s received a derived process override %v; the digest belongs on the configuration group", service, values)
 	}
 }
 
@@ -501,12 +511,41 @@ func TestSolutionDerivedOverridesNoOpsWithoutConsumes(t *testing.T) {
 	dir := t.TempDir()
 	writeSolutionManifest(t, dir, solutionManifestWithoutConsumes)
 
-	overrides, err := solutionDerivedOverrides(ctx, wikiWorkspace(dir), wikiModule(), wikiService("backend"), "wiki/backend")
+	derived, err := solutionDerivedRunInputs(ctx, wikiWorkspace(dir), wikiModule(), wikiService("backend"), "wiki/backend")
 	if err != nil {
-		t.Fatalf("solutionDerivedOverrides: %v", err)
+		t.Fatalf("solutionDerivedRunInputs: %v", err)
 	}
-	if overrides != nil {
-		t.Fatalf("expected no overrides, got %+v", overrides)
+	if derived.overrides != nil || derived.workspaceConfigurations != nil {
+		t.Fatalf("expected no derived inputs, got %+v", derived)
+	}
+}
+
+// A composition whose host declares no federation group cannot authorize a
+// mint. Handing the backend a secret regardless buys nothing but a heartbeat
+// spent on an exchange that always fails; withholding it lets the runtime skip
+// the module with the accurate "no registration secret provisioned" line.
+func TestSolutionDerivedRunInputsWithholdsSecretsWithoutARegistrar(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	// Drop the only module whose accounts service declares the group.
+	workspace.Modules = slices.DeleteFunc(workspace.Modules,
+		func(ref *resources.ModuleReference) bool { return ref.Name == "host" })
+
+	derived, err := solutionDerivedRunInputs(ctx, workspace,
+		&resources.Module{Name: "wiki", ServiceEntry: "backend"}, wikiService("backend"), "wiki/backend")
+	if err != nil {
+		t.Fatalf("solutionDerivedRunInputs: %v", err)
+	}
+	if got := derived.overrides["wiki/backend"][moduleRegistrationSecretsEnvironmentVariable]; got != "" {
+		t.Errorf("provisioned a secret %q with no registrar to authorize it", got)
+	}
+	if derived.workspaceConfigurations != nil {
+		t.Errorf("declared federation values with no registrar: %+v", derived.workspaceConfigurations)
+	}
+	// The api.consumes projection is unrelated to federation credentials and
+	// must still reach the backend.
+	if derived.overrides["wiki/backend"][manifest.APIConsumesEnvironmentVariable] == "" {
+		t.Error("withholding the secret also dropped the api.consumes projection")
 	}
 }
 

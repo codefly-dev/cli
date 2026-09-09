@@ -145,11 +145,12 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 
 	serviceName := resources.WithUnique(service).Unique()
 
-	derived, derivedErr := solutionDerivedOverrides(ctx, workspace, module, service, serviceName)
+	derived, derivedErr := solutionDerivedRunInputs(ctx, workspace, module, service, serviceName)
 	if derivedErr != nil {
 		return derivedErr
 	}
-	derivedOverrides = derived
+	derivedOverrides = derived.overrides
+	derivedWorkspaceConfigurations = derived.workspaceConfigurations
 
 	var flow *orchestration.Flow
 
@@ -712,6 +713,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
 	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
+	flow.WithWorkspaceConfigurationValues(derivedWorkspaceConfigurations)
 	flow.WithRemotes(remoteServices)
 	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
 	if err != nil {
@@ -779,7 +781,7 @@ func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
 	return out, nil
 }
 
-// solutionDerivedOverrides resolves the solution-federation injections for the
+// solutionDerivedRunInputs resolves the solution-federation injections for the
 // service being run: the CODEFLY__API_CONSUMES projection, and the registration
 // secrets that let the consuming backend prove which module it is. It lives on
 // the shared run path so `run service <entry>` and `run solution` inject
@@ -787,13 +789,13 @@ func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
 // which each service agent chooses to honor, so an operator debugging dead
 // federation must be able to see that the CLI supplied them before suspecting
 // the manifest.
-func solutionDerivedOverrides(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (map[string]map[string]string, error) {
+func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (derivedRunInputs, error) {
 	consumed, value, err := solutionEntryConsumes(workspace, module, service)
 	if err != nil {
-		return nil, err
+		return derivedRunInputs{}, err
 	}
 	if len(consumed) == 0 {
-		return nil, nil
+		return derivedRunInputs{}, nil
 	}
 	ids := make([]string, 0, len(consumed))
 	for i := range consumed {
@@ -806,31 +808,43 @@ func solutionDerivedOverrides(ctx context.Context, workspace *resources.Workspac
 
 	provisioned, err := provisionModuleRegistrationSecrets(consumed)
 	if err != nil {
-		return nil, err
+		return derivedRunInputs{}, err
 	}
 	if provisioned == nil {
-		return overrides, nil
+		return derivedRunInputs{overrides: overrides}, nil
 	}
-	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.secrets
 
 	registrars := federationRegistrars(ctx, workspace)
 	if len(registrars) == 0 {
-		// Without a registrar holding the digests, every mint is refused and every
-		// registration 401s. That is a composition gap, not a reason to refuse to
-		// run, so say so and boot: the solution still serves its own routes.
+		// Without a registrar holding the digests, nothing can authorize a mint.
+		// Hand the backend a secret anyway and it spends every heartbeat on an
+		// exchange that cannot succeed; withholding it lets the runtime skip the
+		// module with the accurate "no registration secret provisioned" line
+		// instead. That is a composition gap, not a reason to refuse to run, so
+		// say so and boot: the solution still serves its own routes.
 		cli.Warning("no service declares the %q workspace configuration: consumed modules (%s) cannot federate",
 			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))
-		return overrides, nil
+		return derivedRunInputs{overrides: overrides}, nil
 	}
-	for _, registrar := range registrars {
-		if overrides[registrar] == nil {
-			overrides[registrar] = map[string]string{}
-		}
-		overrides[registrar][moduleRegistrationSecretsKey] = provisioned.digests
-	}
+	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.secrets
 	cli.Info("provisioned registration secrets for %s into %s, digests into %s",
 		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))
-	return overrides, nil
+	return derivedRunInputs{
+		overrides: overrides,
+		workspaceConfigurations: map[string]map[string]string{
+			federationConfigurationGroup: {moduleRegistrationSecretsKey: provisioned.digests},
+		},
+	}, nil
+}
+
+// derivedRunInputs are the two carriers the run path derives for a solution:
+// per-service process overrides, and values for the workspace configuration
+// groups a service declares. Returned together (never assigned to a global from
+// inside) so a run that derives nothing clears both, and a second in-process
+// invocation cannot inherit the previous run's values.
+type derivedRunInputs struct {
+	overrides               map[string]map[string]string
+	workspaceConfigurations map[string]map[string]string
 }
 
 // mergeOverrides layers per-service override maps, later layers winning key by
