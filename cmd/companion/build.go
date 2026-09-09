@@ -13,6 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// baseCompanionName is the companion every other companion builds on: it
+// is built first and its failure aborts the run.
+const baseCompanionName = "codefly"
+
 // BuildCmd builds one or more companion Docker images.
 //
 // Order: when --all is in play, the codefly base image is built FIRST.
@@ -231,7 +235,9 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 		}
 	}
 
-	failures := append(buildFailures, pushFailures...)
+	failures := make([]string, 0, len(buildFailures)+len(pushFailures))
+	failures = append(failures, buildFailures...)
+	failures = append(failures, pushFailures...)
 	if len(failures) > 0 {
 		return fmt.Errorf("%d companion build/push(es) failed:\n  %s",
 			len(failures), strings.Join(failures, "\n  "))
@@ -243,7 +249,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) error
 // the same "codefly first" fact sortCompanionsForBuild orders by, named once
 // so the ordering and the abort rule cannot disagree.
 func isBaseCompanion(name string) bool {
-	return name == "codefly"
+	return name == baseCompanionName
 }
 
 // listCompanionsRequired lists every companion under root. The bare
@@ -270,7 +276,7 @@ func listCompanionsRequired(root string) ([]*Companion, error) {
 func sortCompanionsForBuild(in []*Companion) []*Companion {
 	priority := func(name string) int {
 		switch name {
-		case "codefly":
+		case baseCompanionName:
 			return 0
 		case "go", "python", "node":
 			return 1
@@ -299,7 +305,7 @@ func sortCompanionsForBuild(in []*Companion) []*Companion {
 func needsLinuxCLI(targets []*Companion) bool {
 	for _, c := range targets {
 		switch c.Name {
-		case "codefly", "go", "python", "node", "execution":
+		case baseCompanionName, "go", "python", "node", "execution":
 			return true
 		}
 	}
