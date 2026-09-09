@@ -1,4 +1,4 @@
-package conformance
+package conformancetest
 
 import (
 	"encoding/json"
@@ -8,7 +8,16 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/cli/pkg/conformance"
 )
+
+// TestSourceLaneIsExercised is the linux-amd64-source row's gate call site.
+// The row claims the fast source lane runs on every change; this is what
+// leaves the receipt proving it did.
+func TestSourceLaneIsExercised(t *testing.T) {
+	Gate(t, "linux-amd64-source")
+}
 
 // recordingTB captures a gate decision. Fatalf and Skipf abort the caller the
 // way the real ones do, so the code under test cannot run past them.
@@ -44,7 +53,7 @@ func (r *recordingTB) Errorf(format string, args ...any) {
 }
 
 // runGate drives the gate against a synthetic matrix and reports what it did.
-func runGate(t *testing.T, matrix Matrix, id string) *recordingTB {
+func runGate(t *testing.T, matrix conformance.Matrix, id string, needs ...string) *recordingTB {
 	t.Helper()
 	recorder := &recordingTB{name: t.Name()}
 	func() {
@@ -55,7 +64,7 @@ func runGate(t *testing.T, matrix Matrix, id string) *recordingTB {
 				}
 			}
 		}()
-		gate(recorder, matrix, id)
+		gate(recorder, matrix, "pkg/fixture", id, needs)
 	}()
 	for _, cleanup := range recorder.cleanups {
 		cleanup()
@@ -65,28 +74,28 @@ func runGate(t *testing.T, matrix Matrix, id string) *recordingTB {
 
 // hostMatrix builds a matrix whose rows target the running host, so the tests
 // exercise the decision table rather than the CI runner's platform.
-func hostMatrix(rows ...Row) Matrix {
+func hostMatrix(rows ...conformance.Row) conformance.Matrix {
 	for i := range rows {
 		rows[i].OS = runtime.GOOS
 		rows[i].Arch = runtime.GOARCH
 	}
-	return Matrix{SchemaVersion: 1, CLI: "source", Core: "v0.0.1", Rows: rows}
+	return conformance.Matrix{SchemaVersion: 1, CLI: "source", Core: "v0.0.1", Rows: rows}
 }
 
-func gatedRow() Row {
-	return Row{
-		ID: "host-gated-row", Status: StatusNotYetQualified, Summary: "gated",
+func gatedRow() conformance.Row {
+	return conformance.Row{
+		ID: "host-gated-row", Status: conformance.StatusNotYetQualified, Summary: "gated",
 		Backend: "docker", Prerequisites: []string{"codefly-absent-binary"},
-		GateEnv: "CODEFLY_TEST_QUALIFY", Gates: []string{"pkg/conformance"},
+		GateEnv: "CODEFLY_TEST_QUALIFY", Gates: []string{"pkg/conformance/conformancetest"},
 		Blockers: []string{"test fixture"},
 	}
 }
 
-func openRow() Row {
-	return Row{
-		ID: "host-open-row", Status: StatusQualified, Summary: "open",
+func openRow() conformance.Row {
+	return conformance.Row{
+		ID: "host-open-row", Status: conformance.StatusQualified, Summary: "open",
 		Backend: "native", Prerequisites: []string{"codefly-absent-binary"},
-		CI: []string{"go.yml#coverage"}, Gates: []string{"pkg/conformance"},
+		CI: []string{"go.yml#coverage"}, Gates: []string{"pkg/conformance/conformancetest"},
 	}
 }
 
@@ -135,6 +144,44 @@ func TestGateFailsOptedInRowMissingPrerequisite(t *testing.T) {
 	}
 }
 
+// A row's prerequisites are the union over its tests, so a caller that names
+// the subset it uses must not be blocked by a tool it never invokes. Without
+// this, adding buf to the docker-generate row stopped cmd/generate's tests —
+// which never run buf — from qualifying on a host that has Docker only.
+func TestGateNarrowsToTheNeedsACallerNames(t *testing.T) {
+	t.Setenv(RequiredEnv, "")
+	t.Setenv("CODEFLY_TEST_QUALIFY", "1")
+	row := gatedRow()
+	row.Prerequisites = []string{"sh", "codefly-absent-binary"}
+
+	decision := runGate(t, hostMatrix(row), "host-gated-row", "sh")
+	if decision.fatal != "" || decision.skip != "" {
+		t.Fatalf("narrowed gate did not admit the test: fatal=%q skip=%q", decision.fatal, decision.skip)
+	}
+}
+
+// Narrowing is a local convenience, never a way to weaken a CI claim: a
+// claimed row is held to everything it declares.
+func TestGateHoldsAClaimedRowToEveryPrerequisite(t *testing.T) {
+	t.Setenv(RequiredEnv, "host-gated-row")
+	row := gatedRow()
+	row.Prerequisites = []string{"sh", "codefly-absent-binary"}
+
+	decision := runGate(t, hostMatrix(row), "host-gated-row", "sh")
+	if !strings.Contains(decision.fatal, "codefly-absent-binary") {
+		t.Fatalf("claimed row was narrowed to %q: fatal=%q skip=%q", "sh", decision.fatal, decision.skip)
+	}
+}
+
+func TestGateRejectsANeedTheRowDoesNotDeclare(t *testing.T) {
+	t.Setenv(RequiredEnv, "")
+	t.Setenv("CODEFLY_TEST_QUALIFY", "1")
+	decision := runGate(t, hostMatrix(gatedRow()), "host-gated-row", "kubectl")
+	if !strings.Contains(decision.fatal, "does not declare prerequisite") {
+		t.Fatalf("undeclared need was accepted: %q", decision.fatal)
+	}
+}
+
 // A row with no opt-in switch runs opportunistically, so a developer without
 // the tooling is not blocked by a row CI is not currently claiming.
 func TestGateSkipsUnclaimedRowWithoutOptInSwitch(t *testing.T) {
@@ -151,8 +198,7 @@ func TestGateSkipsUnclaimedRowWithoutOptInSwitch(t *testing.T) {
 
 func TestGateFailsRequiredRowOnForeignPlatform(t *testing.T) {
 	t.Setenv(RequiredEnv, "host-gated-row")
-	row := gatedRow()
-	matrix := hostMatrix(row)
+	matrix := hostMatrix(gatedRow())
 	matrix.Rows[0].OS = "plan9"
 	decision := runGate(t, matrix, "host-gated-row")
 	if !strings.Contains(decision.fatal, "plan9") {
@@ -162,8 +208,8 @@ func TestGateFailsRequiredRowOnForeignPlatform(t *testing.T) {
 
 func TestGateRejectsClaimNoGateEnforces(t *testing.T) {
 	t.Setenv(RequiredEnv, "host-ungated-row")
-	matrix := hostMatrix(gatedRow(), Row{
-		ID: "host-ungated-row", Status: StatusQualified, Summary: "no gate",
+	matrix := hostMatrix(gatedRow(), conformance.Row{
+		ID: "host-ungated-row", Status: conformance.StatusQualified, Summary: "no gate",
 		Backend: "none", CI: []string{"go.yml#coverage"},
 	})
 	decision := runGate(t, matrix, "host-gated-row")
@@ -186,7 +232,7 @@ func TestGateWritesReceiptForAnAdmittedRow(t *testing.T) {
 	t.Setenv(ReceiptsEnv, receipts)
 	row := openRow()
 	row.Prerequisites = nil
-	row.Agents = []Agent{{Publisher: "codefly.dev", Name: "redis", Version: "0.0.74"}}
+	row.Agents = []conformance.Agent{{Publisher: "codefly.dev", Name: "redis", Version: "0.0.74"}}
 
 	decision := runGate(t, hostMatrix(row), "host-open-row")
 	if decision.fatal != "" || decision.skip != "" {
@@ -210,6 +256,61 @@ func TestGateWritesReceiptForAnAdmittedRow(t *testing.T) {
 	}
 	if len(receipt.Agents) != 1 || receipt.Agents[0] != "codefly.dev/redis:0.0.74" {
 		t.Fatalf("receipt agents = %v", receipt.Agents)
+	}
+}
+
+// Every package gating one row writes into the same directory, and two
+// packages may hold a same-named test. Without the package in the name their
+// receipts are the same path, and concurrent package binaries truncate each
+// other's evidence.
+func TestReceiptNamesAreScopedToThePackage(t *testing.T) {
+	receipts := t.TempDir()
+	t.Setenv(RequiredEnv, "host-open-row")
+	t.Setenv(ReceiptsEnv, receipts)
+	row := openRow()
+	row.Prerequisites = nil
+	matrix := hostMatrix(row)
+
+	recorder := &recordingTB{name: "TestSameName"}
+	gate(recorder, matrix, "pkg/first", "host-open-row", nil)
+	gate(recorder, matrix, "cmd/second", "host-open-row", nil)
+	for _, cleanup := range recorder.cleanups {
+		cleanup()
+	}
+
+	entries, err := filepath.Glob(filepath.Join(receipts, "host-open-row.*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("same-named tests in two packages left %d receipt(s), want 2: %v", len(entries), entries)
+	}
+}
+
+// Gate must attribute a receipt to the package that called it, not to the
+// harness. The write happens in a cleanup, so the assertion lives outside the
+// subtest whose cleanups it waits on.
+func TestGateAttributesTheReceiptToTheCallingPackage(t *testing.T) {
+	receipts := t.TempDir()
+	t.Setenv(RequiredEnv, "")
+	t.Setenv(ReceiptsEnv, receipts)
+
+	t.Run("gated", func(t *testing.T) { Gate(t, "linux-amd64-source") })
+
+	matches, err := filepath.Glob(filepath.Join(receipts, "linux-amd64-source.*.json"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("receipts = %v (%v), want exactly one", matches, err)
+	}
+	payload, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt Receipt
+	if err := json.Unmarshal(payload, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Package != "github.com/codefly-dev/cli/pkg/conformance/conformancetest" {
+		t.Fatalf("receipt package = %q, want the calling package", receipt.Package)
 	}
 }
 

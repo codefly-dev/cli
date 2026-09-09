@@ -20,6 +20,15 @@ import (
 // MatrixRelativePath locates the matrix from the repository root.
 const MatrixRelativePath = "pkg/conformance/matrix.json"
 
+const (
+	// RequiredEnv lists, comma-separated, the row identifiers a CI job claims
+	// to prove. A required row may never skip itself.
+	RequiredEnv = "CODEFLY_CONFORMANCE_REQUIRED"
+	// ReceiptsEnv names a directory where each gated test drops a receipt, so
+	// a job can prove afterwards that the row really ran.
+	ReceiptsEnv = "CODEFLY_CONFORMANCE_RECEIPTS"
+)
+
 //go:embed matrix.json
 var embeddedMatrix []byte
 
@@ -107,15 +116,6 @@ func (m Matrix) Row(id string) (Row, bool) {
 		}
 	}
 	return Row{}, false
-}
-
-// IDs returns every row identifier, in declaration order.
-func (m Matrix) IDs() []string {
-	ids := make([]string, 0, len(m.Rows))
-	for i := range m.Rows {
-		ids = append(ids, m.Rows[i].ID)
-	}
-	return ids
 }
 
 // Requirable reports whether a CI job may declare the row required. A row with
@@ -229,6 +229,11 @@ func (r *Row) validateStatusEvidence() error {
 	case StatusQualified:
 		if len(r.CI) == 0 {
 			return fmt.Errorf("conformance row %s is qualified but names no CI job", r.ID)
+		}
+		// Without a gate call site nothing can hold the row to its claim: no
+		// CI job may require it, so "qualified" would rest on assertion alone.
+		if !r.Requirable() {
+			return fmt.Errorf("conformance row %s is qualified but declares no gate call site to enforce it", r.ID)
 		}
 		if len(r.Blockers) > 0 {
 			return fmt.Errorf("conformance row %s is qualified but still lists blockers", r.ID)

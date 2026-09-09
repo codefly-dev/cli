@@ -17,7 +17,7 @@ a row is about whether a real lifecycle was driven end to end.
 
 | Status | Meaning |
 |---|---|
-| `qualified` | A CI job drives this row on every change. If the row has a gate call site, that job also lists it in `CODEFLY_CONFORMANCE_REQUIRED`, so its tests cannot skip themselves when the backend is missing. |
+| `qualified` | A CI job drives this row on every change and lists it in `CODEFLY_CONFORMANCE_REQUIRED`, so its tests cannot skip themselves when the backend is missing. Every qualified row must declare a gate call site — without one nothing could hold it to the claim. |
 | `not-yet-qualified` | Real tests and a real gate exist, but nothing proves the row outside a developer machine. **This is not a support claim.** Each row lists what blocks it. |
 | `unsupported` | Not shipped and not tested. |
 
@@ -49,8 +49,8 @@ matter most for a support claim:
 
 ## How the gate works
 
-`conformance.Gate(t, "<row>")` replaces the ad-hoc `t.Skip` that used to guard
-each of these tests:
+`conformancetest.Gate(t, "<row>")` replaces the ad-hoc `t.Skip` that used to
+guard each of these tests:
 
 - The row is listed in `CODEFLY_CONFORMANCE_REQUIRED` → the test **runs**. A
   missing prerequisite, or a runner whose OS/architecture is not the row's,
@@ -59,28 +59,47 @@ each of these tests:
   runs, and a missing prerequisite fails: you asked for that backend.
 - Neither → the test skips, naming the row and how to enable it.
 
-A row with no gate call site cannot be required at all
-(`Row.Requirable`), so a job cannot claim a row nothing enforces.
+A row with no gate call site cannot be required at all (`Row.Requirable`), and
+`Validate` refuses to call such a row qualified — so a job cannot claim a row
+nothing enforces, and a row cannot claim support nothing can check.
+
+### Prerequisites are a union; a caller may narrow
+
+A row's `prerequisites` are the union over its tests, and no single test needs
+all of them: only the solution-SDK fixture runs `buf`, and only the two ArgoCD
+shapes need `kubectl` and `ssh-keygen`. A call site names the subset it uses —
+`conformancetest.Gate(t, "linux-amd64-k3d-deploy", "docker", "k3d", "git")` —
+and outside a CI claim only that subset must be present, so a partial local
+toolchain still qualifies the tests it can run. A **claimed** row is always
+held to every prerequisite it declares: narrowing is a local convenience, never
+a way to call a row qualified on a runner missing a tool. Naming a prerequisite
+the row does not declare is an error, so the two cannot drift apart.
 
 ### Receipts
 
 When `CODEFLY_CONFORMANCE_RECEIPTS` names a directory, each admitted test drops
-`<row>.<test>.json` there with the row, its status, the resolved prerequisite
-paths, the core pin, and the phase duration. CI uploads the directory as an
-artifact and runs
+`<row>.<package>.<test>.json` there with the row, its status, the calling
+package, the resolved prerequisite paths, the core pin, the phase duration and
+the outcome. The package is part of the name because every package gating one
+row writes into the same directory and two packages may hold a same-named test.
+CI uploads the directory as an artifact and runs
 [`scripts/verify-conformance-receipts.sh`](../scripts/verify-conformance-receipts.sh)
-in an always-run step, which fails when a required row produced no receipt.
-That is what closes the last silent-pass hole: a `go test -run` filter that
-matches nothing exits 0, but it leaves no receipt.
+in an always-run step, which fails when a required row produced no receipt, or
+produced one recording a failed run. That is what closes the last silent-pass
+hole: a `go test -run` filter that matches nothing exits 0, but it leaves no
+receipt — and checking the recorded outcome means the claim does not rest on
+the test step's exit code.
 
 ## Qualifying a new row
 
 1. Add the row to `pkg/conformance/matrix.json` as `not-yet-qualified`, with
    its blockers, prerequisites and gate packages.
-2. Call `conformance.Gate(t, "<row>")` at the top of every test that is
-   evidence for it, replacing any bespoke skip.
+2. Call `conformancetest.Gate(t, "<row>", …)` at the top of every test that is
+   evidence for it, replacing any bespoke skip, naming the prerequisites that
+   test actually uses.
 3. Add the row to this table.
 4. When a CI job provisions the backend, add the job to the row's `ci` list,
-   set `CODEFLY_CONFORMANCE_REQUIRED` on its test step, drop the blockers, and
-   flip the status to `qualified`. The tests in `pkg/conformance` fail if any
-   of those four are missing.
+   name the row in that gate's `conformance_rows` in `go.yml`, drop the
+   blockers, and flip the status to `qualified`. The tests in `pkg/conformance`
+   fail if any of those four are missing — the `ci` entry is resolved against
+   the workflow's real jobs and matrix gates, not matched as a substring.

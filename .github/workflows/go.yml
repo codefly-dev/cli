@@ -19,12 +19,12 @@ jobs:
     # 8 minutes keeps a hang from burning a full runner-hour while leaving the
     # suite real headroom.
     timeout-minutes: 8
-    # `conformance` is the set of docs/supported-matrix.md rows this gate
+    # `conformance_rows` is the set of docs/supported-matrix.md rows this gate
     # claims to prove. A claimed row's tests can no longer skip themselves when
     # the backend is missing, and the always-run receipt check below fails if a
     # claimed row never ran.
     env:
-      CODEFLY_CONFORMANCE_REQUIRED: ${{ matrix.conformance }}
+      CODEFLY_CONFORMANCE_REQUIRED: ${{ matrix.conformance_rows }}
       CODEFLY_CONFORMANCE_RECEIPTS: ${{ github.workspace }}/conformance-receipts
     strategy:
       fail-fast: true
@@ -32,11 +32,11 @@ jobs:
         include:
           - gate: bootstrap-audit
           - gate: control-integration
-            conformance: linux-amd64-nix-run
+            conformance_rows: linux-amd64-nix-run
           - gate: coverage
-            conformance: linux-amd64-native-npm
+            conformance_rows: linux-amd64-source,linux-amd64-native-npm
           - gate: race
-            conformance: linux-amd64-native-npm
+            conformance_rows: linux-amd64-source,linux-amd64-native-npm
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -159,11 +159,11 @@ jobs:
       # Always-run so a failed or filtered-out test still has to account for
       # the rows its job claimed.
       - name: Verify conformance receipts
-        if: always() && matrix.conformance != ''
+        if: always() && matrix.conformance_rows != ''
         run: ./scripts/verify-conformance-receipts.sh
 
       - name: Upload conformance receipts
-        if: always() && matrix.conformance != ''
+        if: always() && matrix.conformance_rows != ''
         uses: actions/upload-artifact@v4
         with:
           name: conformance-receipts-${{ matrix.gate }}

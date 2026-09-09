@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/cli/pkg/conformance"
+	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 	"github.com/codefly-dev/cli/pkg/generators"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/languages"
@@ -546,7 +546,7 @@ service ExportService {
 }
 
 func TestSyncSolutionSDKEndToEnd(t *testing.T) {
-	conformance.Gate(t, "linux-amd64-docker-generate")
+	conformancetest.Gate(t, "linux-amd64-docker-generate", "docker", "buf")
 	descriptorSet := buildRealDescriptorSet(t)
 	digest := composition.APIContractDigest(descriptorSet)
 

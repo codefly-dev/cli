@@ -11,7 +11,7 @@ import (
 	"github.com/blang/semver"
 	"github.com/codefly-dev/core/resources"
 
-	"github.com/codefly-dev/cli/pkg/conformance"
+	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 )
 
 func TestAddServiceRejectsUnsafeName(t *testing.T) {
@@ -146,7 +146,7 @@ func TestAddServiceUnknownModule(t *testing.T) {
 // and runs its Create flow end to end. Opt-in like CODEFLY_GITOPS_K3D_QUALIFY
 // (docs/commands.md) since it requires network access.
 func TestAddServiceCreatesViaAgentCreateFlow(t *testing.T) {
-	conformance.Gate(t, "linux-amd64-network-mcp-agent")
+	conformancetest.Gate(t, "linux-amd64-network-mcp-agent")
 
 	t.Chdir(writeMCPWorkspace(t))
 	ctx := context.Background()

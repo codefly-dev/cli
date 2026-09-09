@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codefly-dev/cli/pkg/conformance"
+	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +23,7 @@ import (
 // declares the row required does not.
 func requireNpm(t *testing.T) {
 	t.Helper()
-	conformance.Gate(t, "linux-amd64-native-npm")
+	conformancetest.Gate(t, "linux-amd64-native-npm", "npm")
 }
 
 func npmPackageDir(t *testing.T, name, version string) string {

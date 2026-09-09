@@ -14,6 +14,9 @@
         "go.yml#coverage",
         "go.yml#race",
         "go.yml#lint"
+      ],
+      "gates": [
+        "pkg/conformance/conformancetest"
       ]
     },
     {

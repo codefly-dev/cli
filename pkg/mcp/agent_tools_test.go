@@ -11,7 +11,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 
-	"github.com/codefly-dev/cli/pkg/conformance"
+	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 )
 
 func TestListAgentsReflectsWorkspacePins(t *testing.T) {
@@ -298,7 +298,7 @@ func TestAgentInfoUsesRequestedKind(t *testing.T) {
 }
 
 func TestAgentInfoLoadsRealAgent(t *testing.T) {
-	conformance.Gate(t, "linux-amd64-network-mcp-agent")
+	conformancetest.Gate(t, "linux-amd64-network-mcp-agent")
 	t.Chdir(t.TempDir())
 	ctx := context.Background()
 	server, err := NewServer(ctx, "test")

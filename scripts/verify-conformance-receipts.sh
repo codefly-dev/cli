@@ -32,6 +32,15 @@ for row in "${rows[@]}"; do
     missing=1
     continue
   fi
+  # A receipt proves the row ran; its outcome proves the row held. Checking
+  # both means the claim does not depend on the test step's exit code, which a
+  # continue-on-error would silently remove.
+  for receipt in "${found[@]}"; do
+    if ! grep -Eq '"passed"[[:space:]]*:[[:space:]]*true' "${receipt}"; then
+      echo "conformance receipt ${receipt} records a failed run of required row ${row}" >&2
+      missing=1
+    fi
+  done
   echo "row ${row}: ${#found[@]} receipt(s)"
 done
 

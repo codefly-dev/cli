@@ -38,6 +38,15 @@ func TestValidateRejects(t *testing.T) {
 			want:   "names no CI job",
 		},
 		{
+			name: "a qualified row with no gate call site to enforce it",
+			matrix: func() Matrix {
+				r := validRow()
+				r.Prerequisites, r.Gates = nil, nil
+				return validMatrix(r)
+			}(),
+			want: "declares no gate call site to enforce it",
+		},
+		{
 			name: "a qualified row that still lists blockers",
 			matrix: func() Matrix {
 				r := validRow()

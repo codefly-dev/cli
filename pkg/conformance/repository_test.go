@@ -70,28 +70,131 @@ func releaseLine(version string) string {
 	return strings.TrimSuffix(version, semver.Prerelease(version))
 }
 
+// workflowGates is every name a row may legitimately cite for one workflow:
+// its job identifiers, plus the matrix values that name a job's gates.
+//
+// Resolving against the parsed document rather than the file text matters:
+// gate names like "coverage", "race" and "lint" also occur in comments,
+// filenames and flags, so a substring test passes even after the job itself is
+// deleted.
+func workflowGates(t *testing.T, document any) map[string]bool {
+	t.Helper()
+	gates := map[string]bool{}
+	root, ok := document.(map[string]any)
+	if !ok {
+		return gates
+	}
+	jobs, ok := root["jobs"].(map[string]any)
+	if !ok {
+		return gates
+	}
+	for id, job := range jobs {
+		gates[id] = true
+		definition, isMap := job.(map[string]any)
+		if !isMap {
+			continue
+		}
+		strategy, isMap := definition["strategy"].(map[string]any)
+		if !isMap {
+			continue
+		}
+		for _, value := range matrixScalars(strategy["matrix"]) {
+			gates[value] = true
+		}
+	}
+	return gates
+}
+
+// matrixScalars flattens every string a strategy matrix expands into.
+func matrixScalars(node any) []string {
+	var values []string
+	switch typed := node.(type) {
+	case string:
+		values = append(values, typed)
+	case []any:
+		for _, item := range typed {
+			values = append(values, matrixScalars(item)...)
+		}
+	case map[string]any:
+		for _, item := range typed {
+			values = append(values, matrixScalars(item)...)
+		}
+	}
+	return values
+}
+
+// TestWorkflowGatesResolveJobsNotSubstrings pins the reason this resolves
+// against the parsed document: every gate name below also appears in the
+// workflow's text, so a substring test would call the deleted job real.
+func TestWorkflowGatesResolveJobsNotSubstrings(t *testing.T) {
+	var document any
+	if err := yaml.Unmarshal([]byte(`
+jobs:
+  quality:
+    # The coverage and race gates take 4-5 minutes.
+    strategy:
+      matrix:
+        include:
+          - gate: race
+    steps:
+      - run: go test ./... -coverprofile=cover.out
+  lint:
+    steps:
+      - run: golangci-lint run ./...
+`), &document); err != nil {
+		t.Fatal(err)
+	}
+	gates := workflowGates(t, document)
+	for _, real := range []string{"quality", "lint", "race"} {
+		if !gates[real] {
+			t.Errorf("%q is a job or matrix gate but did not resolve", real)
+		}
+	}
+	// Present in a comment and a flag, absent as a job or gate.
+	if gates["coverage"] {
+		t.Error("a gate name occurring only in prose resolved as real")
+	}
+	// A single letter matches almost any file as a substring.
+	if gates["e"] {
+		t.Error("an arbitrary substring resolved as a real gate")
+	}
+}
+
 // TestQualifiedRowsNameRealCIJobs rejects a support claim backed by a job that
 // does not exist.
 func TestQualifiedRowsNameRealCIJobs(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, row := range Default().Rows {
 		for _, entry := range row.CI {
-			workflow, gate, _ := strings.Cut(entry, "#")
+			workflow, gate, found := strings.Cut(entry, "#")
+			if !found || gate == "" {
+				t.Errorf("row %s has CI entry %q without a job or gate", row.ID, entry)
+				continue
+			}
 			path := filepath.Join(root, ".github", "workflows", workflow)
-			if _, err := os.Stat(path); err != nil {
+			body, err := os.ReadFile(path)
+			if err != nil {
 				t.Errorf("row %s names workflow %s: %v", row.ID, workflow, err)
 				continue
 			}
-			if !strings.Contains(readFile(t, path), gate) {
-				t.Errorf("row %s names gate %q, absent from %s", row.ID, gate, workflow)
+			var document any
+			if err := yaml.Unmarshal(body, &document); err != nil {
+				t.Errorf("parse workflow %s: %v", workflow, err)
+				continue
+			}
+			if !workflowGates(t, document)[gate] {
+				t.Errorf("row %s names gate %q, which is not a job or matrix gate in %s",
+					row.ID, gate, workflow)
 			}
 		}
 	}
 }
 
 // claimKeys are the workflow keys that declare which rows a job proves: the
-// environment variable the gate reads, and the matrix key feeding it.
-var claimKeys = map[string]bool{RequiredEnv: true, "conformance": true}
+// environment variable the gate reads, and the matrix key feeding it. The
+// matrix key is named for what it holds because "conformance" alone already
+// means something else in this repo (an agent CI manifest mode).
+var claimKeys = map[string]bool{RequiredEnv: true, "conformance_rows": true}
 
 // requiredByWorkflows maps every row identifier a workflow claims to the
 // workflows claiming it. Values that are GitHub expressions are indirections
@@ -165,7 +268,7 @@ func TestQualifiedRowsAreRequiredInCI(t *testing.T) {
 	}
 }
 
-var gateCall = regexp.MustCompile(`conformance\.Gate\(\w+,\s*"([a-z0-9-]+)"\)`)
+var gateCall = regexp.MustCompile(`(?:conformancetest\.)?\bGate\(\w+,\s*"([a-z0-9-]+)"`)
 
 // gateCallSites maps each row identifier to the packages that gate on it.
 func gateCallSites(t *testing.T) map[string]map[string]bool {
