@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -31,10 +32,14 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 		return DeployResult{
 			Succeeded: true,
 			RenderedTrees: []RenderedTree{{
-				Module: req.Module,
-				Digest: rendered.Inventory.Digest,
+				Module:     req.Module,
+				Digest:     rendered.Inventory.Digest,
+				Stage:      deployments.StageRendered,
+				RenderedAt: time.Now().UTC(),
 			}},
-			Output: rendered.Path,
+			Output:   rendered.Path,
+			Required: deployments.StageRendered,
+			Reached:  deployments.StageRendered,
 		}, nil
 	}
 	ws, module, service, err := p.loadTarget(ctx, req.Service)
@@ -56,7 +61,7 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 		deploymentManager = manager
 		evidenceProvider = manager
 	} else {
-		manager, managerErr := deployments.NewLocalApplyManager(ctx, ws, env)
+		manager, managerErr := deployments.NewLocalApplyManager(ctx, ws, env, deployCompletion(&req))
 		if managerErr != nil {
 			return DeployResult{}, managerErr
 		}
@@ -88,9 +93,25 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 	return result, nil
 }
 
+// deployCompletion resolves the stage a deploy must establish. An unset
+// Completion keeps the historical contract rather than promoting apply success
+// to health.
+func deployCompletion(req *DeployRequest) deployments.CompletionCondition {
+	completion := deployments.DefaultDeployCompletion()
+	if req.Completion != "" {
+		completion.Stage = req.Completion
+	}
+	if req.CompletionTimeout > 0 {
+		completion.Timeout = req.CompletionTimeout
+	}
+	return completion
+}
+
 func deployResult(succeeded bool, provider deployments.EvidenceProvider) (DeployResult, error) {
 	result := DeployResult{Succeeded: succeeded}
 	evidence := provider.Evidence()
+	result.Required = evidence.Required
+	result.Reached = evidence.Reached
 	if evidence.Target != nil {
 		target := evidence.Target
 		result.Target = &DeployTarget{
@@ -103,16 +124,26 @@ func deployResult(succeeded bool, provider deployments.EvidenceProvider) (Deploy
 			ClusterIdentity: target.ClusterIdentity,
 		}
 	}
-	for _, tree := range evidence.RenderedTrees {
+	for index := range evidence.RenderedTrees {
+		tree := &evidence.RenderedTrees[index]
 		result.RenderedTrees = append(result.RenderedTrees, RenderedTree{
-			Module:    tree.Module,
-			Service:   tree.Service,
-			Digest:    tree.Digest,
-			Manifests: tree.Manifests,
+			Module:      tree.Module,
+			Service:     tree.Service,
+			Digest:      tree.Digest,
+			Manifests:   tree.Manifests,
+			Stage:       tree.Stage,
+			RenderedAt:  tree.RenderedAt,
+			AppliedAt:   tree.AppliedAt,
+			ObservedAt:  tree.ObservedAt,
+			Diagnostics: tree.Diagnostics,
 		})
 	}
 	if len(result.RenderedTrees) == 0 {
 		return result, fmt.Errorf("rendered-tree evidence is unavailable")
+	}
+	if succeeded && !result.Reached.AtLeast(result.Required) {
+		result.Succeeded = false
+		return result, fmt.Errorf("deployment reached %s, short of the required %s", result.Reached, result.Required)
 	}
 	return result, nil
 }

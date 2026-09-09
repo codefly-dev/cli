@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/stretchr/testify/require"
@@ -43,6 +44,7 @@ func TestRunDeployRejectsRemoteTargetBeforeStartingFlow(t *testing.T) {
 }
 
 func TestDeployResultIncludesEveryRenderedTreeAndExactTarget(t *testing.T) {
+	applied := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	provider := staticEvidenceProvider{evidence: deployments.DeploymentEvidence{
 		Target: &deployments.VerifiedKubernetesTarget{
 			Kind:            "k3d",
@@ -53,9 +55,17 @@ func TestDeployResultIncludesEveryRenderedTreeAndExactTarget(t *testing.T) {
 			K3dCluster:      "dev",
 			ClusterIdentity: "sha256:cluster",
 		},
+		Required: deployments.StageApplied,
+		Reached:  deployments.StageApplied,
 		RenderedTrees: []deployments.RenderedTreeEvidence{
-			{Module: "backend", Service: "api", Digest: "sha256:api", Manifests: "kind: Deployment\n"},
-			{Module: "shared", Service: "database", Digest: "sha256:database", Manifests: "kind: StatefulSet\n"},
+			{
+				Module: "backend", Service: "api", Digest: "sha256:api", Manifests: "kind: Deployment\n",
+				Stage: deployments.StageApplied, AppliedAt: applied,
+			},
+			{
+				Module: "shared", Service: "database", Digest: "sha256:database", Manifests: "kind: StatefulSet\n",
+				Stage: deployments.StageApplied, AppliedAt: applied,
+			},
 		},
 	}}
 
@@ -64,19 +74,30 @@ func TestDeployResultIncludesEveryRenderedTreeAndExactTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Succeeded)
 	require.Equal(t, "sha256:cluster", result.Target.ClusterIdentity)
+	require.Equal(t, deployments.StageApplied, result.Required)
+	require.Equal(t, deployments.StageApplied, result.Reached)
 	require.Equal(t, []RenderedTree{
-		{Module: "backend", Service: "api", Digest: "sha256:api", Manifests: "kind: Deployment\n"},
-		{Module: "shared", Service: "database", Digest: "sha256:database", Manifests: "kind: StatefulSet\n"},
+		{
+			Module: "backend", Service: "api", Digest: "sha256:api", Manifests: "kind: Deployment\n",
+			Stage: deployments.StageApplied, AppliedAt: applied,
+		},
+		{
+			Module: "shared", Service: "database", Digest: "sha256:database", Manifests: "kind: StatefulSet\n",
+			Stage: deployments.StageApplied, AppliedAt: applied,
+		},
 	}, result.RenderedTrees)
 }
 
 func TestDeployResultCarriesRenderedManifestsWithoutMutationTarget(t *testing.T) {
 	provider := staticEvidenceProvider{evidence: deployments.DeploymentEvidence{
+		Required: deployments.StageRendered,
+		Reached:  deployments.StageRendered,
 		RenderedTrees: []deployments.RenderedTreeEvidence{{
 			Module:    "backend",
 			Service:   "api",
 			Digest:    "sha256:api",
 			Manifests: "kind: Deployment\n",
+			Stage:     deployments.StageRendered,
 		}},
 	}}
 
@@ -85,6 +106,41 @@ func TestDeployResultCarriesRenderedManifestsWithoutMutationTarget(t *testing.T)
 	require.NoError(t, err)
 	require.Nil(t, result.Target)
 	require.Equal(t, "kind: Deployment\n", result.RenderedTrees[0].Manifests)
+}
+
+// A caller that required bootstrapping cannot be handed a success just because
+// kubectl apply returned zero: apply establishes applied and nothing more.
+func TestDeployResultRefusesSuccessShortOfTheRequiredStage(t *testing.T) {
+	provider := staticEvidenceProvider{evidence: deployments.DeploymentEvidence{
+		Required: deployments.StageBootstrapped,
+		Reached:  deployments.StageApplied,
+		RenderedTrees: []deployments.RenderedTreeEvidence{{
+			Module:      "backend",
+			Service:     "api",
+			Digest:      "sha256:api",
+			Manifests:   "kind: Deployment\n",
+			Stage:       deployments.StageApplied,
+			Diagnostics: []string{"Job backend/schema-migrate failed: BackoffLimitExceeded"},
+		}},
+	}}
+
+	result, err := deployResult(true, provider)
+
+	require.ErrorContains(t, err, "reached applied, short of the required bootstrapped")
+	require.False(t, result.Succeeded)
+	require.Equal(t, []string{"Job backend/schema-migrate failed: BackoffLimitExceeded"}, result.RenderedTrees[0].Diagnostics)
+}
+
+func TestDeployCompletionKeepsAppliedWhenTheCallerNamesNoStage(t *testing.T) {
+	require.Equal(t, deployments.StageApplied, deployCompletion(&DeployRequest{}).Stage)
+	require.Equal(t, deployments.DefaultCompletionTimeout, deployCompletion(&DeployRequest{}).Timeout)
+
+	requested := deployCompletion(&DeployRequest{
+		Completion:        deployments.StageHealthy,
+		CompletionTimeout: 90 * time.Second,
+	})
+	require.Equal(t, deployments.StageHealthy, requested.Stage)
+	require.Equal(t, 90*time.Second, requested.Timeout)
 }
 
 func containsAll(value string, fragments ...string) bool {

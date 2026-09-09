@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/codefly-dev/cli/pkg/deployments"
 )
 
 var (
@@ -183,7 +185,8 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 		SchemaVersion: EvidenceSchemaVersion, Module: request.Module, Environment: request.Environment,
 		RenderDigest: request.RenderDigest, SignedCommit: request.Commit, Tree: request.Tree,
 		Review: review, Repository: request.Repository, Path: request.Path,
-		ArgoRevision: request.Revision, Health: healthyStatus, ObservedAt: time.Now().UTC(),
+		ArgoRevision: request.Revision, Health: healthyStatus, Stage: deployments.StageHealthy,
+		ObservedAt: time.Now().UTC(),
 	}
 	observedPaths := make(map[string]struct{}, len(evidence.Applications))
 	for _, name := range names {

@@ -2,11 +2,13 @@ package deployments
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -27,16 +29,32 @@ func RequiresDeploymentOutput(manager Manager) bool {
 	return ok && requirement.RequiresDeploymentOutput()
 }
 
+// RenderedTreeEvidence is what one deployment tree established: which target it
+// was applied to, the digest of the artifact that produced it, when each stage
+// was reached, the owned resources observation read, and — when a stage was not
+// reached — the terminal diagnostics that explain why.
 type RenderedTreeEvidence struct {
 	Module    string
 	Service   string
 	Digest    string
 	Manifests string
+	// Stage is the furthest completion stage this tree established, never the
+	// stage its caller asked for.
+	Stage       CompletionStage
+	RenderedAt  time.Time
+	AppliedAt   time.Time
+	ObservedAt  time.Time
+	Resources   []ObservedResource
+	Diagnostics []string
 }
 
 type DeploymentEvidence struct {
 	Target        *VerifiedKubernetesTarget
 	RenderedTrees []RenderedTreeEvidence
+	// Required is the stage the caller asked for; Reached is the weakest stage
+	// any rendered tree established.
+	Required CompletionStage
+	Reached  CompletionStage
 }
 
 type EvidenceProvider interface {
@@ -57,18 +75,18 @@ func newEvidenceRecorder() evidenceRecorder {
 	return evidenceRecorder{trees: map[evidenceKey]RenderedTreeEvidence{}}
 }
 
-func (r *evidenceRecorder) record(tree RenderedTreeEvidence) {
+func (r *evidenceRecorder) record(tree *RenderedTreeEvidence) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.trees[evidenceKey{module: tree.Module, service: tree.Service}] = tree
+	r.trees[evidenceKey{module: tree.Module, service: tree.Service}] = *tree
 }
 
 func (r *evidenceRecorder) renderedTrees() []RenderedTreeEvidence {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	trees := make([]RenderedTreeEvidence, 0, len(r.trees))
-	for _, tree := range r.trees {
-		trees = append(trees, tree)
+	for key := range r.trees {
+		trees = append(trees, r.trees[key])
 	}
 	sort.Slice(trees, func(i, j int) bool {
 		if trees[i].Module == trees[j].Module {
@@ -110,24 +128,43 @@ func KubernetesOutputProfile(manager Manager) builderv0.KubernetesOutputProfile 
 	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
 }
 
-func NewLocalApplyManager(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) (*LocalApplyManager, error) {
+// NewLocalApplyManager binds a direct apply to an exact local k3d target and to
+// the completion the caller requires. A direct apply always mutates a cluster,
+// so a condition weaker than applied is a caller mistake rather than a
+// render-only request.
+func NewLocalApplyManager(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	env *resources.Environment,
+	completion CompletionCondition,
+) (*LocalApplyManager, error) {
+	if !completion.Stage.AtLeast(StageApplied) {
+		return nil, fmt.Errorf(
+			"direct apply cannot complete at %q; use a render manager for %s, or require one of %s",
+			completion.Stage,
+			StageRendered,
+			strings.Join(CompletionStageNames()[1:], ", "),
+		)
+	}
 	target, err := VerifyLocalK3dTarget(ctx, env)
 	if err != nil {
 		return nil, err
 	}
 	return &LocalApplyManager{
-		Workspace: workspace,
-		Env:       env,
-		target:    target,
-		evidence:  newEvidenceRecorder(),
+		Workspace:  workspace,
+		Env:        env,
+		target:     target,
+		completion: completion,
+		evidence:   newEvidenceRecorder(),
 	}, nil
 }
 
 type LocalApplyManager struct {
-	Workspace *resources.Workspace
-	Env       *resources.Environment
-	target    VerifiedKubernetesTarget
-	evidence  evidenceRecorder
+	Workspace  *resources.Workspace
+	Env        *resources.Environment
+	target     VerifiedKubernetesTarget
+	completion CompletionCondition
+	evidence   evidenceRecorder
 }
 
 func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error {
@@ -161,20 +198,67 @@ func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Servi
 var _ Manager = &LocalApplyManager{}
 var _ EvidenceProvider = &LocalApplyManager{}
 
+// applyTree takes one rendered tree as far as the caller's completion condition
+// requires, recording what it actually established at every exit. Preparation
+// resources — Jobs included — are applied and, when the caller requires
+// bootstrapping, awaited before any workload rollout is applied, so a consumer
+// never starts against schema preparation that has not finished.
 func (l *LocalApplyManager) applyTree(ctx context.Context, module, service, tree, digest, dir string) error {
-	manifests, resourcesToApply, err := renderKustomize(ctx, tree, digest, dir)
+	manifests, documents, err := renderKustomize(ctx, tree, digest, dir)
 	if err != nil {
 		return err
 	}
-	if err := KubernetesApply(ctx, l.Env, &l.target, resourcesToApply...); err != nil {
+	evidence := RenderedTreeEvidence{
+		Module:     module,
+		Service:    service,
+		Digest:     digest,
+		Manifests:  manifests,
+		Stage:      StageRendered,
+		RenderedAt: time.Now().UTC(),
+	}
+	defer func() { l.evidence.record(&evidence) }()
+
+	owned, err := ownedResources(manifests, l.Env)
+	if err != nil {
 		return err
 	}
-	l.evidence.record(RenderedTreeEvidence{
-		Module:    module,
-		Service:   service,
-		Digest:    digest,
-		Manifests: manifests,
-	})
+	preparation, rollout, err := partitionDocuments(documents)
+	if err != nil {
+		return err
+	}
+	observer := completionObserver{env: l.Env, target: &l.target}
+
+	if err := KubernetesApply(ctx, l.Env, &l.target, preparation...); err != nil {
+		return err
+	}
+	if l.completion.Stage.AtLeast(StageBootstrapped) {
+		observed, observeErr := observer.await(ctx, owned, StageBootstrapped, l.completion.Timeout)
+		evidence.ObservedAt = time.Now().UTC()
+		evidence.Resources = observed
+		if observeErr != nil {
+			evidence.Diagnostics = append(evidence.Diagnostics, observeErr.Error())
+			return observeErr
+		}
+	}
+	if err := KubernetesApply(ctx, l.Env, &l.target, rollout...); err != nil {
+		return err
+	}
+	evidence.AppliedAt = time.Now().UTC()
+	evidence.Stage = StageApplied
+	if l.completion.Stage.AtLeast(StageBootstrapped) {
+		evidence.Stage = StageBootstrapped
+	}
+	if !l.completion.Stage.AtLeast(StageHealthy) {
+		return nil
+	}
+	observed, observeErr := observer.await(ctx, owned, StageHealthy, l.completion.Timeout)
+	evidence.ObservedAt = time.Now().UTC()
+	evidence.Resources = observed
+	if observeErr != nil {
+		evidence.Diagnostics = append(evidence.Diagnostics, observeErr.Error())
+		return observeErr
+	}
+	evidence.Stage = StageHealthy
 	return nil
 }
 
@@ -207,9 +291,12 @@ func (l *LocalApplyManager) importImages(ctx context.Context, module *resources.
 
 func (l *LocalApplyManager) Evidence() DeploymentEvidence {
 	target := l.target
+	trees := l.evidence.renderedTrees()
 	return DeploymentEvidence{
 		Target:        &target,
-		RenderedTrees: l.evidence.renderedTrees(),
+		RenderedTrees: trees,
+		Required:      l.completion.Stage,
+		Reached:       weakestStage(trees),
 	}
 }
 
@@ -243,11 +330,13 @@ func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, 
 		if err != nil {
 			return w.Wrapf(err, "cannot render kustomize")
 		}
-		r.evidence.record(RenderedTreeEvidence{
-			Module:    module.Name,
-			Service:   service.Name,
-			Digest:    digest,
-			Manifests: manifests,
+		r.evidence.record(&RenderedTreeEvidence{
+			Module:     module.Name,
+			Service:    service.Name,
+			Digest:     digest,
+			Manifests:  manifests,
+			Stage:      StageRendered,
+			RenderedAt: time.Now().UTC(),
 		})
 	default:
 		return w.NewError("unsupported deployment kind %T", deploy.Kind)
@@ -256,7 +345,12 @@ func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, 
 }
 
 func (r *RenderManager) Evidence() DeploymentEvidence {
-	return DeploymentEvidence{RenderedTrees: r.evidence.renderedTrees()}
+	trees := r.evidence.renderedTrees()
+	return DeploymentEvidence{
+		RenderedTrees: trees,
+		Required:      StageRendered,
+		Reached:       weakestStage(trees),
+	}
 }
 
 var _ Manager = &RenderManager{}

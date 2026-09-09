@@ -1,6 +1,11 @@
 package control
 
-import "github.com/codefly-dev/cli/pkg/gitops"
+import (
+	"time"
+
+	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/gitops"
+)
 
 // This file defines transport-neutral workspace-orchestration types. Typed
 // per-service leaf behavior uses the existing Codefly agent protobufs in
@@ -188,6 +193,14 @@ type DeployRequest struct {
 	Module  string
 	Env     string
 	DryRun  bool
+	// Completion is the stage the deploy must establish before it counts as
+	// successful. Empty keeps the historical contract — kubectl apply success,
+	// i.e. deployments.StageApplied — so an existing caller is not silently
+	// relabelled as healthy. A dry run always completes at StageRendered.
+	Completion deployments.CompletionStage
+	// CompletionTimeout bounds observation when Completion goes beyond applied.
+	// Zero uses deployments.DefaultCompletionTimeout.
+	CompletionTimeout time.Duration
 }
 
 // DeployResult is the outcome of a deploy.
@@ -196,6 +209,11 @@ type DeployResult struct {
 	RenderedTrees []RenderedTree
 	Target        *DeployTarget
 	Output        string
+	// Required is the stage the caller asked for; Reached is the weakest stage
+	// any rendered tree established. A failed deploy still carries both, so the
+	// caller can tell which stage failed.
+	Required deployments.CompletionStage
+	Reached  deployments.CompletionStage
 }
 
 type RenderedTree struct {
@@ -203,6 +221,13 @@ type RenderedTree struct {
 	Service   string
 	Digest    string
 	Manifests string
+	// Stage is the furthest stage this tree established, with the timestamps of
+	// the stages it passed and the terminal diagnostics for the one it failed.
+	Stage       deployments.CompletionStage
+	RenderedAt  time.Time
+	AppliedAt   time.Time
+	ObservedAt  time.Time
+	Diagnostics []string
 }
 
 type DeployTarget struct {

@@ -252,10 +252,20 @@ Deploy a service to a target environment.
 codefly deploy service api
 codefly deploy service api --standalone
 codefly deploy service api --env production --render-only
+codefly deploy service api --wait-for healthy --wait-timeout 5m
 ```
 
 `--render-only` writes a validated, inventoried service-owned tree without
-calling Kubernetes. For a complete module promotion, use the GitOps lifecycle:
+calling Kubernetes.
+
+`--wait-for` selects the completion stage the deployment must establish before
+it is reported as successful — `applied` (the default: `kubectl apply` succeeded
+and nothing more), `bootstrapped` (the owned Jobs also completed) or `healthy`
+(the owned workloads also finished rolling out). `--wait-timeout` (default 10m)
+bounds observation. The same flags apply to `codefly deploy module`. See
+[deployment completion stages](deployment-completion.md).
+
+For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
 codefly deploy gitops render payments --env production --app-project payments

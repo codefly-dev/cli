@@ -72,15 +72,23 @@ var ModuleCmd = &cobra.Command{
 		}
 
 		var deploymentManager deployments.Manager
+		var evidenceProvider deployments.EvidenceProvider
 		var localApplyManager *deployments.LocalApplyManager
 		if directApplyRequested() {
-			localApplyManager, err = deployments.NewLocalApplyManager(ctx, workspace, env)
+			completion, conditionErr := requestedCompletion()
+			if conditionErr != nil {
+				return conditionErr
+			}
+			localApplyManager, err = deployments.NewLocalApplyManager(ctx, workspace, env, completion)
 			if err != nil {
 				return err
 			}
 			deploymentManager = localApplyManager
+			evidenceProvider = localApplyManager
 		} else {
-			deploymentManager = deployments.NewRenderManager(workspace, env)
+			manager := deployments.NewRenderManager(workspace, env)
+			deploymentManager = manager
+			evidenceProvider = manager
 		}
 
 		cli.Header(1, "Deploying module %s to env %s", module.Name, env.Name)
@@ -110,6 +118,7 @@ var ModuleCmd = &cobra.Command{
 			}
 		}
 
+		reportCompletion(evidenceProvider)
 		cli.Header(1, "Module deployment done!")
 		return nil
 	},
@@ -188,4 +197,5 @@ func init() {
 	ModuleCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Render the deployment without applying it")
 	ModuleCmd.Flags().BoolVar(&renderOnly, "render-only", false, "Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.")
 	ModuleCmd.Flags().StringVar(&appProject, "app-project", "", "AppProject contract used to validate cluster-scoped rendered resources")
+	registerCompletionFlags(ModuleCmd)
 }

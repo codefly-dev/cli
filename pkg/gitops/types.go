@@ -3,6 +3,7 @@ package gitops
 import (
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/deployments"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 )
 
@@ -314,21 +315,25 @@ type ApplicationEvidence struct {
 }
 
 type Evidence struct {
-	SchemaVersion   int                   `json:"schemaVersion"`
-	Module          string                `json:"module"`
-	Environment     string                `json:"environment"`
-	RenderDigest    string                `json:"renderDigest"`
-	SignedCommit    string                `json:"signedCommit"`
-	Tree            string                `json:"tree"`
-	Review          ReviewEvidence        `json:"review"`
-	Repository      string                `json:"repository"`
-	Path            string                `json:"path"`
-	ArgoRevision    string                `json:"argoRevision"`
-	Cluster         string                `json:"cluster"`
-	ClusterIdentity string                `json:"clusterIdentity"`
-	Health          string                `json:"health"`
-	Applications    []ApplicationEvidence `json:"applications"`
-	ObservedAt      time.Time             `json:"observedAt"`
+	SchemaVersion   int            `json:"schemaVersion"`
+	Module          string         `json:"module"`
+	Environment     string         `json:"environment"`
+	RenderDigest    string         `json:"renderDigest"`
+	SignedCommit    string         `json:"signedCommit"`
+	Tree            string         `json:"tree"`
+	Review          ReviewEvidence `json:"review"`
+	Repository      string         `json:"repository"`
+	Path            string         `json:"path"`
+	ArgoRevision    string         `json:"argoRevision"`
+	Cluster         string         `json:"cluster"`
+	ClusterIdentity string         `json:"clusterIdentity"`
+	Health          string         `json:"health"`
+	// Stage reports how far reconciliation got in the same vocabulary a direct
+	// apply uses. Argo CD holding every owned application Healthy is what makes
+	// this receipt claim deployments.StageHealthy rather than merely applied.
+	Stage        deployments.CompletionStage `json:"stage,omitempty"`
+	Applications []ApplicationEvidence       `json:"applications"`
+	ObservedAt   time.Time                   `json:"observedAt"`
 }
 
 type ObserveResult struct {

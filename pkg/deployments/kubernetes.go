@@ -281,43 +281,46 @@ func (config kubeconfigView) target(contextName string) (string, string, string,
 	return clusterName, apiServer, clusterIdentity, nil
 }
 
-func kubectlApply(ctx context.Context, target *VerifiedKubernetesTarget, kubeconfig []byte, resource string) error {
-	w := wool.Get(ctx).In("kubectlApply")
+// runKubectl runs one kubectl invocation against the verified target, reading
+// the kubeconfig from a private snapshot of the bytes that were verified rather
+// than from whatever the declared path holds by now.
+func runKubectl(ctx context.Context, target *VerifiedKubernetesTarget, kubeconfig []byte, stdin string, args ...string) (string, error) {
 	snapshot, err := os.CreateTemp("", "codefly-verified-kubeconfig-*")
 	if err != nil {
-		return w.Wrapf(err, "cannot create verified kubeconfig snapshot")
+		return "", fmt.Errorf("cannot create verified kubeconfig snapshot: %w", err)
 	}
 	snapshotPath := snapshot.Name()
 	defer os.Remove(snapshotPath)
 	if _, err := snapshot.Write(kubeconfig); err != nil {
 		_ = snapshot.Close()
-		return w.Wrapf(err, "cannot write verified kubeconfig snapshot")
+		return "", fmt.Errorf("cannot write verified kubeconfig snapshot: %w", err)
 	}
 	if err := snapshot.Close(); err != nil {
-		return w.Wrapf(err, "cannot close verified kubeconfig snapshot")
+		return "", fmt.Errorf("cannot close verified kubeconfig snapshot: %w", err)
 	}
 
-	args := []string{"--kubeconfig", snapshotPath, "--context", target.Context}
-	args = append(args, "apply", "-f", "-")
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	cmd.Stdin = bytes.NewBufferString(resource)
-
-	// Capture the output and error if any
-	var out bytes.Buffer
-	var stderr bytes.Buffer
+	full := append([]string{"--kubeconfig", snapshotPath, "--context", target.Context}, args...)
+	cmd := exec.CommandContext(ctx, "kubectl", full...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
-
-	// Execute the command
-	err = cmd.Run()
-	if err != nil {
-		return w.Wrapf(err, "cannot run kubectl apply: %s", stderr.String())
+	if err := cmd.Run(); err != nil {
+		return out.String(), fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
+	return out.String(), nil
+}
 
-	if strings.Contains(out.String(), "unchanged") {
+func kubectlApply(ctx context.Context, target *VerifiedKubernetesTarget, kubeconfig []byte, resource string) error {
+	w := wool.Get(ctx).In("kubectlApply")
+	out, err := runKubectl(ctx, target, kubeconfig, resource, "apply", "-f", "-")
+	if err != nil {
+		return w.Wrapf(err, "cannot run kubectl apply")
+	}
+	if strings.Contains(out, "unchanged") {
 		return nil
 	}
-	w.Info(strings.TrimSpace(out.String()))
+	w.Info(strings.TrimSpace(out))
 	return nil
 }
 
