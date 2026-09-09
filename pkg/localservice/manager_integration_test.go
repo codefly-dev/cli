@@ -7,12 +7,12 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/cli/pkg/conformance"
 )
 
 func TestNativeUserManagerLifecycle(t *testing.T) {
-	if os.Getenv("CODEFLY_SERVICE_INTEGRATION") != "1" {
-		t.Skip("set CODEFLY_SERVICE_INTEGRATION=1 to exercise the real user service manager")
-	}
+	conformance.Gate(t, "darwin-arm64-native-user-service")
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("native user services are unsupported on this platform")
 	}

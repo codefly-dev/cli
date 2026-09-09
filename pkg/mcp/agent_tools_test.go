@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
+
+	"github.com/codefly-dev/cli/pkg/conformance"
 )
 
 func TestListAgentsReflectsWorkspacePins(t *testing.T) {
@@ -296,9 +298,7 @@ func TestAgentInfoUsesRequestedKind(t *testing.T) {
 }
 
 func TestAgentInfoLoadsRealAgent(t *testing.T) {
-	if os.Getenv("CODEFLY_MCP_AGENT_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_MCP_AGENT_QUALIFY=1 to run against a real installed agent")
-	}
+	conformance.Gate(t, "linux-amd64-network-mcp-agent")
 	t.Chdir(t.TempDir())
 	ctx := context.Background()
 	server, err := NewServer(ctx, "test")

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/conformance"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -223,6 +224,7 @@ func TestHostPortFromConnectionStringRejectsUnparseable(t *testing.T) {
 // configurations. The connection check preserves the in-process acceptance
 // coverage for dependency configuration and teardown.
 func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
+	conformance.Gate(t, "linux-amd64-nix-run")
 	tests := []struct {
 		profile            string
 		wantDependencies   []string

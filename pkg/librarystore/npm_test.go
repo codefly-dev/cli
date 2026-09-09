@@ -8,24 +8,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/conformance"
 	"github.com/stretchr/testify/require"
 )
 
-// requireNpm skips a test that needs the real npm CLI (npm pack / npm
-// publish) when it is not installed, rather than failing a developer machine
-// or CI image that lacks Node.
+// requireNpm admits a test that needs the real npm CLI (npm pack / npm
+// publish). A developer machine without Node steps aside; a CI job that
+// declares the row required does not.
 func requireNpm(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("npm"); err != nil {
-		t.Skip("npm not installed")
-	}
+	conformance.Gate(t, "linux-amd64-native-npm")
 }
 
 func npmPackageDir(t *testing.T, name, version string) string {

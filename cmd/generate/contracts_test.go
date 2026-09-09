@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/conformance"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -364,9 +365,7 @@ services:
 }
 
 func TestGenerateContractsGoGrpc(t *testing.T) {
-	if os.Getenv("CODEFLY_GENERATE_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_GENERATE_QUALIFY=1 to run the disposable Docker qualification")
-	}
+	conformance.Gate(t, "linux-amd64-docker-generate")
 	moduleDir := scaffoldGoGRPCFixture(t)
 
 	t.Chdir(moduleDir)
@@ -431,9 +430,7 @@ func TestGenerateContractsGoGrpc(t *testing.T) {
 }
 
 func TestGenerateContractsCheckDetectsDrift(t *testing.T) {
-	if os.Getenv("CODEFLY_GENERATE_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_GENERATE_QUALIFY=1 to run the disposable Docker qualification")
-	}
+	conformance.Gate(t, "linux-amd64-docker-generate")
 	moduleDir := scaffoldGoGRPCFixture(t)
 
 	t.Chdir(moduleDir)

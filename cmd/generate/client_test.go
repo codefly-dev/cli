@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/conformance"
 	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
@@ -90,9 +91,7 @@ func captureStderr(t *testing.T, fn func() error) (string, error) {
 
 func requireQualify(t *testing.T) {
 	t.Helper()
-	if os.Getenv("CODEFLY_GENERATE_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_GENERATE_QUALIFY=1 to run the disposable Docker qualification")
-	}
+	conformance.Gate(t, "linux-amd64-docker-generate")
 }
 
 func TestGenerateClientFromModuleService(t *testing.T) {
