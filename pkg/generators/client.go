@@ -17,7 +17,9 @@ import (
 	"github.com/codefly-dev/core/languages"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
+	"google.golang.org/protobuf/encoding/protowire"
 	googleproto "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"gopkg.in/yaml.v3"
 )
@@ -302,7 +304,11 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
 			return fmt.Errorf("cannot parse contract descriptor set: %w", err)
 		}
-		req.DescriptorSet = entry.ContractBytes
+		image, err := markWellKnownTypesAsImports(&set)
+		if err != nil {
+			return fmt.Errorf("cannot prepare contract descriptor set: %w", err)
+		}
+		req.DescriptorSet = image
 		req.TargetFiles = targetFilesForPackage(&set, entry.Endpoint.Package)
 	}
 	if err := coreproto.GenerateClient(ctx, req); err != nil {
@@ -340,6 +346,48 @@ func entryModuleName(entry *ContractEntry) string {
 // codegen is a plain typed HTTP client.
 func generateOpenAPILanguageEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, goModule, npmPackage string) (generatedLanguageExport, error) {
 	return assembleOpenAPILibrary(ctx, lang, langDir, entry, goModule, npmPackage)
+}
+
+// wellKnownTypePrefix is the file-name prefix of the protobuf well-known
+// types, whose bindings always come from the protobuf runtime itself: buf's
+// managed mode leaves their go_package alone, so generated code imports them
+// from google.golang.org/protobuf/types/known/*.
+const wellKnownTypePrefix = "google/protobuf/"
+
+// buf marks a file that an image carries only to resolve imports with
+// buf.alpha.image.v1.ImageFileExtension.is_import: an extension of
+// FileDescriptorProto at field 8042, carrying is_import at field 1.
+const (
+	bufImageFileExtensionField = 8042
+	bufImageFileIsImportField  = 1
+)
+
+// markWellKnownTypesAsImports marks every google/protobuf/*.proto file in set
+// as a buf image import, and returns the re-serialized set.
+//
+// A persisted contract is a plain FileDescriptorSet — `generate contracts`
+// builds it with `buf build --as-file-descriptor-set`, which deliberately drops
+// buf's image extensions — so buf treats every file it carries as a generation
+// target and emits local bindings for the imports too. For Go that means one
+// gen/google/protobuf directory holding a Go package per well-known type
+// (descriptorpb, durationpb, ...), which the compiler rejects outright; the
+// files are dead on top of that, since the module's own bindings import the
+// well-known types from upstream. Only the well-known types are marked: the
+// other shared imports (google/api, buf.validate) do get their go_package
+// rewritten by managed mode, so the module's bindings reference them at the
+// generated library's own path and their local copies are load-bearing.
+func markWellKnownTypesAsImports(set *descriptorpb.FileDescriptorSet) ([]byte, error) {
+	isImport := protowire.AppendVarint(protowire.AppendTag(nil, bufImageFileIsImportField, protowire.VarintType), 1)
+	extension := protowire.AppendBytes(protowire.AppendTag(nil, bufImageFileExtensionField, protowire.BytesType), isImport)
+	for _, file := range set.GetFile() {
+		if !strings.HasPrefix(file.GetName(), wellKnownTypePrefix) {
+			continue
+		}
+		message := file.ProtoReflect()
+		unknown := append(protoreflect.RawFields(nil), message.GetUnknown()...)
+		message.SetUnknown(append(unknown, extension...))
+	}
+	return googleproto.Marshal(set)
 }
 
 // targetFilesForPackage returns the names of the files in set whose proto

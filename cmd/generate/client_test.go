@@ -16,6 +16,8 @@ import (
 	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
+	googleproto "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"gopkg.in/yaml.v3"
 )
 
@@ -160,6 +162,126 @@ func TestGenerateClientFromContractsDir(t *testing.T) {
 
 	tsFacade := findFacadeFile(t, filepath.Join(clientOutput, "typescript"), "_facade.ts")
 	assertFileContains(t, tsFacade, "export const")
+}
+
+// TestGenerateClientDoesNotVendorWellKnownTypes guards the descriptor-set
+// path against emitting local bindings for the google/protobuf well-known
+// types: a persisted contract is a plain FileDescriptorSet, so buf takes every
+// file in it — imports included — as a generation target unless told otherwise.
+// For Go that used to put one Go package per well-known type (descriptorpb,
+// durationpb, ...) in a single gen/google/protobuf directory, which does not
+// compile, on top of being dead code the module's own bindings never import.
+func TestGenerateClientDoesNotVendorWellKnownTypes(t *testing.T) {
+	requireQualify(t)
+	ctx := context.Background()
+	moduleDir := writeWellKnownTypesContractsFixture(t)
+
+	workspace := &resources.Workspace{Name: "qualify-ws", Layout: resources.LayoutKindModules}
+	wsDir := filepath.Join(t.TempDir(), "ws")
+	if err := workspace.SaveToDirUnsafe(ctx, wsDir); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(wsDir)
+	resetClientFlags(t)
+	clientFrom = "contracts:" + filepath.Join(moduleDir, "contracts", "api")
+	clientLanguages = []string{"go"}
+	clientName = "accounts-client"
+	clientGoModule = "github.com/codefly-dev/accounts-client-go"
+	clientOutput = filepath.Join(t.TempDir(), "lib")
+
+	if err := ClientCmd.RunE(ClientCmd, nil); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+
+	goDir := filepath.Join(clientOutput, "go")
+	if _, err := os.Stat(filepath.Join(goDir, "gen", "google", "protobuf")); !os.IsNotExist(err) {
+		t.Fatalf("gen/google/protobuf was generated (stat error: %v)", err)
+	}
+	assertFileContains(t,
+		filepath.Join(goDir, "gen", "accounts", "v1", "accounts.pb.go"),
+		"google.golang.org/protobuf/types/known/timestamppb")
+	goVetLibrary(t, goDir)
+}
+
+// writeWellKnownTypesContractsFixture compiles a proto importing two
+// well-known types into a real descriptor set (the same companion buf run
+// `generate contracts` uses) and writes it as a module's committed API
+// contract catalog, without needing a service agent to scaffold one.
+func writeWellKnownTypesContractsFixture(t *testing.T) string {
+	t.Helper()
+	moduleDir := t.TempDir()
+	protoDir := filepath.Join(moduleDir, "proto", "accounts", "v1")
+	if err := os.MkdirAll(protoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bufYAML := `version: v1
+lint:
+  use:
+    - DEFAULT
+`
+	if err := os.WriteFile(filepath.Join(moduleDir, "proto", "buf.yaml"), []byte(bufYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	accounts := `syntax = "proto3";
+
+package accounts.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+message Account {
+  string id = 1;
+  google.protobuf.Timestamp created_at = 2;
+}
+
+service Accounts {
+  rpc Create(Account) returns (google.protobuf.Empty) {}
+}
+`
+	if err := os.WriteFile(filepath.Join(protoDir, "accounts.proto"), []byte(accounts), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	descriptorSet, err := buildDescriptorSet(context.Background(), filepath.Join(moduleDir, "proto"))
+	if err != nil {
+		t.Fatalf("buildDescriptorSet: %v", err)
+	}
+	var set descriptorpb.FileDescriptorSet
+	if err := googleproto.Unmarshal(descriptorSet, &set); err != nil {
+		t.Fatalf("unmarshal descriptor set: %v", err)
+	}
+
+	contractsDir := filepath.Join(moduleDir, "contracts", "api")
+	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contractsDir, "contract.binpb"), descriptorSet, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog := &composition.APIContractCatalog{
+		Schema:  composition.APIContractCatalogSchema,
+		Package: "codefly/accounts",
+		Version: "0.1.0",
+		Endpoints: []composition.APIContractEndpoint{{
+			Service:  "api",
+			Endpoint: "grpc",
+			API:      "grpc",
+			Kind:     composition.APIContractKindProtobuf,
+			Package:  "accounts.v1",
+			Path:     "contracts/api/contract.binpb",
+			Digest:   composition.APIContractDigest(descriptorSet),
+			Services: composition.ProtobufServices(&set, "accounts.v1"),
+		}},
+	}
+	data, err := catalog.CanonicalBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contractsDir, "catalog.codefly.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return moduleDir
 }
 
 func TestGenerateClientIsIdempotent(t *testing.T) {
