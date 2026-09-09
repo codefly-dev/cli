@@ -3,6 +3,7 @@ package companion
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -175,7 +177,7 @@ func selectTargets(coreDir string, all bool, args []string) ([]*Companion, error
 // including on a partial failure: the caller records that set for provenance
 // attestation, and losing it would either drop provenance for images that
 // were published or invite attesting the whole declared set instead.
-func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*Companion, error) {
+func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]publishedImage, error) {
 	platforms, err := resolveDockerPlatforms(opts.Platform)
 	if err != nil {
 		return nil, err
@@ -196,12 +198,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*C
 		}
 	}
 
-	// The reference dependents build on, resolved by the first dependent that
-	// consumes it and reused by the rest, so a companion set without a base
-	// companion still builds. Resolving it before the loop would read the
-	// registry before this run has pushed the base, and hand every dependent
-	// the image the base tag pointed at beforehand.
-	baseImage := ""
+	base := newBaseResolver(coreDir, targets, opts.Push)
 
 	// Push failures are collected rather than returned immediately. A first
 	// push of a new companion lands in a ghcr package that is private until
@@ -216,7 +213,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*C
 	// must cover these and nothing else: a tag skipped as already published
 	// was produced by some earlier run, and signing it here would attribute
 	// a build to this one that never happened.
-	var published []*Companion
+	var published []publishedImage
 
 	for _, c := range targets {
 		// Skip companions that aren't built as images. A directory with an
@@ -236,28 +233,20 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*C
 		}
 		fmt.Printf("==> Building %s (%s) via %s\n", c.Tag(), c.Dir, method)
 
+		// companionBase is recorded alongside the image this iteration publishes:
+		// it is the input a dependent's provenance turns on, and re-deriving it
+		// after the run means re-reading a tag that has since moved.
+		companionBase := ""
+		buildDigest := ""
 		var buildErr error
 		switch method {
 		case "nix":
 			buildErr = buildWithNix(c)
 		default:
-			// The base builds itself; only its dependents take it as an argument.
-			companionBase := ""
-			if !isBaseCompanion(c.Name) {
-				declares, err := declaresBaseImageArg(c)
-				if err != nil {
-					return published, err
-				}
-				if declares {
-					if baseImage == "" {
-						if baseImage, err = resolveBaseImage(coreDir, opts.Push); err != nil {
-							return published, fmt.Errorf("%s builds on the %s companion: %w", c.Name, baseCompanionName, err)
-						}
-					}
-					companionBase = baseImage
-				}
+			if companionBase, err = base.referenceFor(c); err != nil {
+				return published, err
 			}
-			buildErr = buildWithDocker(c, coreDir, opts.Pull, platforms, opts.Push, companionBase)
+			buildDigest, buildErr = buildWithDocker(c, coreDir, opts.Pull, platforms, opts.Push, companionBase)
 		}
 		if buildErr != nil {
 			// The base is the one build whose failure invalidates what
@@ -274,15 +263,25 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*C
 		// A multi-platform build is pushed atomically by buildx; there is no
 		// single local image for `docker push` to publish afterward.
 		if opts.Push && !(method == "docker" && multiPlatform) {
-			if err := pushImage(c.Tag()); err != nil {
+			pushDigest, pushErr := pushImage(c.Tag())
+			// A digest means the upload landed, which pushImage reports even
+			// when it goes on to fail the visibility check. Dependents are owed
+			// the image that is now in the registry either way; the failure is
+			// still collected below and still fails the run.
+			buildDigest = pushDigest
+			base.recordPush(c, buildDigest)
+			if pushErr != nil {
 				fmt.Printf("    FAILED   %s\n", c.Tag())
-				pushFailures = append(pushFailures, fmt.Sprintf("%s: %v", c.Name, err))
+				pushFailures = append(pushFailures, fmt.Sprintf("%s: %v", c.Name, pushErr))
 				continue
 			}
 			fmt.Printf("    pushed %s\n", c.Tag())
+		} else if opts.Push {
+			// buildx pushed the manifest list itself and reported its digest.
+			base.recordPush(c, buildDigest)
 		}
 		if opts.Push {
-			published = append(published, c)
+			published = append(published, publishedImage{Companion: c, Base: companionBase, Digest: buildDigest})
 		}
 	}
 
@@ -294,6 +293,90 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*C
 			len(failures), strings.Join(failures, "\n  "))
 	}
 	return published, nil
+}
+
+// publishedImage is one companion this run built and pushed, together with the
+// base reference it was built against and the digest the registry now holds it
+// under. The base is a load-bearing input to the image's provenance and cannot
+// be recovered after the run: re-deriving it means re-reading a mutable tag.
+type publishedImage struct {
+	Companion *Companion
+	Base      string
+	Digest    string
+}
+
+// baseResolver hands each dependent the reference for the base companion it
+// builds on. It resolves that reference once per run, and remembers what this
+// run itself published for the base, because that digest — not the tag it went
+// under — is what a dependent must be pinned to.
+type baseResolver struct {
+	coreDir string
+	pushing bool
+	// inTargets records that this run set out to publish the base, which is
+	// what makes a missing push a refusal rather than a lookup.
+	inTargets bool
+
+	pushed       bool
+	pushedDigest string
+
+	// resolved is tracked separately from a non-empty reference: "not yet
+	// resolved" and "resolved" are different states, and only one may look up.
+	resolved  bool
+	reference string
+}
+
+func newBaseResolver(coreDir string, targets []*Companion, pushing bool) *baseResolver {
+	r := &baseResolver{coreDir: coreDir, pushing: pushing}
+	for _, c := range targets {
+		if isBaseCompanion(c.Name) && c.ProducesImage() {
+			r.inTargets = true
+			break
+		}
+	}
+	return r
+}
+
+// recordPush remembers the digest this run put in the registry for the base.
+// Called at the point each publishing path learns it — the buildx metadata for
+// a multi-platform manifest, docker push's own report otherwise.
+func (r *baseResolver) recordPush(c *Companion, digest string) {
+	if !isBaseCompanion(c.Name) || digest == "" {
+		return
+	}
+	r.pushed = true
+	r.pushedDigest = digest
+}
+
+// referenceFor returns the base reference c must build on, empty when c takes
+// none — the base builds itself, and a companion whose Dockerfile declares no
+// base argument would only collect an unconsumed one.
+func (r *baseResolver) referenceFor(c *Companion) (string, error) {
+	if isBaseCompanion(c.Name) {
+		return "", nil
+	}
+	declares, err := declaresBaseImageArg(c)
+	if err != nil || !declares {
+		return "", err
+	}
+	if r.resolved {
+		return r.reference, nil
+	}
+	// A run that is publishing the base owes its dependents that base and no
+	// other. Reading the registry here instead would answer with whatever the
+	// tag names now, which — if this run failed to push it — is the previous
+	// base, published by a run that never built these dependents.
+	if r.pushing && r.inTargets && !r.pushed {
+		return "", fmt.Errorf(
+			"%s builds on the %s companion, which this run was publishing but did not put in the registry; refusing to build it on the base already there",
+			c.Name, baseCompanionName)
+	}
+	reference, err := resolveBaseImage(r.coreDir, r.pushing, r.pushedDigest)
+	if err != nil {
+		return "", fmt.Errorf("%s builds on the %s companion: %w", c.Name, baseCompanionName, err)
+	}
+	r.reference = reference
+	r.resolved = true
+	return reference, nil
 }
 
 // isBaseCompanion reports whether other companions build on this one. It is
@@ -326,18 +409,28 @@ func declaresBaseImageArg(c *Companion) (bool, error) {
 // have to be built against it. Taking it from the targets would silently fall
 // back to the Dockerfile's pinned default in exactly those runs.
 //
-// pushing selects which of the two bases exists to be named. A run that pushes
-// hands dependents a digest: they resolve the base out of the registry, where
-// the tag is mutable, so a tag reference makes what a dependent bakes in depend
-// on where that tag pointed the moment its build ran — anything that moves the
-// tag between the base push and a dependent build silently changes the result.
-// A run that does not push has to keep the tag: the base its dependents must
-// build on is the one this run just left in the local daemon, which the
-// registry has no digest for.
-func resolveBaseImage(coreDir string, pushing bool) (string, error) {
+// It names that base by digest whenever the run publishes, because a tag is
+// mutable: what a dependent bakes in would otherwise depend on where the tag
+// pointed the moment its build ran, and anything with write access to the
+// package can move it in between.
+//
+// pushedDigest is what this run itself put in the registry for the base, and is
+// preferred over any lookup — it is the only source that cannot be overtaken.
+// It is empty when the base was not this run's to publish (a single named
+// dependent build, or a publish run that skipped the base as already
+// published), and only then is the tag read back to find the digest it names.
+//
+// A run that does not publish keeps the tag. It has no digest to offer: nothing
+// went to a registry, and the base such a run's dependents resolve is whatever
+// the tag names locally — the image just built, or, under --pull, the one the
+// registry currently serves.
+func resolveBaseImage(coreDir string, pushing bool, pushedDigest string) (string, error) {
 	base, err := LoadCompanion(filepath.Join(coreDir, "companions", baseCompanionName))
 	if err != nil {
 		return "", fmt.Errorf("resolve the %s base image every other companion builds on: %w", baseCompanionName, err)
+	}
+	if pushedDigest != "" {
+		return repoPath(base.Tag()) + "@" + pushedDigest, nil
 	}
 	if !pushing {
 		return base.Tag(), nil
@@ -356,6 +449,28 @@ func resolveBaseImage(coreDir string, pushing bool) (string, error) {
 // instead, and pinning one of those would build every dependent, on every
 // architecture, on the base for a single arch.
 func imageDigest(ref string) (string, error) {
+	for attempt := 1; ; attempt++ {
+		digest, err := inspectImageDigest(ref)
+		if err == nil || attempt >= registryReadAttempts {
+			return digest, err
+		}
+		time.Sleep(registryReadDelay)
+	}
+}
+
+// registryReadAttempts/registryReadDelay retry the digest lookup above. It is
+// the one registry read a publish run cannot route around: it happens between
+// the base being published and its dependents being built, in a job that has
+// already mutated the registry, so a single 5xx or rate-limited response would
+// abort the run half-published. The other registry read in this package
+// (anonymousManifestInspectRetrying) retries for the same reason. Package vars
+// so tests can shrink the delay.
+var (
+	registryReadAttempts = 3
+	registryReadDelay    = time.Second
+)
+
+func inspectImageDigest(ref string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.Command("docker", "buildx", "imagetools", "inspect", ref, "--format", "{{ .Manifest.Digest }}")
 	cmd.Stdout = &stdout
@@ -504,9 +619,16 @@ func resolveDockerPlatforms(value string) ([]dockerPlatform, error) {
 
 // buildWithDocker uses the ordinary daemon build for one platform and an
 // atomic buildx manifest push for multiple platforms.
-func buildWithDocker(c *Companion, coreDir string, pull bool, platforms []dockerPlatform, push bool, baseImage string) error {
+//
+// A multi-platform build returns the digest buildx recorded for the manifest
+// list it pushed. That push is the only place this run can learn what it
+// published: buildx pushes atomically, so nothing else in the run touches the
+// image, and the tag it was pushed under is mutable afterwards. Every other
+// build returns an empty digest — a single-platform image is published by
+// pushImage, which reports its own.
+func buildWithDocker(c *Companion, coreDir string, pull bool, platforms []dockerPlatform, push bool, baseImage string) (string, error) {
 	if !c.HasDockerfile {
-		return fmt.Errorf("no Dockerfile in %s", c.Dir)
+		return "", fmt.Errorf("no Dockerfile in %s", c.Dir)
 	}
 	platformValues := make([]string, 0, len(platforms))
 	for _, platform := range platforms {
@@ -532,18 +654,52 @@ func buildWithDocker(c *Companion, coreDir string, pull bool, platforms []docker
 		dockerArgs = append(dockerArgs, "--build-arg", baseImageArg+"="+baseImage)
 	}
 	dockerArgs = append(dockerArgs, "-f", dockerfile, "-t", c.Tag())
+	metadataFile := ""
 	if len(platforms) > 1 {
 		if !push {
-			return fmt.Errorf("multi-platform companion builds require push")
+			return "", fmt.Errorf("multi-platform companion builds require push")
 		}
-		dockerArgs = append(dockerArgs, "--push")
+		metadata, err := os.CreateTemp("", "codefly-companion-metadata-*.json")
+		if err != nil {
+			return "", fmt.Errorf("create build metadata file for %s: %w", c.Name, err)
+		}
+		metadata.Close()
+		metadataFile = metadata.Name()
+		defer os.Remove(metadataFile)
+		dockerArgs = append(dockerArgs, "--push", "--metadata-file", metadataFile)
 	}
 	dockerArgs = append(dockerArgs, ".")
 	cmd := exec.Command("docker", dockerArgs...)
 	cmd.Dir = coreDir // build context is core/
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	if metadataFile == "" {
+		return "", nil
+	}
+	return buildMetadataDigest(metadataFile), nil
+}
+
+// buildMetadataDigest reads the digest buildx wrote to its --metadata-file for
+// the manifest it pushed. Empty when the file carries no usable digest; as with
+// pushImage, only a caller that needs the pin can judge whether that is fatal.
+func buildMetadataDigest(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var metadata struct {
+		Digest string `json:"containerimage.digest"`
+	}
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		return ""
+	}
+	if !strings.HasPrefix(metadata.Digest, "sha256:") {
+		return ""
+	}
+	return metadata.Digest
 }
 
 // buildWithNix runs `nix build .#dockerImage` in the companion's dir

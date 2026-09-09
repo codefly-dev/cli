@@ -26,7 +26,7 @@ func TestPushImage_DeniedPrintsLoginHint(t *testing.T) {
 echo "denied: requested access to the resource is denied" 1>&2
 exit 1
 `)
-	err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
+	_, err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "docker login ghcr.io -u <user> -p $(gh auth token)")
 }
@@ -44,7 +44,7 @@ case "$1" in
     ;;
 esac
 `)
-	err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
+	_, err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
 	require.NoError(t, err)
 }
 
@@ -62,7 +62,7 @@ case "$1" in
     ;;
 esac
 `)
-	err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
+	_, err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not publicly pullable")
 	require.Contains(t, err.Error(), "https://github.com/orgs/codefly-dev/packages/container/proto/settings")
@@ -87,7 +87,7 @@ case "$1" in
     ;;
 esac
 `)
-	err := pushImage("acme/proto:0.0.13")
+	_, err := pushImage("acme/proto:0.0.13")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not publicly pullable")
 	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/acme/proto/general")
@@ -124,7 +124,7 @@ case "$1" in
 esac
 `, countPath, countPath, countPath, pushVerifyAttempts))
 
-	err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
+	_, err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(countPath)
@@ -153,7 +153,7 @@ func TestPushImage_DeniedOnDockerHubDoesNotSuggestGitHubToken(t *testing.T) {
 echo "denied: requested access to the resource is denied" 1>&2
 exit 1
 `)
-	err := pushImage("acme/proto:0.0.13")
+	_, err := pushImage("acme/proto:0.0.13")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "docker login docker.io")
 	require.NotContains(t, err.Error(), "gh auth token")
