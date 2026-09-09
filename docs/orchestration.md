@@ -222,7 +222,7 @@ BuilderBegin → BuilderLoad → BuilderInit → BuilderSync → done
 The `StateManager` tracks shared state across services during orchestration:
 
 - **Endpoints** -- each service registers its endpoints after `Load`
-- **NetworkMappings** -- each service registers its port assignments after `Init`
+- **NetworkMappings** -- each service registers the port assignments its agent accepted at `Init`
 - **Configurations** -- runtime configurations exposed by services for their dependents
 
 ```go
@@ -237,7 +237,7 @@ type StateManager struct {
 Key methods:
 
 - `RecordEndpoints()` -- called after a service loads, stores its API endpoints
-- `RecordNetworkMappings()` -- called after init, stores host:port assignments
+- `RecordNetworkMappings()` -- called after init, stores the agent-accepted host:port assignments
 - `GetDependenciesEndpoints()` -- returns endpoints of a service's direct dependencies
 - `GetDependenciesNetworkMappings()` -- returns network addresses of dependencies
 - `GetDependentConfigurationsFor()` -- returns configurations from dependency services
@@ -257,6 +257,21 @@ The `Runner` manages a single service's runtime lifecycle via its agent (a gRPC 
 | **Follow** | Polls agent for desired state changes (hot reload) | `Runtime.Information()` |
 | **Stop** | Graceful shutdown (10s timeout, then SIGKILL) | `Runtime.Stop()` |
 | **Destroy** | Clean up resources | `Runtime.Destroy()` |
+
+**Accepted network mappings:** `Init` proposes an address per endpoint
+(`InitRequest.proposed_network_mappings`) and the agent answers with the ones it
+will actually serve (`InitResponse.network_mappings`) — it may bind a different
+port. The answer is validated and then becomes the single published set: the
+runner, the shared state every consumer reads (dependents' `Start` requests,
+readiness probes, the dashboard) and the exported environment all take it.
+
+The answer must cover exactly the proposed endpoints, each owned by this
+service, each carrying exactly the access views (native / container / public)
+that were proposed, each view complete and distinct where the proposal made it
+so. Anything else fails `Init` before a single value is published. An agent that
+returns no mappings at all is taken to accept the proposal unchanged (the legacy
+contract, from before `InitResponse.network_mappings`); a partial answer is
+never merged with the proposal endpoint by endpoint.
 
 **Hot reload:** The `Follow` phase polls the agent every second. If the agent signals `DesiredState.LOAD`, `INIT`, or `START`, the runner sends a callback action to the playbook, triggering a re-execution of that phase.
 

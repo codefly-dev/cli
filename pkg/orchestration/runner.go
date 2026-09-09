@@ -342,9 +342,17 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return runner.outputPropertyForInit.Process(ctx)
 	}
 
-	runner.networkMappings = resp.NetworkMappings
+	// The agent, not the proposal, decides the addresses this service serves.
+	// The validated accepted set is the only one published: runner, shared
+	// state and the exported environment must never hold different views of
+	// where this service can be reached.
+	accepted, err := acceptNetworkMappings(ctx, runner.instance.Identity, networkMappings, resp.NetworkMappings)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot accept network mappings from %s", runner.instance.Unique())
+	}
+	runner.networkMappings = accepted
 
-	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
+	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, cloneNetworkMappings(accepted))
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
@@ -377,7 +385,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 	w.Debug("init", wool.Field("configuration info", resources.MakeManyConfigurationSummary(resp.RuntimeConfigurations)))
 
-	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: networkMappings, configurations: resp.RuntimeConfigurations})
+	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: accepted, configurations: resp.RuntimeConfigurations})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
 	}
