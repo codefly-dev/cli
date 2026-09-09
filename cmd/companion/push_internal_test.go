@@ -194,7 +194,7 @@ exit 0
 	beta, err := LoadCompanion(filepath.Join(root, "companions", "beta"))
 	require.NoError(t, err)
 
-	err = buildTargets(root, []*Companion{alpha, beta}, BuildOptions{Push: true})
+	_, err = buildTargets(root, []*Companion{alpha, beta}, BuildOptions{Push: true})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "alpha")
 	require.Contains(t, err.Error(), "beta", "the second companion must still be attempted and reported")
