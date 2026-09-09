@@ -104,10 +104,6 @@ type Flow struct {
 	testDependencyMode agentv0.TestDependencyMode
 	temporaryPorts     bool
 	portOverrides      map[string]uint16
-	// invocationID is the identity of a disposable flow, empty for every other
-	// flow. Set by WithTemporaryPorts when the caller supplied no naming scope
-	// of its own; see that method for why the two travel together.
-	invocationID string
 
 	// syncRequest carries CI dry-run intent to every builder participating in a
 	// SyncMode flow. Nil retains the conventional mutating sync behavior.
@@ -1789,42 +1785,32 @@ func (flow *Flow) WithRuntimeContext(runtimeContext string) {
 // dependency stacks, where separate package processes have independent
 // RuntimeManagers and therefore cannot coordinate deterministic hash
 // collisions through one in-memory allocation table.
-//
-// A host port is not the only thing such a flow allocates: its agents derive
-// container names, runtime state directories and log roots from the naming
-// scope (core's services.Base.UniqueWithWorkspace). Ephemeral ports alone
-// therefore left two concurrent disposable flows in one workspace sharing
-// every one of those names, so stopping either destroyed the other's
-// resources. Disposability is one property, not two: a flow that asks for
-// temporary ports also gets a fresh invocation identity as its naming scope.
-// An explicit scope — the caller's human label — still wins.
 func (flow *Flow) WithTemporaryPorts(enabled bool) {
 	flow.temporaryPorts = enabled
-	if !enabled || flow.world == nil {
-		return
-	}
-	if flow.world.LocalNetworkManager != nil {
+	if enabled && flow.world != nil && flow.world.LocalNetworkManager != nil {
 		flow.world.LocalNetworkManager.WithTemporaryPorts()
 	}
-	if flow.world.Env == nil || flow.world.Env.NamingScope != "" {
-		return
-	}
-	flow.invocationID = NewInvocationID()
-	flow.world.Env.NamingScope = flow.invocationID
-	flow.output().Info(
-		"isolated invocation %s: ephemeral ports, and every agent, container and runtime state directory this run owns is named under that scope",
-		flow.invocationID,
-	)
 }
 
-// InvocationID is the identity this flow generated for itself, or empty when
-// the flow reuses a stable or caller-named scope. Diagnostics only: it names
-// the resources the flow owns and carries no secret.
-func (flow *Flow) InvocationID() string {
-	if flow == nil {
+// WithIsolatedInvocation marks this flow as a disposable invocation: it takes a
+// fresh identity and runs under it as its naming scope, which is what agents
+// fold into the container names, runtime state directories and log roots they
+// derive (core's services.Base.UniqueWithWorkspace). Without it two disposable
+// flows in one workspace shared every one of those names, so stopping either
+// destroyed the other's resources.
+//
+// Only a caller that knows its resources are throwaway may ask for this: it is
+// deliberately not implied by temporary ports, which `codefly ci run` uses to
+// isolate a port space inside an already-isolated CODEFLY_HOME.
+//
+// Returns the identity it generated, or empty when the caller already named a
+// scope of its own — that label wins, and nothing is generated over it.
+func (flow *Flow) WithIsolatedInvocation() string {
+	if flow.world == nil || flow.world.Env == nil || flow.world.Env.NamingScope != "" {
 		return ""
 	}
-	return flow.invocationID
+	flow.world.Env.NamingScope = NewInvocationID()
+	return flow.world.Env.NamingScope
 }
 
 func (flow *Flow) TemporaryPortsEnabled() bool {

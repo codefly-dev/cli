@@ -25,49 +25,60 @@ func TestNewInvocationIDIsUnpredictableAndNameSafe(t *testing.T) {
 // Two disposable flows over the same workspace and environment are exactly the
 // audited collision: independent test packages, or two worktrees of one
 // workspace, each running `run service --temporary-ports` with no scope flag.
-func TestTemporaryPortsIsolatesEachInvocation(t *testing.T) {
-	first := disposableFlow(t)
-	second := disposableFlow(t)
+func TestIsolatedInvocationGivesEachFlowItsOwnScope(t *testing.T) {
+	first := newFlowForEnvironment(&resources.Environment{})
+	second := newFlowForEnvironment(&resources.Environment{})
 
-	require.Regexp(t, invocationIDShape, first.InvocationID())
-	require.Regexp(t, invocationIDShape, second.InvocationID())
-	require.NotEqual(t, first.InvocationID(), second.InvocationID())
-	require.Equal(t, first.InvocationID(), first.world.Env.NamingScope)
-	require.Equal(t, second.InvocationID(), second.world.Env.NamingScope)
+	firstID := first.WithIsolatedInvocation()
+	secondID := second.WithIsolatedInvocation()
+
+	require.Regexp(t, invocationIDShape, firstID)
+	require.Regexp(t, invocationIDShape, secondID)
+	require.NotEqual(t, firstID, secondID)
+	require.Equal(t, firstID, first.world.Env.NamingScope)
+	require.Equal(t, secondID, second.world.Env.NamingScope)
 }
 
 // The generated identity has to reach the agents, or containers and state
 // directories stay shared however unique the ID is.
-func TestTemporaryPortsPropagatesInvocationToRunners(t *testing.T) {
-	flow := disposableFlow(t)
+func TestIsolatedInvocationPropagatesToRunners(t *testing.T) {
+	flow := newFlowForEnvironment(&resources.Environment{})
+	id := flow.WithIsolatedInvocation()
 	runner := &Runner{world: flow.world}
 
-	require.Equal(t, flow.InvocationID(), runner.runtimeOverrides()[resources.NamingScopePrefix])
+	require.Equal(t, id, runner.runtimeOverrides()[resources.NamingScopePrefix])
 }
 
 // The scope is a human label the caller owns; codefly must not silently
 // rename the resources that caller asked for.
-func TestTemporaryPortsKeepsAnExplicitNamingScope(t *testing.T) {
-	flow := &Flow{world: &World{Env: &resources.Environment{NamingScope: "pinned"}, OutputSink: noopOutputSink{}}}
+func TestIsolatedInvocationKeepsAnExplicitNamingScope(t *testing.T) {
+	flow := newFlowForEnvironment(&resources.Environment{NamingScope: "pinned"})
+
+	require.Empty(t, flow.WithIsolatedInvocation())
+	require.Equal(t, "pinned", flow.world.Env.NamingScope)
+}
+
+// Temporary ports are a port strategy shared with `codefly ci run`, whose
+// conformance workspace has always used unscoped resource names. Only a caller
+// that knows its resources are throwaway may ask for an identity, so asking
+// for ephemeral ports must not quietly rename anything.
+func TestTemporaryPortsAloneDoesNotRenameResources(t *testing.T) {
+	flow := newFlowForEnvironment(&resources.Environment{})
+
 	flow.WithTemporaryPorts(true)
 
-	require.Equal(t, "pinned", flow.world.Env.NamingScope)
-	require.Empty(t, flow.InvocationID())
+	require.Empty(t, flow.world.Env.NamingScope)
 }
 
 // Stable development reuse is the whole point of a named port: `codefly run
 // service` must find the same containers and state it left behind.
 func TestStableRunKeepsItsIdentity(t *testing.T) {
-	flow := &Flow{world: &World{Env: &resources.Environment{}, OutputSink: noopOutputSink{}}}
+	flow := newFlowForEnvironment(&resources.Environment{})
 	flow.WithTemporaryPorts(false)
 
 	require.Empty(t, flow.world.Env.NamingScope)
-	require.Empty(t, flow.InvocationID())
 }
 
-func disposableFlow(t *testing.T) *Flow {
-	t.Helper()
-	flow := &Flow{world: &World{Env: &resources.Environment{}, OutputSink: noopOutputSink{}}}
-	flow.WithTemporaryPorts(true)
-	return flow
+func newFlowForEnvironment(env *resources.Environment) *Flow {
+	return &Flow{world: &World{Env: env, OutputSink: noopOutputSink{}}}
 }

@@ -1,3 +1,5 @@
+//go:build integration
+
 package run
 
 import (
@@ -21,22 +23,43 @@ import (
 // control address, so these drive the real binary against real sockets rather
 // than the in-process command functions.
 
+var narratedInvocationID = regexp.MustCompile(`isolated invocation (inv[a-z2-7]{8})`)
+
 // A run that loses the control address must say so before it owns anything.
 // The failure a developer meets is two same-name checkouts (or two test
 // packages) hashing to one port, so the message has to name the way out.
+//
+// "Owns nothing" is asserted through the identity the run narrates when it
+// builds its flow: no identity means no flow, and therefore no agent, no
+// container and no state directory. The same narration is asserted positively
+// in the free-address case below and in the sibling test, so a reworded line
+// cannot quietly turn this into an assertion about nothing.
 func TestRunRefusesAControlAddressAnotherProcessOwns(t *testing.T) {
+	// CLIServerPort reads this from whichever process calls it. Clearing it
+	// here keeps the address this test claims identical to the one the child
+	// derives; an inherited value would have them bind different ports and the
+	// child would start a real run.
+	t.Setenv("CODEFLY_CLI_SERVER_PORT", "")
 	workspace := writeIsolationWorkspace(t, "cli-control-ownership")
+	address := fmt.Sprintf("127.0.0.1:%d", network.CLIServerPort("cli-control-ownership"))
 
-	squatter, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", network.CLIServerPort("cli-control-ownership")))
+	squatter, err := net.Listen("tcp", address)
 	require.NoError(t, err, "the derived control address must be bindable for this test to mean anything")
-	defer squatter.Close()
 
-	output, err := runCodeflyService(t, workspace, 60*time.Second, "--cli-server")
-
+	output, err := runCodeflyService(t, workspace, "--cli-server")
 	require.Error(t, err, "codefly ran on a control address it does not own:\n%s", output)
 	require.Contains(t, output, "cannot own the codefly control server")
 	require.Contains(t, output, "--naming-scope")
-	require.NotContains(t, output, "Will run", "the losing run started loading services before it owned its control address")
+	require.NotRegexp(t, narratedInvocationID, output,
+		"the losing run built its flow — and so claimed resources — before it owned its control address")
+
+	// Positive control: the same command against a free address does reach
+	// flow construction, so the assertion above is about ownership and not
+	// about a narration that never happens.
+	require.NoError(t, squatter.Close())
+	output, _ = runCodeflyService(t, workspace, "--cli-server")
+	require.Regexp(t, narratedInvocationID, output,
+		"the run never reached flow construction even with its control address free")
 }
 
 // Two checkouts of one workspace, run at the same time with no isolation flag
@@ -64,8 +87,6 @@ func TestConcurrentDisposableRunsClaimDistinctIdentities(t *testing.T) {
 	require.NotEmpty(t, ids[1])
 	require.NotEqual(t, ids[0], ids[1], "two concurrent disposable runs of one workspace share an identity")
 }
-
-var narratedInvocationID = regexp.MustCompile(`isolated invocation (inv[a-z2-7]{8})`)
 
 // awaitInvocationID starts a real disposable run and reads the identity it
 // narrates. The identity is fixed when the flow is built, before any agent is
@@ -99,9 +120,9 @@ func awaitInvocationID(t *testing.T, workspace string) (string, error) {
 	return "", fmt.Errorf("run never narrated an invocation identity")
 }
 
-func runCodeflyService(t *testing.T, workspace string, timeout time.Duration, extra ...string) (string, error) {
+func runCodeflyService(t *testing.T, workspace string, extra ...string) (string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
 	args := append([]string{"run", "service", "app/api", "--temporary-ports", "--headless"}, extra...)
@@ -124,28 +145,16 @@ func codeflyCommand(ctx context.Context, t *testing.T, workspace string, args ..
 	return command
 }
 
-var (
-	codeflyBinaryOnce sync.Once
-	codeflyBinaryPath string
-	codeflyBinaryErr  error
-)
-
+// codeflyBinary resolves the CLI under test from PATH. The integration lane
+// installs it from this checkout (.github/actions/install), so the tests cost
+// a process launch rather than a link — building it here would put a full CLI
+// link into every default test lane.
 func codeflyBinary(t *testing.T) string {
 	t.Helper()
-	codeflyBinaryOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "codefly-control-ownership-*")
-		if err != nil {
-			codeflyBinaryErr = err
-			return
-		}
-		codeflyBinaryPath = filepath.Join(dir, "codefly")
-		build := exec.Command("go", "build", "-o", codeflyBinaryPath, "github.com/codefly-dev/cli/cmd/codefly")
-		if out, err := build.CombinedOutput(); err != nil {
-			codeflyBinaryErr = fmt.Errorf("build codefly: %w\n%s", err, out)
-		}
-	})
-	require.NoError(t, codeflyBinaryErr)
-	return codeflyBinaryPath
+	path, err := exec.LookPath("codefly")
+	require.NoError(t, err,
+		"these tests drive the CLI under test as a subprocess: put it on PATH with `go install ./cmd/codefly`")
+	return path
 }
 
 // writeIsolationWorkspace lays down a workspace whose origin service pins an

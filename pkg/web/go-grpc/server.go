@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -45,7 +46,6 @@ type Server struct {
 	cli.UnsafeCLIServer
 	config    *Configuration
 	gRPC      *grpc.Server
-	listener  net.Listener
 	workspace *resources.Workspace
 	Wool      *wool.Wool
 	Terminal  *TerminalServer
@@ -56,6 +56,12 @@ type Server struct {
 	// history keeps the most recent log lines so a dashboard opened after the run
 	// started (or reloaded) can backfill. Bounded; oldest lines are dropped.
 	history *logHistory
+
+	// listenerMu guards listener. Listen/Close are the natural pair to put
+	// beside `go Start(ctx)` with a deferred Close, so they must be safe
+	// against the Run goroutine releasing the same listener.
+	listenerMu sync.Mutex
+	listener   net.Listener
 }
 
 // workspaceFor prefers the workspace this server was constructed with and only
@@ -418,24 +424,30 @@ func (s *Server) Address() string {
 	return s.config.EndpointGrpc
 }
 
-// Listen claims the gRPC control address. Binding is a separate step from
-// Run so a caller can establish ownership of the control channel — and fail
-// when something else already holds it — before it provisions anything an
-// aborted run would have to strand.
-func (s *Server) Listen() error {
+// Listen claims the gRPC control address, returning the listener it holds.
+// Binding is a separate step from Run so a caller can establish ownership of
+// the control channel — and fail when something else already holds it — before
+// it provisions anything an aborted run would have to strand. Calling it again
+// returns the address already claimed.
+func (s *Server) Listen() (net.Listener, error) {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
 	if s.listener != nil {
-		return nil
+		return s.listener, nil
 	}
 	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	s.listener = lis
-	return nil
+	return lis, nil
 }
 
-// Close releases an address claimed by Listen but never served.
+// Close releases the claimed address. Safe to call at any point, including
+// while Run is serving on it.
 func (s *Server) Close() {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
 	if s.listener == nil {
 		return
 	}
@@ -447,10 +459,10 @@ func (s *Server) Run(ctx context.Context) error {
 	w := wool.Get(ctx).In("cli.Server")
 	s.Wool = w
 	agents.AddProcessor(s)
-	if err := s.Listen(); err != nil {
+	lis, err := s.Listen()
+	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
-	lis := s.listener
 	// Defensive cleanup: if Serve exits unexpectedly (e.g. transient
 	// listener error), GracefulStop is idempotent and lis.Close is
 	// safe to call after gRPC has already closed it. Without these

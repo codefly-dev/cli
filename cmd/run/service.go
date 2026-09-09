@@ -568,6 +568,17 @@ func shouldWaitForRun(loadOnly, initOnly bool) bool {
 	return !loadOnly && !initOnly
 }
 
+// shouldIsolateInvocation decides whether this run takes a generated identity
+// for the resources it owns. A run with temporary ports is throwaway, and the
+// run path is the only caller that knows it: `codefly ci run` shares the flag
+// name to isolate a port space inside a CODEFLY_HOME that is already per-run,
+// and its conformance workspace must keep the resource names it has always
+// used. An explicit --naming-scope, including an explicitly empty one, is the
+// caller stating what it wants the run named — honored either way.
+func shouldIsolateInvocation(temporaryPorts, namingScopeExplicit bool) bool {
+	return temporaryPorts && !namingScopeExplicit
+}
+
 func validateOpenDashboardFlag(open, cliServer bool) error {
 	if open && !cliServer {
 		return errors.New("--open requires --cli-server")
@@ -704,6 +715,14 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTemporaryPorts(temporaryPorts)
+	if shouldIsolateInvocation(temporaryPorts, namingScopeExplicit) {
+		if invocation := flow.WithIsolatedInvocation(); invocation != "" {
+			cli.Info(
+				"isolated invocation %s: ephemeral ports, and every agent, container and runtime state directory this run owns is named under that scope",
+				invocation,
+			)
+		}
+	}
 	// Only the "free" default lets codefly pick an advertised backend, so only
 	// then do we probe Docker (which shells out to the docker CLI). An explicit
 	// context is honored as-is and needs no probe.

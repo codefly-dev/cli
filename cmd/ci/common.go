@@ -35,10 +35,8 @@ var initOnly bool
 // Test suites selected for CI. Empty means each agent's advertised default.
 var testSuites []string
 
-// temporaryPorts marks a CI run as a disposable invocation: OS-probed
-// ephemeral ports, and a generated naming scope for every other resource the
-// run owns, so nothing it allocates can collide with another run on the same
-// host.
+// temporaryPorts asks the runtime allocator for OS-probed ephemeral ports so a
+// CI run's port space cannot collide with another run's on the same host.
 var temporaryPorts bool
 
 // portOverrideFlags carries raw --override-port entries (endpoint=port) before

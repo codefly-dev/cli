@@ -38,7 +38,10 @@ func TestListenRefusesAForeignListenerOnTheControlPort(t *testing.T) {
 	require.NoError(t, err)
 	defer squatter.Close()
 
-	require.ErrorContains(t, server.Listen(), "cannot own the codefly control server")
+	err = server.Listen()
+	require.ErrorContains(t, err, "cannot own the codefly control server")
+	require.NotContains(t, err.Error(), "codefly is already serving",
+		"a plain listener on the derived port was reported as a codefly to attach to")
 }
 
 // A run that aborts between claiming the control address and serving it must
@@ -86,4 +89,38 @@ func newTestServer(t *testing.T, workspace *resources.Workspace) *CodeflyServer 
 	server, err := NewServer(ServerData{Workspace: workspace})
 	require.NoError(t, err)
 	return server
+}
+
+// Listen, `go Start`, `defer Close` is the pattern this API invites, and it has
+// Close releasing the same listener the serving goroutine is releasing. Run
+// under -race, an unguarded listener field fails here.
+func TestCloseIsSafeWhileStartIsServing(t *testing.T) {
+	server := newTestServer(t, &resources.Workspace{Name: "control-close-race-test"})
+	require.NoError(t, server.Listen())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- server.Start(ctx) }()
+	defer server.Close()
+
+	require.Eventually(t, func() bool {
+		conn, err := net.DialTimeout("tcp", server.server.Address(), 100*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		return conn.Close() == nil
+	}, 5*time.Second, 20*time.Millisecond, "Start never served the claimed control address")
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		server.Close()
+	}()
+	cancel()
+	<-closed
+	select {
+	case <-served:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start did not return after a concurrent Close and cancellation")
+	}
 }

@@ -118,6 +118,15 @@ jobs:
         if: matrix.gate == 'race'
         run: go test -failfast -race ./... -v
 
+      # The cross-process control-ownership proof drives the CLI built by the
+      # install action above as a real subprocess against real sockets. It runs
+      # here rather than in the default lanes because those would have to link
+      # a CLI binary of their own; it needs neither Nix nor an agent, so it runs
+      # before both and fails fast.
+      - name: Run the cross-process control-ownership proof
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestRunRefusesAControlAddressAnotherProcessOwns$|^TestConcurrentDisposableRunsClaimDistinctIdentities$' ./cmd/run -v
+
       # The pinned Redis agent resolves a Nix runtime during runtime-init, so the
       # proof needs Nix on the runner or the agent fails with "nix is not
       # installed" instead of exercising the real dependency. Mirrors core's CI.
