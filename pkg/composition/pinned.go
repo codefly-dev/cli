@@ -631,50 +631,140 @@ func NearestOverlayDir(start string) string {
 	}
 }
 
-// GitResolvedRecordName is the machine-local sidecar that records which of the
-// neighbouring codefly.local.yaml's modules resolve through the unverified git
-// clone, and the clone directory each one resolved to. The overlay itself
-// cannot hold that: core admits exactly one of path/worktree/pinned/git per
-// entry, and it cannot load a `git`-only entry at all, so `run` must replace the
-// user's `git: true` with the clone's `path:` — which would otherwise erase both
-// the fact that nothing about that module was verified and the fact that the
-// CLI, not the user, wrote that path.
+// ResolutionRecordName is the machine-local sidecar that records what each
+// CLI-materialized module resolved to, written beside the codefly.local.yaml
+// whose entries it annotates. The overlay itself cannot hold that: core admits
+// exactly one of path/worktree/pinned/git per entry, and it cannot load a
+// `git`-only entry at all, so `run` must replace the user's `git: true` with
+// the materialized `path:` — which would otherwise erase both how the module
+// was materialized and the fact that the CLI, not the user, wrote that path.
 //
-// Recording the directory makes it a receipt: an overlay path that matches it is
-// one this CLI wrote and may refresh, and one that does not is the user editing
-// the module in place. That comparison is exact, so it keeps holding when
-// CODEFLY_HOME moves — unlike asking whether the path merely looks like it sits
-// under a cache root.
-const GitResolvedRecordName = "codefly.local.resolved.yaml"
+// Each entry is a receipt: it binds the request it answered (canonical source,
+// module subpath, requested version or constraint) to what that request
+// resolved to (mode, exact version, path, and for a verified package its
+// digest and commit). That makes the sidecar the boundary between a user
+// checkout override and machine output — an overlay path matching a receipt is
+// one this CLI wrote and may refresh, one that does not is the user editing
+// the module in place — and it makes a machine path checkable against the
+// request being made *now*, so a checkout materialized for an older version
+// cannot be passed off as an answer to a newer one. The path comparison is
+// exact rather than a cache-root prefix, so it keeps holding when CODEFLY_HOME
+// moves.
+const ResolutionRecordName = "codefly.local.resolved.yaml"
 
-// gitResolvedRecord is the sidecar's document: module name to the clone
-// directory it last resolved to.
-type gitResolvedRecord struct {
-	GitResolved map[string]string `yaml:"git-resolved"`
+// ResolutionMode names how a module was materialized.
+type ResolutionMode string
+
+const (
+	// ResolutionModeVerified: pulled from the producer's signed module package
+	// and checked against the workspace's `module-trust` policy.
+	ResolutionModeVerified ResolutionMode = "verified"
+	// ResolutionModeGit: cloned from the module's source at a tag under the
+	// `resolve.<name>.git: true` opt-out; nothing about it is verified.
+	ResolutionModeGit ResolutionMode = "git"
+)
+
+// ResolutionReceipt is one materialization: the request it answered, and what
+// that request resolved to.
+type ResolutionReceipt struct {
+	Source    string         `yaml:"source"`
+	Module    string         `yaml:"module,omitempty"`
+	Requested string         `yaml:"requested"`
+	Mode      ResolutionMode `yaml:"mode"`
+	Version   string         `yaml:"version"`
+	Path      string         `yaml:"path"`
+	Digest    string         `yaml:"digest,omitempty"`
+	Commit    string         `yaml:"commit,omitempty"`
 }
 
-// LoadGitResolved reads the git-resolved modules recorded beside the overlay in
-// dir, mapping each to the clone directory it last resolved to. An absent
-// sidecar is the normal case and yields an empty map; an unreadable or malformed
-// one is an error, because silently reading it as empty would downgrade a module
-// the user opted out of verification for back into verified resolution and
-// report the failure as missing module-trust.
-func LoadGitResolved(dir string) (map[string]string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, GitResolvedRecordName))
+// Answers reports whether the receipt was produced for exactly the request ref
+// and mode make now: same canonical source and module subpath, same requested
+// version or constraint, same materialization mode. A receipt that answers a
+// different request — or a migrated one that records no request at all — says
+// nothing about whether its path is a valid resolution today, however recently
+// it was written.
+func (receipt *ResolutionReceipt) Answers(ref *resources.ModuleReference, mode ResolutionMode) bool {
+	if receipt == nil || receipt.Path == "" || receipt.Version == "" {
+		return false
+	}
+	return receipt.Source == ref.Source &&
+		receipt.Module == ref.Module &&
+		requestedVersion(receipt.Requested) == requestedVersion(ref.Version) &&
+		receipt.Mode == mode
+}
+
+// ResolvedPath is the path this receipt records, or "" when there is no
+// receipt at all — the caller's usual question is whether an overlay path is
+// the one the CLI wrote, and a missing receipt answers "no" rather than
+// erroring.
+func (receipt *ResolutionReceipt) ResolvedPath() string {
+	if receipt == nil {
+		return ""
+	}
+	return receipt.Path
+}
+
+// requestedVersion canonicalizes a committed version constraint so the two
+// spellings of "no constraint" — an absent version and an explicit `latest` —
+// compare equal.
+func requestedVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return "latest"
+	}
+	return version
+}
+
+// resolutionRecord is the sidecar's document.
+type resolutionRecord struct {
+	Resolved map[string]*ResolutionReceipt `yaml:"resolved"`
+	// GitResolved is this file's pre-receipt form: module name to the clone
+	// directory it resolved to, recording nothing about the request that
+	// produced it. It is still read so an existing record keeps its module on
+	// the git opt-out across the upgrade, and so the path it names is still
+	// recognized as machine output rather than a user checkout. It is never
+	// written back, and the receipt it migrates to answers no request until
+	// `run` re-materializes the module and writes a full one.
+	GitResolved map[string]string `yaml:"git-resolved,omitempty"`
+}
+
+// LoadResolutionReceipts reads the receipts recorded beside the overlay in dir.
+// An absent sidecar is the normal case and yields an empty map; an unreadable
+// or malformed one is an error, because silently reading it as empty would
+// downgrade a module the user opted out of verification for back into verified
+// resolution and report the failure as missing module-trust.
+func LoadResolutionReceipts(dir string) (map[string]*ResolutionReceipt, error) {
+	data, err := os.ReadFile(filepath.Join(dir, ResolutionRecordName))
 	if os.IsNotExist(err) {
-		return map[string]string{}, nil
+		return map[string]*ResolutionReceipt{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var record gitResolvedRecord
+	var record resolutionRecord
 	if err := yaml.Unmarshal(data, &record); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", GitResolvedRecordName, err)
+		return nil, fmt.Errorf("parse %s: %w", ResolutionRecordName, err)
 	}
-	if record.GitResolved == nil {
-		record.GitResolved = map[string]string{}
+	receipts := record.Resolved
+	if receipts == nil {
+		receipts = map[string]*ResolutionReceipt{}
 	}
-	return record.GitResolved, nil
+	for name, path := range record.GitResolved {
+		if _, ok := receipts[name]; !ok {
+			receipts[name] = &ResolutionReceipt{Mode: ResolutionModeGit, Path: path}
+		}
+	}
+	return receipts, nil
+}
+
+// SaveResolutionReceipts writes the receipts as the sidecar beside the overlay
+// in dir.
+func SaveResolutionReceipts(ctx context.Context, dir string, receipts map[string]*ResolutionReceipt) error {
+	data, err := yaml.Marshal(&resolutionRecord{Resolved: receipts})
+	if err != nil {
+		return err
+	}
+	return shared.WriteFileAtomic(ctx, filepath.Join(dir, ResolutionRecordName), data, 0o600)
 }
 
 // GitResolutionFor decides whether a module resolves through the unverified git
@@ -683,26 +773,27 @@ func LoadGitResolved(dir string) (map[string]string, error) {
 // previous opt-in (without it the recorded choice would be sticky, and a user
 // who set up module-trust could never get verified resolution back). Otherwise —
 // a bare reference, or the clone path the CLI wrote in place of `git: true` —
-// the recorded choice stands.
+// the mode on the recorded receipt stands.
 //
 // `run` and `doctor workspace` must answer this identically, or doctor reports a
 // module as needing module-trust that run resolves by cloning; sharing the
 // predicate is what keeps them in step.
-func GitResolutionFor(directive *resources.ModuleResolveDirective, recorded bool) bool {
+func GitResolutionFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt) bool {
 	if directive != nil && directive.Git {
 		return true
 	}
 	if directive != nil && directive.Pinned {
 		return false
 	}
-	return recorded
+	return receipt != nil && receipt.Mode == ResolutionModeGit
 }
 
-// SaveGitResolved writes the record as the sidecar beside the overlay in dir.
-func SaveGitResolved(ctx context.Context, dir string, record map[string]string) error {
-	data, err := yaml.Marshal(&gitResolvedRecord{GitResolved: record})
-	if err != nil {
-		return err
+// ResolutionModeFor is GitResolutionFor's answer expressed as the mode a
+// receipt records, so a caller comparing a receipt against the current request
+// and a caller choosing how to materialize cannot drift apart.
+func ResolutionModeFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt) ResolutionMode {
+	if GitResolutionFor(directive, receipt) {
+		return ResolutionModeGit
 	}
-	return shared.WriteFileAtomic(ctx, filepath.Join(dir, GitResolvedRecordName), data, 0o600)
+	return ResolutionModeVerified
 }

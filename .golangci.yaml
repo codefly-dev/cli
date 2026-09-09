@@ -51,6 +51,10 @@ linters:
       - .*\.pb\.go$
       - .*\.pb\.gw\.go$
       - .*_test\.go$
+      # Test scaffolding that has to live outside a _test.go file because two
+      # packages share it. It is compiled only into test binaries, so the same
+      # exclusion that applies to _test.go applies to it.
+      - pkg/composition/pinnedfixture
       - third_party$
       - builtin$
       - examples$
@@ -65,6 +69,10 @@ formatters:
       - .*\.pb\.go$
       - .*\.pb\.gw\.go$
       - .*_test\.go$
+      # Test scaffolding that has to live outside a _test.go file because two
+      # packages share it. It is compiled only into test binaries, so the same
+      # exclusion that applies to _test.go applies to it.
+      - pkg/composition/pinnedfixture
       - third_party$
       - builtin$
       - examples$
