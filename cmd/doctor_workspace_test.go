@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/cli/pkg/composition"
 )
 
 const testWorkspaceYAML = `name: demo
@@ -198,6 +200,59 @@ func TestDoctorWorkspaceModuleTrustGitOptOutIsNotFlagged(t *testing.T) {
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	requireNoCode(t, report, codeModuleTrustMissing)
+}
+
+// After `run` has replaced `git: true` with the clone's path, the overlay no
+// longer says the module is unverified — the record beside it does. doctor must
+// read it, or it reports a module-trust failure for a module `run` resolves
+// happily, and the workspace's only remaining statement that it consumes an
+// unverified module disappears from the report.
+func TestDoctorWorkspaceModuleTrustGitRecordIsReportedNotFlagged(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":          "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":              "resolve:\n    saas:\n        path: clone\n",
+		composition.GitResolvedRecordName: "git-resolved:\n    saas: clone\n",
+		// Materialized, as `run` would leave it: the subject under test is how the
+		// record is read, not an unloadable module.
+		"clone/module.codefly.yaml": "name: saas\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleTrustMissing)
+	diag := requireCode(t, report, codeModuleUnverified, "warn")
+	if !strings.Contains(diag.Message, "saas") {
+		t.Fatalf("diagnostic should name the unverified module: %+v", diag)
+	}
+	if report.Status != readinessStatusReady {
+		t.Fatalf("an unverified module is a warning, not a readiness failure: %q", report.Status)
+	}
+}
+
+// The `git: true` directive itself reports the same way, so the diagnostic does
+// not appear or vanish depending on whether a run has happened yet.
+func TestDoctorWorkspaceModuleTrustGitDirectiveIsReported(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":     "resolve:\n    saas:\n        git: true\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleTrustMissing)
+	requireCode(t, report, codeModuleUnverified, "warn")
+}
+
+// A malformed record must be named, not read as "nothing is opted out" — that
+// silently turns an unverified module into a module-trust failure and hides the
+// real problem.
+func TestDoctorWorkspaceMalformedGitRecordIsReported(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":          "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":              "resolve:\n    saas:\n        git: true\n",
+		composition.GitResolvedRecordName: "git-resolved: [\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeWorkspaceInvalid, "fail")
+	if !strings.Contains(diag.Message, composition.GitResolvedRecordName) {
+		t.Fatalf("diagnostic should name the record: %+v", diag)
+	}
 }
 
 func TestDoctorWorkspaceModuleTrustDeclaredIsNotFlagged(t *testing.T) {

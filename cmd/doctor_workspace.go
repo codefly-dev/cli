@@ -45,6 +45,7 @@ const (
 	codeReferenceSchemeUnknown    = "reference_scheme_unknown"
 	codeModuleReferenceUnresolved = "module_reference_unresolved"
 	codeModuleTrustMissing        = "module_trust_missing"
+	codeModuleUnverified          = "module_unverified"
 	codeTimeout                   = "timeout"
 )
 
@@ -116,7 +117,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	}
 
 	checkReferencedModules(ctx, ws, report)
-	checkModuleTrust(ws, report)
+	checkModuleTrust(ctx, ws, report)
 
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
@@ -227,26 +228,52 @@ func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report
 // the workspace's module-trust doesn't cover the module's repository (whether
 // because no module-trust is declared at all, or because it exists but names
 // a different repository/package), and the module has not opted into the
-// unverified git-clone fallback (`resolve.<name>.git: true`, honored from the
-// nearest ancestor codefly.local.yaml exactly as `run` resolves it — not just
-// the workspace's own directory). Without this check that failure only
-// surfaces mid-run; here it is named against the workspace manifest directly,
-// before a run is attempted. A read/parse error in workspace.codefly.yaml
-// itself is reported once rather than once per pinned module.
-func checkModuleTrust(ws *resources.Workspace, report *workspaceReadinessReport) {
+// unverified git-clone fallback (`resolve.<name>.git: true`, or the
+// composition.GitResolvedRecordName record `run` writes when it replaces that
+// directive with the clone's path — both read from the nearest ancestor
+// codefly.local.yaml exactly as `run` resolves it, not just the workspace's own
+// directory). Without this check that failure only surfaces mid-run; here it is
+// named against the workspace manifest directly, before a run is attempted. A
+// read/parse error in workspace.codefly.yaml itself is reported once rather
+// than once per pinned module.
+//
+// An opted-out module is not silently skipped: it is reported as consuming an
+// unverified clone, because after `run` has replaced `git: true` with the
+// resolved path the overlay no longer says so on its own.
+func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
 	if _, _, err := composition.LoadModuleTrust(ws.Dir()); err != nil {
 		report.add(codeModuleTrustMissing, "module-trust", "fail",
 			fmt.Sprintf("cannot read module-trust from %s: %v", resources.WorkspaceConfigurationName, err),
 			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
 		return
 	}
+	overlay, err := resources.LoadLocalOverlay(ctx, ws.Dir())
+	if err != nil {
+		report.add(codeWorkspaceInvalid, "module-trust", "fail",
+			fmt.Sprintf("cannot read %s: %v", resources.LocalOverlayConfigurationName, err),
+			fmt.Sprintf("fix %s near %s", resources.LocalOverlayConfigurationName, ws.Dir()))
+		return
+	}
 	overlayDir := ws.Dir()
 	if dir := composition.NearestOverlayDir(ws.Dir()); dir != "" {
 		overlayDir = dir
 	}
-	gitFallbacks := composition.GitFallbackOptOuts(overlayDir)
+	gitResolved, err := composition.LoadGitResolved(overlayDir)
+	if err != nil {
+		report.add(codeWorkspaceInvalid, "module-trust", "fail",
+			fmt.Sprintf("cannot read %s: %v", composition.GitResolvedRecordName, err),
+			fmt.Sprintf("fix or delete %s in %s", composition.GitResolvedRecordName, overlayDir))
+		return
+	}
 	for _, ref := range ws.Modules {
-		if ref.Source == "" || ref.PathOverride != nil || gitFallbacks[ref.Name] {
+		if ref.Source == "" || ref.PathOverride != nil {
+			continue
+		}
+		_, wasCloned := gitResolved[ref.Name]
+		if composition.GitResolutionFor(overlayDirective(overlay, ref.Name), wasCloned) {
+			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
+				fmt.Sprintf("module %q resolves through the unverified git clone: nothing about it is signature- or digest-checked", ref.Name),
+				fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", ref.Name, resources.WorkspaceConfigurationName, composition.GitResolvedRecordName))
 			continue
 		}
 		if err := composition.CheckModuleTrustCoverage(ws.Dir(), ref); err != nil {
@@ -255,6 +282,15 @@ func checkModuleTrust(ws *resources.Workspace, report *workspaceReadinessReport)
 				fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))
 		}
 	}
+}
+
+// overlayDirective returns module's overlay entry, or nil when there is no
+// overlay at all.
+func overlayDirective(overlay *resources.LocalOverlay, module string) *resources.ModuleResolveDirective {
+	if overlay == nil {
+		return nil
+	}
+	return overlay.Resolve[module]
 }
 
 func checkEnvironment(ws *resources.Workspace, name string, report *workspaceReadinessReport) *resources.Environment {

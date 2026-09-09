@@ -562,3 +562,73 @@ func TestResolvePinnedModuleMovedTagDetectedAcrossWorkspaces(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, corecomposition.ErrMovedTag)
 }
+
+// The unverified-clone choice must come from an explicit statement — the user's
+// directive or the record — never from what the resolved path happens to look
+// like. Inferring it from a cache-root prefix silently downgraded a verified
+// module to an unverified clone whenever the workspace itself sat inside that
+// cache root (a materialized module repo is a workspace, so `run` inside one is
+// a real layout).
+func TestGitResolutionFor(t *testing.T) {
+	cacheShapedPath := filepath.Join(t.TempDir(), ".codefly", "modules", "owner", "repo", "v1.0.0")
+	for _, tc := range []struct {
+		name      string
+		directive *resources.ModuleResolveDirective
+		recorded  bool
+		want      bool
+	}{
+		{name: "bare reference, nothing recorded"},
+		{name: "bare reference, recorded", recorded: true, want: true},
+		{
+			name:      "git opts in",
+			directive: &resources.ModuleResolveDirective{Git: true},
+			want:      true,
+		},
+		{
+			name:      "pinned revokes a recorded opt-in",
+			directive: &resources.ModuleResolveDirective{Pinned: true},
+			recorded:  true,
+		},
+		{
+			name:      "cache-shaped path is not by itself an opt-in",
+			directive: &resources.ModuleResolveDirective{Path: cacheShapedPath},
+		},
+		{
+			name:      "recorded clone path stays a clone",
+			directive: &resources.ModuleResolveDirective{Path: cacheShapedPath},
+			recorded:  true,
+			want:      true,
+		},
+		{
+			name:      "user checkout is not recorded, so not a clone",
+			directive: &resources.ModuleResolveDirective{Path: "/home/me/checkout"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := GitResolutionFor(tc.directive, tc.recorded); got != tc.want {
+				t.Fatalf("GitResolutionFor = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGitResolvedRecordRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	absent, err := LoadGitResolved(dir)
+	require.NoError(t, err, "an absent record is the normal case")
+	require.Empty(t, absent)
+
+	clones := map[string]string{"saas": "/cache/saas/v1", "documents": "/cache/documents/v2"}
+	require.NoError(t, SaveGitResolved(context.Background(), dir, clones))
+	loaded, err := LoadGitResolved(dir)
+	require.NoError(t, err)
+	require.Equal(t, clones, loaded, "the record is a receipt of the clone directory, not just a name")
+
+	// Malformed is an error, never an empty set: read as empty it would resolve
+	// an opted-out module through the verified package and report the failure as
+	// missing module-trust.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, GitResolvedRecordName), []byte("git-resolved: [\n"), 0o600))
+	_, err = LoadGitResolved(dir)
+	require.Error(t, err)
+}
