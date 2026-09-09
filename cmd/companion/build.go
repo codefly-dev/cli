@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -195,22 +196,12 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*C
 		}
 	}
 
-	// Resolve the base reference once, and only when something actually
-	// consumes it, so a companion set without a base companion still builds.
+	// The reference dependents build on, resolved by the first dependent that
+	// consumes it and reused by the rest, so a companion set without a base
+	// companion still builds. Resolving it before the loop would read the
+	// registry before this run has pushed the base, and hand every dependent
+	// the image the base tag pointed at beforehand.
 	baseImage := ""
-	for _, c := range targets {
-		declares, err := declaresBaseImageArg(c)
-		if err != nil {
-			return nil, err
-		}
-		if !declares || isBaseCompanion(c.Name) {
-			continue
-		}
-		if baseImage, err = resolveBaseImage(coreDir); err != nil {
-			return nil, fmt.Errorf("%s builds on the %s companion: %w", c.Name, baseCompanionName, err)
-		}
-		break
-	}
 
 	// Push failures are collected rather than returned immediately. A first
 	// push of a new companion lands in a ghcr package that is private until
@@ -245,17 +236,27 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]*C
 		}
 		fmt.Printf("==> Building %s (%s) via %s\n", c.Tag(), c.Dir, method)
 
-		// The base builds itself; only its dependents take it as an argument.
-		companionBase := ""
-		if !isBaseCompanion(c.Name) {
-			companionBase = baseImage
-		}
-
 		var buildErr error
 		switch method {
 		case "nix":
 			buildErr = buildWithNix(c)
 		default:
+			// The base builds itself; only its dependents take it as an argument.
+			companionBase := ""
+			if !isBaseCompanion(c.Name) {
+				declares, err := declaresBaseImageArg(c)
+				if err != nil {
+					return published, err
+				}
+				if declares {
+					if baseImage == "" {
+						if baseImage, err = resolveBaseImage(coreDir, opts.Push); err != nil {
+							return published, fmt.Errorf("%s builds on the %s companion: %w", c.Name, baseCompanionName, err)
+						}
+					}
+					companionBase = baseImage
+				}
+			}
 			buildErr = buildWithDocker(c, coreDir, opts.Pull, platforms, opts.Push, companionBase)
 		}
 		if buildErr != nil {
@@ -324,12 +325,52 @@ func declaresBaseImageArg(c *Companion) (bool, error) {
 // publish run that skipped it as already published — and its dependents still
 // have to be built against it. Taking it from the targets would silently fall
 // back to the Dockerfile's pinned default in exactly those runs.
-func resolveBaseImage(coreDir string) (string, error) {
+//
+// pushing selects which of the two bases exists to be named. A run that pushes
+// hands dependents a digest: they resolve the base out of the registry, where
+// the tag is mutable, so a tag reference makes what a dependent bakes in depend
+// on where that tag pointed the moment its build ran — anything that moves the
+// tag between the base push and a dependent build silently changes the result.
+// A run that does not push has to keep the tag: the base its dependents must
+// build on is the one this run just left in the local daemon, which the
+// registry has no digest for.
+func resolveBaseImage(coreDir string, pushing bool) (string, error) {
 	base, err := LoadCompanion(filepath.Join(coreDir, "companions", baseCompanionName))
 	if err != nil {
 		return "", fmt.Errorf("resolve the %s base image every other companion builds on: %w", baseCompanionName, err)
 	}
-	return base.Tag(), nil
+	if !pushing {
+		return base.Tag(), nil
+	}
+	digest, err := imageDigest(base.Tag())
+	if err != nil {
+		return "", err
+	}
+	return repoPath(base.Tag()) + "@" + digest, nil
+}
+
+// imageDigest resolves a reference to the digest of the manifest it currently
+// points at, via buildx because a multi-platform companion is a manifest list
+// and the list digest is what a dependent's FROM needs — it is what selects the
+// per-architecture image. `docker manifest inspect` reports the members
+// instead, and pinning one of those would build every dependent, on every
+// architecture, on the base for a single arch.
+func imageDigest(ref string) (string, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("docker", "buildx", "imagetools", "inspect", ref, "--format", "{{ .Manifest.Digest }}")
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("resolve the digest of %s: %w: %s", ref, err, strings.TrimSpace(stderr.String()))
+	}
+	// buildx renders an unresolvable field as its Go zero value and still exits
+	// 0, so a digest is only a digest once it looks like one; the alternative
+	// is a --build-arg that reads as a reference and resolves to nothing.
+	digest := strings.TrimSpace(stdout.String())
+	if !strings.HasPrefix(digest, "sha256:") {
+		return "", fmt.Errorf("resolve the digest of %s: docker reported %q, which is not a digest", ref, digest)
+	}
+	return digest, nil
 }
 
 // listCompanionsRequired lists every companion under root. The bare
