@@ -57,6 +57,11 @@ type Runner struct {
 	// isStarted is written by Stop/Start handlers and read by Follow.
 	isStarted atomic.Bool
 
+	// everStarted latches on the first successful Start and is never cleared.
+	// isStarted cannot answer "has this service ever run", because Stop clears
+	// it before a hot reload re-enters Init.
+	everStarted atomic.Bool
+
 	restartMu       sync.Mutex
 	pendingRestart  ActionType
 	restartInFlight bool
@@ -352,7 +357,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	}
 	runner.networkMappings = accepted
 
-	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, cloneNetworkMappings(accepted))
+	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, accepted)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
@@ -684,6 +689,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 func (runner *Runner) markStarted() {
 	runner.isStarted.Store(true)
+	runner.everStarted.Store(true)
 	runner.restartMu.Lock()
 	runner.restartInFlight = false
 	runner.restartMu.Unlock()
@@ -743,7 +749,12 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 }
 
 func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
-	if runner.isStarted.Load() {
+	// Only the very first Init can see a ghost: once this runner has started
+	// the service, a bound port is its own — either still running (hot reload)
+	// or still releasing after the Stop that precedes a restart. Testing
+	// isStarted alone missed the restart case, because Stop clears it before
+	// the re-Init.
+	if runner.isStarted.Load() || runner.everStarted.Load() {
 		return nil
 	}
 	if held := runner.boundNativePorts(ctx); len(held) > 0 {

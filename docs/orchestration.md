@@ -265,13 +265,26 @@ port. The answer is validated and then becomes the single published set: the
 runner, the shared state every consumer reads (dependents' `Start` requests,
 readiness probes, the dashboard) and the exported environment all take it.
 
-The answer must cover exactly the proposed endpoints, each owned by this
-service, each carrying exactly the access views (native / container / public)
-that were proposed, each view complete and distinct where the proposal made it
-so. Anything else fails `Init` before a single value is published. An agent that
-returns no mappings at all is taken to accept the proposal unchanged (the legacy
-contract, from before `InitResponse.network_mappings`); a partial answer is
-never merged with the proposal endpoint by endpoint.
+The answer is judged against the proposal, not in the absolute: an address the
+agent echoed back unchanged is acceptable whatever shape it has, because the CLI
+generated it. Only what the agent added or altered has to stand on its own. It
+must name exactly the proposed endpoints — membership in the proposal is what
+establishes ownership — answer each access view at most once, leave every
+endpoint at least one address, keep a public address off an endpoint the CLI
+would not have proposed one for, and neither blank a field nor move a container
+address onto loopback. It may drop a view it cannot serve and add one the CLI
+would itself have proposed. Anything else fails `Init` before a single value is
+published.
+
+The accepted set is re-ordered onto the proposal's endpoint order and the
+canonical access order (container, native, public). `NetworkMappingHash` is
+order-sensitive and gates propagation, so without this an agent that merely
+re-orders its answer between Inits would re-Init and re-Start every dependent.
+
+An agent that returns no mappings at all is taken to accept the proposal
+unchanged (the legacy contract, from before `InitResponse.network_mappings`),
+and says so at `WARN` naming the addresses assumed; a partial answer is never
+merged with the proposal endpoint by endpoint.
 
 **Hot reload:** The `Follow` phase polls the agent every second. If the agent signals `DesiredState.LOAD`, `INIT`, or `START`, the runner sends a callback action to the playbook, triggering a re-execution of that phase.
 

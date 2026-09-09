@@ -35,6 +35,7 @@ const (
 
 	// Agent behaviours, selected per subprocess.
 	realAgentEcho      = "echo"      // accepts the proposal verbatim
+	realAgentLegacy    = "legacy"    // returns no mappings at all (pre-contract)
 	realAgentBind      = "bind"      // binds OS-assigned ports and reports them
 	realAgentOmit      = "omit"      // drops one of the proposed endpoints
 	realAgentForeign   = "foreign"   // claims another service's endpoint
@@ -59,11 +60,13 @@ type realAgent struct {
 func boundMappings(proposed []*basev0.NetworkMapping) ([]*basev0.NetworkMapping, error) {
 	accepted := make([]*basev0.NetworkMapping, 0, len(proposed))
 	for _, mapping := range proposed {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		// The proposal's ports were bound then released, so the kernel can hand
+		// one of them straight back. Keep asking until the port really differs,
+		// or "the agent chose another port" is not what the test observes.
+		port, err := bindPortOtherThan(proposedPorts(proposed))
 		if err != nil {
 			return nil, err
 		}
-		port := uint16(listener.Addr().(*net.TCPAddr).Port)
 		endpoint := mapping.GetEndpoint()
 		accepted = append(accepted, &basev0.NetworkMapping{
 			Endpoint: endpoint,
@@ -77,8 +80,41 @@ func boundMappings(proposed []*basev0.NetworkMapping) ([]*basev0.NetworkMapping,
 	return accepted, nil
 }
 
+// bindPortOtherThan holds a kernel-assigned port for the life of the process,
+// so the address it reports is one a readiness probe can actually reach.
+func bindPortOtherThan(excluded map[uint16]bool) (uint16, error) {
+	for attempt := 0; attempt < 50; attempt++ {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return 0, err
+		}
+		port := uint16(listener.Addr().(*net.TCPAddr).Port)
+		if !excluded[port] {
+			return port, nil
+		}
+		if err = listener.Close(); err != nil {
+			return 0, err
+		}
+	}
+	return 0, fmt.Errorf("no free port outside the proposed set")
+}
+
+func proposedPorts(proposed []*basev0.NetworkMapping) map[uint16]bool {
+	ports := make(map[uint16]bool)
+	for _, mapping := range proposed {
+		for _, instance := range mapping.GetInstances() {
+			ports[uint16(instance.GetPort())] = true
+		}
+	}
+	return ports
+}
+
 func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
 	mappings := req.GetProposedNetworkMappings()
+	if agent.mode == realAgentLegacy {
+		// A pre-contract agent answers READY without naming any mapping.
+		return &runtimev0.InitResponse{Status: &runtimev0.InitStatus{State: runtimev0.InitStatus_READY}}, nil
+	}
 	if agent.mode != realAgentEcho {
 		var err error
 		if mappings, err = boundMappings(mappings); err != nil {
@@ -110,6 +146,10 @@ func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*ru
 			}},
 		}},
 	}, nil
+}
+
+func (agent *realAgent) Stop(context.Context, *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
+	return &runtimev0.StopResponse{Status: &runtimev0.StopStatus{State: runtimev0.StopStatus_SUCCESS}}, nil
 }
 
 // TestRealAgentProcess is the agent subprocess entry point, not a test: it only
@@ -337,7 +377,7 @@ func TestInitRejectsInvalidAgentMappingsWithoutPublishing(t *testing.T) {
 		message string
 	}{
 		{mode: realAgentOmit, message: "omit proposed endpoint"},
-		{mode: realAgentForeign, message: "is not owned by web/gateway"},
+		{mode: realAgentForeign, message: "was never proposed to web/gateway"},
 		{mode: realAgentUnknown, message: "was never proposed"},
 		{mode: realAgentDuplicate, message: "two native instances"},
 	} {
@@ -396,4 +436,57 @@ func hostOfNativeInstance(t *testing.T, mappings []*basev0.NetworkMapping, name 
 	}
 	t.Fatalf("no mapping for endpoint %s", name)
 	return ""
+}
+
+// A pre-contract agent that names no mappings has the proposal published on its
+// behalf — and must stay reloadable. Populating runner.networkMappings for it
+// (where the field used to be left nil) armed the first-start port guard, which
+// Stop re-arms by clearing isStarted before every hot reload: the guard then
+// fired against the service's own teardown.
+func TestInitLegacyAgentAdoptsTheProposalAndStaysReloadable(t *testing.T) {
+	ctx := context.Background()
+	runner, world := gatewayRunner(t, startRealAgent(t, realAgentLegacy))
+
+	_, err := runner.Init(ctx)
+	require.NoError(t, err)
+	adoptedREST := nativeAddressFor(t, runner.networkMappings, "rest")
+
+	// The agent named nothing, so the runner and every consumer take the
+	// address the CLI proposed — the same one, not two views of it.
+	recorded, err := world.SharedState.GetNetworkMappings(ctx, runner.instance.Identity)
+	require.NoError(t, err)
+	require.Equal(t, adoptedREST, nativeAddressFor(t, recorded, "rest"))
+	require.Len(t, runner.networkMappings, len(runner.endpoints))
+
+	// The service starts, then a watch-driven reload stops it and re-enters
+	// Init. Something still holding the port at that moment is this runner's own
+	// teardown, not a ghost from a previous run.
+	runner.markStarted()
+	listener, err := net.Listen("tcp", strings.TrimPrefix(adoptedREST, "http://"))
+	require.NoError(t, err)
+	defer listener.Close()
+	_, err = runner.stop(ctx)
+	require.NoError(t, err)
+	require.False(t, runner.isStarted.Load())
+
+	_, err = runner.Init(ctx)
+	require.NoError(t, err, "hot reload rejected the service's own port as stale")
+}
+
+// The guard still has to catch a real ghost: a process squatting the port
+// before this runner has ever started the service.
+func TestInitRejectsAStalePortBeforeTheFirstStart(t *testing.T) {
+	ctx := context.Background()
+	runner, _ := gatewayRunner(t, startRealAgent(t, realAgentEcho))
+
+	// The guard probes the addresses a previous Init accepted, so run one first.
+	_, err := runner.Init(ctx)
+	require.NoError(t, err)
+
+	listener, err := net.Listen("tcp", strings.TrimPrefix(nativeAddressFor(t, runner.networkMappings, "rest"), "http://"))
+	require.NoError(t, err)
+	defer listener.Close()
+
+	_, err = runner.Init(ctx)
+	require.ErrorContains(t, err, "already in use")
 }
