@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,17 +48,26 @@ func TestMatrixOnDiskMatchesEmbeddedMatrix(t *testing.T) {
 	}
 }
 
-// TestMatrixCoreMatchesGoMod stops the declared core pin from outliving the
-// dependency the CLI actually builds against.
+// TestMatrixCoreMatchesGoMod stops the declared core release line from
+// outliving the dependency the CLI actually builds against. Pseudo-versions
+// within a line are ignored: a support claim is about the line, and every open
+// pull request would otherwise redden the moment a core bump lands on main.
 func TestMatrixCoreMatchesGoMod(t *testing.T) {
 	gomod := readFile(t, filepath.Join(repositoryRoot(t), "go.mod"))
-	pin := regexp.MustCompile(`github\.com/codefly-dev/core (v[\d.]+)`).FindStringSubmatch(gomod)
+	pin := regexp.MustCompile(`github\.com/codefly-dev/core (v\S+)`).FindStringSubmatch(gomod)
 	if pin == nil {
 		t.Fatal("go.mod does not require github.com/codefly-dev/core")
 	}
-	if Default().Core != pin[1] {
-		t.Fatalf("matrix core = %s, go.mod core = %s", Default().Core, pin[1])
+	line := releaseLine(pin[1])
+	if Default().Core != line {
+		t.Fatalf("matrix core = %s, go.mod core = %s (release line %s)", Default().Core, pin[1], line)
 	}
+}
+
+// releaseLine strips a pseudo-version's prerelease and build metadata.
+func releaseLine(version string) string {
+	version = strings.TrimSuffix(version, semver.Build(version))
+	return strings.TrimSuffix(version, semver.Prerelease(version))
 }
 
 // TestQualifiedRowsNameRealCIJobs rejects a support claim backed by a job that

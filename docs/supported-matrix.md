@@ -6,8 +6,10 @@ machine-readable support matrix. The two cannot drift: `pkg/conformance`
 fails if a row here disagrees with the matrix, names a CI job that does not
 exist, or claims a status the repository cannot back.
 
-Every row describes the CLI **built from this checkout** against
-`github.com/codefly-dev/core` as pinned in `go.mod`. Version skew between a
+Every row describes the CLI **built from this checkout** against the
+`github.com/codefly-dev/core` release line pinned in `go.mod` — the matrix
+records the line (`v0.3.25`), not the pseudo-version, so a core bump within a
+line does not invalidate the claim. Version skew between a
 released CLI and a released agent is not, by itself, a compatibility failure —
 a row is about whether a real lifecycle was driven end to end.
 
