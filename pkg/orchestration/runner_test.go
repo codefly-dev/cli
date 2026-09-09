@@ -83,18 +83,74 @@ func TestBoundNativePortsDetectsHeldPort(t *testing.T) {
 
 	reported := runner.boundNativePorts(context.Background())
 	require.Len(t, reported, 1)
-	require.Contains(t, reported[0], fmt.Sprintf("%d (grpc", held))
+	require.Contains(t, reported[0], fmt.Sprintf("%d (grpc)", held))
 	// The holder is this test process, so the report must name its pid —
 	// otherwise a port collision still forces the user to go hunting with lsof.
 	require.Contains(t, reported[0], fmt.Sprintf("held by pid %d", os.Getpid()))
+}
+
+// TestHolderLookupContextImposesADeadline guards the Init hang: identifying a
+// holder enumerates the machine's sockets (lsof on darwin), which blocks
+// forever on an unreachable network mount. boundNativePorts runs under the run
+// context, which carries NO deadline, so the attribution must impose its own —
+// otherwise a diagnostic outlives the failure it explains and `codefly run`
+// hangs silently at Init.
+func TestHolderLookupContextImposesADeadline(t *testing.T) {
+	ctx, cancel := holderLookupContext(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok, "holder lookup must run under a deadline, not the caller's open-ended context")
+	require.LessOrEqual(t, time.Until(deadline), portHolderLookupTimeout)
+}
+
+// TestBoundNativePortsDegradesWhenHolderLookupFails covers the other half: when
+// the lookup cannot answer, the port report itself must still be produced —
+// losing the holder's name must never cost us the collision report.
+func TestBoundNativePortsDegradesWhenHolderLookupFails(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	held := ln.Addr().(*net.TCPAddr).Port
+
+	runner := &Runner{networkMappings: []*basev0.NetworkMapping{nativeMapping("grpc", uint16(held))}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan []string, 1)
+	go func() { done <- runner.boundNativePorts(ctx) }()
+	select {
+	case reported := <-done:
+		require.Len(t, reported, 1)
+		require.Contains(t, reported[0], fmt.Sprintf("%d (grpc)", held))
+	case <-time.After(portHolderLookupTimeout + 5*time.Second):
+		t.Fatal("boundNativePorts did not return after its holder lookup failed")
+	}
+}
+
+// TestPortHolderSuffixNamesExecutableNotCommandLine is the credential guard: a
+// port collision report reaches the terminal and, headless, the CI log, so it
+// must identify the holder by executable path — which is what marks a stale
+// codefly binary — and never by argv, which routinely carries secrets.
+func TestPortHolderSuffixNamesExecutableNotCommandLine(t *testing.T) {
+	self := int32(os.Getpid())
+	suffix := portHolderSuffix(context.Background(), map[uint32]int32{30093: self}, 30093)
+	require.Contains(t, suffix, fmt.Sprintf("held by pid %d", self))
+
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	require.Contains(t, suffix, executable)
+
+	// This test binary is run with arguments (-test.run=...); none of them may
+	// appear in a string destined for a log.
+	for _, arg := range os.Args[1:] {
+		require.NotContains(t, suffix, arg)
+	}
 }
 
 // TestPortHolderSuffixOmitsUnknownHolder keeps an unidentifiable listener from
 // costing us the port report itself: socket ownership is not always readable.
 func TestPortHolderSuffixOmitsUnknownHolder(t *testing.T) {
 	require.Empty(t, portHolderSuffix(context.Background(), map[uint32]int32{}, 30093))
-	require.Contains(t, portHolderSuffix(context.Background(), map[uint32]int32{30093: int32(os.Getpid())}, 30093),
-		fmt.Sprintf("held by pid %d", os.Getpid()))
 }
 
 func TestBoundNativePortsToleratesNilMappings(t *testing.T) {
@@ -117,36 +173,17 @@ func TestInitialPortGuardRejectsFirstInitAndSkipsRunningService(t *testing.T) {
 	}}
 
 	err = runner.checkInitialPortAvailability(context.Background())
-	require.ErrorContains(t, err, fmt.Sprintf("port %d (http", held))
+	require.ErrorContains(t, err, fmt.Sprintf("port %d (http)", held))
 	require.ErrorContains(t, err, "already in use")
+	// The holder here is this test process, not a leftover codefly run, so the
+	// remedy must be offered conditionally rather than asserted.
+	require.ErrorContains(t, err, "if it is a leftover codefly run")
 
 	// An initialized infrastructure runtime may already own this listener by
 	// the time Start is called. Once the service is marked running, reloads
 	// must not classify its own port as stale.
 	runner.isStarted.Store(true)
 	require.NoError(t, runner.checkInitialPortAvailability(context.Background()))
-}
-
-// TestStopStartedOnlyStopsRunningServices is the guard for the failed-run
-// teardown: the aborted run must stop what it actually brought up, and must not
-// re-issue a Stop the ordinary shutdown will already send.
-func TestStopStartedOnlyStopsRunningServices(t *testing.T) {
-	client := &restartRuntimeClient{}
-	runner := runnerWithRuntimeClient(client)
-
-	_, err := runner.StopStarted(context.Background())
-	require.NoError(t, err)
-	require.Zero(t, client.stopCalls)
-
-	runner.markStarted()
-	_, err = runner.StopStarted(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, 1, client.stopCalls)
-
-	// Already stopped: a second teardown pass must not talk to the agent again.
-	_, err = runner.StopStarted(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, 1, client.stopCalls)
 }
 
 func TestStatusDiagnosticPreservesAgentMessage(t *testing.T) {

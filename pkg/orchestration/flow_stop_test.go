@@ -2,7 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -16,25 +15,15 @@ import (
 // hub knows about — the invariant that keeps a failed/interrupted run from
 // leaking the process groups its already-spawned agents hold.
 type recordingManager struct {
-	unique           string
-	started          bool
-	stopCalls        int
-	stopStartedCalls int
-	destroyCalls     int
+	unique       string
+	stopCalls    int
+	destroyCalls int
 }
 
 func (m *recordingManager) Unique() string { return m.unique }
 
 func (m *recordingManager) RunnerDoStop(context.Context) (*OutputProperty, error) {
 	m.stopCalls++
-	return &OutputProperty{}, nil
-}
-
-func (m *recordingManager) RunnerDoStopStarted(context.Context) (*OutputProperty, error) {
-	if !m.started {
-		return &OutputProperty{}, nil
-	}
-	m.stopStartedCalls++
 	return &OutputProperty{}, nil
 }
 
@@ -131,29 +120,6 @@ func (p *blockingFailurePolicy) Execute(ctx context.Context, _ Action) ([]Action
 	return nil, nil
 }
 
-// stubbornManager is a manager whose service refuses to stop.
-type stubbornManager struct {
-	recordingManager
-}
-
-func (m *stubbornManager) RunnerDoStopStarted(context.Context) (*OutputProperty, error) {
-	return nil, errors.New("agent is gone")
-}
-
-type failingPolicy struct{}
-
-func (p *failingPolicy) GetExecutor(context.Context, Action) (OutputProcessorFunc, error) {
-	return nil, nil
-}
-
-func (p *failingPolicy) Restrict(context.Context, string) error {
-	return nil
-}
-
-func (p *failingPolicy) Execute(context.Context, Action) ([]Action, error) {
-	return nil, errors.New("start failed")
-}
-
 type panicPolicy struct{}
 
 func (p *panicPolicy) GetExecutor(context.Context, Action) (OutputProcessorFunc, error) {
@@ -178,12 +144,9 @@ func TestFlowStartReturnsPostStartRunnerFailure(t *testing.T) {
 	playbook, err := NewPlaybook(ctx, &World{})
 	require.NoError(t, err)
 	playbook.WithPolicy(policy)
-	up := &recordingManager{unique: "backend/postgres", started: true}
-	down := &recordingManager{unique: "backend/api"}
 	flow := &Flow{
 		originService: service,
 		playbook:      playbook,
-		hub:           &Hub{managers: []IManager{up, down}},
 	}
 
 	result := make(chan error, 1)
@@ -198,32 +161,45 @@ func TestFlowStartReturnsPostStartRunnerFailure(t *testing.T) {
 	failure, ok = flow.Failure()
 	require.True(t, ok)
 	require.Equal(t, FlowFailure{Service: "backend/auth-sidecar", Message: "runner exited"}, failure)
-
-	// The aborted run owes a stop to everything it actually brought up:
-	// otherwise those services keep their ports and the next run collides.
-	require.Equal(t, 1, up.stopStartedCalls)
-	require.Zero(t, down.stopStartedCalls)
 }
 
-// TestFlowStartReportsFailedTeardown keeps a teardown failure visible: a
-// service the run could not stop is exactly the one that will still be holding
-// its port on the next boot, so it must not be swallowed by the start error.
-func TestFlowStartReportsFailedTeardown(t *testing.T) {
+// TestFlowStartLeavesTeardownToTheCaller pins the teardown contract: a failed
+// Start reports the failure and stops nothing itself. Every caller already
+// stops the flow on its own error path — cmd/run's stopFresh, cmd/validation's
+// defer, cmd/ci's runAndStopFlow (which carries its own `stopped` latch),
+// cmd/test's stopService — so a stop issued from here too would send each
+// started service a SECOND Stop RPC: it would double the "stopping <svc>"
+// shutdown log the user is reading the failure out of, double the worst-case
+// teardown wait (each Stop is bounded at 10s, and the two fan-outs run back to
+// back), and turn an agent that rejects a redundant Stop into a spurious error
+// joined onto the real failure.
+func TestFlowStartLeavesTeardownToTheCaller(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
 	service := &resources.Service{Name: "api"}
 	service.WithModule("backend")
-	playbook, err := NewPlaybook(context.Background(), &World{})
+	policy := &blockingFailurePolicy{started: make(chan struct{})}
+	playbook, err := NewPlaybook(ctx, &World{})
 	require.NoError(t, err)
-	playbook.WithPolicy(&failingPolicy{})
-	stubborn := &stubbornManager{recordingManager: recordingManager{unique: "backend/postgres", started: true}}
+	playbook.WithPolicy(policy)
+	manager := &recordingManager{unique: "backend/postgres"}
 	flow := &Flow{
 		originService: service,
 		playbook:      playbook,
-		hub:           &Hub{managers: []IManager{stubborn}},
+		hub:           &Hub{managers: []IManager{manager}},
 	}
 
-	err = flow.Start(context.Background())
-	require.ErrorContains(t, err, "cannot execute start playbook")
-	require.ErrorContains(t, err, "cannot stop the services this run started")
+	result := make(chan error, 1)
+	go func() { result <- flow.Start(ctx) }()
+	<-policy.started
+	flow.reportFailure("backend/auth-sidecar", "runner exited")
+	require.Error(t, <-result)
+	require.Zero(t, manager.stopCalls)
+
+	// The caller's teardown is the one and only stop each service receives.
+	require.NoError(t, flow.Stop())
+	require.Equal(t, 1, manager.stopCalls)
 }
 
 func TestFlowStartPropagatesPlaybookPanicToCaller(t *testing.T) {

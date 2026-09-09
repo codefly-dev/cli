@@ -710,14 +710,28 @@ func (runner *Runner) cancelRestarts() {
 	runner.restartMu.Unlock()
 }
 
+// portHolderLookupTimeout bounds identifying who holds a clashing port.
+// Enumerating the machine's listening sockets shells out to lsof on darwin,
+// and lsof blocks indefinitely on an unreachable network mount — so an
+// unbounded lookup would turn a legible port-collision error into a silent
+// hang at Init. A diagnostic must never outlive the failure it explains: past
+// this deadline the report simply carries no attribution.
+const portHolderLookupTimeout = 3 * time.Second
+
+// portCollision is one of the runner's own native endpoints that another
+// process is already listening on.
+type portCollision struct {
+	port     uint32
+	endpoint string
+}
+
 // boundNativePorts returns "<port> (<endpoint>)" descriptions for each of the
 // runner's own native endpoint ports that another process is already listening
 // on, naming the process that holds each one when it can be identified. A
 // successful TCP dial is the honest signal that the port is held: unlike a
 // listen probe it doesn't trip on TIME_WAIT sockets that have no listener.
 func (runner *Runner) boundNativePorts(ctx context.Context) []string {
-	var held []string
-	var listeners map[uint32]int32
+	var collisions []portCollision
 	for _, mapping := range runner.networkMappings {
 		// networkMappings arrive over the agent's Init gRPC response, so a nil
 		// mapping or endpoint is possible at this boundary — skip rather than panic.
@@ -733,12 +747,28 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 			continue
 		}
 		_ = conn.Close()
-		if listeners == nil {
-			listeners = listeningPorts(ctx)
-		}
-		held = append(held, fmt.Sprintf("%d (%s%s)", instance.Port, mapping.Endpoint.Name, portHolderSuffix(ctx, listeners, instance.Port)))
+		collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name})
+	}
+	if len(collisions) == 0 {
+		return nil
+	}
+	lookupCtx, cancel := holderLookupContext(ctx)
+	defer cancel()
+	listeners := listeningPorts(lookupCtx)
+	held := make([]string, 0, len(collisions))
+	for _, collision := range collisions {
+		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, listeners, collision.port)))
 	}
 	return held
+}
+
+// holderLookupContext derives the deadline the holder attribution runs under.
+// One deadline covers the whole attribution — the socket enumeration and every
+// executable lookup it feeds — so naming holders is bounded no matter how many
+// endpoints clash. The caller's context carries no deadline of its own (it is
+// the run context), which is exactly why this must impose one.
+func holderLookupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, portHolderLookupTimeout)
 }
 
 // listeningPorts maps each locally LISTENing TCP port to the pid that holds it.
@@ -765,9 +795,16 @@ func listeningPorts(ctx context.Context) map[uint32]int32 {
 
 // portHolderSuffix names the process squatting on port, so an "already in use"
 // failure says which pid to look at instead of leaving the user to run lsof.
-// It returns "" when the holder cannot be identified — socket ownership is not
-// always readable (a listener owned by another user, a platform without the
-// lookup), and a missing name must not cost us the port report itself.
+//
+// It reports the holder's executable PATH and never its command line: the path
+// is what identifies a stale codefly binary (".../.cache/native/<hash>"), while
+// the arguments of an arbitrary process on this machine routinely carry
+// credentials — a --db-url with a password, an --api-key — and this string is
+// printed to the terminal and, in headless runs, into CI logs.
+//
+// It returns "" when the holder cannot be identified: socket ownership is not
+// always readable (a listener owned by another user, a lookup that ran past
+// the deadline), and a missing name must not cost us the port report itself.
 func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint32) string {
 	pid, ok := listeners[port]
 	if !ok {
@@ -775,13 +812,13 @@ func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint
 	}
 	proc, err := process.NewProcessWithContext(ctx, pid)
 	if err != nil {
-		return fmt.Sprintf(", held by pid %d", pid)
+		return fmt.Sprintf(" held by pid %d", pid)
 	}
-	command, err := proc.CmdlineWithContext(ctx)
-	if err != nil || command == "" {
-		return fmt.Sprintf(", held by pid %d", pid)
+	executable, err := proc.ExeWithContext(ctx)
+	if err != nil || executable == "" {
+		return fmt.Sprintf(" held by pid %d", pid)
 	}
-	return fmt.Sprintf(", held by pid %d: %s", pid, command)
+	return fmt.Sprintf(" held by pid %d (%s)", pid, executable)
 }
 
 func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
@@ -789,7 +826,11 @@ func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
 		return nil
 	}
 	if held := runner.boundNativePorts(ctx); len(held) > 0 {
-		return fmt.Errorf("port %s already in use — a process from a previous run may still be holding it; run 'codefly clear' to reclaim it, then retry",
+		// The holder is whoever bound the port first — it may be a leftover
+		// codefly run, but it may equally be the user's own server, so the
+		// remedy is stated conditionally rather than asserting a provenance
+		// this check never verified.
+		return fmt.Errorf("port %s already in use — stop the process holding it, or run 'codefly clear' if it is a leftover codefly run, then retry",
 			strings.Join(held, ", "))
 	}
 	return nil
@@ -988,17 +1029,6 @@ func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
 	default:
 	}
 	return runner.stop(ctx)
-}
-
-// StopStarted stops the service only while this runner still holds it started.
-// Unlike StopIfNeeded it does not exempt a hot-reloading service: this is a
-// teardown, and a hot-reloading service left running is exactly the process
-// that squats on its port after the run it belonged to has gone.
-func (runner *Runner) StopStarted(ctx context.Context) (*OutputProperty, error) {
-	if runner == nil || !runner.isStarted.Load() {
-		return &OutputProperty{}, nil
-	}
-	return runner.Stop(ctx)
 }
 
 func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {

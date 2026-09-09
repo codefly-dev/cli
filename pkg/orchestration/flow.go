@@ -710,26 +710,17 @@ func (flow *Flow) Start(ctx context.Context) error {
 
 	err := flow.playbook.Begin(runCtx, Action{Type: RuntimeBegin, Service: resources.WithUnique(flow.originService).Unique()})
 	failure, failed := flow.endStart()
-	if !failed && err == nil {
-		return nil
-	}
-	// The playbook aborted, so nothing supervises the services it already
-	// started. Stop them here, while their agents are still connected, rather
-	// than leaving it to whatever the caller does after unwinding — an
-	// abandoned native binary keeps its deterministic port and makes the next
-	// run fail on a different service.
-	stopErr := flow.stopStarted()
-	if stopErr != nil {
-		stopErr = w.Wrapf(stopErr, "cannot stop the services this run started")
-	}
 	if failed {
 		failureErr := w.Wrapf(failure, "service failed after start")
 		if err != nil {
-			return errors.Join(failureErr, w.Wrapf(err, "cannot stop start playbook"), stopErr)
+			return errors.Join(failureErr, w.Wrapf(err, "cannot stop start playbook"))
 		}
-		return errors.Join(failureErr, stopErr)
+		return failureErr
 	}
-	return errors.Join(w.Wrapf(err, "cannot execute start playbook"), stopErr)
+	if err != nil {
+		return w.Wrapf(err, "cannot execute start playbook")
+	}
+	return nil
 }
 
 func (flow *Flow) Test(ctx context.Context) error {
@@ -1205,41 +1196,50 @@ func (flow *Flow) Stop() error {
 	if flow.world != nil && (flow.world.Mode == BuildMode || flow.world.Mode == SyncMode || flow.world.Mode == DeployMode || flow.world.Mode == SnapshotMode) {
 		return nil
 	}
-	return flow.teardown(IManager.RunnerDoStop)
+	// Don't call on a possibly Done context
+	stoppedContext, done := flow.newTeardownContext()
+	w := wool.Get(stoppedContext).In("StopIfNeeded")
+	defer done()
+	// Clear any stale pause state — if a paused action is still sitting
+	// in the PauseManager, the spinner keeps spinning even as Stop tears
+	// everything down. Force-clear so the UI reflects reality.
+	if flow.playbook != nil && flow.playbook.pause != nil {
+		flow.playbook.pause.Clear()
+	}
+	// Fan out stops in parallel — sequential iteration was wasting wall
+	// time (10s timeout × N managers) while the goroutines were mostly
+	// idle waiting on their respective agents. Reverse order is preserved
+	// by walking the slice backwards before the Add, so Destroy targets
+	// newest-started-first which matches dependency rules.
+	var res error
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
+		mgr := flow.hub.managers[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := mgr.RunnerDoStop(stoppedContext)
+			if err != nil {
+				w.Debug("got error", wool.ErrField(err))
+				mu.Lock()
+				res = multierror.Append(res, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return res
 }
 
 func (flow *Flow) Shutdown() error {
 	if flow == nil || flow.hub == nil {
 		return nil
 	}
-	return flow.teardown(IManager.RunnerDoDestroy)
-}
-
-// stopStarted stops every service this flow actually brought up, leaving the
-// ones that never started alone. It is the teardown a FAILED run owes: a
-// service whose own Start already returned success is supervised by nothing
-// once the playbook unwinds, so its native binary keeps holding the
-// deterministic port it bound and collides with the next run.
-func (flow *Flow) stopStarted() error {
-	if flow == nil || flow.hub == nil {
-		return nil
-	}
-	return flow.teardown(IManager.RunnerDoStopStarted)
-}
-
-// teardown fans one shutdown RPC out across every manager the hub holds. It is
-// parallel — sequential iteration wasted wall time (10s timeout × N managers)
-// while the goroutines sat idle waiting on their respective agents — and walks
-// the slice backwards so newest-started services are torn down first, matching
-// dependency order.
-func (flow *Flow) teardown(op func(IManager, context.Context) (*OutputProperty, error)) error {
 	// Don't call on a possibly Done context
 	stoppedContext, done := flow.newTeardownContext()
 	w := wool.Get(stoppedContext).In("StopIfNeeded")
 	defer done()
-	// Clear any stale pause state — if a paused action is still sitting
-	// in the PauseManager, the spinner keeps spinning even as teardown tears
-	// everything down. Force-clear so the UI reflects reality.
 	if flow.playbook != nil && flow.playbook.pause != nil {
 		flow.playbook.pause.Clear()
 	}
@@ -1251,7 +1251,7 @@ func (flow *Flow) teardown(op func(IManager, context.Context) (*OutputProperty, 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := op(mgr, stoppedContext)
+			_, err := mgr.RunnerDoDestroy(stoppedContext)
 			if err != nil {
 				w.Debug("got error", wool.ErrField(err))
 				mu.Lock()
@@ -1262,6 +1262,7 @@ func (flow *Flow) teardown(op func(IManager, context.Context) (*OutputProperty, 
 	}
 	wg.Wait()
 	return res
+
 }
 
 func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcessorFunc, error) {

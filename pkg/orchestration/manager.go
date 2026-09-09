@@ -46,10 +46,6 @@ type IManager interface {
 	RunnerDoLint(ctx context.Context) (*OutputProperty, error)
 	RunnerDoTest(ctx context.Context) (*OutputProperty, error)
 	RunnerDoStop(ctx context.Context) (*OutputProperty, error)
-	// RunnerDoStopStarted stops the service only if this manager's runner
-	// actually brought it up, so a teardown that runs twice — a failed run
-	// unwinding, then the caller's deferred Stop — issues one Stop RPC.
-	RunnerDoStopStarted(ctx context.Context) (*OutputProperty, error)
 	RunnerDoDestroy(ctx context.Context) (*OutputProperty, error)
 
 	// RunnerTestResponse returns the structured response from the last Test
@@ -161,10 +157,6 @@ func (manager *Manager) RunnerDoTest(ctx context.Context) (*OutputProperty, erro
 
 func (manager *Manager) RunnerDoStop(ctx context.Context) (*OutputProperty, error) {
 	return manager.Runner.Stop(ctx)
-}
-
-func (manager *Manager) RunnerDoStopStarted(ctx context.Context) (*OutputProperty, error) {
-	return manager.Runner.StopStarted(ctx)
 }
 
 func (manager *Manager) RunnerDoDestroy(ctx context.Context) (*OutputProperty, error) {
@@ -307,10 +299,6 @@ func (n NoOpManager) RunnerDoLint(ctx context.Context) (*OutputProperty, error) 
 }
 
 func (n NoOpManager) RunnerDoStop(ctx context.Context) (*OutputProperty, error) {
-	return nil, nil
-}
-
-func (n NoOpManager) RunnerDoStopStarted(_ context.Context) (*OutputProperty, error) {
 	return nil, nil
 }
 
