@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -80,7 +81,20 @@ func TestBoundNativePortsDetectsHeldPort(t *testing.T) {
 		nativeMapping("free", uint16(free)),
 	}}
 
-	require.Equal(t, []string{fmt.Sprintf("%d (grpc)", held)}, runner.boundNativePorts(context.Background()))
+	reported := runner.boundNativePorts(context.Background())
+	require.Len(t, reported, 1)
+	require.Contains(t, reported[0], fmt.Sprintf("%d (grpc", held))
+	// The holder is this test process, so the report must name its pid —
+	// otherwise a port collision still forces the user to go hunting with lsof.
+	require.Contains(t, reported[0], fmt.Sprintf("held by pid %d", os.Getpid()))
+}
+
+// TestPortHolderSuffixOmitsUnknownHolder keeps an unidentifiable listener from
+// costing us the port report itself: socket ownership is not always readable.
+func TestPortHolderSuffixOmitsUnknownHolder(t *testing.T) {
+	require.Empty(t, portHolderSuffix(context.Background(), map[uint32]int32{}, 30093))
+	require.Contains(t, portHolderSuffix(context.Background(), map[uint32]int32{30093: int32(os.Getpid())}, 30093),
+		fmt.Sprintf("held by pid %d", os.Getpid()))
 }
 
 func TestBoundNativePortsToleratesNilMappings(t *testing.T) {
@@ -103,13 +117,36 @@ func TestInitialPortGuardRejectsFirstInitAndSkipsRunningService(t *testing.T) {
 	}}
 
 	err = runner.checkInitialPortAvailability(context.Background())
-	require.ErrorContains(t, err, fmt.Sprintf("port %d (http) already in use", held))
+	require.ErrorContains(t, err, fmt.Sprintf("port %d (http", held))
+	require.ErrorContains(t, err, "already in use")
 
 	// An initialized infrastructure runtime may already own this listener by
 	// the time Start is called. Once the service is marked running, reloads
 	// must not classify its own port as stale.
 	runner.isStarted.Store(true)
 	require.NoError(t, runner.checkInitialPortAvailability(context.Background()))
+}
+
+// TestStopStartedOnlyStopsRunningServices is the guard for the failed-run
+// teardown: the aborted run must stop what it actually brought up, and must not
+// re-issue a Stop the ordinary shutdown will already send.
+func TestStopStartedOnlyStopsRunningServices(t *testing.T) {
+	client := &restartRuntimeClient{}
+	runner := runnerWithRuntimeClient(client)
+
+	_, err := runner.StopStarted(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, client.stopCalls)
+
+	runner.markStarted()
+	_, err = runner.StopStarted(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, client.stopCalls)
+
+	// Already stopped: a second teardown pass must not talk to the agent again.
+	_, err = runner.StopStarted(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, client.stopCalls)
 }
 
 func TestStatusDiagnosticPreservesAgentMessage(t *testing.T) {

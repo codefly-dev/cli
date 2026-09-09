@@ -18,12 +18,13 @@ import (
 // for a workspace marker before giving up.
 const maxWorkspaceWalk = 64
 
-// nativeBuildCacheSegment marks a compiled native-mode service binary. The go and
-// rust runners build a service's user binary under "<service>/cache/native/<hash>"
-// and exec it in place, so this segment in a process's executable identifies a
-// codefly-built native service. (The issue's manual workaround greps the same
-// path.)
-const nativeBuildCacheSegment = "/cache/native/"
+// nativeBuildCacheSegments mark a compiled native-mode service binary. The go and
+// rust runners build a service's user binary under the service's local cache
+// directory — "<service>/.cache/native/<hash>" for a service laid out with a
+// hidden cache, "<service>/cache/native/<hash>" otherwise — and exec it in
+// place, so one of these segments in a process's executable identifies a
+// codefly-built native service.
+var nativeBuildCacheSegments = []string{"/.cache/native/", "/cache/native/"}
 
 // DevServerOrphan is a frontend dev server found by signature rather than by
 // registry record: a dev-server-shaped process whose working directory sits
@@ -306,12 +307,14 @@ func isNativeServiceCommand(argv []string) bool {
 		return false
 	}
 	exe := argv[0]
-	// Match the build-cache segment both mid-path (absolute binary, e.g.
-	// "/ws/svc/code/cache/native/<hash>") and as a leading segment (a binary
-	// built under a relative source dir, "cache/native/<hash>"). Anchoring on the
+	// Match a build-cache segment both mid-path (absolute binary, e.g.
+	// "/ws/svc/code/.cache/native/<hash>") and as a leading segment (a binary
+	// built under a relative source dir, ".cache/native/<hash>"). Anchoring on the
 	// path separator is what keeps an unrelated "mycache/native/..." from matching.
-	if strings.Contains(exe, nativeBuildCacheSegment) || strings.HasPrefix(exe, nativeBuildCacheSegment[1:]) {
-		return true
+	for _, segment := range nativeBuildCacheSegments {
+		if strings.Contains(exe, segment) || strings.HasPrefix(exe, segment[1:]) {
+			return true
+		}
 	}
 	return filepath.Base(exe) == "postgres"
 }

@@ -22,6 +22,8 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
+	gopsnet "github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 /*
@@ -710,10 +712,12 @@ func (runner *Runner) cancelRestarts() {
 
 // boundNativePorts returns "<port> (<endpoint>)" descriptions for each of the
 // runner's own native endpoint ports that another process is already listening
-// on. A successful TCP dial is the honest signal that the port is held: unlike
-// a listen probe it doesn't trip on TIME_WAIT sockets that have no listener.
+// on, naming the process that holds each one when it can be identified. A
+// successful TCP dial is the honest signal that the port is held: unlike a
+// listen probe it doesn't trip on TIME_WAIT sockets that have no listener.
 func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 	var held []string
+	var listeners map[uint32]int32
 	for _, mapping := range runner.networkMappings {
 		// networkMappings arrive over the agent's Init gRPC response, so a nil
 		// mapping or endpoint is possible at this boundary — skip rather than panic.
@@ -729,9 +733,55 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 			continue
 		}
 		_ = conn.Close()
-		held = append(held, fmt.Sprintf("%d (%s)", instance.Port, mapping.Endpoint.Name))
+		if listeners == nil {
+			listeners = listeningPorts(ctx)
+		}
+		held = append(held, fmt.Sprintf("%d (%s%s)", instance.Port, mapping.Endpoint.Name, portHolderSuffix(ctx, listeners, instance.Port)))
 	}
 	return held
+}
+
+// listeningPorts maps each locally LISTENing TCP port to the pid that holds it.
+// Building the whole map once per probe keeps a stack-wide collision from
+// re-enumerating the machine's sockets for every clashing endpoint.
+func listeningPorts(ctx context.Context) map[uint32]int32 {
+	connections, err := gopsnet.ConnectionsWithContext(ctx, "tcp")
+	if err != nil {
+		return map[uint32]int32{}
+	}
+	ports := make(map[uint32]int32, len(connections))
+	for _, connection := range connections {
+		if connection.Status != "LISTEN" || connection.Pid <= 0 {
+			continue
+		}
+		// A port bound on several addresses (v4 + v6, or per-interface) yields
+		// one connection each; they belong to the same listener, so first wins.
+		if _, seen := ports[connection.Laddr.Port]; !seen {
+			ports[connection.Laddr.Port] = connection.Pid
+		}
+	}
+	return ports
+}
+
+// portHolderSuffix names the process squatting on port, so an "already in use"
+// failure says which pid to look at instead of leaving the user to run lsof.
+// It returns "" when the holder cannot be identified — socket ownership is not
+// always readable (a listener owned by another user, a platform without the
+// lookup), and a missing name must not cost us the port report itself.
+func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint32) string {
+	pid, ok := listeners[port]
+	if !ok {
+		return ""
+	}
+	proc, err := process.NewProcessWithContext(ctx, pid)
+	if err != nil {
+		return fmt.Sprintf(", held by pid %d", pid)
+	}
+	command, err := proc.CmdlineWithContext(ctx)
+	if err != nil || command == "" {
+		return fmt.Sprintf(", held by pid %d", pid)
+	}
+	return fmt.Sprintf(", held by pid %d: %s", pid, command)
 }
 
 func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
@@ -938,6 +988,17 @@ func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
 	default:
 	}
 	return runner.stop(ctx)
+}
+
+// StopStarted stops the service only while this runner still holds it started.
+// Unlike StopIfNeeded it does not exempt a hot-reloading service: this is a
+// teardown, and a hot-reloading service left running is exactly the process
+// that squats on its port after the run it belonged to has gone.
+func (runner *Runner) StopStarted(ctx context.Context) (*OutputProperty, error) {
+	if runner == nil || !runner.isStarted.Load() {
+		return &OutputProperty{}, nil
+	}
+	return runner.Stop(ctx)
 }
 
 func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
