@@ -174,7 +174,7 @@ func TestGenerateClientFromContractsDir(t *testing.T) {
 func TestGenerateClientDoesNotVendorWellKnownTypes(t *testing.T) {
 	requireQualify(t)
 	ctx := context.Background()
-	moduleDir := writeWellKnownTypesContractsFixture(t)
+	contractsDir := writeWellKnownTypesContractsFixture(t)
 
 	workspace := &resources.Workspace{Name: "qualify-ws", Layout: resources.LayoutKindModules}
 	wsDir := filepath.Join(t.TempDir(), "ws")
@@ -184,7 +184,7 @@ func TestGenerateClientDoesNotVendorWellKnownTypes(t *testing.T) {
 
 	t.Chdir(wsDir)
 	resetClientFlags(t)
-	clientFrom = "contracts:" + filepath.Join(moduleDir, "contracts", "api")
+	clientFrom = "contracts:" + contractsDir
 	clientLanguages = []string{"go"}
 	clientName = "accounts-client"
 	clientGoModule = "github.com/codefly-dev/accounts-client-go"
@@ -207,7 +207,8 @@ func TestGenerateClientDoesNotVendorWellKnownTypes(t *testing.T) {
 // writeWellKnownTypesContractsFixture compiles a proto importing two
 // well-known types into a real descriptor set (the same companion buf run
 // `generate contracts` uses) and writes it as a module's committed API
-// contract catalog, without needing a service agent to scaffold one.
+// contract catalog, without needing a service agent to scaffold one. Returns
+// the contracts/api directory `--from contracts:` takes.
 func writeWellKnownTypesContractsFixture(t *testing.T) string {
 	t.Helper()
 	moduleDir := t.TempDir()
@@ -252,36 +253,14 @@ service Accounts {
 		t.Fatalf("unmarshal descriptor set: %v", err)
 	}
 
-	contractsDir := filepath.Join(moduleDir, "contracts", "api")
-	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(contractsDir, "contract.binpb"), descriptorSet, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	catalog := &composition.APIContractCatalog{
-		Schema:  composition.APIContractCatalogSchema,
-		Package: "codefly/accounts",
-		Version: "0.1.0",
-		Endpoints: []composition.APIContractEndpoint{{
-			Service:  "api",
-			Endpoint: "grpc",
-			API:      "grpc",
-			Kind:     composition.APIContractKindProtobuf,
-			Package:  "accounts.v1",
-			Path:     "contracts/api/contract.binpb",
-			Digest:   composition.APIContractDigest(descriptorSet),
-			Services: composition.ProtobufServices(&set, "accounts.v1"),
-		}},
-	}
-	data, err := catalog.CanonicalBytes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(contractsDir, "catalog.codefly.json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return moduleDir
+	return writeContractsCatalog(t, moduleDir, "codefly/accounts", descriptorSet, composition.APIContractEndpoint{
+		Service:  "api",
+		Endpoint: "grpc",
+		API:      "grpc",
+		Kind:     composition.APIContractKindProtobuf,
+		Package:  "accounts.v1",
+		Services: composition.ProtobufServices(&set, "accounts.v1"),
+	})
 }
 
 func TestGenerateClientIsIdempotent(t *testing.T) {
@@ -756,35 +735,46 @@ func hashTree(t *testing.T, root string) string {
 // which never reaches proto.GenerateClient, to exercise without Docker.
 func writeSyntheticContractsFixture(t *testing.T) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "contracts", "api")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	return writeContractsCatalog(t, t.TempDir(), "codefly/synthetic", []byte("synthetic-descriptor-set"), composition.APIContractEndpoint{
+		Service:  "api",
+		Endpoint: "grpc",
+		API:      "grpc",
+		Kind:     composition.APIContractKindProtobuf,
+		Package:  "synthetic.v1",
+		Services: []composition.APIContractService{{Name: "Svc", FullName: "synthetic.v1.Svc", Procedures: []string{"/synthetic.v1.Svc/Do"}}},
+	})
+}
+
+// writeContractsCatalog writes moduleDir's committed contracts/api directory —
+// the contract bytes plus a one-endpoint catalog pointing at them — and returns
+// that directory, which is what `--from contracts:` takes. It owns the two
+// fields that must agree with the bytes it just wrote (the endpoint's path and
+// its digest) so a caller cannot write a fixture whose catalog disagrees with
+// its own contract file, which reads as a corrupted contract rather than a
+// broken fixture.
+func writeContractsCatalog(t *testing.T, moduleDir, packageID string, contractBytes []byte, endpoint composition.APIContractEndpoint) string {
+	t.Helper()
+	contractsDir := filepath.Join(moduleDir, "contracts", "api")
+	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	contractBytes := []byte("synthetic-descriptor-set")
-	if err := os.WriteFile(filepath.Join(dir, "contract.binpb"), contractBytes, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(contractsDir, "contract.binpb"), contractBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	endpoint.Path = "contracts/api/contract.binpb"
+	endpoint.Digest = composition.APIContractDigest(contractBytes)
 	catalog := &composition.APIContractCatalog{
-		Schema:  composition.APIContractCatalogSchema,
-		Package: "codefly/synthetic",
-		Version: "0.1.0",
-		Endpoints: []composition.APIContractEndpoint{{
-			Service:  "api",
-			Endpoint: "grpc",
-			API:      "grpc",
-			Kind:     composition.APIContractKindProtobuf,
-			Package:  "synthetic.v1",
-			Path:     "contracts/api/contract.binpb",
-			Digest:   composition.APIContractDigest(contractBytes),
-			Services: []composition.APIContractService{{Name: "Svc", FullName: "synthetic.v1.Svc", Procedures: []string{"/synthetic.v1.Svc/Do"}}},
-		}},
+		Schema:    composition.APIContractCatalogSchema,
+		Package:   packageID,
+		Version:   "0.1.0",
+		Endpoints: []composition.APIContractEndpoint{endpoint},
 	}
 	data, err := catalog.CanonicalBytes()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "catalog.codefly.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(contractsDir, "catalog.codefly.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return dir
+	return contractsDir
 }
