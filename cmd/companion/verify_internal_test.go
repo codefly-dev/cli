@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -44,7 +45,14 @@ exit 0
 	require.Equal(t, "argv: manifest inspect ghcr.io/codefly-dev/proto:0.0.13", lines[0])
 	require.True(t, strings.HasPrefix(lines[1], "DOCKER_CONFIG="), "record: %q", record)
 	require.NotEmpty(t, strings.TrimPrefix(lines[1], "DOCKER_CONFIG="), "DOCKER_CONFIG must be set to a real path")
-	require.Equal(t, "{}", lines[2], "docker must run against an empty, credential-free config")
+	// Credential-free is the property under test, not emptiness: the config
+	// must carry no stored auth, while still enabling the experimental flag
+	// that older Docker CLIs gate `docker manifest` behind.
+	require.NotContains(t, lines[2], "auth", "config must carry no stored credentials")
+	require.NotContains(t, lines[2], "credsStore", "config must not delegate to a credential helper")
+	require.NotContains(t, lines[2], "credHelpers", "config must not delegate to a credential helper")
+	require.Contains(t, lines[2], `"experimental":"enabled"`,
+		"stripping experimental would break `docker manifest` on CLIs that gate it")
 }
 
 func TestManifestExists_PrivatePackagePrintsBothCauses(t *testing.T) {
@@ -59,21 +67,21 @@ exit 1
 	require.Contains(t, err.Error(), "https://github.com/orgs/codefly-dev/packages/container/proto/settings")
 }
 
-// TestManifestExists_PrivatePackagePrintsDockerHubHint is the case the
-// original PR's tests never exercised: Companion.Tag() still produces a
-// Docker Hub tag (codeflydev/<name>:<version>), not a ghcr.io one, so the
-// "make it public" hint must not point at GitHub Packages for this — the
+// TestManifestExists_PrivatePackagePrintsDockerHubHint covers a
+// non-ghcr.io tag directly (registryPrivacyHint is registry-agnostic, even
+// though Companion.Tag() only ever produces ghcr.io ones now): the "make it
+// public" hint must not point at GitHub Packages for a Docker Hub tag — the
 // package doesn't exist there.
 func TestManifestExists_PrivatePackagePrintsDockerHubHint(t *testing.T) {
 	writeFakeDocker(t, `
 echo "denied: requested access to the resource is denied" 1>&2
 exit 1
 `)
-	ok, err := manifestExists("proto", "codeflydev/proto:0.0.13")
+	ok, err := manifestExists("proto", "acme/proto:0.0.13")
 	require.False(t, ok)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "codefly companion publish proto")
-	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/codeflydev/proto/general")
+	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/acme/proto/general")
 	require.NotContains(t, err.Error(), "github.com/orgs")
 }
 
@@ -115,7 +123,7 @@ func TestImageCompanions_DropsNonImageCompanions(t *testing.T) {
 
 func TestIsManifestNotFound(t *testing.T) {
 	for _, s := range []string{
-		"no such manifest: codeflydev/proto:0.0.11",
+		"no such manifest: ghcr.io/codefly-dev/proto:0.0.11",
 		"manifest unknown",
 		"MANIFEST UNKNOWN: manifest unknown", // case-insensitive
 	} {
@@ -128,7 +136,7 @@ func TestIsManifestNotFound(t *testing.T) {
 		"error during connect: dial tcp: i/o timeout",
 		"unauthorized: authentication required",
 		"denied: requested access to the resource is denied",
-		"repository codeflydev/proto not found",
+		"repository ghcr.io/codefly-dev/proto not found",
 		"",
 	} {
 		require.False(t, isManifestNotFound(s), "%q must not be classified as missing", s)
@@ -139,6 +147,34 @@ func TestResolveCoreDir_ErrorsWhenNoCompanionsDir(t *testing.T) {
 	_, err := resolveCoreDir(t.TempDir())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "companions directory not found")
+}
+
+// TestRunVerify_ReportsEveryFailingCompanion pins that verify surveys the whole
+// set. A companion whose ghcr package does not exist at all answers an
+// anonymous inspect with "denied" rather than "manifest unknown" — a hard
+// error — and that is the state a first migration to a new registry leaves
+// every companion in. Returning on the first one would report a single
+// companion per run and hide the rest.
+func TestRunVerify_ReportsEveryFailingCompanion(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "alpha", "0.0.1", true, false)
+	writeManifest(t, root, "beta", "0.0.2", true, false)
+	writeFakeDocker(t, `
+echo "denied: requested access to the resource is denied" 1>&2
+exit 1
+`)
+
+	// A fresh command rather than a copy of VerifyCmd: cobra's Flags() hands
+	// back the same FlagSet pointer through a shallow copy, so setting a flag
+	// on the copy would leak into the package-level VerifyCmd.
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("all", false, "")
+	cmd.Flags().String("core-dir", "", "")
+	require.NoError(t, cmd.Flags().Set("core-dir", root))
+	err := runVerify(cmd, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "alpha")
+	require.Contains(t, err.Error(), "beta", "every failing companion must be reported, not just the first")
 }
 
 func TestResolveCoreDir_AcceptsExplicitFlag(t *testing.T) {
@@ -155,7 +191,7 @@ func TestSelectTargets_SingleByName(t *testing.T) {
 	got, err := selectTargets(root, false, []string{"proto"})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	require.Equal(t, "codeflydev/proto:0.0.11", got[0].Tag())
+	require.Equal(t, "ghcr.io/codefly-dev/proto:0.0.11", got[0].Tag())
 }
 
 func TestSelectTargets_AllRejectsNameArgument(t *testing.T) {

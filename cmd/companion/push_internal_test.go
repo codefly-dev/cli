@@ -26,7 +26,7 @@ func TestPushImage_DeniedPrintsLoginHint(t *testing.T) {
 echo "denied: requested access to the resource is denied" 1>&2
 exit 1
 `)
-	err := pushImage("proto", "ghcr.io/codefly-dev/proto:0.0.13")
+	err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "docker login ghcr.io -u <user> -p $(gh auth token)")
 }
@@ -44,7 +44,7 @@ case "$1" in
     ;;
 esac
 `)
-	err := pushImage("proto", "ghcr.io/codefly-dev/proto:0.0.13")
+	err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
 	require.NoError(t, err)
 }
 
@@ -62,16 +62,16 @@ case "$1" in
     ;;
 esac
 `)
-	err := pushImage("proto", "ghcr.io/codefly-dev/proto:0.0.13")
+	err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not publicly pullable")
 	require.Contains(t, err.Error(), "https://github.com/orgs/codefly-dev/packages/container/proto/settings")
 }
 
-// TestPushImage_FailsWhenPushedButPrivate_DockerHub is the case the original
-// PR's tests never exercised: Companion.Tag() still produces a Docker Hub
-// tag (codeflydev/<name>:<version>), not a ghcr.io one, so the "make it
-// public" hint must not point at GitHub Packages for this — the package
+// TestPushImage_FailsWhenPushedButPrivate_DockerHub covers a non-ghcr.io tag
+// directly (pushImage's registry hint is registry-agnostic, even though
+// Companion.Tag() only ever produces ghcr.io ones now): the "make it public"
+// hint must not point at GitHub Packages for a Docker Hub tag — the package
 // doesn't exist there.
 func TestPushImage_FailsWhenPushedButPrivate_DockerHub(t *testing.T) {
 	withFastPushVerifyRetry(t)
@@ -87,10 +87,10 @@ case "$1" in
     ;;
 esac
 `)
-	err := pushImage("proto", "codeflydev/proto:0.0.13")
+	err := pushImage("acme/proto:0.0.13")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not publicly pullable")
-	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/codeflydev/proto/general")
+	require.Contains(t, err.Error(), "https://hub.docker.com/repository/docker/acme/proto/general")
 	require.NotContains(t, err.Error(), "github.com/orgs")
 }
 
@@ -124,7 +124,7 @@ case "$1" in
 esac
 `, countPath, countPath, countPath, pushVerifyAttempts))
 
-	err := pushImage("proto", "ghcr.io/codefly-dev/proto:0.0.13")
+	err := pushImage("ghcr.io/codefly-dev/proto:0.0.13")
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(countPath)
@@ -136,10 +136,112 @@ esac
 func TestRegistryHost(t *testing.T) {
 	cases := map[string]string{
 		"ghcr.io/codefly-dev/proto:0.0.13": "ghcr.io",
-		"codeflydev/proto:0.0.13":          "docker.io",
+		"acme/proto:0.0.13":                "docker.io",
 		"localhost:5000/proto:0.0.13":      "localhost:5000",
 	}
 	for tag, want := range cases {
 		require.Equal(t, want, registryHost(tag), "registryHost(%q)", tag)
+	}
+}
+
+// TestPushImage_DeniedOnDockerHubDoesNotSuggestGitHubToken pins the credential
+// to the registry. `gh auth token` mints a GitHub token, which Docker Hub will
+// never accept, so printing it for a docker.io denial sends the operator into
+// a login that cannot succeed.
+func TestPushImage_DeniedOnDockerHubDoesNotSuggestGitHubToken(t *testing.T) {
+	writeFakeDocker(t, `
+echo "denied: requested access to the resource is denied" 1>&2
+exit 1
+`)
+	err := pushImage("acme/proto:0.0.13")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "docker login docker.io")
+	require.NotContains(t, err.Error(), "gh auth token")
+}
+
+// TestBuildTargets_ContinuesPushingAfterAFailure pins the fleet behaviour: a
+// companion whose package is private (the default state of a brand-new ghcr
+// package, fixable only through the UI) must not strand every companion
+// queued behind it. The run still fails, but every target is attempted and
+// all failures are reported together.
+func TestBuildTargets_ContinuesPushingAfterAFailure(t *testing.T) {
+	withFastPushVerifyRetry(t)
+	root := t.TempDir()
+	writeManifest(t, root, "alpha", "0.0.1", true, false)
+	writeManifest(t, root, "beta", "0.0.2", true, false)
+
+	pushLog := filepath.Join(t.TempDir(), "pushed.txt")
+	writeFakeDocker(t, fmt.Sprintf(`
+case "$1" in
+  build)
+    exit 0
+    ;;
+  push)
+    echo "$2" >> %q
+    echo "pushed"
+    exit 0
+    ;;
+  manifest)
+    echo "denied: requested access to the resource is denied" 1>&2
+    exit 1
+    ;;
+esac
+exit 0
+`, pushLog))
+
+	alpha, err := LoadCompanion(filepath.Join(root, "companions", "alpha"))
+	require.NoError(t, err)
+	beta, err := LoadCompanion(filepath.Join(root, "companions", "beta"))
+	require.NoError(t, err)
+
+	err = buildTargets(root, []*Companion{alpha, beta}, BuildOptions{Push: true})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "alpha")
+	require.Contains(t, err.Error(), "beta", "the second companion must still be attempted and reported")
+
+	pushed, readErr := os.ReadFile(pushLog)
+	require.NoError(t, readErr)
+	require.Contains(t, string(pushed), alpha.Tag())
+	require.Contains(t, string(pushed), beta.Tag(),
+		"a private package on the first companion must not abort the rest of the fleet")
+}
+
+func TestRepoPath(t *testing.T) {
+	cases := map[string]string{
+		"acme/proto:0.0.13":                       "acme/proto",
+		"acme/proto@sha256:deadbeef":              "acme/proto",
+		"acme/proto":                              "acme/proto",
+		"localhost:5000/proto:0.0.13":             "localhost:5000/proto",
+		"localhost:5000/proto":                    "localhost:5000/proto",
+		"ghcr.io/codefly-dev/proto:0.0.13":        "ghcr.io/codefly-dev/proto",
+		"ghcr.io/codefly-dev/proto@sha256:abc123": "ghcr.io/codefly-dev/proto",
+	}
+	for ref, want := range cases {
+		require.Equal(t, want, repoPath(ref), "repoPath(%q)", ref)
+	}
+}
+
+// TestRegistryPrivacyHint covers the two ways this hint used to be wrong: it
+// took the org/namespace from a caller-supplied name rather than the reference
+// (so any non-codefly-dev org got a codefly-dev URL), and it split the tag on
+// the last colon (so a digest reference produced ".../proto@sha256/general").
+func TestRegistryPrivacyHint(t *testing.T) {
+	cases := map[string]string{
+		"ghcr.io/codefly-dev/proto:0.0.13": "https://github.com/orgs/codefly-dev/packages/container/proto/settings",
+		"ghcr.io/acme/widget:1.0":          "https://github.com/orgs/acme/packages/container/widget/settings",
+		"ghcr.io/acme/widget@sha256:abc":   "https://github.com/orgs/acme/packages/container/widget/settings",
+		"acme/proto:0.0.13":                "https://hub.docker.com/repository/docker/acme/proto/general",
+		"acme/proto@sha256:deadbeef":       "https://hub.docker.com/repository/docker/acme/proto/general",
+	}
+	for tag, want := range cases {
+		require.Contains(t, registryPrivacyHint(tag), want, "registryPrivacyHint(%q)", tag)
+	}
+
+	// A reference with no resolvable org/namespace must fall back rather than
+	// emit a malformed URL.
+	for _, tag := range []string{"ghcr.io/proto:1.0", "localhost:5000/proto:1.0"} {
+		hint := registryPrivacyHint(tag)
+		require.Contains(t, hint, "visibility settings in its registry", "registryPrivacyHint(%q)", tag)
+		require.NotContains(t, hint, "https://", "registryPrivacyHint(%q) must not invent a URL", tag)
 	}
 }

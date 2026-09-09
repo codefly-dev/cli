@@ -67,7 +67,8 @@ digest downstream.
 
 ## Deprecation note
 
-The `codeflydev` Docker Hub org is retired once every consumer has moved to
-`ghcr.io/codefly-dev` pins. Until then, some `codeflydev/<name>:<tag>`
-references may still appear in code or docs pending that migration
-(tracked: codefly-dev/core#406, codefly-dev/cli#566).
+The `codeflydev` Docker Hub org is retired now that companions and this CLI
+publish and consume `ghcr.io/codefly-dev` exclusively (codefly-dev/core#406,
+codefly-dev/cli#566). Any repo still pinning a `codeflydev/<name>:<tag>`
+reference hasn't migrated yet — point it at the `ghcr.io/codefly-dev`
+equivalent.

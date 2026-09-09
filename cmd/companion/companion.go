@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,7 +32,8 @@ import (
 // We only need version today; future fields (description, base image,
 // build args) extend this struct without breaking callers.
 type CompanionInfo struct {
-	// Version is the image tag that gets applied: codeflydev/<name>:<version>.
+	// Version is the tag component of the published image reference; see
+	// Companion.Tag.
 	Version string `yaml:"version"`
 }
 
@@ -39,8 +41,8 @@ type CompanionInfo struct {
 // parsed info. Keeps the build/push commands decoupled from filesystem
 // scanning.
 type Companion struct {
-	// Name is the companion's directory basename — also the suffix in
-	// the resulting image tag (codeflydev/<Name>:<Info.Version>).
+	// Name is the companion's directory basename — also the image name
+	// passed to resources.PublishedImage in Tag.
 	Name string
 	// Dir is the absolute path to the companion directory.
 	Dir string
@@ -156,9 +158,11 @@ func ListCompanions(root string) ([]*Companion, error) {
 	return out, nil
 }
 
-// Tag returns the image tag this companion will produce: codeflydev/<name>:<version>.
+// Tag returns the full image reference this companion publishes to, under
+// resources.ImageRegistry.
 func (c *Companion) Tag() string {
-	return fmt.Sprintf("codeflydev/%s:%s", c.Name, c.Info.Version)
+	image := resources.PublishedImage(c.Name, c.Info.Version)
+	return image.FullName()
 }
 
 // ProducesImage reports whether this companion builds a Docker image. A

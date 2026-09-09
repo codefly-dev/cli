@@ -19,10 +19,13 @@ spelling out a registry string.
 Core's half has landed — codefly-dev/core#407 (`80611ae`) adds
 `resources.ImageRegistry = "ghcr.io/codefly-dev"` and
 `resources.PublishedImage(name, tag) DockerImage`, and derives all six
-companions through it. It is on core `main` but not yet in a released tag
-(`v0.3.23` points at `e7b6566`, which predates it), so this repo still pins
-`core v0.3.22` and `Companion.Tag()` (`cmd/companion/companion.go:160`) still
-returns `codeflydev/<name>:<version>`. cli#566 is the consuming change.
+companions through it. That commit is released as `core v0.3.24`, and this
+repo now pins it, so `Companion.Tag()` (`cmd/companion/companion.go:163`)
+returns `ghcr.io/codefly-dev/<name>:<version>`. cli#566 was the consuming
+change. (`v0.3.21` points at the same commit but is unfetchable — it was
+force-moved after publication, so its checksum no longer matches
+`sum.golang.org`; `v0.3.24` exists to give consumers a clean pin. Do not
+delete or re-move `v0.3.21`: deleting a published tag is what broke it.)
 
 A constant in a shared package is a real improvement — one place to change
 instead of five — but it is still a compile-time literal. Changing the
@@ -128,14 +131,13 @@ exactly the deployment that sets config, so ranking config above the
 override would make the flag and env var permanently dead in the one
 environment the payoff paragraph below advertises them for.
 
-Step 4 needs a released core — `resources.ImageRegistry` does not exist in
-`v0.3.22`, which this repo pins (see "Where this comes from"). No *additional*
-core release is required beyond the one Phase 0 already needs for cli#566,
-but Phase 1 cannot start before that release is cut.
+Step 4's prerequisite is met: `resources.ImageRegistry` ships in `core
+v0.3.24`, which this repo now pins (see "Where this comes from"), so Phase 1
+needs no further core release to begin.
 
 Consumers then call the CLI resolver instead of `resources.PublishedImage`:
-`Companion.Tag()` (`cmd/companion/companion.go:160`) and the push path
-(`cmd/companion/build.go:426`, reached via `cmd/companion/push.go`) are the
+`Companion.Tag()` (`cmd/companion/companion.go:163`) and the push path
+(`cmd/companion/build.go:458`, reached via `cmd/companion/push.go`) are the
 first two call sites.
 
 **Do not resolve axis 2 through axis 1's existing state.** `pkg/builder`
@@ -203,8 +205,8 @@ upstream base image, and then only by digest with the original as the source
 of truth. Phase 2 does not touch them.
 
 The chokepoint has to be a component that actually moves images. Today that
-is the CLI's own `docker` invocations: `cmd/companion/build.go:426`
-(`docker push`) and `cmd/companion/verify.go:124` (`docker manifest inspect`)
+is the CLI's own `docker` invocations: `cmd/companion/build.go:458`
+(`docker push`) and `cmd/companion/verify.go:170` (`docker manifest inspect`)
 for axis 2, and `pkg/orchestration/builder.go:276` for axis 1. Routing those
 through the Phase 1 resolver in `pkg/builder` is the pilot — one real
 consumer fully off literal registries — after which the pattern extends

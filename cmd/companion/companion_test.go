@@ -40,7 +40,7 @@ func TestLoadCompanion_ParsesVersionAndDetectsBuildFiles(t *testing.T) {
 	require.Equal(t, "1.2.3", c.Info.Version)
 	require.True(t, c.HasDockerfile)
 	require.True(t, c.HasFlake)
-	require.Equal(t, "codeflydev/proto:1.2.3", c.Tag())
+	require.Equal(t, "ghcr.io/codefly-dev/proto:1.2.3", c.Tag())
 }
 
 func TestLoadCompanion_FailsLoudWhenManifestMissing(t *testing.T) {
