@@ -27,7 +27,6 @@ import (
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
-	multierror "github.com/hashicorp/go-multierror"
 )
 
 type Flow struct {
@@ -133,6 +132,13 @@ type Flow struct {
 	// poller, hence the lock.
 	beganMu sync.Mutex
 	begun   map[string]bool
+
+	// teardownPhaseBudget bounds one reverse-topological teardown layer; zero
+	// selects defaultTeardownPhaseBudget. Since layers are sequential, a whole
+	// Stop/Shutdown is bounded by this budget times the number of layers.
+	teardownPhaseBudget time.Duration
+	teardownMu          sync.Mutex
+	lastTeardown        *teardownReceipt
 }
 
 // StateListener observes per-service runtime lifecycle transitions. service is
@@ -1196,73 +1202,14 @@ func (flow *Flow) Stop() error {
 	if flow.world != nil && (flow.world.Mode == BuildMode || flow.world.Mode == SyncMode || flow.world.Mode == DeployMode || flow.world.Mode == SnapshotMode) {
 		return nil
 	}
-	// Don't call on a possibly Done context
-	stoppedContext, done := flow.newTeardownContext()
-	w := wool.Get(stoppedContext).In("StopIfNeeded")
-	defer done()
-	// Clear any stale pause state — if a paused action is still sitting
-	// in the PauseManager, the spinner keeps spinning even as Stop tears
-	// everything down. Force-clear so the UI reflects reality.
-	if flow.playbook != nil && flow.playbook.pause != nil {
-		flow.playbook.pause.Clear()
-	}
-	// Fan out stops in parallel — sequential iteration was wasting wall
-	// time (10s timeout × N managers) while the goroutines were mostly
-	// idle waiting on their respective agents. Reverse order is preserved
-	// by walking the slice backwards before the Add, so Destroy targets
-	// newest-started-first which matches dependency rules.
-	var res error
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
-		mgr := flow.hub.managers[i]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := mgr.RunnerDoStop(stoppedContext)
-			if err != nil {
-				w.Debug("got error", wool.ErrField(err))
-				mu.Lock()
-				res = multierror.Append(res, err)
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	return res
+	return flow.runTeardown("Stop", defaultStopPhaseBudget, IManager.RunnerDoStop)
 }
 
 func (flow *Flow) Shutdown() error {
 	if flow == nil || flow.hub == nil {
 		return nil
 	}
-	// Don't call on a possibly Done context
-	stoppedContext, done := flow.newTeardownContext()
-	w := wool.Get(stoppedContext).In("StopIfNeeded")
-	defer done()
-	if flow.playbook != nil && flow.playbook.pause != nil {
-		flow.playbook.pause.Clear()
-	}
-	var res error
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
-		mgr := flow.hub.managers[i]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := mgr.RunnerDoDestroy(stoppedContext)
-			if err != nil {
-				w.Debug("got error", wool.ErrField(err))
-				mu.Lock()
-				res = multierror.Append(res, err)
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	return res
-
+	return flow.runTeardown("Shutdown", defaultShutdownPhaseBudget, IManager.RunnerDoDestroy)
 }
 
 func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcessorFunc, error) {
