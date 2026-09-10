@@ -465,12 +465,64 @@ with the `module_trust_missing` diagnostic. The escape hatch is per module:
 the unverified git clone (`run` prints `unverified git clone for <name>` once
 per run when it does). An overlay entry selects exactly one of
 `path`/`worktree`/`pinned`/`git`, so `run` replaces that entry with the
-clone's `path:` once it materializes the module, and says so when it does. The
-choice itself, and the clone it produced, move to `codefly.local.resolved.yaml`
-beside the overlay (gitignored like it), which is what keeps later runs on the
-clone and lets `codefly doctor workspace` report the module as unverified.
+clone's `path:` once it materializes the module, and says so when it does.
 Setting `resolve.<name>.pinned: true` revokes the opt-out and returns the
 module to verified resolution.
+
+#### Resolution receipts
+
+Everything `run` materializes is recorded as a receipt in
+`codefly.local.resolved.yaml` beside the overlay (gitignored like it). A
+receipt binds the request it answered — canonical source, module subpath,
+requested version or constraint — to what that request resolved to: the
+materialization mode (`verified` or `git`), the exact resolved version, the
+path, and for a verified package its artifact digest and commit.
+
+```yaml
+resolved:
+    saas:
+        source: codefly-dev/module-saas-starter
+        requested: "0.1.0"
+        mode: verified
+        version: 0.1.0
+        path: /path/to/workspace/.codefly/cache/modules/<digest>
+        digest: sha256:…
+        commit: …
+```
+
+That record is the boundary between a checkout you manage and output the CLI
+manages. An overlay `path:` matching a receipt is one `run` wrote and may
+refresh; one that does not is you editing the module in place, and `run` never
+touches it. It is also what keeps a module on its git opt-out after the
+directive has been replaced by a path, and what lets `codefly doctor
+workspace` report the module as unverified.
+
+Because the receipt names the request, a materialization can be checked
+against the request being made *now*. When a module's requested version (or
+source) changes and the new request cannot be resolved, `run` does **not** keep
+running the previous version: it drops the materialized path from the overlay
+and fails with both versions named —
+
+```
+module <saas>: cannot resolve requested version v9.9.9: …;
+its previously resolved version v0.0.1 at … no longer answers that request
+and has been dropped from codefly.local.yaml
+```
+
+The cached files may remain on disk, but nothing routes the composed reference
+to them any more, so a failed upgrade cannot silently keep shipping the old
+module. A module the CLI has *never* materialized is unaffected: it is left
+unresolved with a warning, and only a target whose dependency closure needs it
+fails. `codefly doctor workspace` reports a materialization that answers a
+different request than the workspace now makes with the
+`module_resolution_stale` diagnostic, before a run is attempted. A record
+written before receipts existed is read for its git opt-out and its path, but
+records no request, so it cannot vouch for its checkout under a request that
+fails.
+
+An unchanged request still resolves offline: the git clone cache is
+version-keyed and the verified package cache is digest-checked on every reuse,
+so a warmed-up workspace boots with the producer unreachable.
 
 **`add service` flags:**
 

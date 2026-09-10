@@ -139,6 +139,14 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("cannot load required service: %w", err)
 	}
 
+	// This entry point never materializes (only `run solution` does), so a
+	// composed module whose committed version changed since the last
+	// materialization would otherwise boot the checkout the previous request
+	// resolved to. Refuse instead, before anything starts.
+	if err := checkMaterializationsAnswerRequests(ctx, workspace); err != nil {
+		return err
+	}
+
 	if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
 		return err
 	}

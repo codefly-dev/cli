@@ -2,237 +2,18 @@ package composition
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/composition/pinnedfixture"
 	corecomposition "github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
-
-const (
-	testOwner     = "codefly-dev"
-	testRepoName  = "module-saas-starter"
-	testPackageID = "codefly/saas-starter"
-	testSigner    = "https://github.com/codefly-dev/module-saas-starter/.github/workflows/release.yml@refs/heads/main"
-	testCommit    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-)
-
-func testRepositoryURL() string {
-	return fmt.Sprintf("https://github.com/%s/%s", testOwner, testRepoName)
-}
-
-// pinnedFixture is a GitHub API + release-asset test double serving one
-// signed module-package release per registered version, replicating core's
-// composition_test.go httptest harness (fixtureResolver /
-// TestGitHubResolverFetchesAssetsAndPeeledCommit) against the exported
-// composition API this package builds on.
-type pinnedFixture struct {
-	server      *httptest.Server
-	privateKey  ed25519.PrivateKey
-	publicKey   ed25519.PublicKey
-	releases    map[string]releaseAssets // tag -> assets
-	plainTags   []string                 // deploy-counter tags with no module-package assets
-	assetsByID  map[int64][]byte
-	nextAssetID int64
-	requests    atomic.Int64
-}
-
-type releaseAssets struct {
-	commit                                     string
-	archiveID, provenanceID, signatureID       int64
-	archiveSize, provenanceSize, signatureSize int
-}
-
-func newPinnedFixture(t *testing.T) *pinnedFixture {
-	t.Helper()
-	seed := strings.Repeat("k", ed25519.SeedSize)
-	privateKey := ed25519.NewKeyFromSeed([]byte(seed))
-	fixture := &pinnedFixture{
-		privateKey: privateKey,
-		publicKey:  privateKey.Public().(ed25519.PublicKey),
-		releases:   map[string]releaseAssets{},
-		assetsByID: map[int64][]byte{},
-	}
-	fixture.server = httptest.NewServer(http.HandlerFunc(fixture.handle))
-	t.Cleanup(fixture.server.Close)
-	return fixture
-}
-
-// addRelease registers a module-package release tagged v<version>, signed and
-// digest-matched for immediate verification, at testCommit.
-func (fixture *pinnedFixture) addRelease(t *testing.T, version string) {
-	t.Helper()
-	fixture.addReleaseAt(t, version, testCommit, "frontend")
-}
-
-// addPlainRelease registers a release at tag with no module-package assets —
-// the deploy-counter track sharing the same "v*" tag namespace, which must
-// never be picked as a candidate module-package version.
-func (fixture *pinnedFixture) addPlainRelease(tag string) {
-	fixture.plainTags = append(fixture.plainTags, tag)
-}
-
-// addReleaseAt (re)registers tag "v"+version as a fresh, internally
-// self-consistent release at commit — different content so a different commit
-// also means a different artifact digest, mirroring what an actual re-tag
-// would republish. Used to simulate the remote moving an immutable tag.
-func (fixture *pinnedFixture) addReleaseAt(t *testing.T, version, commit, content string) {
-	t.Helper()
-	fixture.addReleaseTagged(t, "v"+version, version, commit, content)
-}
-
-// addPrefixedRelease registers a release under the literal
-// "module-package/v"+version tag some producers use instead of a plain
-// "v"+version tag, exercising fetchPackageRelease's Fetch fallback (Resolve
-// can only ever fetch a plain "v"+version tag).
-func (fixture *pinnedFixture) addPrefixedRelease(t *testing.T, version, commit, content string) {
-	t.Helper()
-	fixture.addReleaseTagged(t, modulePackageTagPrefix+version, version, commit, content)
-}
-
-func (fixture *pinnedFixture) addReleaseTagged(t *testing.T, tag, version, commit, content string) {
-	t.Helper()
-	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "services"), 0o755))
-	manifest := fmt.Sprintf(`kind: %s
-schema: %s
-id: %s
-version: %s
-minimum-codefly-version: ">=0.1.0"
-artifact-roots:
-  - services
-contracts:
-  composition: ">=2.0 <3.0"
-`, corecomposition.PackageKind, corecomposition.PackageSchema, testPackageID, version)
-	require.NoError(t, os.WriteFile(filepath.Join(root, corecomposition.PackageManifestFileName), []byte(manifest), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "services", "frontend.txt"), []byte(content), 0o644))
-
-	archive, digest, err := corecomposition.CanonicalArchive(root)
-	require.NoError(t, err)
-	provenance := &corecomposition.Provenance{
-		Schema: corecomposition.ProvenanceSchema, Package: testPackageID, Version: version,
-		Repository: testRepositoryURL(), Ref: tag, Commit: commit,
-		ArtifactMediaType: corecomposition.ArtifactMediaType, ArtifactDigest: digest,
-		SignatureIdentity: testSigner,
-	}
-	provenanceData, err := json.Marshal(provenance)
-	require.NoError(t, err)
-	signature := ed25519.Sign(fixture.privateKey, provenanceData)
-	fixture.putRelease(tag, commit, archive, provenanceData, signature)
-}
-
-// putRelease (re)registers tag's assets under fresh IDs, so re-tagging a
-// release (a moved tag / re-signed provenance) serves distinct content from
-// whatever a prior resolution already cached.
-func (fixture *pinnedFixture) putRelease(tag, commit string, archive, provenance, signature []byte) {
-	archiveID, provenanceID, signatureID := fixture.nextAssetID+1, fixture.nextAssetID+2, fixture.nextAssetID+3
-	fixture.nextAssetID += 3
-	fixture.assetsByID[archiveID] = archive
-	fixture.assetsByID[provenanceID] = provenance
-	fixture.assetsByID[signatureID] = signature
-	fixture.releases[tag] = releaseAssets{
-		commit:    commit,
-		archiveID: archiveID, provenanceID: provenanceID, signatureID: signatureID,
-		archiveSize: len(archive), provenanceSize: len(provenance), signatureSize: len(signature),
-	}
-}
-
-func (fixture *pinnedFixture) signerKeyBase64() string {
-	return base64.StdEncoding.EncodeToString(fixture.publicKey)
-}
-
-func (fixture *pinnedFixture) handle(writer http.ResponseWriter, request *http.Request) {
-	fixture.requests.Add(1)
-	path := strings.TrimPrefix(request.URL.Path, "/api/v3")
-	prefix := fmt.Sprintf("/repos/%s/%s", testOwner, testRepoName)
-
-	switch {
-	case path == prefix+"/releases":
-		writer.Header().Set("Content-Type", "application/json")
-		var entries []string
-		for tag := range fixture.releases {
-			entries = append(entries, fmt.Sprintf(
-				`{"tag_name":%q,"assets":[{"name":"module.tar"},{"name":"provenance.json"},{"name":"provenance.sig"}]}`, tag))
-		}
-		for _, tag := range fixture.plainTags {
-			entries = append(entries, fmt.Sprintf(`{"tag_name":%q,"assets":[]}`, tag))
-		}
-		fmt.Fprintf(writer, "[%s]", strings.Join(entries, ","))
-	case strings.HasPrefix(path, prefix+"/releases/tags/"):
-		tag := strings.TrimPrefix(path, prefix+"/releases/tags/")
-		assets, ok := fixture.releases[tag]
-		if !ok {
-			http.NotFound(writer, request)
-			return
-		}
-		immutable := true
-		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(writer, `{"id":1,"tag_name":%q,"draft":false,"immutable":%t,"assets":[`+
-			`{"id":%d,"name":"module.tar","size":%d},`+
-			`{"id":%d,"name":"provenance.json","size":%d},`+
-			`{"id":%d,"name":"provenance.sig","size":%d}]}`,
-			tag, immutable,
-			assets.archiveID, assets.archiveSize, assets.provenanceID, assets.provenanceSize, assets.signatureID, assets.signatureSize)
-	case strings.HasPrefix(path, prefix+"/git/ref/tags/"):
-		tag := strings.TrimPrefix(path, prefix+"/git/ref/tags/")
-		assets, ok := fixture.releases[tag]
-		if !ok {
-			http.NotFound(writer, request)
-			return
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(writer, `{"ref":"refs/tags/%s","object":{"type":"commit","sha":%q}}`, tag, assets.commit)
-	case strings.HasPrefix(path, prefix+"/releases/assets/"):
-		var id int64
-		if _, err := fmt.Sscanf(strings.TrimPrefix(path, prefix+"/releases/assets/"), "%d", &id); err != nil {
-			http.NotFound(writer, request)
-			return
-		}
-		content, ok := fixture.assetsByID[id]
-		if !ok {
-			http.NotFound(writer, request)
-			return
-		}
-		writer.Header().Set("Content-Type", "application/octet-stream")
-		_, _ = writer.Write(content)
-	default:
-		http.NotFound(writer, request)
-	}
-}
-
-// writeWorkspace writes a minimal workspace.codefly.yaml declaring
-// module-trust for fixture's package/repository, so
-// LoadModuleTrust/ResolvePinnedModule can side-parse it.
-func writeWorkspace(t *testing.T, dir string, fixture *pinnedFixture) {
-	t.Helper()
-	doc := fmt.Sprintf(`name: wiki
-layout: modules
-module-trust:
-  repositories:
-    %s: %s
-  signers:
-    %s: %q
-`, testPackageID, testRepositoryURL(), testSigner, fixture.signerKeyBase64())
-	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(doc), 0o644))
-}
-
-func useFixtureGitHub(t *testing.T, fixture *pinnedFixture) {
-	t.Helper()
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	t.Setenv("GITHUB_API_URL", fixture.server.URL+"/api/v3/")
-}
 
 // removeReadOnlyTree deletes root, a materialized module cache directory the
 // Materializer chmods read-only (0o555) after promotion — plain os.RemoveAll
@@ -247,21 +28,6 @@ func removeReadOnlyTree(root string) error {
 	return os.RemoveAll(root)
 }
 
-// allowTempDirCleanup restores write permission on every directory under root
-// once the test finishes, so t.TempDir()'s own cleanup can delete a module
-// cache tree the Materializer left read-only.
-func allowTempDirCleanup(t *testing.T, root string) {
-	t.Helper()
-	t.Cleanup(func() {
-		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-			if err == nil && entry.IsDir() {
-				_ = os.Chmod(path, 0o755)
-			}
-			return nil
-		})
-	})
-}
-
 // A workspace author writing the repository with a trailing ".git" (the
 // exact form PinnedSourceURL itself produces for a bare "owner/repo" source
 // elsewhere in this codebase) must still verify successfully: the producer's
@@ -272,12 +38,12 @@ func allowTempDirCleanup(t *testing.T, root string) {
 // repository.
 func TestResolvePinnedModuleAcceptsGitSuffixedTrustRepository(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	allowTempDirCleanup(t, workspaceDir)
+	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
 	doc := fmt.Sprintf(`name: wiki
 layout: modules
 module-trust:
@@ -285,9 +51,9 @@ module-trust:
     %s: %s.git
   signers:
     %s: %q
-`, testPackageID, testRepositoryURL(), testSigner, fixture.signerKeyBase64())
+`, pinnedfixture.PackageID, pinnedfixture.RepositoryURL(), pinnedfixture.Signer, fixture.SignerKeyBase64())
 	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, resources.WorkspaceConfigurationName), []byte(doc), 0o644))
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0"}
 
 	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
@@ -296,26 +62,26 @@ module-trust:
 
 func TestResolvePinnedModuleVerifiesAndMaterializes(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	allowTempDirCleanup(t, workspaceDir)
-	writeWorkspace(t, workspaceDir, fixture)
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
+	pinnedfixture.WriteWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0"}
 
 	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
 	require.FileExists(t, filepath.Join(resolved.Dir, corecomposition.PackageManifestFileName))
-	require.Equal(t, testPackageID, resolved.Package)
+	require.Equal(t, pinnedfixture.PackageID, resolved.Package)
 	require.Equal(t, "0.1.0", resolved.Version)
 
-	requestsAfterFirst := fixture.requests.Load()
+	requestsAfterFirst := fixture.Requests()
 	resolved2, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
 	require.Equal(t, resolved.Dir, resolved2.Dir)
-	require.Equal(t, requestsAfterFirst, fixture.requests.Load(), "a cached exact version must not hit the network again")
+	require.Equal(t, requestsAfterFirst, fixture.Requests(), "a cached exact version must not hit the network again")
 }
 
 // A `module:` field naming a subpath the package doesn't actually contain
@@ -326,14 +92,14 @@ func TestResolvePinnedModuleVerifiesAndMaterializes(t *testing.T) {
 // actually tries to load the module.
 func TestResolvePinnedModuleRejectsMissingModuleSubpath(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	allowTempDirCleanup(t, workspaceDir)
-	writeWorkspace(t, workspaceDir, fixture)
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0", Module: "does-not-exist"}
+	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
+	pinnedfixture.WriteWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0", Module: "does-not-exist"}
 
 	_, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.ErrorContains(t, err, "module subpath")
@@ -341,10 +107,10 @@ func TestResolvePinnedModuleRejectsMissingModuleSubpath(t *testing.T) {
 	// The package itself verified and materialized fine — only ref.Module is
 	// wrong — so the second attempt must raise the same error from the
 	// no-network cache-hit path rather than re-fetching from GitHub.
-	requestsAfterFirst := fixture.requests.Load()
+	requestsAfterFirst := fixture.Requests()
 	_, err = ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.ErrorContains(t, err, "module subpath")
-	require.Equal(t, requestsAfterFirst, fixture.requests.Load(), "the cached, already-verified package must not be re-fetched")
+	require.Equal(t, requestsAfterFirst, fixture.Requests(), "the cached, already-verified package must not be re-fetched")
 }
 
 // The no-network fast path must not trust a cached directory on manifest
@@ -355,14 +121,14 @@ func TestResolvePinnedModuleRejectsMissingModuleSubpath(t *testing.T) {
 // silently forever.
 func TestResolvePinnedModuleDetectsCacheTampering(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	allowTempDirCleanup(t, workspaceDir)
-	writeWorkspace(t, workspaceDir, fixture)
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
+	pinnedfixture.WriteWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0"}
 
 	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
@@ -372,10 +138,10 @@ func TestResolvePinnedModuleDetectsCacheTampering(t *testing.T) {
 	require.NoError(t, os.Chmod(tamperedFile, 0o644))
 	require.NoError(t, os.WriteFile(tamperedFile, []byte("tampered"), 0o644))
 
-	requestsBeforeSecond := fixture.requests.Load()
+	requestsBeforeSecond := fixture.Requests()
 	resolved2, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
-	require.Greater(t, fixture.requests.Load(), requestsBeforeSecond,
+	require.Greater(t, fixture.Requests(), requestsBeforeSecond,
 		"a tampered cache entry must not be trusted without a network re-verification")
 
 	content, err := os.ReadFile(filepath.Join(resolved2.Dir, "services", "frontend.txt"))
@@ -385,9 +151,9 @@ func TestResolvePinnedModuleDetectsCacheTampering(t *testing.T) {
 
 func TestResolvePinnedModuleRejectsUntrustedSigner(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
 	doc := fmt.Sprintf(`name: wiki
@@ -396,9 +162,9 @@ module-trust:
   repositories:
     %s: %s
   signers: {}
-`, testPackageID, testRepositoryURL())
+`, pinnedfixture.PackageID, pinnedfixture.RepositoryURL())
 	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, resources.WorkspaceConfigurationName), []byte(doc), 0o644))
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0"}
 
 	_, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.Error(t, err)
@@ -410,14 +176,14 @@ module-trust:
 
 func TestResolvePinnedModuleRejectsMovedTag(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	allowTempDirCleanup(t, workspaceDir)
-	writeWorkspace(t, workspaceDir, fixture)
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
+	pinnedfixture.WriteWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0"}
 
 	// A first resolve succeeds and records the release's digest and peeled
 	// commit in the resolved index.
@@ -428,7 +194,7 @@ func TestResolvePinnedModuleRejectsMovedTag(t *testing.T) {
 	// internally self-consistent commit and content. Evicting only the cached
 	// directory (not the resolved index) forces a network re-fetch while
 	// keeping the previously recorded digest/commit to compare against.
-	fixture.addReleaseAt(t, "0.1.0", strings.Repeat("b", 40), "retagged")
+	fixture.AddReleaseAt(t, "0.1.0", strings.Repeat("b", 40), "retagged")
 	cacheDir, err := corecomposition.NewMaterializer(workspaceDir).CachePath(first.Digest)
 	require.NoError(t, err)
 	require.NoError(t, removeReadOnlyTree(cacheDir))
@@ -444,16 +210,16 @@ func TestResolvePinnedModuleRejectsMovedTag(t *testing.T) {
 // satisfy the constraint and numerically outrank every real candidate.
 func TestResolvePinnedModuleConstraintPicksHighestPackageTrack(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	fixture.addRelease(t, "0.2.0")
-	fixture.addPlainRelease("v0.5.0")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.AddRelease(t, "0.2.0")
+	fixture.AddPlainRelease("v0.5.0")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	allowTempDirCleanup(t, workspaceDir)
-	writeWorkspace(t, workspaceDir, fixture)
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: ">=0.1.0"}
+	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
+	pinnedfixture.WriteWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: ">=0.1.0"}
 
 	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
@@ -502,14 +268,14 @@ func TestWriteResolvedIndexConcurrentWritesDoNotLoseEntries(t *testing.T) {
 // candidates).
 func TestResolvePinnedModuleFetchesModulePackagePrefixedTag(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addPrefixedRelease(t, "0.3.0", testCommit, "prefixed")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddPrefixedRelease(t, "0.3.0", pinnedfixture.Commit, "prefixed")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	allowTempDirCleanup(t, workspaceDir)
-	writeWorkspace(t, workspaceDir, fixture)
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.3.0"}
+	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
+	pinnedfixture.WriteWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.3.0"}
 
 	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
@@ -518,15 +284,15 @@ func TestResolvePinnedModuleFetchesModulePackagePrefixedTag(t *testing.T) {
 
 func TestResolvePinnedModuleConstraintListsModulePackagePrefixedTags(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	fixture.addPrefixedRelease(t, "0.4.0", testCommit, "prefixed")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.AddPrefixedRelease(t, "0.4.0", pinnedfixture.Commit, "prefixed")
+	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	allowTempDirCleanup(t, workspaceDir)
-	writeWorkspace(t, workspaceDir, fixture)
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: ">=0.1.0"}
+	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
+	pinnedfixture.WriteWorkspace(t, workspaceDir, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: ">=0.1.0"}
 
 	resolved, err := ResolvePinnedModule(context.Background(), workspaceDir, ref)
 	require.NoError(t, err)
@@ -540,24 +306,24 @@ func TestResolvePinnedModuleConstraintListsModulePackagePrefixedTags(t *testing.
 // the materializer's per-workspace cache directory.
 func TestResolvePinnedModuleMovedTagDetectedAcrossWorkspaces(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	fixture := newPinnedFixture(t)
-	fixture.addRelease(t, "0.1.0")
-	useFixtureGitHub(t, fixture)
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.UseGitHub(t)
 
 	firstWorkspace := t.TempDir()
-	allowTempDirCleanup(t, firstWorkspace)
-	writeWorkspace(t, firstWorkspace, fixture)
-	ref := &resources.ModuleReference{Name: "saas", Source: testOwner + "/" + testRepoName, Version: "0.1.0"}
+	pinnedfixture.AllowTempDirCleanup(t, firstWorkspace)
+	pinnedfixture.WriteWorkspace(t, firstWorkspace, fixture)
+	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0"}
 	_, err := ResolvePinnedModule(context.Background(), firstWorkspace, ref)
 	require.NoError(t, err)
 
 	// The remote re-tags v0.1.0 at a different, internally self-consistent
 	// commit and content.
-	fixture.addReleaseAt(t, "0.1.0", strings.Repeat("b", 40), "retagged")
+	fixture.AddReleaseAt(t, "0.1.0", strings.Repeat("b", 40), "retagged")
 
 	secondWorkspace := t.TempDir()
-	allowTempDirCleanup(t, secondWorkspace)
-	writeWorkspace(t, secondWorkspace, fixture)
+	pinnedfixture.AllowTempDirCleanup(t, secondWorkspace)
+	pinnedfixture.WriteWorkspace(t, secondWorkspace, fixture)
 	_, err = ResolvePinnedModule(context.Background(), secondWorkspace, ref)
 	require.Error(t, err)
 	require.ErrorIs(t, err, corecomposition.ErrMovedTag)
@@ -574,11 +340,11 @@ func TestGitResolutionFor(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		directive *resources.ModuleResolveDirective
-		recorded  bool
+		recorded  *ResolutionReceipt
 		want      bool
 	}{
 		{name: "bare reference, nothing recorded"},
-		{name: "bare reference, recorded", recorded: true, want: true},
+		{name: "bare reference, recorded", recorded: &ResolutionReceipt{Mode: ResolutionModeGit}, want: true},
 		{
 			name:      "git opts in",
 			directive: &resources.ModuleResolveDirective{Git: true},
@@ -587,7 +353,7 @@ func TestGitResolutionFor(t *testing.T) {
 		{
 			name:      "pinned revokes a recorded opt-in",
 			directive: &resources.ModuleResolveDirective{Pinned: true},
-			recorded:  true,
+			recorded:  &ResolutionReceipt{Mode: ResolutionModeGit},
 		},
 		{
 			name:      "cache-shaped path is not by itself an opt-in",
@@ -596,39 +362,125 @@ func TestGitResolutionFor(t *testing.T) {
 		{
 			name:      "recorded clone path stays a clone",
 			directive: &resources.ModuleResolveDirective{Path: cacheShapedPath},
-			recorded:  true,
+			recorded:  &ResolutionReceipt{Mode: ResolutionModeGit, Path: cacheShapedPath},
 			want:      true,
 		},
 		{
 			name:      "user checkout is not recorded, so not a clone",
 			directive: &resources.ModuleResolveDirective{Path: "/home/me/checkout"},
 		},
+		{
+			name:      "a verified receipt keeps the module verified",
+			directive: &resources.ModuleResolveDirective{Path: cacheShapedPath},
+			recorded:  &ResolutionReceipt{Mode: ResolutionModeVerified, Path: cacheShapedPath},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := GitResolutionFor(tc.directive, tc.recorded); got != tc.want {
-				t.Fatalf("GitResolutionFor = %v, want %v", got, tc.want)
+			if got := gitResolutionFor(tc.directive, tc.recorded); got != tc.want {
+				t.Fatalf("gitResolutionFor = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestGitResolvedRecordRoundTrip(t *testing.T) {
+func TestResolutionRecordRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 
-	absent, err := LoadGitResolved(dir)
+	absent, err := LoadResolutionReceipts(dir)
 	require.NoError(t, err, "an absent record is the normal case")
 	require.Empty(t, absent)
 
-	clones := map[string]string{"saas": "/cache/saas/v1", "documents": "/cache/documents/v2"}
-	require.NoError(t, SaveGitResolved(context.Background(), dir, clones))
-	loaded, err := LoadGitResolved(dir)
+	receipts := map[string]*ResolutionReceipt{
+		"saas": {
+			Source: "owner/saas", Requested: "v1.0.0", Mode: ResolutionModeVerified,
+			Version: "1.0.0", Path: "/cache/saas/v1", Digest: "sha256:abc", Commit: "deadbeef",
+		},
+		"documents": {
+			Source: "owner/documents", Module: "module", Requested: "latest",
+			Mode: ResolutionModeGit, Version: "v2.0.0", Path: "/cache/documents/v2",
+		},
+	}
+	require.NoError(t, SaveResolutionReceipts(context.Background(), dir, receipts))
+	loaded, err := LoadResolutionReceipts(dir)
 	require.NoError(t, err)
-	require.Equal(t, clones, loaded, "the record is a receipt of the clone directory, not just a name")
+	require.Equal(t, receipts, loaded, "a receipt binds the whole request, not just the path")
 
 	// Malformed is an error, never an empty set: read as empty it would resolve
 	// an opted-out module through the verified package and report the failure as
-	// missing module-trust.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, GitResolvedRecordName), []byte("git-resolved: [\n"), 0o600))
-	_, err = LoadGitResolved(dir)
+	// missing module-trust, and would reclassify every machine path as a user
+	// checkout.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ResolutionRecordName), []byte("resolved: [\n"), 0o600))
+	_, err = LoadResolutionReceipts(dir)
 	require.Error(t, err)
+}
+
+// A record written by a CLI that predates receipts still identifies its module
+// as git-resolved and its path as machine output; it just cannot claim to answer
+// any request until the module is re-materialized.
+func TestLoadResolutionReceiptsMigratesGitResolvedRecord(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ResolutionRecordName),
+		[]byte("git-resolved:\n    saas: /cache/saas/v0.0.1\n"), 0o600))
+
+	receipts, err := LoadResolutionReceipts(dir)
+	require.NoError(t, err)
+	require.Equal(t, ResolutionModeGit, receipts["saas"].Mode)
+	require.Equal(t, "/cache/saas/v0.0.1", receipts["saas"].Path)
+	require.True(t, gitResolutionFor(nil, receipts["saas"]), "the opt-out must survive the upgrade")
+
+	ref := &resources.ModuleReference{Name: "saas", Source: "owner/saas", Version: "v0.0.1"}
+	require.False(t, receipts["saas"].Answers(ref, ResolutionModeGit),
+		"a migrated record records no request, so it answers none")
+}
+
+// A receipt is eligible only for the request it was produced for: any change to
+// the source, module subpath, requested version or materialization mode makes it
+// unable to vouch for its path.
+func TestResolutionReceiptAnswers(t *testing.T) {
+	ref := &resources.ModuleReference{Name: "saas", Source: "owner/saas", Module: "module", Version: "v0.0.1"}
+	receipt := &ResolutionReceipt{
+		Source: "owner/saas", Module: "module", Requested: "v0.0.1",
+		Mode: ResolutionModeGit, Version: "v0.0.1", Path: "/cache/saas/v0.0.1",
+	}
+	require.True(t, receipt.Answers(ref, ResolutionModeGit))
+	require.False(t, receipt.Answers(ref, ResolutionModeVerified), "mode is part of the request")
+
+	bumped := *ref
+	bumped.Version = "v9.9.9"
+	require.False(t, receipt.Answers(&bumped, ResolutionModeGit), "a bumped version is a new request")
+
+	moved := *ref
+	moved.Source = "owner/other"
+	require.False(t, receipt.Answers(&moved, ResolutionModeGit), "a changed source is a new request")
+
+	subpath := *ref
+	subpath.Module = "other"
+	require.False(t, receipt.Answers(&subpath, ResolutionModeGit), "a changed module subpath is a new request")
+
+	// A bare semver and its "v"-prefixed spelling resolve to the same artifact,
+	// so editing the spelling must not invalidate a receipt that does answer the
+	// request — it would report a stale materialization where none exists.
+	bareSpelling := *ref
+	bareSpelling.Version = "0.0.1"
+	require.True(t, receipt.Answers(&bareSpelling, ResolutionModeGit),
+		"v0.0.1 and 0.0.1 are the same request")
+
+	// A constraint expression is not a version and must keep comparing verbatim.
+	constrained := &resources.ModuleReference{Name: "saas", Source: "owner/saas", Version: ">=0.0.1"}
+	constrainedReceipt := &ResolutionReceipt{
+		Source: "owner/saas", Requested: ">=0.0.1", Mode: ResolutionModeGit,
+		Version: "v0.0.9", Path: "/cache/saas/v0.0.9",
+	}
+	require.True(t, constrainedReceipt.Answers(constrained, ResolutionModeGit))
+	require.False(t, constrainedReceipt.Answers(ref, ResolutionModeGit),
+		"a constraint and an exact version are different requests")
+
+	// An absent version and an explicit `latest` are the same request spelled
+	// two ways, so switching between them must not invalidate the receipt.
+	latest := &resources.ModuleReference{Name: "saas", Source: "owner/saas", Version: ""}
+	latestReceipt := &ResolutionReceipt{
+		Source: "owner/saas", Requested: "latest", Mode: ResolutionModeGit,
+		Version: "v0.1.0", Path: "/cache/saas/v0.1.0",
+	}
+	require.True(t, latestReceipt.Answers(latest, ResolutionModeGit))
 }

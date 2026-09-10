@@ -207,11 +207,11 @@ func TestDoctorWorkspaceModuleTrustGitOptOutIsNotFlagged(t *testing.T) {
 // read it, or it reports a module-trust failure for a module `run` resolves
 // happily, and the workspace's only remaining statement that it consumes an
 // unverified module disappears from the report.
-func TestDoctorWorkspaceModuleTrustGitRecordIsReportedNotFlagged(t *testing.T) {
+func TestDoctorWorkspaceModuleTrustGitReceiptIsReportedNotFlagged(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
-		"workspace.codefly.yaml":          "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
-		"codefly.local.yaml":              "resolve:\n    saas:\n        path: clone\n",
-		composition.GitResolvedRecordName: "git-resolved:\n    saas: clone\n",
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: git\n        version: v0.1.0\n        path: clone\n",
 		// Materialized, as `run` would leave it: the subject under test is how the
 		// record is read, not an unloadable module.
 		"clone/module.codefly.yaml": "name: saas\n",
@@ -242,15 +242,15 @@ func TestDoctorWorkspaceModuleTrustGitDirectiveIsReported(t *testing.T) {
 // A malformed record must be named, not read as "nothing is opted out" — that
 // silently turns an unverified module into a module-trust failure and hides the
 // real problem.
-func TestDoctorWorkspaceMalformedGitRecordIsReported(t *testing.T) {
+func TestDoctorWorkspaceMalformedResolutionRecordIsReported(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
-		"workspace.codefly.yaml":          "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
-		"codefly.local.yaml":              "resolve:\n    saas:\n        git: true\n",
-		composition.GitResolvedRecordName: "git-resolved: [\n",
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        git: true\n",
+		composition.ResolutionRecordName: "resolved: [\n",
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	diag := requireCode(t, report, codeWorkspaceInvalid, "fail")
-	if !strings.Contains(diag.Message, composition.GitResolvedRecordName) {
+	if !strings.Contains(diag.Message, composition.ResolutionRecordName) {
 		t.Fatalf("diagnostic should name the record: %+v", diag)
 	}
 }
@@ -820,4 +820,39 @@ func TestDoctorWorkspaceCommandFailureIsMachineReadable(t *testing.T) {
 	if !strings.Contains(humanOut, codeConfigurationMissing) {
 		t.Fatalf("human output should show the diagnostic code, got:\n%s", humanOut)
 	}
+}
+
+// A version bump leaves the overlay pointing at the materialization of the
+// previous request until the next run re-resolves it. doctor names that gap: the
+// run will refuse the old checkout if the new request cannot be resolved, and
+// without the diagnostic the mismatch is invisible until then.
+func TestDoctorWorkspaceFlagsMaterializationForADifferentRequest(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"9.9.9\"\n",
+		"codefly.local.yaml":     "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n" +
+			"        requested: \"0.1.0\"\n        mode: git\n        version: v0.1.0\n        path: clone\n",
+		"clone/module.codefly.yaml": "name: saas\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeModuleResolutionStale, "warn")
+	for _, want := range []string{"saas", "0.1.0", "9.9.9"} {
+		if !strings.Contains(diag.Message, want) {
+			t.Fatalf("diagnostic should name the module and both requests: %+v", diag)
+		}
+	}
+}
+
+// A materialization that still answers the committed request is not flagged, so
+// the diagnostic marks a real mismatch rather than firing on every run.
+func TestDoctorWorkspaceDoesNotFlagAMatchingMaterialization(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":     "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n" +
+			"        requested: \"0.1.0\"\n        mode: git\n        version: v0.1.0\n        path: clone\n",
+		"clone/module.codefly.yaml": "name: saas\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleResolutionStale)
 }
