@@ -40,6 +40,7 @@ runbook whenever you do a multi-step operational task a second time.
 ### Reference (deep dives, not step-by-step)
 - **All CLI commands, by category** → [docs/commands.md](docs/commands.md)
 - **Orchestration engine** → [docs/orchestration.md](docs/orchestration.md)
+- **Deployment completion stages** (rendered / applied / bootstrapped / healthy, bootstrap ordering, expand/contract schema rollout) → [docs/deployment-completion.md](docs/deployment-completion.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
 - **Supported CLI/core/agent combinations** (the conformance matrix, and why a required row cannot skip itself) → [docs/supported-matrix.md](docs/supported-matrix.md)
 - **Daemon** → [docs/daemon.md](docs/daemon.md)

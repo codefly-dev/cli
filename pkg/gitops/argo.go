@@ -69,6 +69,24 @@ type argoBootstrapComponent struct {
 	Wave      string
 }
 
+// Sync waves order reconciliation inside a module: namespace-level resources
+// first, then the units that prepare schema for the rest, then their consumers.
+// Argo CD only starts a wave once the previous one is healthy, so a consumer
+// never rolls out against schema preparation that has not completed. The
+// position of a unit in the inventory carries no ordering meaning.
+const (
+	moduleResourcesWave = "-1"
+	bootstrapUnitWave   = "0"
+	consumerUnitWave    = "1"
+)
+
+func unitWave(unit *InventoryUnit) string {
+	if unit.Bootstrap {
+		return bootstrapUnitWave
+	}
+	return consumerUnitWave
+}
+
 type argoMetadata struct {
 	Name      string `yaml:"name"`
 	Namespace string `yaml:"namespace"`
@@ -212,17 +230,18 @@ func generateArgoBootstrap(
 		components = append(components, argoBootstrapComponent{
 			Component: argoBoundedName(componentNameBudget, inventory.Module, "resources"),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment)),
-			Wave:      "-1",
+			Wave:      moduleResourcesWave,
 		})
 	}
-	for _, unit := range inventory.Units {
+	for index := range inventory.Units {
+		unit := &inventory.Units[index]
 		if unit.Path == "" {
 			continue
 		}
 		components = append(components, argoBootstrapComponent{
 			Component: argoBoundedName(componentNameBudget, inventory.Module, unit.Name),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment)),
-			Wave:      "0",
+			Wave:      unitWave(unit),
 		})
 	}
 

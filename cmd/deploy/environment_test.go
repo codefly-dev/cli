@@ -56,7 +56,7 @@ endpoints:
 	t.Cleanup(func() { envInput = previous })
 	envInput = "production"
 
-	flow, err := initDeployService(ctx, workspace, module, service, true)
+	flow, _, err := initDeployService(ctx, workspace, module, service, true)
 	require.Nil(t, flow)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `"production"`)
@@ -116,7 +116,7 @@ func TestInitDeployServiceRejectsRemoteDirectApplyBeforeStartingFlow(t *testing.
 	service := &resources.Service{Name: "gateway"}
 	service.WithModule("web")
 
-	flow, err := initDeployService(
+	flow, _, err := initDeployService(
 		context.Background(),
 		workspace,
 		&resources.Module{Name: "web"},
