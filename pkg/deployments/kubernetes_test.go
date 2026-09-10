@@ -397,6 +397,7 @@ type kubernetesCommandHarness struct {
 	getLog       string
 	resourceDir  string
 	renderOutput string
+	slowMarker   string
 }
 
 func newKubernetesCommandHarness(t *testing.T) kubernetesCommandHarness {
@@ -414,6 +415,7 @@ func newKubernetesCommandHarness(t *testing.T) kubernetesCommandHarness {
 		getLog:       filepath.Join(root, "get.log"),
 		resourceDir:  filepath.Join(root, "resources"),
 		renderOutput: filepath.Join(root, "render.yaml"),
+		slowMarker:   filepath.Join(root, "slow-reads"),
 	}
 	require.NoError(t, os.MkdirAll(harness.resourceDir, 0o755))
 	writeTestFile(t, harness.kubeconfig, "fixture")
@@ -436,6 +438,9 @@ case " $* " in
     case "$name" in
       -*) name="all" ;;
     esac
+    if [ -f "$FAKE_GET_SLOW" ]; then
+      sleep 20 >/dev/null 2>&1 </dev/null
+    fi
     namespace=""
     previous=""
     for argument in "$@"; do
@@ -448,6 +453,9 @@ case " $* " in
       cat "$document"
       if [ -f "$FAKE_RESOURCE_DIR/$kind.$name.once" ]; then
         rm -f "$document" "$FAKE_RESOURCE_DIR/$kind.$name.once"
+      fi
+      if [ -f "$FAKE_RESOURCE_DIR/$kind.$name.stall" ]; then
+        : > "$FAKE_GET_SLOW"
       fi
       exit 0
     fi
@@ -503,7 +511,17 @@ printf 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: applied\n'
 	t.Setenv("FAKE_GET_LOG", harness.getLog)
 	t.Setenv("FAKE_RESOURCE_DIR", harness.resourceDir)
 	t.Setenv("FAKE_KUSTOMIZE_OUTPUT", harness.renderOutput)
+	t.Setenv("FAKE_GET_SLOW", harness.slowMarker)
 	return harness
+}
+
+// clusterHasThenStalls answers the first `kubectl get <kind> <name>` with this
+// document and hangs on every read after it. Triggering on the read rather than
+// on a timer lands the budget mid-sweep no matter how slow the machine is.
+func (h kubernetesCommandHarness) clusterHasThenStalls(kind, name, document string) {
+	h.t.Helper()
+	h.clusterHas(kind, name, document)
+	require.NoError(h.t, os.WriteFile(filepath.Join(h.resourceDir, kind+"."+name+".stall"), nil, 0o600))
 }
 
 // renders makes kustomize emit exactly these manifests, so a test can pin the

@@ -45,6 +45,13 @@ spec:
   completions: 1
 `
 
+// generousBudget is an upper bound the settled fixtures below never reach:
+// their observations return on the first read. Sizing such a budget near one
+// sweep makes the assertion depend on how fast the machine runs subprocesses,
+// which is what broke these tests under -race. Only a test asserting the bound
+// itself sits near it.
+const generousBudget = time.Minute
+
 const completeJob = `{"spec":{"completions":1},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
 
 const readyDeployment = `{"metadata":{"generation":1,"uid":"deploy-uid"},"spec":{"replicas":1},` +
@@ -145,7 +152,7 @@ func TestLocalApplyManagerAppliesSchemaPreparationBeforeConsumerRollout(t *testi
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageBootstrapped, Timeout: 2 * time.Second},
+		CompletionCondition{Stage: StageBootstrapped, Timeout: generousBudget},
 	)
 	require.NoError(t, err)
 
@@ -168,7 +175,7 @@ func TestLocalApplyManagerRefusesToApplyConsumersWhenTheSchemaJobFails(t *testin
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageBootstrapped, Timeout: 2 * time.Second},
+		CompletionCondition{Stage: StageBootstrapped, Timeout: generousBudget},
 	)
 	require.NoError(t, err)
 
@@ -193,7 +200,7 @@ func TestFailedBarrierRecordsThatTheTargetWasChanged(t *testing.T) {
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageBootstrapped, Timeout: 2 * time.Second},
+		CompletionCondition{Stage: StageBootstrapped, Timeout: generousBudget},
 	)
 	require.NoError(t, err)
 
@@ -217,7 +224,7 @@ func TestLocalApplyManagerReportsAppliedWhenAnImageCannotBePulled(t *testing.T) 
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageHealthy, Timeout: 2 * time.Second},
+		CompletionCondition{Stage: StageHealthy, Timeout: generousBudget},
 	)
 	require.NoError(t, err)
 
@@ -236,25 +243,28 @@ func TestLocalApplyManagerReportsAppliedWhenAnImageCannotBePulled(t *testing.T) 
 // so diagnosing by label would fail a healthy Deployment on a sibling's pod.
 func TestPendingWorkloadIsNotDiagnosedWithAPodItDoesNotOwn(t *testing.T) {
 	harness := newKubernetesCommandHarness(t)
-	harness.renders(schemaThenConsumer)
-	harness.clusterHas("job", "schema-migrate", completeJob)
 	harness.clusterHas("deployment", "api", pendingDeployment)
 	harness.clusterHas("replicasets", "all", ownedReplicaSet)
 	harness.clusterHas("pods", "all", `{"items":[{"metadata":{"name":"other-job-xyz",`+
 		`"ownerReferences":[{"uid":"someone-else"}]},"status":{"containerStatuses":[{"name":"migrate",`+
 		`"state":{"waiting":{"reason":"ImagePullBackOff","message":"Back-off pulling image"}}}]}}]}`)
-	workspace, module, service := deploymentFixture(t)
-	manager, err := NewLocalApplyManager(
-		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageHealthy, Timeout: 600 * time.Millisecond},
-	)
+	env := harness.verifiedEnvironment()
+	target, err := VerifyLocalK3dTarget(context.Background(), env)
+	require.NoError(t, err)
+	kubeconfig, err := verifiedKubeconfigSnapshot(context.Background(), env, &target)
 	require.NoError(t, err)
 
-	err = manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput())
+	observed, readable := completionObserver{env: env, target: &target}.observe(
+		context.Background(),
+		kubeconfig,
+		ownedResource{kind: kindDeployment, namespace: "backend", name: "api"},
+	)
 
-	require.ErrorContains(t, err, "did not reach healthy")
-	require.NotContains(t, err.Error(), "ImagePullBackOff")
-	require.NotContains(t, err.Error(), "other-job-xyz")
+	require.True(t, readable)
+	require.Equal(t, ResourcePending, observed.State)
+	require.Contains(t, observed.Message, "0/1 replicas ready")
+	require.NotContains(t, observed.Message, "ImagePullBackOff")
+	require.NotContains(t, observed.Message, "other-job-xyz")
 }
 
 // ProgressDeadlineExceeded is not terminal: the controller keeps reconciling and
@@ -286,7 +296,7 @@ func TestLocalApplyManagerReachesHealthyWhenEveryOwnedRolloutIsReady(t *testing.
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageHealthy, Timeout: 2 * time.Second},
+		CompletionCondition{Stage: StageHealthy, Timeout: generousBudget},
 	)
 	require.NoError(t, err)
 
@@ -308,7 +318,7 @@ func TestCompletedBootstrapJobIsNotReadAgainWhileTheRolloutSettles(t *testing.T)
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageHealthy, Timeout: 4 * time.Second},
+		CompletionCondition{Stage: StageHealthy, Timeout: generousBudget},
 	)
 	require.NoError(t, err)
 
@@ -331,7 +341,7 @@ metadata:
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageHealthy, Timeout: 2 * time.Second},
+		CompletionCondition{Stage: StageHealthy, Timeout: generousBudget},
 	)
 	require.NoError(t, err)
 
@@ -387,14 +397,38 @@ func TestLocalApplyManagerBoundsObservationAndNamesWhatNeverFinished(t *testing.
 	workspace, module, service := deploymentFixture(t)
 	manager, err := NewLocalApplyManager(
 		context.Background(), workspace, harness.verifiedEnvironment(),
-		CompletionCondition{Stage: StageBootstrapped, Timeout: 300 * time.Millisecond},
+		CompletionCondition{Stage: StageBootstrapped, Timeout: 8 * time.Second},
 	)
 	require.NoError(t, err)
 
 	err = manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput())
 
-	require.ErrorContains(t, err, "did not reach bootstrapped within 300ms")
+	require.ErrorContains(t, err, "did not reach bootstrapped within 8s")
 	require.ErrorContains(t, err, "Job backend/schema-migrate: 0/1 completions")
+}
+
+// When the budget lands in the middle of a sweep, the readings that sweep took
+// were cut short by our own deadline. Reporting them would replace the state the
+// cluster actually gave us with "context deadline exceeded", which tells an
+// operator nothing about why the deployment stalled.
+func TestBudgetExpiringMidSweepReportsTheLastCompleteReading(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	harness.clusterHasThenStalls("job", "schema-migrate", `{"spec":{"completions":1},"status":{"succeeded":0,"failed":0}}`)
+	env := harness.verifiedEnvironment()
+	target, err := VerifyLocalK3dTarget(context.Background(), env)
+	require.NoError(t, err)
+
+	_, err = completionObserver{env: env, target: &target}.await(
+		context.Background(),
+		[]ownedResource{{kind: "Job", namespace: "backend", name: "schema-migrate"}},
+		StageBootstrapped,
+		8*time.Second,
+	)
+
+	require.ErrorContains(t, err, "did not reach bootstrapped within 8s")
+	require.ErrorContains(t, err, "Job backend/schema-migrate: 0/1 completions")
+	require.NotContains(t, err.Error(), "context deadline exceeded")
+	require.NotContains(t, err.Error(), "no longer reports it")
 }
 
 // An owned resource is applied before observation starts, so one that never
@@ -410,7 +444,7 @@ func TestObservationFailsAResourceTheTargetStopsReporting(t *testing.T) {
 		context.Background(),
 		[]ownedResource{{kind: "Job", namespace: "backend", name: "schema-migrate"}},
 		StageBootstrapped,
-		time.Minute,
+		generousBudget,
 	)
 
 	require.ErrorContains(t, err, "applied but the target no longer reports it")
@@ -431,10 +465,10 @@ func TestObservationStopsAtTheCallerBudget(t *testing.T) {
 		context.Background(),
 		[]ownedResource{{kind: "Job", namespace: "backend", name: "schema-migrate"}},
 		StageBootstrapped,
-		2*time.Second,
+		4*time.Second,
 	)
 
-	require.ErrorContains(t, err, "did not reach bootstrapped within 2s")
+	require.ErrorContains(t, err, "did not reach bootstrapped within 4s")
 	require.Less(t, time.Since(start), 30*time.Second)
 }
 

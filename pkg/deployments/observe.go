@@ -257,19 +257,30 @@ func (observer completionObserver) await(
 		kubeconfig, err := verifiedKubeconfigSnapshot(bounded, observer.env, observer.target)
 		if err != nil {
 			if bounded.Err() != nil {
-				return last, observer.unfinished(ctx, stage, timeout, last)
+				return last, observer.unfinished(ctx, stage, timeout, watched, last)
 			}
 			return last, fmt.Errorf("cannot verify Kubernetes target before observation: %w", err)
 		}
 		current := make([]ObservedResource, 0, len(watched))
 		var failures []string
 		pending := 0
+		torn := false
 		for _, resource := range watched {
+			if bounded.Err() != nil {
+				torn = true
+				break
+			}
 			if done, established := settled[resource]; established {
 				current = append(current, done)
 				continue
 			}
 			observed, readable := observer.observe(bounded, kubeconfig, resource)
+			if !readable && bounded.Err() != nil {
+				// Our own deadline killed the read. It says nothing about the
+				// resource, so it must not count against the grace below.
+				torn = true
+				break
+			}
 			if readable {
 				delete(unreadable, resource)
 			} else {
@@ -290,6 +301,13 @@ func (observer completionObserver) await(
 				pending++
 			}
 		}
+		if torn {
+			// The budget expired partway through this sweep. Report the last
+			// complete one when there is one: "0/1 completions" tells an
+			// operator what to look at, "context deadline exceeded" tells them
+			// only that we stopped waiting.
+			return last, observer.unfinished(ctx, stage, timeout, watched, last)
+		}
 		last = current
 		if len(failures) > 0 {
 			return last, fmt.Errorf("deployment cannot reach %s: %s", stage, strings.Join(failures, "; "))
@@ -301,22 +319,35 @@ func (observer completionObserver) await(
 		select {
 		case <-bounded.Done():
 			timer.Stop()
-			return last, observer.unfinished(ctx, stage, timeout, last)
+			return last, observer.unfinished(ctx, stage, timeout, watched, last)
 		case <-timer.C:
 		}
 	}
 }
 
+// unfinished names what the deployment was still waiting on. It falls back to
+// the watched set when the budget expired before any resource could be read, so
+// the error always says which resources were outstanding rather than trailing
+// off after the colon.
 func (observer completionObserver) unfinished(
 	ctx context.Context,
 	stage CompletionStage,
 	timeout time.Duration,
+	watched []ownedResource,
 	last []ObservedResource,
 ) error {
 	var reasons []string
 	for _, observed := range last {
 		if observed.State != ResourceReady {
 			reasons = append(reasons, observed.String())
+		}
+	}
+	if len(reasons) == 0 {
+		for _, resource := range watched {
+			reasons = append(reasons, fmt.Sprintf(
+				"%s %s/%s: no status was read before the budget expired",
+				resource.kind, resource.namespace, resource.name,
+			))
 		}
 	}
 	detail := strings.Join(reasons, "; ")
