@@ -5,14 +5,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
+	"gopkg.in/yaml.v3"
 )
 
 // generatedFileMarker matches the leading-comment marker that machine-generated
@@ -26,6 +29,10 @@ var (
 )
 
 const baseManifestRelativePath = "tools/base-manifest.json"
+
+// moduleInterfaceKey is the generated section of module.codefly.yaml: the
+// module's contract, rendered from the base-owned topology bindings.
+const moduleInterfaceKey = "interface"
 
 // SourceInvalidReason distinguishes the three failures that all block a base
 // sync but demand different remedies: a malformed manifest path, a missing or
@@ -665,6 +672,214 @@ func serviceManifestRefreshCandidates(sourceRoot, targetRoot string) ([]string, 
 	return candidates, nil
 }
 
+// PlanModuleInterfaceRefresh reports whether a refresh would rewrite the
+// module's generated interface block from the pinned source, without mutating.
+func PlanModuleInterfaceRefresh(sourceRoot, targetRoot string) (bool, error) {
+	sourceRoot, targetRoot, err := refreshRoots(sourceRoot, targetRoot)
+	if err != nil {
+		return false, err
+	}
+	refreshed, current, err := plannedModuleInterface(sourceRoot, targetRoot)
+	if err != nil {
+		return false, err
+	}
+	return refreshed != nil && !bytes.Equal(refreshed, current), nil
+}
+
+// RefreshModuleInterface rewrites the interface block of the consumer's
+// generated module.codefly.yaml from the pinned source's copy, reporting whether
+// it changed. The module manifest is generated from
+// deployment/topology.bindings.codefly.yaml — a base-owned file the sync
+// updates — yet it is also where the consumer keeps product-owned content (its
+// own name, description, and added services), so it cannot be copied wholesale
+// like a service manifest. Refreshing only the generated interface keeps the
+// module's declared contract from contradicting the bindings it was rendered
+// from, which is what fails the base's own composition gate in the consumer.
+// Every other byte of the manifest — consumer-owned keys, comments, formatting —
+// is left exactly as written. Only a manifest that still declares itself
+// generated on both sides is refreshed.
+func RefreshModuleInterface(sourceRoot, targetRoot string) (bool, error) {
+	sourceRoot, targetRoot, err := refreshRoots(sourceRoot, targetRoot)
+	if err != nil {
+		return false, err
+	}
+	refreshed, current, err := plannedModuleInterface(sourceRoot, targetRoot)
+	if err != nil {
+		return false, err
+	}
+	if refreshed == nil || bytes.Equal(refreshed, current) {
+		return false, nil
+	}
+	target := filepath.Join(targetRoot, resources.ModuleConfigurationName)
+	info, err := os.Stat(target)
+	if err != nil {
+		return false, fmt.Errorf("stat target module manifest: %w", err)
+	}
+	if err := atomicWriteFile(target, refreshed, info.Mode().Perm()); err != nil {
+		return false, fmt.Errorf("refresh module interface in %s: %w", resources.ModuleConfigurationName, err)
+	}
+	// An interface endpoint must resolve to a non-private endpoint on a composed
+	// service, so a service whose manifest the consumer took over as hand-authored
+	// content — and which the service refresh therefore left behind — can leave
+	// the module exposing an endpoint it no longer declares. Writing that would
+	// make the module unloadable for every later command, so the refresh is undone
+	// and the operator is told what to reconcile.
+	if _, err := resources.LoadModuleFromDir(context.Background(), targetRoot); err != nil {
+		if restoreErr := atomicWriteFile(target, current, info.Mode().Perm()); restoreErr != nil {
+			return false, errors.Join(err, fmt.Errorf("restore %s: %w", resources.ModuleConfigurationName, restoreErr))
+		}
+		return false, fmt.Errorf("the interface the pinned source declares does not validate against this module's services, so %s was left as it was: %w", resources.ModuleConfigurationName, err)
+	}
+	return true, nil
+}
+
+// plannedModuleInterface returns the target module manifest with its interface
+// block reconciled against the pinned source, alongside the manifest as it is on
+// disk. A nil reconciliation means the manifest is outside what the sync owns.
+func plannedModuleInterface(sourceRoot, targetRoot string) ([]byte, []byte, error) {
+	relative := resources.ModuleConfigurationName
+	if !safeModulePath(sourceRoot, relative, true) || !safeModulePath(targetRoot, relative, true) {
+		return nil, nil, nil
+	}
+	sourceContent, err := os.ReadFile(filepath.Join(sourceRoot, relative))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read source module manifest: %w", err)
+	}
+	targetContent, err := os.ReadFile(filepath.Join(targetRoot, relative))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read target module manifest: %w", err)
+	}
+	// The generated marker is the ownership signal on both sides: a source that
+	// does not declare its manifest generated is not rendering an interface the
+	// sync owns, and a consumer manifest without the marker is hand-authored
+	// product content the sync must never rewrite.
+	if !carriesGeneratedMarker(sourceContent) || !carriesGeneratedMarker(targetContent) {
+		return nil, nil, nil
+	}
+	refreshed, err := rewriteModuleInterface(sourceContent, targetContent)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reconcile the interface of %s: %w", relative, err)
+	}
+	return refreshed, targetContent, nil
+}
+
+// rewriteModuleInterface splices the source manifest's interface block into the
+// target manifest's text, editing only the lines that block occupies. A source
+// without an interface block drops the target's — the module exposes nothing at
+// that version — and a target without one gains it at the position the source's
+// key order implies.
+func rewriteModuleInterface(sourceContent, targetContent []byte) ([]byte, error) {
+	sourceDocument, err := documentMapping(sourceContent)
+	if err != nil {
+		return nil, fmt.Errorf("parse source manifest: %w", err)
+	}
+	targetDocument, err := documentMapping(targetContent)
+	if err != nil {
+		return nil, fmt.Errorf("parse target manifest: %w", err)
+	}
+	sourceLines, _ := yamlLines(sourceContent)
+	targetLines, targetTerminated := yamlLines(targetContent)
+
+	var block []string
+	if start, end, ok := yamlKeyBlock(sourceDocument, moduleInterfaceKey); ok {
+		block = sourceLines[start:end]
+	}
+	start, end, ok := yamlKeyBlock(targetDocument, moduleInterfaceKey)
+	switch {
+	case ok:
+	case len(block) == 0:
+		return targetContent, nil
+	default:
+		start = moduleInterfaceInsertion(sourceDocument, targetDocument, len(targetLines))
+		end = start
+	}
+	rewritten := slices.Concat(targetLines[:start], block, targetLines[end:])
+	return joinYAMLLines(rewritten, targetTerminated), nil
+}
+
+// moduleInterfaceInsertion picks where an absent interface block belongs: before
+// the first target key the source orders after its own interface, so the
+// refreshed manifest keeps the generator's layout instead of appending a block
+// the next regeneration would move.
+func moduleInterfaceInsertion(sourceDocument, targetDocument *yaml.Node, targetLines int) int {
+	sourceKeys := yamlKeys(sourceDocument)
+	after := make(map[string]bool, len(sourceKeys))
+	for index := len(sourceKeys) - 1; index >= 0 && sourceKeys[index] != moduleInterfaceKey; index-- {
+		after[sourceKeys[index]] = true
+	}
+	for _, key := range yamlKeys(targetDocument) {
+		if !after[key] {
+			continue
+		}
+		if start, _, ok := yamlKeyBlock(targetDocument, key); ok {
+			return start
+		}
+	}
+	return targetLines
+}
+
+// documentMapping returns the root mapping of a single-document YAML file.
+func documentMapping(content []byte) (*yaml.Node, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return nil, err
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("not a YAML mapping")
+	}
+	return document.Content[0], nil
+}
+
+func yamlKeys(mapping *yaml.Node) []string {
+	keys := make([]string, 0, len(mapping.Content)/2)
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		keys = append(keys, mapping.Content[index].Value)
+	}
+	return keys
+}
+
+// yamlKeyBlock returns the half-open range of 0-based line indexes that key and
+// its value occupy in a mapping. The value's extent is the deepest line any of
+// its descendants sits on, so a blank line or a comment introducing the next key
+// stays outside the block.
+func yamlKeyBlock(mapping *yaml.Node, key string) (int, int, bool) {
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value != key {
+			continue
+		}
+		return mapping.Content[index].Line - 1,
+			max(deepestLine(mapping.Content[index+1]), mapping.Content[index].Line),
+			true
+	}
+	return 0, 0, false
+}
+
+func deepestLine(node *yaml.Node) int {
+	line := node.Line
+	for _, child := range node.Content {
+		line = max(line, deepestLine(child))
+	}
+	return line
+}
+
+// yamlLines splits a document into lines, reporting whether it was newline
+// terminated so a rewrite can restore the file's exact framing.
+func yamlLines(content []byte) ([]string, bool) {
+	text := string(content)
+	if terminated := strings.HasSuffix(text, "\n"); terminated {
+		return strings.Split(strings.TrimSuffix(text, "\n"), "\n"), true
+	}
+	return strings.Split(text, "\n"), false
+}
+
+func joinYAMLLines(lines []string, terminated bool) []byte {
+	joined := strings.Join(lines, "\n")
+	if terminated {
+		joined += "\n"
+	}
+	return []byte(joined)
+}
+
 // GeneratedFileMarker reports the source named by a leading
 // "Code generated from <source>. DO NOT EDIT." marker and whether any generated
 // marker is present in the file's leading comment block. It is the single
@@ -937,6 +1152,10 @@ func prepareAtomicCopy(source, target string) (string, func(), error) {
 	if err != nil {
 		return "", func() {}, err
 	}
+	return prepareAtomicWrite(target, payload, info.Mode().Perm())
+}
+
+func prepareAtomicWrite(target string, payload []byte, mode os.FileMode) (string, func(), error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return "", func() {}, err
 	}
@@ -946,7 +1165,7 @@ func prepareAtomicCopy(source, target string) (string, func(), error) {
 	}
 	temporaryPath := temporary.Name()
 	cleanup := func() { _ = os.Remove(temporaryPath) }
-	if err := temporary.Chmod(info.Mode().Perm()); err != nil {
+	if err := temporary.Chmod(mode); err != nil {
 		_ = temporary.Close()
 		cleanup()
 		return "", func() {}, err
@@ -970,6 +1189,15 @@ func prepareAtomicCopy(source, target string) (string, func(), error) {
 
 func atomicCopyFile(source, target string) error {
 	temporaryPath, cleanup, err := prepareAtomicCopy(source, target)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	return os.Rename(temporaryPath, target)
+}
+
+func atomicWriteFile(target string, payload []byte, mode os.FileMode) error {
+	temporaryPath, cleanup, err := prepareAtomicWrite(target, payload, mode)
 	if err != nil {
 		return err
 	}

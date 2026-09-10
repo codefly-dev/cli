@@ -752,11 +752,223 @@ func TestRefreshServiceManifestsPreservesHandAuthoredManifest(t *testing.T) {
 	assertFileContents(t, filepath.Join(target, filepath.FromSlash(relative)), handAuthored)
 }
 
+// The module's own module.codefly.yaml is generated from
+// deployment/topology.bindings.codefly.yaml — a base-owned file the sync
+// updates — so leaving it untouched lets the module's declared interface drift
+// from its own bindings (#602). Its generated interface is refreshed from the
+// pinned source while every consumer-owned byte (the module name, description,
+// added services, comments) survives.
+func TestRefreshModuleInterfaceTracksThePinnedSource(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, resources.ModuleConfigurationName), generatedManifestHeader+`kind: module
+name: saas-starter
+interface:
+  endpoints:
+    - service: auth-gateway
+      endpoint: grpc
+    - service: accounts
+      endpoint: connect
+      visibility: module
+services:
+  - name: auth-gateway
+  - name: accounts
+`)
+	writeTestFile(t, filepath.Join(target, resources.ModuleConfigurationName), generatedManifestHeader+`kind: module
+name: saas
+description: product composition
+interface:
+  endpoints:
+    - service: auth-gateway
+      endpoint: grpc
+
+# product-owned services
+services:
+  - name: auth-gateway
+  - name: accounts
+  - name: object-storage
+`)
+	writeComposedService(t, target, "auth-gateway", "grpc")
+	writeComposedService(t, target, "accounts", "connect")
+	writeComposedService(t, target, "object-storage", "http")
+
+	pending, err := PlanModuleInterfaceRefresh(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("a module interface contradicting the synced bindings was not planned for refresh")
+	}
+	refreshed, err := RefreshModuleInterface(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !refreshed {
+		t.Fatal("the module interface was not refreshed")
+	}
+	assertFileContents(t, filepath.Join(target, resources.ModuleConfigurationName), generatedManifestHeader+`kind: module
+name: saas
+description: product composition
+interface:
+  endpoints:
+    - service: auth-gateway
+      endpoint: grpc
+    - service: accounts
+      endpoint: connect
+      visibility: module
+
+# product-owned services
+services:
+  - name: auth-gateway
+  - name: accounts
+  - name: object-storage
+`)
+
+	again, err := RefreshModuleInterface(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again {
+		t.Fatal("refresh was not idempotent")
+	}
+}
+
+// A manifest with no interface block gains one where the source's key order puts
+// it, and a source that exposes nothing at the synced version drops the stale
+// block the consumer still carries.
+func TestRefreshModuleInterfaceAddsAndRemovesTheBlock(t *testing.T) {
+	source, target := syncFixture(t)
+	sourceManifest := filepath.Join(source, resources.ModuleConfigurationName)
+	targetManifest := filepath.Join(target, resources.ModuleConfigurationName)
+	unexposed := generatedManifestHeader + `kind: module
+name: app
+services:
+  - name: kept
+`
+	exposed := generatedManifestHeader + `kind: module
+name: app
+interface:
+  endpoints:
+    - service: kept
+      endpoint: grpc
+services:
+  - name: kept
+`
+	writeComposedService(t, target, "kept", "grpc")
+	writeTestFile(t, sourceManifest, exposed)
+	writeTestFile(t, targetManifest, unexposed)
+	if _, err := RefreshModuleInterface(source, target); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, targetManifest, exposed)
+
+	writeTestFile(t, sourceManifest, unexposed)
+	if _, err := RefreshModuleInterface(source, target); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, targetManifest, unexposed)
+}
+
+// An interface endpoint must resolve to a non-private endpoint on a composed
+// service. A service manifest the consumer took over as hand-authored content is
+// left behind by the service refresh, so the pinned source's interface can name
+// an endpoint that manifest no longer declares — writing it would make the module
+// unloadable for every later command, so the refresh is undone and reported.
+func TestRefreshModuleInterfaceRefusesAnInterfaceItsServicesCannotBack(t *testing.T) {
+	source, target := syncFixture(t)
+	writeTestFile(t, filepath.Join(source, resources.ModuleConfigurationName), generatedManifestHeader+`kind: module
+name: app
+interface:
+  endpoints:
+    - service: kept
+      endpoint: grpc
+services:
+  - name: kept
+`)
+	stale := generatedManifestHeader + `kind: module
+name: app
+services:
+  - name: kept
+`
+	writeTestFile(t, filepath.Join(target, resources.ModuleConfigurationName), stale)
+	// Hand-authored (no generated marker), so the service refresh never gives it
+	// the endpoint the module interface is about to expose.
+	writeTestFile(t, filepath.Join(target, "services", "kept", resources.ServiceConfigurationName),
+		"name: kept\nversion: 0.0.1\nagent:\n  kind: codefly:service\n  name: kept\n  publisher: codefly.dev\n  version: 0.0.1\n")
+
+	refreshed, err := RefreshModuleInterface(source, target)
+	if err == nil {
+		t.Fatal("an interface the module's services cannot back was accepted")
+	}
+	if refreshed {
+		t.Fatal("the refresh reported success after failing to validate")
+	}
+	if !strings.Contains(err.Error(), resources.ModuleConfigurationName) {
+		t.Fatalf("error does not name the manifest it left alone: %v", err)
+	}
+	assertFileContents(t, filepath.Join(target, resources.ModuleConfigurationName), stale)
+}
+
+// The generated marker is the ownership boundary on both sides: a consumer
+// manifest taken over as hand-authored product content is off-limits, and a
+// source that does not declare its manifest generated is not rendering an
+// interface the sync owns.
+func TestRefreshModuleInterfaceHonorsTheGeneratedMarker(t *testing.T) {
+	generatedSource := generatedManifestHeader + `kind: module
+name: app
+interface:
+  endpoints:
+    - service: kept
+      endpoint: grpc
+services:
+  - name: kept
+`
+	handAuthored := `kind: module
+name: saas
+services:
+  - name: kept
+`
+	cases := map[string]struct{ source, target string }{
+		"hand-authored target": {generatedSource, handAuthored},
+		"markerless source":    {strings.TrimPrefix(generatedSource, generatedManifestHeader), generatedManifestHeader + handAuthored},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			source, target := syncFixture(t)
+			writeTestFile(t, filepath.Join(source, resources.ModuleConfigurationName), testCase.source)
+			writeTestFile(t, filepath.Join(target, resources.ModuleConfigurationName), testCase.target)
+			pending, err := PlanModuleInterfaceRefresh(source, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pending {
+				t.Fatal("a manifest outside the sync's ownership was planned for refresh")
+			}
+			refreshed, err := RefreshModuleInterface(source, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if refreshed {
+				t.Fatal("a manifest outside the sync's ownership was rewritten")
+			}
+			assertFileContents(t, filepath.Join(target, resources.ModuleConfigurationName), testCase.target)
+		})
+	}
+}
+
 const targetModuleYAML = `kind: module
 name: app
 services:
   - name: kept
 `
+
+// writeComposedService writes a minimal service manifest so a module interface
+// exposing this endpoint validates when the module loads.
+func writeComposedService(t *testing.T, root, service, endpoint string) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(root, "services", service, resources.ServiceConfigurationName),
+		"name: "+service+"\nversion: 0.0.1\nagent:\n  kind: codefly:service\n  name: "+service+
+			"\n  publisher: codefly.dev\n  version: 0.0.1\nendpoints:\n  - name: "+endpoint+"\n    visibility: module\n")
+}
 
 func syncFixture(t *testing.T) (string, string) {
 	t.Helper()
