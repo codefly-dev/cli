@@ -1,0 +1,21 @@
+kind: service
+name: api
+version: 0.0.0
+module: app
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+    - name: store
+      module: data
+      endpoints:
+        - name: grpc
+    - name: migrate
+      module: jobs
+    - name: console
+      module: web
+endpoints:
+    - name: grpc
+      api: grpc

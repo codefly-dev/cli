@@ -1,0 +1,14 @@
+kind: service
+name: console
+version: 0.0.0
+module: web
+agent:
+    kind: runtime::service
+    name: nextjs-auth0
+    version: 0.0.6
+    publisher: codefly.ai
+endpoints:
+    - name: http
+      api: http
+    - name: admin
+      api: http

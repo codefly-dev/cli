@@ -215,13 +215,18 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 }
 
 // waitReady blocks until the flow reports ready, the flow exits/fails, or ctx is
-// done.
+// done. Giving up names the requirement that never held — which service, which
+// endpoint, which predicate — so a timeout is diagnosable.
 func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan error) error {
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
+	var pending *orchestration.ReadinessFailure
 	for {
 		select {
 		case <-ctx.Done():
+			if pending != nil {
+				return fmt.Errorf("flow not ready (%s): %w", pending, ctx.Err())
+			}
 			return ctx.Err()
 		case err := <-started:
 			if err != nil {
@@ -229,8 +234,15 @@ func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan err
 			}
 			return fmt.Errorf("flow stopped before becoming ready")
 		case <-ticker.C:
-			if flow.Ready(ctx) {
+			failure := flow.Readiness(ctx)
+			if failure == nil {
 				return nil
+			}
+			// A probe interrupted by this very ctx reports the interruption,
+			// not the requirement: keep the last diagnosis made while the
+			// deadline still had room.
+			if ctx.Err() == nil {
+				pending = failure
 			}
 		}
 	}

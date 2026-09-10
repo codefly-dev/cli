@@ -20,9 +20,13 @@ import (
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
+	"github.com/codefly-dev/core/standards"
+	"github.com/codefly-dev/core/tui"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // The agent subprocess is this same test binary re-executed with
@@ -55,19 +59,26 @@ type realAgent struct {
 }
 
 // boundMappings asks the kernel for a port per endpoint and keeps each listener
-// open for the lifetime of the process, so the reported address is one a
-// readiness probe can actually reach.
+// open for the lifetime of the process, serving whatever protocol the endpoint
+// declares, so the reported address is one a readiness probe can actually reach
+// — a bare listener on an endpoint declaring gRPC is not a served endpoint.
 func boundMappings(proposed []*basev0.NetworkMapping) ([]*basev0.NetworkMapping, error) {
 	accepted := make([]*basev0.NetworkMapping, 0, len(proposed))
 	for _, mapping := range proposed {
 		// The proposal's ports were bound then released, so the kernel can hand
 		// one of them straight back. Keep asking until the port really differs,
 		// or "the agent chose another port" is not what the test observes.
-		port, err := bindPortOtherThan(proposedPorts(proposed))
+		listener, err := bindPortOtherThan(proposedPorts(proposed))
 		if err != nil {
 			return nil, err
 		}
+		port := uint16(listener.Addr().(*net.TCPAddr).Port)
 		endpoint := mapping.GetEndpoint()
+		if endpoint.GetApi() == standards.GRPC {
+			server := grpc.NewServer()
+			healthv1.RegisterHealthServer(server, health.NewServer())
+			go func() { _ = server.Serve(listener) }()
+		}
 		accepted = append(accepted, &basev0.NetworkMapping{
 			Endpoint: endpoint,
 			Instances: []*basev0.NetworkInstance{
@@ -81,22 +92,24 @@ func boundMappings(proposed []*basev0.NetworkMapping) ([]*basev0.NetworkMapping,
 }
 
 // bindPortOtherThan holds a kernel-assigned port for the life of the process,
-// so the address it reports is one a readiness probe can actually reach.
-func bindPortOtherThan(excluded map[uint16]bool) (uint16, error) {
+// so the address it reports is one a readiness probe can actually reach. The
+// listener is returned so the caller can serve the endpoint's declared
+// protocol on it.
+func bindPortOtherThan(excluded map[uint16]bool) (net.Listener, error) {
 	for attempt := 0; attempt < 50; attempt++ {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		port := uint16(listener.Addr().(*net.TCPAddr).Port)
 		if !excluded[port] {
-			return port, nil
+			return listener, nil
 		}
 		if err = listener.Close(); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
-	return 0, fmt.Errorf("no free port outside the proposed set")
+	return nil, fmt.Errorf("no free port outside the proposed set")
 }
 
 func proposedPorts(proposed []*basev0.NetworkMapping) map[uint16]bool {
@@ -312,11 +325,11 @@ func TestInitPublishesTheAgentAcceptedPortsEverywhere(t *testing.T) {
 	require.Equal(t, acceptedREST, nativeAddressFor(t, dependencyMappings, "rest"))
 
 	// Readiness and the dashboard both answer from the shared state.
-	flow := &Flow{SharedState: world.SharedState, begun: map[string]bool{"web/gateway": true}}
+	flow := &Flow{SharedState: world.SharedState, states: map[string]tui.ServiceState{"web/gateway": tui.StateRunning}}
 	address, err := flow.GetAddressForEndpoint(ctx, "web", "gateway", "rest")
 	require.NoError(t, err)
 	require.Equal(t, acceptedREST, address)
-	require.True(t, flow.ServiceReachable("web/gateway"), "the accepted port is bound by the agent process")
+	require.True(t, flow.ServiceReachable(ctx, "web/gateway"), "the accepted port is bound by the agent process")
 
 	// Environment projection: Start writes the runner's own mappings out.
 	require.NoError(t, AppendRuntimeEnvironmentToFile(ctx, outputEnv, &basev0.ServiceIdentity{

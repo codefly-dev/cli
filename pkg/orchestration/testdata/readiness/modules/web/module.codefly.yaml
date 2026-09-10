@@ -1,0 +1,6 @@
+kind: module
+name: web
+project: readiness
+domain: github.com/codefly-dev/readiness/web
+services:
+    - name: console

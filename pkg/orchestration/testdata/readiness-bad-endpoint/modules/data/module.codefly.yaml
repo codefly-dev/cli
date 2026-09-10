@@ -1,0 +1,6 @@
+kind: module
+name: data
+project: readiness-bad-endpoint
+domain: github.com/codefly-dev/readiness/data
+services:
+    - name: store

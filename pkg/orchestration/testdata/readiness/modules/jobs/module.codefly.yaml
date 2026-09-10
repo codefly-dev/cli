@@ -1,0 +1,6 @@
+kind: module
+name: jobs
+project: readiness
+domain: github.com/codefly-dev/readiness/jobs
+services:
+    - name: migrate

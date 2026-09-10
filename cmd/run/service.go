@@ -332,7 +332,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 				case <-pollCtx.Done():
 					return
 				case <-ticker.C:
-					flow.PromoteReachable(serviceName, pollPromoted, printReady)
+					flow.PromoteReachable(pollCtx, serviceName, pollPromoted, printReady)
 					if hbCtx.Err() == nil && flow.Ready(pollCtx) {
 						markRunning()
 					}
@@ -510,7 +510,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 					t.SendDone(err) // quit instead of spinning on "Starting"
 					return
 				case <-ticker.C:
-					flow.PromoteReachable(serviceName, promoted, t.SendReady)
+					flow.PromoteReachable(runCtx, serviceName, promoted, t.SendReady)
 				}
 			}
 
