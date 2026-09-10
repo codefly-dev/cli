@@ -8,13 +8,118 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/companions"
 	"github.com/stretchr/testify/require"
 )
 
-func TestNeedsLinuxCLIIncludesExecutionCompanion(t *testing.T) {
-	if !needsLinuxCLI([]*Companion{{Name: "execution"}}) {
-		t.Fatal("execution companion must embed a freshly built linux CLI")
+// A companion whose spec names a CLI binary expects it staged in the context
+// before the build; one that names none takes its CLI from the base image with
+// COPY --from and needs nothing staged.
+func TestNeedsLinuxCLIFollowsTheDeclaredCLIBinary(t *testing.T) {
+	specs, err := loadBuildSpecs()
+	require.NoError(t, err)
+
+	require.True(t, needsLinuxCLI(specs, []*Companion{{Name: "execution"}}),
+		"the execution companion bakes a freshly built linux CLI")
+	require.False(t, needsLinuxCLI(specs, []*Companion{{Name: "go"}}),
+		"a language companion copies the CLI out of the base image, not the context")
+	require.True(t, needsLinuxCLI(specs, []*Companion{{Name: "go"}, {Name: baseCompanionName}}),
+		"one target that bakes the CLI is enough to have to stage it")
+}
+
+// core declares the Dockerfile and the context every companion image is built
+// from. The spec is deliberately given values the old name heuristic would
+// never produce — it derived the Dockerfile from the companion name and always
+// built from the core root — so a build that ignored the spec and inferred the
+// paths again fails here.
+func TestBuildWithDockerBuildsWhatTheSpecDeclares(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "proto", "0.0.11", true, false)
+
+	dockerLog := filepath.Join(t.TempDir(), "docker.txt")
+	writeFakeDocker(t, fmt.Sprintf("echo \"$@\" >> %q\nexit 0\n", dockerLog))
+
+	spec := companions.BuildSpec{
+		Name:       "proto",
+		Dockerfile: "build/proto.Dockerfile",
+		Context:    "companions/proto",
 	}
+	c, err := LoadCompanion(filepath.Join(root, "companions", "proto"))
+	require.NoError(t, err)
+	_, err = buildWithDocker(c, spec, root, false, []dockerPlatform{{Value: "linux/amd64", Arch: "amd64"}}, false, "")
+	require.NoError(t, err)
+
+	logged := strings.TrimSpace(string(readFile(t, dockerLog)))
+	require.Contains(t, logged, "-f "+filepath.FromSlash(spec.Dockerfile))
+	require.NotContains(t, logged, filepath.Join("companions", "proto", "Dockerfile"),
+		"the Dockerfile must come from the spec, not from the companion name")
+	require.True(t, strings.HasSuffix(logged, " "+filepath.FromSlash(spec.Context)),
+		"the build context must be the one the spec declares; got %q", logged)
+}
+
+// A Dockerfile core declares no spec for has no Dockerfile path and no context
+// to build it with. The run stops before anything is built rather than
+// publishing the companions ordered ahead of it and failing on this one, which
+// reads as a partial-publish incident instead of a stale core pin.
+func TestBuildTargetsRefusesTheWholeRunForACompanionCoreDoesNotDeclare(t *testing.T) {
+	root := t.TempDir()
+	writeSiblingCLI(t, root)
+	writeManifest(t, root, baseCompanionName, "0.0.5", true, false)
+	writeManifest(t, root, "invented", "0.0.1", true, false)
+
+	dockerLog := filepath.Join(t.TempDir(), "docker.txt")
+	writeFakeDocker(t, fmt.Sprintf("echo \"$@\" >> %q\nexit 0\n", dockerLog))
+
+	targets, err := selectTargets(root, true, nil)
+	require.NoError(t, err)
+	_, err = buildTargets(root, targets, BuildOptions{Push: true})
+	require.ErrorContains(t, err, "no build spec for invented")
+
+	_, readErr := os.Stat(dockerLog)
+	require.True(t, os.IsNotExist(readErr),
+		"an undeclared companion must stop the run before anything is built or pushed")
+}
+
+// A companion whose spec names no base but whose Dockerfile takes one gets no
+// --build-arg, so the Dockerfile's pinned ARG default wins and the image
+// publishes built on whatever that stale tag names. The specs come from the
+// pinned core module and the Dockerfile from --core-dir, so the two disagree
+// exactly when the CLI's pin trails the tree being built.
+func TestBuildTargetsRefusesWhenTheTreeTakesABaseTheSpecDoesNotDeclare(t *testing.T) {
+	root := t.TempDir()
+	writeSiblingCLI(t, root)
+	writeManifest(t, root, "execution", "0.0.2", true, false)
+	writeBaseDependentDockerfile(t, root, "execution", "ghcr.io/codefly-dev/codefly:0.0.4")
+
+	dockerLog := filepath.Join(t.TempDir(), "docker.txt")
+	writeFakeDocker(t, fmt.Sprintf("echo \"$@\" >> %q\nexit 0\n", dockerLog))
+
+	execution, err := LoadCompanion(filepath.Join(root, "companions", "execution"))
+	require.NoError(t, err)
+
+	_, err = buildTargets(root, []*Companion{execution}, BuildOptions{})
+	require.ErrorContains(t, err, companions.BaseImageArg)
+	require.ErrorContains(t, err, "names no base companion")
+
+	_, readErr := os.Stat(dockerLog)
+	require.True(t, os.IsNotExist(readErr),
+		"a base the spec and the tree disagree on must stop the run before anything is built")
+}
+
+// The mirror image: the spec names a base the Dockerfile has no argument to
+// receive, so the resolved reference is passed and ignored and the image is
+// built on whatever its own FROM says instead.
+func TestBuildTargetsRefusesWhenTheSpecNamesABaseTheTreeCannotReceive(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, baseCompanionName, "0.0.5", true, false)
+	writeManifest(t, root, "go", "0.0.9", true, false)
+	writeFakeDocker(t, "exit 0\n")
+
+	dependent, err := LoadCompanion(filepath.Join(root, "companions", "go"))
+	require.NoError(t, err)
+
+	_, err = buildTargets(root, []*Companion{dependent}, BuildOptions{})
+	require.ErrorContains(t, err, "declares no "+companions.BaseImageArg)
 }
 
 // withFastRegistryRead shrinks the digest-lookup retry delay so tests that
@@ -139,7 +244,7 @@ exit 0
 	require.NotContains(t, string(logged), "imagetools",
 		"the digest comes from the push, not from re-reading the tag")
 	require.Contains(t, dependentBuildLine(t, logged, "go"),
-		"--build-arg "+baseImageArg+"=ghcr.io/codefly-dev/codefly@sha256:"+pushedBaseDigest)
+		"--build-arg "+companions.BaseImageArg+"=ghcr.io/codefly-dev/codefly@sha256:"+pushedBaseDigest)
 
 	// The base a dependent consumed cannot be recovered after the run: the tag
 	// it was published under is mutable, so it is recorded here or nowhere.
@@ -190,7 +295,7 @@ exit 0
 	require.NotContains(t, string(logged), "docker push",
 		"buildx pushes the manifest list itself")
 	require.Contains(t, dependentBuildLine(t, logged, "go"),
-		"--build-arg "+baseImageArg+"=ghcr.io/codefly-dev/codefly@sha256:"+pushedBaseDigest)
+		"--build-arg "+companions.BaseImageArg+"=ghcr.io/codefly-dev/codefly@sha256:"+pushedBaseDigest)
 }
 
 // A run that was publishing the base and failed to get it into the registry
@@ -245,7 +350,7 @@ exit 0
 	_, err = buildTargets(root, targets, BuildOptions{Push: true})
 	require.ErrorContains(t, err, "not publicly pullable")
 	require.Contains(t, dependentBuildLine(t, readFile(t, dockerLog), "go"),
-		"--build-arg "+baseImageArg+"=ghcr.io/codefly-dev/codefly@sha256:"+pushedBaseDigest)
+		"--build-arg "+companions.BaseImageArg+"=ghcr.io/codefly-dev/codefly@sha256:"+pushedBaseDigest)
 }
 
 // The argument goes to the companions whose Dockerfile declares it and to no
@@ -275,8 +380,8 @@ exit 0
 	require.NoError(t, err)
 
 	logged := readFile(t, dockerLog)
-	require.Contains(t, dependentBuildLine(t, logged, "go"), baseImageArg+"=")
-	require.NotContains(t, dependentBuildLine(t, logged, "execution"), baseImageArg,
+	require.Contains(t, dependentBuildLine(t, logged, "go"), companions.BaseImageArg+"=")
+	require.NotContains(t, dependentBuildLine(t, logged, "execution"), companions.BaseImageArg,
 		"a companion that declares no base takes no base argument")
 }
 

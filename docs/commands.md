@@ -138,8 +138,10 @@ codefly run service api --cli-server --open       # Run headless with the local 
 | `--output-env-service` | Export a specific running service (`module/service`) instead of the root |
 | `--load-only` | Stop after Load phase |
 | `--init-only` | Stop after Init phase |
-| `--cli-server` | Start the CLI gRPC/Connect server and the embedded dashboard (implies headless output) |
+| `--cli-server` | Start the CLI gRPC/Connect server and the embedded dashboard (implies headless output). The address is derived from the workspace name and `--naming-scope`; the run claims it before building the flow and fails if another process holds it |
 | `--open` | Open the dashboard in the browser (requires `--cli-server`) |
+| `--temporary-ports` | Run as a disposable invocation: ephemeral ports plus a generated naming scope isolating the run's agents, containers and runtime state. The Codefly SDK sets it for test-owned dependency stacks; see [disposable invocations](agent-ci-port-isolation.md#disposable-invocations) |
+| `--naming-scope` | Fold a caller-chosen label into port derivation and resource names. Wins over the scope `--temporary-ports` would generate; passing it empty asks for no scope at all |
 
 Run profiles define intentional local runtime shapes in
 `workspace.codefly.yaml`:
@@ -252,10 +254,21 @@ Deploy a service to a target environment.
 codefly deploy service api
 codefly deploy service api --standalone
 codefly deploy service api --env production --render-only
+codefly deploy service api --wait-for healthy --wait-timeout 5m
 ```
 
 `--render-only` writes a validated, inventoried service-owned tree without
-calling Kubernetes. For a complete module promotion, use the GitOps lifecycle:
+calling Kubernetes.
+
+`--wait-for` selects the completion stage the deployment must establish before
+it is reported as successful — `applied` (the default: `kubectl apply` succeeded
+and nothing more), `bootstrapped` (the owned schema-preparation Jobs also completed) or `healthy`
+(the owned workloads also finished rolling out). `--wait-timeout` (default 10m)
+is the total observation budget for the command, shared across every service it
+observes. The same flags apply to `codefly deploy module`. See
+[deployment completion stages](deployment-completion.md).
+
+For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
 codefly deploy gitops render payments --env production --app-project payments
@@ -463,12 +476,64 @@ with the `module_trust_missing` diagnostic. The escape hatch is per module:
 the unverified git clone (`run` prints `unverified git clone for <name>` once
 per run when it does). An overlay entry selects exactly one of
 `path`/`worktree`/`pinned`/`git`, so `run` replaces that entry with the
-clone's `path:` once it materializes the module, and says so when it does. The
-choice itself, and the clone it produced, move to `codefly.local.resolved.yaml`
-beside the overlay (gitignored like it), which is what keeps later runs on the
-clone and lets `codefly doctor workspace` report the module as unverified.
+clone's `path:` once it materializes the module, and says so when it does.
 Setting `resolve.<name>.pinned: true` revokes the opt-out and returns the
 module to verified resolution.
+
+#### Resolution receipts
+
+Everything `run` materializes is recorded as a receipt in
+`codefly.local.resolved.yaml` beside the overlay (gitignored like it). A
+receipt binds the request it answered — canonical source, module subpath,
+requested version or constraint — to what that request resolved to: the
+materialization mode (`verified` or `git`), the exact resolved version, the
+path, and for a verified package its artifact digest and commit.
+
+```yaml
+resolved:
+    saas:
+        source: codefly-dev/module-saas-starter
+        requested: "0.1.0"
+        mode: verified
+        version: 0.1.0
+        path: /path/to/workspace/.codefly/cache/modules/<digest>
+        digest: sha256:…
+        commit: …
+```
+
+That record is the boundary between a checkout you manage and output the CLI
+manages. An overlay `path:` matching a receipt is one `run` wrote and may
+refresh; one that does not is you editing the module in place, and `run` never
+touches it. It is also what keeps a module on its git opt-out after the
+directive has been replaced by a path, and what lets `codefly doctor
+workspace` report the module as unverified.
+
+Because the receipt names the request, a materialization can be checked
+against the request being made *now*. When a module's requested version (or
+source) changes and the new request cannot be resolved, `run` does **not** keep
+running the previous version: it drops the materialized path from the overlay
+and fails with both versions named —
+
+```
+module <saas>: cannot resolve requested version v9.9.9: …;
+its previously resolved version v0.0.1 at … no longer answers that request
+and has been dropped from codefly.local.yaml
+```
+
+The cached files may remain on disk, but nothing routes the composed reference
+to them any more, so a failed upgrade cannot silently keep shipping the old
+module. A module the CLI has *never* materialized is unaffected: it is left
+unresolved with a warning, and only a target whose dependency closure needs it
+fails. `codefly doctor workspace` reports a materialization that answers a
+different request than the workspace now makes with the
+`module_resolution_stale` diagnostic, before a run is attempted. A record
+written before receipts existed is read for its git opt-out and its path, but
+records no request, so it cannot vouch for its checkout under a request that
+fails.
+
+An unchanged request still resolves offline: the git clone cache is
+version-keyed and the verified package cache is digest-checked on every reuse,
+so a warmed-up workspace boots with the producer unreachable.
 
 **`add service` flags:**
 

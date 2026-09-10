@@ -224,7 +224,15 @@ func (flow *Flow) dependencyConsumers(order []architecture.Service) (map[string]
 // readiness gate can never disagree about which endpoints matter.
 func (flow *Flow) serviceEndpointRequirements(ctx context.Context, service string) ([]readinessRequirement, error) {
 	if flow.world == nil || flow.world.Dependencies == nil {
-		return nil, nil
+		// Without a resolved graph there are no declarations to select against,
+		// so every recorded endpoint counts — the same rule endpointConsumed
+		// applies when nothing in the run declares one.
+		mappings, _ := flow.SharedState.GetNetworkMappingsFromUnique(service)
+		requirements := make([]readinessRequirement, 0, len(mappings))
+		for _, mapping := range mappings {
+			requirements = append(requirements, endpointRequirement(service, mapping))
+		}
+		return requirements, nil
 	}
 	order, err := flow.world.Dependencies.OrderTo(ctx, resources.WithUnique(flow.originService).Unique())
 	if err != nil {

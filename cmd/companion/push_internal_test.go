@@ -167,8 +167,9 @@ exit 1
 func TestBuildTargets_ContinuesPushingAfterAFailure(t *testing.T) {
 	withFastPushVerifyRetry(t)
 	root := t.TempDir()
-	writeManifest(t, root, "alpha", "0.0.1", true, false)
-	writeManifest(t, root, "beta", "0.0.2", true, false)
+	writeSiblingCLI(t, root)
+	writeManifest(t, root, baseCompanionName, "0.0.1", true, false)
+	writeManifest(t, root, "execution", "0.0.2", true, false)
 
 	pushLog := filepath.Join(t.TempDir(), "pushed.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
@@ -189,20 +190,20 @@ esac
 exit 0
 `, pushLog))
 
-	alpha, err := LoadCompanion(filepath.Join(root, "companions", "alpha"))
+	base, err := LoadCompanion(filepath.Join(root, "companions", baseCompanionName))
 	require.NoError(t, err)
-	beta, err := LoadCompanion(filepath.Join(root, "companions", "beta"))
+	execution, err := LoadCompanion(filepath.Join(root, "companions", "execution"))
 	require.NoError(t, err)
 
-	_, err = buildTargets(root, []*Companion{alpha, beta}, BuildOptions{Push: true})
+	_, err = buildTargets(root, []*Companion{base, execution}, BuildOptions{Push: true})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "alpha")
-	require.Contains(t, err.Error(), "beta", "the second companion must still be attempted and reported")
+	require.Contains(t, err.Error(), baseCompanionName)
+	require.Contains(t, err.Error(), "execution", "the second companion must still be attempted and reported")
 
 	pushed, readErr := os.ReadFile(pushLog)
 	require.NoError(t, readErr)
-	require.Contains(t, string(pushed), alpha.Tag())
-	require.Contains(t, string(pushed), beta.Tag(),
+	require.Contains(t, string(pushed), base.Tag())
+	require.Contains(t, string(pushed), execution.Tag(),
 		"a private package on the first companion must not abort the rest of the fleet")
 }
 

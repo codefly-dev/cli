@@ -60,6 +60,11 @@ func TestIsNativeServiceCommand(t *testing.T) {
 		{"go native binary", []string{"/repo/svc/code/cache/native/a1b2c3d4", "serve"}, true},
 		{"debug native binary", []string{"/repo/svc/code/cache/native/a1b2c3d4-debug"}, true},
 		{"relative native binary", []string{"cache/native/a1b2c3d4", "serve"}, true},
+		// The layout the go/rust runners actually produce: the service's cache
+		// directory is hidden, so the binary lives under ".cache/native/".
+		{"hidden cache native binary", []string{"/repo/modules/saas/services/telemetry/.cache/native/e7da9615", "serve"}, true},
+		{"relative hidden cache native binary", []string{".cache/native/e7da9615"}, true},
+		{"lookalike hidden parent dir", []string{"/repo/my.cache/native/tool"}, false},
 		{"postgres postmaster", []string{"/opt/homebrew/bin/postgres", "-D", "/home/u/.codefly/data/ws"}, true},
 		{"cache/native only inside a later arg", []string{"go", "run", "/repo/cache/native/x"}, false},
 		{"lookalike parent dir is not the cache segment", []string{"/repo/mycache/native/tool"}, false},

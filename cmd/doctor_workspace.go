@@ -46,6 +46,7 @@ const (
 	codeModuleReferenceUnresolved = "module_reference_unresolved"
 	codeModuleTrustMissing        = "module_trust_missing"
 	codeModuleUnverified          = "module_unverified"
+	codeModuleResolutionStale     = "module_resolution_stale"
 	codeTimeout                   = "timeout"
 )
 
@@ -258,22 +259,25 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 	if dir := composition.NearestOverlayDir(ws.Dir()); dir != "" {
 		overlayDir = dir
 	}
-	gitResolved, err := composition.LoadGitResolved(overlayDir)
+	receipts, err := composition.LoadResolutionReceipts(overlayDir)
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "module-trust", "fail",
-			fmt.Sprintf("cannot read %s: %v", composition.GitResolvedRecordName, err),
-			fmt.Sprintf("fix or delete %s in %s", composition.GitResolvedRecordName, overlayDir))
+			fmt.Sprintf("cannot read %s: %v", composition.ResolutionRecordName, err),
+			fmt.Sprintf("fix or delete %s in %s", composition.ResolutionRecordName, overlayDir))
 		return
 	}
 	for _, ref := range ws.Modules {
 		if ref.Source == "" || ref.PathOverride != nil {
 			continue
 		}
-		_, wasCloned := gitResolved[ref.Name]
-		if composition.GitResolutionFor(overlayDirective(overlay, ref.Name), wasCloned) {
+		directive := overlayDirective(overlay, ref.Name)
+		receipt := receipts[ref.Name]
+		mode := composition.ResolutionModeFor(directive, receipt)
+		checkModuleMaterialization(ref, directive, receipt, mode, report)
+		if mode == composition.ResolutionModeGit {
 			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
 				fmt.Sprintf("module %q resolves through the unverified git clone: nothing about it is signature- or digest-checked", ref.Name),
-				fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", ref.Name, resources.WorkspaceConfigurationName, composition.GitResolvedRecordName))
+				fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", ref.Name, resources.WorkspaceConfigurationName, composition.ResolutionRecordName))
 			continue
 		}
 		if err := composition.CheckModuleTrustCoverage(ws.Dir(), ref); err != nil {
@@ -282,6 +286,45 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 				fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))
 		}
 	}
+}
+
+// checkModuleMaterialization reports an overlay entry that still points at a
+// materialization the CLI wrote for a *different* request than the workspace
+// makes now — the state a version bump leaves behind between the edit and the
+// next run. `run` refuses to reuse it (it re-resolves, and fails closed if that
+// resolution fails), so this is a warning about what the next run will have to
+// do rather than a failure in itself; without it the mismatch is invisible until
+// the run either re-pulls or refuses. Only a path the receipt itself names is
+// considered: any other path is a checkout the user manages, which no committed
+// version says anything about.
+func checkModuleMaterialization(ref *resources.ModuleReference, directive *resources.ModuleResolveDirective, receipt *composition.ResolutionReceipt, mode composition.ResolutionMode, report *workspaceReadinessReport) {
+	if directive == nil || directive.Path == "" || directive.Path != receipt.ResolvedPath() {
+		return
+	}
+	if receipt.Answers(ref, mode) {
+		return
+	}
+	report.add(codeModuleResolutionStale, "materialization of "+ref.Name, "warn",
+		fmt.Sprintf("module %q is materialized at %s for %s, but the workspace now requests %s: the next run re-resolves it and refuses that checkout if the request cannot be resolved", ref.Name, directive.Path, receiptRequestLabel(receipt), moduleRequestLabel(ref, mode)),
+		fmt.Sprintf("run `codefly run solution` to re-resolve %q, or set resolve.%s.path in %s to a local checkout", ref.Name, ref.Name, resources.LocalOverlayConfigurationName))
+}
+
+// receiptRequestLabel describes the request a receipt answered. A receipt
+// migrated from the pre-receipt record records no request at all, so it can only
+// be described as one.
+func receiptRequestLabel(receipt *composition.ResolutionReceipt) string {
+	if receipt.Requested == "" && receipt.Version == "" {
+		return "an unrecorded request"
+	}
+	return fmt.Sprintf("%s (%s, resolved to %s)", receipt.Requested, receipt.Mode, receipt.Version)
+}
+
+func moduleRequestLabel(ref *resources.ModuleReference, mode composition.ResolutionMode) string {
+	version := ref.Version
+	if version == "" {
+		version = "latest"
+	}
+	return fmt.Sprintf("%s (%s)", version, mode)
 }
 
 // overlayDirective returns module's overlay entry, or nil when there is no

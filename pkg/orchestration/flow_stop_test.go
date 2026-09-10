@@ -163,6 +163,45 @@ func TestFlowStartReturnsPostStartRunnerFailure(t *testing.T) {
 	require.Equal(t, FlowFailure{Service: "backend/auth-sidecar", Message: "runner exited"}, failure)
 }
 
+// TestFlowStartLeavesTeardownToTheCaller pins the teardown contract: a failed
+// Start reports the failure and stops nothing itself. Every caller already
+// stops the flow on its own error path — cmd/run's stopFresh, cmd/validation's
+// defer, cmd/ci's runAndStopFlow (which carries its own `stopped` latch),
+// cmd/test's stopService — so a stop issued from here too would send each
+// started service a SECOND Stop RPC: it would double the "stopping <svc>"
+// shutdown log the user is reading the failure out of, double the worst-case
+// teardown wait (each Stop is bounded at 10s, and the two fan-outs run back to
+// back), and turn an agent that rejects a redundant Stop into a spurious error
+// joined onto the real failure.
+func TestFlowStartLeavesTeardownToTheCaller(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	service := &resources.Service{Name: "api"}
+	service.WithModule("backend")
+	policy := &blockingFailurePolicy{started: make(chan struct{})}
+	playbook, err := NewPlaybook(ctx, &World{})
+	require.NoError(t, err)
+	playbook.WithPolicy(policy)
+	manager := &recordingManager{unique: "backend/postgres"}
+	flow := &Flow{
+		originService: service,
+		playbook:      playbook,
+		hub:           &Hub{managers: []IManager{manager}},
+	}
+
+	result := make(chan error, 1)
+	go func() { result <- flow.Start(ctx) }()
+	<-policy.started
+	flow.reportFailure("backend/auth-sidecar", "runner exited")
+	require.Error(t, <-result)
+	require.Zero(t, manager.stopCalls)
+
+	// The caller's teardown is the one and only stop each service receives.
+	require.NoError(t, flow.Stop())
+	require.Equal(t, 1, manager.stopCalls)
+}
+
 func TestFlowStartPropagatesPlaybookPanicToCaller(t *testing.T) {
 	service := &resources.Service{Name: "api"}
 	service.WithModule("backend")

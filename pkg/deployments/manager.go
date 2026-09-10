@@ -2,11 +2,13 @@ package deployments
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -27,16 +29,40 @@ func RequiresDeploymentOutput(manager Manager) bool {
 	return ok && requirement.RequiresDeploymentOutput()
 }
 
+// RenderedTreeEvidence is what one deployment tree established: which target it
+// was applied to, the digest of the artifact that produced it, when each stage
+// was reached, the owned resources observation read, and — when a stage was not
+// reached — the terminal diagnostics that explain why.
 type RenderedTreeEvidence struct {
 	Module    string
 	Service   string
 	Digest    string
 	Manifests string
+	// Stage is the furthest completion stage this tree verified. It never
+	// reflects the stage the caller asked for: a stage beyond rendered is set
+	// only after the apply or the observation that established it returned
+	// successfully.
+	Stage CompletionStage
+	// Mutated records that this tree changed the target, even when it did not
+	// reach StageApplied. A bootstrap barrier that fails has applied the
+	// preparation resources and deliberately withheld the rollout, so the
+	// namespace holds a partial revision an operator has to reconcile; without
+	// this, StageRendered alone would read as "no cluster was contacted".
+	Mutated     bool
+	RenderedAt  time.Time
+	AppliedAt   time.Time
+	ObservedAt  time.Time
+	Resources   []ObservedResource
+	Diagnostics []string
 }
 
 type DeploymentEvidence struct {
 	Target        *VerifiedKubernetesTarget
 	RenderedTrees []RenderedTreeEvidence
+	// Required is the stage the caller asked for; Reached is the weakest stage
+	// any rendered tree established.
+	Required CompletionStage
+	Reached  CompletionStage
 }
 
 type EvidenceProvider interface {
@@ -57,18 +83,18 @@ func newEvidenceRecorder() evidenceRecorder {
 	return evidenceRecorder{trees: map[evidenceKey]RenderedTreeEvidence{}}
 }
 
-func (r *evidenceRecorder) record(tree RenderedTreeEvidence) {
+func (r *evidenceRecorder) record(tree *RenderedTreeEvidence) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.trees[evidenceKey{module: tree.Module, service: tree.Service}] = tree
+	r.trees[evidenceKey{module: tree.Module, service: tree.Service}] = *tree
 }
 
 func (r *evidenceRecorder) renderedTrees() []RenderedTreeEvidence {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	trees := make([]RenderedTreeEvidence, 0, len(r.trees))
-	for _, tree := range r.trees {
-		trees = append(trees, tree)
+	for key := range r.trees {
+		trees = append(trees, r.trees[key])
 	}
 	sort.Slice(trees, func(i, j int) bool {
 		if trees[i].Module == trees[j].Module {
@@ -110,24 +136,100 @@ func KubernetesOutputProfile(manager Manager) builderv0.KubernetesOutputProfile 
 	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
 }
 
-func NewLocalApplyManager(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) (*LocalApplyManager, error) {
+// NewLocalApplyManager binds a direct apply to an exact local k3d target and to
+// the completion the caller requires. A direct apply always mutates a cluster,
+// so a condition weaker than applied is a caller mistake rather than a
+// render-only request.
+func NewLocalApplyManager(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	env *resources.Environment,
+	completion CompletionCondition,
+) (*LocalApplyManager, error) {
+	if !completion.Stage.AtLeast(StageApplied) {
+		return nil, fmt.Errorf(
+			"direct apply cannot complete at %q; use a render manager for %s, or require one of %s",
+			completion.Stage,
+			StageRendered,
+			strings.Join(CompletionStageNames()[1:], ", "),
+		)
+	}
+	if completion.Timeout <= 0 {
+		completion.Timeout = DefaultCompletionTimeout
+	}
 	target, err := VerifyLocalK3dTarget(ctx, env)
 	if err != nil {
 		return nil, err
 	}
 	return &LocalApplyManager{
-		Workspace: workspace,
-		Env:       env,
-		target:    target,
-		evidence:  newEvidenceRecorder(),
+		Workspace:  workspace,
+		Env:        env,
+		target:     target,
+		completion: completion,
+		evidence:   newEvidenceRecorder(),
 	}, nil
 }
 
 type LocalApplyManager struct {
-	Workspace *resources.Workspace
-	Env       *resources.Environment
-	target    VerifiedKubernetesTarget
-	evidence  evidenceRecorder
+	Workspace  *resources.Workspace
+	Env        *resources.Environment
+	target     VerifiedKubernetesTarget
+	completion CompletionCondition
+	budget     observationBudget
+	evidence   evidenceRecorder
+}
+
+// observationBudget is the completion timeout spent across every tree and every
+// stage this manager observes. One manager serves a whole module deploy, so a
+// per-call budget would let a caller's stated timeout be spent once per service
+// per stage instead of once.
+type observationBudget struct {
+	mu    sync.Mutex
+	spent time.Duration
+}
+
+func (l *LocalApplyManager) claimObservation() (time.Duration, error) {
+	l.budget.mu.Lock()
+	defer l.budget.mu.Unlock()
+	remaining := l.completion.Timeout - l.budget.spent
+	if remaining <= 0 {
+		return 0, fmt.Errorf("observation budget of %s is exhausted", l.completion.Timeout)
+	}
+	return remaining, nil
+}
+
+func (l *LocalApplyManager) spendObservation(elapsed time.Duration) {
+	l.budget.mu.Lock()
+	defer l.budget.mu.Unlock()
+	l.budget.spent += elapsed
+}
+
+// observe runs one observation against the deployment-wide budget and records
+// what it read, whether or not the stage was established.
+func (l *LocalApplyManager) observe(
+	ctx context.Context,
+	observer completionObserver,
+	evidence *RenderedTreeEvidence,
+	targets []ownedResource,
+	stage CompletionStage,
+) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	budget, err := l.claimObservation()
+	if err != nil {
+		evidence.Diagnostics = append(evidence.Diagnostics, err.Error())
+		return err
+	}
+	start := time.Now()
+	observed, observeErr := observer.await(ctx, targets, stage, budget)
+	l.spendObservation(time.Since(start))
+	evidence.ObservedAt = time.Now().UTC()
+	evidence.Resources = append(evidence.Resources, observed...)
+	if observeErr != nil {
+		evidence.Diagnostics = append(evidence.Diagnostics, observeErr.Error())
+	}
+	return observeErr
 }
 
 func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error {
@@ -161,20 +263,83 @@ func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Servi
 var _ Manager = &LocalApplyManager{}
 var _ EvidenceProvider = &LocalApplyManager{}
 
+// partialRevision is what an operator has to act on when a bootstrap barrier
+// fails: the preparation resources are live on the target and the workloads that
+// go with them are not.
+const partialRevision = "the preparation resources were applied and the workload rollout was withheld; " +
+	"the target holds a partial revision"
+
+// applyTree takes one rendered tree as far as the caller's completion condition
+// requires, recording what it actually established at every exit.
+//
+// A caller that requires bootstrapping gets a barrier: the schema Jobs are
+// applied and awaited before any workload rollout is applied, so a consumer
+// never starts against preparation that has not finished. A caller that requires
+// only StageApplied gets its documents applied exactly as rendered — the barrier
+// reorders resources, and reordering is a behavior change nobody asked for.
 func (l *LocalApplyManager) applyTree(ctx context.Context, module, service, tree, digest, dir string) error {
-	manifests, resourcesToApply, err := renderKustomize(ctx, tree, digest, dir)
+	manifests, documents, err := renderKustomize(ctx, tree, digest, dir)
 	if err != nil {
 		return err
 	}
-	if err := KubernetesApply(ctx, l.Env, &l.target, resourcesToApply...); err != nil {
+	evidence := RenderedTreeEvidence{
+		Module:     module,
+		Service:    service,
+		Digest:     digest,
+		Manifests:  manifests,
+		Stage:      StageRendered,
+		RenderedAt: time.Now().UTC(),
+	}
+	defer func() { l.evidence.record(&evidence) }()
+
+	barrier := l.completion.Stage.AtLeast(StageBootstrapped)
+	plan, err := planApply(documents, l.target.Namespace, barrier)
+	if err != nil {
 		return err
 	}
-	l.evidence.record(RenderedTreeEvidence{
-		Module:    module,
-		Service:   service,
-		Digest:    digest,
-		Manifests: manifests,
-	})
+	observer := completionObserver{env: l.Env, target: &l.target}
+
+	// Mutated is set the moment an apply is attempted with something to apply,
+	// not once it succeeds: KubernetesApply sends resources one at a time, so a
+	// failure partway through has already changed the target. Over-reporting
+	// prompts a check that finds nothing; under-reporting tells an operator to
+	// skip a namespace that needs reconciling.
+	if len(plan.Preparation) > 0 {
+		evidence.Mutated = true
+		if err := KubernetesApply(ctx, l.Env, &l.target, plan.Preparation...); err != nil {
+			return err
+		}
+	}
+
+	bootstrapped := false
+	if barrier {
+		if err := l.observe(ctx, observer, &evidence, plan.BootstrapJobs, StageBootstrapped); err != nil {
+			evidence.Diagnostics = append(evidence.Diagnostics, partialRevision)
+			return err
+		}
+		bootstrapped = true
+	}
+	if len(plan.Rollout) > 0 {
+		evidence.Mutated = true
+		if err := KubernetesApply(ctx, l.Env, &l.target, plan.Rollout...); err != nil {
+			return err
+		}
+	}
+	evidence.AppliedAt = time.Now().UTC()
+	evidence.Stage = StageApplied
+	if bootstrapped {
+		evidence.Stage = StageBootstrapped
+	}
+	if !l.completion.Stage.AtLeast(StageHealthy) {
+		return nil
+	}
+	// The bootstrap Jobs are deliberately absent here: their stage is already
+	// established, and re-reading a completed Job that its TTL has since removed
+	// would fail a deployment that succeeded.
+	if err := l.observe(ctx, observer, &evidence, plan.RolloutTargets, StageHealthy); err != nil {
+		return err
+	}
+	evidence.Stage = StageHealthy
 	return nil
 }
 
@@ -207,9 +372,12 @@ func (l *LocalApplyManager) importImages(ctx context.Context, module *resources.
 
 func (l *LocalApplyManager) Evidence() DeploymentEvidence {
 	target := l.target
+	trees := l.evidence.renderedTrees()
 	return DeploymentEvidence{
 		Target:        &target,
-		RenderedTrees: l.evidence.renderedTrees(),
+		RenderedTrees: trees,
+		Required:      l.completion.Stage,
+		Reached:       weakestStage(trees),
 	}
 }
 
@@ -243,11 +411,13 @@ func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, 
 		if err != nil {
 			return w.Wrapf(err, "cannot render kustomize")
 		}
-		r.evidence.record(RenderedTreeEvidence{
-			Module:    module.Name,
-			Service:   service.Name,
-			Digest:    digest,
-			Manifests: manifests,
+		r.evidence.record(&RenderedTreeEvidence{
+			Module:     module.Name,
+			Service:    service.Name,
+			Digest:     digest,
+			Manifests:  manifests,
+			Stage:      StageRendered,
+			RenderedAt: time.Now().UTC(),
 		})
 	default:
 		return w.NewError("unsupported deployment kind %T", deploy.Kind)
@@ -256,7 +426,12 @@ func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, 
 }
 
 func (r *RenderManager) Evidence() DeploymentEvidence {
-	return DeploymentEvidence{RenderedTrees: r.evidence.renderedTrees()}
+	trees := r.evidence.renderedTrees()
+	return DeploymentEvidence{
+		RenderedTrees: trees,
+		Required:      StageRendered,
+		Reached:       weakestStage(trees),
+	}
 }
 
 var _ Manager = &RenderManager{}

@@ -1,0 +1,7 @@
+kind: module
+name: app
+services:
+    - name: database
+    - name: api
+    - name: orders
+    - name: billing

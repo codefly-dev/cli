@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "cli": "source",
+  "core": "v0.3.25",
+  "rows": [
+    {
+      "id": "linux-amd64-source",
+      "status": "qualified",
+      "summary": "Fast source and contract checks: build, unit tests, race, coverage and lint. No agent is spawned and no external backend is provisioned.",
+      "os": "linux",
+      "arch": "amd64",
+      "backend": "none",
+      "ci": [
+        "go.yml#coverage",
+        "go.yml#race",
+        "go.yml#lint"
+      ],
+      "gates": [
+        "pkg/conformance/conformancetest"
+      ]
+    },
+    {
+      "id": "linux-amd64-native-npm",
+      "status": "qualified",
+      "summary": "The librarystore npm backend driving the real npm CLI (npm pack, npm publish) against an httptest registry, and module sync regenerating a stale package lockfile.",
+      "os": "linux",
+      "arch": "amd64",
+      "backend": "native",
+      "prerequisites": [
+        "npm"
+      ],
+      "ci": [
+        "go.yml#coverage",
+        "go.yml#race"
+      ],
+      "gates": [
+        "pkg/librarystore",
+        "cmd/sync"
+      ]
+    },
+    {
+      "id": "linux-amd64-nix-run",
+      "status": "qualified",
+      "summary": "codefly run drives a real pinned Redis agent through Load, Init and Start over gRPC, with the agent resolving a Nix runtime, against the in-process control plane.",
+      "os": "linux",
+      "arch": "amd64",
+      "backend": "nix",
+      "prerequisites": [
+        "nix"
+      ],
+      "build_tag": "integration",
+      "agents": [
+        {
+          "publisher": "codefly.dev",
+          "name": "redis",
+          "version": "0.0.74"
+        }
+      ],
+      "ci": [
+        "go.yml#control-integration"
+      ],
+      "gates": [
+        "pkg/control"
+      ]
+    },
+    {
+      "id": "linux-amd64-docker-generate",
+      "status": "not-yet-qualified",
+      "summary": "Contract and client generation through the real proto companion image, including the solution SDK facade compiled from a buf-built descriptor set.",
+      "os": "linux",
+      "arch": "amd64",
+      "backend": "docker",
+      "prerequisites": [
+        "docker",
+        "buf"
+      ],
+      "gate_env": "CODEFLY_GENERATE_QUALIFY",
+      "blockers": [
+        "No CI job provisions the proto companion image, so no run has ever proved this row."
+      ],
+      "gates": [
+        "cmd/generate",
+        "cmd/sync"
+      ]
+    },
+    {
+      "id": "linux-amd64-docker-mcp-run",
+      "status": "not-yet-qualified",
+      "summary": "The MCP run_service, flow_status and stop_flow tools drive a real flow that starts a Postgres container and reports it running.",
+      "os": "linux",
+      "arch": "amd64",
+      "backend": "docker",
+      "prerequisites": [
+        "docker"
+      ],
+      "gate_env": "CODEFLY_MCP_RUN_QUALIFY",
+      "agents": [
+        {
+          "publisher": "codefly.dev",
+          "name": "postgres",
+          "version": "0.0.130"
+        }
+      ],
+      "blockers": [
+        "No CI job runs this gate, so the MCP lifecycle surface has no conformance evidence."
+      ],
+      "gates": [
+        "pkg/mcp"
+      ]
+    },
+    {
+      "id": "linux-amd64-network-mcp-agent",
+      "status": "not-yet-qualified",
+      "summary": "MCP agent_info and add_service against an agent downloaded from the real release registry and driven through its Create flow.",
+      "os": "linux",
+      "arch": "amd64",
+      "backend": "native",
+      "gate_env": "CODEFLY_MCP_AGENT_QUALIFY",
+      "blockers": [
+        "Needs outbound access to the release registry from the test process; no CI job runs this gate."
+      ],
+      "gates": [
+        "pkg/mcp"
+      ]
+    },
+    {
+      "id": "linux-amd64-k3d-deploy",
+      "status": "not-yet-qualified",
+      "summary": "GitOps publication rendered, applied and reconciled by ArgoCD on a disposable k3d cluster, for the service, solution and fetch-remote shapes.",
+      "os": "linux",
+      "arch": "amd64",
+      "backend": "k3d",
+      "prerequisites": [
+        "docker",
+        "k3d",
+        "kubectl",
+        "ssh-keygen",
+        "git"
+      ],
+      "gate_env": "CODEFLY_GITOPS_K3D_QUALIFY",
+      "blockers": [
+        "No CI job provisions k3d, so the only deployment row has never run outside a developer machine.",
+        "The cluster is created at k3d's default k3s image; qualification requires an explicitly pinned kubernetes version."
+      ],
+      "gates": [
+        "pkg/gitops"
+      ]
+    },
+    {
+      "id": "darwin-arm64-native-user-service",
+      "status": "not-yet-qualified",
+      "summary": "The native user-service manager installing, starting and uninstalling a real launchd service.",
+      "os": "darwin",
+      "arch": "arm64",
+      "backend": "native",
+      "prerequisites": [
+        "launchctl"
+      ],
+      "gate_env": "CODEFLY_SERVICE_INTEGRATION",
+      "blockers": [
+        "CI has no macOS runner, so every released darwin binary ships without lifecycle evidence."
+      ],
+      "gates": [
+        "pkg/localservice"
+      ]
+    },
+    {
+      "id": "windows-amd64-native-run",
+      "status": "unsupported",
+      "summary": "Windows is not a release target: .goreleaser.yaml builds darwin and linux only, and no lifecycle path is exercised on Windows.",
+      "os": "windows",
+      "arch": "amd64",
+      "backend": "native"
+    }
+  ]
+}

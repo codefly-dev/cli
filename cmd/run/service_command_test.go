@@ -51,6 +51,40 @@ func TestRunServiceOpenRequiresCLIServer(t *testing.T) {
 	}
 }
 
+func TestShouldIsolateInvocation(t *testing.T) {
+	tests := []struct {
+		name                string
+		temporaryPorts      bool
+		namingScopeExplicit bool
+		want                bool
+	}{
+		{name: "disposable run takes an identity", temporaryPorts: true, want: true},
+		{name: "stable run keeps the names it must find again"},
+		{
+			name:                "an explicit scope is the caller naming the run",
+			temporaryPorts:      true,
+			namingScopeExplicit: true,
+		},
+		{
+			// `--naming-scope ""` clears a workspace-declared scope. Replacing
+			// it with a generated one would answer a request for no scope with
+			// a scope.
+			name:                "an explicitly empty scope asks for no scope at all",
+			temporaryPorts:      true,
+			namingScopeExplicit: true,
+		},
+		{name: "a named stable run is untouched", namingScopeExplicit: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldIsolateInvocation(test.temporaryPorts, test.namingScopeExplicit); got != test.want {
+				t.Fatalf("shouldIsolateInvocation(%v, %v) = %v, want %v",
+					test.temporaryPorts, test.namingScopeExplicit, got, test.want)
+			}
+		})
+	}
+}
+
 func TestSetupOnlyRunsDoNotWait(t *testing.T) {
 	tests := []struct {
 		name     string

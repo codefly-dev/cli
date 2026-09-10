@@ -53,5 +53,39 @@ Both route through the flow into `RuntimeManager` in core:
 Both flags are on `codefly ci run`; `codefly run service` also carries
 `--temporary-ports` and `--override-port`.
 
+## Disposable invocations
+
+`codefly run service --temporary-ports` (what the Codefly SDK passes for a
+test-owned dependency stack) means more than a port strategy: the run also takes
+a fresh **invocation identity** (`inv…`, `orchestration.NewInvocationID`) and
+adopts it as its naming scope, so the container names, runtime state directories
+and log roots agents derive from `services.Base.UniqueWithWorkspace` are unique
+to the run. Ports are not the only thing a run allocates: without the scope, two
+concurrent disposable runs of one workspace got distinct ports but the same
+container name, and stopping either destroyed the other's. `--naming-scope` is
+the caller's own label and wins; passing it empty asks for no scope at all.
+
+This is applied by the run command, not by `Flow.WithTemporaryPorts`. `codefly
+ci run` shares the flag name for the unrelated reason above — its filesystem is
+already isolated by a per-run `CODEFLY_HOME` — so agent conformance keeps the
+resource names it has always used.
+
+## Control-channel ownership
+
+`codefly run service --cli-server` serves the CLI control API (and the
+dashboard) on an address derived from the workspace name plus `--naming-scope`
+(`network.CLIServerPort`, overridable with `CODEFLY_CLI_SERVER_PORT`). The
+address is derived, not negotiated, so two checkouts of the same workspace — or
+two test packages that pass no scope — select the same one.
+
+The run claims that address before it builds the flow. A run that cannot claim
+it fails immediately, naming the address and the flags that give it a disjoint
+one, instead of starting agents and containers it must then reclaim. Whoever
+already holds the address keeps it, and keeps serving its own flow.
+
+> The client side of this — the SDK proving that the server it connected to is
+> the child it spawned, rather than a stranger on the same derived port — is
+> core's contract, tracked in codefly-dev/core#416.
+
 > This stops a leak from *propagating* to the next agent. Reliably *reaping*
 > the leaked processes themselves is a separate concern (codefly-dev/cli#429).

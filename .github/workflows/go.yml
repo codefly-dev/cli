@@ -19,14 +19,24 @@ jobs:
     # 8 minutes keeps a hang from burning a full runner-hour while leaving the
     # suite real headroom.
     timeout-minutes: 8
+    # `conformance_rows` is the set of docs/supported-matrix.md rows this gate
+    # claims to prove. A claimed row's tests can no longer skip themselves when
+    # the backend is missing, and the always-run receipt check below fails if a
+    # claimed row never ran.
+    env:
+      CODEFLY_CONFORMANCE_REQUIRED: ${{ matrix.conformance_rows }}
+      CODEFLY_CONFORMANCE_RECEIPTS: ${{ github.workspace }}/conformance-receipts
     strategy:
       fail-fast: true
       matrix:
-        gate:
-          - bootstrap-audit
-          - control-integration
-          - coverage
-          - race
+        include:
+          - gate: bootstrap-audit
+          - gate: control-integration
+            conformance_rows: linux-amd64-nix-run
+          - gate: coverage
+            conformance_rows: linux-amd64-source,linux-amd64-native-npm
+          - gate: race
+            conformance_rows: linux-amd64-source,linux-amd64-native-npm
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -118,6 +128,15 @@ jobs:
         if: matrix.gate == 'race'
         run: go test -failfast -race ./... -v
 
+      # The cross-process control-ownership proof drives the CLI built by the
+      # install action above as a real subprocess against real sockets. It runs
+      # here rather than in the default lanes because those would have to link
+      # a CLI binary of their own; it needs neither Nix nor an agent, so it runs
+      # before both and fails fast.
+      - name: Run the cross-process control-ownership proof
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestRunRefusesAControlAddressAnotherProcessOwns$|^TestConcurrentDisposableRunsClaimDistinctIdentities$' ./cmd/run -v
+
       # The pinned Redis agent resolves a Nix runtime during runtime-init, so the
       # proof needs Nix on the runner or the agent fails with "nix is not
       # installed" instead of exercising the real dependency. Mirrors core's CI.
@@ -145,6 +164,38 @@ jobs:
       - name: Run the in-process run-profile proof
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestRunProfilesStartRealDependencyShapesInProcess$' ./pkg/control -v
+
+      # Pull separately from the proof below so a cold-cache image fetch is
+      # attributed to its own step instead of inflating the test's wall time —
+      # this gate shares one 8-minute job budget with the Nix install above.
+      # Keep the tag in step with teardownPostgresImage in
+      # pkg/orchestration/teardown_postgres_integration_test.go.
+      - name: Pull the ordered-teardown proof's database image
+        if: matrix.gate == 'control-integration'
+        run: docker pull postgres:16-alpine
+
+      # Ordered teardown (F09): the consumer holds its drain open and commits a
+      # final transaction to a disposable Postgres; the database must not begin
+      # stopping until that commit returned. Needs Docker, which the runner has.
+      # It claims no conformance row: the ordering contract is backend-neutral,
+      # so it proves nothing about a docs/supported-matrix.md row.
+      - name: Run the ordered-teardown acceptance proof
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestFlowStopHoldsPostgresUntilItsConsumerCommits$' ./pkg/orchestration -v
+
+      # Always-run so a failed or filtered-out test still has to account for
+      # the rows its job claimed. Keep these last: they audit every step above.
+      - name: Verify conformance receipts
+        if: always() && matrix.conformance_rows != ''
+        run: ./scripts/verify-conformance-receipts.sh
+
+      - name: Upload conformance receipts
+        if: always() && matrix.conformance_rows != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-receipts-${{ matrix.gate }}
+          path: conformance-receipts/
+          if-no-files-found: warn
 
   # golangci-lint runs as its own job, not a quality gate, for two reasons:
   # only-new-issues has a well-defined baseline only against a pull-request base

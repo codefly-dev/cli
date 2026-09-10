@@ -64,6 +64,12 @@ type Server struct {
 	// distinct reason puts it in the run's output without a line per poll.
 	notReadyMu sync.Mutex
 	notReady   string
+
+	// listenerMu guards listener. Listen/Close are the natural pair to put
+	// beside `go Start(ctx)` with a deferred Close, so they must be safe
+	// against the Run goroutine releasing the same listener.
+	listenerMu sync.Mutex
+	listener   net.Listener
 }
 
 // workspaceFor prefers the workspace this server was constructed with and only
@@ -440,11 +446,47 @@ func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManag
 	return &s, nil
 }
 
+// Address is the gRPC endpoint this server binds, e.g. "127.0.0.1:10000".
+func (s *Server) Address() string {
+	return s.config.EndpointGrpc
+}
+
+// Listen claims the gRPC control address, returning the listener it holds.
+// Binding is a separate step from Run so a caller can establish ownership of
+// the control channel — and fail when something else already holds it — before
+// it provisions anything an aborted run would have to strand. Calling it again
+// returns the address already claimed.
+func (s *Server) Listen() (net.Listener, error) {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	if s.listener != nil {
+		return s.listener, nil
+	}
+	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
+	if err != nil {
+		return nil, err
+	}
+	s.listener = lis
+	return lis, nil
+}
+
+// Close releases the claimed address. Safe to call at any point, including
+// while Run is serving on it.
+func (s *Server) Close() {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	if s.listener == nil {
+		return
+	}
+	_ = s.listener.Close()
+	s.listener = nil
+}
+
 func (s *Server) Run(ctx context.Context) error {
 	w := wool.Get(ctx).In("cli.Server")
 	s.Wool = w
 	agents.AddProcessor(s)
-	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
+	lis, err := s.Listen()
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
@@ -454,7 +496,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// the listener would leak the bound port on non-shutdown exits.
 	defer func() {
 		s.gRPC.GracefulStop()
-		_ = lis.Close()
+		s.Close()
 	}()
 	stopped := make(chan struct{})
 	defer close(stopped)

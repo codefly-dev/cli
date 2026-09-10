@@ -246,3 +246,60 @@ func TestBootstrapApplicationSetExemptionIsNarrow(t *testing.T) {
 		t.Fatal("non-bootstrap ApplicationSet manifest path must not be recognized")
 	}
 }
+
+// A unit that prepares schema for the rest of its module must reconcile in an
+// earlier sync wave than the units that consume it. Argo CD holds the next wave
+// until the current one is healthy, which is the reconciliation-level barrier;
+// the order units happen to appear in the inventory is not one.
+func TestGenerateArgoBootstrapOrdersSchemaPreparationBeforeConsumers(t *testing.T) {
+	root := t.TempDir()
+	revision := strings.Repeat("c", 40)
+	inventory := &Inventory{
+		SchemaVersion: SchemaVersion,
+		Module:        "payments",
+		Environment:   "production",
+		Namespace:     "payments",
+		AppProject:    "payments-production",
+		ModulePath:    "module",
+		Units: []InventoryUnit{
+			{Kind: UnitKindService, Module: "payments", Name: "api", Path: "services/api"},
+			{Kind: UnitKindService, Module: "payments", Name: "store", Path: "services/store", Managed: true, Bootstrap: true},
+		},
+	}
+	for _, component := range []string{"module", "services/api", "services/store"} {
+		writeOverlay(t, filepath.Join(root, component, "overlays", "production"))
+	}
+	config := &repositoryConfig{RepoURL: "https://github.com/codefly-dev/manifests.git"}
+	targetPath := "environments/deployments/modules/payments"
+	if err := generateArgoBootstrap(
+		context.Background(), config, root, targetPath, inventory, "production", revision, "",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "bootstrap", "applicationset.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := string(data)
+	waves := map[string]string{}
+	var component string
+	for _, line := range strings.Split(set, "\n") {
+		trimmed := strings.TrimPrefix(strings.TrimSpace(line), "- ")
+		switch {
+		case strings.HasPrefix(trimmed, "component: "):
+			component = strings.TrimPrefix(trimmed, "component: ")
+		case strings.HasPrefix(trimmed, "wave: ") && component != "":
+			waves[component] = strings.Trim(strings.TrimPrefix(trimmed, "wave: "), `"`)
+		}
+	}
+	if waves["payments-store"] != bootstrapUnitWave {
+		t.Fatalf("schema-preparing unit is not in the bootstrap wave: %v\n%s", waves, set)
+	}
+	if waves["payments-api"] != consumerUnitWave {
+		t.Fatalf("consumer unit is not held behind the bootstrap wave: %v\n%s", waves, set)
+	}
+	if waves["payments-resources"] != moduleResourcesWave {
+		t.Fatalf("module resources are not in the first wave: %v\n%s", waves, set)
+	}
+}

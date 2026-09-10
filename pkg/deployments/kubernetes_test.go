@@ -179,6 +179,7 @@ func TestVerifyLocalK3dTargetBindsExactIdentity(t *testing.T) {
 		Cluster:    "k3d-dev",
 		APIServer:  "https://127.0.0.1:6443",
 		K3dCluster: "dev",
+		Namespace:  "default",
 	}, target)
 }
 
@@ -226,7 +227,7 @@ func TestLocalApplyManagerFailsClosedBeforeApplyWhenImagePreparationFails(t *tes
 			}
 
 			workspace, module, service := deploymentFixture(t)
-			manager, err := NewLocalApplyManager(context.Background(), workspace, harness.environment("k3d-dev"))
+			manager, err := NewLocalApplyManager(context.Background(), workspace, harness.environment("k3d-dev"), DefaultDeployCompletion())
 			require.NoError(t, err)
 
 			err = manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput())
@@ -243,7 +244,7 @@ func TestLocalApplyManagerRecordsTargetAndRenderedTreeDigest(t *testing.T) {
 	harness.writeSelected(config)
 	harness.writeOwned(config)
 	workspace, module, service := deploymentFixture(t)
-	manager, err := NewLocalApplyManager(context.Background(), workspace, harness.environment("k3d-dev"))
+	manager, err := NewLocalApplyManager(context.Background(), workspace, harness.environment("k3d-dev"), DefaultDeployCompletion())
 	require.NoError(t, err)
 
 	require.NoError(t, manager.Handle(context.Background(), service, module, kubernetesDeploymentOutput()))
@@ -268,12 +269,18 @@ func TestRenderManagerReturnsRenderedEvidenceWithoutApplying(t *testing.T) {
 
 	evidence := manager.Evidence()
 	require.Nil(t, evidence.Target)
+	require.Equal(t, StageRendered, evidence.Required)
+	require.Equal(t, StageRendered, evidence.Reached)
 	require.Equal(t, []RenderedTreeEvidence{{
-		Module:    "backend",
-		Service:   "api",
-		Digest:    evidence.RenderedTrees[0].Digest,
-		Manifests: "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: applied\n",
+		Module:     "backend",
+		Service:    "api",
+		Digest:     evidence.RenderedTrees[0].Digest,
+		Manifests:  "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: applied\n",
+		Stage:      StageRendered,
+		RenderedAt: evidence.RenderedTrees[0].RenderedAt,
 	}}, evidence.RenderedTrees)
+	require.False(t, evidence.RenderedTrees[0].Mutated)
+	require.False(t, evidence.RenderedTrees[0].RenderedAt.IsZero())
 	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, evidence.RenderedTrees[0].Digest)
 	require.NoFileExists(t, harness.applyLog)
 }
@@ -321,7 +328,7 @@ func TestLocalApplyManagerRecordsModuleTreeEvidence(t *testing.T) {
 	dir := filepath.Join(module.Dir(), "deployment", "kustomize", "overlays", "local")
 	writeTestFile(t, filepath.Join(dir, "kustomization.yaml"), "resources: []\n")
 	writeTestFile(t, filepath.Join(module.Dir(), "deployment", "kustomize", "base", "namespace.yaml"), "kind: Namespace\n")
-	manager, err := NewLocalApplyManager(context.Background(), workspace, harness.environment("k3d-dev"))
+	manager, err := NewLocalApplyManager(context.Background(), workspace, harness.environment("k3d-dev"), DefaultDeployCompletion())
 	require.NoError(t, err)
 
 	require.NoError(t, manager.ApplyModuleKustomize(context.Background(), module, dir))
@@ -387,6 +394,10 @@ type kubernetesCommandHarness struct {
 	kubeconfig   string
 	applyLog     string
 	kustomizeLog string
+	getLog       string
+	resourceDir  string
+	renderOutput string
+	slowMarker   string
 }
 
 func newKubernetesCommandHarness(t *testing.T) kubernetesCommandHarness {
@@ -401,7 +412,12 @@ func newKubernetesCommandHarness(t *testing.T) kubernetesCommandHarness {
 		kubeconfig:   filepath.Join(root, "declared-kubeconfig"),
 		applyLog:     filepath.Join(root, "apply.log"),
 		kustomizeLog: filepath.Join(root, "kustomize.log"),
+		getLog:       filepath.Join(root, "get.log"),
+		resourceDir:  filepath.Join(root, "resources"),
+		renderOutput: filepath.Join(root, "render.yaml"),
+		slowMarker:   filepath.Join(root, "slow-reads"),
 	}
+	require.NoError(t, os.MkdirAll(harness.resourceDir, 0o755))
 	writeTestFile(t, harness.kubeconfig, "fixture")
 	writeExecutable(t, filepath.Join(bin, "kubectl"), `#!/bin/sh
 case " $* " in
@@ -412,9 +428,38 @@ case " $* " in
     if [ "$2" = "$FAKE_DECLARED_KUBECONFIG" ] || [ ! -f "$2" ]; then
       exit 93
     fi
-    printf '%s\n' "$*" >> "$FAKE_APPLY_LOG"
-    cat >/dev/null
+    cat >> "$FAKE_APPLY_LOG"
     printf 'resource configured\n'
+    ;;
+  *" get "*)
+    shift 4
+    kind="$2"
+    name="$3"
+    case "$name" in
+      -*) name="all" ;;
+    esac
+    if [ -f "$FAKE_GET_SLOW" ]; then
+      sleep 20 >/dev/null 2>&1 </dev/null
+    fi
+    namespace=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = "--namespace" ]; then namespace="$argument"; fi
+      previous="$argument"
+    done
+    printf '%s %s %s\n' "$kind" "$name" "$namespace" >> "$FAKE_GET_LOG"
+    document="$FAKE_RESOURCE_DIR/$kind.$name.json"
+    if [ -f "$document" ]; then
+      cat "$document"
+      if [ -f "$FAKE_RESOURCE_DIR/$kind.$name.once" ]; then
+        rm -f "$document" "$FAKE_RESOURCE_DIR/$kind.$name.once"
+      fi
+      if [ -f "$FAKE_RESOURCE_DIR/$kind.$name.stall" ]; then
+        : > "$FAKE_GET_SLOW"
+      fi
+      exit 0
+    fi
+    exit 44
     ;;
   *)
     exit 90
@@ -451,6 +496,10 @@ exit 92
 `)
 	writeExecutable(t, filepath.Join(bin, "kustomize"), `#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_KUSTOMIZE_LOG"
+if [ -f "$FAKE_KUSTOMIZE_OUTPUT" ]; then
+  cat "$FAKE_KUSTOMIZE_OUTPUT"
+  exit 0
+fi
 printf 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: applied\n'
 `)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -459,7 +508,70 @@ printf 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: applied\n'
 	t.Setenv("FAKE_DECLARED_KUBECONFIG", harness.kubeconfig)
 	t.Setenv("FAKE_APPLY_LOG", harness.applyLog)
 	t.Setenv("FAKE_KUSTOMIZE_LOG", harness.kustomizeLog)
+	t.Setenv("FAKE_GET_LOG", harness.getLog)
+	t.Setenv("FAKE_RESOURCE_DIR", harness.resourceDir)
+	t.Setenv("FAKE_KUSTOMIZE_OUTPUT", harness.renderOutput)
+	t.Setenv("FAKE_GET_SLOW", harness.slowMarker)
 	return harness
+}
+
+// clusterHasThenStalls answers the first `kubectl get <kind> <name>` with this
+// document and hangs on every read after it. Triggering on the read rather than
+// on a timer lands the budget mid-sweep no matter how slow the machine is.
+func (h kubernetesCommandHarness) clusterHasThenStalls(kind, name, document string) {
+	h.t.Helper()
+	h.clusterHas(kind, name, document)
+	require.NoError(h.t, os.WriteFile(filepath.Join(h.resourceDir, kind+"."+name+".stall"), nil, 0o600))
+}
+
+// renders makes kustomize emit exactly these manifests, so a test can pin the
+// resources a deployment tree owns.
+func (h kubernetesCommandHarness) renders(manifests string) {
+	h.t.Helper()
+	require.NoError(h.t, os.WriteFile(h.renderOutput, []byte(manifests), 0o600))
+}
+
+// clusterHas makes `kubectl get <kind> <name>` answer with this document.
+func (h kubernetesCommandHarness) clusterHas(kind, name, document string) {
+	h.t.Helper()
+	require.NoError(h.t, os.WriteFile(filepath.Join(h.resourceDir, kind+"."+name+".json"), []byte(document), 0o600))
+}
+
+// clusterHasOnce answers one `kubectl get <kind> <name>` with this document and
+// NotFound after that, the way a Job disappears once its
+// ttlSecondsAfterFinished elapses.
+func (h kubernetesCommandHarness) clusterHasOnce(kind, name, document string) {
+	h.t.Helper()
+	h.clusterHas(kind, name, document)
+	require.NoError(h.t, os.WriteFile(filepath.Join(h.resourceDir, kind+"."+name+".once"), nil, 0o600))
+}
+
+func (h kubernetesCommandHarness) applied() string {
+	h.t.Helper()
+	data, err := os.ReadFile(h.applyLog)
+	if os.IsNotExist(err) {
+		return ""
+	}
+	require.NoError(h.t, err)
+	return string(data)
+}
+
+func (h kubernetesCommandHarness) read() string {
+	h.t.Helper()
+	data, err := os.ReadFile(h.getLog)
+	if os.IsNotExist(err) {
+		return ""
+	}
+	require.NoError(h.t, err)
+	return string(data)
+}
+
+func (h kubernetesCommandHarness) verifiedEnvironment() *resources.Environment {
+	h.t.Helper()
+	config := kubeconfigDocument("k3d-dev", "k3d-dev", "k3d-dev", "https://127.0.0.1:6443")
+	h.writeSelected(config)
+	h.writeOwned(config)
+	return h.environment("k3d-dev")
 }
 
 func (h kubernetesCommandHarness) environment(contextName string) *resources.Environment {
@@ -487,6 +599,31 @@ func kubeconfigDocument(currentContext, contextName, clusterName, apiServer stri
 	return kubeconfigDocumentWithCluster(currentContext, contextName, clusterName, map[string]any{
 		"server": apiServer,
 	})
+}
+
+// kubeconfigDocumentInNamespace is a context that selects a namespace, which is
+// where kubectl puts a manifest that declares none.
+func kubeconfigDocumentInNamespace(currentContext, contextName, clusterName, namespace string) string {
+	document := map[string]any{
+		"apiVersion":      "v1",
+		"current-context": currentContext,
+		"contexts": []any{map[string]any{
+			"name": contextName,
+			"context": map[string]any{
+				"cluster":   clusterName,
+				"namespace": namespace,
+			},
+		}},
+		"clusters": []any{map[string]any{
+			"name":    clusterName,
+			"cluster": map[string]any{"server": "https://127.0.0.1:6443"},
+		}},
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func kubeconfigDocumentWithCluster(currentContext, contextName, clusterName string, cluster map[string]any) string {

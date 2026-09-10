@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/dockerstart"
@@ -25,7 +26,6 @@ import (
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
-	multierror "github.com/hashicorp/go-multierror"
 )
 
 type Flow struct {
@@ -132,6 +132,13 @@ type Flow struct {
 	// orchestration goroutine, read from the UI poller, hence the lock.
 	beganMu sync.Mutex
 	states  map[string]tui.ServiceState
+
+	// teardownPhaseBudget bounds one reverse-topological teardown layer; zero
+	// selects defaultTeardownPhaseBudget. Since layers are sequential, a whole
+	// Stop/Shutdown is bounded by this budget times the number of layers.
+	teardownPhaseBudget time.Duration
+	teardownMu          sync.Mutex
+	lastTeardown        *teardownReceipt
 }
 
 // StateListener observes per-service runtime lifecycle transitions. service is
@@ -1212,73 +1219,14 @@ func (flow *Flow) Stop() error {
 	if flow.world != nil && (flow.world.Mode == BuildMode || flow.world.Mode == SyncMode || flow.world.Mode == DeployMode || flow.world.Mode == SnapshotMode) {
 		return nil
 	}
-	// Don't call on a possibly Done context
-	stoppedContext, done := flow.newTeardownContext()
-	w := wool.Get(stoppedContext).In("StopIfNeeded")
-	defer done()
-	// Clear any stale pause state — if a paused action is still sitting
-	// in the PauseManager, the spinner keeps spinning even as Stop tears
-	// everything down. Force-clear so the UI reflects reality.
-	if flow.playbook != nil && flow.playbook.pause != nil {
-		flow.playbook.pause.Clear()
-	}
-	// Fan out stops in parallel — sequential iteration was wasting wall
-	// time (10s timeout × N managers) while the goroutines were mostly
-	// idle waiting on their respective agents. Reverse order is preserved
-	// by walking the slice backwards before the Add, so Destroy targets
-	// newest-started-first which matches dependency rules.
-	var res error
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
-		mgr := flow.hub.managers[i]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := mgr.RunnerDoStop(stoppedContext)
-			if err != nil {
-				w.Debug("got error", wool.ErrField(err))
-				mu.Lock()
-				res = multierror.Append(res, err)
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	return res
+	return flow.runTeardown("Stop", defaultStopPhaseBudget, IManager.RunnerDoStop)
 }
 
 func (flow *Flow) Shutdown() error {
 	if flow == nil || flow.hub == nil {
 		return nil
 	}
-	// Don't call on a possibly Done context
-	stoppedContext, done := flow.newTeardownContext()
-	w := wool.Get(stoppedContext).In("StopIfNeeded")
-	defer done()
-	if flow.playbook != nil && flow.playbook.pause != nil {
-		flow.playbook.pause.Clear()
-	}
-	var res error
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for i := len(flow.hub.managers) - 1; i >= 0; i-- {
-		mgr := flow.hub.managers[i]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := mgr.RunnerDoDestroy(stoppedContext)
-			if err != nil {
-				w.Debug("got error", wool.ErrField(err))
-				mu.Lock()
-				res = multierror.Append(res, err)
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	return res
-
+	return flow.runTeardown("Shutdown", defaultShutdownPhaseBudget, IManager.RunnerDoDestroy)
 }
 
 func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcessorFunc, error) {
@@ -1745,6 +1693,27 @@ func (flow *Flow) WithTemporaryPorts(enabled bool) {
 	if enabled && flow.world != nil && flow.world.LocalNetworkManager != nil {
 		flow.world.LocalNetworkManager.WithTemporaryPorts()
 	}
+}
+
+// WithIsolatedInvocation marks this flow as a disposable invocation: it takes a
+// fresh identity and runs under it as its naming scope, which is what agents
+// fold into the container names, runtime state directories and log roots they
+// derive (core's services.Base.UniqueWithWorkspace). Without it two disposable
+// flows in one workspace shared every one of those names, so stopping either
+// destroyed the other's resources.
+//
+// Only a caller that knows its resources are throwaway may ask for this: it is
+// deliberately not implied by temporary ports, which `codefly ci run` uses to
+// isolate a port space inside an already-isolated CODEFLY_HOME.
+//
+// Returns the identity it generated, or empty when the caller already named a
+// scope of its own — that label wins, and nothing is generated over it.
+func (flow *Flow) WithIsolatedInvocation() string {
+	if flow.world == nil || flow.world.Env == nil || flow.world.Env.NamingScope != "" {
+		return ""
+	}
+	flow.world.Env.NamingScope = NewInvocationID()
+	return flow.world.Env.NamingScope
 }
 
 func (flow *Flow) TemporaryPortsEnabled() bool {

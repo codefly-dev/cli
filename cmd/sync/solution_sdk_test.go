@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 	"github.com/codefly-dev/cli/pkg/generators"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/languages"
@@ -498,16 +499,12 @@ services: []
 
 // buildRealDescriptorSet compiles a two-service proto package with buf into a
 // real FileDescriptorSet, so TestSyncSolutionSDKEndToEnd exercises the actual
-// facade generator rather than a synthetic digest-only fixture. Requires
-// `buf` on PATH in addition to the CODEFLY_GENERATE_QUALIFY Docker gate,
-// since the codegen itself (coreproto.GenerateClient) still runs inside the
-// proto companion image; only compiling the fixture's descriptor set needs a
-// local buf.
+// facade generator rather than a synthetic digest-only fixture. buf is a
+// declared prerequisite of the linux-amd64-docker-generate row: the codegen
+// itself (coreproto.GenerateClient) runs inside the proto companion image, but
+// compiling the fixture's descriptor set needs a local buf.
 func buildRealDescriptorSet(t *testing.T) []byte {
 	t.Helper()
-	if _, err := exec.LookPath("buf"); err != nil {
-		t.Skip("buf is not on PATH; skipping the real end-to-end fixture")
-	}
 	dir := t.TempDir()
 	buf := `version: v2
 modules:
@@ -549,9 +546,7 @@ service ExportService {
 }
 
 func TestSyncSolutionSDKEndToEnd(t *testing.T) {
-	if os.Getenv("CODEFLY_GENERATE_QUALIFY") != "1" {
-		t.Skip("set CODEFLY_GENERATE_QUALIFY=1 to run the disposable Docker qualification")
-	}
+	conformancetest.Gate(t, "linux-amd64-docker-generate", "docker", "buf")
 	descriptorSet := buildRealDescriptorSet(t)
 	digest := composition.APIContractDigest(descriptorSet)
 
