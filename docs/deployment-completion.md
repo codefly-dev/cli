@@ -64,6 +64,13 @@ Conversely, an owned resource that stops reporting for several consecutive
 sweeps is called failed rather than waited out — it was applied before
 observation began, so a persistent `NotFound` means it is gone.
 
+A sweep the budget cuts short never replaces the last complete one. Those
+readings were killed by our own deadline, so reporting them would swap the state
+the cluster actually gave us (`0/1 completions`) for one that only says we
+stopped waiting (`context deadline exceeded`), and would count our timeout
+against the resource. When the budget expires before any reading completes at
+all, the failure names the resources that were still outstanding.
+
 Terminal conditions are reported as themselves instead of burning the timeout:
 
 - a Job with a `Failed` condition (`BackoffLimitExceeded`, `DeadlineExceeded`, …)
