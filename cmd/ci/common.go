@@ -16,6 +16,8 @@ import (
 	"github.com/codefly-dev/core/wool"
 )
 
+const buildPhase = "build"
+
 // Silent services in the CLI
 var silent []string
 
@@ -457,7 +459,7 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 	}
 	// Image builds use standalone flows: another service's runtime dependency
 	// edge does not mean its image is an input to this build.
-	if options.Phase == "build" && !options.LockDependencyClosure {
+	if options.Phase == buildPhase && !options.LockDependencyClosure {
 		if _, err := dependencies.Graph().TopologicalSort(); err != nil {
 			return nil, fmt.Errorf("validate CI scheduler dependency graph: %w", err)
 		}
