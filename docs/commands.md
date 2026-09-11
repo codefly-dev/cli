@@ -1141,7 +1141,12 @@ divergences in `tools/base-integrity-allow.json`. Other tools, JSON, contracts,
 and configuration retain normal dependency-aware selection.
 
 Affected-service phase commands accept `--jobs` (`0` selects an automatic value
-capped at four) and `--fail-fast`. Executable CI commands atomically write a
+capped at four) and `--fail-fast`. Selected dependency prerequisites remain
+ordered in every phase, including image builds: standalone agent execution
+does not establish that another service's image is absent from build inputs.
+With `--fail-fast=false`, independent tasks continue after failures while tasks
+whose prerequisites failed are skipped. Test flows also lock shared runtime
+dependency closures. Executable CI commands atomically write a
 schema-versioned `report.json` to `.codefly/ci` by default. `--output` selects a
 different workspace-relative report/artifact directory; `--format json`
 suppresses normal narration and emits the same report payload on stdout. Every

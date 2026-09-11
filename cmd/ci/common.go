@@ -241,7 +241,7 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 	if jobs > len(plan.Services) {
 		jobs = len(plan.Services)
 	}
-	tasks, err := buildScheduledTasks(ctx, workspace, plan, options.LockDependencyClosure)
+	tasks, err := buildScheduledTasks(ctx, workspace, plan, options)
 	if err != nil {
 		return err
 	}
@@ -309,6 +309,11 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 
 	for settled < len(tasks) {
 		for running < jobs && !stopScheduling {
+			if err := ctx.Err(); err != nil {
+				contextErr = err
+				stopScheduling = true
+				break
+			}
 			position := firstRunnableTask(ready, tasks, activeResources)
 			if position < 0 {
 				break
@@ -425,10 +430,13 @@ func normalizeCIJobs(jobs int) (int, error) {
 	return jobs, nil
 }
 
-func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, lockDependencyClosure bool) ([]ciScheduledTask, error) {
+func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, options ScheduleOptions) ([]ciScheduledTask, error) {
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	if err != nil {
 		return nil, fmt.Errorf("load CI scheduler dependency graph: %w", err)
+	}
+	if _, err := dependencies.Graph().TopologicalSort(); err != nil {
+		return nil, fmt.Errorf("validate CI scheduler dependency graph: %w", err)
 	}
 	tasks := make([]ciScheduledTask, len(plan.Services))
 	selected := make(map[string]int, len(plan.Services))
@@ -438,7 +446,7 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 		}
 		selected[planned.Service] = index
 		tasks[index] = ciScheduledTask{index: index, planned: planned, resources: []string{planned.Service}}
-		if !lockDependencyClosure {
+		if !options.LockDependencyClosure {
 			continue
 		}
 		order, err := dependencies.OrderTo(ctx, planned.Service)

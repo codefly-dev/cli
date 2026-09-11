@@ -3,10 +3,12 @@ package ci
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -315,4 +317,147 @@ service-dependencies:
 		t.Fatal(err)
 	}
 	return root, workspace
+}
+
+func TestCIBuildPreservesPrerequisites(t *testing.T) {
+	for _, selected := range []bool{false, true} {
+		for _, jobs := range []int{1, 2, 4} {
+			t.Run(fmt.Sprintf("selected=%t/jobs=%d", selected, jobs), func(t *testing.T) {
+				_, workspace := loadSchedulerFixture(t)
+				plan, err := BuildPlan(context.Background(), workspace, PlanOptions{All: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				required := map[string][]string{
+					"billing/accounts":    {"management/organization"},
+					"management/consumer": {"management/organization"},
+					"web/gateway":         {"management/organization", "billing/accounts"},
+					"web/frontend":        {"web/gateway"},
+				}
+				if selected {
+					plan.Services = []PlannedService{{Service: "web/frontend"}, {Service: "management/organization"}}
+					required["web/frontend"] = []string{"management/organization"}
+				}
+				var mu sync.Mutex
+				completed := map[string]bool{}
+				err = CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+					unique := resources.WithUnique(service).Unique()
+					mu.Lock()
+					defer mu.Unlock()
+					for _, prerequisite := range required[unique] {
+						if !completed[prerequisite] {
+							return fmt.Errorf("%s ran before %s", unique, prerequisite)
+						}
+					}
+					if completed[unique] {
+						return fmt.Errorf("%s ran twice", unique)
+					}
+					completed[unique] = true
+					return nil
+				}, ScheduleOptions{Jobs: jobs, Phase: "build"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(completed) != len(plan.Services) {
+					t.Fatalf("completed %d of %d tasks", len(completed), len(plan.Services))
+				}
+			})
+		}
+	}
+}
+
+func TestCIBuildFailureBlocksConsumersAndPreservesIndependentWork(t *testing.T) {
+	_, workspace := loadSchedulerFixture(t)
+	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "web/frontend"}, {Service: "management/worker"}}}
+	reporter := fixedCIReporter(t, plan)
+	options := ScheduleOptions{Jobs: 1, Phase: "build", Reporter: reporter}
+	if err := prepareCIReportTasks(context.Background(), workspace, plan, options); err != nil {
+		t.Fatal(err)
+	}
+	err := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+		if service.Name == "organization" {
+			return errors.New("image build failed")
+		}
+		return nil
+	}, options)
+	if err == nil || !strings.Contains(err.Error(), "image build failed") {
+		t.Fatalf("build failure lost: %v", err)
+	}
+	report := reporter.Finalize(err)
+	if report.Status != reportStatusFailed {
+		t.Fatalf("gate status = %s", report.Status)
+	}
+	assertReportTask(t, report.Tasks[0], reportStatusFailed, "")
+	assertReportTask(t, report.Tasks[1], reportStatusSkipped, reportReasonFailedPrerequisite)
+	assertReportTask(t, report.Tasks[2], reportStatusPassed, "")
+	if !reflect.DeepEqual(report.Tasks[1].Prerequisites, []string{"management/organization"}) || !reflect.DeepEqual(report.Tasks[1].BlockedBy, []string{"management/organization"}) {
+		t.Fatalf("consumer prerequisite evidence = %+v", report.Tasks[1])
+	}
+	for _, task := range report.Tasks {
+		if !reflect.DeepEqual(task.RuntimeResources, []string{task.Service}) {
+			t.Fatalf("standalone build has runtime dependencies: %+v", task)
+		}
+	}
+}
+
+func TestCIBuildRejectsRuntimeCycle(t *testing.T) {
+	root, workspace := loadSchedulerFixture(t)
+	path := filepath.Join(root, "modules/management/services/organization/service.codefly.yaml")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = append(content, []byte("\nservice-dependencies:\n  - name: frontend\n    module: web\n")...)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "web/frontend"}}}
+	_, err = buildScheduledTasks(context.Background(), workspace, plan, ScheduleOptions{Phase: "build"})
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("expected topology cycle rejection, got %v", err)
+	}
+}
+
+func TestCICancelledPlanDoesNotStartTasks(t *testing.T) {
+	_, workspace := loadSchedulerFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}}}
+	var ran atomic.Bool
+	err := CIWithPlanOptions(ctx, workspace, plan, func(context.Context, *resources.Workspace, *resources.Module, *resources.Service) error {
+		ran.Store(true)
+		return nil
+	}, ScheduleOptions{Jobs: 1, Phase: "build"})
+	if !errors.Is(err, context.Canceled) || ran.Load() {
+		t.Fatalf("cancelled scheduling: error=%v ran=%t", err, ran.Load())
+	}
+}
+
+func TestCISchedulerRetainsConservativePrerequisites(t *testing.T) {
+	_, workspace := loadSchedulerFixture(t)
+	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "web/frontend"}}}
+	for _, options := range []ScheduleOptions{
+		{},
+		{Phase: "unknown"},
+		{Phase: "lint"},
+		{Phase: "compile"},
+		{Phase: "build"},
+		{Phase: "test", LockDependencyClosure: true},
+		{Phase: "build", LockDependencyClosure: true},
+	} {
+		t.Run(options.Phase, func(t *testing.T) {
+			tasks, err := buildScheduledTasks(context.Background(), workspace, plan, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(tasks[1].prerequisites, []string{"management/organization"}) {
+				t.Fatalf("prerequisites = %v", tasks[1].prerequisites)
+			}
+			if options.LockDependencyClosure && !reflect.DeepEqual(tasks[1].resources, []string{
+				"billing/accounts", "management/organization", "web/frontend", "web/gateway",
+			}) {
+				t.Fatalf("runtime resources = %v", tasks[1].resources)
+			}
+		})
+	}
 }

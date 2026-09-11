@@ -189,6 +189,10 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestFlowStopHoldsPostgresUntilItsConsumerCommits$' ./pkg/orchestration -v
 
+      - name: Verify CI image prerequisite ordering
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestCIBuildOrdersRealImagePrerequisites$' ./cmd/ci -v
+
       # Always-run so a failed or filtered-out test still has to account for
       # the rows its job claimed. Keep these last: they audit every step above.
       - name: Verify conformance receipts

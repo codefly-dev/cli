@@ -397,7 +397,7 @@ func prepareCIReportTasks(ctx context.Context, workspace *resources.Workspace, p
 		_, err := options.Reporter.registerTasks(ctx, workspace, options, nil)
 		return err
 	}
-	tasks, err := buildScheduledTasks(ctx, workspace, plan, options.LockDependencyClosure)
+	tasks, err := buildScheduledTasks(ctx, workspace, plan, options)
 	if err != nil {
 		return err
 	}
