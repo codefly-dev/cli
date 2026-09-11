@@ -264,6 +264,10 @@ func classifyChangedPath(repoRoot string, workspace *resources.Workspace, change
 		return
 	}
 
+	if filepath.Base(absPath) == resources.ServiceConfigurationName {
+		selectAllRecords(selected, services, "global", "service declaration changed; preserve coverage for removed dependencies and suites", "")
+		return
+	}
 	for _, record := range services {
 		if pathWithin(absPath, record.dir) {
 			addPlanSelection(selected, record.unique, "direct", "service input changed", changedPath)
@@ -356,7 +360,14 @@ func finalizePlan(ctx context.Context, workspace *resources.Workspace, plan *Pla
 		}
 	}
 
-	order, err := graph.TopologicalSort()
+	if cycleErr := dependencies.VerifyAcyclic(ctx); cycleErr != nil {
+		return nil, fmt.Errorf("validate CI stage graphs: %w", cycleErr)
+	}
+	buildDependencies, err := dependencies.ForStage(resources.StageBuild)
+	if err != nil {
+		return nil, err
+	}
+	order, err := buildDependencies.Graph().TopologicalSort()
 	if err != nil {
 		return nil, fmt.Errorf("sort affected service graph: %w", err)
 	}

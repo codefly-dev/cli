@@ -61,6 +61,10 @@ The first provider-neutral vertical slice is operational:
   transitive prerequisites finish before dependents, independent targets run up
   to `--jobs`, failures are reported in stable plan order, and cancellation
   drains every active flow before exit;
+- image-build ordering uses Core's build-stage graph: build, schema, and
+  legacy declarations remain prerequisites; explicit runtime/completion edges
+  order runtime work. Cycles are validated per stage, not in their union.
+  Reports include the ordering stage and all failed prerequisite identities;
 - test scheduling locks each target's runtime dependency closure, preventing
   concurrent suites from sharing one service-scoped agent or runtime stack;
 - static lint/compile flows initialize only the validation target. Dependency
@@ -330,6 +334,31 @@ targets. They are runtime prerequisites for that target and are started by the
 test flow only when the suite requires them.
 
 ### Public plan
+
+A service declaration change conservatively selects the complete candidate
+inventory. This retains coverage when a service, dependency edge, or required
+suite is removed or renamed. More precise phase/suite selection requires the
+agent effective-input contract; CI currently retains service-wide eligibility.
+
+A replay envelope can preserve selection reasons, original changed paths, and
+Core execution plans for both stages:
+
+```bash
+codefly ci plan --base "$BASE" --replay --format json > /tmp/codefly-plan.json
+codefly ci run --base "$BASE" --plan /tmp/codefly-plan.json
+```
+
+Supply the same independent `--base`, `--changed-file`, or `--all` bounds when
+replaying. Submitted selections cannot weaken those bounds or release `--all`.
+Replay checks the checked-out candidate commit, complete local source contents,
+and freshly resolved stage plans before dispatch. Unknown schemas, altered
+reasons/tasks/topology, and stale contents fail validation. The content digest
+includes ignored files and symlink targets; cyclic or broken symlinks fail.
+Save the envelope outside the source tree so writing it does not change the
+snapshot. Any local change, including generated output, requires a new plan.
+The envelope preserves service selection and topology; phase/suite execution
+flags remain invocation inputs, and effective-input/validation-result task
+contracts are not yet supported.
 
 `codefly ci plan` is the stable inspection and automation boundary. Text output
 is for humans; JSON is versioned and machine-readable:

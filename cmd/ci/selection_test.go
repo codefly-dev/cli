@@ -179,7 +179,7 @@ func TestParseNameStatusZIncludesBothRenamePaths(t *testing.T) {
 	}
 }
 
-func loadPlanFixture(t *testing.T, relative string) (string, *resources.Workspace) {
+func loadPlanFixture(t testing.TB, relative string) (string, *resources.Workspace) {
 	t.Helper()
 	t.Setenv("CI", "")
 	source, err := filepath.Abs(relative)
@@ -435,6 +435,29 @@ func TestUnknownChangesCannotPassIntegrityGate(t *testing.T) {
 			report := reporter.Finalize(nil)
 			if len(report.Tasks) != 1 || report.Tasks[0].Status != reportStatusFailed {
 				t.Fatalf("tasks = %+v", report.Tasks)
+			}
+		})
+	}
+}
+
+func TestDeclarationChangesRetainRemovedEdgeCoverage(t *testing.T) {
+	for _, path := range []string{
+		"modules/web/services/frontend/service.codefly.yaml",
+		"modules/removed/services/deleted/service.codefly.yaml",
+	} {
+		t.Run(path, func(t *testing.T) {
+			root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
+			plan, err := BuildPlan(context.Background(), workspace, PlanOptions{RepoRoot: root, ChangedFiles: []string{path}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Services) != 4 {
+				t.Fatalf("declaration change lost coverage: %v", servicePlanSummary(plan))
+			}
+			for _, service := range plan.Services {
+				if service.Classification != "global" {
+					t.Fatalf("classification: %v", service)
+				}
 			}
 		})
 	}

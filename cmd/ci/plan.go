@@ -17,16 +17,20 @@ var (
 	planChangedFiles []string
 	planAll          bool
 	planFormat       string
+	planReplay       bool
 )
 
 // PlanCmd exposes Codefly's provider-neutral changed/affected service plan.
-// It performs no validation and starts no agents, so CI systems and developers
+// It executes no validation tasks and starts no agents, so CI systems and developers
 // can inspect exactly what a subsequent Codefly-native run would select.
 var PlanCmd = &cobra.Command{
 	Use:   "plan",
 	Short: "List directly changed services and their transitive dependents",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		if planReplay && !strings.EqualFold(strings.TrimSpace(planFormat), "json") {
+			return fmt.Errorf("--replay requires --format json")
+		}
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -52,13 +56,20 @@ var PlanCmd = &cobra.Command{
 			return fmt.Errorf("cannot build CI plan: %w", err)
 		}
 
+		var output any = plan
+		if planReplay {
+			output, err = buildReplayPlan(ctx, workspace, plan)
+			if err != nil {
+				return err
+			}
+		}
 		switch strings.ToLower(strings.TrimSpace(planFormat)) {
 		case "", "text":
 			printPlan(plan)
 		case "json":
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
-			if err := enc.Encode(plan); err != nil {
+			if err := enc.Encode(output); err != nil {
 				return fmt.Errorf("encode CI plan: %w", err)
 			}
 		default:
@@ -69,6 +80,7 @@ var PlanCmd = &cobra.Command{
 }
 
 func init() {
+	PlanCmd.Flags().BoolVar(&planReplay, "replay", false, "Include validated execution plans and candidate content identity (use --format json; save outside the repository)")
 	PlanCmd.Flags().StringVar(&planBase, "base", "", "Base Git revision for change discovery")
 	PlanCmd.Flags().StringVar(&planHead, "head", "", "Head Git revision (defaults to HEAD when --base is set)")
 	PlanCmd.Flags().StringSliceVar(&planChangedFiles, "changed-file", nil, "Changed path supplied by the CI provider (repeatable; bypasses Git discovery)")

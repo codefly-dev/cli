@@ -268,13 +268,12 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 	var failures []ciTaskFailure
 	var blocked []string
 
-	var settle func(index int, success bool, blocker string)
-	settle = func(index int, success bool, blocker string) {
+	settle := func(index int, success bool, blockers []string) {
 		queue := []struct {
-			index   int
-			success bool
-			blocker string
-		}{{index: index, success: success, blocker: blocker}}
+			index    int
+			success  bool
+			blockers []string
+		}{{index: index, success: success, blockers: blockers}}
 		for len(queue) > 0 {
 			current := queue[0]
 			queue = queue[1:]
@@ -283,22 +282,22 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 				task := &tasks[dependent]
 				task.remaining--
 				if !current.success {
-					task.failedRequired = append(task.failedRequired, current.blocker)
+					task.failedRequired = append(task.failedRequired, current.blockers...)
 				}
 				if task.remaining != 0 {
 					continue
 				}
 				if len(task.failedRequired) > 0 {
 					blockers := sortedUnique(task.failedRequired)
-					blocked = append(blocked, fmt.Sprintf("%s (failed prerequisite: %s)", task.planned.Service, blockers[0]))
+					blocked = append(blocked, fmt.Sprintf("%s (failed prerequisite: %s)", task.planned.Service, strings.Join(blockers, ", ")))
 					if options.Reporter != nil {
 						options.Reporter.skipTask(reportTaskIDs[dependent], reportReasonFailedPrerequisite, blockers)
 					}
 					queue = append(queue, struct {
-						index   int
-						success bool
-						blocker string
-					}{index: dependent, blocker: blockers[0]})
+						index    int
+						success  bool
+						blockers []string
+					}{index: dependent, blockers: blockers})
 					continue
 				}
 				ready = append(ready, dependent)
@@ -360,7 +359,7 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 					stopScheduling = true
 				}
 			}
-			settle(result.index, result.err == nil, tasks[result.index].planned.Service)
+			settle(result.index, result.err == nil, []string{tasks[result.index].planned.Service})
 		case <-ctx.Done():
 			if contextErr == nil {
 				contextErr = ctx.Err()
@@ -435,8 +434,14 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 	if err != nil {
 		return nil, fmt.Errorf("load CI scheduler dependency graph: %w", err)
 	}
+	stage := scheduleStage(options)
+	runtimeDependencies := dependencies
+	dependencies, err = dependencies.ForStage(stage)
+	if err != nil {
+		return nil, fmt.Errorf("resolve CI %s graph: %w", stage, err)
+	}
 	if _, err := dependencies.Graph().TopologicalSort(); err != nil {
-		return nil, fmt.Errorf("validate CI scheduler dependency graph: %w", err)
+		return nil, fmt.Errorf("validate CI scheduler %s dependency graph: %w", stage, err)
 	}
 	tasks := make([]ciScheduledTask, len(plan.Services))
 	selected := make(map[string]int, len(plan.Services))
@@ -449,12 +454,16 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 		if !options.LockDependencyClosure {
 			continue
 		}
-		order, err := dependencies.OrderTo(ctx, planned.Service)
-		if err != nil {
-			return nil, fmt.Errorf("resolve runtime resources for %s: %w", planned.Service, err)
-		}
-		for _, required := range order {
-			tasks[index].resources = append(tasks[index].resources, required.Unique)
+		// Runtime flows still own their conservative closure until agents declare
+		// effective inputs; changing ordering must not weaken those ownership locks.
+		for _, required := range runtimeDependencies.Services() {
+			depends, err := runtimeDependencies.DependsOn(planned.Service, required.Unique)
+			if err != nil {
+				return nil, fmt.Errorf("resolve runtime resources for %s: %w", planned.Service, err)
+			}
+			if depends {
+				tasks[index].resources = append(tasks[index].resources, required.Unique)
+			}
 		}
 		tasks[index].resources = sortedUnique(tasks[index].resources)
 	}
@@ -523,4 +532,11 @@ func executePlannedService(ctx context.Context, workspace *resources.Workspace, 
 		return w.Wrapf(err, "Cannot run CI action for service <%s>", planned.Service)
 	}
 	return nil
+}
+
+func scheduleStage(options ScheduleOptions) resources.Stage {
+	if phaseLocksDependencyClosure(options.Phase) || options.Phase == string(resources.PhaseDeploy) {
+		return resources.StageRun
+	}
+	return resources.StageBuild
 }

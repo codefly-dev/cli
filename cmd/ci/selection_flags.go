@@ -16,9 +16,11 @@ type SelectionFlags struct {
 	head         string
 	changedFiles []string
 	all          bool
+	planFile     string
 }
 
 func (flags *SelectionFlags) Bind(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&flags.planFile, "plan", "", "Replay a saved CI plan, validating independent selection bounds and local contents")
 	cmd.Flags().StringVar(&flags.base, "base", "", "Base Git revision for affected-service discovery")
 	cmd.Flags().StringVar(&flags.head, "head", "", "Head Git revision (defaults to HEAD when --base is set)")
 	cmd.Flags().StringSliceVar(&flags.changedFiles, "changed-file", nil, "Changed path supplied by the CI provider (repeatable; bypasses Git discovery)")
@@ -30,10 +32,14 @@ func (flags *SelectionFlags) BuildPlan(ctx context.Context, workspace *resources
 	if len(changed) == 0 {
 		changed = append(changed, changedFilesFromEnvironment()...)
 	}
-	return BuildPlan(ctx, workspace, PlanOptions{
+	options := PlanOptions{
 		Base:         firstNonEmpty(flags.base, os.Getenv("CODEFLY_CI_BASE")),
 		Head:         firstNonEmpty(flags.head, os.Getenv("CODEFLY_CI_HEAD")),
 		ChangedFiles: changed,
 		All:          flags.all,
-	})
+	}
+	if flags.planFile != "" {
+		return readReplayPlan(ctx, workspace, flags.planFile, &options)
+	}
+	return BuildPlan(ctx, workspace, options)
 }
