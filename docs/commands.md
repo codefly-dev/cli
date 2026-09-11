@@ -191,6 +191,32 @@ overlay, so the identical command runs in CI (everything pinned, no sibling
 checkouts) and against your local worktrees. It errors clearly when no module —
 or more than one — declares a `service-entry`.
 
+Each run also mints one registration secret per consumed facade prefix and
+provisions all three ends of the federation exchange. Provisioning writes nothing
+to disk, so a secret lives in the environment of the processes that spend it and
+does not outlive the run — unless you ask for it with `--output-env`, which
+exports a service's whole runtime environment, overrides included:
+
+| End | Carrier | Value |
+|-----|---------|-------|
+| Solution entry service | `CODEFLY__MODULE_REGISTRATION_SECRETS` | `prefix:secret,…` — presented to register each consumed module's routes |
+| Consumed module's services | `CODEFLY__MODULE_REGISTRATION_SECRET` | that module's own secret, presented to mint its service-principal work context |
+| Registrar | `MODULE_REGISTRATION_SECRETS` in the `federation` workspace configuration group | `prefix:sha256hex` — the digests both plaintexts are checked against |
+
+The registrar is whichever service declares the `federation` group. Two rules
+follow from one prefix being one identity, and the run reports what it did with
+every consumed module rather than leaving a gap to be discovered at runtime:
+
+- Two `api.consumes` entries claiming the same `as` prefix are rejected — they
+  would hand two modules one credential, letting either mint the other's work
+  context. (`sync` and `package` already reject this; the run's lenient decode
+  skips the full schema check, so it is enforced here too.)
+- A consumed module that itself declares the `federation` group is the authority
+  the exchange runs against, so it is not given a plaintext whose digest it holds.
+- A consumed module the workspace cannot resolve, and a run with no registrar at
+  all, both leave federation unconfigured: the run warns and boots, and the
+  solution still serves its own routes.
+
 ### `codefly run job [name]`
 
 Run a job (scheduled or one-shot task).

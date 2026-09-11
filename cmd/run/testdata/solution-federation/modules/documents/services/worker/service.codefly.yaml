@@ -1,0 +1,11 @@
+kind: service
+name: worker
+version: 0.0.0
+module: documents
+agent:
+    kind: runtime::service
+    name: go
+    version: 0.0.1
+    publisher: codefly.dev
+workspace-configuration-dependencies:
+    - internal-auth

@@ -183,12 +183,23 @@ func loadSolutionManifestForRun(workspaceDir string) (*manifest.Manifest, error)
 	return &solutionManifest, nil
 }
 
-// validateConsumedBindings rejects a partially bound api.consumes entry. The
-// lenient decode above skips manifest.Validate, and ConsumedAPIs() drops only
-// entries with an empty module — so an entry naming a module but no service or
-// endpoint would project into a CODEFLY__ENDPOINT key built from empty
-// segments, which no runtime can resolve.
+// validateConsumedBindings rejects a partially bound api.consumes entry, and a
+// facade prefix claimed twice. The lenient decode above skips manifest.Validate,
+// so this is the only gate a run passes through, and both rules are ones the run
+// itself depends on.
+//
+// A partial bind — ConsumedAPIs() drops only entries with an empty module — would
+// project into a CODEFLY__ENDPOINT key built from empty segments, which no
+// runtime can resolve.
+//
+// A repeated prefix is worse than unroutable: one prefix mints one registration
+// secret, so two entries sharing a prefix hand the services of two different
+// modules the same credential, and either module can then mint the other's
+// service-principal work context. manifest.Validate rejects a duplicated `as`
+// for sync and package; a run must not be the path that turns the same typo into
+// cross-module identity confusion.
 func validateConsumedBindings(consumes []manifest.APIDeclaration) error {
+	seenAs := make(map[string]string, len(consumes))
 	for i := range consumes {
 		declaration := &consumes[i]
 		bound := 0
@@ -200,6 +211,13 @@ func validateConsumedBindings(consumes []manifest.APIDeclaration) error {
 		if bound != 0 && bound != 3 {
 			return fmt.Errorf("%s: api.consumes entry %q binds only part of module/service/endpoint", manifest.FileName, declaration.ID)
 		}
+		if declaration.As == "" {
+			continue
+		}
+		if first, duplicate := seenAs[declaration.As]; duplicate {
+			return fmt.Errorf("%s: api.consumes entries %q and %q both claim the facade prefix %q; one prefix is one identity", manifest.FileName, first, declaration.ID, declaration.As)
+		}
+		seenAs[declaration.As] = declaration.ID
 	}
 	return nil
 }
@@ -232,8 +250,15 @@ func init() {
 // halves are provisioned here, per run: the plaintext rides a process override
 // to the consuming backend, and the digest is declared into the federation
 // workspace configuration group, so it reaches the registrar on the carrier a
-// service reads by contract. Nothing is written to disk, so the raw secret
-// exists only in the backend's process environment and never outlives the run.
+// service reads by contract. Provisioning writes nothing to disk: a secret lives
+// in the environment of the processes that spend it and never outlives the run —
+// unless an operator asks for it, since --output-env exports a service's whole
+// runtime environment, overrides included, to an owner-only file.
+//
+// The same secret is the consumed module's own credential: a module presents it
+// to the gateway to mint the service-principal work context every module-facing
+// RPC is authenticated from, so its services get the plaintext too — one secret,
+// spent by both ends of the exchange against the one digest the registrar holds.
 
 const (
 	// federationConfigurationGroup is the workspace-configuration group a host
@@ -252,6 +277,12 @@ const (
 	// release carries it.
 	// #nosec G101 -- an environment variable name, not a credential
 	moduleRegistrationSecretsEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRETS"
+	// moduleRegistrationSecretEnvironmentVariable carries a consumed module's own
+	// secret to that module's services. Singular: a module holds one identity, so
+	// it needs only the entry minted for its own prefix — never the whole map,
+	// which would hand every consumed module the credentials of its siblings.
+	// #nosec G101 -- an environment variable name, not a credential
+	moduleRegistrationSecretEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRET"
 	// moduleRegistrationSecretBytes is the entropy of one generated secret. It is
 	// hex-encoded, so a secret can never contain the "," or ":" that separate
 	// entries on either side of the exchange.
@@ -265,6 +296,9 @@ type moduleRegistrationSecrets struct {
 	// prefixes are the facade prefixes provisioned, in the order both encodings
 	// list them.
 	prefixes []string
+	// byPrefix is the plaintext of each prefix, for the injection that hands one
+	// module its own secret rather than the whole map.
+	byPrefix map[string]string
 	secrets  string
 	digests  string
 }
@@ -291,6 +325,7 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 
 	secrets := make([]string, 0, len(prefixes))
 	digests := make([]string, 0, len(prefixes))
+	byPrefix := make(map[string]string, len(prefixes))
 	for _, prefix := range prefixes {
 		raw := make([]byte, moduleRegistrationSecretBytes)
 		if _, err := rand.Read(raw); err != nil {
@@ -300,9 +335,11 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 		digest := sha256.Sum256([]byte(secret))
 		secrets = append(secrets, prefix+":"+secret)
 		digests = append(digests, prefix+":"+hex.EncodeToString(digest[:]))
+		byPrefix[prefix] = secret
 	}
 	return &moduleRegistrationSecrets{
 		prefixes: prefixes,
+		byPrefix: byPrefix,
 		secrets:  strings.Join(secrets, ","),
 		digests:  strings.Join(digests, ","),
 	}, nil
@@ -337,4 +374,124 @@ func federationRegistrars(ctx context.Context, workspace *resources.Workspace) [
 		}
 	}
 	return registrars
+}
+
+// consumedModuleSecretInjection is what one run derives for the modules it
+// consumes: the overrides to apply, and the modules left out, kept apart by why.
+// The caller reports all three — a module that silently receives no secret is
+// indistinguishable at runtime from one whose exchange is broken, which is the
+// diagnosis this provisioning exists to end.
+type consumedModuleSecretInjection struct {
+	overrides map[string]map[string]string
+	// provisioned are the modules whose services received their own secret.
+	provisioned []string
+	// registrars are consumed modules that hold the digests themselves, and so
+	// are deliberately left out.
+	registrars []string
+	// unresolved are consumed modules with no service to inject into, each with
+	// the reason it has none.
+	unresolved []string
+}
+
+// consumedModuleSecretOverrides maps every service of each consumed module to
+// the secret minted for the prefix that module federates under, keyed by the
+// module-qualified unique so an injection lands on exactly one service.
+//
+// A module holding a federation registrar is excluded: it is the authority the
+// exchange runs against, not a module that authenticates to it — it mints work
+// contexts rather than presenting a secret for one. Injecting there would put the
+// plaintext and the digest it is checked against in the same process, dissolving
+// the separation the digest carrier exists to create.
+func consumedModuleSecretOverrides(ctx context.Context, workspace *resources.Workspace, consumed []manifest.ConsumedAPI, provisioned *moduleRegistrationSecrets, registrars []string) consumedModuleSecretInjection {
+	injection := consumedModuleSecretInjection{overrides: make(map[string]map[string]string)}
+	holdsDigests := registrarModules(registrars)
+	for _, binding := range consumedModuleBindings(consumed) {
+		if slices.Contains(holdsDigests, binding.module) {
+			injection.registrars = append(injection.registrars, binding.module)
+			continue
+		}
+		services, err := moduleServiceUniques(ctx, workspace, binding.module)
+		if err != nil {
+			injection.unresolved = append(injection.unresolved, fmt.Sprintf("%s (%v)", binding.module, err))
+			continue
+		}
+		if len(services) == 0 {
+			injection.unresolved = append(injection.unresolved, fmt.Sprintf("%s (declares no service)", binding.module))
+			continue
+		}
+		injection.provisioned = append(injection.provisioned, binding.module)
+		for _, unique := range services {
+			injection.overrides[unique] = map[string]string{moduleRegistrationSecretEnvironmentVariable: provisioned.byPrefix[binding.prefix]}
+		}
+	}
+	return injection
+}
+
+// consumedModuleBinding is the single prefix a consumed module federates under —
+// that module's identity for this run.
+type consumedModuleBinding struct {
+	module string
+	prefix string
+}
+
+// consumedModuleBindings pairs each consumed module with the prefix whose secret
+// is its identity, in declaration order, once per module.
+//
+// An entry with no facade prefix minted no secret, so it binds nothing and must
+// not be what a module is remembered by: the prefix test therefore precedes the
+// per-module one, leaving a module declared both with and without a prefix bound
+// to the prefix that actually has a secret. validateConsumedBindings rejects a
+// prefix claimed twice, so no prefix reaches two modules; a module declared under
+// several prefixes keeps the first, holding one identity either way.
+func consumedModuleBindings(consumed []manifest.ConsumedAPI) []consumedModuleBinding {
+	var bindings []consumedModuleBinding
+	for i := range consumed {
+		module, prefix := consumed[i].Module, consumed[i].As
+		if prefix == "" {
+			continue
+		}
+		if slices.ContainsFunc(bindings, func(bound consumedModuleBinding) bool { return bound.module == module }) {
+			continue
+		}
+		bindings = append(bindings, consumedModuleBinding{module: module, prefix: prefix})
+	}
+	return bindings
+}
+
+// registrarModules reduces the registrar service uniques to the modules holding
+// them.
+func registrarModules(registrars []string) []string {
+	modules := make([]string, 0, len(registrars))
+	for _, unique := range registrars {
+		module, _, _ := strings.Cut(unique, "/")
+		modules = append(modules, module)
+	}
+	return modules
+}
+
+// moduleServiceUniques returns the module-qualified uniques of every service the
+// named module declares.
+//
+// Neither failure is folded into an empty result. A module the workspace does not
+// reference and a module whose checkout will not load leave the same hole in the
+// federation — the consumer idles with a valid-looking run — so each is returned
+// as the reason it left one, for the caller to report. Loading is still not fatal
+// to the run: a composed module that does not resolve locally is not one this run
+// can start either, and the solution still serves its own routes.
+func moduleServiceUniques(ctx context.Context, workspace *resources.Workspace, module string) ([]string, error) {
+	for _, ref := range workspace.Modules {
+		if ref.Name != module {
+			continue
+		}
+		mod, err := workspace.LoadModuleFromReference(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("cannot load module: %w", err)
+		}
+		uniques := make([]string, 0, len(mod.ServiceReferences))
+		for _, svcRef := range mod.ServiceReferences {
+			uniques = append(uniques, resources.ServiceUnique(mod.Name, svcRef.Name))
+		}
+		return uniques, nil
+	}
+	return nil, fmt.Errorf("workspace <%s> references no such module", workspace.Name)
 }
