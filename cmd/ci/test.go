@@ -40,7 +40,7 @@ var TestCmd = &cobra.Command{
 			return fmt.Errorf("cannot configure silent services: %w", err)
 		}
 
-		plan, err := testSelection.BuildPlan(ctx, workspace)
+		plan, err := testSelection.BuildPlan(ctx, workspace, ReplayInvocation{Phases: []string{string(resources.PhaseTest)}, Suites: testSuites, RuntimeContext: runtimeContext})
 		if err != nil {
 			return fmt.Errorf("cannot build affected-service plan: %w", err)
 		}

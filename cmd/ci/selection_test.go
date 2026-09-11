@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -179,7 +180,7 @@ func TestParseNameStatusZIncludesBothRenamePaths(t *testing.T) {
 	}
 }
 
-func loadPlanFixture(t *testing.T, relative string) (string, *resources.Workspace) {
+func loadPlanFixture(t testing.TB, relative string) (string, *resources.Workspace) {
 	t.Helper()
 	t.Setenv("CI", "")
 	source, err := filepath.Abs(relative)
@@ -265,8 +266,12 @@ func TestBuildPlanDerivedIntegrityInput(t *testing.T) {
 				t.Fatal(err)
 			}
 			report := reporter.Finalize(nil)
-			if len(report.Tasks) != 1 || report.Tasks[0].Service != "app/frontend" {
-				t.Fatalf("%s tasks = %+v, want only frontend", phase, report.Tasks)
+			wantTasks := 1
+			if phase == "build" {
+				wantTasks = 3
+			}
+			if len(report.Tasks) != wantTasks || report.Tasks[0].Service != "app/frontend" {
+				t.Fatalf("%s tasks = %+v, want frontend and its build prerequisites", phase, report.Tasks)
 			}
 		}
 	}
@@ -437,5 +442,72 @@ func TestUnknownChangesCannotPassIntegrityGate(t *testing.T) {
 				t.Fatalf("tasks = %+v", report.Tasks)
 			}
 		})
+	}
+}
+
+func TestDeclarationEditDoesNotSelectUnrelatedSuites(t *testing.T) {
+	root, workspace := loadSchedulerFixture(t)
+	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{RepoRoot: root, ChangedFiles: []string{"modules/web/services/frontend/service.codefly.yaml"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := servicePlanSummary(plan); !reflect.DeepEqual(got, []string{"web/frontend:direct"}) {
+		t.Fatalf("unrelated suites selected: %v", got)
+	}
+	tasks, err := buildScheduledTasks(context.Background(), workspace, plan, ScheduleOptions{Phase: "test", Suite: "integration", LockDependencyClosure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || len(tasks[0].resources) != 4 {
+		t.Fatalf("test targets/runtime resources: %+v", tasks)
+	}
+}
+
+func TestRemovedDeclarationUsesReferenceDependents(t *testing.T) {
+	root, workspace := loadSchedulerFixture(t)
+	runCacheTestGit(t, root, "init")
+	runCacheTestGit(t, root, "add", ".")
+	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
+	// Remove the organization dependency from both consumers before deleting it.
+	for _, relative := range []string{"modules/billing/services/accounts/service.codefly.yaml", "modules/management/services/consumer/service.codefly.yaml"} {
+		path := filepath.Join(root, relative)
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(string(payload), "service-dependencies:")
+		end := strings.Index(string(payload)[start:], "endpoints:")
+		replacement := string(payload)[:start]
+		if end >= 0 {
+			replacement += string(payload)[start+end:]
+		}
+		if err := os.WriteFile(path, []byte(replacement), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(root, "modules/management/module.codefly.yaml")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = []byte(strings.Replace(string(payload), "    - name: organization\n", "", 1))
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "modules/management/services/organization")); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{Base: "HEAD", ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := servicePlanSummary(plan)
+	want := []string{"billing/accounts:dependent", "management/consumer:dependent", "web/gateway:dependent", "web/frontend:dependent"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("removed service coverage = %v, want %v", got, want)
 	}
 }

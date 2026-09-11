@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/codefly-dev/core/resources"
@@ -16,24 +17,33 @@ type SelectionFlags struct {
 	head         string
 	changedFiles []string
 	all          bool
+	planFile     string
 }
 
 func (flags *SelectionFlags) Bind(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&flags.planFile, "plan", "", "Replay a saved CI plan, validating independent selection bounds and local contents")
 	cmd.Flags().StringVar(&flags.base, "base", "", "Base Git revision for affected-service discovery")
 	cmd.Flags().StringVar(&flags.head, "head", "", "Head Git revision (defaults to HEAD when --base is set)")
 	cmd.Flags().StringSliceVar(&flags.changedFiles, "changed-file", nil, "Changed path supplied by the CI provider (repeatable; bypasses Git discovery)")
 	cmd.Flags().BoolVar(&flags.all, "all", false, "Select every service explicitly")
 }
 
-func (flags *SelectionFlags) BuildPlan(ctx context.Context, workspace *resources.Workspace) (*Plan, error) {
+func (flags *SelectionFlags) BuildPlan(ctx context.Context, workspace *resources.Workspace, invocation ReplayInvocation) (*Plan, error) {
 	changed := append([]string(nil), flags.changedFiles...)
 	if len(changed) == 0 {
 		changed = append(changed, changedFilesFromEnvironment()...)
 	}
-	return BuildPlan(ctx, workspace, PlanOptions{
+	options := PlanOptions{
 		Base:         firstNonEmpty(flags.base, os.Getenv("CODEFLY_CI_BASE")),
 		Head:         firstNonEmpty(flags.head, os.Getenv("CODEFLY_CI_HEAD")),
 		ChangedFiles: changed,
 		All:          flags.all,
-	})
+	}
+	if flags.planFile != "" {
+		if loadOnly || initOnly {
+			return nil, fmt.Errorf("replay requires complete task execution; --load-only and --init-only are incompatible")
+		}
+		return readReplayPlan(ctx, workspace, flags.planFile, &options, invocation)
+	}
+	return BuildPlan(ctx, workspace, options)
 }

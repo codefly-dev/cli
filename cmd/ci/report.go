@@ -68,6 +68,7 @@ type CIReportTask struct {
 	Scope            string             `json:"scope"`
 	Resource         string             `json:"resource"`
 	Phase            string             `json:"phase"`
+	Stage            resources.Stage    `json:"stage,omitempty"`
 	Suite            string             `json:"suite,omitempty"`
 	Service          string             `json:"service,omitempty"`
 	Classification   string             `json:"classification,omitempty"`
@@ -327,6 +328,7 @@ func (reporter *CIReporter) registerTasks(ctx context.Context, workspace *resour
 			Service:          task.planned.Service,
 			Classification:   task.planned.Classification,
 			SelectionReasons: cloneStrings(task.planned.Reasons),
+			Stage:            scheduleStage(options),
 			Prerequisites:    cloneStrings(task.prerequisites),
 			RuntimeResources: cloneStrings(task.resources),
 			Cache:            cacheIdentity,

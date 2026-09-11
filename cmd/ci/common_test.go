@@ -267,9 +267,25 @@ func TestCIWithPlanOptionsDrainsRunningTasksOnCancellation(t *testing.T) {
 	}
 }
 
-func loadSchedulerFixture(t *testing.T) (string, *resources.Workspace) {
+func loadSchedulerFixture(t testing.TB) (string, *resources.Workspace) {
 	t.Helper()
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Name() != resources.ServiceConfigurationName {
+			return nil
+		}
+		payload, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		return os.WriteFile(path, []byte(strings.ReplaceAll(strings.ReplaceAll(string(payload), "visibility: application", "visibility: public"), "name: grpc\n      api:", "name: grpc\n      visibility: public\n      api:")), 0o600)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	modulePath := filepath.Join(root, "modules", "management", "module.codefly.yaml")
 	module, err := os.ReadFile(modulePath)
 	if err != nil {
@@ -336,7 +352,7 @@ func TestCIBuildPreservesPrerequisites(t *testing.T) {
 				}
 				if selected {
 					plan.Services = []PlannedService{{Service: "web/frontend"}, {Service: "management/organization"}}
-					required["web/frontend"] = []string{"management/organization"}
+					required["web/frontend"] = []string{"management/organization", "billing/accounts", "web/gateway"}
 				}
 				var mu sync.Mutex
 				completed := map[string]bool{}
@@ -358,8 +374,12 @@ func TestCIBuildPreservesPrerequisites(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(completed) != len(plan.Services) {
-					t.Fatalf("completed %d of %d tasks", len(completed), len(plan.Services))
+				wantCount := len(plan.Services)
+				if selected {
+					wantCount = 4
+				}
+				if len(completed) != wantCount {
+					t.Fatalf("completed %d of %d tasks", len(completed), wantCount)
 				}
 			})
 		}
@@ -390,7 +410,7 @@ func TestCIBuildFailureBlocksConsumersAndPreservesIndependentWork(t *testing.T) 
 	assertReportTask(t, report.Tasks[0], reportStatusFailed, "")
 	assertReportTask(t, report.Tasks[1], reportStatusSkipped, reportReasonFailedPrerequisite)
 	assertReportTask(t, report.Tasks[2], reportStatusPassed, "")
-	if !reflect.DeepEqual(report.Tasks[1].Prerequisites, []string{"management/organization"}) || !reflect.DeepEqual(report.Tasks[1].BlockedBy, []string{"management/organization"}) {
+	if !reflect.DeepEqual(report.Tasks[1].Prerequisites, []string{"billing/accounts", "management/organization", "web/gateway"}) || !reflect.DeepEqual(report.Tasks[1].BlockedBy, []string{"management/organization"}) {
 		t.Fatalf("consumer prerequisite evidence = %+v", report.Tasks[1])
 	}
 	for _, task := range report.Tasks {
@@ -450,7 +470,11 @@ func TestCISchedulerRetainsConservativePrerequisites(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(tasks[1].prerequisites, []string{"management/organization"}) {
+			wantPrerequisites := []string{"management/organization"}
+			if options.Phase == "build" {
+				wantPrerequisites = []string{"billing/accounts", "management/organization", "web/gateway"}
+			}
+			if !reflect.DeepEqual(tasks[1].prerequisites, wantPrerequisites) {
 				t.Fatalf("prerequisites = %v", tasks[1].prerequisites)
 			}
 			if options.LockDependencyClosure && !reflect.DeepEqual(tasks[1].resources, []string{
@@ -459,5 +483,138 @@ func TestCISchedulerRetainsConservativePrerequisites(t *testing.T) {
 				t.Fatalf("runtime resources = %v", tasks[1].resources)
 			}
 		})
+	}
+}
+
+func TestCIStageGraphs(t *testing.T) {
+	for _, kind := range []string{"runtime", "completion", "build", "schema", ""} {
+		t.Run(kind, func(t *testing.T) {
+			root, workspace := loadSchedulerFixture(t)
+			path := filepath.Join(root, "modules/web/services/frontend/service.codefly.yaml")
+			payload, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind != "" {
+				payload = []byte(strings.Replace(string(payload), "- name: gateway", "- kind: "+kind+"\n      name: gateway", 1))
+			}
+			if err := os.WriteFile(path, payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "web/frontend"}}}
+			for _, phase := range []string{"build", "test"} {
+				tasks, err := buildScheduledTasks(context.Background(), workspace, plan, ScheduleOptions{Phase: phase, LockDependencyClosure: phase == "test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantsEdge := kind == "" || (phase == "build" && (kind == "build" || kind == "schema")) || (phase == "test" && (kind == "runtime" || kind == "completion"))
+				if phase == "test" && len(tasks[1].resources) != 4 {
+					t.Fatalf("runtime ownership was weakened: %v", tasks[1].resources)
+				}
+				if (len(tasks[1].prerequisites) > 0) != wantsEdge {
+					t.Fatalf("%s %s prerequisites: %v", kind, phase, tasks[1].prerequisites)
+				}
+			}
+		})
+	}
+}
+
+func TestCIMixedStageCycleCanPlanAndSchedule(t *testing.T) {
+	root, workspace := loadSchedulerFixture(t)
+	for _, entry := range []struct{ path, content string }{
+		{"modules/management/services/organization/service.codefly.yaml", "\nservice-dependencies:\n - name: frontend\n   module: web\n   kind: build\n"},
+	} {
+		path := filepath.Join(root, entry.path)
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(payload, []byte(entry.content)...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(root, "modules/web/services/frontend/service.codefly.yaml")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = []byte(strings.Replace(string(payload), "- name: gateway", "- kind: runtime\n      name: gateway", 1))
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCacheTestGit(t, root, "init")
+	runCacheTestGit(t, root, "add", ".")
+	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
+	replay, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay.Execution) != 2*len(plan.Services) {
+		t.Fatal("missing stage plans")
+	}
+	for _, phase := range []string{"build", "test"} {
+		if _, err := buildScheduledTasks(context.Background(), workspace, plan, ScheduleOptions{Phase: phase, LockDependencyClosure: phase == "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestCIReportsAllFailedPrerequisites(t *testing.T) {
+	root, workspace := loadSchedulerFixture(t)
+	path := filepath.Join(root, "modules/web/services/frontend/service.codefly.yaml")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = []byte(strings.Replace(string(payload), "service-dependencies:", "service-dependencies:\n    - name: worker\n      module: management", 1))
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "management/worker"}, {Service: "web/frontend"}}}
+	reporter := fixedCIReporter(t, plan)
+	err = CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+		if service.Name == "frontend" {
+			t.Error("blocked task executed")
+		}
+		return fmt.Errorf("failed %s", service.Name)
+	}, ScheduleOptions{Phase: "build", Jobs: 2, Reporter: reporter})
+	if err == nil {
+		t.Fatal("required failures did not fail gate")
+	}
+	report := reporter.Finalize(err)
+	if report.Tasks[2].Stage != resources.StageBuild {
+		t.Fatalf("missing report stage: %+v", report.Tasks[2])
+	}
+	if !reflect.DeepEqual(report.Tasks[2].BlockedBy, []string{"management/organization", "management/worker"}) {
+		t.Fatalf("blockers: %v", report.Tasks[2].BlockedBy)
+	}
+}
+
+func BenchmarkCIStageScheduling(b *testing.B) {
+	for _, phase := range []string{"build", "test"} {
+		for _, selected := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%s/selected=%t", phase, selected), func(b *testing.B) {
+				_, workspace := loadSchedulerFixture(b)
+				plan, err := BuildPlan(context.Background(), workspace, PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
+				if err != nil {
+					b.Fatal(err)
+				}
+				if selected {
+					plan.Services = []PlannedService{{Service: "management/organization"}, {Service: "web/frontend"}}
+				}
+				options := ScheduleOptions{Phase: phase, LockDependencyClosure: phase == "test"}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for b.Loop() {
+					if _, err := buildScheduledTasks(context.Background(), workspace, plan, options); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
 	}
 }

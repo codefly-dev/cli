@@ -61,6 +61,10 @@ The first provider-neutral vertical slice is operational:
   transitive prerequisites finish before dependents, independent targets run up
   to `--jobs`, failures are reported in stable plan order, and cancellation
   drains every active flow before exit;
+- image-build ordering uses Core's build-stage graph: build, schema, and
+  legacy declarations remain prerequisites; explicit runtime/completion edges
+  order runtime work. Cycles are validated per stage, not in their union.
+  Reports include the ordering stage and all failed prerequisite identities;
 - test scheduling locks each target's runtime dependency closure, preventing
   concurrent suites from sharing one service-scoped agent or runtime stack;
 - static lint/compile flows initialize only the validation target. Dependency
@@ -330,6 +334,37 @@ targets. They are runtime prerequisites for that target and are started by the
 test flow only when the suite requires them.
 
 ### Public plan
+
+Service declaration changes select their owner and affected dependents from
+both reference and candidate graphs. Removed producers and edges retain
+surviving consumer coverage without applying named suites to unrelated agents.
+A removed declaration requires a resolvable reference revision; CI refuses to
+guess its consumers when that history is unavailable.
+
+Replay envelopes bind task selection, phases, named suites, runtime context,
+prerequisites, resource locks, original change paths, and Core stage topology:
+
+```bash
+codefly ci plan --base "$BASE" --phase build --replay --format json > /tmp/codefly-plan.json
+codefly ci build --base "$BASE" --plan /tmp/codefly-plan.json
+```
+
+Omit `--phase` on the plan command for the full `ci run` gate. Supply the same
+independent `--base`, `--changed-file`, or `--all` bounds when replaying. Submitted
+plans cannot weaken those bounds, change phases/suites, or remove task
+prerequisites. Build tasks include unchanged artifact prerequisites. The
+scheduler consumes the validated task list; runtime flows use run-stage edges.
+Core visibility rules are checked before a replay plan is accepted. Schema jobs
+without a CI executor are rejected rather than omitted from an executable plan.
+
+Replay validates the checked-out commit and source bytes in the repository,
+resolved modules, services, libraries, and symlink targets. Directory digests
+are memoized so package-manager back-links terminate without hiding source
+changes. Ignored source files remain covered. Untracked outputs in the reserved
+`.codefly/ci` report directory are excluded; tracked files there remain inputs.
+Save the envelope and custom report outputs outside the source tree. Broken
+symlinks and special files are rejected. The replay schema is
+`codefly.ci-replay/v2`; earlier envelopes must be regenerated.
 
 `codefly ci plan` is the stable inspection and automation boundary. Text output
 is for humans; JSON is versioned and machine-readable:

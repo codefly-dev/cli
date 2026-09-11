@@ -29,6 +29,7 @@ type PlanOptions struct {
 }
 
 type Plan struct {
+	replay          *ReplayPlan
 	IntegrityInputs []IntegrityInput `json:"integrity_inputs,omitempty"`
 	IntegrityError  string           `json:"integrity_error,omitempty"`
 	SchemaVersion   int              `json:"schema_version"`
@@ -165,6 +166,9 @@ func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOpt
 		classifyChangedPath(repoRoot, workspace, changedPath, services, modules, libraryConsumers, selected)
 	}
 
+	if err := preserveReferenceDependents(ctx, workspace, repoRoot, plan, services, selected); err != nil {
+		return nil, err
+	}
 	return finalizePlan(ctx, workspace, plan, services, selected)
 }
 
@@ -271,6 +275,10 @@ func classifyChangedPath(repoRoot string, workspace *resources.Workspace, change
 		}
 	}
 
+	if filepath.Base(absPath) == resources.ServiceConfigurationName {
+		return
+	}
+
 	librariesDir := filepath.Join(workspaceDir, "libraries")
 	if pathWithin(absPath, librariesDir) {
 		rel, err := filepath.Rel(librariesDir, absPath)
@@ -356,7 +364,14 @@ func finalizePlan(ctx context.Context, workspace *resources.Workspace, plan *Pla
 		}
 	}
 
-	order, err := graph.TopologicalSort()
+	if cycleErr := dependencies.VerifyAcyclic(ctx); cycleErr != nil {
+		return nil, fmt.Errorf("validate CI stage graphs: %w", cycleErr)
+	}
+	buildDependencies, err := dependencies.ForStage(resources.StageBuild)
+	if err != nil {
+		return nil, err
+	}
+	order, err := buildDependencies.Graph().TopologicalSort()
 	if err != nil {
 		return nil, fmt.Errorf("sort affected service graph: %w", err)
 	}
