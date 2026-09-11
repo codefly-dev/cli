@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
-
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/wool"
@@ -242,23 +240,68 @@ func recipeContext(serviceDir string, recipe *builderv0.DockerBuildRecipe) (stri
 	return contextDir, nil
 }
 
-func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe) (*dockerhelpers.PreparedBuildContext, error) {
+// preparedRecipeContext keeps source traversal and ignore matching with Docker.
+// Only a custom build definition is staged, so concurrent recipes never mutate
+// a shared Dockerfile.dockerignore or copy/filter the application's inputs.
+type preparedRecipeContext struct {
+	Root       string
+	Dockerfile string
+	directory  string
+}
+
+func (p *preparedRecipeContext) Close() error {
+	if p.directory == "" {
+		return nil
+	}
+	return os.RemoveAll(p.directory)
+}
+
+func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe) (*preparedRecipeContext, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root, err := filepath.EvalSymlinks(contextDir)
+	if err != nil {
+		return nil, err
+	}
 	dockerfile, err := recipeDockerfile(outputDir, recipe)
 	if err != nil {
 		return nil, err
 	}
-	relativeDockerfile, err := filepath.Rel(contextDir, dockerfile)
+	if recipe.GetDockerignore() == "" {
+		return &preparedRecipeContext{Root: root, Dockerfile: dockerfile}, nil
+	}
+
+	// Dockerfile-specific policy replaces root policy; it is not an additional
+	// filter. Put the declared policy beside a private copy of the definition
+	// and let Docker apply its native precedence and directory pruning.
+	definition, err := os.ReadFile(dockerfile)
 	if err != nil {
 		return nil, err
 	}
-	var ignore string
-	if recipe.GetDockerignore() != "" {
-		ignore, err = filepath.Rel(contextDir, filepath.Join(outputDir, recipe.GetDockerignore()))
-		if err != nil {
-			return nil, err
-		}
+	ignore, err := os.ReadFile(filepath.Join(outputDir, recipe.GetDockerignore()))
+	if err != nil {
+		return nil, err
 	}
-	return dockerhelpers.PrepareBuildContext(ctx, contextDir, relativeDockerfile, ignore)
+	directory, err := os.MkdirTemp("", "codefly-build-definition-")
+	if err != nil {
+		return nil, err
+	}
+	definitionRoot, err := os.OpenRoot(directory)
+	if err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
+	defer definitionRoot.Close()
+	if err := definitionRoot.WriteFile("Dockerfile", definition, 0o600); err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
+	if err := definitionRoot.WriteFile("Dockerfile.dockerignore", ignore, 0o600); err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
+	return &preparedRecipeContext{Root: root, Dockerfile: filepath.Join(directory, "Dockerfile"), directory: directory}, nil
 }
 
 // ensureBuildxBuilder provisions the dedicated docker-container buildx builder

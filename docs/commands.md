@@ -1299,9 +1299,11 @@ artifacts, so cache readers must be trusted to read those artifacts too.
 
 The CLI adds service and recipe identity to the stable caller scope. Core adds
 the actual target platform. Cache-enabled recipe builds use a container-driver
-BuildKit instance, retain agent Dockerfile/build-argument semantics, and stage
-filtered context independently of build definitions. Publication policy stays
-with the caller. Agents returning verified recipes leave cache execution to the CLI. Legacy
+BuildKit instance, retain agent Dockerfile/build-argument semantics, and leave
+context traversal and ignore matching to Docker. A recipe-declared ignore file
+takes precedence over the context root ignore file, just like a Dockerfile-specific
+ignore file; declared build definitions are staged separately without changing
+source files. Publication policy stays with the caller. Agents returning verified recipes leave cache execution to the CLI. Legacy
 in-agent image builds must acknowledge cache execution or fail explicitly. Pushed image digests still come from Buildx metadata, never cache tags.
 BuildKit progress reports cache hits, transfer sizes and import/export durations
 when available; image-build wall time is logged and CI reporting retains the
