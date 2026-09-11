@@ -994,7 +994,11 @@ func init() {
 }
 
 func prepareContainerRecovery(workspace *resources.Workspace, flow *orchestration.Flow) (dockerrun.ContainerRecoveryScope, error) {
-	scope, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), flow.Environment().NamingScope)
+	home := resources.CodeflyHomeDir()
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("prepare container recovery home: %w", err)
+	}
+	scope, err := dockerrun.NewContainerRecoveryScope(home, workspace.Dir(), flow.Environment().NamingScope)
 	if err != nil {
 		return scope, fmt.Errorf("resolve container recovery ownership: %w", err)
 	}

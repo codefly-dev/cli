@@ -150,7 +150,7 @@ endpoints:
 	require.Equal(t, "1password", env.Secrets[0].Kind)
 	require.Equal(t, "acme-dev", env.Secrets[0].Account)
 
-	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "new-home"))
 	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
 	originalScope, originalExplicit := namingScope, namingScopeExplicit
 	t.Cleanup(func() { namingScope, namingScopeExplicit = originalScope, originalExplicit })
