@@ -1122,7 +1122,11 @@ All selection flags are provider-neutral. Use `--all` for an explicit full
 workspace run. CI providers should invoke `codefly ci run`; language commands
 and service matrices belong to Codefly agents, not provider configuration.
 Affected-service phase commands accept `--jobs` (`0` selects an automatic value
-capped at four) and `--fail-fast`. Executable CI commands atomically write a
+capped at four) and `--fail-fast`. Standalone image builds can run concurrently
+across runtime dependency edges; with `--fail-fast=false`, a failed image build
+does not block its runtime consumers' image builds. Other phases retain
+conservative dependency ordering, and test flows lock their shared runtime
+dependency closures. Executable CI commands atomically write a
 schema-versioned `report.json` to `.codefly/ci` by default. `--output` selects a
 different workspace-relative report/artifact directory; `--format json`
 suppresses normal narration and emits the same report payload on stdout. Every

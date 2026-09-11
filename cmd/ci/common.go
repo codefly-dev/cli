@@ -241,7 +241,7 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 	if jobs > len(plan.Services) {
 		jobs = len(plan.Services)
 	}
-	tasks, err := buildScheduledTasks(ctx, workspace, plan, options.LockDependencyClosure)
+	tasks, err := buildScheduledTasks(ctx, workspace, plan, options)
 	if err != nil {
 		return err
 	}
@@ -309,6 +309,11 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 
 	for settled < len(tasks) {
 		for running < jobs && !stopScheduling {
+			if err := ctx.Err(); err != nil {
+				contextErr = err
+				stopScheduling = true
+				break
+			}
 			position := firstRunnableTask(ready, tasks, activeResources)
 			if position < 0 {
 				break
@@ -425,7 +430,7 @@ func normalizeCIJobs(jobs int) (int, error) {
 	return jobs, nil
 }
 
-func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, lockDependencyClosure bool) ([]ciScheduledTask, error) {
+func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, options ScheduleOptions) ([]ciScheduledTask, error) {
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	if err != nil {
 		return nil, fmt.Errorf("load CI scheduler dependency graph: %w", err)
@@ -438,7 +443,7 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 		}
 		selected[planned.Service] = index
 		tasks[index] = ciScheduledTask{index: index, planned: planned, resources: []string{planned.Service}}
-		if !lockDependencyClosure {
+		if !options.LockDependencyClosure {
 			continue
 		}
 		order, err := dependencies.OrderTo(ctx, planned.Service)
@@ -449,6 +454,14 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 			tasks[index].resources = append(tasks[index].resources, required.Unique)
 		}
 		tasks[index].resources = sortedUnique(tasks[index].resources)
+	}
+	// Image builds use standalone flows: another service's runtime dependency
+	// edge does not mean its image is an input to this build.
+	if options.Phase == "build" && !options.LockDependencyClosure {
+		if _, err := dependencies.Graph().TopologicalSort(); err != nil {
+			return nil, fmt.Errorf("validate CI scheduler dependency graph: %w", err)
+		}
+		return tasks, nil
 	}
 	// Preserve transitive ordering even when an intermediate service is not in
 	// the affected set (for example two library consumers separated by a
