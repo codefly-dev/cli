@@ -23,7 +23,7 @@ func TestSessionHandshakeUsesOwnedUnixSocketAndRejectsForeignSessions(t *testing
 	t.Setenv(session.IDEnvironment, owner.ID)
 	t.Setenv(session.SecretEnvironment, owner.Secret)
 	t.Setenv(session.SocketEnvironment, control.Socket)
-	server, err := NewServer(&Configuration{EndpointGrpc: "127.0.0.1:0"}, nil, nil)
+	server, err := NewServer(&Configuration{EndpointGrpc: "127.0.0.1:0", ControlSocket: control.Socket, Session: owner}, nil, nil)
 	require.NoError(t, err)
 	listener, err := server.Listen()
 	require.NoError(t, err)
@@ -70,6 +70,6 @@ func TestSessionHandshakeUsesOwnedUnixSocketAndRejectsForeignSessions(t *testing
 	require.NoError(t, err)
 	defer publicConn.Close()
 	_, err = cli.NewCLIClient(publicConn).SessionHandshake(ctx, request)
-	require.Equal(t, codes.PermissionDenied, status.Code(err))
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 
 }

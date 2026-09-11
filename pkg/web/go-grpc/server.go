@@ -13,14 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codefly-dev/core/sdk/session"
-	"google.golang.org/grpc/peer"
-
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"google.golang.org/grpc/reflection"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -32,6 +30,7 @@ import (
 	"github.com/codefly-dev/core/architecture"
 	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/sdk/session"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 
@@ -43,8 +42,10 @@ import (
 )
 
 type Configuration struct {
-	EndpointGrpc string
-	EndpointRest string
+	EndpointGrpc  string
+	EndpointRest  string
+	ControlSocket string
+	Session       *session.Session
 }
 
 type Server struct {
@@ -73,10 +74,8 @@ type Server struct {
 	// listenerMu guards listener. Listen/Close are the natural pair to put
 	// beside `go Start(ctx)` with a deferred Close, so they must be safe
 	// against the Run goroutine releasing the same listener.
-	listenerMu    sync.Mutex
-	listener      net.Listener
-	session       *session.Session
-	sessionSocket string
+	listenerMu sync.Mutex
+	listener   net.Listener
 }
 
 // workspaceFor prefers the workspace this server was constructed with and only
@@ -100,26 +99,6 @@ func (s *Server) activeFlow() *orchestration.Flow {
 
 func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty, error) {
 	return &emptypb.Empty{}, nil
-}
-
-func (s *Server) SessionHandshake(ctx context.Context, req *cli.SessionHandshakeRequest) (*cli.SessionHandshakeResponse, error) {
-	if s.session == nil {
-		return nil, status.Error(codes.FailedPrecondition, "server is not an isolated dependency session")
-	}
-	remote, ok := peer.FromContext(ctx)
-	if !ok || remote.Addr.Network() != "unix" {
-		return nil, status.Error(codes.PermissionDenied, "session proofs require the private control socket")
-	}
-	if req.GetSessionId() != s.session.ID {
-		return nil, status.Error(codes.PermissionDenied, "session identity does not match")
-	}
-	if req.GetProtocolVersion() != session.ProtocolVersion {
-		return nil, status.Error(codes.FailedPrecondition, "unsupported session protocol version")
-	}
-	if req.GetChallenge() == "" {
-		return nil, status.Error(codes.InvalidArgument, "session challenge is required")
-	}
-	return &cli.SessionHandshakeResponse{SessionId: s.session.ID, Proof: s.session.Proof(req.GetChallenge()), ProtocolVersion: session.ProtocolVersion, Capabilities: []string{session.IsolatedControlSocketCapability}}, nil
 }
 
 func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.StopFlowResponse, error) {
@@ -450,7 +429,45 @@ func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {
 	}
 }
 
+func (s *Server) SessionHandshake(ctx context.Context, req *cli.SessionHandshakeRequest) (*cli.SessionHandshakeResponse, error) {
+	if s.config.Session == nil || s.config.ControlSocket == "" {
+		return nil, status.Error(codes.FailedPrecondition, "this server has no isolated dependency session")
+	}
+	remote, ok := peer.FromContext(ctx)
+	if !ok || remote.Addr.Network() != "unix" {
+		return nil, status.Error(codes.PermissionDenied, "session proofs require the private control socket")
+	}
+	if req.GetProtocolVersion() != session.ProtocolVersion {
+		return nil, status.Error(codes.FailedPrecondition, "unsupported session protocol version")
+	}
+	if req.GetSessionId() != s.config.Session.ID {
+		return nil, status.Error(codes.PermissionDenied, "session identity does not match this server")
+	}
+	if req.GetChallenge() == "" {
+		return nil, status.Error(codes.InvalidArgument, "session challenge is required")
+	}
+	return &cli.SessionHandshakeResponse{SessionId: s.config.Session.ID, ProtocolVersion: session.ProtocolVersion, Proof: s.config.Session.Proof(req.GetChallenge()), Capabilities: []string{session.IsolatedControlSocketCapability}}, nil
+}
+
 func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManager) (*Server, error) {
+	if c.ControlSocket != "" {
+		if c.Session == nil || c.Session.ID == "" || c.Session.Secret == "" {
+			return nil, fmt.Errorf("isolated control socket requires a session identity and secret")
+		}
+		if !filepath.IsAbs(c.ControlSocket) {
+			return nil, fmt.Errorf("isolated control socket path must be absolute")
+		}
+		parent, err := os.Lstat(filepath.Dir(c.ControlSocket))
+		if err != nil {
+			return nil, fmt.Errorf("inspect control socket directory: %w", err)
+		}
+		if !parent.IsDir() || parent.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("control socket directory must be private to its owner")
+		}
+	} else if c.Session != nil {
+		return nil, fmt.Errorf("session identity requires an isolated control socket")
+	}
+
 	grpcServer := grpc.NewServer()
 
 	// Resolve workspace directory for terminal sessions
@@ -460,14 +477,12 @@ func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManag
 	}
 
 	s := Server{
-		config:        c,
-		session:       session.FromEnvironment(os.Environ()),
-		sessionSocket: os.Getenv(session.SocketEnvironment),
-		workspace:     w,
-		gRPC:          grpcServer,
-		Terminal:      NewTerminalServer(workspaceDir),
-		flows:         flows,
-		history:       newLogHistory(5000),
+		config:    c,
+		workspace: w,
+		gRPC:      grpcServer,
+		Terminal:  NewTerminalServer(workspaceDir),
+		flows:     flows,
+		history:   newLogHistory(5000),
 	}
 	cli.RegisterCLIServer(grpcServer, &s)
 	cli.RegisterTerminalServiceServer(grpcServer, s.Terminal)
@@ -477,6 +492,9 @@ func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManag
 
 // Address is the gRPC endpoint this server binds, e.g. "127.0.0.1:10000".
 func (s *Server) Address() string {
+	if s.config.ControlSocket != "" {
+		return "unix:" + s.config.ControlSocket
+	}
 	return s.config.EndpointGrpc
 }
 
@@ -492,11 +510,8 @@ func (s *Server) Listen() (net.Listener, error) {
 		return s.listener, nil
 	}
 	network, address := "tcp", s.config.EndpointGrpc
-	if s.sessionSocket != "" {
-		if s.session == nil || !filepath.IsAbs(s.sessionSocket) {
-			return nil, fmt.Errorf("isolated control socket requires session identity and an absolute path")
-		}
-		network, address = "unix", s.sessionSocket
+	if s.config.ControlSocket != "" {
+		network, address = "unix", s.config.ControlSocket
 	}
 	lis, err := net.Listen(network, address)
 	if err != nil {

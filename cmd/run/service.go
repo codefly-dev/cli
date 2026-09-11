@@ -211,7 +211,9 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 				cancelRun()
 			}
 		}()
-		common.AnnounceDashboardWhenReady(ctx, server.DashboardURL(), openDashboard)
+		if dashboardURL := server.DashboardURL(); dashboardURL != "" {
+			common.AnnounceDashboardWhenReady(ctx, dashboardURL, openDashboard)
+		}
 	}
 
 	// stopFresh tears down whatever the flow started, using a FRESH context

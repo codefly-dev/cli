@@ -97,10 +97,14 @@ func (b *Builder) buildRecipe(
 	// provisions nor selects the local emulating builder.
 	builderName := b.world.BuildxBuilder
 	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
-	if (multiArch || b.world.BuildCache != nil) && builderName == "" {
+	if multiArch && b.world.BuildCache == nil && builderName == "" {
 		if err := ensureBuildxBuilder(ctx); err != nil {
 			return w.Wrapf(err, "cannot provision image builder for %s", b.instance.Unique())
 		}
+		builderName = buildxBuilderName
+	}
+
+	if b.world.BuildCache != nil && builderName == "" {
 		builderName = buildxBuilderName
 	}
 
@@ -119,7 +123,7 @@ func (b *Builder) buildRecipe(
 		defer os.Remove(metadataFile)
 	}
 
-	cache := scopedBuildCache(b.world.BuildCache, b.instance.Unique(), recipe.GetName())
+	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache)
 	if err != nil {
 		return err

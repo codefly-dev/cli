@@ -3,6 +3,7 @@ package orchestration
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -166,4 +167,31 @@ func TestBuildRecipeOutputDirectoryIsAbsoluteAndDoesNotCreate(t *testing.T) {
 	// must not have an empty directory left behind.
 	_, statErr := os.Stat(outputDir)
 	require.True(t, os.IsNotExist(statErr))
+}
+
+func TestBuildCacheSeparatesServicesRecipesAndWorkspaces(t *testing.T) {
+	cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "protected/app", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}, Mode: "max"}
+	references := map[string]bool{}
+	for _, identity := range [][3]string{
+		{"workspace", "app/api", "app"}, {"workspace", "app/worker", "app"},
+		{"workspace", "app/api", "migration"}, {"workspace", "app/api", ""},
+		{"other", "app/api", "app"}, {"workspace/app", "api", "app"},
+	} {
+		scoped := scopedBuildCache(cache, identity[0], identity[1], identity[2])
+		require.Equal(t, cache.Imports, scoped.Imports)
+		require.Equal(t, cache.Exports, scoped.Exports)
+		require.Equal(t, cache.Mode, scoped.Mode)
+		recipe := &builderv0.DockerBuildRecipe{Image: "ghcr.io/org/app:v1", Platforms: []string{"linux/amd64"}}
+		args, err := cachedBuildxArgs(recipe, "Dockerfile", ".", false, false, "", "", scoped)
+		require.NoError(t, err)
+		export := args[slices.Index(args, "--cache-to")+1]
+		require.False(t, references[export], "cache export collides for %v", identity)
+		references[export] = true
+		recipe.Image = "ghcr.io/org/app:v2"
+		again, err := cachedBuildxArgs(recipe, "Dockerfile", ".", false, false, "", "", scopedBuildCache(cache, identity[0], identity[1], identity[2]))
+		require.NoError(t, err)
+		require.Equal(t, export, again[slices.Index(again, "--cache-to")+1])
+	}
+	require.Equal(t, "protected/app", cache.Scope)
+	require.Nil(t, scopedBuildCache(nil, "workspace", "app/api", "app"))
 }

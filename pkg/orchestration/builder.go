@@ -15,6 +15,8 @@ import (
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
+	coreservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/services"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -215,6 +217,25 @@ func (b *Builder) SyncSkipped() bool {
 	return b.syncSkipped
 }
 
+func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv0.DockerBuildContext, error) {
+	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = dockerhelpers.CacheArguments(b.world.BuildCache, coreservices.RecipeBuildPlatforms()); err != nil {
+		return nil, fmt.Errorf("cannot configure build cache: %w", err)
+	}
+	dockerContext.Cache = scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), "")
+	dockerContext.BuildxBuilder = b.world.BuildxBuilder
+	if dockerContext.Cache != nil && dockerContext.BuildxBuilder == "" {
+		if err = ensureBuildxBuilder(ctx); err != nil {
+			return nil, fmt.Errorf("cannot provision buildx builder for %s: %w", b.instance.Unique(), err)
+		}
+		dockerContext.BuildxBuilder = buildxBuilderName
+	}
+	return dockerContext, nil
+}
+
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 	w.Debug("Build")
@@ -222,13 +243,10 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("cannot build deployable artifact for %s: agent explicitly advertises artifact build as unsupported", b.instance.Unique())
 	}
 
-	// Build the request
-	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)
+	dockerContext, err := b.dockerBuildContext(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
-
-	dockerContext.Cache = scopedBuildCache(b.world.BuildCache, b.instance.Unique(), "app")
 
 	outputDir, err := buildRecipeOutputDirectory(b.instance.Service.Dir())
 	if err != nil {

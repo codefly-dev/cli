@@ -1,6 +1,10 @@
 package go_grpc
 
 import (
+	"connectrpc.com/connect"
+	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
+	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -111,4 +115,17 @@ func get(t *testing.T, url string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestConnectSessionHandshakeDelegatesToServer(t *testing.T) {
+	server, err := NewServer(&Configuration{EndpointGrpc: "127.0.0.1:0"}, nil, nil)
+	require.NoError(t, err)
+	handler, err := (&HttpServer{config: &Configuration{}, impl: server}).handler()
+	require.NoError(t, err)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+	client := cliconnect.NewCLIClient(httpServer.Client(), httpServer.URL)
+	_, err = client.SessionHandshake(t.Context(), connect.NewRequest(&cli.SessionHandshakeRequest{}))
+	require.ErrorContains(t, err, "no isolated dependency session")
+	require.NotEqual(t, connect.CodeUnimplemented, connect.CodeOf(err))
 }

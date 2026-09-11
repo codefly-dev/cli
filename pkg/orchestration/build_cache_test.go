@@ -1,10 +1,89 @@
 package orchestration
 
 import (
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	"github.com/stretchr/testify/require"
+	"context"
+	"fmt"
 	"testing"
+
+	coreservices "github.com/codefly-dev/core/agents/services"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
+
+func TestBuildCacheRetainsCallerPolicyAndNegotiatesExecution(t *testing.T) {
+	for _, recipe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recipe=%t", recipe), func(t *testing.T) {
+			ctx := context.Background()
+			base := &coreservices.Base{}
+			require.NoError(t, base.HeadlessLoad(ctx, &basev0.ServiceIdentity{Name: "api", Module: "app", WorkspacePath: t.TempDir()}))
+			requests := make(chan *builderv0.BuildRequest, 2)
+			server := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+				if request, ok := req.(*builderv0.BuildRequest); ok {
+					requests <- proto.CloneOf(request)
+				}
+				return handler(ctx, req)
+			}))
+			wrapper := &coreservices.BuilderWrapper{Base: base}
+			if recipe {
+				wrapper.BuildResult = &builderv0.BuildResult{Kind: &builderv0.BuildResult_DockerBuildPlan{DockerBuildPlan: &builderv0.DockerBuildPlan{}}}
+			}
+			builderv0.RegisterBuilderServer(server, coreservices.NewDefaultBuilder(wrapper))
+			address := serveGRPC(t, server)
+			conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = conn.Close() })
+			client := coreservices.NewBuilderAgentClient(conn)
+			response, err := client.Build(ctx, &builderv0.BuildRequest{})
+			require.NoError(t, err)
+			require.Equal(t, builderv0.BuildStatus_SUCCESS, response.GetState().GetState())
+			<-requests
+
+			cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "app/api", Imports: []string{"ghcr.io/org/cache"}}
+			flow := &Flow{world: &World{Workspace: &resources.Workspace{}}}
+			flow.WithBuildCache(cache)
+			flow.WithBuildxBuilder("selected")
+			cache.Imports[0] = "ghcr.io/org/changed"
+			require.Equal(t, "ghcr.io/org/cache", flow.world.BuildCache.Imports[0])
+			require.Nil(t, (&World{}).BuildCache)
+			service := serviceWithRecipe(t, "1.0.0", nil)
+			instance := &services.Instance{Service: service, Identity: &resources.ServiceIdentity{Name: "api", Module: "app"}}
+			instance.Builder = &services.BuilderInstance{Instance: instance, Builder: client}
+			build, err := NewBuilder(ctx, instance, flow.world)
+			require.NoError(t, err)
+			_, err = build.Build(ctx)
+			if recipe {
+				require.ErrorContains(t, err, "cannot verify build recipe")
+			} else {
+				require.ErrorContains(t, err, "did not acknowledge build cache contract registry-v1")
+			}
+			request := <-requests
+			require.Equal(t, "selected", request.GetBuildContext().GetDockerBuildContext().GetBuildxBuilder())
+			forwarded := request.GetBuildContext().GetDockerBuildContext().GetCache()
+			require.Equal(t, `["app/api","","app/api",""]`, forwarded.Scope)
+			require.Equal(t, flow.world.BuildCache.Imports, forwarded.Imports)
+			require.Equal(t, flow.world.BuildCache.Exports, forwarded.Exports)
+			require.NotEmpty(t, request.OutputDirectory)
+			require.True(t, proto.Equal(flow.world.BuildCache, &builderv0.BuildCacheOptions{Backend: "registry", Scope: "app/api", Imports: []string{"ghcr.io/org/cache"}}))
+			flow.WithBuildCache(nil)
+			require.Nil(t, flow.world.BuildCache)
+		})
+	}
+}
+
+func TestBuildCacheRequiresCallerScopeBeforeAddingServiceIdentity(t *testing.T) {
+	builder := &Builder{
+		world:    &World{Workspace: &resources.Workspace{Name: "workspace"}, BuildxBuilder: "selected", BuildCache: &builderv0.BuildCacheOptions{Backend: "registry", Exports: []string{"ghcr.io/org/cache"}}},
+		instance: &services.Instance{Identity: &resources.ServiceIdentity{Name: "api", Module: "app"}},
+	}
+	_, err := builder.dockerBuildContext(t.Context())
+	require.ErrorContains(t, err, "build cache scope is required")
+}
 
 func TestBuildCacheIsOwnedByFlowAndScopedByServiceAndRecipe(t *testing.T) {
 	cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "workspace/protected", Exports: []string{"ghcr.io/org/cache"}}
