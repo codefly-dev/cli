@@ -26,6 +26,7 @@ type goWorkflowJob struct {
 type goWorkflowStep struct {
 	Name string `yaml:"name"`
 	Uses string `yaml:"uses"`
+	Run  string `yaml:"run"`
 	With struct {
 		Version       string `yaml:"version"`
 		OnlyNewIssues bool   `yaml:"only-new-issues"`
