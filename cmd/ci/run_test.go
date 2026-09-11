@@ -2,7 +2,10 @@ package ci
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -144,5 +147,65 @@ func TestCIRuntimeAuditIsTheDefault(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Fatalf("--audit-include-dev default = %q, want false", flag.DefValue)
+	}
+}
+
+func TestMetadataOnlyRunCannotBypassIntegrityVerification(t *testing.T) {
+	for _, test := range []struct {
+		name, manifest string
+		wantFailure    bool
+	}{
+		{"valid", `{"files":{"services/frontend/code/src/example.ts":"DIGEST"}}`, false},
+		{"stale", `{"files":{"services/frontend/code/src/example.ts":"wrong"}}`, true},
+		{"malformed", `{`, true},
+		{"missing files", `{}`, true},
+		{"null", `null`, true},
+		{"removed", "", true},
+		{"unsafe path", `{"files":{"../../outside":"DIGEST"}}`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, workspace := loadComposedPlanFixture(t)
+			runCacheTestGit(t, root, "init")
+			runCacheTestGit(t, root, "add", ".")
+			runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "baseline")
+			path := "module/tools/base-manifest.json"
+			if test.manifest != "" {
+				digest := sha256.Sum256([]byte("export const example = 1;\n"))
+				writeCacheTestFile(t, filepath.Join(root, path), strings.ReplaceAll(test.manifest, "DIGEST", hex.EncodeToString(digest[:])))
+			}
+			ctx := context.Background()
+			plan, err := BuildPlan(ctx, workspace, PlanOptions{RepoRoot: root, ChangedFiles: []string{path}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Services) != 0 {
+				t.Fatalf("metadata selected services: %+v", plan.Services)
+			}
+			phases, err := plan.runPhases([]string{"test", "build"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(phases, []string{"verify", "test", "build"}) {
+				t.Fatalf("phases = %v", phases)
+			}
+			reporter := fixedCIReporter(t, plan)
+			err = runCIPhases(ctx, phases, false, func(ctx context.Context, phase string) error {
+				return executeCIPhase(ctx, reporter, workspace, plan, phase, []string{""}, false)
+			})
+			if (err != nil) != test.wantFailure {
+				t.Fatalf("gate error = %v, want failure %v", err, test.wantFailure)
+			}
+			report := reporter.Finalize(err)
+			if len(report.Tasks) != 1 || report.Tasks[0].ID != "verify:workspace" {
+				t.Fatalf("tasks = %+v", report.Tasks)
+			}
+			status := reportStatusPassed
+			if test.wantFailure {
+				status = reportStatusFailed
+			}
+			if report.Tasks[0].Status != status || report.Tasks[0].Integrity.GuardedModules != 1 {
+				t.Fatalf("verification evidence = %+v", report.Tasks[0])
+			}
+		})
 	}
 }

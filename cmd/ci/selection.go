@@ -16,6 +16,8 @@ import (
 
 const planSchemaVersion = 1
 
+const gitHeadRevision = "HEAD"
+
 type PlanOptions struct {
 	Base         string
 	Head         string
@@ -27,6 +29,8 @@ type PlanOptions struct {
 }
 
 type Plan struct {
+	IntegrityInputs []IntegrityInput `json:"integrity_inputs,omitempty"`
+	IntegrityError  string           `json:"integrity_error,omitempty"`
 	SchemaVersion   int              `json:"schema_version"`
 	Workspace       string           `json:"workspace"`
 	Base            string           `json:"base,omitempty"`
@@ -34,6 +38,13 @@ type Plan struct {
 	ChangedFiles    []string         `json:"changed_files"`
 	SelectionReason string           `json:"selection_reason,omitempty"`
 	Services        []PlannedService `json:"services"`
+}
+
+type IntegrityInput struct {
+	Module string `json:"module"`
+	Path   string `json:"path"`
+	Phase  string `json:"phase"`
+	Reason string `json:"reason"`
 }
 
 type PlannedService struct {
@@ -102,18 +113,19 @@ func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOpt
 	if opts.All {
 		plan.SelectionReason = "explicit --all"
 		selectAll("global", plan.SelectionReason)
-		return finalizePlan(ctx, workspace, plan, services, selected)
 	}
 
 	changed := append([]string(nil), opts.ChangedFiles...)
 	if len(changed) == 0 {
 		if plan.Base == "" && isCIEnvironment() {
+			plan.IntegrityError = "CI change bounds were not supplied; provide --base or --changed-file to establish integrity inputs"
 			plan.SelectionReason = "CI change bounds were not supplied; selected all services conservatively"
 			selectAll("global", plan.SelectionReason)
 			return finalizePlan(ctx, workspace, plan, services, selected)
 		}
 		changed, err = discoverGitChanges(ctx, repoRoot, plan.Base, plan.Head)
 		if err != nil {
+			plan.IntegrityError = fmt.Sprintf("cannot establish integrity inputs: %v", err)
 			plan.SelectionReason = fmt.Sprintf("change discovery failed (%v); selected all services conservatively", err)
 			selectAll("global", plan.SelectionReason)
 			return finalizePlan(ctx, workspace, plan, services, selected)
@@ -122,7 +134,7 @@ func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOpt
 
 	plan.ChangedFiles = normalizeChangedPaths(repoRoot, changed)
 	if plan.Head == "" && plan.Base != "" {
-		plan.Head = "HEAD"
+		plan.Head = gitHeadRevision
 	}
 
 	libraryConsumers, err := loadLibraryConsumers(ctx, workspace, services)
@@ -130,6 +142,26 @@ func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOpt
 		return nil, err
 	}
 	for _, changedPath := range plan.ChangedFiles {
+		absPath := changedPath
+		if !filepath.IsAbs(absPath) {
+			absPath = filepath.Join(repoRoot, filepath.FromSlash(changedPath))
+		}
+		// Resolve the parent so a deleted or replaced manifest keeps its owner.
+		absPath = filepath.Join(cleanAbs(filepath.Dir(absPath)), filepath.Base(absPath))
+		integrityOwned := false
+		for _, module := range modules {
+			if absPath == filepath.Join(cleanAbs(filepath.Join(module.dir, "tools")), "base-manifest.json") {
+				plan.IntegrityInputs = append(plan.IntegrityInputs, IntegrityInput{
+					Module: module.name, Path: changedPath, Phase: ciPhaseVerify,
+					Reason: "base hash and ownership index is integrity-owned; source paths determine affected services",
+				})
+				integrityOwned = true
+				break
+			}
+		}
+		if integrityOwned || opts.All {
+			continue
+		}
 		classifyChangedPath(repoRoot, workspace, changedPath, services, modules, libraryConsumers, selected)
 	}
 
@@ -425,7 +457,7 @@ func gitRoot(ctx context.Context, dir string) (string, error) {
 func discoverGitChanges(ctx context.Context, repoRoot, base, head string) ([]string, error) {
 	if base != "" {
 		if head == "" {
-			head = "HEAD"
+			head = gitHeadRevision
 		}
 		out, err := gitOutput(ctx, repoRoot, "diff", "--name-status", "-z", "--find-renames", base, head)
 		if err != nil {
@@ -434,7 +466,7 @@ func discoverGitChanges(ctx context.Context, repoRoot, base, head string) ([]str
 		return parseNameStatusZ(out), nil
 	}
 
-	out, err := gitOutput(ctx, repoRoot, "diff", "--name-status", "-z", "--find-renames", "HEAD")
+	out, err := gitOutput(ctx, repoRoot, "diff", "--name-status", "-z", "--find-renames", gitHeadRevision)
 	if err != nil {
 		return nil, err
 	}

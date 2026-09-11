@@ -261,6 +261,7 @@ func newCIReporter(plan *Plan, command, version string, now reportClock) (*CIRep
 
 func clonePlan(plan *Plan) Plan {
 	cloned := *plan
+	cloned.IntegrityInputs = append([]IntegrityInput(nil), plan.IntegrityInputs...)
 	cloned.ChangedFiles = cloneStrings(plan.ChangedFiles)
 	cloned.Services = make([]PlannedService, len(plan.Services))
 	for index, service := range plan.Services {

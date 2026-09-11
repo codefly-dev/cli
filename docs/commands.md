@@ -1121,6 +1121,25 @@ codefly ci build --base <revision>                # Build deployable artifacts f
 All selection flags are provider-neutral. Use `--all` for an explicit full
 workspace run. CI providers should invoke `codefly ci run`; language commands
 and service matrices belong to Codefly agents, not provider configuration.
+
+Plans report a module's exact `tools/base-manifest.json` path in
+`integrity_inputs`, with its owner, required `verify` phase, and reason. This
+hash and ownership index does not select service test/build tasks; the underlying
+source changes still do. `ci run` always includes verification for these inputs,
+even with zero affected services or an explicit `--phase` list, and a changed
+manifest that has been removed fails verification. `--all` preserves these
+integrity obligations. Unknown change bounds or failed Git discovery block the
+integrity gate even when all services are selected; supply valid change bounds
+rather than relying on full service selection to replace integrity evidence.
+
+Changed manifests are also compared with `--base` (local working-tree runs
+default to `HEAD`; CI requires an explicit base). The baseline must be available
+in the Git checkout. Dropping an entry while its file remains fails: base sync
+would otherwise lose ownership of that file. Remove retired files with their
+entries, or retain their recorded base hashes and declare intentional local
+divergences in `tools/base-integrity-allow.json`. Other tools, JSON, contracts,
+and configuration retain normal dependency-aware selection.
+
 Affected-service phase commands accept `--jobs` (`0` selects an automatic value
 capped at four) and `--fail-fast`. Executable CI commands atomically write a
 schema-versioned `report.json` to `.codefly/ci` by default. `--output` selects a
