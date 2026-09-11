@@ -335,30 +335,36 @@ test flow only when the suite requires them.
 
 ### Public plan
 
-A service declaration change conservatively selects the complete candidate
-inventory. This retains coverage when a service, dependency edge, or required
-suite is removed or renamed. More precise phase/suite selection requires the
-agent effective-input contract; CI currently retains service-wide eligibility.
+Service declaration changes select their owner and affected dependents from
+both reference and candidate graphs. Removed producers and edges retain
+surviving consumer coverage without applying named suites to unrelated agents.
+A removed declaration requires a resolvable reference revision; CI refuses to
+guess its consumers when that history is unavailable.
 
-A replay envelope can preserve selection reasons, original changed paths, and
-Core execution plans for both stages:
+Replay envelopes bind task selection, phases, named suites, runtime context,
+prerequisites, resource locks, original change paths, and Core stage topology:
 
 ```bash
-codefly ci plan --base "$BASE" --replay --format json > /tmp/codefly-plan.json
-codefly ci run --base "$BASE" --plan /tmp/codefly-plan.json
+codefly ci plan --base "$BASE" --phase build --replay --format json > /tmp/codefly-plan.json
+codefly ci build --base "$BASE" --plan /tmp/codefly-plan.json
 ```
 
-Supply the same independent `--base`, `--changed-file`, or `--all` bounds when
-replaying. Submitted selections cannot weaken those bounds or release `--all`.
-Replay checks the checked-out candidate commit, complete local source contents,
-and freshly resolved stage plans before dispatch. Unknown schemas, altered
-reasons/tasks/topology, and stale contents fail validation. The content digest
-includes ignored files and symlink targets; cyclic or broken symlinks fail.
-Save the envelope outside the source tree so writing it does not change the
-snapshot. Any local change, including generated output, requires a new plan.
-The envelope preserves service selection and topology; phase/suite execution
-flags remain invocation inputs, and effective-input/validation-result task
-contracts are not yet supported.
+Omit `--phase` on the plan command for the full `ci run` gate. Supply the same
+independent `--base`, `--changed-file`, or `--all` bounds when replaying. Submitted
+plans cannot weaken those bounds, change phases/suites, or remove task
+prerequisites. Build tasks include unchanged artifact prerequisites. The
+scheduler consumes the validated task list; runtime flows use run-stage edges.
+Core visibility rules are checked before a replay plan is accepted. Schema jobs
+without a CI executor are rejected rather than omitted from an executable plan.
+
+Replay validates the checked-out commit and source bytes in the repository,
+resolved modules, services, libraries, and symlink targets. Directory digests
+are memoized so package-manager back-links terminate without hiding source
+changes. Ignored source files remain covered. Untracked outputs in the reserved
+`.codefly/ci` report directory are excluded; tracked files there remain inputs.
+Save the envelope and custom report outputs outside the source tree. Broken
+symlinks and special files are rejected. The replay schema is
+`codefly.ci-replay/v2`; earlier envelopes must be regenerated.
 
 `codefly ci plan` is the stable inspection and automation boundary. Text output
 is for humans; JSON is versioned and machine-readable:

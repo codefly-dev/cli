@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/codefly-dev/core/resources"
@@ -27,7 +28,7 @@ func (flags *SelectionFlags) Bind(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&flags.all, "all", false, "Select every service explicitly")
 }
 
-func (flags *SelectionFlags) BuildPlan(ctx context.Context, workspace *resources.Workspace) (*Plan, error) {
+func (flags *SelectionFlags) BuildPlan(ctx context.Context, workspace *resources.Workspace, invocation ReplayInvocation) (*Plan, error) {
 	changed := append([]string(nil), flags.changedFiles...)
 	if len(changed) == 0 {
 		changed = append(changed, changedFilesFromEnvironment()...)
@@ -39,7 +40,10 @@ func (flags *SelectionFlags) BuildPlan(ctx context.Context, workspace *resources
 		All:          flags.all,
 	}
 	if flags.planFile != "" {
-		return readReplayPlan(ctx, workspace, flags.planFile, &options)
+		if loadOnly || initOnly {
+			return nil, fmt.Errorf("replay requires complete task execution; --load-only and --init-only are incompatible")
+		}
+		return readReplayPlan(ctx, workspace, flags.planFile, &options, invocation)
 	}
 	return BuildPlan(ctx, workspace, options)
 }

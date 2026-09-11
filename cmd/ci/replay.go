@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
+
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,11 +19,13 @@ import (
 )
 
 type ReplayPlan struct {
-	Schema    string      `json:"schema"`
-	Candidate string      `json:"candidate"`
-	Content   string      `json:"content"`
-	Selection *Plan       `json:"selection"`
-	Execution []StagePlan `json:"execution"`
+	Schema     string           `json:"schema"`
+	Candidate  string           `json:"candidate"`
+	Content    string           `json:"content"`
+	Selection  *Plan            `json:"selection"`
+	Execution  []StagePlan      `json:"execution"`
+	Invocation ReplayInvocation `json:"invocation"`
+	Tasks      []ReplayTask     `json:"tasks"`
 }
 
 type StagePlan struct {
@@ -32,7 +34,28 @@ type StagePlan struct {
 	Fingerprint string              `json:"fingerprint"`
 }
 
-func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *Plan) (*ReplayPlan, error) {
+type ReplayInvocation struct {
+	Phases         []string `json:"phases"`
+	Suites         []string `json:"suites"`
+	RuntimeContext string   `json:"runtime_context"`
+}
+
+type ReplayTask struct {
+	Phase         string         `json:"phase"`
+	Suite         string         `json:"suite,omitempty"`
+	Service       PlannedService `json:"service"`
+	Prerequisites []string       `json:"prerequisites"`
+	Resources     []string       `json:"resources"`
+}
+
+func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *Plan, invocation ReplayInvocation) (*ReplayPlan, error) {
+	phases, err := normalizeRunPhases(invocation.Phases)
+	if err != nil {
+		return nil, err
+	}
+	invocation.Phases = phases
+	invocation.Suites = normalizeTestSuites(invocation.Suites)
+	invocation.RuntimeContext = normalizedCacheRuntimeContext(invocation.RuntimeContext)
 	root, err := gitRoot(ctx, workspace.Dir())
 	if err != nil {
 		return nil, err
@@ -51,7 +74,7 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 			return nil, fmt.Errorf("plan head is not the checked-out candidate")
 		}
 	}
-	content, err := replayContent(ctx, root, map[string]bool{})
+	content, err := replayInputs(ctx, workspace, root)
 	if err != nil {
 		return nil, err
 	}
@@ -65,8 +88,24 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 			kinds[[2]string{dependency.Unique(), record.unique}] = dependency.Kind
 		}
 	}
-	result := &ReplayPlan{Schema: "codefly.ci-replay/v1", Candidate: candidate, Content: content, Selection: plan, Execution: []StagePlan{}}
+	result := &ReplayPlan{Schema: "codefly.ci-replay/v2", Invocation: invocation, Tasks: []ReplayTask{}, Candidate: candidate, Content: content, Selection: plan, Execution: []StagePlan{}}
+	result.Tasks, err = resolveReplayTasks(ctx, workspace, plan, invocation)
+	if err != nil {
+		return nil, err
+	}
+	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
 	for _, selected := range plan.Services {
+		selectedDependencies, restrictionErr := dependencies.Restrict(ctx, selected.Service)
+		if restrictionErr != nil {
+			return nil, restrictionErr
+		}
+		if visibilityErr := selectedDependencies.VerifyVisibility(ctx); visibilityErr != nil {
+			return nil, visibilityErr
+		}
+
 		closure, err := architecture.SelectClosure(ctx, workspace, selected.Service)
 		if err != nil {
 			return nil, err
@@ -93,8 +132,8 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 				}
 			}
 			draft.Edges = edges
-			if stage == resources.StageRun {
-				draft.SchemaSteps = nil
+			if len(draft.SchemaSteps) > 0 {
+				return nil, fmt.Errorf("CI replay has no executor for schema job %s", draft.SchemaSteps[0].ID)
 			}
 			draft = draft.Canonical()
 			if validationErr := draft.Validate(); validationErr != nil {
@@ -110,59 +149,167 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 	return result, nil
 }
 
-// Replay hashes the complete local tree, including ignored files and symlink
-// targets. Cache pruning is unsuitable here: an omitted input could change the
-// code executed without changing the submitted plan's identity.
-func replayContent(ctx context.Context, root string, visiting map[string]bool) (string, error) {
-	resolved, err := filepath.EvalSymlinks(root)
+func resolveReplayTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, invocation ReplayInvocation) ([]ReplayTask, error) {
+	tasks := []ReplayTask{}
+	for _, phase := range invocation.Phases {
+		if phase == ciPhaseVerify {
+			continue
+		}
+		suites := []string{""}
+		if phase == string(resources.PhaseTest) {
+			suites = invocation.Suites
+		}
+		for _, suite := range suites {
+			options := ScheduleOptions{Phase: phase, Suite: suite, LockDependencyClosure: phaseLocksDependencyClosure(phase)}
+			scheduled, taskErr := resolveScheduledTasks(ctx, workspace, plan, options)
+			if taskErr != nil {
+				return nil, taskErr
+			}
+			for index := range scheduled {
+				task := &scheduled[index]
+				tasks = append(tasks, ReplayTask{Phase: phase, Suite: suite, Service: task.planned, Prerequisites: task.prerequisites, Resources: task.resources})
+			}
+		}
+	}
+	return tasks, nil
+}
+
+func replayInputs(ctx context.Context, workspace *resources.Workspace, root string) (string, error) {
+	inventory, modules, err := loadPlanInventory(ctx, workspace)
 	if err != nil {
 		return "", err
 	}
-	if visiting[resolved] {
-		return "", fmt.Errorf("cyclic source symlink at %s", root)
+	inputs := []cacheDigestPath{{Label: "repository", Path: root}}
+	for _, module := range modules {
+		inputs = append(inputs, cacheDigestPath{Label: "module/" + module.name, Path: module.dir})
 	}
-	visiting[resolved] = true
-	defer delete(visiting, resolved)
-	hasher := sha256.New()
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if contextErr := ctx.Err(); contextErr != nil {
-			return contextErr
-		}
-		if !entry.Type().IsRegular() && !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
-			return fmt.Errorf("unsupported source file type: %s", path)
-		}
-		if entry.Name() == ".git" {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if hashErr := hashCacheEntry(hasher, root, path); hashErr != nil {
-			return hashErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			target, targetErr := filepath.EvalSymlinks(path)
-			if targetErr != nil {
-				return targetErr
-			}
-			digest, digestErr := replayContent(ctx, target, visiting)
-			if digestErr != nil {
-				return digestErr
-			}
-			writeCacheRecord(hasher, "symlink-content", digest)
-		}
-		return nil
-	})
+	for _, service := range inventory {
+		inputs = append(inputs, cacheDigestPath{Label: "service/" + service.unique, Path: service.dir})
+	}
+	libraries, err := workspace.LoadLibraries(ctx)
 	if err != nil {
-		return "", fmt.Errorf("hash candidate content: %w", err)
+		return "", err
 	}
-	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
+	for _, library := range libraries {
+		inputs = append(inputs, cacheDigestPath{Label: "library/" + library.Name, Path: library.Dir()})
+	}
+	snapshot := &replaySnapshot{digests: map[string]string{}}
+	output := filepath.Join(workspace.Dir(), ".codefly", "ci")
+	tracked, err := gitOutput(ctx, root, "ls-files", "--", output)
+	if err != nil {
+		return "", err
+	}
+	info, statErr := os.Lstat(output)
+	if len(tracked) == 0 && (os.IsNotExist(statErr) || (statErr == nil && info.IsDir())) {
+		snapshot.output = cleanAbs(output)
+	}
+	digests := make([]CICacheResourceDigest, 0, len(inputs))
+	for _, input := range inputs {
+		digest, hashErr := snapshot.digest(ctx, input.Path)
+		if hashErr != nil {
+			return "", fmt.Errorf("hash %s: %w", input.Label, hashErr)
+		}
+		digests = append(digests, CICacheResourceDigest{Resource: input.Label, Digest: digest})
+	}
+	return aggregateCacheDigests(digests), nil
 }
 
-func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path string, options *PlanOptions) (*Plan, error) {
+// Directory digests form a graph: legitimate package-manager back-links must
+// not cause infinite traversal or make a reproducible source tree unhashable.
+type replaySnapshot struct {
+	digests map[string]string
+	output  string
+}
+
+func (snapshot *replaySnapshot) skipOutput(path string) (bool, error) {
+	if snapshot.output == "" {
+		return false, nil
+	}
+	if filepath.Clean(path) == snapshot.output {
+		return true, nil
+	}
+	if filepath.Clean(path) != filepath.Dir(snapshot.output) {
+		return false, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Name() != filepath.Base(snapshot.output) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (snapshot *replaySnapshot) digest(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	if digest, visited := snapshot.digests[resolved]; visited {
+		return digest, nil
+	}
+	snapshot.digests[resolved] = "back-reference"
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		return "", err
+	}
+	hasher := sha256.New()
+	if !info.IsDir() {
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("unsupported source file type: %s", path)
+		}
+		if err := hashCacheEntry(hasher, resolved, resolved); err != nil {
+			return "", err
+		}
+	} else {
+		entries, readErr := os.ReadDir(resolved)
+		if readErr != nil {
+			return "", readErr
+		}
+		for _, entry := range entries {
+			if entry.Name() == ".git" {
+				continue
+			}
+			child := filepath.Join(resolved, entry.Name())
+			skip, skipErr := snapshot.skipOutput(child)
+			if skipErr != nil {
+				return "", skipErr
+			}
+			if skip {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				if err := hashCacheEntry(hasher, resolved, child); err != nil {
+					return "", err
+				}
+			}
+			digest, digestErr := snapshot.digest(ctx, child)
+			if digestErr != nil {
+				return "", digestErr
+			}
+			writeCacheRecord(hasher, entry.Name(), digest)
+		}
+	}
+	digest := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+	snapshot.digests[resolved] = digest
+	return digest, nil
+}
+
+func replayContent(ctx context.Context, root string) (string, error) {
+	snapshot := &replaySnapshot{digests: map[string]string{}}
+	return snapshot.digest(ctx, root)
+}
+
+func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path string, options *PlanOptions, invocation ReplayInvocation) (*Plan, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -177,7 +324,7 @@ func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path st
 	if trailingErr := decoder.Decode(new(any)); trailingErr != io.EOF {
 		return nil, fmt.Errorf("CI replay plan must contain one JSON document")
 	}
-	if submitted.Schema != "codefly.ci-replay/v1" || submitted.Selection == nil {
+	if submitted.Schema != "codefly.ci-replay/v2" || submitted.Selection == nil {
 		return nil, fmt.Errorf("incompatible CI replay plan")
 	}
 	// Selection is recomputed from independently supplied bounds, never from the
@@ -189,7 +336,7 @@ func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path st
 	if err != nil {
 		return nil, err
 	}
-	current, err := buildReplayPlan(ctx, workspace, expected)
+	current, err := buildReplayPlan(ctx, workspace, expected, invocation)
 	if err != nil {
 		return nil, err
 	}
@@ -210,5 +357,6 @@ func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path st
 	if !bytes.Equal(submittedJSON, expectedJSON) {
 		return nil, fmt.Errorf("CI plan was altered or differs from required selection and resolved topology")
 	}
+	expected.replay = current
 	return expected, nil
 }

@@ -270,6 +270,22 @@ func TestCIWithPlanOptionsDrainsRunningTasksOnCancellation(t *testing.T) {
 func loadSchedulerFixture(t testing.TB) (string, *resources.Workspace) {
 	t.Helper()
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Name() != resources.ServiceConfigurationName {
+			return nil
+		}
+		payload, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		return os.WriteFile(path, []byte(strings.ReplaceAll(strings.ReplaceAll(string(payload), "visibility: application", "visibility: public"), "name: grpc\n      api:", "name: grpc\n      visibility: public\n      api:")), 0o600)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	modulePath := filepath.Join(root, "modules", "management", "module.codefly.yaml")
 	module, err := os.ReadFile(modulePath)
 	if err != nil {
@@ -336,7 +352,7 @@ func TestCIBuildPreservesPrerequisites(t *testing.T) {
 				}
 				if selected {
 					plan.Services = []PlannedService{{Service: "web/frontend"}, {Service: "management/organization"}}
-					required["web/frontend"] = []string{"management/organization"}
+					required["web/frontend"] = []string{"management/organization", "billing/accounts", "web/gateway"}
 				}
 				var mu sync.Mutex
 				completed := map[string]bool{}
@@ -358,8 +374,12 @@ func TestCIBuildPreservesPrerequisites(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(completed) != len(plan.Services) {
-					t.Fatalf("completed %d of %d tasks", len(completed), len(plan.Services))
+				wantCount := len(plan.Services)
+				if selected {
+					wantCount = 4
+				}
+				if len(completed) != wantCount {
+					t.Fatalf("completed %d of %d tasks", len(completed), wantCount)
 				}
 			})
 		}
@@ -390,7 +410,7 @@ func TestCIBuildFailureBlocksConsumersAndPreservesIndependentWork(t *testing.T) 
 	assertReportTask(t, report.Tasks[0], reportStatusFailed, "")
 	assertReportTask(t, report.Tasks[1], reportStatusSkipped, reportReasonFailedPrerequisite)
 	assertReportTask(t, report.Tasks[2], reportStatusPassed, "")
-	if !reflect.DeepEqual(report.Tasks[1].Prerequisites, []string{"management/organization"}) || !reflect.DeepEqual(report.Tasks[1].BlockedBy, []string{"management/organization"}) {
+	if !reflect.DeepEqual(report.Tasks[1].Prerequisites, []string{"billing/accounts", "management/organization", "web/gateway"}) || !reflect.DeepEqual(report.Tasks[1].BlockedBy, []string{"management/organization"}) {
 		t.Fatalf("consumer prerequisite evidence = %+v", report.Tasks[1])
 	}
 	for _, task := range report.Tasks {
@@ -450,7 +470,11 @@ func TestCISchedulerRetainsConservativePrerequisites(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(tasks[1].prerequisites, []string{"management/organization"}) {
+			wantPrerequisites := []string{"management/organization"}
+			if options.Phase == "build" {
+				wantPrerequisites = []string{"billing/accounts", "management/organization", "web/gateway"}
+			}
+			if !reflect.DeepEqual(tasks[1].prerequisites, wantPrerequisites) {
 				t.Fatalf("prerequisites = %v", tasks[1].prerequisites)
 			}
 			if options.LockDependencyClosure && !reflect.DeepEqual(tasks[1].resources, []string{
@@ -525,7 +549,7 @@ func TestCIMixedStageCycleCanPlanAndSchedule(t *testing.T) {
 	runCacheTestGit(t, root, "init")
 	runCacheTestGit(t, root, "add", ".")
 	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
-	replay, err := buildReplayPlan(context.Background(), workspace, plan)
+	replay, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1327,6 +1327,23 @@ func (flow *Flow) ServiceFromUnique(unique string) (*resources.Service, error) {
 	return flow.world.Dependencies.ServiceFromUnique(unique)
 }
 
+func (flow *Flow) selectDependencyStage() error {
+	stage := resources.StageRun
+	switch flow.world.Mode {
+	case BuildMode, LintMode, CompileMode:
+		stage = resources.StageBuild
+	}
+	dependencies, err := flow.world.Dependencies.ForStage(stage)
+	if err != nil {
+		return err
+	}
+	flow.world.Dependencies = dependencies
+	if flow.SharedState != nil {
+		flow.SharedState.SetDependencies(dependencies)
+	}
+	return nil
+}
+
 func (flow *Flow) InitManagers(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
 	remotes := make(map[string]*Remote)
@@ -1351,6 +1368,10 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		if flow.SharedState != nil {
 			flow.SharedState.SetDependencies(dep)
 		}
+	}
+
+	if err := flow.selectDependencyStage(); err != nil {
+		return w.Wrap(err)
 	}
 
 	// Test dependency policy is advertised by the origin agent, so load that

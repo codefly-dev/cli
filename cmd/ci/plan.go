@@ -12,12 +12,15 @@ import (
 )
 
 var (
-	planBase         string
-	planHead         string
-	planChangedFiles []string
-	planAll          bool
-	planFormat       string
-	planReplay       bool
+	planBase           string
+	planHead           string
+	planChangedFiles   []string
+	planAll            bool
+	planFormat         string
+	planReplay         bool
+	planPhases         []string
+	planSuites         []string
+	planRuntimeContext string
 )
 
 // PlanCmd exposes Codefly's provider-neutral changed/affected service plan.
@@ -58,7 +61,7 @@ var PlanCmd = &cobra.Command{
 
 		var output any = plan
 		if planReplay {
-			output, err = buildReplayPlan(ctx, workspace, plan)
+			output, err = buildReplayPlan(ctx, workspace, plan, ReplayInvocation{Phases: planPhases, Suites: planSuites, RuntimeContext: planRuntimeContext})
 			if err != nil {
 				return err
 			}
@@ -80,6 +83,9 @@ var PlanCmd = &cobra.Command{
 }
 
 func init() {
+	PlanCmd.Flags().StringSliceVar(&planPhases, "phase", nil, "Phases bound by a replay plan (default: full CI gate)")
+	PlanCmd.Flags().StringSliceVar(&planSuites, "suite", nil, "Named test suites bound by a replay plan")
+	PlanCmd.Flags().StringVar(&planRuntimeContext, "runtime-context", "free", "Runtime context bound by a replay plan")
 	PlanCmd.Flags().BoolVar(&planReplay, "replay", false, "Include validated execution plans and candidate content identity (use --format json; save outside the repository)")
 	PlanCmd.Flags().StringVar(&planBase, "base", "", "Base Git revision for change discovery")
 	PlanCmd.Flags().StringVar(&planHead, "head", "", "Head Git revision (defaults to HEAD when --base is set)")

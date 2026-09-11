@@ -28,7 +28,16 @@ func TestCIBuildOrdersRealImagePrerequisites(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, workspace := loadSchedulerFixture(t)
+			root, workspace := loadSchedulerFixture(t)
+			frontendPath := filepath.Join(root, "modules/web/services/frontend/service.codefly.yaml")
+			declaration, err := os.ReadFile(frontendPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			declaration = []byte(strings.Replace(string(declaration), "- name: gateway", "- name: organization\n      module: management\n      kind: build", 1))
+			if err := os.WriteFile(frontendPath, declaration, 0o600); err != nil {
+				t.Fatal(err)
+			}
 			suffix := uuid.NewString()
 			images := map[string]string{}
 			for _, name := range []string{"organization", "frontend", "worker"} {

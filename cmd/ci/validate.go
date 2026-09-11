@@ -52,7 +52,7 @@ func runValidationCommand(selection *SelectionFlags, action Action, phase string
 	if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
 		return fmt.Errorf("cannot configure silent services: %w", err)
 	}
-	plan, err := selection.BuildPlan(ctx, workspace)
+	plan, err := selection.BuildPlan(ctx, workspace, ReplayInvocation{Phases: []string{phase}, Suites: testSuites, RuntimeContext: runtimeContext})
 	if err != nil {
 		return fmt.Errorf("cannot build affected-service plan: %w", err)
 	}

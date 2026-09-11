@@ -238,12 +238,13 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 	if err != nil {
 		return err
 	}
-	if jobs > len(plan.Services) {
-		jobs = len(plan.Services)
-	}
+
 	tasks, err := buildScheduledTasks(ctx, workspace, plan, options)
 	if err != nil {
 		return err
+	}
+	if jobs > len(tasks) {
+		jobs = len(tasks)
 	}
 	var reportTaskIDs []string
 	if options.Reporter != nil {
@@ -429,7 +430,7 @@ func normalizeCIJobs(jobs int) (int, error) {
 	return jobs, nil
 }
 
-func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, options ScheduleOptions) ([]ciScheduledTask, error) {
+func resolveScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, options ScheduleOptions) ([]ciScheduledTask, error) {
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	if err != nil {
 		return nil, fmt.Errorf("load CI scheduler dependency graph: %w", err)
@@ -443,9 +444,29 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 	if _, err := dependencies.Graph().TopologicalSort(); err != nil {
 		return nil, fmt.Errorf("validate CI scheduler %s dependency graph: %w", stage, err)
 	}
-	tasks := make([]ciScheduledTask, len(plan.Services))
-	selected := make(map[string]int, len(plan.Services))
-	for index, planned := range plan.Services {
+	plannedServices := append([]PlannedService(nil), plan.Services...)
+	if options.Phase == string(resources.PhaseBuild) {
+		selectedServices := map[string]bool{}
+		for _, planned := range plannedServices {
+			selectedServices[planned.Service] = true
+		}
+		for _, planned := range plan.Services {
+			required, orderErr := dependencies.OrderTo(ctx, planned.Service)
+			if orderErr != nil {
+				return nil, orderErr
+			}
+			for _, service := range required {
+				if selectedServices[service.Unique] {
+					continue
+				}
+				selectedServices[service.Unique] = true
+				plannedServices = append(plannedServices, PlannedService{Service: service.Unique, Classification: "prerequisite", Reasons: []string{"build prerequisite of " + planned.Service}})
+			}
+		}
+	}
+	tasks := make([]ciScheduledTask, len(plannedServices))
+	selected := make(map[string]int, len(plannedServices))
+	for index, planned := range plannedServices {
 		if _, exists := selected[planned.Service]; exists {
 			return nil, fmt.Errorf("CI plan contains duplicate service %q", planned.Service)
 		}
@@ -539,4 +560,51 @@ func scheduleStage(options ScheduleOptions) resources.Stage {
 		return resources.StageRun
 	}
 	return resources.StageBuild
+}
+
+func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, options ScheduleOptions) ([]ciScheduledTask, error) {
+	if plan.replay == nil {
+		return resolveScheduledTasks(ctx, workspace, plan, options)
+	}
+	allowedPhase := false
+	for _, phase := range plan.replay.Invocation.Phases {
+		if phase == options.Phase {
+			allowedPhase = true
+		}
+	}
+	if !allowedPhase {
+		return nil, fmt.Errorf("phase %s is not bound by the replay plan", options.Phase)
+	}
+	if options.Phase == string(resources.PhaseTest) {
+		allowedSuite := false
+		for _, suite := range plan.replay.Invocation.Suites {
+			if suite == options.Suite {
+				allowedSuite = true
+			}
+		}
+		if !allowedSuite {
+			return nil, fmt.Errorf("suite %s is not bound by the replay plan", options.Suite)
+		}
+	}
+	var tasks []ciScheduledTask
+	for index := range plan.replay.Tasks {
+		saved := &plan.replay.Tasks[index]
+		if saved.Phase != options.Phase || saved.Suite != options.Suite {
+			continue
+		}
+		tasks = append(tasks, ciScheduledTask{index: len(tasks), planned: saved.Service, prerequisites: cloneStrings(saved.Prerequisites), resources: cloneStrings(saved.Resources)})
+	}
+	indices := make(map[string]int, len(tasks))
+	for index := range tasks {
+		indices[tasks[index].planned.Service] = index
+	}
+	for dependent := range tasks {
+		for _, name := range tasks[dependent].prerequisites {
+			prerequisite := indices[name]
+			tasks[dependent].remaining++
+			tasks[prerequisite].dependents = append(tasks[prerequisite].dependents, dependent)
+		}
+	}
+
+	return tasks, nil
 }

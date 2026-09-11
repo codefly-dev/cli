@@ -29,6 +29,7 @@ type PlanOptions struct {
 }
 
 type Plan struct {
+	replay          *ReplayPlan
 	IntegrityInputs []IntegrityInput `json:"integrity_inputs,omitempty"`
 	IntegrityError  string           `json:"integrity_error,omitempty"`
 	SchemaVersion   int              `json:"schema_version"`
@@ -165,6 +166,9 @@ func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOpt
 		classifyChangedPath(repoRoot, workspace, changedPath, services, modules, libraryConsumers, selected)
 	}
 
+	if err := preserveReferenceDependents(ctx, workspace, repoRoot, plan, services, selected); err != nil {
+		return nil, err
+	}
 	return finalizePlan(ctx, workspace, plan, services, selected)
 }
 
@@ -264,15 +268,15 @@ func classifyChangedPath(repoRoot string, workspace *resources.Workspace, change
 		return
 	}
 
-	if filepath.Base(absPath) == resources.ServiceConfigurationName {
-		selectAllRecords(selected, services, "global", "service declaration changed; preserve coverage for removed dependencies and suites", "")
-		return
-	}
 	for _, record := range services {
 		if pathWithin(absPath, record.dir) {
 			addPlanSelection(selected, record.unique, "direct", "service input changed", changedPath)
 			return
 		}
+	}
+
+	if filepath.Base(absPath) == resources.ServiceConfigurationName {
+		return
 	}
 
 	librariesDir := filepath.Join(workspaceDir, "libraries")
