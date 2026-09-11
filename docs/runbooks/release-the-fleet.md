@@ -87,24 +87,32 @@ The tag contains merged Core #458, including Buildx forwarding and pre-build
 capability negotiation, and resolves through Go modules. The conformance
 matrix already records the matching `v0.3.27` release line.
 
-The source-workspace catalog consumes Go agent
-[`v0.0.46`](https://github.com/codefly-dev/service-go/releases/tag/v0.0.46),
-whose tag resolves to `504360afdfc196f59a36369f052ffa5f4806db26` and consumes
-Core `v0.3.26`. All four Linux/macOS amd64/arm64 release archives match the
-published SHA-256 checksums. The existing `codefly agent promote-source`
-gate downloaded the exact release into an isolated cache and passed a real
-Go source test over gRPC before generating the catalog update. GitHub reports `isImmutable: false` for this
-release; checksum verification does not establish GitHub-enforced immutability.
+The candidate source-workspace pins are Go `0.0.47` and Next.js `0.0.152`,
+implemented in [Go #61](https://github.com/codefly-dev/service-go/pull/61)
+and [Next.js #118](https://github.com/codefly-dev/service-nextjs/pull/118).
+Both consume Core `v0.3.27` and explicitly implement `BuildCapabilities`.
+Go's legacy executor honors Buildx selection through Core; Next.js requires
+recipe output for selected-builder requests and rejects legacy execution
+before preparing build files. Merely upgrading the embedded transport does
+not advertise support.
+
+The CLI regression starts both real agent binaries and checks the outgoing
+Build request, scoped cache policy, selected builder, exact output directory,
+and verified recipe response. It also proves Docker execution belongs to the
+CLI. Clearing the request's output directory makes the regression fail.
+Local validation uses binaries built from the companion changes in an
+isolated `CODEFLY_HOME`; it is not evidence of published release assets.
 
 The [tagged dependency rollout](https://github.com/codefly-dev/cli/issues/625)
 still requires:
 
-1. Publish and verify Next.js `v0.0.151` from merged
-   [Next.js #116](https://github.com/codefly-dev/service-nextjs/pull/116),
-   tracked by [Next.js #113](https://github.com/codefly-dev/service-nextjs/issues/113).
-   Until its release assets exist and pass source-workspace qualification,
-   the catalog retains Next.js `0.0.141`.
-2. After the final catalog pins pass CLI checks and the PR merges, follow
-   the CLI release process above and record the published CLI version.
-   The CLI manifest and latest published release remain `0.1.145`; this
-   checkpoint does not publish a CLI release.
+1. Merge the checked companion PRs through the agent release process, then
+   publish and checksum-verify Go `v0.0.47` and Next.js `v0.0.152`. The prior
+   Go `v0.0.46` release and unpublished Next.js `v0.0.151` candidate cannot
+   negotiate the Buildx preflight and are insufficient for this rollout.
+2. Qualify both published source plugins and rerun the real-agent CLI
+   regression with an empty agent cache. Keep the CLI PR in draft until
+   these pins resolve to verified release artifacts.
+3. After final validation and merge, follow the CLI release process above
+   and record the published CLI version. The CLI manifest remains
+   `0.1.145`; this checkpoint does not publish a CLI release.
