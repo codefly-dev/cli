@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -254,7 +255,7 @@ func TestBuildPlanDerivedIntegrityInput(t *testing.T) {
 		if !reflect.DeepEqual(plan.Services, baseline.Services) || len(plan.Services) != 1 {
 			t.Fatalf("source plus manifest changed service coverage: %+v", plan.Services)
 		}
-		want := []IntegrityInput{{Module: "app", Path: path, Phase: "verify", Reason: "derived base hash index is integrity-owned; source paths determine affected services"}}
+		want := []IntegrityInput{{Module: "app", Path: path, Phase: "verify", Reason: "base hash and ownership index is integrity-owned; source paths determine affected services"}}
 		if !reflect.DeepEqual(plan.IntegrityInputs, want) {
 			t.Fatalf("integrity inputs = %+v, want %+v", plan.IntegrityInputs, want)
 		}
@@ -339,6 +340,101 @@ func TestBuildPlanGitAndProviderIntegrityChangesAgree(t *testing.T) {
 				if !reflect.DeepEqual(plan.Services, provider.Services) || !reflect.DeepEqual(plan.IntegrityInputs, provider.IntegrityInputs) || len(plan.Services) != wantServices {
 					t.Fatalf("%s: discovered %+v, provider %+v", operation, plan, provider)
 				}
+			}
+		})
+	}
+}
+
+func TestBuildPlanAllRetainsIntegrityInputs(t *testing.T) {
+	for _, provider := range []bool{false, true} {
+		t.Run(fmt.Sprintf("provider=%t", provider), func(t *testing.T) {
+			root, workspace := loadComposedPlanFixture(t)
+			path := "module/tools/base-manifest.json"
+			writeCacheTestFile(t, filepath.Join(root, path), `{"files":{}}`)
+			runCacheTestGit(t, root, "init")
+			runCacheTestGit(t, root, "add", ".")
+			runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "baseline")
+			if err := os.Remove(filepath.Join(root, path)); err != nil {
+				t.Fatal(err)
+			}
+			options := PlanOptions{RepoRoot: root, All: true}
+			if provider {
+				options.ChangedFiles = []string{path}
+			}
+			plan, err := BuildPlan(context.Background(), workspace, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Services) != 8 || len(plan.IntegrityInputs) != 1 {
+				t.Fatalf("plan = %+v", plan)
+			}
+			phases, err := plan.runPhases([]string{"test"})
+			if err != nil || !reflect.DeepEqual(phases, []string{"verify", "test"}) {
+				t.Fatalf("phases=%v err=%v", phases, err)
+			}
+			if err := executeCIPhase(context.Background(), fixedCIReporter(t, plan), workspace, plan, "verify", nil, true); err == nil {
+				t.Fatal("--all bypassed deleted manifest verification")
+			}
+		})
+	}
+}
+
+func TestBuildPlanSymlinkedToolsRetainsIntegrityOwner(t *testing.T) {
+	for _, exists := range []bool{false, true} {
+		for _, path := range []string{"module/metadata/base-manifest.json", "module/tools/base-manifest.json", "modules/app/tools/base-manifest.json"} {
+			t.Run(fmt.Sprintf("exists=%t/%s", exists, path), func(t *testing.T) {
+				root, workspace := loadComposedPlanFixture(t)
+				if err := os.Mkdir(filepath.Join(root, "module", "metadata"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("metadata", filepath.Join(root, "module", "tools")); err != nil {
+					t.Fatal(err)
+				}
+				if exists {
+					writeCacheTestFile(t, filepath.Join(root, "module", "metadata", "base-manifest.json"), `{"files":{}}`)
+				}
+				plan, err := BuildPlan(context.Background(), workspace, PlanOptions{RepoRoot: root, ChangedFiles: []string{path}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(plan.Services) != 0 || len(plan.IntegrityInputs) != 1 || plan.IntegrityInputs[0].Module != "app" {
+					t.Fatalf("plan = %+v", plan)
+				}
+				if !exists {
+					if err := runVerifyWorkspace(context.Background(), workspace, plan); err == nil {
+						t.Fatal("deleted linked manifest passed verification")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestUnknownChangesCannotPassIntegrityGate(t *testing.T) {
+	for _, scenario := range []string{"discovery failure", "CI without bounds"} {
+		t.Run(scenario, func(t *testing.T) {
+			root, workspace := loadComposedPlanFixture(t)
+			if scenario == "CI without bounds" {
+				t.Setenv("CI", "true")
+			}
+			plan, err := BuildPlan(context.Background(), workspace, PlanOptions{RepoRoot: root, All: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Services) != 8 || plan.IntegrityError == "" {
+				t.Fatalf("plan = %+v", plan)
+			}
+			phases, err := plan.runPhases([]string{"test"})
+			if err != nil || !reflect.DeepEqual(phases, []string{"verify", "test"}) {
+				t.Fatalf("phases=%v err=%v", phases, err)
+			}
+			reporter := fixedCIReporter(t, plan)
+			if err := executeCIPhase(context.Background(), reporter, workspace, plan, "verify", nil, true); err == nil {
+				t.Fatal("unknown integrity inputs passed verification")
+			}
+			report := reporter.Finalize(nil)
+			if len(report.Tasks) != 1 || report.Tasks[0].Status != reportStatusFailed {
+				t.Fatalf("tasks = %+v", report.Tasks)
 			}
 		})
 	}

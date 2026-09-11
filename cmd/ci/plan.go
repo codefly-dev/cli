@@ -109,6 +109,9 @@ func printPlan(plan *Plan) {
 			fmt.Printf("  - %s\n", path)
 		}
 	}
+	if plan.IntegrityError != "" {
+		fmt.Printf("Integrity: required verify cannot pass — %s\n", plan.IntegrityError)
+	}
 	for _, input := range plan.IntegrityInputs {
 		fmt.Printf("Integrity: %s (%s, required %s) — %s\n", input.Path, input.Module, input.Phase, input.Reason)
 	}

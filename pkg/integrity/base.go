@@ -212,3 +212,42 @@ func loadBaseIntegrityAllow(path string) (baseIntegrityAllow, error) {
 	}
 	return result, nil
 }
+
+// VerifyBaseManifestTransition prevents a manifest update from silently
+// converting retained base files into untracked overlays. A retired file must
+// be removed with its entry; retained divergences keep their recorded base hash
+// and use base-integrity-allow.json instead of erasing ownership.
+func VerifyBaseManifestTransition(dir string, previous []byte) error {
+	var before baseManifest
+	if err := json.Unmarshal(previous, &before); err != nil {
+		return fmt.Errorf("invalid baseline base-manifest.json: %w", err)
+	}
+	if before.Files == nil {
+		return fmt.Errorf("baseline base-manifest.json has no files map")
+	}
+	after, err := readBaseManifest(filepath.Join(dir, baseManifestRelativePath))
+	if err != nil {
+		return fmt.Errorf("read current base manifest: %w", err)
+	}
+	var retained []string
+	for _, relative := range sortedManifestPaths(before) {
+		if _, exists := after.Files[relative]; exists {
+			continue
+		}
+		if !safeModulePath(dir, relative, false) {
+			return fmt.Errorf("baseline manifest contains unsafe path %q", relative)
+		}
+		_, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(relative)))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect retired base path %s: %w", relative, err)
+		}
+		retained = append(retained, relative)
+	}
+	if len(retained) > 0 {
+		return fmt.Errorf("manifest dropped ownership of retained files: %s; remove retired files or retain their base entries and declare intentional divergences in base-integrity-allow.json", strings.Join(retained, ", "))
+	}
+	return nil
+}

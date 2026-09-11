@@ -122,7 +122,10 @@ func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resour
 	switch phase {
 	case "verify":
 		return runReportedWorkspacePhase(ctx, reporter, workspace, phase, func(taskContext context.Context) error {
-			return runVerifyWorkspace(taskContext, workspace, plan.integrityModules()...)
+			if plan.IntegrityError != "" {
+				return fmt.Errorf("integrity verification unavailable: %s", plan.IntegrityError)
+			}
+			return runVerifyWorkspace(taskContext, workspace, plan)
 		})
 	case "test":
 		var errs error
@@ -180,7 +183,7 @@ func (plan *Plan) integrityModules() []string {
 
 func (plan *Plan) runPhases(requested []string) ([]string, error) {
 	phases, err := normalizeRunPhases(requested)
-	if err != nil || len(plan.IntegrityInputs) == 0 {
+	if err != nil || (len(plan.IntegrityInputs) == 0 && plan.IntegrityError == "") {
 		return phases, err
 	}
 	result := []string{ciPhaseVerify}
@@ -239,12 +242,6 @@ func runPhaseAction(phase string) Action {
 
 func phaseLocksDependencyClosure(phase string) bool {
 	return phase == "sync-drift" || phase == "test"
-}
-
-func runVerifyWorkspace(ctx context.Context, workspace *resources.Workspace, requiredModules ...string) error {
-	report, err := integrity.VerifyBase(ctx, workspace, requiredModules...)
-	recordCIReportIntegrity(ctx, summarizeIntegrityReport(report))
-	return err
 }
 
 func summarizeIntegrityReport(report integrity.BaseReport) CIReportIntegrity {

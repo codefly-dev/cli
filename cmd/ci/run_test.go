@@ -165,6 +165,9 @@ func TestMetadataOnlyRunCannotBypassIntegrityVerification(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root, workspace := loadComposedPlanFixture(t)
+			runCacheTestGit(t, root, "init")
+			runCacheTestGit(t, root, "add", ".")
+			runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "baseline")
 			path := "module/tools/base-manifest.json"
 			if test.manifest != "" {
 				digest := sha256.Sum256([]byte("export const example = 1;\n"))

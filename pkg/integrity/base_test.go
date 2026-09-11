@@ -146,3 +146,38 @@ func writeTestJSON(t *testing.T, path string, value any) {
 	}
 	writeTestFile(t, path, string(payload))
 }
+
+func TestVerifyBaseManifestTransitionPreservesOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		previous  string
+		current   string
+		remove    bool
+		wantError string
+	}{
+		{"dropped entry", `{"files":{"kept.txt":"digest","retired.txt":"digest"}}`, `{"files":{"kept.txt":"digest"}}`, false, "retired.txt"},
+		{"emptied map", `{"files":{"retired.txt":"digest"}}`, `{"files":{}}`, false, "retired.txt"},
+		{"retired file", `{"files":{"retired.txt":"digest"}}`, `{"files":{}}`, true, ""},
+		{"retained entry", `{"files":{"retired.txt":"digest"}}`, `{"files":{"retired.txt":"digest"}}`, false, ""},
+		{"new ownership", `{"files":{}}`, `{"files":{"retired.txt":"digest"}}`, false, ""},
+		{"unsafe baseline", `{"files":{"../../outside":"digest"}}`, `{"files":{}}`, false, "unsafe path"},
+		{"malformed baseline", `{`, `{"files":{}}`, false, "invalid baseline"},
+		{"missing baseline map", `{}`, `{"files":{}}`, false, "no files map"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestFile(t, filepath.Join(dir, "tools", "base-manifest.json"), test.current)
+			if !test.remove {
+				writeTestFile(t, filepath.Join(dir, "retired.txt"), "retained base code")
+			}
+			err := VerifyBaseManifestTransition(dir, []byte(test.previous))
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("err=%v want %q", err, test.wantError)
+			}
+		})
+	}
+}
