@@ -4,3 +4,4 @@ modules:
     - name: wiki
       path: .
     - name: host
+    - name: documents

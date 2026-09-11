@@ -491,16 +491,70 @@ func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
 	if digests["documents"] != hex.EncodeToString(want[:]) {
 		t.Errorf("registrar digest for documents = %q, does not match the backend's secret", digests["documents"])
 	}
-	// The raw secret belongs only to the backend that presents it.
+	// The raw secret belongs only to the two ends that present it.
 	if strings.Contains(declared[moduleRegistrationSecretsKey], secrets["documents"]) {
 		t.Error("registrar received the plaintext secret; it must hold only the digest")
 	}
 	// Nothing about the registrar rides the per-service override seam any more.
 	for service, values := range overrides {
-		if service == "wiki/backend" {
+		switch service {
+		case "wiki/backend", "documents/api", "documents/worker":
 			continue
 		}
 		t.Errorf("service %s received a derived process override %v; the digest belongs on the configuration group", service, values)
+	}
+}
+
+// The consumed module presents the very same secret to mint its own
+// service-principal work context, so every service of that module boots with the
+// singular plaintext — and with nothing else: handing a module the whole map
+// would give it its siblings' credentials.
+func TestSolutionDerivedOverridesProvisionsTheConsumedModulesOwnSecret(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	module := &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+
+	derived, err := solutionDerivedRunInputs(ctx, workspace, module, wikiService("backend"), "wiki/backend")
+	if err != nil {
+		t.Fatalf("solutionDerivedRunInputs: %v", err)
+	}
+	secrets := parsePairs(t, derived.overrides["wiki/backend"][moduleRegistrationSecretsEnvironmentVariable])
+	for _, unique := range []string{"documents/api", "documents/worker"} {
+		values := derived.overrides[unique]
+		if got := values[moduleRegistrationSecretEnvironmentVariable]; got != secrets["documents"] {
+			t.Errorf("%s %s = %q, want the secret the backend presents for documents",
+				unique, moduleRegistrationSecretEnvironmentVariable, got)
+		}
+		if _, leaked := values[moduleRegistrationSecretsEnvironmentVariable]; leaked {
+			t.Errorf("%s received the whole %s map; a module holds one identity",
+				unique, moduleRegistrationSecretsEnvironmentVariable)
+		}
+	}
+}
+
+// A consumed module the workspace does not carry — not composed, or pinned to an
+// artifact no materialization resolved — has no service to inject into, and the
+// run still boots: the solution serves its own routes, and the backend keeps the
+// secret it presents for the prefix.
+func TestSolutionDerivedOverridesSkipsAnUnresolvableConsumedModule(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	workspace.Modules = slices.DeleteFunc(workspace.Modules,
+		func(ref *resources.ModuleReference) bool { return ref.Name == "documents" })
+
+	derived, err := solutionDerivedRunInputs(ctx, workspace,
+		&resources.Module{Name: "wiki", ServiceEntry: "backend"}, wikiService("backend"), "wiki/backend")
+	if err != nil {
+		t.Fatalf("solutionDerivedRunInputs: %v", err)
+	}
+	for service, values := range derived.overrides {
+		if service == "wiki/backend" {
+			continue
+		}
+		t.Errorf("service %s received %v for a module the workspace cannot load", service, values)
+	}
+	if derived.overrides["wiki/backend"][moduleRegistrationSecretsEnvironmentVariable] == "" {
+		t.Error("skipping the module also dropped the backend's own registration secrets")
 	}
 }
 
@@ -538,6 +592,11 @@ func TestSolutionDerivedRunInputsWithholdsSecretsWithoutARegistrar(t *testing.T)
 	}
 	if got := derived.overrides["wiki/backend"][moduleRegistrationSecretsEnvironmentVariable]; got != "" {
 		t.Errorf("provisioned a secret %q with no registrar to authorize it", got)
+	}
+	// Withholding is symmetric: a secret no registrar can authorize is useless to
+	// the module that would present it too.
+	if got := derived.overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable]; got != "" {
+		t.Errorf("provisioned documents/api a secret %q with no registrar to authorize it", got)
 	}
 	if derived.workspaceConfigurations != nil {
 		t.Errorf("declared federation values with no registrar: %+v", derived.workspaceConfigurations)

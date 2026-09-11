@@ -234,6 +234,11 @@ func init() {
 // workspace configuration group, so it reaches the registrar on the carrier a
 // service reads by contract. Nothing is written to disk, so the raw secret
 // exists only in the backend's process environment and never outlives the run.
+//
+// The same secret is the consumed module's own credential: a module presents it
+// to the gateway to mint the service-principal work context every module-facing
+// RPC is authenticated from, so its services get the plaintext too — one secret,
+// spent by both ends of the exchange against the one digest the registrar holds.
 
 const (
 	// federationConfigurationGroup is the workspace-configuration group a host
@@ -252,6 +257,12 @@ const (
 	// release carries it.
 	// #nosec G101 -- an environment variable name, not a credential
 	moduleRegistrationSecretsEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRETS"
+	// moduleRegistrationSecretEnvironmentVariable carries a consumed module's own
+	// secret to that module's services. Singular: a module holds one identity, so
+	// it needs only the entry minted for its own prefix — never the whole map,
+	// which would hand every consumed module the credentials of its siblings.
+	// #nosec G101 -- an environment variable name, not a credential
+	moduleRegistrationSecretEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRET"
 	// moduleRegistrationSecretBytes is the entropy of one generated secret. It is
 	// hex-encoded, so a secret can never contain the "," or ":" that separate
 	// entries on either side of the exchange.
@@ -265,6 +276,9 @@ type moduleRegistrationSecrets struct {
 	// prefixes are the facade prefixes provisioned, in the order both encodings
 	// list them.
 	prefixes []string
+	// byPrefix is the plaintext of each prefix, for the injection that hands one
+	// module its own secret rather than the whole map.
+	byPrefix map[string]string
 	secrets  string
 	digests  string
 }
@@ -291,6 +305,7 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 
 	secrets := make([]string, 0, len(prefixes))
 	digests := make([]string, 0, len(prefixes))
+	byPrefix := make(map[string]string, len(prefixes))
 	for _, prefix := range prefixes {
 		raw := make([]byte, moduleRegistrationSecretBytes)
 		if _, err := rand.Read(raw); err != nil {
@@ -300,9 +315,11 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 		digest := sha256.Sum256([]byte(secret))
 		secrets = append(secrets, prefix+":"+secret)
 		digests = append(digests, prefix+":"+hex.EncodeToString(digest[:]))
+		byPrefix[prefix] = secret
 	}
 	return &moduleRegistrationSecrets{
 		prefixes: prefixes,
+		byPrefix: byPrefix,
 		secrets:  strings.Join(secrets, ","),
 		digests:  strings.Join(digests, ","),
 	}, nil
@@ -337,4 +354,56 @@ func federationRegistrars(ctx context.Context, workspace *resources.Workspace) [
 		}
 	}
 	return registrars
+}
+
+// consumedModuleSecretOverrides maps every service of each consumed module to
+// the secret minted for the prefix that module is federated under, keyed by the
+// module-qualified unique so an injection lands on exactly one service. It also
+// returns the modules provisioned, for the run log.
+//
+// A module the workspace cannot load contributes nothing: a module the flow
+// cannot load is not one it can run either, so there is no service to inject
+// into. A module consumed under several prefixes still holds one identity, and
+// takes the secret of the first prefix it is declared under.
+func consumedModuleSecretOverrides(ctx context.Context, workspace *resources.Workspace, consumed []manifest.ConsumedAPI, provisioned *moduleRegistrationSecrets) (map[string]map[string]string, []string) {
+	overrides := make(map[string]map[string]string)
+	var provisionedModules []string
+	var seen []string
+	for i := range consumed {
+		module, prefix := consumed[i].Module, consumed[i].As
+		if prefix == "" || slices.Contains(seen, module) {
+			continue
+		}
+		seen = append(seen, module)
+		services := moduleServiceUniques(ctx, workspace, module)
+		if len(services) == 0 {
+			continue
+		}
+		provisionedModules = append(provisionedModules, module)
+		for _, unique := range services {
+			overrides[unique] = map[string]string{moduleRegistrationSecretEnvironmentVariable: provisioned.byPrefix[prefix]}
+		}
+	}
+	return overrides, provisionedModules
+}
+
+// moduleServiceUniques returns the module-qualified uniques of every service the
+// named module declares, or nothing when the workspace does not reference it or
+// cannot load it.
+func moduleServiceUniques(ctx context.Context, workspace *resources.Workspace, module string) []string {
+	for _, ref := range workspace.Modules {
+		if ref.Name != module {
+			continue
+		}
+		mod, err := workspace.LoadModuleFromReference(ctx, ref)
+		if err != nil {
+			return nil
+		}
+		uniques := make([]string, 0, len(mod.ServiceReferences))
+		for _, svcRef := range mod.ServiceReferences {
+			uniques = append(uniques, resources.ServiceUnique(mod.Name, svcRef.Name))
+		}
+		return uniques
+	}
+	return nil
 }

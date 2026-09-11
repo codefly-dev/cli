@@ -863,8 +863,18 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.secrets
 	cli.Info("provisioned registration secrets for %s into %s, digests into %s",
 		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))
+
+	// The consuming backend is only one end of the exchange: a consumed module
+	// presents the same secret to mint its own service-principal work context,
+	// without which every module-facing RPC it makes is unauthenticated and its
+	// background workers idle.
+	moduleOverrides, provisionedModules := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned)
+	if len(provisionedModules) > 0 {
+		cli.Info("provisioned %s into the services of %s",
+			moduleRegistrationSecretEnvironmentVariable, strings.Join(provisionedModules, ", "))
+	}
 	return derivedRunInputs{
-		overrides: overrides,
+		overrides: mergeOverrides(overrides, moduleOverrides),
 		workspaceConfigurations: map[string]map[string]string{
 			federationConfigurationGroup: {moduleRegistrationSecretsKey: provisioned.digests},
 		},

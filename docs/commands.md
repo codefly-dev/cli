@@ -191,6 +191,20 @@ overlay, so the identical command runs in CI (everything pinned, no sibling
 checkouts) and against your local worktrees. It errors clearly when no module —
 or more than one — declares a `service-entry`.
 
+Each run also mints one registration secret per consumed facade prefix and
+provisions all three ends of the federation exchange, in memory only — nothing
+is written to disk and no secret outlives the run:
+
+| End | Carrier | Value |
+|-----|---------|-------|
+| Solution entry service | `CODEFLY__MODULE_REGISTRATION_SECRETS` | `prefix:secret,…` — presented to register each consumed module's routes |
+| Consumed module's services | `CODEFLY__MODULE_REGISTRATION_SECRET` | that module's own secret, presented to mint its service-principal work context |
+| Registrar | `MODULE_REGISTRATION_SECRETS` in the `federation` workspace configuration group | `prefix:sha256hex` — the digests both plaintexts are checked against |
+
+The registrar is whichever service declares the `federation` group. When no
+service declares it, nothing can authorize a mint, so no secret is provisioned
+at all and the run says so: the solution still serves its own routes.
+
 ### `codefly run job [name]`
 
 Run a job (scheduled or one-shot task).
