@@ -605,11 +605,63 @@ publisher, name, version, kind, and the installed executable digest; an
 unresolved binary is surfaced in `limitations` rather than silently treated as
 equivalent.
 
-The current task status is `identity_only`: Codefly computes and reports the
-complete key but does not skip execution or restore artifacts yet. This avoids
-claiming a cache hit before agent-declared output and environment contracts are
-available. The restore/store milestone will add `hit`, `miss`, `stored`, and
-`bypassed` outcomes while retaining the same identity input schema.
+The current cache status is `identity_only`: Codefly reports a descriptive key
+but does not skip execution or restore artifacts. Version 1 is **not a complete
+effective-input identity** and must not be used to certify successful result
+reuse. An empty `limitations` array does not establish eligibility: it currently
+reports some resolution failures, not all missing execution inputs. Safe reuse
+requires a new versioned identity contract.
+
+### Result-reuse readiness audit
+
+Persistent result reuse is blocked on the effective-input contract in
+[Core #445](https://github.com/codefly-dev/core/issues/445) and validated task
+planning in [CLI #611](https://github.com/codefly-dev/cli/issues/611). The current
+`Plan` selects services; phase and suite are supplied separately through
+`ScheduleOptions`. It cannot certify a submitted set of required tasks against
+the candidate checkout. The following gaps were audited in
+`cmd/ci/cache_identity.go` before enabling any hits:
+
+| Input or evidence | Version 1 coverage and reuse blocker |
+| --- | --- |
+| Candidate source and tests | Hashes current file bytes under selected resource roots, including test files, but Git-ignored files and hard-coded transient directories are excluded without agent declarations. Shared inputs outside those roots can be missed. |
+| Symlinks and generated inputs | Hashes symlink target text, not the target's consumed bytes. Generated files in excluded directories are not covered. |
+| Phase, suite and fixtures | Includes phase and suite names, but not the agent's resolved suite definition, required suite inventory or effective fixture selection. |
+| Configuration and environment | Hashes selected configuration files and a runtime-context string, not the final environment, local overrides, external configuration or protected identities for sensitive inputs. |
+| Dependencies, libraries and composition | Hashes transitive runtime service and internal library trees. These do not declare each task's actual artifact, validation and external dependency inputs or prove consuming-workspace test success. |
+| Platform and tools | Includes OS/architecture, CLI/Core version strings and an installed agent digest when available. Resolved language toolchains, runtime images, plugins and CLI binary identity are not covered. |
+| Task completion | A key contains no authenticated success, source run/reference, expiry, trust scope or required-output manifest. A Git diff baseline supplies none of these. |
+| Audits | Contains no advisory-database identity or freshness policy. Identical source cannot certify a current clean audit. |
+
+Once the contracts are available, integration must keep unknown or incomplete
+declarations ineligible and execute those tasks normally. Candidate identities
+must describe the actual merge revision or merge-group checkout; selecting a
+trusted reference must never replace those inputs. An ancestor's success is
+usable only after accounting for the entire intervening input delta.
+
+Storage integrity and trust are separate requirements. A content digest detects
+changed bytes but does not authenticate who certified success. The verifier
+must use an explicitly configured trust policy outside the cached record,
+including authorized producers, reference scope, expiry and revocation.
+Untrusted PR writers must not gain protected-reference authority merely by
+writing to the same backend. Publish a complete authenticated record atomically
+only after its required artifacts are durable; verify every restored artifact
+before releasing downstream tasks. Concurrent or partial uploads, corrupt
+records, revoked trust and missing artifacts must cause execution or a clear
+gate failure.
+
+Reports must distinguish executed success, verified reuse, ineligible reuse,
+and skipped or blocked tasks. Reuse evidence must retain the original successful
+run/reference, matching versioned input identity and restored artifact digests.
+Existing full-execution release gates must retain their execution policy until
+their release contract explicitly adopts verified reuse.
+
+Completion requires real cold/warm runs with equivalent required-task coverage,
+plus invalidation runs for agent updates, fixture-only edits, configuration and
+composition changes, and new vulnerability data. Record executed/reused task
+counts, wall time, storage and transfer costs, and total runner minutes. Neither
+these measurements nor persistent lookup, publication and restoration are
+implemented by the current identity-only reporting.
 
 ## Agent CI pipeline
 

@@ -30,8 +30,7 @@ const (
 )
 
 // CICacheIdentity is a content-addressed description of a CI task. Version 1
-// only reports identities; a later cache store may turn identity_only into a
-// hit/miss outcome without changing the task or key contract.
+// omits effective execution inputs and cannot certify result reuse.
 type CICacheIdentity struct {
 	SchemaVersion int                  `json:"schema_version"`
 	Algorithm     string               `json:"algorithm"`
