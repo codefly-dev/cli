@@ -76,3 +76,26 @@ compose them.
 - [ ] Every agent re-pinned and published (service / module / toolbox / provider)
 - [ ] `module-saas-starter` refreshed and published after its agents
 - [ ] Downstream base-sync refs moved
+
+## Tagged Core rollout checkpoint (2026-09-11)
+
+The [tagged dependency rollout](https://github.com/codefly-dev/cli/issues/625)
+is incomplete. Preserve the Core pin
+`v0.3.27-0.20260911145602-1f745a51a87d` required by the merged Buildx
+forwarding work. `v0.3.26` contains the effective-input contract but lacks
+that Buildx API, so selecting it breaks the CLI build.
+
+1. Wait for [Core #459](https://github.com/codefly-dev/core/issues/459) to
+   publish a checked tag through Core's version-file/CI tagging workflow.
+   Verify it contains merged Core #458, including pre-build capability
+   negotiation, then update `go.mod`, tidy module metadata, and update the
+   Core line in the conformance matrix and its reference documentation.
+2. Wait for [Go #54](https://github.com/codefly-dev/service-go/issues/54) and
+   [Next.js #113](https://github.com/codefly-dev/service-nextjs/issues/113).
+   Update `pkg/sourceworkspace/compatibility.json` only after the required
+   releases are published and verified. Its current pins are Go `0.0.44`
+   and Next.js `0.0.141`.
+3. Run the CLI build, full tests, conformance and source-workspace checks,
+   and the CI lint gate against the final pins. Then follow the CLI release
+   process above and record the published versions. The CLI manifest
+   remains `0.1.145`; this checkpoint does not publish a release.
