@@ -253,6 +253,30 @@ func TestSolutionEntryConsumesRejectsPartialBinding(t *testing.T) {
 	}
 }
 
+// One facade prefix is one registration secret, so two entries claiming the same
+// prefix would hand the services of two different modules one credential — either
+// could then mint the other's service-principal work context. manifest.Validate
+// catches this for sync and package; the run's lenient decode skips it, so the
+// run path is the one that must not let the typo through.
+func TestSolutionEntryConsumesRejectsADuplicatedFacadePrefix(t *testing.T) {
+	dir := t.TempDir()
+	writeSolutionManifest(t, dir, strings.Replace(solutionManifestWithConsumes, `lifecycle:`, `    - id: archives
+      protocol: connect
+      module: archives
+      service: api
+      endpoint: connect
+      as: documents
+lifecycle:`, 1))
+
+	_, _, err := solutionEntryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+	if err == nil {
+		t.Fatal("expected an error for two api.consumes entries claiming one facade prefix")
+	}
+	if !strings.Contains(err.Error(), "documents") {
+		t.Fatalf("error %q does not name the duplicated prefix", err)
+	}
+}
+
 // YAML that does not parse at all is a genuine boundary failure: booting a
 // backend that silently federates nothing is the bug this injection exists to
 // prevent.
@@ -533,10 +557,72 @@ func TestSolutionDerivedOverridesProvisionsTheConsumedModulesOwnSecret(t *testin
 }
 
 // A consumed module the workspace does not carry — not composed, or pinned to an
-// artifact no materialization resolved — has no service to inject into, and the
-// run still boots: the solution serves its own routes, and the backend keeps the
-// secret it presents for the prefix.
-func TestSolutionDerivedOverridesSkipsAnUnresolvableConsumedModule(t *testing.T) {
+// artifact no materialization resolved — has no service to inject into. The run
+// still boots, but it must not pass in silence: the preceding line reports the
+// backend half as provisioned, and a module that quietly receives nothing looks
+// exactly like one whose exchange is broken.
+func TestConsumedModuleSecretOverridesReportsAModuleItCannotResolve(t *testing.T) {
+	ctx := context.Background()
+	consumed := []manifest.ConsumedAPI{
+		{ID: "documents", Module: "documents", Service: "api", Endpoint: "connect", As: "documents"},
+	}
+	provisioned, err := provisionModuleRegistrationSecrets(consumed)
+	if err != nil {
+		t.Fatalf("provisionModuleRegistrationSecrets: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		workspace func() *resources.Workspace
+		reason    string
+	}{
+		{
+			name: "not referenced by the workspace",
+			workspace: func() *resources.Workspace {
+				workspace := loadTestWorkspace(t, "testdata/solution-federation")
+				workspace.Modules = slices.DeleteFunc(workspace.Modules,
+					func(ref *resources.ModuleReference) bool { return ref.Name == "documents" })
+				return workspace
+			},
+			reason: "references no such module",
+		},
+		{
+			name: "referenced but unloadable",
+			workspace: func() *resources.Workspace {
+				workspace := loadTestWorkspace(t, "testdata/solution-federation")
+				for _, ref := range workspace.Modules {
+					if ref.Name == "documents" {
+						ref.PathOverride = strptr("modules/gone")
+					}
+				}
+				return workspace
+			},
+			reason: "cannot load module",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			injection := consumedModuleSecretOverrides(ctx, tc.workspace(), consumed, provisioned, []string{"host/accounts"})
+			if len(injection.overrides) != 0 {
+				t.Errorf("injected %v for a module with no service", injection.overrides)
+			}
+			if len(injection.provisioned) != 0 {
+				t.Errorf("reported %v as provisioned", injection.provisioned)
+			}
+			if len(injection.unresolved) != 1 || !strings.Contains(injection.unresolved[0], "documents") {
+				t.Fatalf("unresolved = %v, want the documents module and why it has no service", injection.unresolved)
+			}
+			if !strings.Contains(injection.unresolved[0], tc.reason) {
+				t.Errorf("unresolved %q does not say %q; an operator cannot tell an uncomposed module from a broken checkout",
+					injection.unresolved[0], tc.reason)
+			}
+		})
+	}
+}
+
+// The backend half is independent of the module half: a consumed module the
+// workspace cannot resolve must not cost the solution the secrets it presents
+// itself, nor leave an override on a service that is not in the run.
+func TestSolutionDerivedRunInputsKeepsTheBackendHalfWhenAModuleIsUnresolvable(t *testing.T) {
 	ctx := context.Background()
 	workspace := loadTestWorkspace(t, "testdata/solution-federation")
 	workspace.Modules = slices.DeleteFunc(workspace.Modules,
@@ -555,6 +641,38 @@ func TestSolutionDerivedOverridesSkipsAnUnresolvableConsumedModule(t *testing.T)
 	}
 	if derived.overrides["wiki/backend"][moduleRegistrationSecretsEnvironmentVariable] == "" {
 		t.Error("skipping the module also dropped the backend's own registration secrets")
+	}
+}
+
+// A consumed module that itself holds the federation digests is the authority the
+// exchange runs against, not a module that authenticates to it. Injecting the
+// plaintext there would hand the registrar the preimage of the digest it compares
+// against — the separation the digest carrier exists to create.
+func TestConsumedModuleSecretOverridesExcludesTheRegistrarsOwnModule(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	consumed := []manifest.ConsumedAPI{
+		{ID: "accounts", Module: "host", Service: "accounts", Endpoint: "connect", As: "accounts"},
+		{ID: "documents", Module: "documents", Service: "api", Endpoint: "connect", As: "documents"},
+	}
+	provisioned, err := provisionModuleRegistrationSecrets(consumed)
+	if err != nil {
+		t.Fatalf("provisionModuleRegistrationSecrets: %v", err)
+	}
+
+	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, federationRegistrars(ctx, workspace))
+
+	for _, unique := range []string{"host/accounts", "host/gateway"} {
+		if got := injection.overrides[unique][moduleRegistrationSecretEnvironmentVariable]; got != "" {
+			t.Errorf("%s received the plaintext %q whose digest its own module holds", unique, got)
+		}
+	}
+	if !reflect.DeepEqual(injection.registrars, []string{"host"}) {
+		t.Errorf("registrars = %v, want [host] reported as deliberately excluded", injection.registrars)
+	}
+	// The module that does authenticate is unaffected.
+	if injection.overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable] != provisioned.byPrefix["documents"] {
+		t.Error("excluding the registrar's module also dropped the consumed module's own secret")
 	}
 }
 

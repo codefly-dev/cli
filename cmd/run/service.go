@@ -867,14 +867,24 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 	// The consuming backend is only one end of the exchange: a consumed module
 	// presents the same secret to mint its own service-principal work context,
 	// without which every module-facing RPC it makes is unauthenticated and its
-	// background workers idle.
-	moduleOverrides, provisionedModules := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned)
-	if len(provisionedModules) > 0 {
+	// background workers idle. Every module is accounted for out loud — the line
+	// above otherwise reads as a fully wired federation while half of it is
+	// missing, which is the diagnosis this provisioning exists to end.
+	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, registrars)
+	if len(injection.provisioned) > 0 {
 		cli.Info("provisioned %s into the services of %s",
-			moduleRegistrationSecretEnvironmentVariable, strings.Join(provisionedModules, ", "))
+			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.provisioned, ", "))
+	}
+	if len(injection.registrars) > 0 {
+		cli.Info("consumed modules %s declare the %q group and hold the digests: they mint work contexts rather than present a secret for one",
+			strings.Join(injection.registrars, ", "), federationConfigurationGroup)
+	}
+	if len(injection.unresolved) > 0 {
+		cli.Warning("no %s provisioned for %s: those modules cannot obtain a work context, so their module-facing workers will idle",
+			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.unresolved, "; "))
 	}
 	return derivedRunInputs{
-		overrides: mergeOverrides(overrides, moduleOverrides),
+		overrides: mergeOverrides(overrides, injection.overrides),
 		workspaceConfigurations: map[string]map[string]string{
 			federationConfigurationGroup: {moduleRegistrationSecretsKey: provisioned.digests},
 		},
