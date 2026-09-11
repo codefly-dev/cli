@@ -865,12 +865,22 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))
 	// The consumed module's own service holds the same identity: it presents
 	// this secret to obtain its service principal's Work Context, the credential
-	// the host's module-facing surface requires (module-saas-starter #568). One
-	// identity per module, so a module serving two facades of one solution is
-	// a declaration error — the registrar refuses the repeated prefix.
+	// the host's module-facing surface requires (module-saas-starter #568).
+	// One identity per service and one service per facade —
+	// provisionModuleRegistrationSecrets refuses anything else, so each owner
+	// below is written exactly once.
 	for _, prefix := range provisioned.prefixes {
 		for _, owner := range provisioned.owners[prefix] {
 			if owner == serviceName {
+				continue
+			}
+			// Only announce an identity that lands somewhere. An override keyed
+			// to a service the workspace cannot resolve is discarded in silence,
+			// which is indistinguishable from a module that ignored it — the
+			// exact confusion this injection exists to remove.
+			if !workspaceResolvesService(ctx, workspace, owner) {
+				cli.Warning("api.consumes names %s as the service serving facade %q, but no such service resolves in this workspace: it receives no module identity",
+					owner, prefix)
 				continue
 			}
 			if overrides[owner] == nil {

@@ -1,0 +1,4 @@
+kind: module
+name: documents
+services:
+    - name: api

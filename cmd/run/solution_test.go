@@ -383,6 +383,74 @@ func TestProvisionModuleRegistrationSecretsRotatePerRun(t *testing.T) {
 	}
 }
 
+// CODEFLY__MODULE_REGISTRATION_PREFIX/_SECRET name one prefix and one secret,
+// and the run folds prefix -> owners into a per-service override map. A
+// declaration that needs two entries for one service, or one entry for two
+// services, therefore collapses at that assignment: the first silently drops an
+// identity (last write wins, ordered by the id-sorted projection), the second
+// hands two modules the same plaintext so either can obtain the other's
+// service-principal Work Context. Both must be refused before the run starts
+// anything, because neither is recoverable once the override map is built.
+func TestProvisionModuleRegistrationSecretsRefusesUnrepresentableIdentities(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		consumed []manifest.ConsumedAPI
+		message  string
+	}{
+		{
+			// Valid to core: it rejects a duplicated (module, service, endpoint)
+			// triple and a duplicated `as`, but NOT one service serving two
+			// endpoints under two distinct prefixes.
+			name: "one service, two facades",
+			consumed: []manifest.ConsumedAPI{
+				{ID: "docs-admin", As: "docsadmin", Module: "documents", Service: "api", Endpoint: "admin"},
+				{ID: "docs-read", As: "docsread", Module: "documents", Service: "api", Endpoint: "connect"},
+			},
+			message: "documents/api",
+		},
+		{
+			// manifest.Load rejects a repeated `as`, but the run path decodes
+			// leniently and skips that gate, so this reaches provisioning.
+			name: "one facade, two services",
+			consumed: []manifest.ConsumedAPI{
+				{ID: "docs", As: "documents", Module: "documents", Service: "api", Endpoint: "connect"},
+				{ID: "other", As: "documents", Module: "other", Service: "api", Endpoint: "connect"},
+			},
+			message: "more than one service",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provisioned, err := provisionModuleRegistrationSecrets(tc.consumed)
+			if err == nil {
+				t.Fatalf("provisioned %v for a declaration the identity carrier cannot express", provisioned.owners)
+			}
+			if !strings.Contains(err.Error(), tc.message) {
+				t.Errorf("error %q does not name what to fix (want it to mention %q)", err, tc.message)
+			}
+		})
+	}
+}
+
+// The refusal above must not catch a module that legitimately serves several
+// facades through DIFFERENT services: each of those holds its own identity, so
+// nothing collapses.
+func TestProvisionModuleRegistrationSecretsAllowsOneFacadePerService(t *testing.T) {
+	provisioned, err := provisionModuleRegistrationSecrets([]manifest.ConsumedAPI{
+		{ID: "docs-admin", As: "docsadmin", Module: "documents", Service: "admin", Endpoint: "connect"},
+		{ID: "docs-read", As: "docsread", Module: "documents", Service: "api", Endpoint: "connect"},
+	})
+	if err != nil {
+		t.Fatalf("refused a module serving two facades through two services: %v", err)
+	}
+	if !reflect.DeepEqual(provisioned.owners["docsadmin"], []string{"documents/admin"}) ||
+		!reflect.DeepEqual(provisioned.owners["docsread"], []string{"documents/api"}) {
+		t.Fatalf("owners = %v, want each facade owned by its own service", provisioned.owners)
+	}
+	if provisioned.byPrefix["docsadmin"] == provisioned.byPrefix["docsread"] {
+		t.Error("two facades share one secret; each identity must be independent")
+	}
+}
+
 func TestProvisionModuleRegistrationSecretsSkipsUnfederatableEntries(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -513,6 +581,36 @@ func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
 			continue
 		}
 		t.Errorf("service %s received a derived process override %v; the digest belongs on the configuration group", service, values)
+	}
+}
+
+// api.consumes names the facade's owner in manifest text, and Flow.overridesFor
+// delivers an override by matching that text against a service in the run graph
+// — a key matching nothing is dropped in silence. So an entry naming a service
+// the workspace cannot resolve (a renamed composed module, a module that
+// resolves only remotely) must not produce an override at all: writing one and
+// logging "provisioned module identity" reports a delivery that never happened,
+// which is the confusion this injection exists to remove. The backend's own
+// half is unaffected — it is a different service and still federates.
+func TestSolutionDerivedRunInputsSkipsAnUnresolvableFacadeOwner(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	// Drop the consumed module the manifest names as documents/api's owner.
+	workspace.Modules = slices.DeleteFunc(workspace.Modules,
+		func(ref *resources.ModuleReference) bool { return ref.Name == "documents" })
+
+	derived, err := solutionDerivedRunInputs(ctx, workspace,
+		&resources.Module{Name: "wiki", ServiceEntry: "backend"}, wikiService("backend"), "wiki/backend")
+	if err != nil {
+		t.Fatalf("solutionDerivedRunInputs: %v", err)
+	}
+	if got, injected := derived.overrides["documents/api"]; injected {
+		t.Errorf("wrote an override %v for a service the workspace cannot resolve; it reaches no process", got)
+	}
+	// The backend still registers: an unresolvable owner is that module's
+	// problem, not a reason to strip the solution's own federation.
+	if derived.overrides["wiki/backend"][moduleRegistrationSecretsEnvironmentVariable] == "" {
+		t.Error("an unresolvable facade owner also dropped the backend's registration secrets")
 	}
 }
 

@@ -232,8 +232,12 @@ func init() {
 // halves are provisioned here, per run: the plaintext rides a process override
 // to the consuming backend, and the digest is declared into the federation
 // workspace configuration group, so it reaches the registrar on the carrier a
-// service reads by contract. Nothing is written to disk, so the raw secret
-// exists only in the backend's process environment and never outlives the run.
+// service reads by contract. Provisioning itself writes nothing to disk: the
+// raw secret lives in the receiving processes' environment and does not outlive
+// the run. The one way it reaches a file is --output-env, which exports one
+// selected service's whole runtime environment to an owner-only path — and
+// since a consumed module's service now carries a plaintext identity too, that
+// export can name it as well as the backend (--output-env-service).
 
 const (
 	// federationConfigurationGroup is the workspace-configuration group a host
@@ -260,7 +264,18 @@ const (
 	// its service principal calls the host's module-facing surface with
 	// (module-saas-starter #568); without it the module can never authenticate
 	// there. Singular on purpose — a module holds one identity, the solution
-	// backend holds one per module it consumes.
+	// backend holds one per module it consumes; validateModuleIdentities
+	// enforces that a declaration cannot ask for more.
+	//
+	// The secret is the SAME one the backend presents to register the facade:
+	// the registrar verifies both exchanges against the single digest declared
+	// for the prefix, so it cannot tell the backend registering "documents"
+	// apart from the service principal of "documents". A backend therefore can
+	// mint the Work Context of every module it consumes. Splitting registration
+	// from identity needs a second digest the host reads, so it is a host-first
+	// change (codefly-dev/cli#608), not one the CLI can make alone: emitting a
+	// digest under a key no service declares would fail every module's exchange
+	// closed.
 	moduleRegistrationPrefixEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_PREFIX"
 	// #nosec G101 -- an environment variable name, not a credential
 	moduleRegistrationSecretEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRET"
@@ -307,8 +322,8 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 				owners[prefix] = append(owners[prefix], owner)
 			}
 		}
-		// Distinct prefixes only: a repeated prefix is a declaration error the
-		// registrar rejects outright.
+		// Distinct prefixes only: the digests are declared once per prefix, so a
+		// repeat contributes nothing to the registrar's side of the exchange.
 		if slices.Contains(prefixes, prefix) {
 			continue
 		}
@@ -316,6 +331,9 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 	}
 	if len(prefixes) == 0 {
 		return nil, nil
+	}
+	if err := validateModuleIdentities(prefixes, owners); err != nil {
+		return nil, err
 	}
 
 	secrets := make([]string, 0, len(prefixes))
@@ -339,6 +357,48 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 		byPrefix: byPrefix,
 		owners:   owners,
 	}, nil
+}
+
+// validateModuleIdentities refuses a projection the module-identity carrier
+// cannot express. CODEFLY__MODULE_REGISTRATION_PREFIX/_SECRET name exactly one
+// prefix and one secret, and the run folds prefix -> owners into a per-service
+// override map, so both shapes below collapse silently at the assignment: one
+// of them would drop an identity, the other would hand two modules the same
+// one. Neither depends on the environment — they are wrong in every workspace,
+// for any registrar — so they are rejected here, on the same footing as
+// validateConsumedBindings and before the run starts anything, rather than
+// discovered as a module that never authenticates.
+func validateModuleIdentities(prefixes []string, owners map[string][]string) error {
+	byOwner := make(map[string][]string, len(prefixes))
+	order := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		// One facade, several services. Every owner would be handed the SAME
+		// plaintext, so each could present it to the gateway exchange and obtain
+		// the others' service-principal Work Context. manifest.Load rejects a
+		// repeated `as`, but the run path decodes leniently and skips that gate
+		// (loadSolutionManifestForRun), so this is the only thing that catches it.
+		if len(owners[prefix]) > 1 {
+			return fmt.Errorf("%s: api.consumes declares facade %q for more than one service (%s); one facade is one module's identity",
+				manifest.FileName, prefix, strings.Join(owners[prefix], ", "))
+		}
+		for _, owner := range owners[prefix] {
+			if len(byOwner[owner]) == 0 {
+				order = append(order, owner)
+			}
+			byOwner[owner] = append(byOwner[owner], prefix)
+		}
+	}
+	for _, owner := range order {
+		// One service, several facades. Valid to core — it rejects a duplicated
+		// (module, service, endpoint) triple, not a module serving two endpoints
+		// under two prefixes — but the singular carrier holds only the last one
+		// written, so the other facade could never obtain a Work Context.
+		if claimed := byOwner[owner]; len(claimed) > 1 {
+			return fmt.Errorf("%s: api.consumes gives %s more than one facade (%s); %s carries a single identity per service",
+				manifest.FileName, owner, strings.Join(claimed, ", "), moduleRegistrationPrefixEnvironmentVariable)
+		}
+	}
+	return nil
 }
 
 // federationRegistrars returns the module-qualified uniques of the services
@@ -370,4 +430,24 @@ func federationRegistrars(ctx context.Context, workspace *resources.Workspace) [
 		}
 	}
 	return registrars
+}
+
+// workspaceResolvesService reports whether a module-qualified unique names a
+// service this workspace can actually load.
+//
+// api.consumes names the facade's owner in manifest text, and a derived
+// override is delivered by matching that text against a service in the run
+// graph (Flow.overridesFor) — a key matching nothing is dropped without a word.
+// So a composed module renamed in the composition, an entry naming the contract
+// rather than the runnable service, or a module that resolves only remotely all
+// produce an injection that reaches no process. Resolving first, the same way
+// federationRegistrars does, is what lets the caller say so instead of
+// announcing an identity it did not deliver.
+func workspaceResolvesService(ctx context.Context, workspace *resources.Workspace, unique string) bool {
+	target, err := resources.ParseServiceWithOptionalModule(unique)
+	if err != nil || target.Module == "" {
+		return false
+	}
+	_, err = workspace.LoadService(ctx, target)
+	return err == nil
 }

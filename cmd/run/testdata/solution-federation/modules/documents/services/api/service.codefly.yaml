@@ -1,0 +1,9 @@
+kind: service
+name: api
+version: 0.0.0
+module: documents
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.1
+    publisher: codefly.dev
