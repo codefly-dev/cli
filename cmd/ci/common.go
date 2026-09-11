@@ -16,8 +16,6 @@ import (
 	"github.com/codefly-dev/core/wool"
 )
 
-const buildPhase = "build"
-
 // Silent services in the CLI
 var silent []string
 
@@ -437,6 +435,9 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 	if err != nil {
 		return nil, fmt.Errorf("load CI scheduler dependency graph: %w", err)
 	}
+	if _, err := dependencies.Graph().TopologicalSort(); err != nil {
+		return nil, fmt.Errorf("validate CI scheduler dependency graph: %w", err)
+	}
 	tasks := make([]ciScheduledTask, len(plan.Services))
 	selected := make(map[string]int, len(plan.Services))
 	for index, planned := range plan.Services {
@@ -456,14 +457,6 @@ func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, pl
 			tasks[index].resources = append(tasks[index].resources, required.Unique)
 		}
 		tasks[index].resources = sortedUnique(tasks[index].resources)
-	}
-	// Image builds use standalone flows: another service's runtime dependency
-	// edge does not mean its image is an input to this build.
-	if options.Phase == buildPhase && !options.LockDependencyClosure {
-		if _, err := dependencies.Graph().TopologicalSort(); err != nil {
-			return nil, fmt.Errorf("validate CI scheduler dependency graph: %w", err)
-		}
-		return tasks, nil
 	}
 	// Preserve transitive ordering even when an intermediate service is not in
 	// the affected set (for example two library consumers separated by a

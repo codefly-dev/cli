@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -318,7 +319,7 @@ service-dependencies:
 	return root, workspace
 }
 
-func TestCIBuildConcurrency(t *testing.T) {
+func TestCIBuildPreservesPrerequisites(t *testing.T) {
 	for _, selected := range []bool{false, true} {
 		for _, jobs := range []int{1, 2, 4} {
 			t.Run(fmt.Sprintf("selected=%t/jobs=%d", selected, jobs), func(t *testing.T) {
@@ -327,52 +328,47 @@ func TestCIBuildConcurrency(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				required := map[string][]string{
+					"billing/accounts":    {"management/organization"},
+					"management/consumer": {"management/organization"},
+					"web/gateway":         {"management/organization", "billing/accounts"},
+					"web/frontend":        {"web/gateway"},
+				}
 				if selected {
 					plan.Services = []PlannedService{{Service: "web/frontend"}, {Service: "management/organization"}}
+					required["web/frontend"] = []string{"management/organization"}
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				entered := make(chan string, len(plan.Services))
-				release := make(chan struct{})
-				done := make(chan error, 1)
-				go func() {
-					done <- CIWithPlanOptions(ctx, workspace, plan, func(ctx context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
-						entered <- resources.WithUnique(service).Unique()
-						select {
-						case <-release:
-							return nil
-						case <-ctx.Done():
-							return ctx.Err()
+				var mu sync.Mutex
+				completed := map[string]bool{}
+				err = CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+					unique := resources.WithUnique(service).Unique()
+					mu.Lock()
+					defer mu.Unlock()
+					for _, prerequisite := range required[unique] {
+						if !completed[prerequisite] {
+							return fmt.Errorf("%s ran before %s", unique, prerequisite)
 						}
-					}, ScheduleOptions{Jobs: jobs, Phase: "build"})
-				}()
-				for i := 0; i < min(jobs, len(plan.Services)); i++ {
-					select {
-					case <-entered:
-					case <-ctx.Done():
-						<-done
-						t.Fatal("runtime edges prevented independent builds from overlapping")
 					}
-				}
-				select {
-				case service := <-entered:
-					cancel()
-					<-done
-					t.Fatalf("build %s exceeded jobs limit", service)
-				case <-time.After(30 * time.Millisecond):
-				}
-				close(release)
-				if err := <-done; err != nil {
+					if completed[unique] {
+						return fmt.Errorf("%s ran twice", unique)
+					}
+					completed[unique] = true
+					return nil
+				}, ScheduleOptions{Jobs: jobs, Phase: "build"})
+				if err != nil {
 					t.Fatal(err)
+				}
+				if len(completed) != len(plan.Services) {
+					t.Fatalf("completed %d of %d tasks", len(completed), len(plan.Services))
 				}
 			})
 		}
 	}
 }
 
-func TestCIBuildFailureDoesNotBlockRuntimeConsumers(t *testing.T) {
+func TestCIBuildFailureBlocksConsumersAndPreservesIndependentWork(t *testing.T) {
 	_, workspace := loadSchedulerFixture(t)
-	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "web/frontend"}}}
+	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "web/frontend"}, {Service: "management/worker"}}}
 	reporter := fixedCIReporter(t, plan)
 	options := ScheduleOptions{Jobs: 1, Phase: "build", Reporter: reporter}
 	if err := prepareCIReportTasks(context.Background(), workspace, plan, options); err != nil {
@@ -392,9 +388,13 @@ func TestCIBuildFailureDoesNotBlockRuntimeConsumers(t *testing.T) {
 		t.Fatalf("gate status = %s", report.Status)
 	}
 	assertReportTask(t, report.Tasks[0], reportStatusFailed, "")
-	assertReportTask(t, report.Tasks[1], reportStatusPassed, "")
+	assertReportTask(t, report.Tasks[1], reportStatusSkipped, reportReasonFailedPrerequisite)
+	assertReportTask(t, report.Tasks[2], reportStatusPassed, "")
+	if !reflect.DeepEqual(report.Tasks[1].Prerequisites, []string{"management/organization"}) || !reflect.DeepEqual(report.Tasks[1].BlockedBy, []string{"management/organization"}) {
+		t.Fatalf("consumer prerequisite evidence = %+v", report.Tasks[1])
+	}
 	for _, task := range report.Tasks {
-		if len(task.Prerequisites) != 0 || !reflect.DeepEqual(task.RuntimeResources, []string{task.Service}) {
+		if !reflect.DeepEqual(task.RuntimeResources, []string{task.Service}) {
 			t.Fatalf("standalone build has runtime dependencies: %+v", task)
 		}
 	}
@@ -441,6 +441,7 @@ func TestCISchedulerRetainsConservativePrerequisites(t *testing.T) {
 		{Phase: "unknown"},
 		{Phase: "lint"},
 		{Phase: "compile"},
+		{Phase: "build"},
 		{Phase: "test", LockDependencyClosure: true},
 		{Phase: "build", LockDependencyClosure: true},
 	} {
