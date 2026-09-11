@@ -87,32 +87,48 @@ The tag contains merged Core #458, including Buildx forwarding and pre-build
 capability negotiation, and resolves through Go modules. The conformance
 matrix already records the matching `v0.3.27` release line.
 
-The candidate source-workspace pins are Go `0.0.47` and Next.js `0.0.152`,
-implemented in [Go #61](https://github.com/codefly-dev/service-go/pull/61)
-and [Next.js #118](https://github.com/codefly-dev/service-nextjs/pull/118).
+The source-workspace pins are Go `0.0.47` and Next.js `0.0.152`.
 Both consume Core `v0.3.27` and explicitly implement `BuildCapabilities`.
-Go's legacy executor honors Buildx selection through Core; Next.js requires
-recipe output for selected-builder requests and rejects legacy execution
-before preparing build files. Merely upgrading the embedded transport does
-not advertise support.
+Go's legacy executor honors Buildx selection through Core; Next.js produces
+recipes and rejects requests without an output directory before preparing
+build files. Merely upgrading the embedded transport does not advertise
+support.
+
+Next.js [`v0.0.152`](https://github.com/codefly-dev/service-nextjs/releases/tag/v0.0.152)
+was published at `7e150913857b2ed2734cb3d576eed36781fde974` through
+[GoReleaser](https://github.com/codefly-dev/service-nextjs/actions/runs/34637795678).
+All four Linux/macOS amd64/arm64 archives match the published SHA-256
+manifest. Source qualification, the recipe regression, and the polyglot
+gateway regression under race detection pass using downloaded artifacts in
+empty caches.
+
+Go [`v0.0.47`](https://github.com/codefly-dev/service-go/releases/tag/v0.0.47)
+was published at `a49e3f72ad3a8ebfccfc24d39571ba82570944c6`, the merge of
+[Go #62](https://github.com/codefly-dev/service-go/pull/62). Both main-branch
+CI gates passed before tagging, and
+[GoReleaser](https://github.com/codefly-dev/service-go/actions/runs/34642039756)
+passed. All four Linux/macOS amd64/arm64 archives match the published
+SHA-256 manifest; Go source qualification passes with the downloaded release.
+
+The verified checksum-manifest SHA-256 values are:
+
+- Go `v0.0.47`: `6698cee42f9f8d6e6d4a5d24240e0e70de32d66d030bf01bcc5ac1ae66aef759`.
+- Next.js `v0.0.152`: `b8c2d981dac1c836a569ace8c956544676b8ae70cccbf8b27152f47fdfeef9e1`.
+
+GitHub reports `isImmutable: false` for both releases. These recorded hashes
+identify the verified artifacts; checksum verification does not establish
+GitHub-enforced release immutability.
 
 The CLI regression starts both real agent binaries and checks the outgoing
 Build request, scoped cache policy, selected builder, exact output directory,
 and verified recipe response. It also proves Docker execution belongs to the
 CLI. Clearing the request's output directory makes the regression fail.
-Local validation uses binaries built from the companion changes in an
-isolated `CODEFLY_HOME`; it is not evidence of published release assets.
+The full CLI suite and the affected orchestration/gateway race tests pass
+with the published agents downloaded into empty `CODEFLY_HOME` caches.
+Preinstalled development binaries are not used as release evidence.
 
 The [tagged dependency rollout](https://github.com/codefly-dev/cli/issues/625)
-still requires:
-
-1. Merge the checked companion PRs through the agent release process, then
-   publish and checksum-verify Go `v0.0.47` and Next.js `v0.0.152`. The prior
-   Go `v0.0.46` release and unpublished Next.js `v0.0.151` candidate cannot
-   negotiate the Buildx preflight and are insufficient for this rollout.
-2. Qualify both published source plugins and rerun the real-agent CLI
-   regression with an empty agent cache. Keep the CLI PR in draft until
-   these pins resolve to verified release artifacts.
-3. After final validation and merge, follow the CLI release process above
-   and record the published CLI version. The CLI manifest remains
-   `0.1.145`; this checkpoint does not publish a CLI release.
+now consumes Core `v0.3.27`, Go `0.0.47`, and Next.js `0.0.152`.
+After final CLI CI validation and merge, follow the CLI release process above
+and record the published CLI version. The CLI manifest remains `0.1.145`;
+this checkpoint does not publish a CLI release.
