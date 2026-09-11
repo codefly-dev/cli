@@ -862,12 +862,12 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))
 		return derivedRunInputs{overrides: overrides}, nil
 	}
-	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.secrets
-	cli.Info("provisioned registration secrets for %s into %s, digests into %s",
+	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.registrationSecrets
+	cli.Info("provisioned registration secrets for %s into %s, registration and identity digests into %s",
 		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))
 
 	// The consuming backend is only one end of the exchange: a consumed module
-	// presents the same secret to mint its own service-principal work context,
+	// presents its own identity secret to mint the service-principal work context,
 	// without which every module-facing RPC it makes is unauthenticated and its
 	// background workers idle. Every module is accounted for out loud — the line
 	// above otherwise reads as a fully wired federation while half of it is
@@ -888,7 +888,10 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 	return derivedRunInputs{
 		overrides: mergeOverrides(overrides, injection.overrides),
 		workspaceConfigurations: map[string]map[string]string{
-			federationConfigurationGroup: {moduleRegistrationSecretsKey: provisioned.digests},
+			federationConfigurationGroup: {
+				moduleRegistrationSecretsKey: provisioned.registrationDigests,
+				moduleIdentitySecretsKey:     provisioned.identityDigests,
+			},
 		},
 	}, nil
 }
