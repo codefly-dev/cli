@@ -8,7 +8,7 @@ exist, or claims a status the repository cannot back.
 
 Every row describes the CLI **built from this checkout** against the
 `github.com/codefly-dev/core` release line pinned in `go.mod` — the matrix
-records the line (`v0.3.25`), not the pseudo-version, so a core bump within a
+records the line (`v0.3.26`), not the pseudo-version, so a core bump within a
 line does not invalidate the claim. Version skew between a
 released CLI and a released agent is not, by itself, a compatibility failure —
 a row is about whether a real lifecycle was driven end to end.

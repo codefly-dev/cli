@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"encoding/json"
+
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"google.golang.org/protobuf/proto"
@@ -11,7 +12,7 @@ func scopedBuildCache(cache *builderv0.BuildCacheOptions, identity ...string) *b
 	if cache == nil {
 		return nil
 	}
-	result := proto.Clone(cache).(*builderv0.BuildCacheOptions)
+	result := proto.CloneOf(cache)
 	if len(identity) > 0 {
 		scope, _ := json.Marshal(append([]string{cache.Scope}, identity...))
 		result.Scope = string(scope)

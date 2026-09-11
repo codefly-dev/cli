@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/spf13/cobra"
@@ -29,5 +30,5 @@ func (f *BuildCacheFlags) Policy() (*builderv0.BuildCacheOptions, error) {
 	if len(f.options.Imports) == 0 && len(f.options.Exports) == 0 {
 		return nil, fmt.Errorf("cache options require --cache-from or --cache-to")
 	}
-	return proto.Clone(&f.options).(*builderv0.BuildCacheOptions), nil
+	return proto.CloneOf(&f.options), nil
 }
