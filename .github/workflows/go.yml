@@ -145,8 +145,14 @@ jobs:
         # CI must fail loud rather than silently skipping nix tests.
         # DeterminateSystems' installer is the de-facto standard for
         # GH Actions: deterministic, no daemon issues on ephemeral runners.
+        #
+        # This used to follow @main. It is now pinned to a release, like every
+        # other action here, so the comment records the tag at the pinned commit
+        # (v23) rather than the branch it was reached through — Dependabot
+        # resolves the version from the tag at the SHA, so a `# main` comment
+        # would be silently rewritten to a version on the first bump.
         if: matrix.gate == 'control-integration'
-        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # main
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - name: Allow unprivileged user namespaces (for bwrap)
         # Ubuntu 24.04 ships with kernel.apparmor_restrict_unprivileged_userns=1
@@ -234,3 +240,58 @@ jobs:
           # than the targeted Go version"). Matches `make lint`.
           install-mode: goinstall
           only-new-issues: true
+
+  # pkg/web/go-grpc/out is a committed, generated artifact: web/dashboard builds
+  # into it and go:embed ships it inside the CLI binary (see the Makefile's
+  # `dashboard` target, which is the only other place it is produced).
+  #
+  # Nothing else in CI runs npm, so without this job a dependency bump under
+  # web/dashboard changes package.json and package-lock.json, leaves out/
+  # untouched, and passes every Go gate — TestHandlerServesDashboard included,
+  # because that test asserts against the committed bundle and so cannot notice
+  # that the bundle no longer corresponds to the declared dependencies. The
+  # binary would ship a dashboard built from the old dependency tree while the
+  # lockfile claimed the new one, and the drift would surface at the next manual
+  # `make dashboard`, several merges downstream of the bump that caused it.
+  #
+  # The build is byte-reproducible from the lockfile, so a clean tree is a fair
+  # gate rather than a flaky one.
+  dashboard:
+    name: dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          # Pinned rather than left to the runner default: this job's whole
+          # value is that a dirty out/ means the dependencies moved, so the
+          # toolchain producing out/ must not drift underneath it.
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/dashboard/package-lock.json
+
+      # npm ci, not npm install: it fails closed on a package.json that has
+      # drifted from the lockfile instead of silently resolving something else.
+      - name: Rebuild the embedded dashboard
+        run: |
+          set -euo pipefail
+          cd web/dashboard
+          npm ci
+          npm run build
+
+      # --intent-to-add so a newly emitted asset (an untracked file) is visible
+      # to `git diff`; without it the check would only catch modifications and
+      # deletions, and a build that added a chunk would pass while out/ was
+      # missing it.
+      - name: Fail if the committed bundle is stale
+        run: |
+          set -euo pipefail
+          git add --intent-to-add -- pkg/web/go-grpc/out
+          if ! git diff --exit-code -- pkg/web/go-grpc/out; then
+            echo "::error::pkg/web/go-grpc/out does not match a build of web/dashboard. Run 'make dashboard' and commit the result."
+            exit 1
+          fi
