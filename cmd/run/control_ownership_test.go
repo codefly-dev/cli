@@ -189,3 +189,13 @@ agent:
 	}
 	return root
 }
+
+func TestManagedCommandCompletesThroughIsolatedSDKSession(t *testing.T) {
+	workspace := writeIsolationWorkspace(t, "managed-command-session")
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	command := codeflyCommand(ctx, t, filepath.Join(workspace, "modules/app/services/api"), "run", "command", "--", "/bin/sh", "-c", "printf managed-command-ran")
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	require.Contains(t, string(output), "managed-command-ran")
+}

@@ -60,7 +60,9 @@ attached.`,
 		}
 
 		cli.Warning("No run is attached: the Services, Logs and Config tabs show declared inventory only. Start a run with `codefly run service <name> --cli-server` to see live state.")
-		common.AnnounceDashboardWhenReady(ctx, url, openDashboardOnServer)
+		if url != "" {
+			common.AnnounceDashboardWhenReady(ctx, url, openDashboardOnServer)
+		}
 
 		if err := server.Start(ctx); err != nil {
 			return fmt.Errorf("server failed: %w", err)

@@ -1321,9 +1321,11 @@ that can write a cache consumed by protected builds. Use a separate repository
 for untrusted writes; scope names are not registry ACLs. `max` exports intermediate
 artifacts, so cache readers must be trusted to read those artifacts too.
 
-The CLI adds service and recipe identity to the stable caller scope. Core adds
-the actual target platform. Cache-enabled recipe builds use a container-driver
-BuildKit instance, retain agent Dockerfile/build-argument semantics, and leave
+The CLI adds workspace, service and recipe identity to the stable caller scope. Core adds
+the actual target platform. Cached builds provision a container-driver BuildKit instance before the agent
+Build RPC, unless `build service --builder` selects a caller-owned builder.
+Legacy in-agent builds receive and must acknowledge that selection. Recipe builds
+retain agent Dockerfile/build-argument semantics, and leave
 context traversal and ignore matching to Docker. A recipe-declared ignore file
 takes precedence over the context root ignore file, just like a Dockerfile-specific
 ignore file; declared build definitions are staged separately without changing

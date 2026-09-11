@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 
 	"github.com/codefly-dev/cli/pkg/engine"
 	go_grpc "github.com/codefly-dev/cli/pkg/web/go-grpc"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/sdk/session"
 	"github.com/codefly-dev/golor"
 )
 
@@ -36,7 +38,8 @@ type ServerData struct {
 // deterministically from the workspace name (plus optional naming scope)
 // via network.CLIServerPort so different workspaces — and different test
 // scopes within the same workspace — can run concurrently without
-// colliding on port 10000.
+// colliding on port 10000. SDK sessions instead bind their private Unix socket
+// without exposing the control RPCs through a TCP dashboard.
 func NewServer(input ServerData) (*CodeflyServer, error) {
 	wsName := ""
 	if input.Workspace != nil {
@@ -51,9 +54,17 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 		EndpointGrpc: loopbackEndpoint(grpcPort),
 		EndpointRest: loopbackEndpoint(restPort),
 	}
+	config.ControlSocket = os.Getenv(session.SocketEnvironment)
+	config.Session = session.FromEnvironment(os.Environ())
+	if config.ControlSocket == "" && (os.Getenv(session.IDEnvironment) != "" || os.Getenv(session.SecretEnvironment) != "") {
+		return nil, fmt.Errorf("session environment requires an isolated control socket")
+	}
 	server, err := go_grpc.NewServer(&config, input.Workspace, input.Flows)
 	if err != nil {
 		return nil, err
+	}
+	if config.ControlSocket != "" {
+		return &CodeflyServer{server: server}, nil
 	}
 	rest, err := go_grpc.NewHttpServer(&config, server)
 	if err != nil {
@@ -67,6 +78,9 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 
 // DashboardURL is the browser address of the embedded dashboard.
 func (server *CodeflyServer) DashboardURL() string {
+	if server.rest == nil {
+		return ""
+	}
 	return "http://" + server.rest.Address()
 }
 
@@ -84,10 +98,16 @@ func (server *CodeflyServer) Listen() error {
 	// process that happens to hash onto this port, or on a permission error,
 	// and naming a codefly that may not exist sends the reader hunting for it.
 	if _, err := server.server.Listen(); err != nil {
+		if server.rest == nil {
+			return fmt.Errorf("cannot own isolated codefly control socket %s (%v): refusing to displace an existing owner", server.server.Address(), err)
+		}
 		return fmt.Errorf(
 			"cannot own the codefly control server at %s (%v): this run needs that address to itself — "+
 				"give it a disjoint one with --naming-scope or CODEFLY_CLI_SERVER_PORT, or stop whatever holds it",
 			server.server.Address(), err)
+	}
+	if server.rest == nil {
+		return nil
 	}
 	if _, err := server.rest.Listen(); err != nil {
 		server.server.Close()
@@ -99,7 +119,9 @@ func (server *CodeflyServer) Listen() error {
 // Close releases addresses claimed by Listen but never served.
 func (server *CodeflyServer) Close() {
 	server.server.Close()
-	server.rest.Close()
+	if server.rest != nil {
+		server.rest.Close()
+	}
 }
 
 func loopbackEndpoint(port uint16) string {
@@ -111,6 +133,9 @@ func (server *CodeflyServer) Start(ctx context.Context) error {
 	// Releases an address claimed by Listen that a Run returned without
 	// serving, so no early exit can strand the claim in a live process.
 	defer server.Close()
+	if server.rest == nil {
+		return server.server.Run(ctx)
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type result struct {
