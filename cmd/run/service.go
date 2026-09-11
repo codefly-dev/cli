@@ -115,15 +115,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		defer dockerrun.SetEphemeralContainers(false)
 	}
 
-	// Ryuk-adapted container sweep: remove any codefly-labeled Docker
-	// containers whose owning CLI is dead. Same semantics as the pgid
-	// sweep but for Docker-mode agents, which can't participate in
-	// pgid tracking (process groups are namespaced inside containers).
-	if shouldSweepStaleContainers(runtimeContext) {
-		if err := dockerrun.ReapStaleContainers(ctx); err != nil {
-			cli.Warning("stale container sweep failed: %v", err)
-		}
-	}
+	defer func() { _ = os.Unsetenv(dockerrun.ContainerRecoveryScopeEnvironment) }()
 
 	var workspace *resources.Workspace
 	var module *resources.Module
@@ -771,6 +763,16 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, err
 	}
 
+	scope, err := prepareContainerRecovery(workspace, flow)
+	if err != nil {
+		return flow, err
+	}
+	if shouldSweepStaleContainers(runtimeContext) {
+		if err = dockerrun.ReapStaleContainers(ctx, scope); err != nil {
+			return flow, fmt.Errorf("recover scoped containers: %w", err)
+		}
+	}
+
 	// Return the flow even when init fails: InitManagers spawns agents
 	// incrementally (and Load can fail after they're live), so a partial failure
 	// leaves live runners the caller must tear down via stopFresh(). Handing back
@@ -989,4 +991,12 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")
 	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)")
 	ServiceCmd.Flags().BoolVar(&startDocker, "start-docker", true, "Auto-start a local Docker engine (OrbStack/Docker Desktop/colima/…) if a service needs Docker and it isn't running; --start-docker=false to disable")
+}
+
+func prepareContainerRecovery(workspace *resources.Workspace, flow *orchestration.Flow) (dockerrun.ContainerRecoveryScope, error) {
+	scope, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), flow.Environment().NamingScope)
+	if err != nil {
+		return scope, fmt.Errorf("resolve container recovery ownership: %w", err)
+	}
+	return scope, dockerrun.SetContainerRecoveryScope(scope)
 }

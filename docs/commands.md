@@ -1334,3 +1334,18 @@ in-agent image builds must acknowledge cache execution or fail explicitly. Pushe
 BuildKit progress reports cache hits, transfer sizes and import/export durations
 when available; image-build wall time is logged and CI reporting retains the
 operation's total duration. Provider workflows continue invoking Codefly.
+
+### Startup container cleanup ownership
+
+`run service` resolves its workspace and final naming scope before sweeping
+containers. Cleanup is restricted to the exact canonical `CODEFLY_HOME`, workspace
+path and resolved scope, including an explicitly empty scope. Agent processes
+inherit this identity before they create containers. Containers from a different
+home or scope are never swept, even when their creator PID is absent.
+
+Agents using the scoped-recovery Core API add `codefly.recovery-scope` at creation.
+Containers from older agents without that label remain untouched and require
+explicit owner recovery; startup never relabels them. In the same scope, stopped
+orphans and running ephemeral orphans remain eligible, while live owners, running
+stateful containers and session-ledger-owned containers are preserved. Startup
+removal does not request deletion of volumes.

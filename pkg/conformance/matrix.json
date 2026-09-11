@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "cli": "source",
-  "core": "v0.3.27",
+  "core": "v0.3.28",
   "rows": [
     {
       "id": "linux-amd64-source",
