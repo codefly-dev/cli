@@ -539,7 +539,10 @@ ordering when an intermediate graph service is not selected.
 default fail-fast policy stops dispatching new work after the first failure and
 drains tasks already running. With `--fail-fast=false`, independent work
 continues while dependents of a failed prerequisite are skipped. Concurrent
-failures are aggregated in deterministic plan order.
+failures are aggregated in deterministic plan order. Both `ci test` and
+`ci run --phase test` continue through the requested suites when fail-fast is
+disabled, retaining all suite failures in the gate result. Cancellation stops
+subsequent suites regardless of the fail-fast setting.
 
 Recommended default gates:
 

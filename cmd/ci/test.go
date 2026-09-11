@@ -45,16 +45,7 @@ var TestCmd = &cobra.Command{
 			return fmt.Errorf("cannot build affected-service plan: %w", err)
 		}
 		return runWithCIReport(ctx, workspace, plan, "codefly ci test", func(reporter *CIReporter) error {
-			for _, suite := range normalizeTestSuites(testSuites) {
-				if suite != "" {
-					cli.Header(2, "CI test suite: %s", suite)
-				}
-				options := commandScheduleOptions(true, "test", suite, reporter)
-				if err := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite, ciFailFast), options); err != nil {
-					return fmt.Errorf("cannot run CI tests: %w", err)
-				}
-			}
-			return ctx.Err()
+			return executeCIPhase(ctx, reporter, workspace, plan, "test", normalizeTestSuites(testSuites), ciFailFast)
 		})
 	},
 }

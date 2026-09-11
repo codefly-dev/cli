@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -207,5 +209,78 @@ func TestMetadataOnlyRunCannotBypassIntegrityVerification(t *testing.T) {
 				t.Fatalf("verification evidence = %+v", report.Tasks[0])
 			}
 		})
+	}
+}
+
+func TestTestCommandSuiteFailurePolicy(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		failFast   bool
+		wantSuites []string
+	}{
+		{name: "continue", wantSuites: []string{"unit", "integration"}},
+		{name: "fail fast", failFast: true, wantSuites: []string{"unit"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, _ := loadSchedulerFixture(t)
+			t.Chdir(root)
+			t.Setenv("CODEFLY_HOME", t.TempDir())
+			previousSelection, previousSuites := testSelection, testSuites
+			previousContext, previousFailFast := runtimeContext, ciFailFast
+			previousOutput, previousFormat := ciReportOutput, ciReportFormat
+			t.Cleanup(func() {
+				testSelection, testSuites = previousSelection, previousSuites
+				runtimeContext, ciFailFast = previousContext, previousFailFast
+				ciReportOutput, ciReportFormat = previousOutput, previousFormat
+			})
+			testSelection = SelectionFlags{changedFiles: []string{"modules/management/services/worker/code/main.go"}}
+			testSuites = []string{"unit", "integration"}
+			runtimeContext, ciFailFast = "invalid-runtime-context", test.failFast
+			ciReportOutput, ciReportFormat = t.TempDir(), "text"
+			err := TestCmd.RunE(TestCmd, nil)
+			if err == nil || !strings.Contains(err.Error(), "Invalid runtime context") {
+				t.Fatalf("error = %v, want runtime configuration failure", err)
+			}
+			if got := strings.Count(err.Error(), "Invalid runtime context"); got != len(test.wantSuites) {
+				t.Fatalf("reported failures = %d, want %d: %v", got, len(test.wantSuites), err)
+			}
+			payload, readErr := os.ReadFile(filepath.Join(ciReportOutput, reportFilename))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			var report CIReport
+			if err := json.Unmarshal(payload, &report); err != nil {
+				t.Fatal(err)
+			}
+			var suites []string
+			for _, task := range report.Tasks {
+				suites = append(suites, task.Suite)
+				assertReportTask(t, task, reportStatusFailed, "")
+			}
+			if !reflect.DeepEqual(suites, test.wantSuites) {
+				t.Fatalf("attempted suites = %v, want %v", suites, test.wantSuites)
+			}
+			if report.Status != reportStatusFailed {
+				t.Fatalf("gate status = %s, want failed", report.Status)
+			}
+		})
+	}
+}
+
+func TestCITestSuitesStopsOnCancellation(t *testing.T) {
+	_, workspace := loadSchedulerFixture(t)
+	plan := &Plan{Services: []PlannedService{{Service: "management/worker"}}}
+	reporter := fixedCIReporter(t, plan)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := executeCIPhase(ctx, reporter, workspace, plan, "test", []string{"unit", "integration"}, false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want cancellation", err)
+	}
+	report := reporter.Finalize(err)
+	for _, task := range report.Tasks {
+		if task.Suite == "integration" {
+			t.Fatal("attempted another suite after cancellation")
+		}
 	}
 }
