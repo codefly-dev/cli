@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,48 +143,30 @@ func TestRecipeContextResolvesAndContains(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestApplyRecipeIgnoreStagesDiscoverableSibling(t *testing.T) {
-	outputDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "dockerignore"), []byte("code/node_modules\n"), 0o644))
-	dockerfile := filepath.Join(outputDir, "Dockerfile")
-	require.NoError(t, os.WriteFile(dockerfile, []byte("FROM alpine\n"), 0o644))
-
-	cleanup, err := applyRecipeIgnore(outputDir, dockerfile, &builderv0.DockerBuildRecipe{Dockerignore: "dockerignore"})
+func TestPrepareRecipeContextDoesNotMutateOrExposeIgnoredBuildDefinitions(t *testing.T) {
+	serviceDir := t.TempDir()
+	outputDir := filepath.Join(serviceDir, "builder")
+	require.NoError(t, os.Mkdir(outputDir, 0755))
+	for name, content := range map[string]string{
+		"builder/Dockerfile":              "FROM scratch\nCOPY . /\n",
+		"builder/dockerignore":            "builder/\n!secret\n",
+		"builder/Dockerfile.dockerignore": "existing-secret\n",
+		".dockerignore":                   "secret\n", "secret": "hidden", "existing-secret": "hidden", "app": "application",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(serviceDir, name), []byte(content), 0600))
+	}
+	recipe := &builderv0.DockerBuildRecipe{Dockerfile: "Dockerfile", Dockerignore: "dockerignore"}
+	prepared, err := prepareRecipeContext(context.Background(), serviceDir, outputDir, recipe)
 	require.NoError(t, err)
-
-	// buildx discovers "<dockerfile>.dockerignore"; that sibling must now exist
-	// with the recipe's ignore content.
-	staged, err := os.ReadFile(dockerfile + ".dockerignore")
+	defer prepared.Close()
+	require.FileExists(t, prepared.Dockerfile)
+	require.FileExists(t, filepath.Join(prepared.Root, "app"))
+	for _, name := range []string{"secret", "existing-secret", "builder/Dockerfile"} {
+		require.NoFileExists(t, filepath.Join(prepared.Root, name))
+	}
+	original, err := os.ReadFile(filepath.Join(outputDir, "Dockerfile.dockerignore"))
 	require.NoError(t, err)
-	require.Equal(t, "code/node_modules\n", string(staged))
-
-	cleanup()
-	_, err = os.Stat(dockerfile + ".dockerignore")
-	require.True(t, os.IsNotExist(err), "staged ignore must be cleaned up")
-}
-
-func TestApplyRecipeIgnoreNoIgnoreIsNoOp(t *testing.T) {
-	outputDir := t.TempDir()
-	dockerfile := filepath.Join(outputDir, "Dockerfile")
-	cleanup, err := applyRecipeIgnore(outputDir, dockerfile, &builderv0.DockerBuildRecipe{})
-	require.NoError(t, err)
-	cleanup()
-	_, err = os.Stat(dockerfile + ".dockerignore")
-	require.True(t, os.IsNotExist(err))
-}
-
-func TestApplyRecipeIgnoreRefusesToClobber(t *testing.T) {
-	outputDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "dockerignore"), []byte("x\n"), 0o644))
-	dockerfile := filepath.Join(outputDir, "Dockerfile")
-	require.NoError(t, os.WriteFile(dockerfile+".dockerignore", []byte("existing\n"), 0o644))
-
-	_, err := applyRecipeIgnore(outputDir, dockerfile, &builderv0.DockerBuildRecipe{Dockerignore: "dockerignore"})
-	require.Error(t, err)
-	// The pre-existing sibling is left intact.
-	data, readErr := os.ReadFile(dockerfile + ".dockerignore")
-	require.NoError(t, readErr)
-	require.Equal(t, "existing\n", string(data))
+	require.Equal(t, "existing-secret\n", string(original))
 }
 
 func TestReadPushedImageDigest(t *testing.T) {

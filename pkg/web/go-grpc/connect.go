@@ -34,6 +34,9 @@ func resp[T any](v *T, err error) (*connect.Response[T], error) {
 func (a *cliConnect) Ping(ctx context.Context, r *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
 	return resp(a.s.Ping(ctx, r.Msg))
 }
+func (a *cliConnect) SessionHandshake(ctx context.Context, r *connect.Request[cli.SessionHandshakeRequest]) (*connect.Response[cli.SessionHandshakeResponse], error) {
+	return resp(a.s.SessionHandshake(ctx, r.Msg))
+}
 func (a *cliConnect) GetAgentInformation(ctx context.Context, r *connect.Request[cli.GetAgentInformationRequest]) (*connect.Response[agentv0.AgentInformation], error) {
 	return resp(a.s.GetAgentInformation(ctx, r.Msg))
 }

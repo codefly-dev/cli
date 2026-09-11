@@ -228,6 +228,8 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
 
+	dockerContext.Cache = scopedBuildCache(b.world.BuildCache, b.instance.Unique(), "app")
+
 	outputDir, err := buildRecipeOutputDirectory(b.instance.Service.Dir())
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot prepare build recipe directory")

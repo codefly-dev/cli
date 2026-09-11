@@ -120,6 +120,11 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	cache, err := buildCacheFlags.Policy()
+	if err != nil {
+		return nil, err
+	}
+	flow.WithBuildCache(cache)
 	flow.WithPush(push)
 	flow.WithBuildxBuilder(buildxBuilder)
 	flow.WithImageDigest(true)
@@ -151,6 +156,8 @@ func buildService(ctx context.Context, flow *orchestration.Flow) error {
 
 }
 
+var buildCacheFlags common.BuildCacheFlags
+
 var standAlone bool
 var org string
 var push bool
@@ -158,6 +165,7 @@ var envInput string
 var buildxBuilder string
 
 func init() {
+	buildCacheFlags.Bind(ServiceCmd)
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&org, "org", "", "Image registry override (e.g. ghcr.io/myorg). Wins over the env's registry.url.")
 	ServiceCmd.Flags().BoolVar(&push, "push", false, "Push the image to the repository")

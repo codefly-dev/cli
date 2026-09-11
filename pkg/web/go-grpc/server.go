@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/codefly-dev/core/sdk/session"
+	"google.golang.org/grpc/peer"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -68,8 +72,10 @@ type Server struct {
 	// listenerMu guards listener. Listen/Close are the natural pair to put
 	// beside `go Start(ctx)` with a deferred Close, so they must be safe
 	// against the Run goroutine releasing the same listener.
-	listenerMu sync.Mutex
-	listener   net.Listener
+	listenerMu    sync.Mutex
+	listener      net.Listener
+	session       *session.Session
+	sessionSocket string
 }
 
 // workspaceFor prefers the workspace this server was constructed with and only
@@ -93,6 +99,26 @@ func (s *Server) activeFlow() *orchestration.Flow {
 
 func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty, error) {
 	return &emptypb.Empty{}, nil
+}
+
+func (s *Server) SessionHandshake(ctx context.Context, req *cli.SessionHandshakeRequest) (*cli.SessionHandshakeResponse, error) {
+	if s.session == nil {
+		return nil, status.Error(codes.FailedPrecondition, "server is not an isolated dependency session")
+	}
+	remote, ok := peer.FromContext(ctx)
+	if !ok || remote.Addr.Network() != "unix" {
+		return nil, status.Error(codes.PermissionDenied, "session proofs require the private control socket")
+	}
+	if req.GetSessionId() != s.session.ID {
+		return nil, status.Error(codes.PermissionDenied, "session identity does not match")
+	}
+	if req.GetProtocolVersion() != session.ProtocolVersion {
+		return nil, status.Error(codes.FailedPrecondition, "unsupported session protocol version")
+	}
+	if req.GetChallenge() == "" {
+		return nil, status.Error(codes.InvalidArgument, "session challenge is required")
+	}
+	return &cli.SessionHandshakeResponse{SessionId: s.session.ID, Proof: s.session.Proof(req.GetChallenge()), ProtocolVersion: session.ProtocolVersion, Capabilities: []string{session.IsolatedControlSocketCapability}}, nil
 }
 
 func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.StopFlowResponse, error) {
@@ -433,12 +459,14 @@ func NewServer(c *Configuration, w *resources.Workspace, flows *engine.FlowManag
 	}
 
 	s := Server{
-		config:    c,
-		workspace: w,
-		gRPC:      grpcServer,
-		Terminal:  NewTerminalServer(workspaceDir),
-		flows:     flows,
-		history:   newLogHistory(5000),
+		config:        c,
+		session:       session.FromEnvironment(os.Environ()),
+		sessionSocket: os.Getenv(session.SocketEnvironment),
+		workspace:     w,
+		gRPC:          grpcServer,
+		Terminal:      NewTerminalServer(workspaceDir),
+		flows:         flows,
+		history:       newLogHistory(5000),
 	}
 	cli.RegisterCLIServer(grpcServer, &s)
 	cli.RegisterTerminalServiceServer(grpcServer, s.Terminal)
@@ -462,7 +490,14 @@ func (s *Server) Listen() (net.Listener, error) {
 	if s.listener != nil {
 		return s.listener, nil
 	}
-	lis, err := net.Listen("tcp", s.config.EndpointGrpc)
+	network, address := "tcp", s.config.EndpointGrpc
+	if s.sessionSocket != "" {
+		if s.session == nil || !filepath.IsAbs(s.sessionSocket) {
+			return nil, fmt.Errorf("isolated control socket requires session identity and an absolute path")
+		}
+		network, address = "unix", s.sessionSocket
+	}
+	lis, err := net.Listen(network, address)
 	if err != nil {
 		return nil, err
 	}
