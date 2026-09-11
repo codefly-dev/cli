@@ -1296,3 +1296,34 @@ The set of agents evolves, so it isn't reproduced here: run `codefly agent list`
 agent known to your machine, `codefly agent versions <publisher/name>` (e.g. `go-grpc`, `nextjs`,
 `postgres`) for its available versions, or call the MCP `list_agents` tool for the same
 information from an AI assistant.
+
+### Registry build cache
+
+`codefly build service`, `codefly build module`, `codefly ci build`, and the build
+phase of `codefly ci run` accept `--cache-from`, `--cache-to`, `--cache-scope`,
+`--cache-mode`, and `--cache-backend`. Repositories are fully qualified and omit
+tags. The backend currently supports `registry`; mode defaults to `max` so
+intermediate dependency installs survive ordinary source edits.
+
+```sh
+codefly build service frontend --cache-from ghcr.io/example/build-cache --cache-to ghcr.io/example/build-cache --cache-scope workspace/protected
+codefly ci run --phase build --cache-from ghcr.io/example/build-cache --cache-scope workspace/protected
+```
+
+Omitting `--cache-to` makes the request read-only. Authenticate Docker separately
+with repository-scoped credentials. Untrusted PRs must never receive credentials
+that can write a cache consumed by protected builds. Use a separate repository
+for untrusted writes; scope names are not registry ACLs. `max` exports intermediate
+artifacts, so cache readers must be trusted to read those artifacts too.
+
+The CLI adds service and recipe identity to the stable caller scope. Core adds
+the actual target platform. Cache-enabled recipe builds use a container-driver
+BuildKit instance, retain agent Dockerfile/build-argument semantics, and leave
+context traversal and ignore matching to Docker. A recipe-declared ignore file
+takes precedence over the context root ignore file, just like a Dockerfile-specific
+ignore file; declared build definitions are staged separately without changing
+source files. Publication policy stays with the caller. Agents returning verified recipes leave cache execution to the CLI. Legacy
+in-agent image builds must acknowledge cache execution or fail explicitly. Pushed image digests still come from Buildx metadata, never cache tags.
+BuildKit progress reports cache hits, transfer sizes and import/export durations
+when available; image-build wall time is logged and CI reporting retains the
+operation's total duration. Provider workflows continue invoking Codefly.

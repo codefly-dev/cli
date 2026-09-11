@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -78,30 +79,29 @@ func (b *Builder) buildRecipe(
 			recipe.GetName(), b.instance.Unique(), recipe.GetPlatforms(), deploymentImageArchitecture, deploymentImageArchitecture,
 		)
 	}
-	dockerfile, err := recipeDockerfile(outputDir, recipe)
-	if err != nil {
-		return w.Wrapf(err, "cannot resolve dockerfile for recipe %s of %s", recipe.GetName(), b.instance.Unique())
-	}
 	contextDir, err := recipeContext(serviceDir, recipe)
 	if err != nil {
 		return w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
 
-	cleanupIgnore, err := applyRecipeIgnore(outputDir, dockerfile, recipe)
+	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe)
 	if err != nil {
-		return w.Wrapf(err, "cannot apply ignore file for recipe %s of %s", recipe.GetName(), b.instance.Unique())
+		return w.Wrapf(err, "cannot prepare recipe context")
 	}
-	defer cleanupIgnore()
+	defer prepared.Close()
+	dockerfile := prepared.Dockerfile
+	contextDir = prepared.Root
 
 	// A caller-provided builder (e.g. a native amd64 buildkit) is authoritative:
 	// it owns whatever platforms the recipe declares, so the CLI neither
 	// provisions nor selects the local emulating builder.
 	builderName := b.world.BuildxBuilder
 	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
-	if multiArch && builderName == "" {
+	if (multiArch || b.world.BuildCache != nil) && builderName == "" {
 		if err := ensureBuildxBuilder(ctx); err != nil {
-			return w.Wrapf(err, "cannot provision multi-architecture builder for %s", b.instance.Unique())
+			return w.Wrapf(err, "cannot provision image builder for %s", b.instance.Unique())
 		}
+		builderName = buildxBuilderName
 	}
 
 	// A pushed build records the immutable manifest digest a snapshot pins and a
@@ -119,7 +119,12 @@ func (b *Builder) buildRecipe(
 		defer os.Remove(metadataFile)
 	}
 
-	args := buildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName)
+	cache := scopedBuildCache(b.world.BuildCache, b.instance.Unique(), recipe.GetName())
+	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache)
+	if err != nil {
+		return err
+	}
+	started := time.Now()
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush))
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
@@ -127,6 +132,8 @@ func (b *Builder) buildRecipe(
 	if err := command.Run(); err != nil {
 		return w.Wrapf(err, "cannot build %s", recipe.GetImage())
 	}
+
+	w.Info("image build completed", wool.Field("image", recipe.GetImage()), wool.Field("duration", time.Since(started)))
 
 	if captureDigest {
 		digest, err := readPushedImageDigest(metadataFile)
@@ -233,41 +240,68 @@ func recipeContext(serviceDir string, recipe *builderv0.DockerBuildRecipe) (stri
 	return contextDir, nil
 }
 
-// applyRecipeIgnore makes the recipe's declared ignore file visible to buildx,
-// which only discovers "<dockerfile>.dockerignore" or "<context>/.dockerignore"
-// — never the "builder/dockerignore" name agents emit. It writes the ignore to
-// the discovered sibling path for the duration of the build and returns a
-// cleanup. It is a no-op when the recipe declares no ignore or already emits it
-// at the discovered path.
-func applyRecipeIgnore(outputDir, dockerfile string, recipe *builderv0.DockerBuildRecipe) (func(), error) {
-	ignore := recipe.GetDockerignore()
-	if ignore == "" {
-		return func() {}, nil
+// preparedRecipeContext keeps source traversal and ignore matching with Docker.
+// Only a custom build definition is staged, so concurrent recipes never mutate
+// a shared Dockerfile.dockerignore or copy/filter the application's inputs.
+type preparedRecipeContext struct {
+	Root       string
+	Dockerfile string
+	directory  string
+}
+
+func (p *preparedRecipeContext) Close() error {
+	if p.directory == "" {
+		return nil
 	}
-	source := filepath.Join(outputDir, filepath.FromSlash(ignore))
-	target := dockerfile + ".dockerignore"
-	if source == target {
-		return func() {}, nil
+	return os.RemoveAll(p.directory)
+}
+
+func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe) (*preparedRecipeContext, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	input, err := os.Open(source)
+	root, err := filepath.EvalSymlinks(contextDir)
 	if err != nil {
 		return nil, err
 	}
-	defer input.Close()
-	output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	dockerfile, err := recipeDockerfile(outputDir, recipe)
 	if err != nil {
-		return nil, fmt.Errorf("stage recipe ignore at %s: %w", target, err)
-	}
-	if _, err := io.Copy(output, input); err != nil {
-		_ = output.Close()
-		_ = os.Remove(target)
 		return nil, err
 	}
-	if err := output.Close(); err != nil {
-		_ = os.Remove(target)
+	if recipe.GetDockerignore() == "" {
+		return &preparedRecipeContext{Root: root, Dockerfile: dockerfile}, nil
+	}
+
+	// Dockerfile-specific policy replaces root policy; it is not an additional
+	// filter. Put the declared policy beside a private copy of the definition
+	// and let Docker apply its native precedence and directory pruning.
+	definition, err := os.ReadFile(dockerfile)
+	if err != nil {
 		return nil, err
 	}
-	return func() { _ = os.Remove(target) }, nil
+	ignore, err := os.ReadFile(filepath.Join(outputDir, recipe.GetDockerignore()))
+	if err != nil {
+		return nil, err
+	}
+	directory, err := os.MkdirTemp("", "codefly-build-definition-")
+	if err != nil {
+		return nil, err
+	}
+	definitionRoot, err := os.OpenRoot(directory)
+	if err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
+	defer definitionRoot.Close()
+	if err := definitionRoot.WriteFile("Dockerfile", definition, 0o600); err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
+	if err := definitionRoot.WriteFile("Dockerfile.dockerignore", ignore, 0o600); err != nil {
+		_ = os.RemoveAll(directory)
+		return nil, err
+	}
+	return &preparedRecipeContext{Root: root, Dockerfile: filepath.Join(directory, "Dockerfile"), directory: directory}, nil
 }
 
 // ensureBuildxBuilder provisions the dedicated docker-container buildx builder

@@ -85,6 +85,11 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return w.Wrap(err)
 	}
+	cache, err := buildCacheFlags.Policy()
+	if err != nil {
+		return err
+	}
+	flow.WithBuildCache(cache)
 	flow.WithPush(push)
 	flow.WithOutputSink(cli.NewOutputSink())
 	stopped := false
@@ -109,6 +114,7 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 }
 
 func init() {
+	buildCacheFlags.Bind(ModuleCmd)
 	ModuleCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin services as standalone, i.e. without their dependencies")
 	ModuleCmd.Flags().StringVar(&org, "org", "", "Image registry override (wins over env's registry.url)")
 	ModuleCmd.Flags().BoolVar(&push, "push", false, "Push the images to the registry")

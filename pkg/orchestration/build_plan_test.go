@@ -142,50 +142,6 @@ func TestRecipeContextResolvesAndContains(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestApplyRecipeIgnoreStagesDiscoverableSibling(t *testing.T) {
-	outputDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "dockerignore"), []byte("code/node_modules\n"), 0o644))
-	dockerfile := filepath.Join(outputDir, "Dockerfile")
-	require.NoError(t, os.WriteFile(dockerfile, []byte("FROM alpine\n"), 0o644))
-
-	cleanup, err := applyRecipeIgnore(outputDir, dockerfile, &builderv0.DockerBuildRecipe{Dockerignore: "dockerignore"})
-	require.NoError(t, err)
-
-	// buildx discovers "<dockerfile>.dockerignore"; that sibling must now exist
-	// with the recipe's ignore content.
-	staged, err := os.ReadFile(dockerfile + ".dockerignore")
-	require.NoError(t, err)
-	require.Equal(t, "code/node_modules\n", string(staged))
-
-	cleanup()
-	_, err = os.Stat(dockerfile + ".dockerignore")
-	require.True(t, os.IsNotExist(err), "staged ignore must be cleaned up")
-}
-
-func TestApplyRecipeIgnoreNoIgnoreIsNoOp(t *testing.T) {
-	outputDir := t.TempDir()
-	dockerfile := filepath.Join(outputDir, "Dockerfile")
-	cleanup, err := applyRecipeIgnore(outputDir, dockerfile, &builderv0.DockerBuildRecipe{})
-	require.NoError(t, err)
-	cleanup()
-	_, err = os.Stat(dockerfile + ".dockerignore")
-	require.True(t, os.IsNotExist(err))
-}
-
-func TestApplyRecipeIgnoreRefusesToClobber(t *testing.T) {
-	outputDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "dockerignore"), []byte("x\n"), 0o644))
-	dockerfile := filepath.Join(outputDir, "Dockerfile")
-	require.NoError(t, os.WriteFile(dockerfile+".dockerignore", []byte("existing\n"), 0o644))
-
-	_, err := applyRecipeIgnore(outputDir, dockerfile, &builderv0.DockerBuildRecipe{Dockerignore: "dockerignore"})
-	require.Error(t, err)
-	// The pre-existing sibling is left intact.
-	data, readErr := os.ReadFile(dockerfile + ".dockerignore")
-	require.NoError(t, readErr)
-	require.Equal(t, "existing\n", string(data))
-}
-
 func TestReadPushedImageDigest(t *testing.T) {
 	metadata := filepath.Join(t.TempDir(), "meta.json")
 	digest := "sha256:" + strings.Repeat("a", 64)

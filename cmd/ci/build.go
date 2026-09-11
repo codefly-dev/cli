@@ -15,6 +15,7 @@ import (
 
 // BuildCmd represents the run command
 var buildSelection SelectionFlags
+var buildCacheFlags common.BuildCacheFlags
 
 var BuildCmd = &cobra.Command{
 	Use:   "build",
@@ -83,6 +84,11 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 		return nil, w.Wrap(err)
 	}
 
+	cache, err := buildCacheFlags.Policy()
+	if err != nil {
+		return nil, err
+	}
+	flow.WithBuildCache(cache)
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
@@ -112,6 +118,7 @@ func buildService(ctx context.Context, flow *orchestration.Flow) error {
 }
 
 func init() {
+	buildCacheFlags.Bind(BuildCmd)
 	buildSelection.Bind(BuildCmd)
 	BuildCmd.Flags().StringSliceVar(&silent, "silent", []string{}, "Silent mode")
 	BuildCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")

@@ -272,6 +272,7 @@ func summarizeIntegrityReport(report integrity.BaseReport) CIReportIntegrity {
 }
 
 func init() {
+	buildCacheFlags.Bind(RunCmd)
 	runSelection.Bind(RunCmd)
 	RunCmd.Flags().StringSliceVar(&runPhases, "phase", nil, "CI phase to run (repeatable or comma-separated; default: full Codefly gate)")
 	RunCmd.Flags().StringSliceVar(&silent, "silent", []string{}, "Silent services")

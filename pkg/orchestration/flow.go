@@ -170,6 +170,7 @@ type World struct {
 	// an amd64 target build without local QEMU emulation. Empty selects the
 	// default builder, or the dedicated local container builder for multi-arch.
 	BuildxBuilder string
+	BuildCache    *builderv0.BuildCacheOptions
 
 	// CaptureImageDigest asks a pushed build to resolve the immutable manifest
 	// digest of the image it published so a caller can report or pin it. It is
@@ -1669,6 +1670,10 @@ func (flow *Flow) WithStandAlone(alone bool) {
 
 func (flow *Flow) WithPush(push bool) {
 	flow.world.Push = push
+}
+
+func (flow *Flow) WithBuildCache(cache *builderv0.BuildCacheOptions) {
+	flow.world.BuildCache = scopedBuildCache(cache)
 }
 
 func (flow *Flow) WithBuildxBuilder(name string) {
