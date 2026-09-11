@@ -842,10 +842,7 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 		serviceName: {manifest.APIConsumesEnvironmentVariable: value},
 	}
 
-	provisioned, err := provisionModuleRegistrationSecrets(consumed)
-	if err != nil {
-		return derivedRunInputs{}, err
-	}
+	provisioned := provisionModuleRegistrationSecrets(consumed)
 	if provisioned == nil {
 		return derivedRunInputs{overrides: overrides}, nil
 	}
@@ -862,7 +859,7 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))
 		return derivedRunInputs{overrides: overrides}, nil
 	}
-	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.registrationSecrets
+	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.registrationSecrets()
 	cli.Info("provisioned registration secrets for %s into %s, registration and identity digests into %s",
 		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))
 
@@ -889,8 +886,8 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 		overrides: mergeOverrides(overrides, injection.overrides),
 		workspaceConfigurations: map[string]map[string]string{
 			federationConfigurationGroup: {
-				moduleRegistrationSecretsKey: provisioned.registrationDigests,
-				moduleIdentitySecretsKey:     provisioned.identityDigests,
+				moduleRegistrationSecretsKey: provisioned.registrationDigests(),
+				moduleIdentitySecretsKey:     provisioned.identityDigests(),
 			},
 		},
 	}, nil
