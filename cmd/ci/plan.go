@@ -109,6 +109,9 @@ func printPlan(plan *Plan) {
 			fmt.Printf("  - %s\n", path)
 		}
 	}
+	for _, input := range plan.IntegrityInputs {
+		fmt.Printf("Integrity: %s (%s, required %s) — %s\n", input.Path, input.Module, input.Phase, input.Reason)
+	}
 	if len(plan.Services) == 0 {
 		fmt.Println("Services: none affected")
 		return

@@ -27,6 +27,7 @@ type PlanOptions struct {
 }
 
 type Plan struct {
+	IntegrityInputs []IntegrityInput `json:"integrity_inputs,omitempty"`
 	SchemaVersion   int              `json:"schema_version"`
 	Workspace       string           `json:"workspace"`
 	Base            string           `json:"base,omitempty"`
@@ -34,6 +35,13 @@ type Plan struct {
 	ChangedFiles    []string         `json:"changed_files"`
 	SelectionReason string           `json:"selection_reason,omitempty"`
 	Services        []PlannedService `json:"services"`
+}
+
+type IntegrityInput struct {
+	Module string `json:"module"`
+	Path   string `json:"path"`
+	Phase  string `json:"phase"`
+	Reason string `json:"reason"`
 }
 
 type PlannedService struct {
@@ -130,6 +138,26 @@ func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOpt
 		return nil, err
 	}
 	for _, changedPath := range plan.ChangedFiles {
+		absPath := changedPath
+		if !filepath.IsAbs(absPath) {
+			absPath = filepath.Join(repoRoot, filepath.FromSlash(changedPath))
+		}
+		// Resolve the parent so a deleted or replaced manifest keeps its owner.
+		absPath = filepath.Join(cleanAbs(filepath.Dir(absPath)), filepath.Base(absPath))
+		integrityOwned := false
+		for _, module := range modules {
+			if absPath == filepath.Join(module.dir, "tools", "base-manifest.json") {
+				plan.IntegrityInputs = append(plan.IntegrityInputs, IntegrityInput{
+					Module: module.name, Path: changedPath, Phase: ciPhaseVerify,
+					Reason: "derived base hash index is integrity-owned; source paths determine affected services",
+				})
+				integrityOwned = true
+				break
+			}
+		}
+		if integrityOwned {
+			continue
+		}
 		classifyChangedPath(repoRoot, workspace, changedPath, services, modules, libraryConsumers, selected)
 	}
 

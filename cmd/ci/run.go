@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const ciPhaseVerify = "verify"
+
 var (
 	runSelection SelectionFlags
 	runPhases    []string
@@ -47,7 +49,7 @@ var RunCmd = &cobra.Command{
 			return fmt.Errorf("cannot build affected-service plan: %w", err)
 		}
 
-		phases, err := normalizeRunPhases(runPhases)
+		phases, err := plan.runPhases(runPhases)
 		if err != nil {
 			return err
 		}
@@ -120,7 +122,7 @@ func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resour
 	switch phase {
 	case "verify":
 		return runReportedWorkspacePhase(ctx, reporter, workspace, phase, func(taskContext context.Context) error {
-			return runVerifyWorkspace(taskContext, workspace)
+			return runVerifyWorkspace(taskContext, workspace, plan.integrityModules()...)
 		})
 	case "test":
 		var errs error
@@ -166,6 +168,28 @@ func normalizeTestSuites(suites []string) []string {
 		return []string{""}
 	}
 	return result
+}
+
+func (plan *Plan) integrityModules() []string {
+	modules := make([]string, 0, len(plan.IntegrityInputs))
+	for _, input := range plan.IntegrityInputs {
+		modules = append(modules, input.Module)
+	}
+	return sortedUnique(modules)
+}
+
+func (plan *Plan) runPhases(requested []string) ([]string, error) {
+	phases, err := normalizeRunPhases(requested)
+	if err != nil || len(plan.IntegrityInputs) == 0 {
+		return phases, err
+	}
+	result := []string{ciPhaseVerify}
+	for _, phase := range phases {
+		if phase != ciPhaseVerify {
+			result = append(result, phase)
+		}
+	}
+	return result, nil
 }
 
 func normalizeRunPhases(phases []string) ([]string, error) {
@@ -217,8 +241,8 @@ func phaseLocksDependencyClosure(phase string) bool {
 	return phase == "sync-drift" || phase == "test"
 }
 
-func runVerifyWorkspace(ctx context.Context, workspace *resources.Workspace) error {
-	report, err := integrity.VerifyBase(ctx, workspace)
+func runVerifyWorkspace(ctx context.Context, workspace *resources.Workspace, requiredModules ...string) error {
+	report, err := integrity.VerifyBase(ctx, workspace, requiredModules...)
 	recordCIReportIntegrity(ctx, summarizeIntegrityReport(report))
 	return err
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -51,8 +52,9 @@ func (report BaseReport) Failed() int {
 }
 
 // VerifyBase checks every guarded module without printing or mutating. A
-// module is guarded when it carries tools/base-manifest.json.
-func VerifyBase(ctx context.Context, workspace *resources.Workspace) (BaseReport, error) {
+// module is guarded when it carries tools/base-manifest.json. Required modules
+// must retain their manifest even when it was removed from the working tree.
+func VerifyBase(ctx context.Context, workspace *resources.Workspace, requiredModules ...string) (BaseReport, error) {
 	if workspace == nil {
 		return BaseReport{}, fmt.Errorf("workspace is nil")
 	}
@@ -66,7 +68,7 @@ func VerifyBase(ctx context.Context, workspace *resources.Workspace) (BaseReport
 		dir := module.Dir()
 		manifestPath := filepath.Join(dir, "tools", "base-manifest.json")
 		data, err := os.ReadFile(manifestPath)
-		if errorsIsNotExist(err) {
+		if errorsIsNotExist(err) && !slices.Contains(requiredModules, module.Name) {
 			continue
 		}
 		moduleReport := BaseModuleReport{Module: module.Name, Omitted: map[string]int{}}
@@ -78,6 +80,11 @@ func VerifyBase(ctx context.Context, workspace *resources.Workspace) (BaseReport
 		var manifest baseManifest
 		if err := json.Unmarshal(data, &manifest); err != nil {
 			moduleReport.Error = fmt.Sprintf("invalid base-manifest.json: %v", err)
+			report.Modules = append(report.Modules, moduleReport)
+			continue
+		}
+		if manifest.Files == nil {
+			moduleReport.Error = "invalid base-manifest.json: files must be a path-to-digest object"
 			report.Modules = append(report.Modules, moduleReport)
 			continue
 		}
