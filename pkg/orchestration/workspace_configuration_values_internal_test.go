@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"slices"
 	"testing"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -52,6 +53,41 @@ func TestApplyWorkspaceConfigurationValuesReplacesADeclaredKey(t *testing.T) {
 	values := got[0].Infos[0].ConfigurationValues
 	if len(values) != 1 || values[0].Value != "documents:deadbeef" {
 		t.Errorf("declared key not replaced in place: %v", values)
+	}
+}
+
+// A run derives more than one value for a group — the federation group carries a
+// registration digest and an identity digest — and both must arrive. The declared
+// key is replaced in place while the undeclared one is appended, which is the
+// shape a composition declaring only the older key produces.
+func TestApplyWorkspaceConfigurationValuesEmitsEveryDerivedKeyInAGroup(t *testing.T) {
+	declared := &basev0.Configuration{
+		Origin: resources.ConfigurationWorkspace,
+		Infos: []*basev0.ConfigurationInformation{{
+			Name:                "federation",
+			ConfigurationValues: []*basev0.ConfigurationValue{{Key: "MODULE_REGISTRATION_SECRETS", Value: ""}},
+		}},
+	}
+	world := &World{workspaceConfigurationValues: map[string]map[string]string{
+		"federation": {
+			"MODULE_REGISTRATION_SECRETS": "documents:aaaa",
+			"MODULE_IDENTITY_SECRETS":     "documents:bbbb",
+		},
+	}}
+
+	got := world.applyWorkspaceConfigurationValues([]*basev0.Configuration{declared}, []string{"federation"})
+	if len(got) != 1 {
+		t.Fatalf("expected the declared configuration to be reused, got %d", len(got))
+	}
+	envs := resources.EnvironmentVariableAsStrings(
+		resources.ConfigurationAsEnvironmentVariables(got[0], false))
+	for _, want := range []string{
+		"CODEFLY__WORKSPACE_CONFIGURATION__FEDERATION__MODULE_REGISTRATION_SECRETS=documents:aaaa",
+		"CODEFLY__WORKSPACE_CONFIGURATION__FEDERATION__MODULE_IDENTITY_SECRETS=documents:bbbb",
+	} {
+		if !slices.Contains(envs, want) {
+			t.Errorf("emitted %v, missing %s", envs, want)
+		}
 	}
 }
 
