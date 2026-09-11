@@ -573,8 +573,9 @@ the content-addressed cache identity described next.
 
 ## Caching
 
-Cache identity belongs to Codefly because only Codefly knows the complete input
-set. A phase key includes:
+Codefly owns cache identity, using effective-input declarations supplied by
+Core and agents. Verified result reuse requires a future versioned phase key
+that includes:
 
 - Codefly CLI/Core protocol version;
 - agent publisher/name/version and resolved binary digest;
@@ -585,9 +586,11 @@ set. A phase key includes:
 - internal library hashes;
 - upstream contract or generated-client hashes for dependent validations.
 
-Provider caches may store Codefly's cache directory, but must not construct
-cache keys themselves. A cache hit is part of the JSON report and never hides
-which task would have run.
+In that future contract, provider caches may transport Codefly-owned results,
+but must not construct cache keys themselves. Each verified reuse must appear
+in the JSON report and identify the task whose execution it replaces.
+
+### Current schema v1 behavior
 
 Cache identity schema version 1 is now emitted on every report task. Keys use
 canonical JSON inputs and are prefixed with `sha256:`. Directory digests bind
