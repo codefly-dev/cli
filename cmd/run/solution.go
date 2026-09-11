@@ -252,6 +252,18 @@ const (
 	// release carries it.
 	// #nosec G101 -- an environment variable name, not a credential
 	moduleRegistrationSecretsEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRETS"
+	// moduleRegistrationPrefixEnvironmentVariable and
+	// moduleRegistrationSecretEnvironmentVariable carry ONE identity to the
+	// consumed module's own service: the prefix it federates under and the
+	// plaintext of the digest declared for it. A composed module presents that
+	// secret to the gateway's /modules/_work-context to obtain the Work Context
+	// its service principal calls the host's module-facing surface with
+	// (module-saas-starter #568); without it the module can never authenticate
+	// there. Singular on purpose — a module holds one identity, the solution
+	// backend holds one per module it consumes.
+	moduleRegistrationPrefixEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_PREFIX"
+	// #nosec G101 -- an environment variable name, not a credential
+	moduleRegistrationSecretEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRET"
 	// moduleRegistrationSecretBytes is the entropy of one generated secret. It is
 	// hex-encoded, so a secret can never contain the "," or ":" that separate
 	// entries on either side of the exchange.
@@ -267,6 +279,12 @@ type moduleRegistrationSecrets struct {
 	prefixes []string
 	secrets  string
 	digests  string
+	// byPrefix is each prefix's plaintext on its own, and owners the
+	// module-qualified service uniques that federate under it — the consumed
+	// module's own services, which present the same secret to obtain their
+	// service principal's Work Context.
+	byPrefix map[string]string
+	owners   map[string][]string
 }
 
 // provisionModuleRegistrationSecrets mints a fresh secret for each distinct
@@ -275,12 +293,23 @@ type moduleRegistrationSecrets struct {
 // register and a secret for it would authorize nothing.
 func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*moduleRegistrationSecrets, error) {
 	prefixes := make([]string, 0, len(consumed))
+	owners := make(map[string][]string, len(consumed))
 	for i := range consumed {
 		prefix := consumed[i].As
-		// Distinct prefixes only: two entries sharing a facade are one federated
-		// route, and a repeated prefix is a declaration error the registrar
-		// rejects outright.
-		if prefix == "" || slices.Contains(prefixes, prefix) {
+		if prefix == "" {
+			continue
+		}
+		// Every entry names the service that serves the facade; two entries
+		// sharing a prefix are one federated route, served by one module.
+		if consumed[i].Module != "" && consumed[i].Service != "" {
+			owner := resources.ServiceUnique(consumed[i].Module, consumed[i].Service)
+			if !slices.Contains(owners[prefix], owner) {
+				owners[prefix] = append(owners[prefix], owner)
+			}
+		}
+		// Distinct prefixes only: a repeated prefix is a declaration error the
+		// registrar rejects outright.
+		if slices.Contains(prefixes, prefix) {
 			continue
 		}
 		prefixes = append(prefixes, prefix)
@@ -291,6 +320,7 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 
 	secrets := make([]string, 0, len(prefixes))
 	digests := make([]string, 0, len(prefixes))
+	byPrefix := make(map[string]string, len(prefixes))
 	for _, prefix := range prefixes {
 		raw := make([]byte, moduleRegistrationSecretBytes)
 		if _, err := rand.Read(raw); err != nil {
@@ -300,11 +330,14 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 		digest := sha256.Sum256([]byte(secret))
 		secrets = append(secrets, prefix+":"+secret)
 		digests = append(digests, prefix+":"+hex.EncodeToString(digest[:]))
+		byPrefix[prefix] = secret
 	}
 	return &moduleRegistrationSecrets{
 		prefixes: prefixes,
 		secrets:  strings.Join(secrets, ","),
 		digests:  strings.Join(digests, ","),
+		byPrefix: byPrefix,
+		owners:   owners,
 	}, nil
 }
 

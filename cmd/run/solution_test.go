@@ -495,9 +495,21 @@ func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
 	if strings.Contains(declared[moduleRegistrationSecretsKey], secrets["documents"]) {
 		t.Error("registrar received the plaintext secret; it must hold only the digest")
 	}
-	// Nothing about the registrar rides the per-service override seam any more.
+	// The consumed module's own service holds the same identity — prefix and
+	// plaintext — so it can obtain its service principal's Work Context from the
+	// gateway exchange (module-saas-starter #568); the solution manifest names
+	// that service (documents/api) as the facade's owner.
+	owner := overrides["documents/api"]
+	if owner[moduleRegistrationPrefixEnvironmentVariable] != "documents" {
+		t.Errorf("consumed module service %s = %q, want the prefix it federates under", moduleRegistrationPrefixEnvironmentVariable, owner[moduleRegistrationPrefixEnvironmentVariable])
+	}
+	if owner[moduleRegistrationSecretEnvironmentVariable] != secrets["documents"] {
+		t.Errorf("consumed module service %s does not match the secret the backend presents for documents", moduleRegistrationSecretEnvironmentVariable)
+	}
+	// Nothing about the registrar rides the per-service override seam any more,
+	// and no service beyond the backend and the facade's owner gets an override.
 	for service, values := range overrides {
-		if service == "wiki/backend" {
+		if service == "wiki/backend" || service == "documents/api" {
 			continue
 		}
 		t.Errorf("service %s received a derived process override %v; the digest belongs on the configuration group", service, values)
