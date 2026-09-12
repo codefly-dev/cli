@@ -338,8 +338,12 @@ test flow only when the suite requires them.
 Service declaration changes select their owner and affected dependents from
 both reference and candidate graphs. Removed producers and edges retain
 surviving consumer coverage without applying named suites to unrelated agents.
-A removed declaration requires a resolvable reference revision; CI refuses to
-guess its consumers when that history is unavailable.
+A removed declaration requires a reference revision containing that declaration;
+`HEAD` after a committed deletion is insufficient. CI refuses to guess its
+consumers when that history is unavailable. External checkouts are fixed
+resolved inputs when comparing revisions of the main repository. Changed
+external declarations must be planned from their owning repository, whose
+revision bounds can describe their history.
 
 Replay envelopes bind task selection, phases, named suites, runtime context,
 prerequisites, resource locks, original change paths, and Core stage topology:
@@ -353,7 +357,11 @@ Omit `--phase` on the plan command for the full `ci run` gate. Supply the same
 independent `--base`, `--changed-file`, or `--all` bounds when replaying. Submitted
 plans cannot weaken those bounds, change phases/suites, or remove task
 prerequisites. Build tasks include unchanged artifact prerequisites. The
-scheduler consumes the validated task list; runtime flows use run-stage edges.
+scheduler consumes the validated task list. That list, including each task's
+stage, prerequisites, and resource locks, is the sole serialized execution
+graph and the input to the replay fingerprint. Runtime flows use run-stage
+edges. Snapshot flows retain the complete service closure, build every artifact
+in build-stage order, then render every service in run-stage order.
 Core visibility rules are checked before a replay plan is accepted. Schema jobs
 without a CI executor are rejected rather than omitted from an executable plan.
 
@@ -364,7 +372,7 @@ changes. Ignored source files remain covered. Untracked outputs in the reserved
 `.codefly/ci` report directory are excluded; tracked files there remain inputs.
 Save the envelope and custom report outputs outside the source tree. Broken
 symlinks and special files are rejected. The replay schema is
-`codefly.ci-replay/v2`; earlier envelopes must be regenerated.
+`codefly.ci-replay/v3`; earlier envelopes must be regenerated.
 
 `codefly ci plan` is the stable inspection and automation boundary. Text output
 is for humans; JSON is versioned and machine-readable:

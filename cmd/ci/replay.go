@@ -19,19 +19,13 @@ import (
 )
 
 type ReplayPlan struct {
-	Schema     string           `json:"schema"`
-	Candidate  string           `json:"candidate"`
-	Content    string           `json:"content"`
-	Selection  *Plan            `json:"selection"`
-	Execution  []StagePlan      `json:"execution"`
-	Invocation ReplayInvocation `json:"invocation"`
-	Tasks      []ReplayTask     `json:"tasks"`
-}
-
-type StagePlan struct {
-	Stage       resources.Stage     `json:"stage"`
-	Plan        *executionplan.Plan `json:"plan"`
-	Fingerprint string              `json:"fingerprint"`
+	Schema      string           `json:"schema"`
+	Candidate   string           `json:"candidate"`
+	Content     string           `json:"content"`
+	Selection   *Plan            `json:"selection"`
+	Fingerprint string           `json:"fingerprint"`
+	Invocation  ReplayInvocation `json:"invocation"`
+	Tasks       []ReplayTask     `json:"tasks"`
 }
 
 type ReplayInvocation struct {
@@ -41,11 +35,12 @@ type ReplayInvocation struct {
 }
 
 type ReplayTask struct {
-	Phase         string         `json:"phase"`
-	Suite         string         `json:"suite,omitempty"`
-	Service       PlannedService `json:"service"`
-	Prerequisites []string       `json:"prerequisites"`
-	Resources     []string       `json:"resources"`
+	Stage         resources.Stage `json:"stage"`
+	Phase         string          `json:"phase"`
+	Suite         string          `json:"suite,omitempty"`
+	Service       PlannedService  `json:"service"`
+	Prerequisites []string        `json:"prerequisites"`
+	Resources     []string        `json:"resources"`
 }
 
 func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *Plan, invocation ReplayInvocation) (*ReplayPlan, error) {
@@ -78,17 +73,7 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 	if err != nil {
 		return nil, err
 	}
-	inventory, _, err := loadPlanInventory(ctx, workspace)
-	if err != nil {
-		return nil, err
-	}
-	kinds := map[[2]string]resources.DependencyKind{}
-	for _, record := range inventory {
-		for _, dependency := range record.service.ServiceDependencies {
-			kinds[[2]string{dependency.Unique(), record.unique}] = dependency.Kind
-		}
-	}
-	result := &ReplayPlan{Schema: "codefly.ci-replay/v2", Invocation: invocation, Tasks: []ReplayTask{}, Candidate: candidate, Content: content, Selection: plan, Execution: []StagePlan{}}
+	result := &ReplayPlan{Schema: "codefly.ci-replay/v3", Invocation: invocation, Tasks: []ReplayTask{}, Candidate: candidate, Content: content, Selection: plan}
 	result.Tasks, err = resolveReplayTasks(ctx, workspace, plan, invocation)
 	if err != nil {
 		return nil, err
@@ -110,42 +95,28 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 		if err != nil {
 			return nil, err
 		}
-		for _, stage := range resources.Stages() {
-			draft, err := closure.Draft(ctx, architecture.PlanOptions{Phase: executionplan.Phase(stage), StatePolicy: executionplan.StatePolicy{Lifecycle: executionplan.LifecycleStop}})
-			if err != nil {
-				return nil, err
-			}
-			edges := draft.Edges[:0]
-			for index := range draft.Edges {
-				edge := draft.Edges[index]
-				kind := kinds[[2]string{edge.From, edge.To}]
-				if kind != resources.DependencyKindLegacy {
-					edge.Kind = executionplan.EdgeKind(kind)
-				}
-				if kindErr := kind.Validate(); kindErr != nil {
-					return nil, kindErr
-				}
-				for _, participating := range kind.Stages() {
-					if participating == stage {
-						edges = append(edges, edge)
-					}
-				}
-			}
-			draft.Edges = edges
-			if len(draft.SchemaSteps) > 0 {
-				return nil, fmt.Errorf("CI replay has no executor for schema job %s", draft.SchemaSteps[0].ID)
-			}
-			draft = draft.Canonical()
-			if validationErr := draft.Validate(); validationErr != nil {
-				return nil, fmt.Errorf("validate %s plan for %s: %w", stage, selected.Service, validationErr)
-			}
-			fingerprint, err := draft.SemanticFingerprint()
-			if err != nil {
-				return nil, fmt.Errorf("validate %s plan for %s: %w", stage, selected.Service, err)
-			}
-			result.Execution = append(result.Execution, StagePlan{Stage: stage, Plan: draft, Fingerprint: fingerprint})
+		draft, err := closure.Draft(ctx, architecture.PlanOptions{Phase: executionplan.PhaseBuild, StatePolicy: executionplan.StatePolicy{Lifecycle: executionplan.LifecycleStop}})
+		if err != nil {
+			return nil, err
+		}
+		if len(draft.SchemaSteps) > 0 {
+			return nil, fmt.Errorf("CI replay has no executor for schema job %s", draft.SchemaSteps[0].ID)
+		}
+		// Core's draft describes the union, including valid mixed-stage cycles.
+		// Validate its resource metadata here. Ordering is owned exclusively by
+		// resolveScheduledTasks, which validates Core's stage graphs and supplies
+		// the exact prerequisite edges executed and fingerprinted below.
+		draft.Edges = nil
+		if err := draft.Validate(); err != nil {
+			return nil, err
 		}
 	}
+	payload, err := json.Marshal(result.Tasks)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(payload)
+	result.Fingerprint = "sha256:" + hex.EncodeToString(digest[:])
 	return result, nil
 }
 
@@ -167,7 +138,7 @@ func resolveReplayTasks(ctx context.Context, workspace *resources.Workspace, pla
 			}
 			for index := range scheduled {
 				task := &scheduled[index]
-				tasks = append(tasks, ReplayTask{Phase: phase, Suite: suite, Service: task.planned, Prerequisites: task.prerequisites, Resources: task.resources})
+				tasks = append(tasks, ReplayTask{Stage: scheduleStage(options), Phase: phase, Suite: suite, Service: task.planned, Prerequisites: task.prerequisites, Resources: task.resources})
 			}
 		}
 	}
@@ -324,7 +295,7 @@ func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path st
 	if trailingErr := decoder.Decode(new(any)); trailingErr != io.EOF {
 		return nil, fmt.Errorf("CI replay plan must contain one JSON document")
 	}
-	if submitted.Schema != "codefly.ci-replay/v2" || submitted.Selection == nil {
+	if submitted.Schema != "codefly.ci-replay/v3" || submitted.Selection == nil {
 		return nil, fmt.Errorf("incompatible CI replay plan")
 	}
 	// Selection is recomputed from independently supplied bounds, never from the

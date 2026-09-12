@@ -14,7 +14,7 @@ import (
 )
 
 func TestReplayPreservesSelectionAndRejectsAlterations(t *testing.T) {
-	for _, scenario := range []string{"roundtrip", "reasons", "paths", "tasks", "topology", "fingerprint", "revision", "content", "ignored", "all", "bounds", "schema"} {
+	for _, scenario := range []string{"roundtrip", "reasons", "paths", "tasks", "topology", "stage", "fingerprint", "revision", "content", "ignored", "all", "bounds", "schema"} {
 		t.Run(scenario, func(t *testing.T) {
 			root, workspace := loadSchedulerFixture(t)
 			runCacheTestGit(t, root, "init")
@@ -38,9 +38,11 @@ func TestReplayPreservesSelectionAndRejectsAlterations(t *testing.T) {
 			case "tasks":
 				saved.Selection.Services = saved.Selection.Services[:1]
 			case "topology":
-				saved.Execution[len(saved.Execution)-1].Plan.Edges = nil
+				saved.Tasks[len(saved.Tasks)-1].Prerequisites = []string{"altered/prerequisite"}
+			case "stage":
+				saved.Tasks[0].Stage = resources.StageBuild
 			case "fingerprint":
-				saved.Execution[0].Fingerprint = "altered"
+				saved.Fingerprint = "altered"
 			case "revision":
 				saved.Candidate = "stale"
 			case "content":
