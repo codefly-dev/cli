@@ -191,17 +191,25 @@ overlay, so the identical command runs in CI (everything pinned, no sibling
 checkouts) and against your local worktrees. It errors clearly when no module —
 or more than one — declares a `service-entry`.
 
-Each run also mints one registration secret per consumed facade prefix and
-provisions all three ends of the federation exchange. Provisioning writes nothing
-to disk, so a secret lives in the environment of the processes that spend it and
-does not outlive the run — unless you ask for it with `--output-env`, which
-exports a service's whole runtime environment, overrides included:
+Each run mints two independent secrets per consumed facade prefix — one the
+consuming backend registers the route with, one the consumed module proves its
+own identity with — and provisions every end of the federation exchange.
+Provisioning writes nothing to disk, so a secret lives in the environment of the
+processes that spend it and does not outlive the run — unless you ask for it with
+`--output-env`, which exports a service's whole runtime environment, overrides
+included:
 
 | End | Carrier | Value |
 |-----|---------|-------|
 | Solution entry service | `CODEFLY__MODULE_REGISTRATION_SECRETS` | `prefix:secret,…` — presented to register each consumed module's routes |
-| Consumed module's services | `CODEFLY__MODULE_REGISTRATION_SECRET` | that module's own secret, presented to mint its service-principal work context |
-| Registrar | `MODULE_REGISTRATION_SECRETS` in the `federation` workspace configuration group | `prefix:sha256hex` — the digests both plaintexts are checked against |
+| Consumed module's services | `CODEFLY__MODULE_REGISTRATION_SECRET` | that module's own identity secret, presented to mint its service-principal work context |
+| Registrar | `MODULE_REGISTRATION_SECRETS` in the `federation` workspace configuration group | `prefix:sha256hex` — the digests the registering backend is checked against |
+| Registrar | `MODULE_IDENTITY_SECRETS` in the same group | `prefix:sha256hex` — the digests a module's own work-context exchange is checked against |
+
+The two declarations are what let the registrar tell the backend registering
+`documents` apart from the service principal of `documents`. A backend holds the
+registration plaintext for every prefix it consumes and the identity plaintext for
+none, so it cannot mint a consumed module's work context.
 
 The registrar is whichever service declares the `federation` group. Two rules
 follow from one prefix being one identity, and the run reports what it did with

@@ -3,6 +3,13 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"github.com/codefly-dev/core/agents/manager"
 	"testing"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
@@ -56,19 +63,17 @@ func TestBuildCacheRetainsCallerPolicyAndNegotiatesExecution(t *testing.T) {
 			instance.Builder = &services.BuilderInstance{Instance: instance, Builder: client}
 			build, err := NewBuilder(ctx, instance, flow.world)
 			require.NoError(t, err)
+			dockerContext, err := build.dockerBuildContext(ctx)
+			require.NoError(t, err)
+			require.Equal(t, "selected", dockerContext.GetBuildxBuilder())
 			_, err = build.Build(ctx)
-			if recipe {
-				require.ErrorContains(t, err, "cannot verify build recipe")
-			} else {
-				require.ErrorContains(t, err, "did not acknowledge build cache contract registry-v1")
-			}
-			request := <-requests
-			require.Equal(t, "selected", request.GetBuildContext().GetDockerBuildContext().GetBuildxBuilder())
-			forwarded := request.GetBuildContext().GetDockerBuildContext().GetCache()
+			require.ErrorContains(t, err, "cannot verify builder agent support for requested Buildx builder")
+			require.Empty(t, requests, "unsupported agents must be rejected before the Build RPC")
+
+			forwarded := dockerContext.GetCache()
 			require.Equal(t, `["app/api","","app/api",""]`, forwarded.Scope)
 			require.Equal(t, flow.world.BuildCache.Imports, forwarded.Imports)
 			require.Equal(t, flow.world.BuildCache.Exports, forwarded.Exports)
-			require.NotEmpty(t, request.OutputDirectory)
 			require.True(t, proto.Equal(flow.world.BuildCache, &builderv0.BuildCacheOptions{Backend: "registry", Scope: "app/api", Imports: []string{"ghcr.io/org/cache"}}))
 			flow.WithBuildCache(nil)
 			require.Nil(t, flow.world.BuildCache)
@@ -137,4 +142,71 @@ func TestCachedBuildxArgsMatchExecutedPlatformsAndPreserveOutputIdentity(t *test
 	cache.Backend = "unsupported"
 	_, err = cachedBuildxArgs(recipe, "/staged/Dockerfile", "/staged/context", false, false, "", "", cache)
 	require.ErrorContains(t, err, "unsupported")
+}
+
+type observedRecipeClient struct {
+	builderv0.BuilderClient
+	request  *builderv0.BuildRequest
+	response *builderv0.BuildResponse
+}
+
+func (client *observedRecipeClient) Build(ctx context.Context, request *builderv0.BuildRequest, options ...grpc.CallOption) (*builderv0.BuildResponse, error) {
+	client.request = proto.CloneOf(request)
+	response, err := client.BuilderClient.Build(ctx, request, options...)
+	client.response = response
+	return response, err
+}
+
+func TestRecipeAgentsReceiveBuildContextAndOutputDirectory(t *testing.T) {
+	if os.Getenv(resources.CodeflyHomeEnv) == "" {
+		t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	}
+	for _, name := range []string{"go", "nextjs"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			plugin, ok := sourceworkspace.PinnedPlugin("codefly.dev", name)
+			require.True(t, ok)
+			agent := plugin.Agent()
+			connection, err := manager.Load(ctx, agent, manager.WithoutSandbox(), manager.WithoutPrincipal(), manager.WithEnv("DOCKER_HOST=unix:///nonexistent-recipe-test-docker.sock"))
+			require.NoError(t, err)
+			t.Cleanup(connection.Close)
+			observed := &observedRecipeClient{BuilderClient: builderv0.NewBuilderClient(connection.GRPCConn())}
+			client := &coreservices.BuilderAgent{BuilderClient: observed}
+			root := t.TempDir()
+			service := &resources.Service{Name: "api", Version: "1.0.0", Agent: agent}
+			service.WithDir(root)
+			require.NoError(t, service.Save(ctx))
+			require.NoError(t, os.MkdirAll(filepath.Join(root, "code"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "code", "go.mod"), []byte("module example.com/recipe\n\ngo 1.27.0\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "code", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+			_, err = client.Load(ctx, &builderv0.LoadRequest{Identity: &basev0.ServiceIdentity{Name: "api", Module: "app", Version: "1.0.0", WorkspacePath: root, RelativeToWorkspace: "."}, CreationMode: &builderv0.CreationMode{Communicate: false}})
+			require.NoError(t, err)
+			flow := &Flow{world: &World{Workspace: &resources.Workspace{Name: "workspace"}}}
+			cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "protected", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}}
+			flow.WithBuildCache(cache)
+			flow.WithBuildxBuilder("selected")
+			instance := &services.Instance{Service: service, Identity: &resources.ServiceIdentity{Name: "api", Module: "app"}}
+			instance.Builder = &services.BuilderInstance{Instance: instance, Builder: client}
+			build, err := NewBuilder(ctx, instance, flow.world)
+			require.NoError(t, err)
+			t.Setenv("PATH", t.TempDir())
+			_, err = build.Build(ctx)
+			require.ErrorIs(t, err, exec.ErrNotFound)
+			require.NotNil(t, observed.request)
+			output, err := buildRecipeOutputDirectory(root)
+			require.NoError(t, err)
+			require.Equal(t, output, observed.request.GetOutputDirectory())
+			docker := observed.request.GetBuildContext().GetDockerBuildContext()
+			require.Equal(t, "selected", docker.GetBuildxBuilder())
+			require.Equal(t, `["protected","workspace","app/api",""]`, docker.GetCache().GetScope())
+			require.Equal(t, cache.Imports, docker.GetCache().GetImports())
+			require.Equal(t, cache.Exports, docker.GetCache().GetExports())
+			require.True(t, proto.Equal(cache, flow.world.BuildCache))
+			require.Equal(t, builderv0.BuildStatus_SUCCESS, observed.response.GetState().GetState())
+			plan := observed.response.GetResult().GetDockerBuildPlan()
+			require.NotNil(t, plan)
+			require.NoError(t, coreservices.VerifyDockerBuildPlan(output, plan))
+		})
+	}
 }

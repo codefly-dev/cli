@@ -79,23 +79,56 @@ compose them.
 
 ## Tagged Core rollout checkpoint (2026-09-11)
 
-The [tagged dependency rollout](https://github.com/codefly-dev/cli/issues/625)
-is incomplete. Preserve the Core pin
-`v0.3.27-0.20260911145602-1f745a51a87d` required by the merged Buildx
-forwarding work. `v0.3.26` contains the effective-input contract but lacks
-that Buildx API, so selecting it breaks the CLI build.
+The CLI now consumes Core `v0.3.27`, tagged at
+`9267a219f28478d090c90b69b5b99900c52f8ab9` by the
+[version-tag workflow](https://github.com/codefly-dev/core/actions/runs/34624729792)
+after [Core CI passed](https://github.com/codefly-dev/core/actions/runs/34623653367).
+The tag contains merged Core #458, including Buildx forwarding and pre-build
+capability negotiation, and resolves through Go modules. The conformance
+matrix already records the matching `v0.3.27` release line.
 
-1. Wait for [Core #459](https://github.com/codefly-dev/core/issues/459) to
-   publish a checked tag through Core's version-file/CI tagging workflow.
-   Verify it contains merged Core #458, including pre-build capability
-   negotiation, then update `go.mod`, tidy module metadata, and update the
-   Core line in the conformance matrix and its reference documentation.
-2. Wait for [Go #54](https://github.com/codefly-dev/service-go/issues/54) and
-   [Next.js #113](https://github.com/codefly-dev/service-nextjs/issues/113).
-   Update `pkg/sourceworkspace/compatibility.json` only after the required
-   releases are published and verified. Its current pins are Go `0.0.44`
-   and Next.js `0.0.141`.
-3. Run the CLI build, full tests, conformance and source-workspace checks,
-   and the CI lint gate against the final pins. Then follow the CLI release
-   process above and record the published versions. The CLI manifest
-   remains `0.1.145`; this checkpoint does not publish a release.
+The source-workspace pins are Go `0.0.47` and Next.js `0.0.152`.
+Both consume Core `v0.3.27` and explicitly implement `BuildCapabilities`.
+Go's legacy executor honors Buildx selection through Core; Next.js produces
+recipes and rejects requests without an output directory before preparing
+build files. Merely upgrading the embedded transport does not advertise
+support.
+
+Next.js [`v0.0.152`](https://github.com/codefly-dev/service-nextjs/releases/tag/v0.0.152)
+was published at `7e150913857b2ed2734cb3d576eed36781fde974` through
+[GoReleaser](https://github.com/codefly-dev/service-nextjs/actions/runs/34637795678).
+All four Linux/macOS amd64/arm64 archives match the published SHA-256
+manifest. Source qualification, the recipe regression, and the polyglot
+gateway regression under race detection pass using downloaded artifacts in
+empty caches.
+
+Go [`v0.0.47`](https://github.com/codefly-dev/service-go/releases/tag/v0.0.47)
+was published at `a49e3f72ad3a8ebfccfc24d39571ba82570944c6`, the merge of
+[Go #62](https://github.com/codefly-dev/service-go/pull/62). Both main-branch
+CI gates passed before tagging, and
+[GoReleaser](https://github.com/codefly-dev/service-go/actions/runs/34642039756)
+passed. All four Linux/macOS amd64/arm64 archives match the published
+SHA-256 manifest; Go source qualification passes with the downloaded release.
+
+The verified checksum-manifest SHA-256 values are:
+
+- Go `v0.0.47`: `6698cee42f9f8d6e6d4a5d24240e0e70de32d66d030bf01bcc5ac1ae66aef759`.
+- Next.js `v0.0.152`: `b8c2d981dac1c836a569ace8c956544676b8ae70cccbf8b27152f47fdfeef9e1`.
+
+GitHub reports `isImmutable: false` for both releases. These recorded hashes
+identify the verified artifacts; checksum verification does not establish
+GitHub-enforced release immutability.
+
+The CLI regression starts both real agent binaries and checks the outgoing
+Build request, scoped cache policy, selected builder, exact output directory,
+and verified recipe response. It also proves Docker execution belongs to the
+CLI. Clearing the request's output directory makes the regression fail.
+The full CLI suite and the affected orchestration/gateway race tests pass
+with the published agents downloaded into empty `CODEFLY_HOME` caches.
+Preinstalled development binaries are not used as release evidence.
+
+The [tagged dependency rollout](https://github.com/codefly-dev/cli/issues/625)
+now consumes Core `v0.3.27`, Go `0.0.47`, and Next.js `0.0.152`.
+After final CLI CI validation and merge, follow the CLI release process above
+and record the published CLI version. The CLI manifest remains `0.1.145`;
+this checkpoint does not publish a CLI release.

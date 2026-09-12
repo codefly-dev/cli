@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -183,10 +184,17 @@ func loadSolutionManifestForRun(workspaceDir string) (*manifest.Manifest, error)
 	return &solutionManifest, nil
 }
 
-// validateConsumedBindings rejects a partially bound api.consumes entry, and a
-// facade prefix claimed twice. The lenient decode above skips manifest.Validate,
-// so this is the only gate a run passes through, and both rules are ones the run
-// itself depends on.
+// facadePrefixPattern is the shape the registrar requires of a routing identity,
+// mirrored here so a run fails on the manifest rather than at the registrar's
+// startup. facadePrefixMaxLength bounds it to one DNS label.
+var facadePrefixPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
+
+const facadePrefixMaxLength = 63
+
+// validateConsumedBindings rejects a partially bound api.consumes entry, a facade
+// prefix claimed twice, and a prefix that is not a routing label. The lenient
+// decode above skips manifest.Validate, so this is the only gate a run passes
+// through, and every rule is one the run itself depends on.
 //
 // A partial bind — ConsumedAPIs() drops only entries with an empty module — would
 // project into a CODEFLY__ENDPOINT key built from empty segments, which no
@@ -198,6 +206,14 @@ func loadSolutionManifestForRun(workspaceDir string) (*manifest.Manifest, error)
 // service-principal work context. manifest.Validate rejects a duplicated `as`
 // for sync and package; a run must not be the path that turns the same typo into
 // cross-module identity confusion.
+//
+// A prefix that is not a routing label is caught here because the run cannot
+// encode it: every declaration this run derives is `prefix:value` joined on ",",
+// and the registrar splits an entry on its first ":" before checking the prefix
+// against this same shape. An `as` carrying a separator, an uppercase letter or
+// an underscore therefore reaches the registrar as a malformed declaration, which
+// it refuses at startup — so the whole composition fails to boot, naming a
+// credential rather than the manifest field that is actually wrong.
 func validateConsumedBindings(consumes []manifest.APIDeclaration) error {
 	seenAs := make(map[string]string, len(consumes))
 	for i := range consumes {
@@ -213,6 +229,9 @@ func validateConsumedBindings(consumes []manifest.APIDeclaration) error {
 		}
 		if declaration.As == "" {
 			continue
+		}
+		if !facadePrefixPattern.MatchString(declaration.As) || len(declaration.As) > facadePrefixMaxLength {
+			return fmt.Errorf("%s: api.consumes entry %q claims the facade prefix %q; a prefix is one routing label: lowercase letters, digits and dashes, starting and ending alphanumeric, at most %d characters", manifest.FileName, declaration.ID, declaration.As, facadePrefixMaxLength)
 		}
 		if first, duplicate := seenAs[declaration.As]; duplicate {
 			return fmt.Errorf("%s: api.consumes entries %q and %q both claim the facade prefix %q; one prefix is one identity", manifest.FileName, first, declaration.ID, declaration.As)
@@ -255,10 +274,14 @@ func init() {
 // unless an operator asks for it, since --output-env exports a service's whole
 // runtime environment, overrides included, to an owner-only file.
 //
-// The same secret is the consumed module's own credential: a module presents it
-// to the gateway to mint the service-principal work context every module-facing
-// RPC is authenticated from, so its services get the plaintext too — one secret,
-// spent by both ends of the exchange against the one digest the registrar holds.
+// A prefix gets two independent secrets, because two different principals
+// authenticate under it. The consuming backend registers the route with the
+// registration secret; the consumed module presents the identity secret to mint
+// the service-principal work context every module-facing RPC is authenticated
+// from. Each is declared under its own key, so the registrar can tell a backend
+// registering "documents" from the service principal of "documents" — with one
+// secret it could not, and a backend could mint the work context of every module
+// it consumes.
 
 const (
 	// federationConfigurationGroup is the workspace-configuration group a host
@@ -267,9 +290,24 @@ const (
 	// service depends on it is the registrar.
 	federationConfigurationGroup = "federation"
 	// moduleRegistrationSecretsKey is the key inside that group carrying the
-	// `prefix:sha256hex` digests this run declares.
+	// `prefix:sha256hex` digests of the secrets the consuming backend registers
+	// with.
 	// #nosec G101 -- a configuration key name, not a credential
 	moduleRegistrationSecretsKey = "MODULE_REGISTRATION_SECRETS"
+	// moduleIdentitySecretsKey carries the digests of the secrets the consumed
+	// modules themselves present, in the same encoding. A separate key is what
+	// makes the two exchanges separable at all: the registrar resolves one digest
+	// per prefix per key, so a single key can only describe a single principal.
+	//
+	// Unlike the key above, this one is asserted by the CLI rather than read from
+	// a host contract that predates it: a registrar that does not yet consult it
+	// authenticates a module's work-context exchange against the registration
+	// digest instead, and fails it closed. The run cannot detect that — a host
+	// reads the group from its own code, and declaring a key is neither necessary
+	// nor sufficient for reading it — so the two repositories are pinned to each
+	// other by release order, not by a runtime check.
+	// #nosec G101 -- a configuration key name, not a credential
+	moduleIdentitySecretsKey = "MODULE_IDENTITY_SECRETS"
 	// moduleRegistrationSecretsEnvironmentVariable carries the plaintext
 	// `prefix:secret` twin to the consuming backend. It is a wire contract with
 	// the solution runtimes, which read it verbatim; its natural home is core's
@@ -278,9 +316,11 @@ const (
 	// #nosec G101 -- an environment variable name, not a credential
 	moduleRegistrationSecretsEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRETS"
 	// moduleRegistrationSecretEnvironmentVariable carries a consumed module's own
-	// secret to that module's services. Singular: a module holds one identity, so
-	// it needs only the entry minted for its own prefix — never the whole map,
-	// which would hand every consumed module the credentials of its siblings.
+	// identity secret to that module's services. Singular: a module holds one
+	// identity, so it needs only the entry minted for its own prefix — never the
+	// whole map, which would hand every consumed module the credentials of its
+	// siblings. The name is the one module runtimes already read; only the secret
+	// it carries is now the module's own rather than the backend's.
 	// #nosec G101 -- an environment variable name, not a credential
 	moduleRegistrationSecretEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRET"
 	// moduleRegistrationSecretBytes is the entropy of one generated secret. It is
@@ -289,25 +329,59 @@ const (
 	moduleRegistrationSecretBytes = 32
 )
 
-// moduleRegistrationSecrets is one run's provisioning: the plaintext entries the
-// consuming backend presents, and the digest entries the registrar compares them
-// against.
+// moduleRegistrationSecrets is one run's provisioning: the secrets each federated
+// prefix carries. The encodings the two ends and the registrar read are derived
+// from these, so the plaintext a principal presents and the digest it is checked
+// against cannot drift apart.
 type moduleRegistrationSecrets struct {
-	// prefixes are the facade prefixes provisioned, in the order both encodings
-	// list them.
+	// prefixes are the facade prefixes provisioned, in the order every encoding
+	// lists them.
 	prefixes []string
-	// byPrefix is the plaintext of each prefix, for the injection that hands one
-	// module its own secret rather than the whole map.
-	byPrefix map[string]string
-	secrets  string
-	digests  string
+	byPrefix map[string]modulePrefixSecrets
+}
+
+// modulePrefixSecrets is what one prefix carries: the secret the consuming
+// backend registers the route with, and the secret the consumed module proves its
+// own identity with. They are independent values, so holding one grants nothing
+// about the other.
+type modulePrefixSecrets struct {
+	registration string
+	identity     string
+}
+
+// registrationSecrets is the plaintext the consuming backend presents to register
+// every prefix it consumes.
+func (provisioned *moduleRegistrationSecrets) registrationSecrets() string {
+	return provisioned.encode(func(secrets modulePrefixSecrets) string { return secrets.registration })
+}
+
+// registrationDigests is what the registrar checks a registering backend against.
+func (provisioned *moduleRegistrationSecrets) registrationDigests() string {
+	return provisioned.encode(func(secrets modulePrefixSecrets) string { return moduleSecretDigest(secrets.registration) })
+}
+
+// identityDigests is what the registrar checks a module's own work-context
+// exchange against. The identity plaintext is never encoded as a map: no principal
+// holds more than its own.
+func (provisioned *moduleRegistrationSecrets) identityDigests() string {
+	return provisioned.encode(func(secrets modulePrefixSecrets) string { return moduleSecretDigest(secrets.identity) })
+}
+
+// encode projects one value per prefix into the `prefix:value,…` form both sides
+// of the exchange parse, in the order prefixes lists them.
+func (provisioned *moduleRegistrationSecrets) encode(value func(modulePrefixSecrets) string) string {
+	entries := make([]string, 0, len(provisioned.prefixes))
+	for _, prefix := range provisioned.prefixes {
+		entries = append(entries, prefix+":"+value(provisioned.byPrefix[prefix]))
+	}
+	return strings.Join(entries, ",")
 }
 
 // provisionModuleRegistrationSecrets mints a fresh secret for each distinct
 // facade prefix among the consumed APIs. An entry with no facade entry-point is
 // skipped: the runtime refuses to guess a prefix for it, so it will never
 // register and a secret for it would authorize nothing.
-func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*moduleRegistrationSecrets, error) {
+func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) *moduleRegistrationSecrets {
 	prefixes := make([]string, 0, len(consumed))
 	for i := range consumed {
 		prefix := consumed[i].As
@@ -320,29 +394,28 @@ func provisionModuleRegistrationSecrets(consumed []manifest.ConsumedAPI) (*modul
 		prefixes = append(prefixes, prefix)
 	}
 	if len(prefixes) == 0 {
-		return nil, nil
+		return nil
 	}
 
-	secrets := make([]string, 0, len(prefixes))
-	digests := make([]string, 0, len(prefixes))
-	byPrefix := make(map[string]string, len(prefixes))
+	byPrefix := make(map[string]modulePrefixSecrets, len(prefixes))
 	for _, prefix := range prefixes {
-		raw := make([]byte, moduleRegistrationSecretBytes)
-		if _, err := rand.Read(raw); err != nil {
-			return nil, fmt.Errorf("cannot generate a registration secret for %q: %w", prefix, err)
-		}
-		secret := hex.EncodeToString(raw)
-		digest := sha256.Sum256([]byte(secret))
-		secrets = append(secrets, prefix+":"+secret)
-		digests = append(digests, prefix+":"+hex.EncodeToString(digest[:]))
-		byPrefix[prefix] = secret
+		byPrefix[prefix] = modulePrefixSecrets{registration: mintModuleSecret(), identity: mintModuleSecret()}
 	}
-	return &moduleRegistrationSecrets{
-		prefixes: prefixes,
-		byPrefix: byPrefix,
-		secrets:  strings.Join(secrets, ","),
-		digests:  strings.Join(digests, ","),
-	}, nil
+	return &moduleRegistrationSecrets{prefixes: prefixes, byPrefix: byPrefix}
+}
+
+func mintModuleSecret() string {
+	raw := make([]byte, moduleRegistrationSecretBytes)
+	// crypto/rand.Read fills the buffer completely or crashes the program; it
+	// cannot return a short read.
+	_, _ = rand.Read(raw)
+	return hex.EncodeToString(raw)
+}
+
+// moduleSecretDigest is how the registrar recognizes a presented secret.
+func moduleSecretDigest(secret string) string {
+	digest := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(digest[:])
 }
 
 // federationRegistrars returns the module-qualified uniques of the services
@@ -421,7 +494,7 @@ func consumedModuleSecretOverrides(ctx context.Context, workspace *resources.Wor
 		}
 		injection.provisioned = append(injection.provisioned, binding.module)
 		for _, unique := range services {
-			injection.overrides[unique] = map[string]string{moduleRegistrationSecretEnvironmentVariable: provisioned.byPrefix[binding.prefix]}
+			injection.overrides[unique] = map[string]string{moduleRegistrationSecretEnvironmentVariable: provisioned.byPrefix[binding.prefix].identity}
 		}
 	}
 	return injection

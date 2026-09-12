@@ -277,6 +277,38 @@ lifecycle:`, 1))
 	}
 }
 
+// A prefix the registrar cannot parse is caught on the manifest, not at the
+// registrar's startup. Both shapes below reach the registrar as a malformed
+// `prefix:sha256hex` declaration — the separator splits the entry in the wrong
+// place, the uppercase label fails the identity pattern — and it refuses to start
+// on either, taking the composition with it and blaming a credential.
+func TestSolutionEntryConsumesRejectsAnUnroutableFacadePrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{
+		{name: "carries the entry separator", prefix: "doc:v1"},
+		{name: "carries the projection separator", prefix: "doc,v1"},
+		{name: "not lowercase", prefix: "Documents"},
+		{name: "underscore is not a routing label", prefix: "doc_store"},
+		{name: "cannot end on a dash", prefix: "documents-"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSolutionManifest(t, dir, strings.Replace(solutionManifestWithConsumes,
+				"as: documents", "as: "+tc.prefix, 1))
+
+			_, _, err := solutionEntryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+			if err == nil {
+				t.Fatalf("expected an error for the facade prefix %q", tc.prefix)
+			}
+			if !strings.Contains(err.Error(), tc.prefix) {
+				t.Fatalf("error %q does not name the offending prefix", err)
+			}
+		})
+	}
+}
+
 // YAML that does not parse at all is a genuine boundary failure: booting a
 // backend that silently federates nothing is the bug this injection exists to
 // prevent.
@@ -360,31 +392,62 @@ lifecycle:
 // declared for that prefix, so a provisioning that does not pair digest to
 // plaintext, prefix for prefix, refuses every mint.
 func TestProvisionModuleRegistrationSecretsPairsDigestToPlaintext(t *testing.T) {
-	provisioned, err := provisionModuleRegistrationSecrets([]manifest.ConsumedAPI{
+	provisioned := provisionModuleRegistrationSecrets([]manifest.ConsumedAPI{
 		{ID: "documents", As: "documents"},
 		{ID: "billing", As: "billing"},
 	})
-	if err != nil {
-		t.Fatalf("provisionModuleRegistrationSecrets: %v", err)
-	}
 	if got := provisioned.prefixes; !reflect.DeepEqual(got, []string{"documents", "billing"}) {
 		t.Fatalf("provisioned prefixes = %v", got)
 	}
 
-	secrets := parsePairs(t, provisioned.secrets)
-	digests := parsePairs(t, provisioned.digests)
-	if len(secrets) != 2 || len(digests) != 2 {
-		t.Fatalf("expected 2 entries per half, got %d secrets / %d digests", len(secrets), len(digests))
+	secrets := parsePairs(t, provisioned.registrationSecrets())
+	digests := parsePairs(t, provisioned.registrationDigests())
+	identityDigests := parsePairs(t, provisioned.identityDigests())
+	if len(secrets) != 2 || len(digests) != 2 || len(identityDigests) != 2 {
+		t.Fatalf("expected 2 entries per half, got %d secrets / %d registration digests / %d identity digests",
+			len(secrets), len(digests), len(identityDigests))
 	}
 	for prefix, secret := range secrets {
 		want := sha256.Sum256([]byte(secret))
 		if got := digests[prefix]; got != hex.EncodeToString(want[:]) {
-			t.Errorf("digest for %q = %q, want sha256 of the provisioned secret", prefix, got)
+			t.Errorf("registration digest for %q = %q, want sha256 of the provisioned secret", prefix, got)
+		}
+		identity := provisioned.byPrefix[prefix].identity
+		wantIdentity := sha256.Sum256([]byte(identity))
+		if got := identityDigests[prefix]; got != hex.EncodeToString(wantIdentity[:]) {
+			t.Errorf("identity digest for %q = %q, want sha256 of the module's own secret", prefix, got)
 		}
 		// The registrar splits an entry on its first ":" and the whole projection
 		// on ",", so a secret carrying either would corrupt the declaration.
-		if strings.ContainsAny(secret, ":,") {
-			t.Errorf("secret for %q contains a separator: %q", prefix, secret)
+		if strings.ContainsAny(secret, ":,") || strings.ContainsAny(identity, ":,") {
+			t.Errorf("a secret for %q contains a separator: %q / %q", prefix, secret, identity)
+		}
+	}
+}
+
+// Every secret one run mints is a distinct value: the two a prefix carries, and
+// the ones every other prefix carries. Reusing any of them would let the holder
+// present a credential it was not issued, which is the impersonation this split
+// removes.
+func TestProvisionModuleRegistrationSecretsMintsIndependentRegistrationAndIdentitySecrets(t *testing.T) {
+	provisioned := provisionModuleRegistrationSecrets([]manifest.ConsumedAPI{
+		{ID: "documents", As: "documents"},
+		{ID: "billing", As: "billing"},
+	})
+	seen := map[string]string{}
+	for _, prefix := range provisioned.prefixes {
+		secrets := provisioned.byPrefix[prefix]
+		for kind, secret := range map[string]string{
+			"registration": secrets.registration,
+			"identity":     secrets.identity,
+		} {
+			if secret == "" {
+				t.Fatalf("no %s secret provisioned for %q", kind, prefix)
+			}
+			if owner, repeated := seen[secret]; repeated {
+				t.Errorf("the %s secret for %q is also %s", kind, prefix, owner)
+			}
+			seen[secret] = kind + " of " + prefix
 		}
 	}
 }
@@ -394,16 +457,13 @@ func TestProvisionModuleRegistrationSecretsPairsDigestToPlaintext(t *testing.T) 
 // next.
 func TestProvisionModuleRegistrationSecretsRotatePerRun(t *testing.T) {
 	consumed := []manifest.ConsumedAPI{{ID: "documents", As: "documents"}}
-	first, err := provisionModuleRegistrationSecrets(consumed)
-	if err != nil {
-		t.Fatal(err)
+	first := provisionModuleRegistrationSecrets(consumed)
+	second := provisionModuleRegistrationSecrets(consumed)
+	if first.byPrefix["documents"].registration == second.byPrefix["documents"].registration {
+		t.Errorf("two runs provisioned the same registration secret: %q", first.byPrefix["documents"].registration)
 	}
-	second, err := provisionModuleRegistrationSecrets(consumed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.secrets == second.secrets {
-		t.Errorf("two runs provisioned the same secret: %q", first.secrets)
+	if first.byPrefix["documents"].identity == second.byPrefix["documents"].identity {
+		t.Errorf("two runs provisioned the same identity secret: %q", first.byPrefix["documents"].identity)
 	}
 }
 
@@ -431,10 +491,7 @@ func TestProvisionModuleRegistrationSecretsSkipsUnfederatableEntries(t *testing.
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			provisioned, err := provisionModuleRegistrationSecrets(tc.consumed)
-			if err != nil {
-				t.Fatalf("provisionModuleRegistrationSecrets: %v", err)
-			}
+			provisioned := provisionModuleRegistrationSecrets(tc.consumed)
 			if len(tc.want) == 0 {
 				if provisioned != nil {
 					t.Fatalf("provisioned %v for entries that can never register", provisioned.prefixes)
@@ -444,8 +501,11 @@ func TestProvisionModuleRegistrationSecretsSkipsUnfederatableEntries(t *testing.
 			if !reflect.DeepEqual(provisioned.prefixes, tc.want) {
 				t.Fatalf("provisioned prefixes = %v, want %v", provisioned.prefixes, tc.want)
 			}
-			if len(parsePairs(t, provisioned.digests)) != len(tc.want) {
-				t.Fatalf("digests %q do not match prefixes %v", provisioned.digests, tc.want)
+			if len(parsePairs(t, provisioned.registrationDigests())) != len(tc.want) {
+				t.Fatalf("registration digests %q do not match prefixes %v", provisioned.registrationDigests(), tc.want)
+			}
+			if len(parsePairs(t, provisioned.identityDigests())) != len(tc.want) {
+				t.Fatalf("identity digests %q do not match prefixes %v", provisioned.identityDigests(), tc.want)
 			}
 		})
 	}
@@ -506,7 +566,7 @@ func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
 			moduleRegistrationSecretsEnvironmentVariable, backend[moduleRegistrationSecretsEnvironmentVariable])
 	}
 
-	// The digest rides the federation workspace configuration group — the carrier
+	// The digests ride the federation workspace configuration group — the carrier
 	// the registrar reads by contract — not a raw process variable it would only
 	// pick up through an incidental os.Getenv fallback.
 	declared := derived.workspaceConfigurations[federationConfigurationGroup]
@@ -515,9 +575,16 @@ func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
 	if digests["documents"] != hex.EncodeToString(want[:]) {
 		t.Errorf("registrar digest for documents = %q, does not match the backend's secret", digests["documents"])
 	}
-	// The raw secret belongs only to the two ends that present it.
-	if strings.Contains(declared[moduleRegistrationSecretsKey], secrets["documents"]) {
-		t.Error("registrar received the plaintext secret; it must hold only the digest")
+	identityDigests := parsePairs(t, declared[moduleIdentitySecretsKey])
+	wantIdentity := sha256.Sum256([]byte(derived.overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable]))
+	if identityDigests["documents"] != hex.EncodeToString(wantIdentity[:]) {
+		t.Errorf("registrar identity digest for documents = %q, does not match the module's own secret", identityDigests["documents"])
+	}
+	// The raw secrets belong only to the ends that present them.
+	for _, key := range []string{moduleRegistrationSecretsKey, moduleIdentitySecretsKey} {
+		if strings.Contains(declared[key], secrets["documents"]) {
+			t.Errorf("registrar received the plaintext secret under %s; it must hold only digests", key)
+		}
 	}
 	// Nothing about the registrar rides the per-service override seam any more.
 	for service, values := range overrides {
@@ -529,10 +596,12 @@ func TestSolutionDerivedOverridesProvisionsBothHalves(t *testing.T) {
 	}
 }
 
-// The consumed module presents the very same secret to mint its own
-// service-principal work context, so every service of that module boots with the
-// singular plaintext — and with nothing else: handing a module the whole map
-// would give it its siblings' credentials.
+// A consumed module mints its service-principal work context with an identity
+// secret of its own, so every service of that module boots with one singular
+// plaintext — and with nothing else. Handing a module the whole map would give it
+// its siblings' credentials; handing the backend this secret would let the
+// consumer mint the provider's work context, which is what the two digests exist
+// to prevent.
 func TestSolutionDerivedOverridesProvisionsTheConsumedModulesOwnSecret(t *testing.T) {
 	ctx := context.Background()
 	workspace := loadTestWorkspace(t, "testdata/solution-federation")
@@ -542,11 +611,24 @@ func TestSolutionDerivedOverridesProvisionsTheConsumedModulesOwnSecret(t *testin
 	if err != nil {
 		t.Fatalf("solutionDerivedRunInputs: %v", err)
 	}
-	secrets := parsePairs(t, derived.overrides["wiki/backend"][moduleRegistrationSecretsEnvironmentVariable])
+	backend := derived.overrides["wiki/backend"]
+	secrets := parsePairs(t, backend[moduleRegistrationSecretsEnvironmentVariable])
+	identity := derived.overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable]
+	if identity == "" {
+		t.Fatal("documents/api received no identity secret")
+	}
+	if identity == secrets["documents"] {
+		t.Error("the module's identity secret is the secret the backend registers with; the consumer can mint the provider's work context")
+	}
+	for _, value := range backend {
+		if strings.Contains(value, identity) {
+			t.Errorf("the backend holds the module's identity secret in %q", value)
+		}
+	}
 	for _, unique := range []string{"documents/api", "documents/worker"} {
 		values := derived.overrides[unique]
-		if got := values[moduleRegistrationSecretEnvironmentVariable]; got != secrets["documents"] {
-			t.Errorf("%s %s = %q, want the secret the backend presents for documents",
+		if got := values[moduleRegistrationSecretEnvironmentVariable]; got != identity {
+			t.Errorf("%s %s = %q, want the identity secret minted for documents",
 				unique, moduleRegistrationSecretEnvironmentVariable, got)
 		}
 		if _, leaked := values[moduleRegistrationSecretsEnvironmentVariable]; leaked {
@@ -566,10 +648,7 @@ func TestConsumedModuleSecretOverridesReportsAModuleItCannotResolve(t *testing.T
 	consumed := []manifest.ConsumedAPI{
 		{ID: "documents", Module: "documents", Service: "api", Endpoint: "connect", As: "documents"},
 	}
-	provisioned, err := provisionModuleRegistrationSecrets(consumed)
-	if err != nil {
-		t.Fatalf("provisionModuleRegistrationSecrets: %v", err)
-	}
+	provisioned := provisionModuleRegistrationSecrets(consumed)
 
 	for _, tc := range []struct {
 		name      string
@@ -655,10 +734,7 @@ func TestConsumedModuleSecretOverridesExcludesTheRegistrarsOwnModule(t *testing.
 		{ID: "accounts", Module: "host", Service: "accounts", Endpoint: "connect", As: "accounts"},
 		{ID: "documents", Module: "documents", Service: "api", Endpoint: "connect", As: "documents"},
 	}
-	provisioned, err := provisionModuleRegistrationSecrets(consumed)
-	if err != nil {
-		t.Fatalf("provisionModuleRegistrationSecrets: %v", err)
-	}
+	provisioned := provisionModuleRegistrationSecrets(consumed)
 
 	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, federationRegistrars(ctx, workspace))
 
@@ -671,7 +747,7 @@ func TestConsumedModuleSecretOverridesExcludesTheRegistrarsOwnModule(t *testing.
 		t.Errorf("registrars = %v, want [host] reported as deliberately excluded", injection.registrars)
 	}
 	// The module that does authenticate is unaffected.
-	if injection.overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable] != provisioned.byPrefix["documents"] {
+	if injection.overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable] != provisioned.byPrefix["documents"].identity {
 		t.Error("excluding the registrar's module also dropped the consumed module's own secret")
 	}
 }
