@@ -1,23 +1,23 @@
 # Dependency updates for every ecosystem this repository ships.
 #
-# Each ecosystem gets TWO catch-all groups, not one: minor+patch in a group that
-# is expected to merge, and major alone in a group of its own.
-# open-pull-requests-limit caps the ecosystem, not the group, so a single group
-# spanning every update type has one bad failure mode: one breaking major bump
-# makes the ecosystem's only pull request red, Dependabot regenerates that same
-# red pull request every week, and every safe patch waits behind it with no way
-# to land — a hand-edit of the group pull request is discarded on the next
-# regeneration. Split, the patch stream keeps flowing while the major sits.
+# Each ecosystem is ONE catch-all group with open-pull-requests-limit 1, so a
+# week yields at most one pull request per ecosystem instead of one per
+# dependency. Dependabot cannot group ACROSS ecosystems, so the entries below
+# are the floor on what Dependabot itself opens; .github/workflows/combine-
+# deps.yml runs afterwards and folds whatever is open into a single pull
+# request.
 #
-# Dependabot cannot group across ecosystems, so entries x groups is the floor on
-# weekly pull requests.
+# The groups deliberately carry NO `update-types:` filter. That filter only
+# recognises semver update types, so a Docker base image pinned by digest
+# matches none of them and falls OUT of the group into its own ungrouped pull
+# request, one per directory. Omitting the filter makes `patterns: "*"` mean
+# what it says: everything, digests included. For the same reason majors are
+# not split into a second group — that is a guaranteed extra pull request.
 #
-# The github-actions entry exists because every action is pinned by commit SHA;
-# nothing else would ever move those pins. It lists `directories`, not
-# `directory`: `/` reaches only .github/workflows and a root action.yml, so the
-# composite action in .github/actions/install needs its own entry or its pins
-# would be the one hole in the pinning. pkg/cliupdate's dependabot contract test
-# holds every action manifest directory to that.
+# Security updates keep their own group where one is defined: `applies-to`
+# separates them from version updates and they are not capped by
+# open-pull-requests-limit, because an urgent fix should not queue behind
+# routine work.
 version: 2
 
 updates:
@@ -25,73 +25,30 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 2
-    # The core pin is not an ordinary dependency. docs/runbooks/release-the-fleet.md
-    # re-pins it as step 2 of an ordered cross-repo release (core tagged -> cli
-    # -> agents -> composed modules), and pkg/conformance/matrix.json records the
-    # release line beside it. An unattended bump does one of two bad things: it
-    # crosses the line and reds the whole gomod pull request against
-    # TestMatrixCoreMatchesGoMod, or it stays inside the line, goes green, and
-    # silently moves the CLI off the core the agent fleet was published against.
-    # The runbook owns this pin.
+    open-pull-requests-limit: 1
     ignore:
       - dependency-name: github.com/codefly-dev/core
     groups:
       gomod:
         patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-      gomod-major:
-        patterns:
-          - "*"
-        update-types:
-          - major
-
-  # web/dashboard builds into pkg/web/go-grpc/out, a committed artifact go:embed
-  # ships in the binary. The `dashboard` job in go.yml rebuilds it and fails on
-  # drift, which is what gives these pull requests a real signal — without it a
-  # bump here changes only the lockfile and passes every Go gate untested.
+          - '*'
   - package-ecosystem: npm
     directory: /web/dashboard
     schedule:
       interval: weekly
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 1
     groups:
       npm:
         patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-      npm-major:
-        patterns:
-          - "*"
-        update-types:
-          - major
-
-  # Limit 4, not 2: if Dependabot bills the two directories separately rather
-  # than folding them into one grouped pull request, 2 would cap the ecosystem
-  # mid-stream and reintroduce exactly the head-of-line stall the groups above
-  # exist to prevent. These pull requests are mechanical SHA bumps; the extra
-  # headroom costs nothing.
+          - '*'
   - package-ecosystem: github-actions
     directories:
       - /
       - /.github/actions/install
     schedule:
       interval: weekly
-    open-pull-requests-limit: 4
+    open-pull-requests-limit: 1
     groups:
       github-actions:
         patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-      github-actions-major:
-        patterns:
-          - "*"
-        update-types:
-          - major
+          - '*'
