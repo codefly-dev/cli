@@ -243,6 +243,9 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return runner.InitRemote(ctx)
 
 	}
+	if err := runner.validateContainerRecovery(); err != nil {
+		return nil, err
+	}
 
 	// Reject stale native listeners before calling the agent's Init hook.
 	// Infrastructure agents are allowed to bind their assigned endpoint during

@@ -8,6 +8,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/stretchr/testify/require"
 )
 
@@ -148,6 +149,41 @@ endpoints:
 	require.Len(t, env.Secrets, 1)
 	require.Equal(t, "1password", env.Secrets[0].Kind)
 	require.Equal(t, "acme-dev", env.Secrets[0].Account)
+
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "new-home"))
+	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	originalScope, originalExplicit := namingScope, namingScopeExplicit
+	t.Cleanup(func() { namingScope, namingScopeExplicit = originalScope, originalExplicit })
+	for _, tc := range []struct {
+		name, flag, want string
+		explicit         bool
+	}{
+		{"declared", "", "from-yaml", false},
+		{"override", "candidate", "candidate", true},
+		{"explicit empty", "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			namingScope, namingScopeExplicit = tc.flag, tc.explicit
+			resolved, err := newRunFlow(ctx, workspace, module, service)
+			require.NoError(t, err)
+			actual, err := prepareContainerRecovery(workspace, resolved)
+			require.NoError(t, err)
+			expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), tc.want)
+			require.NoError(t, err)
+			require.Equal(t, expected, actual)
+			require.NotEmpty(t, os.Getenv(dockerrun.ContainerRecoveryScopeEnvironment))
+		})
+	}
+	workspace.FindEnvironment("local").NamingScope = ""
+	namingScope, namingScopeExplicit = "", false
+	isolated, err := newRunFlow(ctx, workspace, module, service)
+	require.NoError(t, err)
+	require.NotEmpty(t, isolated.Environment().NamingScope)
+	actual, err := prepareContainerRecovery(workspace, isolated)
+	require.NoError(t, err)
+	expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), isolated.Environment().NamingScope)
+	require.NoError(t, err)
+	require.Equal(t, expected, actual)
 }
 
 func TestRunEnvironmentNamingScopeOverrideStaysInvocationLocal(t *testing.T) {
