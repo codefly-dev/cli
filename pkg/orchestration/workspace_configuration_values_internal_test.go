@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"slices"
 	"testing"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -52,6 +53,72 @@ func TestApplyWorkspaceConfigurationValuesReplacesADeclaredKey(t *testing.T) {
 	values := got[0].Infos[0].ConfigurationValues
 	if len(values) != 1 || values[0].Value != "documents:deadbeef" {
 		t.Errorf("declared key not replaced in place: %v", values)
+	}
+}
+
+// A run derives more than one value for a group — the federation group carries a
+// registration digest and an identity digest — and both must arrive whether the
+// composition declared a placeholder for them or not. A host declaring both keys
+// takes the replace path twice; one still carrying only the older key takes
+// replace then append. Both compositions are live, so both shapes are pinned
+// here, and a key the run derives nothing for must survive either way.
+func TestApplyWorkspaceConfigurationValuesEmitsEveryDerivedKeyInAGroup(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared []*basev0.ConfigurationValue
+	}{
+		{
+			name: "composition declares both placeholders",
+			declared: []*basev0.ConfigurationValue{
+				{Key: "MODULE_REGISTRATION_SECRETS", Value: ""},
+				{Key: "MODULE_IDENTITY_SECRETS", Value: ""},
+				{Key: "SOLUTION_REGISTRATION_SECRETS", Value: "solution:cafe"},
+			},
+		},
+		{
+			name: "composition predates the identity key",
+			declared: []*basev0.ConfigurationValue{
+				{Key: "MODULE_REGISTRATION_SECRETS", Value: ""},
+				{Key: "SOLUTION_REGISTRATION_SECRETS", Value: "solution:cafe"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			declared := &basev0.Configuration{
+				Origin: resources.ConfigurationWorkspace,
+				Infos: []*basev0.ConfigurationInformation{{
+					Name:                "federation",
+					ConfigurationValues: tc.declared,
+				}},
+			}
+			world := &World{workspaceConfigurationValues: map[string]map[string]string{
+				"federation": {
+					"MODULE_REGISTRATION_SECRETS": "documents:aaaa",
+					"MODULE_IDENTITY_SECRETS":     "documents:bbbb",
+				},
+			}}
+
+			got := world.applyWorkspaceConfigurationValues([]*basev0.Configuration{declared}, []string{"federation"})
+			if len(got) != 1 {
+				t.Fatalf("expected the declared configuration to be reused, got %d", len(got))
+			}
+			envs := resources.EnvironmentVariableAsStrings(
+				resources.ConfigurationAsEnvironmentVariables(got[0], false))
+			for _, want := range []string{
+				"CODEFLY__WORKSPACE_CONFIGURATION__FEDERATION__MODULE_REGISTRATION_SECRETS=documents:aaaa",
+				"CODEFLY__WORKSPACE_CONFIGURATION__FEDERATION__MODULE_IDENTITY_SECRETS=documents:bbbb",
+				"CODEFLY__WORKSPACE_CONFIGURATION__FEDERATION__SOLUTION_REGISTRATION_SECRETS=solution:cafe",
+			} {
+				if !slices.Contains(envs, want) {
+					t.Errorf("emitted %v, missing %s", envs, want)
+				}
+			}
+			// A replaced key must not also be appended: two entries for one key
+			// leave which wins to map iteration order.
+			if len(envs) != 3 {
+				t.Errorf("emitted %d values, want exactly 3: %v", len(envs), envs)
+			}
+		})
 	}
 }
 
