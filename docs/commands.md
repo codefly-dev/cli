@@ -1338,14 +1338,25 @@ operation's total duration. Provider workflows continue invoking Codefly.
 ### Startup container cleanup ownership
 
 `run service` resolves its workspace and final naming scope before sweeping
-containers. Cleanup is restricted to the exact canonical `CODEFLY_HOME`, workspace
-path and resolved scope, including an explicitly empty scope. Agent processes
+containers. The regular cleanup pass is restricted to the exact canonical
+`CODEFLY_HOME`, workspace path and resolved scope, including an explicitly empty scope. Agent processes
 inherit this identity before they create containers. Containers from a different
-home or scope are never swept, even when their creator PID is absent.
+home or workspace are never swept, even when their creator PID is absent.
+
+Containers also carry a durable `codefly.recovery-namespace` label for their
+stable caller host identity and canonical home/workspace. A later run can recover
+explicitly ephemeral containers from a previous invocation even when its own generated scope differs,
+as happens with SDK/test invocations. Live owners, stateful containers and
+ledger-owned containers are preserved. This does not change which containers
+agents mark ephemeral or make stateful containers disposable. Failed removals
+leave the ownership labels available for retry.
 
 Agents using the scoped-recovery Core API add `codefly.recovery-scope` at creation.
-Containers from older agents without that label remain untouched and require
-explicit owner recovery; startup never relabels them. In the same scope, stopped
-orphans and running ephemeral orphans remain eligible, while live owners, running
-stateful containers and session-ledger-owned containers are preserved. Startup
+The agent acknowledges its inherited identity over gRPC. Docker initialization
+fails before provisioning if that acknowledgement is absent or mismatched: rebuild
+the agent against this CLI's pinned Core. Updating only the CLI does not update
+installed agent binaries. Containers from older agents without both labels remain
+untouched and require explicit recovery by container ID; startup never relabels them.
+In the same scope, stopped orphans and running ephemeral orphans remain eligible,
+while live owners, running stateful containers and session-ledger-owned containers are preserved. Startup
 removal does not request deletion of volumes.

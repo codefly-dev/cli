@@ -56,16 +56,19 @@ func TestBuildCacheRetainsCallerPolicyAndNegotiatesExecution(t *testing.T) {
 			instance.Builder = &services.BuilderInstance{Instance: instance, Builder: client}
 			build, err := NewBuilder(ctx, instance, flow.world)
 			require.NoError(t, err)
-			dockerContext, err := build.dockerBuildContext(ctx)
-			require.NoError(t, err)
 			_, err = build.Build(ctx)
-			require.ErrorContains(t, err, "cannot verify builder agent support for requested Buildx builder")
-			require.Empty(t, requests, "unsupported builder must be rejected before execution")
-			require.Equal(t, "selected", dockerContext.GetBuildxBuilder())
-			forwarded := dockerContext.GetCache()
+			if recipe {
+				require.ErrorContains(t, err, "cannot verify build recipe")
+			} else {
+				require.ErrorContains(t, err, "did not acknowledge build cache contract registry-v1")
+			}
+			request := <-requests
+			require.Equal(t, "selected", request.GetBuildContext().GetDockerBuildContext().GetBuildxBuilder())
+			forwarded := request.GetBuildContext().GetDockerBuildContext().GetCache()
 			require.Equal(t, `["app/api","","app/api",""]`, forwarded.Scope)
 			require.Equal(t, flow.world.BuildCache.Imports, forwarded.Imports)
 			require.Equal(t, flow.world.BuildCache.Exports, forwarded.Exports)
+			require.NotEmpty(t, request.OutputDirectory)
 			require.True(t, proto.Equal(flow.world.BuildCache, &builderv0.BuildCacheOptions{Backend: "registry", Scope: "app/api", Imports: []string{"ghcr.io/org/cache"}}))
 			flow.WithBuildCache(nil)
 			require.Nil(t, flow.world.BuildCache)

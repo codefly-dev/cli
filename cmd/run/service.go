@@ -763,11 +763,14 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, err
 	}
 
-	scope, err := prepareContainerRecovery(workspace, flow)
-	if err != nil {
-		return flow, err
-	}
 	if shouldSweepStaleContainers(runtimeContext) {
+		scope, scopeErr := prepareContainerRecovery(workspace, flow)
+		if scopeErr != nil {
+			return flow, scopeErr
+		}
+		if err = dockerrun.ReapDisposableContainers(ctx, scope); err != nil {
+			return flow, fmt.Errorf("recover disposable containers: %w", err)
+		}
 		if err = dockerrun.ReapStaleContainers(ctx, scope); err != nil {
 			return flow, fmt.Errorf("recover scoped containers: %w", err)
 		}
