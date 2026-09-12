@@ -122,6 +122,20 @@ func (s *Server) registerTools() {
 		},
 	}, s.listJobs)
 
+	s.RegisterTool(Tool{
+		Name:        "list_runnables",
+		Description: "List runnables (typed finite operations) in a module or all runnables in the workspace, with their immutable module/name@version identity, pinned agent and execution bounds",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"module": {
+					Type:        "string",
+					Description: "Module name (optional, lists all if not provided)",
+				},
+			},
+		},
+	}, s.listRunnables)
+
 	// Per-service tools for Mind (design 013)
 	s.RegisterTool(Tool{
 		Name:        "describe",
@@ -430,21 +444,22 @@ type agentListEntry struct {
 }
 
 // listAgentsKindByArg maps the "kind" argument (list_agents' filter, or
-// agent_info's kind override) to the corresponding resources.AgentKind.
-var listAgentsKindByArg = map[string]resources.AgentKind{
-	"service":     resources.ServiceAgent,
-	"job":         resources.JobAgent,
-	"application": resources.ApplicationAgent,
-	"module":      resources.ModuleAgent,
-	"toolbox":     resources.ToolboxAgent,
-	"provider":    resources.ProviderAgent,
-	"solution":    resources.SolutionAgent,
-}
+// agent_info's kind override) to the corresponding resources.AgentKind, and
+// agentKindEnumValues is the matching ordered vocabulary advertised by both
+// tools' schemas. Both come from core's agent-kind registry: a kind core
+// registers is one these tools can filter on, with no second list to update.
+var (
+	listAgentsKindByArg = map[string]resources.AgentKind{}
+	agentKindEnumValues []string
+)
 
-// agentKindEnumValues is the ordered set of valid "kind" argument values,
-// shared by list_agents' and agent_info's schemas so the two tools can't
-// silently drift into advertising different kind vocabularies.
-var agentKindEnumValues = []string{"service", "job", "application", "module", "toolbox", "provider", "solution"}
+func init() {
+	for _, registration := range resources.AgentKindRegistry() {
+		arg := strings.TrimPrefix(string(registration.Resource), "codefly:")
+		listAgentsKindByArg[arg] = registration.Resource
+		agentKindEnumValues = append(agentKindEnumValues, arg)
+	}
+}
 
 // legacyServiceAgentKinds recognizes the pre-migration agent.kind spelling
 // used throughout every service.codefly.yaml in this codebase (agent: kind:
@@ -699,4 +714,56 @@ func (s *Server) requireWorkspace() (*resources.Workspace, error) {
 		return nil, fmt.Errorf("no workspace loaded - run from a codefly workspace directory")
 	}
 	return s.workspace, nil
+}
+
+// listRunnables reports the workspace's runnables. A runnable whose
+// declaration does not load fails the call rather than shortening the list:
+// a caller about to build or install what it finds must not be told a broken
+// runnable is absent.
+func (s *Server) listRunnables(ctx context.Context, args map[string]string) ([]Content, error) {
+	if s.workspace == nil {
+		return []Content{TextContent("No workspace loaded.")}, nil
+	}
+
+	modules, err := s.workspace.LoadModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	moduleFilter := args["module"]
+	result := make([]map[string]any, 0)
+	for _, m := range modules {
+		if moduleFilter != "" && m.Name != moduleFilter {
+			continue
+		}
+		runnables, err := m.LoadRunnables(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("cannot load runnables of module %s: %w", m.Name, err)
+		}
+		for _, runnable := range runnables {
+			facilities := make([]string, 0, len(runnable.Execution.Facilities))
+			for _, facility := range runnable.Execution.Facilities {
+				facilities = append(facilities, string(facility))
+			}
+			result = append(result, map[string]any{
+				"name":        runnable.Name,
+				"module":      m.Name,
+				"version":     runnable.Version,
+				"description": runnable.Description,
+				"agent":       runnable.Agent.Identifier(),
+				"protocol":    runnable.Contract.Protocol,
+				"execution": map[string]any{
+					"facilities":       facilities,
+					"timeout":          runnable.Execution.Timeout,
+					"cancellation":     string(runnable.Execution.Cancellation),
+					"recovery":         string(runnable.Execution.Recovery),
+					"max_input_bytes":  runnable.Execution.MaxInputBytes(),
+					"max_output_bytes": runnable.Execution.MaxOutputBytes(),
+				},
+			})
+		}
+	}
+
+	data, _ := json.MarshalIndent(result, "", "  ")
+	return []Content{TextContent(string(data))}, nil
 }

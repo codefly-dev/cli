@@ -2,14 +2,9 @@ package kinds
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/pkg/cli"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -29,32 +24,7 @@ var ServiceCmd = &cobra.Command{
 }
 
 func serviceInfo(ctx context.Context, input string) error {
-	defer services.ClearAgents()
-	w := wool.Get(ctx).In("cmd.info.agentInput.service")
-	ctx = w.Inject(ctx)
-	if input == "" {
-		return fmt.Errorf("--agent is required")
-	}
-
-	conf, err := resources.ParseAgent(ctx, resources.ServiceAgent, input)
-	if err != nil {
-		return fmt.Errorf("cannot parse agent: %w", err)
-	}
-
-	cli.Header(1, "Fetching information about Service Agent <%s> information", conf)
-
-	agent, err := services.LoadAgent(ctx, conf, "")
-	if err != nil {
-		return fmt.Errorf("cannot load agent: %w", err)
-	}
-	cli.Header(2, "Successfully loaded service agent <%s>", conf)
-
-	info, err := agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
-	if err != nil {
-		return fmt.Errorf("cannot get agent information: %w", err)
-	}
-	fmt.Println(info)
-	return nil
+	return agentInfo(ctx, resources.ServiceAgent, input)
 }
 
 func init() {

@@ -85,6 +85,7 @@ Or add to your project's `.mcp.json` or global MCP config:
 | `list_agents` | List agents known to this machine: agents pinned by workspace services plus agents installed in the local cache | -- | `kind` |
 | `agent_info` | Get an agent's real manifest: capabilities, protocols, languages, backends, toolchains, validation contract, configuration docs, techniques and README | `agent` | `kind` (default `service`), `include_prompts` |
 | `list_jobs` | List jobs (optionally filtered by module) | -- | `module` |
+| `list_runnables` | List runnables with their module/name@version identity, pinned agent and execution bounds (optionally filtered by module) | -- | `module` |
 
 ### Mutation Tools
 

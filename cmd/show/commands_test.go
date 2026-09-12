@@ -7,7 +7,7 @@ import (
 )
 
 func TestShowCommandsReturnErrorsThroughCobra(t *testing.T) {
-	for _, command := range []*cobra.Command{DependenciesCmd, NetworkCmd} {
+	for _, command := range []*cobra.Command{DependenciesCmd, NetworkCmd, RunnableCmd} {
 		if command.RunE == nil || command.Run != nil {
 			t.Errorf("%s is not exclusively RunE", command.Name())
 		}

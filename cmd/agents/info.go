@@ -8,9 +8,10 @@ import (
 // InfoCmd represents the run command
 var InfoCmd = &cobra.Command{
 	Use:   "info",
-	Short: "Inspect metadata reported by an installed service agent",
+	Short: "Inspect metadata reported by an installed agent",
 }
 
 func init() {
 	InfoCmd.AddCommand(kinds.ServiceCmd)
+	InfoCmd.AddCommand(kinds.RunnableCmd)
 }
