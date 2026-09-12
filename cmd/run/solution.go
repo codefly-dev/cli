@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -183,10 +184,17 @@ func loadSolutionManifestForRun(workspaceDir string) (*manifest.Manifest, error)
 	return &solutionManifest, nil
 }
 
-// validateConsumedBindings rejects a partially bound api.consumes entry, and a
-// facade prefix claimed twice. The lenient decode above skips manifest.Validate,
-// so this is the only gate a run passes through, and both rules are ones the run
-// itself depends on.
+// facadePrefixPattern is the shape the registrar requires of a routing identity,
+// mirrored here so a run fails on the manifest rather than at the registrar's
+// startup. facadePrefixMaxLength bounds it to one DNS label.
+var facadePrefixPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
+
+const facadePrefixMaxLength = 63
+
+// validateConsumedBindings rejects a partially bound api.consumes entry, a facade
+// prefix claimed twice, and a prefix that is not a routing label. The lenient
+// decode above skips manifest.Validate, so this is the only gate a run passes
+// through, and every rule is one the run itself depends on.
 //
 // A partial bind — ConsumedAPIs() drops only entries with an empty module — would
 // project into a CODEFLY__ENDPOINT key built from empty segments, which no
@@ -198,6 +206,14 @@ func loadSolutionManifestForRun(workspaceDir string) (*manifest.Manifest, error)
 // service-principal work context. manifest.Validate rejects a duplicated `as`
 // for sync and package; a run must not be the path that turns the same typo into
 // cross-module identity confusion.
+//
+// A prefix that is not a routing label is caught here because the run cannot
+// encode it: every declaration this run derives is `prefix:value` joined on ",",
+// and the registrar splits an entry on its first ":" before checking the prefix
+// against this same shape. An `as` carrying a separator, an uppercase letter or
+// an underscore therefore reaches the registrar as a malformed declaration, which
+// it refuses at startup — so the whole composition fails to boot, naming a
+// credential rather than the manifest field that is actually wrong.
 func validateConsumedBindings(consumes []manifest.APIDeclaration) error {
 	seenAs := make(map[string]string, len(consumes))
 	for i := range consumes {
@@ -213,6 +229,9 @@ func validateConsumedBindings(consumes []manifest.APIDeclaration) error {
 		}
 		if declaration.As == "" {
 			continue
+		}
+		if !facadePrefixPattern.MatchString(declaration.As) || len(declaration.As) > facadePrefixMaxLength {
+			return fmt.Errorf("%s: api.consumes entry %q claims the facade prefix %q; a prefix is one routing label: lowercase letters, digits and dashes, starting and ending alphanumeric, at most %d characters", manifest.FileName, declaration.ID, declaration.As, facadePrefixMaxLength)
 		}
 		if first, duplicate := seenAs[declaration.As]; duplicate {
 			return fmt.Errorf("%s: api.consumes entries %q and %q both claim the facade prefix %q; one prefix is one identity", manifest.FileName, first, declaration.ID, declaration.As)

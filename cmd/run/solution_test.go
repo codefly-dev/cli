@@ -277,6 +277,38 @@ lifecycle:`, 1))
 	}
 }
 
+// A prefix the registrar cannot parse is caught on the manifest, not at the
+// registrar's startup. Both shapes below reach the registrar as a malformed
+// `prefix:sha256hex` declaration — the separator splits the entry in the wrong
+// place, the uppercase label fails the identity pattern — and it refuses to start
+// on either, taking the composition with it and blaming a credential.
+func TestSolutionEntryConsumesRejectsAnUnroutableFacadePrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{
+		{name: "carries the entry separator", prefix: "doc:v1"},
+		{name: "carries the projection separator", prefix: "doc,v1"},
+		{name: "not lowercase", prefix: "Documents"},
+		{name: "underscore is not a routing label", prefix: "doc_store"},
+		{name: "cannot end on a dash", prefix: "documents-"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSolutionManifest(t, dir, strings.Replace(solutionManifestWithConsumes,
+				"as: documents", "as: "+tc.prefix, 1))
+
+			_, _, err := solutionEntryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+			if err == nil {
+				t.Fatalf("expected an error for the facade prefix %q", tc.prefix)
+			}
+			if !strings.Contains(err.Error(), tc.prefix) {
+				t.Fatalf("error %q does not name the offending prefix", err)
+			}
+		})
+	}
+}
+
 // YAML that does not parse at all is a genuine boundary failure: booting a
 // backend that silently federates nothing is the bug this injection exists to
 // prevent.
