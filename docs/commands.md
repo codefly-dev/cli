@@ -805,25 +805,23 @@ codefly list runnables    # List runnables (--module to scope, --json for machin
 See [Runnables](runnable.md) for what a runnable is and which parts of its
 lifecycle the CLI implements today.
 
-### `codefly show`
+### `codefly show runnable <name>`
 
-Read-only inspection of workspace configuration. `show dependencies` and `show
-network` report what `codefly run` will do without starting it; `show runnable`
-reports one runnable's declaration.
+Show one runnable's contract, execution bounds and dependency resolution.
 
 ```bash
-codefly show dependencies [service]   # Dependency graph and startup order
-codefly show network                  # Endpoints and allocated addresses
-codefly show runnable <name>          # Contract, execution bounds, dependency resolution
+codefly show runnable word-count
 codefly show runnable backend/word-count --json
 ```
 
-`show runnable` takes `module/name`, or a bare name when it is unambiguous
-across modules. It loads through core's strict loader, so an invalid
-declaration is reported as a load error rather than rendered partially. Each
-declared service dependency is reported as resolved or unresolved against what
-the workspace declares — reachability and credential resolution belong to
-whoever installs and launches a binding, not to this command.
+Takes `module/name`, or a bare name when it is unambiguous across modules. It
+loads through core's strict loader, so an invalid declaration is reported as a
+load error rather than rendered partially. Each declared service dependency is
+reported as resolved or unresolved against what the workspace declares, using
+core's own binding rules — reachability and credential resolution belong to
+whoever installs and launches a binding, not to this command. An unresolved
+dependency is reported, not fatal: the command exits 0, and unattended callers
+gate on `--json` and each dependency's `resolved` field.
 
 ---
 

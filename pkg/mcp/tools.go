@@ -128,9 +128,9 @@ func (s *Server) registerTools() {
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
-				"module": {
+				fieldModule: {
 					Type:        "string",
-					Description: "Module name (optional, lists all if not provided)",
+					Description: "Module to list runnables from (optional; lists every module when omitted)",
 				},
 			},
 		},
@@ -730,7 +730,7 @@ func (s *Server) listRunnables(ctx context.Context, args map[string]string) ([]C
 		return nil, err
 	}
 
-	moduleFilter := args["module"]
+	moduleFilter := args[fieldModule]
 	result := make([]map[string]any, 0)
 	for _, m := range modules {
 		if moduleFilter != "" && m.Name != moduleFilter {

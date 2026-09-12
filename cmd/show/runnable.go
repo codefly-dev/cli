@@ -25,6 +25,10 @@ dependency resolves in this workspace.
 
 The name is module/name, or a bare name when it is unambiguous across modules.
 
+An unresolved dependency is reported, not fatal: the command exits 0 so it can
+describe every dependency in one pass. Unattended callers gate on --json and
+check each dependency's "resolved" field.
+
 Examples:
   codefly show runnable word-count
   codefly show runnable backend/word-count
@@ -150,7 +154,11 @@ func resolveRunnableDependency(ctx context.Context, workspace *resources.Workspa
 
 	service, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: dep.Name, Module: module})
 	if err != nil {
-		report.Problem = fmt.Sprintf("service %s/%s not found in workspace", module, dep.Name)
+		// The service being absent is only one of the reasons this fails: a
+		// corrupt module file, a malformed declaration and an unreadable one
+		// reach here too, and naming the wrong cause sends the reader looking
+		// for a service that is sitting right there.
+		report.Problem = fmt.Sprintf("cannot load service %s/%s: %v", module, dep.Name, err)
 		return report
 	}
 
@@ -166,6 +174,15 @@ func resolveRunnableDependency(ctx context.Context, workspace *resources.Workspa
 	}
 	if len(missing) > 0 {
 		report.Problem = fmt.Sprintf("service %s/%s declares no endpoint %s", module, dep.Name, strings.Join(missing, ", "))
+		return report
+	}
+	// A runtime edge always consumes a reachable endpoint: core's binding
+	// validation requires at least one mapping for it whether or not the
+	// selection names endpoints, and an empty selection resolves to every
+	// endpoint the service exports. A service exporting none can never
+	// satisfy one, so reporting it resolved promises a binding core refuses.
+	if dep.Kind == resources.DependencyKindRuntime && len(dep.Endpoints) == 0 && len(service.Endpoints) == 0 {
+		report.Problem = fmt.Sprintf("service %s/%s exports no endpoint: a runtime dependency selecting none resolves to all of them", module, dep.Name)
 		return report
 	}
 	report.Resolved = true
@@ -253,23 +270,29 @@ func printRunnableSchema(cmd *cobra.Command, fields []runnableFieldReport, inden
 }
 
 func printRunnableFields(cmd *cobra.Command, fields []runnableFieldReport, indent string) {
-	out := cmd.OutOrStdout()
 	for _, field := range fields {
-		modifiers := ""
-		switch {
-		case field.Optional && field.Nullable:
-			modifiers = " (optional, nullable)"
-		case field.Optional:
-			modifiers = " (optional)"
-		case field.Nullable:
-			modifiers = " (nullable)"
-		}
-		fmt.Fprintf(out, "%s%s: %s%s\n", indent, field.Name, field.Type, modifiers)
-		if field.Items != nil {
-			fmt.Fprintf(out, "%s  items: %s\n", indent, field.Items.Type)
-			printRunnableFields(cmd, field.Items.Fields, indent+"    ")
-		}
-		printRunnableFields(cmd, field.Fields, indent+"  ")
+		printRunnableField(cmd, field.Name, field, indent)
+	}
+}
+
+// printRunnableField renders one node of a schema. An array's element is a
+// field in its own right and may itself be an array or an object, so it
+// recurses through Items as well as Fields; printing only the element's type
+// truncates array<array<T>> to array<array>.
+func printRunnableField(cmd *cobra.Command, label string, field runnableFieldReport, indent string) {
+	modifiers := ""
+	switch {
+	case field.Optional && field.Nullable:
+		modifiers = " (optional, nullable)"
+	case field.Optional:
+		modifiers = " (optional)"
+	case field.Nullable:
+		modifiers = " (nullable)"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s%s: %s%s\n", indent, label, field.Type, modifiers)
+	printRunnableFields(cmd, field.Fields, indent+"  ")
+	if field.Items != nil {
+		printRunnableField(cmd, "items", *field.Items, indent+"  ")
 	}
 }
 

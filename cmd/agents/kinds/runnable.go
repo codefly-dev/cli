@@ -19,7 +19,7 @@ var RunnableCmd = &cobra.Command{
 Examples:
   codefly agent info runnable --agent=python:0.0.1`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)
@@ -30,7 +30,7 @@ Examples:
 }
 
 func runnableInfo(ctx context.Context, input string) error {
-	return agentInfo(ctx, resources.RunnableAgent, input)
+	return agentInfo(ctx, resources.RunnableAgent, "Runnable", input)
 }
 
 func init() {

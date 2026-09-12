@@ -101,9 +101,31 @@ func TestListRunnablesToolFailsOnAnInvalidDeclaration(t *testing.T) {
 	}
 }
 
-// TestAgentKindVocabularyCoversTheRegistry proves the kind filter advertised
-// by list_agents and agent_info tracks core's registry, so a newly registered
-// kind (runnable is the current one) is filterable without a second edit.
+// TestAgentKindVocabularyIsTheExactPublishedSet pins both directions. The
+// enum is client-facing MCP schema that is now derived from core's registry,
+// so a core-side rename or removal would otherwise change what this server
+// publishes on a go.mod bump with nothing failing. Update this list
+// deliberately when core registers a kind.
+func TestAgentKindVocabularyIsTheExactPublishedSet(t *testing.T) {
+	want := []string{"service", "job", "application", "module", "toolbox", "provider", "solution", "runnable"}
+	if !slices.Equal(agentKindEnumValues, want) {
+		t.Fatalf("published agent kind enum = %q, want %q", agentKindEnumValues, want)
+	}
+	for _, arg := range want {
+		kind, ok := listAgentsKindByArg[arg]
+		if !ok {
+			t.Errorf("agent kind %q is advertised but not mapped", arg)
+			continue
+		}
+		if _, err := resources.AgentKindRegistrationFor(kind); err != nil {
+			t.Errorf("agent kind %q maps to %q, which core does not register: %v", arg, kind, err)
+		}
+	}
+}
+
+// TestAgentKindVocabularyCoversTheRegistry is the other direction: every kind
+// core registers must be filterable, so adding one upstream cannot leave the
+// MCP tools unable to see it (runnable was exactly that gap).
 func TestAgentKindVocabularyCoversTheRegistry(t *testing.T) {
 	for _, registration := range resources.AgentKindRegistry() {
 		arg := strings.TrimPrefix(string(registration.Resource), "codefly:")
@@ -113,8 +135,5 @@ func TestAgentKindVocabularyCoversTheRegistry(t *testing.T) {
 		if listAgentsKindByArg[arg] != registration.Resource {
 			t.Errorf("agent kind arg %q maps to %q, want %q", arg, listAgentsKindByArg[arg], registration.Resource)
 		}
-	}
-	if !slices.Contains(agentKindEnumValues, "runnable") {
-		t.Error("runnable agents are not filterable through the MCP tools")
 	}
 }

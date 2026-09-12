@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -162,7 +163,145 @@ func TestShowRunnableReportsMissingService(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
 	require.Len(t, report.Dependencies, 1)
 	require.False(t, report.Dependencies[0].Resolved)
-	require.Contains(t, report.Dependencies[0].Problem, "not found in workspace")
+	require.Contains(t, report.Dependencies[0].Problem, "cannot load service test-ws/store")
+}
+
+// TestShowRunnableDistinguishesAnUnloadableServiceFromAnAbsentOne covers the
+// case that made this report lie: the service file is present, so "not found"
+// sends the reader hunting for a resource that is sitting right there.
+func TestShowRunnableDistinguishesAnUnloadableServiceFromAnAbsentOne(t *testing.T) {
+	dir := writeShowRunnableWorkspace(t, storeServiceWithTCP)
+	declaration := filepath.Join(dir, "services", "store", "service.codefly.yaml")
+	require.NoError(t, os.WriteFile(declaration, []byte("kind: service\nname: store\nendpoints:\n  - name: tcp\n\tapi: tcp\n"), 0o644))
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON = false })
+	showRunnableJSON = true
+
+	cmd, buf := newShowTestCmd()
+	require.NoError(t, showRunnable(cmd, "word-count"))
+
+	var report runnableReport
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
+	require.False(t, report.Dependencies[0].Resolved)
+	require.Contains(t, report.Dependencies[0].Problem, "cannot load service test-ws/store")
+	require.NotContains(t, report.Dependencies[0].Problem, "not found in workspace",
+		"a malformed declaration must not be reported as an absent service")
+}
+
+// TestShowRunnableRejectsARuntimeDependencyOnAnEndpointlessService mirrors
+// core's binding rule (runnable/package.go: a runtime edge needs at least one
+// mapping, and an empty selection resolves to every exported endpoint). A
+// service exporting none can never satisfy one, so reporting it resolved
+// promises a binding VerifyBinding refuses.
+func TestShowRunnableRejectsARuntimeDependencyOnAnEndpointlessService(t *testing.T) {
+	endpointlessStore := `kind: service
+name: store
+version: 0.0.1
+endpoints: []
+`
+	dir := writeShowRunnableWorkspace(t, endpointlessStore)
+	declaration := filepath.Join(dir, "runnables", "word-count", "runnable.codefly.yaml")
+	content, err := os.ReadFile(declaration)
+	require.NoError(t, err)
+	withoutSelection := strings.Replace(string(content), "    endpoints:\n      - name: tcp\n", "", 1)
+	require.NotEqual(t, string(content), withoutSelection, "fixture must drop the explicit endpoint selection")
+	require.NoError(t, os.WriteFile(declaration, []byte(withoutSelection), 0o644))
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON = false })
+	showRunnableJSON = true
+
+	cmd, buf := newShowTestCmd()
+	require.NoError(t, showRunnable(cmd, "word-count"))
+
+	var report runnableReport
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
+	require.Len(t, report.Dependencies, 1)
+	require.Empty(t, report.Dependencies[0].Endpoints, "the selection is empty in this fixture")
+	require.False(t, report.Dependencies[0].Resolved)
+	require.Contains(t, report.Dependencies[0].Problem, "exports no endpoint")
+}
+
+// TestShowRunnableResolvesARuntimeDependencyWithAnEmptySelection is the other
+// half of the rule: an empty selection is satisfied as soon as the service
+// exports anything at all.
+func TestShowRunnableResolvesARuntimeDependencyWithAnEmptySelection(t *testing.T) {
+	dir := writeShowRunnableWorkspace(t, storeServiceWithTCP)
+	declaration := filepath.Join(dir, "runnables", "word-count", "runnable.codefly.yaml")
+	content, err := os.ReadFile(declaration)
+	require.NoError(t, err)
+	withoutSelection := strings.Replace(string(content), "    endpoints:\n      - name: tcp\n", "", 1)
+	require.NoError(t, os.WriteFile(declaration, []byte(withoutSelection), 0o644))
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON = false })
+	showRunnableJSON = true
+
+	cmd, buf := newShowTestCmd()
+	require.NoError(t, showRunnable(cmd, "word-count"))
+
+	var report runnableReport
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
+	require.True(t, report.Dependencies[0].Resolved)
+	require.Empty(t, report.Dependencies[0].Problem)
+}
+
+// TestShowRunnableRendersNestedArrayElementTypes locks the human rendering of
+// array<array<T>>: printing only the immediate element type silently dropped
+// the innermost type, so the text and --json described different contracts.
+func TestShowRunnableRendersNestedArrayElementTypes(t *testing.T) {
+	nested := `kind: runnable
+name: matrix
+version: 0.1.0
+agent:
+  kind: codefly:runnable
+  name: python
+  version: 0.0.1
+  publisher: codefly.dev
+contract:
+  protocol: codefly.runnable/v1
+  input:
+    fields:
+      - name: grid
+        type: array
+        items:
+          type: array
+          items:
+            type: integer
+      - name: rows
+        type: array
+        items:
+          type: object
+          fields:
+            - name: label
+              type: string
+  output:
+    fields:
+      - name: total
+        type: integer
+entrypoint:
+  handler: handler.py
+execution:
+  facilities: [native]
+  timeout: 2m
+  cancellation: signal
+  recovery: recompute
+`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"),
+		[]byte("name: test-ws\nlayout: flat\nrunnables:\n  - name: matrix\n"), 0o644))
+	runnableDir := filepath.Join(dir, "runnables", "matrix")
+	require.NoError(t, os.MkdirAll(runnableDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(runnableDir, "runnable.codefly.yaml"), []byte(nested), 0o644))
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON = false })
+
+	cmd, buf := newShowTestCmd()
+	require.NoError(t, showRunnable(cmd, "matrix"))
+
+	out := buf.String()
+	require.Contains(t, out, "    grid: array\n      items: array\n        items: integer\n",
+		"the innermost array element type must survive:\n%s", out)
+	require.Contains(t, out, "    rows: array\n      items: object\n        label: string\n",
+		"an object element's fields must still render:\n%s", out)
 }
 
 func TestShowRunnableReportsMissingEndpoint(t *testing.T) {

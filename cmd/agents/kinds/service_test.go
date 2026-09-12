@@ -5,7 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/wool"
 )
 
 func TestServiceCommandReturnsErrors(t *testing.T) {
@@ -55,5 +58,38 @@ func TestRunnableAgentKindIsResolvedThroughTheRegistry(t *testing.T) {
 	}
 	if registration.InstallSubdirectory != "runnables" {
 		t.Fatalf("install subdirectory = %q, want runnables", registration.InstallSubdirectory)
+	}
+}
+
+// TestAgentInfoNarrationIsStablePerKind pins the narration the existing
+// service command has always emitted. Sharing its body with the runnable
+// command silently rewrote both the header text and the wool identifier
+// ("cmd.info.agentInput.service"), which anyone grepping logs depends on.
+func TestAgentInfoNarrationIsStablePerKind(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, string) error
+		want string
+	}{
+		{name: "service", call: serviceInfo, want: "Fetching information about Service Agent <codefly.dev/absent:0.0.1> information"},
+		{name: "runnable", call: runnableInfo, want: "Fetching information about Runnable Agent <codefly.dev/absent:0.0.1> information"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+			t.Setenv(manager.AgentSourceEnv, string(resources.AgentStoreLocal))
+
+			var lines []string
+			cli.SetOutputSink(func(_ wool.Loglevel, msg string) { lines = append(lines, msg) })
+			t.Cleanup(func() { cli.SetOutputSink(nil) })
+
+			// The agent does not exist, so this fails at resolution — after the
+			// first header, which is the line under test.
+			if err := tc.call(context.Background(), "absent:0.0.1"); err == nil {
+				t.Fatal("loading an absent agent returned success")
+			}
+			if len(lines) == 0 || lines[0] != tc.want {
+				t.Fatalf("first narration line = %q, want %q", lines, tc.want)
+			}
+		})
 	}
 }

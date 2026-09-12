@@ -24,7 +24,7 @@ var ServiceCmd = &cobra.Command{
 }
 
 func serviceInfo(ctx context.Context, input string) error {
-	return agentInfo(ctx, resources.ServiceAgent, input)
+	return agentInfo(ctx, resources.ServiceAgent, "Service", input)
 }
 
 func init() {
