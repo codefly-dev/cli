@@ -2,8 +2,10 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/core/architecture"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -12,6 +14,8 @@ import (
 type SnapshotPolicy struct {
 	ExecutorManager
 	dependencies *architecture.ServiceDependencies
+	standAlone   bool
+	actions      []Action
 }
 
 func NewSnapshotPolicy(_ context.Context, dependencies *architecture.ServiceDependencies, manager ExecutorManager) (*SnapshotPolicy, error) {
@@ -28,27 +32,39 @@ func (policy *SnapshotPolicy) Execute(ctx context.Context, action Action) ([]Act
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot process outputProperty")
 	}
-	if output == nil {
-		return nil, nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	if !output.Valid() {
-		return nil, w.NewError("invalid outputProperty: only one property may be true: %v", output)
-	}
+	return policy.next(action, output)
+}
 
-	switch action.Type {
-	case BuilderBegin:
-		return BasicNext(ctx, policy.dependencies, output, action, BuilderLoad)
-	case BuilderLoad:
-		return BasicNext(ctx, policy.dependencies, output, action, BuilderInit)
-	case BuilderInit:
-		return BasicNext(ctx, policy.dependencies, output, action, BuilderBuild)
-	case BuilderBuild:
-		return BasicNext(ctx, policy.dependencies, output, action, BuilderDeploy)
-	case BuilderDeploy:
-		return nil, nil
-	default:
-		return nil, w.NewError("unknown action type %s", action.Type)
+func (policy *SnapshotPolicy) next(action Action, output *OutputProperty) ([]Action, error) {
+	if output == nil || !output.Valid() || output.Wait || action.Failed {
+		return nil, fmt.Errorf("snapshot action %s on %s did not complete", action.Type, action.Service)
 	}
+	if len(policy.actions) == 0 {
+		return nil, fmt.Errorf("snapshot has no resolved actions")
+	}
+	if action.Type == BuilderBegin {
+		return []Action{policy.actions[0]}, nil
+	}
+	for index, planned := range policy.actions {
+		if planned.Service == action.Service && planned.Type == action.Type {
+			if index+1 == len(policy.actions) {
+				return nil, nil
+			}
+			return []Action{policy.actions[index+1]}, nil
+		}
+	}
+	return nil, fmt.Errorf("action %s on %s is not in the snapshot plan", action.Type, action.Service)
+}
+
+func (policy *SnapshotPolicy) completed(action Action) bool {
+	if len(policy.actions) == 0 {
+		return false
+	}
+	last := policy.actions[len(policy.actions)-1]
+	return action.Service == last.Service && action.Type == last.Type
 }
 
 func (policy *SnapshotPolicy) Restrict(ctx context.Context, unique string) error {
@@ -56,7 +72,33 @@ func (policy *SnapshotPolicy) Restrict(ctx context.Context, unique string) error
 	if err != nil {
 		return wool.Get(ctx).In("SnapshotPolicy.Restrict").Wrapf(err, "cannot get dependencies")
 	}
-	policy.dependencies = dependencies
+	policy.actions = nil
+	// Every member of the union closure needs a builder, but only edges for
+	// the current stage constrain its order. Complete builds before rendering.
+	for _, phase := range []struct {
+		kind  ActionType
+		stage resources.Stage
+	}{
+		{BuilderLoad, resources.StageBuild},
+		{BuilderInit, resources.StageBuild},
+		{BuilderBuild, resources.StageBuild},
+		{BuilderDeploy, resources.StageRun},
+	} {
+		graph, err := dependencies.ForStage(phase.stage)
+		if err != nil {
+			return err
+		}
+		order, err := graph.Graph().TopologicalSort()
+		if err != nil {
+			return err
+		}
+		for _, service := range order {
+			if policy.standAlone && service != unique {
+				continue
+			}
+			policy.actions = append(policy.actions, Action{Type: phase.kind, Service: service})
+		}
+	}
 	return nil
 }
 

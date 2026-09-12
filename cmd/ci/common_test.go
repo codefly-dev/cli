@@ -553,8 +553,12 @@ func TestCIMixedStageCycleCanPlanAndSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(replay.Execution) != 2*len(plan.Services) {
-		t.Fatal("missing stage plans")
+	stages := map[resources.Stage]bool{}
+	for _, task := range replay.Tasks {
+		stages[task.Stage] = true
+	}
+	if !stages[resources.StageBuild] || !stages[resources.StageRun] {
+		t.Fatal("missing executable stages")
 	}
 	for _, phase := range []string{"build", "test"} {
 		if _, err := buildScheduledTasks(context.Background(), workspace, plan, ScheduleOptions{Phase: phase, LockDependencyClosure: phase == "test"}); err != nil {

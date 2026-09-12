@@ -670,6 +670,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		if err != nil {
 			return w.Wrapf(err, "cannot create policy")
 		}
+		policy.standAlone = flow.standAlone
 		flow.WithPolicy(policy)
 		playbook, err = NewPlaybook(ctx, flow.world)
 		if err != nil {
@@ -677,7 +678,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		}
 		playbook.WithPolicy(policy)
 		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
-			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderDeploy
+			return policy.completed(action)
 		})
 
 	}
@@ -1328,6 +1329,11 @@ func (flow *Flow) ServiceFromUnique(unique string) (*resources.Service, error) {
 }
 
 func (flow *Flow) selectDependencyStage() error {
+	if flow.world.Mode == SnapshotMode {
+		// Snapshot spans build and run. Keep the union for membership; its
+		// policy orders each stage independently.
+		return flow.world.Dependencies.VerifyAcyclic(context.Background())
+	}
 	stage := resources.StageRun
 	switch flow.world.Mode {
 	case BuildMode, LintMode, CompileMode:
@@ -1342,6 +1348,33 @@ func (flow *Flow) selectDependencyStage() error {
 		flow.SharedState.SetDependencies(dependencies)
 	}
 	return nil
+}
+
+// managerDependencies chooses membership independently of snapshot stage order.
+func (flow *Flow) managerDependencies(ctx context.Context) ([]architecture.Service, error) {
+	origin := resources.WithUnique(flow.originService).Unique()
+	if flow.world.Mode != SnapshotMode {
+		return flow.world.Dependencies.OrderTo(ctx, origin)
+	}
+	closure, err := flow.world.Dependencies.Restrict(ctx, origin)
+	if err != nil {
+		return nil, err
+	}
+	build, err := closure.ForStage(resources.StageBuild)
+	if err != nil {
+		return nil, err
+	}
+	order, err := build.Graph().TopologicalSort()
+	if err != nil {
+		return nil, err
+	}
+	var required []architecture.Service
+	for _, unique := range order {
+		if unique != origin {
+			required = append(required, architecture.Service{Unique: unique})
+		}
+	}
+	return required, nil
 }
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
@@ -1400,7 +1433,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// selected operation needs a live dependency graph.
 	var required []string
 	if !flow.standAlone {
-		order, err := flow.world.Dependencies.OrderTo(ctx, resources.WithUnique(flow.originService).Unique())
+		order, err := flow.managerDependencies(ctx)
 		if err != nil {
 			return w.Wrapf(err, "cannot order services")
 		}
