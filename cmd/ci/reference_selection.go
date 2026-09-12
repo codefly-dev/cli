@@ -3,6 +3,7 @@ package ci
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,6 +20,11 @@ func preserveReferenceDependents(ctx context.Context, workspace *resources.Works
 	}
 	if len(declarations) == 0 {
 		return nil
+	}
+	for _, path := range declarations {
+		if !pathWithin(referenceChangedPath(root, path), cleanAbs(root)) {
+			return fmt.Errorf("cannot reconcile changed external service declaration %s using this repository's --base; run CI from the declaration's owning repository", path)
+		}
 	}
 	reference := firstNonEmpty(plan.Base, gitHeadRevision)
 	if _, err := gitOutput(ctx, root, "rev-parse", "--verify", reference+"^{commit}"); err != nil {
@@ -56,10 +62,18 @@ func preserveReferenceDependents(ctx context.Context, workspace *resources.Works
 	}
 	for _, path := range declarations {
 		absolute := referenceChangedPath(root, path)
+		resolved := false
+		for _, service := range candidate {
+			if absolute == filepath.Join(service.dir, resources.ServiceConfigurationName) {
+				resolved = true
+				break
+			}
+		}
 		for _, previous := range referenceServices {
 			if absolute != filepath.Join(previous.dir, resources.ServiceConfigurationName) {
 				continue
 			}
+			resolved = true
 			queue := []string{previous.unique}
 			visited := map[string]bool{}
 			for len(queue) > 0 {
@@ -75,6 +89,9 @@ func preserveReferenceDependents(ctx context.Context, workspace *resources.Works
 				}
 			}
 		}
+		if !resolved {
+			return fmt.Errorf("cannot reconcile removed service declaration %s at reference %s; supply --base with a revision containing the declaration", path, reference)
+		}
 	}
 	return nil
 }
@@ -89,6 +106,16 @@ func referenceServiceInventory(ctx context.Context, workspace *resources.Workspa
 		files[path] = true
 	}
 	read := func(path string, destination any) error {
+		// A main-repository revision does not version external checkouts. They
+		// are fixed resolved inputs to this comparison, not historical files in
+		// its Git tree. External declaration changes require their own CI bounds.
+		if !pathWithin(cleanAbs(path), cleanAbs(root)) {
+			payload, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			return yaml.Unmarshal(payload, destination)
+		}
 		relative, relErr := filepath.Rel(root, cleanAbs(path))
 		if relErr != nil {
 			return relErr
@@ -135,14 +162,9 @@ func referenceServiceInventory(ctx context.Context, workspace *resources.Workspa
 		if err := read(filepath.Join(dir, resources.ModuleConfigurationName), &module); err != nil {
 			return nil, err
 		}
+		module.WithDir(dir)
 		for _, serviceReference := range module.ServiceReferences {
-			serviceDir := filepath.Join(dir, "services", serviceReference.Name)
-			if serviceReference.PathOverride != nil {
-				serviceDir = *serviceReference.PathOverride
-				if !filepath.IsAbs(serviceDir) {
-					serviceDir = filepath.Join(dir, serviceDir)
-				}
-			}
+			serviceDir := module.ServicePath(ctx, serviceReference)
 			var service resources.Service
 			if err := read(filepath.Join(serviceDir, resources.ServiceConfigurationName), &service); err != nil {
 				return nil, err
