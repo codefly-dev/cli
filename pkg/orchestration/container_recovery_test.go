@@ -2,8 +2,10 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -209,4 +211,91 @@ func TestInitManagersRunsWhenOwnershipCannotBeResolved(t *testing.T) {
 	require.NoError(t, flow.InitManagers(context.Background()))
 	require.Empty(t, dockerrun.InheritedContainerRecoveryScope())
 	require.Empty(t, flow.containerRecoveryIdentity)
+}
+
+// containerRecoveryDigests returns the scope and namespace digests this host
+// resolves. They are taken from a real projection so the markers below carry
+// digests the parser accepts, and cannot drift into fixtures it rejects for
+// being malformed rather than for the generation they came from.
+func containerRecoveryDigests(t *testing.T) (string, string) {
+	t.Helper()
+	scope, err := dockerrun.NewContainerRecoveryScope(t.TempDir(), t.TempDir(), "mixed-generation")
+	require.NoError(t, err)
+	require.NoError(t, dockerrun.SetContainerRecoveryScope(scope))
+	identity := dockerrun.InheritedContainerRecoveryScope()
+	require.NotEmpty(t, identity)
+	id, namespace, ok := strings.Cut(identity, ":")
+	require.True(t, ok)
+	return id, namespace
+}
+
+// Mixed CLI and agent generations are unsupported in both directions, and the
+// rollout tells the operator they fail differently: a marker from the untagged
+// generation is refused outright, while a released CLI writes none and leaves
+// containers unlabeled without raising anything. Both outcomes are decided by
+// the agent's own Core at container creation, and the only thing that reaches
+// the CLI is the identity resolved here — which is what an agent echoes as its
+// acknowledgement, and all the guard on Runner.Init ever compares.
+//
+// So a refused marker and a missing one are indistinguishable to the CLI: both
+// resolve to nothing. Neither direction is something the guard can catch, which
+// is why the release gate is a rebuild of the fleet rather than a check the CLI
+// could make on its own.
+func TestMixedGenerationContainerRecoveryMarkersResolve(t *testing.T) {
+	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	id, namespace := containerRecoveryDigests(t)
+	// A host that cannot prove a durable identity projects the exact scope
+	// alone, so the namespace may be empty here. An untagged marker needs some
+	// trailing field to be ambiguous at all, and any valid digest carries the
+	// ambiguity this generation refuses to guess at.
+	trailing := namespace
+	if trailing == "" {
+		trailing = id
+	}
+	// A marker is honored for the process that wrote it and for the child that
+	// inherited it at exec, and for nothing else.
+	foreign := os.Getpid() + 1
+	if foreign == os.Getppid() {
+		foreign++
+	}
+	for _, tc := range []struct{ name, marker, identity string }{
+		{"a released CLI projects nothing", "", ""},
+		{"the untagged generation, ambiguous trailing field", fmt.Sprintf("%d:%s:%s", os.Getpid(), id, trailing), ""},
+		{"the untagged generation, exact scope alone", fmt.Sprintf("%d:%s", os.Getpid(), id), id + ":"},
+		{"neither this process nor its parent", fmt.Sprintf("%d:v2:%s:%s", foreign, id, trailing), ""},
+		{"this generation", fmt.Sprintf("%d:v2:%s:%s", os.Getpid(), id, namespace), id + ":" + namespace},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, tc.marker)
+			require.Equal(t, tc.identity, dockerrun.InheritedContainerRecoveryScope())
+		})
+	}
+}
+
+// A CLI of this generation can itself be launched under a marker another one
+// left behind — a nested run, the re-exec'd daemon, an agent shelling out. The
+// flow has to project its own ownership over whatever it inherited: agents
+// spawned under a marker this generation refuses create no containers at all,
+// and agents spawned under another flow's identity label theirs with ownership
+// no sweep of this flow can ever match.
+func TestFlowProjectsOverAnInheritedForeignMarker(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	id, namespace := containerRecoveryDigests(t)
+	trailing := namespace
+	if trailing == "" {
+		trailing = id
+	}
+	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, fmt.Sprintf("%d:%s:%s", os.Getpid(), id, trailing))
+	require.Empty(t, dockerrun.InheritedContainerRecoveryScope(), "the fixture must be a marker this generation refuses")
+
+	flow, workspace := newProjectionWorkspaceFlow(t, RunMode, false)
+	require.NoError(t, flow.InitManagers(context.Background()))
+
+	expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), "from-yaml")
+	require.NoError(t, err)
+	scope, err := flow.ContainerRecoveryScope()
+	require.NoError(t, err)
+	require.Equal(t, expected, scope)
+	require.NotEmpty(t, dockerrun.InheritedContainerRecoveryScope())
 }
