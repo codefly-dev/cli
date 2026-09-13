@@ -141,55 +141,62 @@ func TestVerifiedReuseFallsBackToExecutionWhenEvidenceIsUnusable(t *testing.T) {
 	_, workspace := loadReuseFixture(t)
 	plan := cacheTestPlan(workspace, "management/consumer")
 
-	for name, damage := range map[string]func(t *testing.T, store string, record *ciResultRecord){
-		"forged signature": func(t *testing.T, store string, record *ciResultRecord) {
+	for name, unusable := range map[string]struct {
+		damage func(t *testing.T, store string, record *ciResultRecord)
+		reason string
+	}{
+		"forged signature": {reason: "not authentic", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Signature = "hmac-sha256:" + strings.Repeat("00", 32)
 			writeReuseRecord(t, store, record)
-		},
-		"untrusted producing reference": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"untrusted producing reference": {reason: "untrusted reference", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Reference = "refs/pull/7/merge"
 			resignReuseRecord(t, store, record)
-		},
-		"missing run": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"missing run": {reason: "no traceable producing run", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Run = ""
 			resignReuseRecord(t, store, record)
-		},
-		"missing task": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"separator-only run": {reason: "no traceable producing run", damage: func(t *testing.T, store string, record *ciResultRecord) {
+			record.Run = "/"
+			resignReuseRecord(t, store, record)
+		}},
+		"missing task": {reason: "does not match the requested task", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Task = ""
 			resignReuseRecord(t, store, record)
-		},
-		"different task": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"different task": {reason: "does not match the requested task", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Task = "compile:management/worker"
 			resignReuseRecord(t, store, record)
-		},
-		"different phase": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"different phase": {reason: "does not match the requested task", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Phase = "lint"
 			resignReuseRecord(t, store, record)
-		},
-		"different suite": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"different suite": {reason: "does not match the requested task", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Suite = "integration"
 			resignReuseRecord(t, store, record)
-		},
-		"different service": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"different service": {reason: "does not match the requested task", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Service = "management/worker"
 			resignReuseRecord(t, store, record)
-		},
-		"future success": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"future success": {reason: "too far in the future", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.RecordedAt = formatReportTime(time.Now().Add(time.Hour))
 			resignReuseRecord(t, store, record)
-		},
-		"recorded failure": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"recorded failure": {reason: "not a success", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.Outcome = "failed"
 			resignReuseRecord(t, store, record)
-		},
-		"incompatible identity contract": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"incompatible identity contract": {reason: "different identity contract", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.IdentitySchema = cacheIdentitySchemaVersion + 1
 			resignReuseRecord(t, store, record)
-		},
-		"malformed record": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"malformed record": {reason: "cannot be read", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			writeCacheTestFile(t, (&ciResultStore{root: store}).recordPath(record.Identity), "{not json")
-		},
-		"vanished artifact": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"vanished artifact": {reason: "restore artifact", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			path, err := (&ciResultStore{root: store}).blobPath(record.Evidence.Artifacts[0].SHA256)
 			if err != nil {
 				t.Fatal(err)
@@ -197,14 +204,14 @@ func TestVerifiedReuseFallsBackToExecutionWhenEvidenceIsUnusable(t *testing.T) {
 			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
-		},
-		"tampered artifact": func(t *testing.T, store string, record *ciResultRecord) {
+		}},
+		"tampered artifact": {reason: "restore artifact", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			path, err := (&ciResultStore{root: store}).blobPath(record.Evidence.Artifacts[0].SHA256)
 			if err != nil {
 				t.Fatal(err)
 			}
 			writeCacheTestFile(t, path, "replaced payload")
-		},
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := t.TempDir()
@@ -221,7 +228,7 @@ func TestVerifiedReuseFallsBackToExecutionWhenEvidenceIsUnusable(t *testing.T) {
 			if !cold.task(t).Cache.Stored {
 				t.Fatalf("cold run did not publish: %#v", cold.task(t).Cache)
 			}
-			damage(t, store, readReuseRecord(t, store, cold.task(t).Cache.Key))
+			unusable.damage(t, store, readReuseRecord(t, store, cold.task(t).Cache.Key))
 
 			warm := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), withReuseAction(produce))
 			if warm.executed != 1 {
@@ -230,8 +237,12 @@ func TestVerifiedReuseFallsBackToExecutionWhenEvidenceIsUnusable(t *testing.T) {
 			if warm.task(t).Status != reportStatusPassed {
 				t.Fatalf("task status = %s", warm.task(t).Status)
 			}
-			if warm.task(t).Cache.Status != cacheStatusMiss || warm.task(t).Cache.StatusReason == "" {
+			if warm.task(t).Cache.Status != cacheStatusMiss {
 				t.Fatalf("%s was not reported as an unusable record: %#v", name, warm.task(t).Cache)
+			}
+			if !strings.Contains(warm.task(t).Cache.StatusReason, unusable.reason) {
+				t.Fatalf("%s rejected for the wrong reason: got %q, want it to mention %q",
+					name, warm.task(t).Cache.StatusReason, unusable.reason)
 			}
 		})
 	}
@@ -336,18 +347,120 @@ func TestVerifiedReusePublisherRequiresRunProvenance(t *testing.T) {
 		reference: reuseTestReference, trustedReferences: []string{reuseTestReference},
 		maxAge: time.Hour,
 	}
-	if _, err := newCIResultReuse(context.Background(), workspace, &flags); err == nil || !strings.Contains(err.Error(), "--reuse-run") {
-		t.Fatalf("missing publisher run error = %v", err)
+	// Missing run provenance withholds publication. It must never abort the run:
+	// a protected-reference run that cannot publish still has to verify
+	// everything it was asked to, rather than going red with nothing executed.
+	reuse, err := newCIResultReuse(context.Background(), workspace, &flags)
+	if err != nil {
+		t.Fatalf("missing run provenance aborted the run instead of withholding publication: %v", err)
 	}
+	if reuse.publishes() || !strings.Contains(reuse.publishBlockedReason(), "run provenance") {
+		t.Fatalf("publish refusal = %v %q", reuse.publishes(), reuse.publishBlockedReason())
+	}
+
+	// A value made only of separators is what the documented
+	// "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" collapses to off GitHub Actions. It
+	// identifies no run and must not satisfy the provenance requirement.
+	flags.run = "/"
+	reuse, err = newCIResultReuse(context.Background(), workspace, &flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reuse.publishes() || !strings.Contains(reuse.publishBlockedReason(), "run provenance") {
+		t.Fatalf("separator-only run accepted as provenance: %v %q", reuse.publishes(), reuse.publishBlockedReason())
+	}
+
+	flags.run = ""
 	flags.reference = "refs/pull/7/merge"
-	if _, err := newCIResultReuse(context.Background(), workspace, &flags); err != nil {
+	reuse, err = newCIResultReuse(context.Background(), workspace, &flags)
+	if err != nil {
 		t.Fatalf("read-only reuse needs no publishing run: %v", err)
 	}
+	if !strings.Contains(reuse.publishBlockedReason(), "untrusted reference") {
+		t.Fatalf("untrusted reference refusal = %q", reuse.publishBlockedReason())
+	}
+
 	flags.reference = reuseTestReference
 	t.Setenv("CODEFLY_CI_RUN", "hosted-run-123/attempt-2")
-	reuse, err := newCIResultReuse(context.Background(), workspace, &flags)
+	reuse, err = newCIResultReuse(context.Background(), workspace, &flags)
 	if err != nil || reuse.run != "hosted-run-123/attempt-2" {
 		t.Fatalf("publisher run from environment = %v, %v", reuse, err)
+	}
+	if !reuse.publishes() {
+		t.Fatalf("complete provenance still refused: %q", reuse.publishBlockedReason())
+	}
+}
+
+// A run without traceable provenance must still execute and pass every task,
+// reporting why nothing was published. Aborting at construction would take a
+// protected reference red with no tests run at all.
+func TestVerifiedReuseWithoutRunProvenanceStillExecutesAndWithholdsPublication(t *testing.T) {
+	_, workspace := loadReuseFixture(t)
+	store := t.TempDir()
+	plan := cacheTestPlan(workspace, "management/consumer")
+	t.Setenv(ciResultKeyVariable, "reuse-test-signing-key")
+
+	reuse, err := newCIResultReuse(context.Background(), workspace, &ciReuseFlags{
+		enabled: true, store: store, environment: "runner@sha256:aaa",
+		reference: reuseTestReference, trustedReferences: []string{reuseTestReference},
+		run: "/", maxAge: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := runReuseGate(t, workspace, plan, reuse)
+	if run.executed != 1 {
+		t.Fatalf("run without provenance executed %d tasks, want 1", run.executed)
+	}
+	if run.task(t).Status != reportStatusPassed {
+		t.Fatalf("task status = %s", run.task(t).Status)
+	}
+	if run.task(t).Cache.Stored {
+		t.Fatal("a run without traceable provenance published a result")
+	}
+	if !strings.Contains(run.task(t).Cache.StatusReason, "run provenance") {
+		t.Fatalf("withheld-publication reason = %q", run.task(t).Cache.StatusReason)
+	}
+	if record, err := (&ciResultStore{root: store}).lookup(run.task(t).Cache.Key); err != nil || record != nil {
+		t.Fatalf("run without provenance seeded the store: %#v %v", record, err)
+	}
+}
+
+// Ordinary NTP skew between a publisher and a consumer must not destroy reuse,
+// but a badly wrong clock must not extend the freshness window either.
+func TestVerifiedReuseToleratesOrdinaryClockSkewButNotABadlyWrongClock(t *testing.T) {
+	_, workspace := loadReuseFixture(t)
+	plan := cacheTestPlan(workspace, "management/consumer")
+
+	for name, skew := range map[string]time.Duration{
+		"publisher a second fast":          time.Second,
+		"publisher just inside tolerance":  ciReuseClockSkewTolerance - time.Minute,
+		"publisher just outside tolerance": ciReuseClockSkewTolerance + time.Minute,
+		"publisher an hour fast":           time.Hour,
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := t.TempDir()
+			publisher := newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference)
+			publisher.now = func() time.Time { return time.Now().Add(skew) }
+			if cold := runReuseGate(t, workspace, plan, publisher); !cold.task(t).Cache.Stored {
+				t.Fatalf("publisher did not store: %#v", cold.task(t).Cache)
+			}
+
+			warm := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference))
+			if skew <= ciReuseClockSkewTolerance {
+				if warm.executed != 0 || warm.task(t).Status != reportStatusReused {
+					t.Fatalf("ordinary skew of %v destroyed reuse: executed=%d reason=%q",
+						skew, warm.executed, warm.task(t).Cache.StatusReason)
+				}
+				return
+			}
+			if warm.executed != 1 {
+				t.Fatalf("a clock %v fast extended the freshness window", skew)
+			}
+			if !strings.Contains(warm.task(t).Cache.StatusReason, "too far in the future") {
+				t.Fatalf("skew rejection reason = %q", warm.task(t).Cache.StatusReason)
+			}
+		})
 	}
 }
 

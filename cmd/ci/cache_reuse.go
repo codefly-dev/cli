@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
@@ -25,7 +26,29 @@ const (
 	// protected reference may hold it: a writer without it cannot publish a
 	// record any verifier will accept, whatever access it has to the backend.
 	ciResultKeyVariable = "CODEFLY_CI_RESULT_KEY"
+	// ciReuseClockSkewTolerance is how far a record's success time may lead this
+	// run's clock before the record is refused. Producer and consumer are
+	// different machines, so ordinary NTP skew puts a freshly published record
+	// slightly in the future; rejecting at exactly zero converts that skew into a
+	// total loss of reuse for the newest — and therefore most valuable — records.
+	// A record may still not outlive its freshness window by more than this, so a
+	// publisher whose clock is badly wrong cannot meaningfully extend it.
+	ciReuseClockSkewTolerance = 5 * time.Minute
 )
+
+// hasRunIdentity reports whether a run provenance value identifies anything. A
+// value made only of separators carries no provenance: the documented
+// "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" collapses to "/" wherever those variables
+// are unset, which a bare non-empty check accepts and which makes the recorded
+// provenance untraceable.
+func hasRunIdentity(run string) bool {
+	for _, character := range run {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			return true
+		}
+	}
+	return false
+}
 
 // ciResultRecord is one authenticated successful task execution. It is the unit
 // a later run may stand in for, and it is self-describing: a verifier needs the
@@ -235,9 +258,6 @@ func newCIResultReuse(ctx context.Context, workspace *resources.Workspace, flags
 		outputDirectory:     resolveCIOutputDirectory(workspace, ciReportOutput),
 		now:                 time.Now,
 	}
-	if reuse.publishes() && reuse.run == "" {
-		return nil, fmt.Errorf("publishing reusable results requires --reuse-run or CODEFLY_CI_RUN for successful execution provenance")
-	}
 	if root, err := gitRoot(ctx, workspace.Dir()); err == nil {
 		if revision, revErr := gitOutput(ctx, root, "rev-parse", "HEAD^{commit}"); revErr == nil {
 			reuse.revision = strings.TrimSpace(string(revision))
@@ -251,7 +271,21 @@ func newCIResultReuse(ctx context.Context, workspace *resources.Workspace, flags
 // pull-request run cannot seed the records a protected reference is verified
 // against even when it can reach the same backend.
 func (reuse *ciResultReuse) publishes() bool {
-	return reuse.trusted[reuse.reference]
+	return reuse.publishBlockedReason() == ""
+}
+
+// publishBlockedReason explains why this run may not write results, or is empty
+// when it may. Publishing is an optimization for later runs, so every reason
+// here withholds the record and leaves this run executing and reporting
+// normally: a run that cannot publish still verifies everything it was asked to.
+func (reuse *ciResultReuse) publishBlockedReason() string {
+	if !reuse.trusted[reuse.reference] {
+		return "results are not published from untrusted reference " + reuse.reference
+	}
+	if !hasRunIdentity(reuse.run) {
+		return "results are not published without traceable run provenance from --reuse-run or CODEFLY_CI_RUN"
+	}
+	return ""
 }
 
 // reuseTimeSensitive marks phases whose correct answer depends on data that
@@ -326,11 +360,16 @@ func (reuse *ciResultReuse) lookup(identity *CICacheIdentity, phase string) ciRe
 		return missedReuse("recorded result is not a success")
 	case !reuse.trusted[record.Reference]:
 		return missedReuse("result was produced on untrusted reference " + record.Reference)
-	case strings.TrimSpace(record.Run) == "":
-		return missedReuse("result record has no producing run")
+	case !hasRunIdentity(record.Run):
+		return missedReuse("result record has no traceable producing run")
+	// The identity key already binds phase, suite and service, so an authentic
+	// record that matches it necessarily agrees here. This is an internal
+	// consistency assertion against a publisher that ever derives a task ID and
+	// an identity differently — not an authentication control, which the
+	// signature check above already is.
 	case record.Task != reportTaskID(phase, identity.Inputs.Suite, identity.Inputs.Service) ||
 		record.Phase != phase || record.Service != identity.Inputs.Service ||
-		normalizedCacheSuite(record.Phase, record.Suite) != identity.Inputs.Suite:
+		normalizedCacheSuite(phase, record.Suite) != identity.Inputs.Suite:
 		return missedReuse("result record task does not match the requested task")
 	case record.Environment != reuse.environment:
 		return missedReuse("result was produced in a different execution environment")
@@ -340,8 +379,8 @@ func (reuse *ciResultReuse) lookup(identity *CICacheIdentity, phase string) ciRe
 		return missedReuse("result record has no readable success time")
 	}
 	age := reuse.now().Sub(recordedAt)
-	if age < 0 {
-		return missedReuse("result record success time is in the future")
+	if age < -ciReuseClockSkewTolerance {
+		return missedReuse("result record success time is too far in the future")
 	}
 	if age > freshness {
 		return missedReuse("recorded result is older than the configured reuse window")

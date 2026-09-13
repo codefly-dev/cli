@@ -699,17 +699,29 @@ normally and the report records why:
 
 - the identity is schema v2, complete, and carries no limitation;
 - a record exists for exactly that identity, and its signature verifies;
-- the record's outcome is a success, its reference is trusted, its producing run
-  is named, and its task ID, phase, suite and service match the requested task;
-- the environment matches and the success time is not in the future or older
-  than the configured freshness window;
+- the record's outcome is a success, its reference is trusted, and its producing
+  run is named by a value that identifies a run rather than one made only of
+  separators;
+- the record's task ID, phase, suite and service agree with the requested task.
+  The identity key already binds phase, suite and service, so an authentic
+  record that matches it necessarily agrees; this is an internal consistency
+  assertion against a publisher that ever derives a task ID and an identity
+  differently, not an authentication control — the signature is that;
+- the environment matches, and the success time is neither older than the
+  configured freshness window nor more than five minutes ahead of this run's
+  clock. The tolerance absorbs ordinary skew between a publisher and a consumer,
+  which would otherwise destroy reuse of the newest records, while still bounding
+  how far a wrong clock can extend the window;
 - every artifact the record names is restored from the store, written
   atomically, and re-verified on disk against its recorded digest.
 
 Missing, failed, malformed, expired, untrusted, forged and unrestorable records
 all fall back to execution. A storage failure is a miss, never a success.
 
-Publishing requires a run identity (`--reuse-run` or `CODEFLY_CI_RUN`).
+Publishing requires a run identity (`--reuse-run` or `CODEFLY_CI_RUN`). A run
+without one consumes evidence normally, executes and reports every task, and
+withholds only the record — publication is an optimization for later runs and
+never decides whether this run passes.
 
 Records are published only after a task actually executed and passed. Artifact
 bytes are re-read from the workspace and re-hashed at publication, so a record
