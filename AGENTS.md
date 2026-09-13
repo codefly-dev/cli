@@ -44,6 +44,7 @@ runbook whenever you do a multi-step operational task a second time.
 - **Deployment completion stages** (rendered / applied / bootstrapped / healthy, bootstrap ordering, expand/contract schema rollout) → [docs/deployment-completion.md](docs/deployment-completion.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
 - **Supported CLI/core/agent combinations** (the conformance matrix, and why a required row cannot skip itself) → [docs/supported-matrix.md](docs/supported-matrix.md)
+- **Container-recovery marker rollout** (which agents read the process marker, which create containers, what each needs before a fleet release) → [docs/container-recovery-rollout.md](docs/container-recovery-rollout.md)
 - **Daemon** → [docs/daemon.md](docs/daemon.md)
 - **Dashboard** → [docs/dashboard.md](docs/dashboard.md)
 - **MCP server** → [docs/mcp-server.md](docs/mcp-server.md)
