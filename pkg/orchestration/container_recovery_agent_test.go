@@ -57,6 +57,8 @@ func TestContainerRecoveryRejectsAReleasedLegacyAgent(t *testing.T) {
 	for _, runtimeContext := range []string{resources.RuntimeContextContainer, resources.RuntimeContextFree} {
 		runner := &Runner{
 			runtimeContext: runtimeContext,
+			// What Flow.configureRunner hands every runner it builds.
+			containerRecoveryIdentity: dockerrun.InheritedContainerRecoveryScope(),
 			instance: &services.Instance{
 				Identity:               &resources.ServiceIdentity{Name: "legacy", Module: "test"},
 				ContainerRecoveryScope: strings.Join(acknowledgement, ""),

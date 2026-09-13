@@ -66,9 +66,11 @@ type Flow struct {
 
 	scope string
 
-	// containerRecoveryScope is this flow's projected container ownership,
+	// containerRecoveryScope is this flow's projected container ownership and
+	// containerRecoveryIdentity the acknowledgement its agents echo back, both
 	// resolved once by ContainerRecoveryScope().
-	containerRecoveryScope dockerrun.ContainerRecoveryScope
+	containerRecoveryScope    dockerrun.ContainerRecoveryScope
+	containerRecoveryIdentity string
 
 	runtimeContext string
 	// docker records whether the Docker engine is reachable and, for messaging,
@@ -1415,11 +1417,19 @@ func (flow *Flow) managerDependencies(ctx context.Context) ([]architecture.Servi
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
-	// Project ownership before anything is spawned: New() starts the agent
-	// process, which inherits the marker at exec and can create containers from
-	// its Init onwards.
-	if _, err := flow.ContainerRecoveryScope(); err != nil {
-		return w.Wrap(err)
+	// Project ownership before anything is spawned, and hold it for every spawn
+	// below: New() starts the agent process, which inherits the marker at exec
+	// and can create containers from its Init onwards.
+	containerRecoveryProjection.Lock()
+	defer containerRecoveryProjection.Unlock()
+	if _, err := flow.projectContainerRecovery(); err != nil {
+		// A host that cannot resolve ownership — no readable PID namespace, an
+		// unwritable home — still has to run. Core degrades that same condition
+		// to "no durable identity" rather than stopping every containerized
+		// run, and failing here would take out build, test, ci, deploy, sync,
+		// gitops and the control plane on hosts where they work today. Say so
+		// loudly and continue unlabeled, as these paths did before.
+		w.Warn("cannot project container recovery ownership: containers this flow creates will not be recoverable by scope", wool.Field("error", err.Error()))
 	}
 	remotes := make(map[string]*Remote)
 	var dependencyOptions []architecture.DependencyOption
@@ -1634,6 +1644,7 @@ func producerExposesReference(producer *resources.Service, reference *resources.
 }
 
 func (flow *Flow) configureRunner(runner *Runner, service *resources.Service) {
+	runner.containerRecoveryIdentity = flow.containerRecoveryIdentity
 	runner.WithRuntimeContext(flow.runtimeContextFor(service))
 	runner.WithFixture(flow.fixture)
 	runner.WithOverrides(flow.overridesFor(service))

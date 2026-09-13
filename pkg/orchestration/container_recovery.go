@@ -3,10 +3,19 @@ package orchestration
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
 )
+
+// containerRecoveryProjection serializes projecting the marker with the agent
+// spawning that inherits it. The marker is a single process-global environment
+// variable while flows are not process-global (pkg/engine.FlowManager holds
+// several at once), so a second flow projecting between this flow's projection
+// and its spawns would hand these agents an ownership no sweep of this flow can
+// match.
+var containerRecoveryProjection sync.Mutex
 
 // ContainerRecoveryScope resolves this flow's ownership identity and projects it
 // into the environment every agent the flow spawns inherits. It lives here,
@@ -15,30 +24,49 @@ import (
 // test, ci, deploy, sync, validation, gitops and the control plane, not only
 // run — and a container created while the marker is missing carries no recovery
 // label, so no sweep on any Core generation can ever match it.
-//
-// Projection is process-global (an environment variable) and the identity is
-// fixed by the flow's workspace and naming scope, so it is resolved once and
-// reused: the sweep asks for it before InitManagers does.
 func (flow *Flow) ContainerRecoveryScope() (dockerrun.ContainerRecoveryScope, error) {
-	if flow.containerRecoveryScope != (dockerrun.ContainerRecoveryScope{}) {
-		return flow.containerRecoveryScope, nil
+	containerRecoveryProjection.Lock()
+	defer containerRecoveryProjection.Unlock()
+	return flow.projectContainerRecovery()
+}
+
+// projectContainerRecovery requires containerRecoveryProjection to be held.
+// Re-projecting an already resolved scope is not redundant: another flow in
+// this process may have overwritten the variable since, and agents spawned
+// after that point would inherit the other flow's ownership.
+func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, error) {
+	if flow.containerRecoveryIdentity != "" {
+		return flow.containerRecoveryScope, dockerrun.SetContainerRecoveryScope(flow.containerRecoveryScope)
+	}
+	// Ownership is a hash of home, workspace and naming scope. Resolving one
+	// from a partial flow would project a DIFFERENT durable identity rather
+	// than none, and containers labeled with it match no later sweep — so
+	// refuse instead of substituting a default.
+	if flow.workspace == nil {
+		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("container recovery requires a workspace")
+	}
+	env := flow.Environment()
+	if env == nil {
+		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("container recovery requires a resolved environment")
 	}
 	home := resources.CodeflyHomeDir()
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("prepare container recovery home: %w", err)
 	}
-	var namingScope string
-	if env := flow.Environment(); env != nil {
-		namingScope = env.NamingScope
-	}
-	scope, err := dockerrun.NewContainerRecoveryScope(home, flow.workspace.Dir(), namingScope)
+	scope, err := dockerrun.NewContainerRecoveryScope(home, flow.workspace.Dir(), env.NamingScope)
 	if err != nil {
 		return scope, fmt.Errorf("resolve container recovery ownership: %w", err)
 	}
 	if err := dockerrun.SetContainerRecoveryScope(scope); err != nil {
 		return scope, err
 	}
-	flow.containerRecoveryScope = scope
+	// The identity agents echo back, captured from our own projection so that
+	// validation never has to re-read a variable another flow can overwrite.
+	identity := dockerrun.InheritedContainerRecoveryScope()
+	if identity == "" {
+		return scope, fmt.Errorf("projected container recovery identity is unreadable")
+	}
+	flow.containerRecoveryScope, flow.containerRecoveryIdentity = scope, identity
 	return scope, nil
 }
 
@@ -48,14 +76,15 @@ func (runner *Runner) validateContainerRecovery() error {
 	if runner.runtimeContext == resources.RuntimeContextNative || runner.runtimeContext == resources.RuntimeContextNix {
 		return nil
 	}
-	if os.Getenv(dockerrun.ContainerRecoveryScopeEnvironment) == "" {
+	// Compare against what THIS flow projected, never the live process
+	// variable: a concurrent flow overwrites that variable, while the agent's
+	// acknowledgement was captured when it was spawned (and a cached agent's
+	// when some earlier flow spawned it). Reading the variable here reports a
+	// correctly rebuilt agent as stale.
+	if runner.containerRecoveryIdentity == "" {
 		return nil
 	}
-	expected := dockerrun.InheritedContainerRecoveryScope()
-	if expected == "" {
-		return fmt.Errorf("cannot initialize Docker with an invalid container recovery identity")
-	}
-	if runner.instance.ContainerRecoveryScope != expected {
+	if runner.instance.ContainerRecoveryScope != runner.containerRecoveryIdentity {
 		return fmt.Errorf("agent for %s did not acknowledge this run's container recovery scope; rebuild the agent against the CLI's pinned Core before running with Docker (upgrading the CLI alone does not update agent binaries); existing unlabeled containers require explicit recovery by container ID", runner.instance.Unique())
 	}
 	return nil
