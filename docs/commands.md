@@ -1218,9 +1218,47 @@ suppresses normal narration and emits the same report payload on stdout. Every
 task includes Codefly's content-addressed cache key and input digests. The
 default gate is `verify`, `sync-drift`, `lint`, `compile`, `test`, `audit`,
 `sbom`, and `build`; reports retain typed integrity, drift, audit, and artifact
-evidence. Cache
-status is currently `identity_only`; providers must not invent keys or infer a
-hit until Codefly adds restore/store outcomes.
+evidence.
+
+### Verified result reuse
+
+`codefly ci run --reuse-results` stands a task on a previously verified
+successful execution of the same inputs instead of running it again. It is
+opt-in and needs an explicit scope: `--reuse-store` (or
+`$CODEFLY_CI_RESULT_STORE`) for the record and artifact directory,
+`--reuse-environment` (or `$CODEFLY_CI_REUSE_ENVIRONMENT`) to name the execution
+environment — typically the runner image digest — and at least one
+`--reuse-trusted-reference`. `--reuse-reference` names the reference this run
+publishes under, `--reuse-run` its provenance, and `--reuse-max-age` /
+`--reuse-audit-max-age` bound how old a reusable result may be. Dependency
+audits default to never being reused, because advisory data changes
+independently of source.
+
+```sh
+codefly ci run --base <revision> --reuse-results \
+  --reuse-store /cache/codefly-results \
+  --reuse-environment ghcr.io/example/runner@sha256:... \
+  --reuse-reference "$GITHUB_REF" --reuse-trusted-reference refs/heads/main
+```
+
+Records are authenticated with an HMAC keyed by `CODEFLY_CI_RESULT_KEY`, so
+authenticity does not depend on the storage backend. **Expose that key only to
+runs on a protected reference**: a run that can write to the store but does not
+hold the key cannot publish a record any verifier accepts, and Codefly also
+refuses to publish from a run whose own reference is not declared trusted.
+Missing, failed, malformed, expired, untrusted or unrestorable records all fall
+back to executing the task; a storage failure is never a success. The `build`
+phase is never reused — its container images are not recorded in the report, so
+Codefly cannot restore or verify them — and the workspace `verify` phase and the
+release commands likewise keep full execution.
+
+Each task's `cache.status` reports this run's reuse outcome — `identity_only`
+when reuse is off, `ineligible`, `miss` or `hit` — with `cache.status_reason`
+explaining anything but a hit, and `cache.stored` saying whether this run
+published its own result. A reused task reports status `reused` rather than
+`passed`, and carries `cache.reuse` identifying the producing reference, run and
+revision, the matched identity, the original success time, and every restored
+artifact digest. Providers must not invent keys or infer a hit.
 
 ---
 
