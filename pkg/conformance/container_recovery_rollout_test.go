@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -230,12 +231,37 @@ const nativeQualificationWorkflow = "container-recovery-native.yml"
 
 // nativelyQualifiedAgents maps the agent repository each matrix entry rebuilds
 // to the identity the qualification resolves that build under.
+func nativelyQualifiedAgents(t *testing.T) map[string]string {
+	t.Helper()
+	path := filepath.Join(repositoryRoot(t), ".github", "workflows", nativeQualificationWorkflow)
+	qualified, problems, err := parseNativelyQualifiedAgents(readFile(t, path))
+	if err != nil {
+		t.Fatalf("parse %s: %v", nativeQualificationWorkflow, err)
+	}
+	for _, problem := range problems {
+		t.Errorf("%s %s", nativeQualificationWorkflow, problem)
+	}
+	if len(qualified) == 0 {
+		t.Fatalf("%s qualifies no agent", nativeQualificationWorkflow)
+	}
+	return qualified
+}
+
+// parseNativelyQualifiedAgents reads the qualification matrix out of a workflow
+// document, returning what it qualifies and everything wrong with how it says
+// so.
 //
 // The matrix is read as a parsed document rather than from the file's text:
 // every repository name also appears in this workflow's step names, so a
 // substring test would keep reporting a deleted entry as covered.
-func nativelyQualifiedAgents(t *testing.T) map[string]string {
-	t.Helper()
+//
+// A repository named twice is reported rather than merged. Merging would keep
+// whichever row YAML order puts last, so a duplicate carrying the wrong
+// identity would be caught or missed depending on where it was pasted — and
+// the job it expands into passes either way, because the rebuilt binary
+// answers the acknowledgement the same whatever identity it was installed
+// under.
+func parseNativelyQualifiedAgents(payload string) (map[string]string, []string, error) {
 	var document struct {
 		Jobs map[string]struct {
 			Strategy struct {
@@ -248,25 +274,89 @@ func nativelyQualifiedAgents(t *testing.T) map[string]string {
 			} `yaml:"strategy"`
 		} `yaml:"jobs"`
 	}
-	path := filepath.Join(repositoryRoot(t), ".github", "workflows", nativeQualificationWorkflow)
-	if err := yaml.Unmarshal([]byte(readFile(t, path)), &document); err != nil {
-		t.Fatalf("parse %s: %v", nativeQualificationWorkflow, err)
+	if err := yaml.Unmarshal([]byte(payload), &document); err != nil {
+		return nil, nil, err
 	}
 	qualified := map[string]string{}
+	var problems []string
 	for _, job := range document.Jobs {
 		for _, entry := range job.Strategy.Matrix.Include {
-			if entry.Agent == "" || entry.Repository == "" {
-				t.Errorf("%s has a matrix entry naming agent %q and repository %q; it must name both",
-					nativeQualificationWorkflow, entry.Agent, entry.Repository)
-				continue
+			switch {
+			case entry.Agent == "" || entry.Repository == "":
+				problems = append(problems, fmt.Sprintf("has a matrix entry naming agent %q and repository %q; it must name both",
+					entry.Agent, entry.Repository))
+			case qualified[entry.Repository] != "":
+				problems = append(problems, fmt.Sprintf("qualifies %s twice, as %q and %q; each repository must appear once, or which identity survives depends on row order",
+					entry.Repository, qualified[entry.Repository], entry.Agent))
+			default:
+				qualified[entry.Repository] = entry.Agent
 			}
-			qualified[entry.Repository] = entry.Agent
 		}
 	}
-	if len(qualified) == 0 {
-		t.Fatalf("%s qualifies no agent", nativeQualificationWorkflow)
+	return qualified, problems, nil
+}
+
+// TestNativeQualificationMatrixRejectsADuplicateRepository pins the reason the
+// matrix is not folded into a map blindly. Two rows naming one repository
+// collapse to whichever comes last, so the same mistake passes or fails on
+// where it was pasted — and neither outcome is caught downstream, because the
+// qualification job holds the binary to its repository but cannot know the
+// matrix meant to name that repository only once.
+func TestNativeQualificationMatrixRejectsADuplicateRepository(t *testing.T) {
+	matrix := func(first, second string) string {
+		return `
+jobs:
+  native:
+    strategy:
+      matrix:
+        include:
+          - agent: ` + first + `
+            repository: service-rust
+            ref: 1111111111111111111111111111111111111111
+          - agent: ` + second + `
+            repository: service-rust
+            ref: 2222222222222222222222222222222222222222
+`
 	}
-	return qualified
+	// Both orders must report, which is exactly what a last-wins map does not.
+	for _, order := range []struct{ first, second string }{
+		{"totally-wrong", "rust"},
+		{"rust", "totally-wrong"},
+	} {
+		qualified, problems, err := parseNativelyQualifiedAgents(matrix(order.first, order.second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(problems) != 1 || !strings.Contains(problems[0], "qualifies service-rust twice") {
+			t.Errorf("matrix listing service-rust as %q then %q reported %v, want one duplicate report",
+				order.first, order.second, problems)
+		}
+		if len(qualified) != 1 {
+			t.Errorf("a duplicated repository must not expand the qualified set, got %v", qualified)
+		}
+	}
+
+	// A matrix naming each repository once stays silent, so the report above
+	// is about the duplication and not about the shape of the document.
+	_, problems, err := parseNativelyQualifiedAgents(`
+jobs:
+  native:
+    strategy:
+      matrix:
+        include:
+          - agent: rust
+            repository: service-rust
+            ref: 1111111111111111111111111111111111111111
+          - agent: go
+            repository: service-go
+            ref: 2222222222222222222222222222222222222222
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("a matrix naming each repository once reported %v", problems)
+	}
 }
 
 // TestNativeQualificationCoversEveryCompanionRow holds the native qualification
@@ -278,9 +368,10 @@ func nativelyQualifiedAgents(t *testing.T) map[string]string {
 // failure this test exists to make loud.
 func TestNativeQualificationCoversEveryCompanionRow(t *testing.T) {
 	qualified := nativelyQualifiedAgents(t)
+	rollout := Rollout()
 	classified := map[string]bool{}
-	for i := range Rollout().Agents {
-		agent := &Rollout().Agents[i]
+	for i := range rollout.Agents {
+		agent := &rollout.Agents[i]
 		if agent.Creates != CreatesInCompanion && agent.Creates != CreatesInBoth {
 			continue
 		}

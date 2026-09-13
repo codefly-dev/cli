@@ -188,7 +188,16 @@ change: it rebuilds every row that reaches a container through a Core companion
 projected identity back verbatim in the `codefly-container-recovery-scope`
 header, retaining each log as an artifact. The matrix cannot quietly shrink
 back to one row: `pkg/conformance` fails if it and the inventory disagree about
-which rows reach a container that way.
+which rows reach a container that way, or if one repository is listed twice.
+
+Each rebuilt binary is held to the repository its row names, read from the
+binary's own build information. The agent identity a row carries only selects
+the cache path the binary is installed at, and an agent answers the
+acknowledgement the same wherever it sits, so without that check a row passes
+while qualifying a different agent's build entirely. Separately, a weekly
+scheduled job reports any pinned ref whose default branch has moved past it:
+nothing else refreshes those pins, and a gate qualifying source the fleet no
+longer publishes reports success for work nobody did.
 
 Observed on 2026-09-13, rebuilt on `b3470f0096cd` and run against the real
 agent processes: all five echo the identity exactly — `go` 0.0.48, `go-grpc`
