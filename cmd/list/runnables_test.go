@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,16 +86,16 @@ func TestListRunnablesJSONCarriesIdentityAndFacilities(t *testing.T) {
 	cmd, buf := newListTestCmd()
 	require.NoError(t, listRunnables(cmd))
 
-	var entries []runnableListEntry
+	var entries []runnablespkg.Identity
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 2)
-	byName := map[string]runnableListEntry{}
+	byName := map[string]runnablespkg.Identity{}
 	for _, entry := range entries {
 		byName[entry.Name] = entry
 	}
 	require.Equal(t, "1.2.3", byName["summarize"].Version)
 	require.Equal(t, "codefly.dev/python:0.0.1", byName["summarize"].Agent)
-	require.Equal(t, []string{"native", "kubernetes"}, byName["summarize"].Facilities)
+	require.Equal(t, []string{"native", "kubernetes"}, byName["summarize"].Execution.Facilities)
 	require.Equal(t, "test-ws", byName["word-count"].Module)
 }
 

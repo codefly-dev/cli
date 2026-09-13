@@ -106,6 +106,11 @@ Each command with subcommands has a `cmd/<name>/` package. See
 - **pkg/cliupdate/** — Version stamping (`version`/`commit`/`buildDate` set via ldflags at
   release), self-update, and the release-signing certificate.
 - **pkg/platform/** / **pkg/gateway/** — Platform ops and Mind Gateway gRPC server.
+- **pkg/agentkinds/** — the one owner of the short agent kind a user types (`runnable`)
+  ↔ the kind core registers (`codefly:runnable`). Used by `codefly agent install --kind`
+  and the MCP `list_agents`/`agent_info` schemas so the convention has a single copy.
+- **pkg/runnables/** — the one projection of a `resources.Runnable` that every listing
+  surface emits (`list runnables --json`, `show runnable --json`, MCP `list_runnables`).
 - **pkg/cli/**, **pkg/builder/**, **pkg/deployments/**, **pkg/generators/**, **pkg/imports/**,
   **pkg/observability/**, **pkg/types/**, **pkg/web/** — supporting packages.
 

@@ -107,7 +107,7 @@ func TestRunnableCommandRequiresExactlyOneName(t *testing.T) {
 
 func TestShowRunnableRendersContractAndExecution(t *testing.T) {
 	t.Chdir(writeShowRunnableWorkspace(t, storeServiceWithTCP))
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 
 	cmd, buf := newShowTestCmd()
 	require.NoError(t, showRunnable(cmd, "word-count"))
@@ -129,7 +129,7 @@ func TestShowRunnableRendersContractAndExecution(t *testing.T) {
 
 func TestShowRunnableJSONReportsResolvedDependency(t *testing.T) {
 	t.Chdir(writeShowRunnableWorkspace(t, storeServiceWithTCP))
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 	showRunnableJSON = true
 
 	cmd, buf := newShowTestCmd()
@@ -139,8 +139,8 @@ func TestShowRunnableJSONReportsResolvedDependency(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
 	require.Equal(t, "word-count", report.Name)
 	require.Equal(t, "0.1.0", report.Version)
-	require.Equal(t, uint64(65536), report.MaxInputBytes)
-	require.Equal(t, uint64(1<<20), report.MaxOutputBytes)
+	require.Equal(t, uint64(65536), report.Execution.MaxInputBytes)
+	require.Equal(t, uint64(1<<20), report.Execution.MaxOutputBytes)
 	require.Len(t, report.Dependencies, 1)
 	require.True(t, report.Dependencies[0].Resolved)
 	require.Empty(t, report.Dependencies[0].Problem)
@@ -153,7 +153,7 @@ func TestShowRunnableJSONReportsResolvedDependency(t *testing.T) {
 // caller needs to see which of several dependencies is the missing one.
 func TestShowRunnableReportsMissingService(t *testing.T) {
 	t.Chdir(writeShowRunnableWorkspace(t, ""))
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 	showRunnableJSON = true
 
 	cmd, buf := newShowTestCmd()
@@ -174,7 +174,7 @@ func TestShowRunnableDistinguishesAnUnloadableServiceFromAnAbsentOne(t *testing.
 	declaration := filepath.Join(dir, "services", "store", "service.codefly.yaml")
 	require.NoError(t, os.WriteFile(declaration, []byte("kind: service\nname: store\nendpoints:\n  - name: tcp\n\tapi: tcp\n"), 0o644))
 	t.Chdir(dir)
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 	showRunnableJSON = true
 
 	cmd, buf := newShowTestCmd()
@@ -207,7 +207,7 @@ endpoints: []
 	require.NotEqual(t, string(content), withoutSelection, "fixture must drop the explicit endpoint selection")
 	require.NoError(t, os.WriteFile(declaration, []byte(withoutSelection), 0o644))
 	t.Chdir(dir)
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 	showRunnableJSON = true
 
 	cmd, buf := newShowTestCmd()
@@ -232,7 +232,7 @@ func TestShowRunnableResolvesARuntimeDependencyWithAnEmptySelection(t *testing.T
 	withoutSelection := strings.Replace(string(content), "    endpoints:\n      - name: tcp\n", "", 1)
 	require.NoError(t, os.WriteFile(declaration, []byte(withoutSelection), 0o644))
 	t.Chdir(dir)
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 	showRunnableJSON = true
 
 	cmd, buf := newShowTestCmd()
@@ -292,7 +292,7 @@ execution:
 	require.NoError(t, os.MkdirAll(runnableDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(runnableDir, "runnable.codefly.yaml"), []byte(nested), 0o644))
 	t.Chdir(dir)
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 
 	cmd, buf := newShowTestCmd()
 	require.NoError(t, showRunnable(cmd, "matrix"))
@@ -318,7 +318,7 @@ endpoints:
     api: http
 `
 	t.Chdir(writeShowRunnableWorkspace(t, serviceWithoutTCP))
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 	showRunnableJSON = true
 
 	cmd, buf := newShowTestCmd()
@@ -332,7 +332,7 @@ endpoints:
 
 func TestShowRunnableUnknownNameReturnsError(t *testing.T) {
 	t.Chdir(writeShowRunnableWorkspace(t, storeServiceWithTCP))
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 
 	cmd, _ := newShowTestCmd()
 	require.Error(t, showRunnable(cmd, "absent"))
@@ -340,8 +340,165 @@ func TestShowRunnableUnknownNameReturnsError(t *testing.T) {
 
 func TestShowRunnableMissingWorkspaceReturnsError(t *testing.T) {
 	t.Chdir(t.TempDir())
-	t.Cleanup(func() { showRunnableJSON = false })
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
 
 	cmd, _ := newShowTestCmd()
 	require.Error(t, showRunnable(cmd, "word-count"))
+}
+
+// TestShowRunnableNamesAnApiOnlySelector covers the selector that projected to
+// nothing: "- api: grpc" names no endpoint, so reporting it by Name alone
+// printed "declares no endpoint " and put "" in the JSON, telling the reader
+// neither which selector failed nor why.
+//
+// The verdict itself is correct and must stay correct: a runnable's wire form
+// flattens every selector to endpoint.Name (core resources/runnable.go), so an
+// api-only selector flattens to "" and binds nothing.
+func TestShowRunnableNamesAnApiOnlySelector(t *testing.T) {
+	dir := writeShowRunnableWorkspace(t, storeServiceWithTCP)
+	declaration := filepath.Join(dir, "runnables", "word-count", "runnable.codefly.yaml")
+	content, err := os.ReadFile(declaration)
+	require.NoError(t, err)
+	apiOnly := strings.Replace(string(content), "      - name: tcp\n", "      - api: tcp\n", 1)
+	require.NotEqual(t, string(content), apiOnly, "fixture must replace the named selector")
+	require.NoError(t, os.WriteFile(declaration, []byte(apiOnly), 0o644))
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
+	showRunnableJSON = true
+
+	cmd, buf := newShowTestCmd()
+	require.NoError(t, showRunnable(cmd, "word-count"))
+
+	var report runnableReport
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
+	require.False(t, report.Dependencies[0].Resolved)
+	require.Equal(t, []string{"::tcp"}, report.Dependencies[0].Endpoints,
+		"an api-only selector must be reported as declared, not as an empty name")
+	require.Contains(t, report.Dependencies[0].Problem, "declares no endpoint ::tcp")
+	require.NotContains(t, report.Dependencies[0].Problem, "endpoint \n")
+}
+
+// TestShowRunnableKeepsALegacyEndpointlessDependencyResolved pins a rule that
+// looks like a bug and is not. core's validateBindingMappings requires a
+// mapping for a RUNTIME edge unconditionally, but for a legacy or external
+// edge only when it explicitly names endpoints; ValidateDependencyPrerequisite
+// spells out why ("Endpointless producers under an undeclared kind are how
+// existing workspaces express one-shot work, and failing them would reject
+// configurations that work today").
+//
+// Widening the endpointless check to every edge that participates in the run
+// stage would therefore report working workspaces as broken.
+func TestShowRunnableKeepsALegacyEndpointlessDependencyResolved(t *testing.T) {
+	endpointlessStore := `kind: service
+name: store
+version: 0.0.1
+endpoints: []
+`
+	dir := writeShowRunnableWorkspace(t, endpointlessStore)
+	declaration := filepath.Join(dir, "runnables", "word-count", "runnable.codefly.yaml")
+	content, err := os.ReadFile(declaration)
+	require.NoError(t, err)
+	legacy := strings.Replace(string(content), "    kind: runtime\n", "", 1)
+	legacy = strings.Replace(legacy, "    endpoints:\n      - name: tcp\n", "", 1)
+	require.NotContains(t, legacy, "kind: runtime", "fixture must drop the declared kind")
+	require.NoError(t, os.WriteFile(declaration, []byte(legacy), 0o644))
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
+	showRunnableJSON = true
+
+	cmd, buf := newShowTestCmd()
+	require.NoError(t, showRunnable(cmd, "word-count"))
+
+	var report runnableReport
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &report))
+	require.Equal(t, "legacy", report.Dependencies[0].Kind)
+	require.True(t, report.Dependencies[0].Resolved,
+		"a legacy edge naming no endpoint is exempt from the endpointless rule")
+	require.Empty(t, report.Dependencies[0].Problem)
+}
+
+// writeSecondRelease adds a second reference to the same runnable name at
+// another version, which is what "several versions of one name coexist" means
+// on disk and what `codefly list runnables` already lists as two rows.
+func writeSecondRelease(t *testing.T, dir, version string) {
+	t.Helper()
+	workspaceFile := filepath.Join(dir, "workspace.codefly.yaml")
+	content, err := os.ReadFile(workspaceFile)
+	require.NoError(t, err)
+	updated := strings.Replace(string(content),
+		"runnables:\n  - name: word-count\n",
+		"runnables:\n  - name: word-count\n  - name: word-count\n    path: runnables/word-count-next\n", 1)
+	require.NotEqual(t, string(content), updated, "fixture must add the second reference")
+	require.NoError(t, os.WriteFile(workspaceFile, []byte(updated), 0o644))
+
+	next := filepath.Join(dir, "runnables", "word-count-next")
+	require.NoError(t, os.MkdirAll(next, 0o755))
+	first, err := os.ReadFile(filepath.Join(dir, "runnables", "word-count", "runnable.codefly.yaml"))
+	require.NoError(t, err)
+	bumped := strings.Replace(string(first), "version: 0.1.0\n", "version: "+version+"\n", 1)
+	require.NoError(t, os.WriteFile(filepath.Join(next, "runnable.codefly.yaml"), []byte(bumped), 0o644))
+}
+
+// TestShowRunnableRefusesAnAmbiguousNameInsteadOfPickingOne is the silent wrong
+// answer: core's LoadRunnableFromName returns the first matching reference and
+// stops, and FindRunnableByName only detects ambiguity across modules, so a
+// second release of a name was reported as the first with nothing saying so.
+func TestShowRunnableRefusesAnAmbiguousNameInsteadOfPickingOne(t *testing.T) {
+	dir := writeShowRunnableWorkspace(t, storeServiceWithTCP)
+	writeSecondRelease(t, dir, "0.2.0")
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
+
+	cmd, _ := newShowTestCmd()
+	err := showRunnable(cmd, "word-count")
+	require.Error(t, err, "an ambiguous name must not silently resolve to one release")
+	require.ErrorContains(t, err, "ambiguous")
+	require.ErrorContains(t, err, "0.1.0")
+	require.ErrorContains(t, err, "0.2.0")
+}
+
+// TestShowRunnableVersionSelectsOneRelease is the other half: the release the
+// listing shows must be reachable.
+func TestShowRunnableVersionSelectsOneRelease(t *testing.T) {
+	dir := writeShowRunnableWorkspace(t, storeServiceWithTCP)
+	writeSecondRelease(t, dir, "0.2.0")
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
+
+	for _, version := range []string{"0.1.0", "0.2.0"} {
+		showRunnableVersion = version
+		cmd, buf := newShowTestCmd()
+		require.NoError(t, showRunnable(cmd, "word-count"))
+		require.Contains(t, buf.String(), "Runnable:   word-count @ "+version)
+	}
+
+	showRunnableVersion = "9.9.9"
+	cmd, _ := newShowTestCmd()
+	err := showRunnable(cmd, "word-count")
+	require.Error(t, err, "an undeclared version must not fall back to another release")
+	require.ErrorContains(t, err, "0.1.0")
+}
+
+// TestShowRunnableStillFailsOnlyOnTheNamedRunnable guards the property the
+// ambiguity fix could have cost: resolving one name must not load, and so must
+// not fail on, an unrelated broken declaration elsewhere in the workspace.
+func TestShowRunnableStillFailsOnlyOnTheNamedRunnable(t *testing.T) {
+	dir := writeShowRunnableWorkspace(t, storeServiceWithTCP)
+	workspaceFile := filepath.Join(dir, "workspace.codefly.yaml")
+	content, err := os.ReadFile(workspaceFile)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(workspaceFile, []byte(strings.Replace(string(content),
+		"runnables:\n  - name: word-count\n",
+		"runnables:\n  - name: word-count\n  - name: broken\n", 1)), 0o644))
+	brokenDir := filepath.Join(dir, "runnables", "broken")
+	require.NoError(t, os.MkdirAll(brokenDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(brokenDir, "runnable.codefly.yaml"),
+		[]byte("kind: runnable\nname: broken\noptionnal: true\n"), 0o644))
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
+
+	cmd, buf := newShowTestCmd()
+	require.NoError(t, showRunnable(cmd, "word-count"),
+		"a broken sibling declaration must not fail an unrelated lookup")
+	require.Contains(t, buf.String(), "Runnable:   word-count @ 0.1.0")
 }

@@ -11,6 +11,8 @@ import (
 
 	"github.com/Masterminds/semver"
 	blangsemver "github.com/blang/semver"
+	"github.com/codefly-dev/cli/pkg/agentkinds"
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -445,25 +447,12 @@ type agentListEntry struct {
 	PinnedBy          []string `json:"pinned_by"`
 }
 
-// listAgentsKindByArg maps the "kind" argument (list_agents' filter, or
-// agent_info's kind override) to the corresponding resources.AgentKind, and
-// agentKindEnumValues is the matching ordered vocabulary advertised by both
-// tools' schemas. Both come from core's agent-kind registry: a kind core
-// registers is one these tools can filter on, with no second list to update.
-var (
-	listAgentsKindByArg = map[string]resources.AgentKind{}
-	agentKindEnumValues []string
-)
-
-func init() {
-	registry := resources.AgentKindRegistry()
-	for i := range registry {
-		registration := &registry[i]
-		arg := strings.TrimPrefix(string(registration.Resource), "codefly:")
-		listAgentsKindByArg[arg] = registration.Resource
-		agentKindEnumValues = append(agentKindEnumValues, arg)
-	}
-}
+// agentKindEnumValues is the ordered kind vocabulary advertised by both
+// list_agents' and agent_info's schemas. It comes from pkg/agentkinds, which
+// owns the short-form ↔ registered-kind mapping for the whole CLI: a kind core
+// registers is one these tools can filter on, with no second list to update
+// and no second copy of the "codefly:" convention to drift.
+var agentKindEnumValues = agentkinds.Vocabulary()
 
 // legacyServiceAgentKinds recognizes the pre-migration agent.kind spelling
 // used throughout every service.codefly.yaml in this codebase (agent: kind:
@@ -582,8 +571,8 @@ func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Cont
 
 	var kindFilter string
 	if raw := args[agentKindArg]; raw != "" {
-		mapped, ok := listAgentsKindByArg[raw]
-		if !ok {
+		mapped, err := agentkinds.Resolve(raw)
+		if err != nil {
 			data, _ := json.MarshalIndent([]agentListEntry{}, "", "  ")
 			return []Content{TextContent(string(data))}, nil
 		}
@@ -756,33 +745,14 @@ func (s *Server) listRunnables(ctx context.Context, args map[string]string) ([]C
 		return nil, err
 	}
 
-	result := make([]map[string]any, 0)
+	result := make([]runnablespkg.Identity, 0)
 	for _, m := range modules {
 		runnables, err := m.LoadRunnables(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("cannot load runnables of module %s: %w", m.Name, err)
 		}
 		for _, runnable := range runnables {
-			facilities := make([]string, 0, len(runnable.Execution.Facilities))
-			for _, facility := range runnable.Execution.Facilities {
-				facilities = append(facilities, string(facility))
-			}
-			result = append(result, map[string]any{
-				"name":        runnable.Name,
-				"module":      m.Name,
-				"version":     runnable.Version,
-				"description": runnable.Description,
-				"agent":       runnable.Agent.Identifier(),
-				"protocol":    runnable.Contract.Protocol,
-				"execution": map[string]any{
-					"facilities":       facilities,
-					"timeout":          runnable.Execution.Timeout,
-					"cancellation":     string(runnable.Execution.Cancellation),
-					"recovery":         string(runnable.Execution.Recovery),
-					"max_input_bytes":  runnable.Execution.MaxInputBytes(),
-					"max_output_bytes": runnable.Execution.MaxOutputBytes(),
-				},
-			})
+			result = append(result, runnablespkg.NewIdentity(runnable))
 		}
 	}
 

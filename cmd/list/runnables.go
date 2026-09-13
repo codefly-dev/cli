@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
@@ -35,15 +36,6 @@ Examples:
 	},
 }
 
-type runnableListEntry struct {
-	Module     string   `json:"module"`
-	Name       string   `json:"name"`
-	Version    string   `json:"version"`
-	Agent      string   `json:"agent"`
-	Facilities []string `json:"facilities"`
-	Timeout    string   `json:"timeout"`
-}
-
 func listRunnables(cmd *cobra.Command) error {
 	ctx, done := common.NewContext()
 	defer done()
@@ -68,19 +60,9 @@ func listRunnables(cmd *cobra.Command) error {
 		return fmt.Errorf("cannot load runnables: %w", err)
 	}
 
-	entries := make([]runnableListEntry, 0, len(runnables))
+	entries := make([]runnablespkg.Identity, 0, len(runnables))
 	for _, r := range runnables {
-		entry := runnableListEntry{
-			Module:  r.Module(),
-			Name:    r.Name,
-			Version: r.Version,
-			Agent:   r.Agent.Identifier(),
-		}
-		for _, facility := range r.Execution.Facilities {
-			entry.Facilities = append(entry.Facilities, string(facility))
-		}
-		entry.Timeout = r.Execution.Timeout
-		entries = append(entries, entry)
+		entries = append(entries, runnablespkg.NewIdentity(r))
 	}
 
 	if listRunnablesJSON {
@@ -96,7 +78,7 @@ func listRunnables(cmd *cobra.Command) error {
 	fmt.Fprintln(w, "MODULE\tNAME\tVERSION\tAGENT\tFACILITIES\tTIMEOUT")
 	for _, e := range entries {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			e.Module, e.Name, e.Version, e.Agent, strings.Join(e.Facilities, ","), e.Timeout)
+			e.Module, e.Name, e.Version, e.Agent, strings.Join(e.Execution.Facilities, ","), e.Execution.Timeout)
 	}
 	return w.Flush()
 }

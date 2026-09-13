@@ -20,7 +20,7 @@ not; nothing here is a promise about the unimplemented parts.
 | `codefly add runnable <name> --agent=<name>:<version> --handler=<path>` | Create a declaration and scaffold through the real Builder agent |
 | `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
-| `codefly show runnable <name> [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
+| `codefly show runnable <name> [--version=<v>] [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
 | `codefly agent info runnable --agent=<language>:<version>` | Load that agent over gRPC and print what it reports |
 
@@ -36,6 +36,19 @@ an immutable release, and two versions of one name coexist: both listings and
 `show` report the version, and nothing in the CLI resolves a name to a
 "latest" release.
 
+Because a name can therefore stand for more than one release, `show runnable`
+refuses an ambiguous name instead of picking one — it lists every candidate as
+`module/name@version` and `--version` selects one. A name that resolves to a
+single release needs no flag.
+
+### One projection per runnable
+
+`codefly list runnables --json`, `codefly show runnable --json` and the MCP
+`list_runnables` tool emit the same identity, agent, protocol and execution
+fields, from one shared projection (`pkg/runnables`). `show` adds the contract,
+entrypoint and dependency report on top; it does not restate the shared fields
+differently.
+
 ### Listing is strict
 
 A runnable whose declaration does not load fails `codefly list runnables`
@@ -46,7 +59,13 @@ finds must not be told a broken runnable is absent.
 
 `codefly show runnable` resolves each declared service dependency against what
 the workspace declares and reports it as resolved or unresolved with the
-reason. It deliberately does not fail on an unresolved dependency: the
+reason. It mirrors core's binding rule for runnables
+(`runnable/package.go`): endpoints are matched by NAME, because
+`resources.Runnable.Proto` flattens each selector to its endpoint name on the
+wire; a runtime edge needs at least one endpoint, while a legacy or external
+edge needs one only when it names endpoints explicitly. A selector that names
+no endpoint (`- api: grpc`) is reported as `::grpc` and unresolved, since it
+flattens to an empty name that binds nothing. It deliberately does not fail on an unresolved dependency: the
 declaration is still valid, and a caller needs to see which of several
 dependencies is missing. Reachability, credential resolution and platform
 compatibility are the installer's and launcher's responsibilities, not this

@@ -7,6 +7,7 @@ import (
 
 	"github.com/blang/semver"
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/agentkinds"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
@@ -61,7 +62,7 @@ func init() {
 }
 
 func parseInstallAgent(ctx context.Context, specification, overrideVersion, kind string) (*resources.Agent, error) {
-	agentKind, err := resolveAgentKind(kind)
+	agentKind, err := agentkinds.Resolve(kind)
 	if err != nil {
 		return nil, err
 	}
@@ -99,21 +100,4 @@ func safeAgentComponent(value string) bool {
 		}
 	}
 	return true
-}
-
-// resolveAgentKind turns the short kind a user types into the registered agent
-// kind. Both the short form (`runnable`) and the registered form
-// (`codefly:runnable`) are accepted; the registry decides which exist.
-func resolveAgentKind(kind string) (resources.AgentKind, error) {
-	if kind == "" {
-		return resources.ServiceAgent, nil
-	}
-	candidate := resources.AgentKind(kind)
-	if !strings.Contains(kind, ":") {
-		candidate = resources.AgentKind("codefly:" + kind)
-	}
-	if _, err := resources.AgentKindRegistrationFor(candidate); err != nil {
-		return "", fmt.Errorf("unknown agent kind %q: %w", kind, err)
-	}
-	return candidate, nil
 }

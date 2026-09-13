@@ -834,14 +834,18 @@ Show one runnable's contract, execution bounds and dependency resolution.
 ```bash
 codefly show runnable word-count
 codefly show runnable backend/word-count --json
+codefly show runnable word-count --version=0.2.0
 ```
 
-Takes `module/name`, or a bare name when it is unambiguous across modules. It
-loads through core's strict loader, so an invalid declaration is reported as a
-load error rather than rendered partially. Each declared service dependency is
-reported as resolved or unresolved against what the workspace declares, using
-core's own binding rules — reachability and credential resolution belong to
-whoever installs and launches a binding, not to this command. An unresolved
+Takes `module/name`, or a bare name when it is unambiguous across modules and
+across versions; when a name stands for several releases the command lists them
+and `--version` selects one. It loads through core's strict loader, so an
+invalid declaration is reported as a load error rather than rendered partially.
+Each declared service dependency is reported as resolved or unresolved against
+what the workspace declares, using core's own binding rules for runnables
+(endpoints match by name, because that is all a runnable's wire form carries)
+— reachability and credential resolution belong to whoever installs and
+launches a binding, not to this command. An unresolved
 dependency is reported, not fatal: the command exits 0, and unattended callers
 gate on `--json` and each dependency's `resolved` field.
 
