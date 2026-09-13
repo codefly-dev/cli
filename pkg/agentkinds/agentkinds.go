@@ -44,9 +44,10 @@ func init() {
 // spell the kind in full.
 func build(registry []resources.AgentKindRegistration) (map[string]resources.AgentKind, map[string][]resources.AgentKind, []string) {
 	claimants := make(map[string][]resources.AgentKind, len(registry))
-	for _, registration := range registry {
-		short := shorten(registration.Resource)
-		claimants[short] = append(claimants[short], registration.Resource)
+	for i := range registry {
+		kind := registry[i].Resource
+		short := shorten(kind)
+		claimants[short] = append(claimants[short], kind)
 	}
 	byShort := make(map[string]resources.AgentKind, len(registry))
 	collisions := make(map[string][]resources.AgentKind)
@@ -59,10 +60,11 @@ func build(registry []resources.AgentKindRegistration) (map[string]resources.Age
 	}
 	// Registry order, so the published vocabulary is stable across processes.
 	words := make([]string, 0, len(registry))
-	for _, registration := range registry {
-		short := shorten(registration.Resource)
+	for i := range registry {
+		kind := registry[i].Resource
+		short := shorten(kind)
 		if _, collided := collisions[short]; collided {
-			words = append(words, string(registration.Resource))
+			words = append(words, string(kind))
 			continue
 		}
 		words = append(words, short)
