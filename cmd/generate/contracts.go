@@ -519,6 +519,8 @@ func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
 		return nil, fmt.Errorf("cannot copy proto sources: %w", err)
 	}
 
+	projectContainerRecovery(ctx)
+
 	name := fmt.Sprintf("contracts-%d", time.Now().UnixMilli())
 	runner, err := runners.NewDockerEnvironment(ctx, image, tmpDir, name)
 	if err != nil {

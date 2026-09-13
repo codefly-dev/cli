@@ -17,9 +17,9 @@ rather than a guess.
 
 ## What crosses the boundary
 
-`CODEFLY_CONTAINER_RECOVERY_SCOPE` carries `<pid>:v2:<scope>:<namespace>` from
-`codefly run` to each agent it spawns — and from no other command, which is the
-gap the exposure section below returns to. Its parser is `runners/dockerrun` inside the
+`CODEFLY_CONTAINER_RECOVERY_SCOPE` carries `<pid>:v2:<scope>:<namespace>` to each
+agent a command spawns, and to the containers the CLI process builds itself.
+Its parser is `runners/dockerrun` inside the
 **agent binary's own Core**, not the CLI's, so the CLI's core pin says nothing
 about whether an agent understands what it was handed. Two consumers matter:
 
@@ -69,13 +69,25 @@ resolved an empty scope, and `dockerrun` skipped both recovery labels without an
 error — so `companions/proto` under build, `runners/testmatrix` under test, and
 `service-mssql`'s Alembic migration runner all created unlabeled containers.
 
-`codefly generate` is the one command still projecting nothing, and it is a
-different shape of hole: it spawns no agent at all. `generate proto` builds its
-container in the CLI process itself (`runners.NewDockerEnvironment` in
-`cmd/generate/proto.go`), so no flow projects for it and `companions/proto`
-creates unlabeled containers there however new its Core is. **Rebuilding that
-agent does not fix it** — there is no marker for the new parser to read.
-Qualification has to cover the command, not only the runtime context.
+`codefly generate` was the one command still projecting nothing, and it is a
+different shape of hole: it spawns no agent at all. `generate proto` and
+`generate contracts` build their containers in the CLI process itself
+(`runners.NewDockerEnvironment` in `cmd/generate/proto.go` and
+`cmd/generate/contracts.go`), so no flow ever projects for them and
+`companions/proto` created unlabeled containers there however new its Core was.
+**Rebuilding that agent could not fix it** — there was no marker for the new
+parser to read. `cmd/generate` now projects directly, which is why it is the
+second entry in `marker_projected_by`.
+
+What it projects has to be the identity a later `codefly run` resolves, or the
+label is written and still collected by nothing: these containers are not
+ephemeral, so `ReapDisposableContainers` — the cross-scope sweep keyed on the
+durable namespace — skips them, and only `ReapStaleContainers` can collect them.
+That sweep compares the exact scope hash of home, workspace and naming scope. So
+`generate` resolves the same triple a run does: the enclosing workspace and its
+`local` environment, naming scope included. Outside a workspace there is no
+ownership to resolve, and the command warns and creates unlabeled containers
+rather than stamping a different identity no sweep would ever match.
 
 One further hole is in the projection decision itself rather than in an agent:
 `codefly run` decides whether to project from the run's *launch* context, while
@@ -178,9 +190,10 @@ and inspect containers without creating any.
 3. Qualify the `companion` rows under `codefly build` and `test` as well as
    `codefly run`. Those commands now project a marker, so a rebuilt agent is
    what makes them label correctly — and that pairing is unqualified, on a path
-   no row in the table above records. `codefly generate` still projects none
-   (it creates its container in the CLI process, not through an agent), so a
-   rebuilt agent does not help there and closing it needs a further CLI change.
+   no row in the table above records. `codefly generate` projects for the
+   containers it builds in-process, which needs no agent rebuild to take
+   effect; qualify that its containers carry `codefly.recovery-scope` and that
+   a later run in the same workspace collects one left behind.
 4. Publish the rebuilt agents before or together with the CLI, then move
    `pkg/sourceworkspace/compatibility.json`, the agent pins in
    `pkg/conformance/matrix.json`, and `module-saas-starter`'s composed pins onto

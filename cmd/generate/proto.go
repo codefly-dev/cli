@@ -312,6 +312,8 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	// Create a unique container name
 	name := fmt.Sprintf("proto-gen-%d", time.Now().UnixMilli())
 
+	projectContainerRecovery(ctx)
+
 	// Create Docker runner
 	runner, err := runners.NewDockerEnvironment(ctx, image, protoDir, name)
 	if err != nil {
