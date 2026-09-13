@@ -235,6 +235,9 @@ func newCIResultReuse(ctx context.Context, workspace *resources.Workspace, flags
 		outputDirectory:     resolveCIOutputDirectory(workspace, ciReportOutput),
 		now:                 time.Now,
 	}
+	if reuse.publishes() && reuse.run == "" {
+		return nil, fmt.Errorf("publishing reusable results requires --reuse-run or CODEFLY_CI_RUN for successful execution provenance")
+	}
 	if root, err := gitRoot(ctx, workspace.Dir()); err == nil {
 		if revision, revErr := gitOutput(ctx, root, "rev-parse", "HEAD^{commit}"); revErr == nil {
 			reuse.revision = strings.TrimSpace(string(revision))
@@ -323,6 +326,12 @@ func (reuse *ciResultReuse) lookup(identity *CICacheIdentity, phase string) ciRe
 		return missedReuse("recorded result is not a success")
 	case !reuse.trusted[record.Reference]:
 		return missedReuse("result was produced on untrusted reference " + record.Reference)
+	case strings.TrimSpace(record.Run) == "":
+		return missedReuse("result record has no producing run")
+	case record.Task != reportTaskID(phase, identity.Inputs.Suite, identity.Inputs.Service) ||
+		record.Phase != phase || record.Service != identity.Inputs.Service ||
+		normalizedCacheSuite(record.Phase, record.Suite) != identity.Inputs.Suite:
+		return missedReuse("result record task does not match the requested task")
 	case record.Environment != reuse.environment:
 		return missedReuse("result was produced in a different execution environment")
 	}
@@ -330,7 +339,11 @@ func (reuse *ciResultReuse) lookup(identity *CICacheIdentity, phase string) ciRe
 	if err != nil {
 		return missedReuse("result record has no readable success time")
 	}
-	if reuse.now().Sub(recordedAt) > freshness {
+	age := reuse.now().Sub(recordedAt)
+	if age < 0 {
+		return missedReuse("result record success time is in the future")
+	}
+	if age > freshness {
 		return missedReuse("recorded result is older than the configured reuse window")
 	}
 	return ciReuseDecision{record: record, status: cacheStatusHit}

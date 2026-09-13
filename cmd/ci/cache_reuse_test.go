@@ -75,6 +75,28 @@ func TestVerifiedReuseExecutesColdThenReusesWarmAndInvalidatesOnInputChange(t *t
 	}
 }
 
+func TestVerifiedReuseMatchesDefaultAndNamedTestSuites(t *testing.T) {
+	_, workspace := loadReuseFixture(t)
+	plan := cacheTestPlan(workspace, "management/consumer")
+	store := t.TempDir()
+	for _, suite := range []string{"", "unit", "integration"} {
+		t.Run(firstNonEmpty(suite, "default"), func(t *testing.T) {
+			options := []reuseGateOption{withReusePhase("test"), withReuseSuite(suite)}
+			cold := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), options...)
+			if cold.executed != 1 || !cold.task(t).Cache.Stored {
+				t.Fatalf("new suite did not execute and publish: %#v", cold.task(t).Cache)
+			}
+			warm := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), options...)
+			if warm.executed != 0 || warm.task(t).Status != reportStatusReused {
+				t.Fatalf("matching suite did not reuse: %#v", warm.task(t).Cache)
+			}
+			if warm.task(t).ID != reportTaskID("test", suite, "management/consumer") {
+				t.Fatalf("reused task ID = %q", warm.task(t).ID)
+			}
+		})
+	}
+}
+
 func TestVerifiedReuseRestoresAndVerifiesRequiredArtifacts(t *testing.T) {
 	_, workspace := loadReuseFixture(t)
 	store := t.TempDir()
@@ -126,6 +148,34 @@ func TestVerifiedReuseFallsBackToExecutionWhenEvidenceIsUnusable(t *testing.T) {
 		},
 		"untrusted producing reference": func(t *testing.T, store string, record *ciResultRecord) {
 			record.Reference = "refs/pull/7/merge"
+			resignReuseRecord(t, store, record)
+		},
+		"missing run": func(t *testing.T, store string, record *ciResultRecord) {
+			record.Run = ""
+			resignReuseRecord(t, store, record)
+		},
+		"missing task": func(t *testing.T, store string, record *ciResultRecord) {
+			record.Task = ""
+			resignReuseRecord(t, store, record)
+		},
+		"different task": func(t *testing.T, store string, record *ciResultRecord) {
+			record.Task = "compile:management/worker"
+			resignReuseRecord(t, store, record)
+		},
+		"different phase": func(t *testing.T, store string, record *ciResultRecord) {
+			record.Phase = "lint"
+			resignReuseRecord(t, store, record)
+		},
+		"different suite": func(t *testing.T, store string, record *ciResultRecord) {
+			record.Suite = "integration"
+			resignReuseRecord(t, store, record)
+		},
+		"different service": func(t *testing.T, store string, record *ciResultRecord) {
+			record.Service = "management/worker"
+			resignReuseRecord(t, store, record)
+		},
+		"future success": func(t *testing.T, store string, record *ciResultRecord) {
+			record.RecordedAt = formatReportTime(time.Now().Add(time.Hour))
 			resignReuseRecord(t, store, record)
 		},
 		"recorded failure": func(t *testing.T, store string, record *ciResultRecord) {
@@ -249,8 +299,10 @@ func TestVerifiedReuseExpiresResultsOlderThanTheConfiguredWindow(t *testing.T) {
 
 func TestVerifiedReuseRequiresAnExplicitTrustAndEnvironmentScope(t *testing.T) {
 	_, workspace := loadReuseFixture(t)
+	t.Setenv(ciResultKeyVariable, "reuse-test-signing-key")
 	store := t.TempDir()
 	complete := ciReuseFlags{
+		run:               "run-1",
 		enabled:           true,
 		store:             store,
 		environment:       "runner@sha256:aaa",
@@ -272,6 +324,30 @@ func TestVerifiedReuseRequiresAnExplicitTrustAndEnvironmentScope(t *testing.T) {
 	t.Setenv(ciResultKeyVariable, "")
 	if _, err := newCIResultReuse(context.Background(), workspace, &complete); err == nil {
 		t.Fatal("reuse accepted unauthenticated records")
+	}
+}
+
+func TestVerifiedReusePublisherRequiresRunProvenance(t *testing.T) {
+	_, workspace := loadReuseFixture(t)
+	t.Setenv(ciResultKeyVariable, "reuse-test-signing-key")
+	t.Setenv("CODEFLY_CI_RUN", "")
+	flags := ciReuseFlags{
+		enabled: true, store: t.TempDir(), environment: "runner@sha256:aaa",
+		reference: reuseTestReference, trustedReferences: []string{reuseTestReference},
+		maxAge: time.Hour,
+	}
+	if _, err := newCIResultReuse(context.Background(), workspace, &flags); err == nil || !strings.Contains(err.Error(), "--reuse-run") {
+		t.Fatalf("missing publisher run error = %v", err)
+	}
+	flags.reference = "refs/pull/7/merge"
+	if _, err := newCIResultReuse(context.Background(), workspace, &flags); err != nil {
+		t.Fatalf("read-only reuse needs no publishing run: %v", err)
+	}
+	flags.reference = reuseTestReference
+	t.Setenv("CODEFLY_CI_RUN", "hosted-run-123/attempt-2")
+	reuse, err := newCIResultReuse(context.Background(), workspace, &flags)
+	if err != nil || reuse.run != "hosted-run-123/attempt-2" {
+		t.Fatalf("publisher run from environment = %v, %v", reuse, err)
 	}
 }
 
@@ -339,12 +415,17 @@ func (result reuseGateResult) task(t *testing.T) CIReportTask {
 type reuseGateOption func(*reuseGateSettings)
 
 type reuseGateSettings struct {
+	suite  string
 	phase  string
 	action Action
 }
 
 func withReusePhase(phase string) reuseGateOption {
 	return func(settings *reuseGateSettings) { settings.phase = phase }
+}
+
+func withReuseSuite(suite string) reuseGateOption {
+	return func(settings *reuseGateSettings) { settings.suite = suite }
 }
 
 func withReuseAction(action Action) reuseGateOption {
@@ -371,7 +452,7 @@ func runReuseGate(t *testing.T, workspace *resources.Workspace, plan *Plan, reus
 		t.Fatal(err)
 	}
 	reporter.reuse = reuse
-	scheduleOptions := ScheduleOptions{Jobs: 1, FailFast: true, Phase: settings.phase, RuntimeContext: "native", Reporter: reporter}
+	scheduleOptions := ScheduleOptions{Jobs: 1, FailFast: true, Phase: settings.phase, Suite: settings.suite, RuntimeContext: "native", Reporter: reporter}
 	if err := CIWithPlanOptions(context.Background(), workspace, plan, wrapped, scheduleOptions); err != nil {
 		t.Fatal(err)
 	}

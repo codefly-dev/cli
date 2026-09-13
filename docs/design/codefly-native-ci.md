@@ -699,13 +699,17 @@ normally and the report records why:
 
 - the identity is schema v2, complete, and carries no limitation;
 - a record exists for exactly that identity, and its signature verifies;
-- the record's outcome is a success, its reference is trusted, its environment
-  matches, and it is inside the configured freshness window;
+- the record's outcome is a success, its reference is trusted, its producing run
+  is named, and its task ID, phase, suite and service match the requested task;
+- the environment matches and the success time is not in the future or older
+  than the configured freshness window;
 - every artifact the record names is restored from the store, written
   atomically, and re-verified on disk against its recorded digest.
 
 Missing, failed, malformed, expired, untrusted, forged and unrestorable records
 all fall back to execution. A storage failure is a miss, never a success.
+
+Publishing requires a run identity (`--reuse-run` or `CODEFLY_CI_RUN`).
 
 Records are published only after a task actually executed and passed. Artifact
 bytes are re-read from the workspace and re-hashed at publication, so a record
