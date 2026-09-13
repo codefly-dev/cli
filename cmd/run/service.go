@@ -556,8 +556,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 // Apply it to every context the run can select, not only the one it was
 // launched with: preferences override the launch context per service, so a
 // native run holding one container-pinned service still creates containers —
-// and deciding from the flag alone left them with no recovery marker to
-// inherit and no ownership guard.
+// and deciding from the flag alone left them with no ownership guard.
 func shouldSweepStaleContainers(selectedRuntime string) bool {
 	return selectedRuntime != resources.RuntimeContextNative && selectedRuntime != resources.RuntimeContextNix
 }
@@ -770,11 +769,17 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, err
 	}
 
+	// Projection is unconditional. A companion agent reaches Docker only
+	// through a Core package, so it creates containers even on a run where
+	// nothing selects a Docker-capable context, and one created with no
+	// recovery label is one no later sweep can ever match.
+	scope, scopeErr := prepareContainerRecovery(workspace, flow)
+	if scopeErr != nil {
+		return flow, scopeErr
+	}
+	// Sweeping talks to a daemon a Local/Nix selection must not require, so it
+	// stays keyed to what this run can actually select.
 	if slices.ContainsFunc(flow.SelectableRuntimeContexts(), shouldSweepStaleContainers) {
-		scope, scopeErr := prepareContainerRecovery(workspace, flow)
-		if scopeErr != nil {
-			return flow, scopeErr
-		}
 		if err = dockerrun.ReapDisposableContainers(ctx, scope); err != nil {
 			return flow, fmt.Errorf("recover disposable containers: %w", err)
 		}

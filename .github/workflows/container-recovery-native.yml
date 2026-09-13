@@ -1,0 +1,71 @@
+name: Container recovery native qualification
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-recovery-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # A companion-row service agent: it never builds a Docker environment of
+      # its own, so the acknowledgement guard the CLI applies to Docker and free
+      # selections never sees it, and only this qualification does.
+      - name: Check out the companion agent source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: codefly-dev/service-go
+          ref: d0711dcdb6354be2f95c3b5fe7ad74cfb435d25d
+          path: .qualification-agent
+      # No published agent embeds a Core carrying the marker, so the fleet's
+      # next generation has to be rebuilt here to be qualified at all. Taking
+      # the revision from this checkout is what keeps the two sides identical.
+      - name: Rebuild the agent on the Core this CLI pins
+        env:
+          GOWORK: 'off'
+          GOFLAGS: -mod=mod
+        run: |
+          core=$(go list -m -f '{{.Version}}' github.com/codefly-dev/core)
+          cd .qualification-agent
+          go get "github.com/codefly-dev/core@${core}"
+          go build -o "$RUNNER_TEMP/companion-agent" .
+          # Carry the agent's own declared version through to the test: it
+          # names the build under qualification, so a literal in the test
+          # would keep passing after the pinned ref above moved.
+          version=$(sed -n 's/^version:[[:space:]]*//p' agent.codefly.yaml)
+          test -n "$version"
+          echo "CODEFLY_CONTAINER_RECOVERY_AGENT_VERSION=${version}" >> "$GITHUB_ENV"
+      - name: Qualify the native container-recovery path
+        id: qualify
+        env:
+          GOWORK: 'off'
+          CODEFLY_CONTAINER_RECOVERY_AGENT_BINARY: ${{ runner.temp }}/companion-agent
+        run: |
+          set -o pipefail
+          go test -tags=integration -v -count=1 \
+            -run TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery \
+            ./pkg/orchestration | tee container-recovery-native.log
+      # Gate on the qualification step having actually run: with a bare
+      # always(), an earlier failure leaves no log and if-no-files-found:error
+      # adds a second, misleading red step on top of the real one.
+      - name: Retain qualification evidence
+        if: always() && steps.qualify.conclusion != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-recovery-native
+          path: container-recovery-native.log
+          if-no-files-found: error

@@ -165,3 +165,41 @@ published agent is pre-marker, and the guard rejects one on the default `free`
 runtime context, not only under Docker. Core's Docker runner is the marker
 consumer; core's agent interceptor exposes its acknowledgement in gRPC headers.
 The CLI sets the marker at run preparation and validates the acknowledgement.
+
+### Native and Nix selections project ownership too
+
+`initRunService` decided whether to prepare container recovery from the same
+predicate that decides whether to sweep, and the sweep is deliberately off for
+`native` and `nix` so those selections never require a Docker daemon. Those are
+different questions. A `companion` agent — one that reaches Docker only through
+a Core package — creates containers even on a run where nothing selects a
+Docker-capable context, and with no marker to inherit it created them carrying
+no `codefly.recovery-scope` label at all, which no later sweep can match.
+Projection is now unconditional; the sweep keeps the selectable-context
+predicate, so a Local/Nix run still never contacts a daemon.
+
+[The rollout inventory](../container-recovery-rollout.md) stays the list of
+record for which agents this affects and what remains unqualified.
+
+`.github/workflows/container-recovery-native.yml` qualifies the path on every
+change: it rebuilds `service-go` — a `companion` row — against the Core this
+checkout pins and requires the projected identity back verbatim in the
+`codefly-container-recovery-scope` header, retaining the log as an artifact.
+Observed on 2026-09-13: rebuilt on `b3470f0096cd` it echoes the identity
+exactly, while the same source at its own pin `177cb87e85ee` returns an empty
+acknowledgement — what every published agent does today.
+
+**A native run holding a container-pinned service now fails against the
+published fleet.** `preferences.codefly.yaml` overrides the launch context per
+service, so `--runtime-context=native` with `by-service: {postgres: container}`
+projects a marker and brings that runner under `Runner.Init`'s acknowledgement
+guard for the first time. Every published agent answers with none, so the run
+stops with "did not acknowledge this run's container recovery scope" rather
+than silently creating unlabeled containers. That is the intended outcome and
+the reason the rebuild gates the release — but it is a new, loud failure on a
+path that used to be silent, so expect it as soon as this ships.
+
+This closes the CLI-side half of the native `companion` qualification. It does
+not lift the release gate: the remaining rebuild, qualification, publishing and
+matrix items are carried in
+[cli#647](https://github.com/codefly-dev/cli/issues/647).
