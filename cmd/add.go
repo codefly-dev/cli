@@ -18,6 +18,7 @@ func init() {
 	AddCmd.AddCommand(add.LibraryCmd)
 	AddCmd.AddCommand(add.LibraryDependencyCmd)
 	AddCmd.AddCommand(add.JobCmd)
+	AddCmd.AddCommand(add.RunnableCmd)
 	AddCmd.AddCommand(add.ApplicationCmd)
 	AddCmd.AddCommand(add.ApplicationDependencyCmd)
 }
