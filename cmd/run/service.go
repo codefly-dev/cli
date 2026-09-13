@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -551,6 +552,12 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 // shouldSweepStaleContainers keeps explicit Local/Nix runs independent of the
 // Docker control plane. A free run may select Docker and an explicit container
 // run requires it, so those startup paths retain orphan cleanup.
+//
+// Apply it to every context the run can select, not only the one it was
+// launched with: preferences override the launch context per service, so a
+// native run holding one container-pinned service still creates containers —
+// and deciding from the flag alone left them with no recovery marker to
+// inherit and no ownership guard.
 func shouldSweepStaleContainers(selectedRuntime string) bool {
 	return selectedRuntime != resources.RuntimeContextNative && selectedRuntime != resources.RuntimeContextNix
 }
@@ -763,7 +770,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, err
 	}
 
-	if shouldSweepStaleContainers(runtimeContext) {
+	if slices.ContainsFunc(flow.SelectableRuntimeContexts(), shouldSweepStaleContainers) {
 		scope, scopeErr := prepareContainerRecovery(workspace, flow)
 		if scopeErr != nil {
 			return flow, scopeErr

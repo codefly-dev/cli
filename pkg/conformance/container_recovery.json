@@ -1,0 +1,327 @@
+{
+  "schema_version": 1,
+  "core": "6a40c4bf28ac",
+  "snapshot": "2026-09-13",
+  "marker_projected_by": [
+    "cmd/run"
+  ],
+  "agents": [
+    {
+      "repository": "service-clickhouse",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "clickhouse",
+      "creates": "runtime",
+      "backends": [
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-dynamodb",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "dynamodb",
+      "creates": "runtime",
+      "backends": [
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-envoy",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "envoy",
+      "creates": "runtime",
+      "backends": [
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-generic",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "generic",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-go",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "go",
+      "creates": "companion",
+      "backends": [
+        "local",
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-go-grpc",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "go-grpc",
+      "creates": "companion",
+      "backends": [
+        "local",
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-mssql",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "mssql",
+      "creates": "runtime",
+      "backends": [
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-neo4j",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "neo4j",
+      "creates": "runtime",
+      "backends": [
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-nextjs",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "nextjs",
+      "creates": "runtime+companion",
+      "backends": [
+        "local",
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-object-storage",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "object-storage",
+      "creates": "runtime",
+      "backends": [
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-postgres",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "postgres",
+      "creates": "runtime",
+      "backends": [
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-python",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "python",
+      "creates": "none",
+      "backends": [
+        "local",
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-python-fastapi",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "python-fastapi",
+      "creates": "runtime+companion",
+      "backends": [
+        "local",
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-redis",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "redis",
+      "creates": "runtime",
+      "backends": [
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-rust",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "rust",
+      "creates": "companion",
+      "backends": [
+        "local",
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-swift",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "swift",
+      "creates": "none",
+      "backends": [
+        "local",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-temporal",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "temporal",
+      "creates": "none",
+      "backends": [
+        "local",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "service-vault",
+      "kind": "codefly:service",
+      "publisher": "codefly.dev",
+      "name": "vault",
+      "creates": "runtime",
+      "backends": [
+        "nix",
+        "docker"
+      ],
+      "rebuild": "required"
+    },
+    {
+      "repository": "toolbox-docker",
+      "kind": "codefly:toolbox",
+      "publisher": "codefly.dev",
+      "name": "docker",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "toolbox-grpc",
+      "kind": "codefly:toolbox",
+      "publisher": "codefly.dev",
+      "name": "grpc",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "toolbox-nix",
+      "kind": "codefly:toolbox",
+      "publisher": "codefly.dev",
+      "name": "nix",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "toolbox-python-repl",
+      "kind": "codefly:toolbox",
+      "publisher": "codefly.dev",
+      "name": "python-repl",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "toolbox-web",
+      "kind": "codefly:toolbox",
+      "publisher": "codefly.dev",
+      "name": "web",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "provider-sentry",
+      "kind": "codefly:provider",
+      "publisher": "codefly.dev",
+      "name": "sentry",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "provider-stripe",
+      "kind": "codefly:provider",
+      "publisher": "codefly.dev",
+      "name": "stripe",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "provider-unleash",
+      "kind": "codefly:provider",
+      "publisher": "codefly.dev",
+      "name": "unleash",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "module-saas-starter",
+      "kind": "codefly:module",
+      "publisher": "codefly.dev",
+      "name": "saas-starter",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "runnable-go",
+      "kind": "codefly:runnable",
+      "publisher": "codefly.dev",
+      "name": "go",
+      "creates": "none",
+      "backends": [],
+      "rebuild": "not-required"
+    },
+    {
+      "repository": "runnable-python",
+      "kind": "codefly:runnable",
+      "publisher": "codefly.dev",
+      "name": "python",
+      "creates": "none",
+      "backends": [
+        "local",
+        "docker"
+      ],
+      "rebuild": "not-required"
+    }
+  ]
+}

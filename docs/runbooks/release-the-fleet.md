@@ -142,6 +142,9 @@ the gate for a coordinated release:
 
 1. Build and qualify every Docker-creating agent against core `6a40c4bf28ac` or
    later, including agents which use containers internally from a native/Nix mode.
+   [The rollout inventory](../container-recovery-rollout.md) is the list of record:
+   it classifies every agent repository by how it reaches a container and says
+   which ones must be rebuilt.
 2. Publish those compatible agents before or together with the CLI release, then
    update workspace pins. An old CLI with a new-core agent is also unsupported for
    container creation; upgrade the pair together.
@@ -156,6 +159,9 @@ before issuing any runtime Init RPC. This test runs in the ordinary Go suite.
 
 The existing guard exempts native and Nix runtime contexts. It is not proof that
 legacy agents using Docker internally are compatible, and source merge does not
-remove the release gate for those paths. Core's Docker runner is the marker
+remove the release gate for those paths. No Core tag carries the marker at all —
+`v0.3.27` is the newest tag and recovery landed after it — so every currently
+published agent is pre-marker, and the guard rejects one on the default `free`
+runtime context, not only under Docker. Core's Docker runner is the marker
 consumer; core's agent interceptor exposes its acknowledgement in gRPC headers.
 The CLI sets the marker at run preparation and validates the acknowledgement.

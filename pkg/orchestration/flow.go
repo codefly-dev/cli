@@ -321,6 +321,37 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	return flow, nil
 }
 
+// SelectableRuntimeContexts returns every runtime context this run can put a
+// service in: the one it was launched with, plus every override the
+// preferences file can apply. The launch context alone does not answer what a
+// run will do — preferences override it per service and per agent — so a
+// caller deciding whether this run can reach Docker has to consider all of
+// them. Sorted and deduplicated so the result does not depend on map order.
+func (flow *Flow) SelectableRuntimeContexts() []string {
+	if flow == nil {
+		return nil
+	}
+	selectable := map[string]bool{flow.runtimeContext: true}
+	if flow.preferences != nil && flow.preferences.Runtime != nil {
+		preferences := flow.preferences.Runtime
+		if preferences.Default != "" {
+			selectable[preferences.Default] = true
+		}
+		for _, selected := range preferences.ByAgent {
+			selectable[selected] = true
+		}
+		for _, selected := range preferences.ByService {
+			selectable[selected] = true
+		}
+	}
+	contexts := make([]string, 0, len(selectable))
+	for context := range selectable {
+		contexts = append(contexts, context)
+	}
+	slices.Sort(contexts)
+	return contexts
+}
+
 // runtimeContextFor resolves the runtime context for a service: the developer's
 // per-service/per-agent preference (~/.codefly/preferences.yaml) wins, else the
 // global runtime context the run was launched with. This is what lets
