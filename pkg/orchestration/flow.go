@@ -23,6 +23,7 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
@@ -64,6 +65,10 @@ type Flow struct {
 	excludeRoot bool
 
 	scope string
+
+	// containerRecoveryScope is this flow's projected container ownership,
+	// resolved once by ContainerRecoveryScope().
+	containerRecoveryScope dockerrun.ContainerRecoveryScope
 
 	runtimeContext string
 	// docker records whether the Docker engine is reachable and, for messaging,
@@ -1410,6 +1415,12 @@ func (flow *Flow) managerDependencies(ctx context.Context) ([]architecture.Servi
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
+	// Project ownership before anything is spawned: New() starts the agent
+	// process, which inherits the marker at exec and can create containers from
+	// its Init onwards.
+	if _, err := flow.ContainerRecoveryScope(); err != nil {
+		return w.Wrap(err)
+	}
 	remotes := make(map[string]*Remote)
 	var dependencyOptions []architecture.DependencyOption
 	if len(flow.remoteServices) > 0 {

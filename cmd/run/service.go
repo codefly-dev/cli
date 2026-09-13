@@ -772,8 +772,10 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	// Projection is unconditional. A companion agent reaches Docker only
 	// through a Core package, so it creates containers even on a run where
 	// nothing selects a Docker-capable context, and one created with no
-	// recovery label is one no later sweep can ever match.
-	scope, scopeErr := prepareContainerRecovery(workspace, flow)
+	// recovery label is one no later sweep can ever match. The flow projects
+	// it again for every agent it spawns; resolving it here is what lets the
+	// sweep below run before InitManagers does.
+	scope, scopeErr := flow.ContainerRecoveryScope()
 	if scopeErr != nil {
 		return flow, scopeErr
 	}
@@ -1006,16 +1008,4 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")
 	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)")
 	ServiceCmd.Flags().BoolVar(&startDocker, "start-docker", true, "Auto-start a local Docker engine (OrbStack/Docker Desktop/colima/…) if a service needs Docker and it isn't running; --start-docker=false to disable")
-}
-
-func prepareContainerRecovery(workspace *resources.Workspace, flow *orchestration.Flow) (dockerrun.ContainerRecoveryScope, error) {
-	home := resources.CodeflyHomeDir()
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("prepare container recovery home: %w", err)
-	}
-	scope, err := dockerrun.NewContainerRecoveryScope(home, workspace.Dir(), flow.Environment().NamingScope)
-	if err != nil {
-		return scope, fmt.Errorf("resolve container recovery ownership: %w", err)
-	}
-	return scope, dockerrun.SetContainerRecoveryScope(scope)
 }
