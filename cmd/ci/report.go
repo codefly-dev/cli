@@ -33,6 +33,8 @@ const (
 	reportReasonRunCancelled          = "run_cancelled"
 	reportReasonNotScheduled          = "not_scheduled"
 	reportReasonAgentNoSyncCapability = "agent_no_sync_capability"
+
+	artifactScopeSource = "source"
 )
 
 // CIReport is Codefly's provider-neutral record of one CI command. Task order
@@ -131,8 +133,14 @@ type CIReportIntegrityDivergence struct {
 	Reason string `json:"reason"`
 }
 
+// CIReportArtifact names one piece of evidence a task produced. Scope states
+// which subject the evidence describes: a source inventory and a runtime-image
+// inventory are different claims, and a consumer that cannot tell them apart
+// reads a lockfile scan as proof the shipped image was scanned. An absent scope
+// is therefore an unknown subject, never image coverage.
 type CIReportArtifact struct {
 	Kind      string `json:"kind"`
+	Scope     string `json:"scope,omitempty"`
 	Path      string `json:"path"`
 	MediaType string `json:"media_type,omitempty"`
 	SHA256    string `json:"sha256"`

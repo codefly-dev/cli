@@ -241,7 +241,7 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	ctx := withCIReportTask(context.Background(), reporter, id)
 	recordCIReportAudit(ctx, CIReportAudit{State: "FINDINGS", Tool: "scanner", Findings: 2, High: 1})
 	recordCIReportDrift(ctx, []string{"b.ts", "a.ts"})
-	recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Path: "sbom/worker.cdx.json", SHA256: "sha256:abc"})
+	recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Scope: artifactScopeSource, Path: "sbom/worker.cdx.json", SHA256: "sha256:abc"})
 	reporter.finishTask(id, nil)
 
 	report := reporter.Finalize(nil)
@@ -261,6 +261,16 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	}
 	if serviceTask.Audit == nil || serviceTask.Audit.High != 1 || serviceTask.Drift == nil || len(serviceTask.Artifacts) != 1 {
 		t.Fatalf("typed task evidence = %#v", serviceTask)
+	}
+	if serviceTask.Artifacts[0].Scope != artifactScopeSource {
+		t.Fatalf("SBOM artifact scope = %q, want %q", serviceTask.Artifacts[0].Scope, artifactScopeSource)
+	}
+	encoded, err := marshalCIReport(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"scope": "source"`) {
+		t.Fatalf("evidence scope missing from report JSON:\n%s", encoded)
 	}
 	serviceTask.Drift.ChangedFiles[0] = "mutated"
 	if reporter.report.Tasks[1].Drift.ChangedFiles[0] == "mutated" {

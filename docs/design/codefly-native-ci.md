@@ -83,8 +83,10 @@ The first provider-neutral vertical slice is operational:
   resource ownership, timings, deterministic outcomes, blocked-by details,
   and the final error. Typed evidence includes exact integrity divergence,
   generated-file drift, audit counts, and CycloneDX SBOM artifact paths and
-  hashes. `--format json` suppresses normal narration, emits the same artifact
-  payload on stdout, and remains machine-clean on a non-zero exit;
+  hashes. Every artifact records the subject its evidence describes, so a
+  source inventory is never readable as runtime-image coverage. `--format json`
+  suppresses normal narration, emits the same artifact payload on stdout, and
+  remains machine-clean on a non-zero exit;
 - every report task carries a schema-versioned, content-addressed cache
   identity. The key binds Codefly/Core versions, platform/runtime context,
   phase/suite, target agent metadata and resolved binary digest, workspace and
