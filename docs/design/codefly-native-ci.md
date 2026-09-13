@@ -619,98 +619,153 @@ the content-addressed cache identity described next.
 
 ## Caching
 
-Codefly owns cache identity, using effective-input declarations supplied by
-Core and agents. Verified result reuse requires a future versioned phase key
-that includes:
+Codefly owns cache identity because only Codefly knows the complete input set.
+Provider caches may transport Codefly-owned records, but must not construct
+cache keys themselves. Every verified reuse appears in the JSON report and
+identifies the execution it stands in for.
 
-- Codefly CLI/Core protocol version;
-- agent publisher/name/version and resolved binary digest;
-- phase and suite;
-- service manifest and selected source hashes;
-- relevant workspace/module configuration hashes;
-- lockfile and toolchain/runtime image digests;
-- internal library hashes;
-- upstream contract or generated-client hashes for dependent validations.
+### Cache identity schema v2
 
-In that future contract, provider caches may transport Codefly-owned results,
-but must not construct cache keys themselves. Each verified reuse must appear
-in the JSON report and identify the task whose execution it replaces.
-
-### Current schema v1 behavior
-
-Cache identity schema version 1 is now emitted on every report task. Keys use
+Cache identity schema version 2 is emitted on every report task. Keys use
 canonical JSON inputs and are prefixed with `sha256:`. Directory digests bind
 relative paths, executable bits, symlink targets, and file bytes; Git-ignored
-files and known transient dependency/build directories are excluded. This
-means renames invalidate a key, while `node_modules`, `.next`, `.codefly`,
-incremental TypeScript state, and equivalent runtime output cannot create
-spurious misses. In a non-Git workspace Codefly falls back to the same
-conservative transient-directory exclusions.
+files and known transient dependency/build directories are excluded. This means
+renames invalidate a key, while `node_modules`, `.next`, `.codefly`, incremental
+TypeScript state, and equivalent runtime output cannot create spurious misses.
+In a non-Git workspace Codefly falls back to the same conservative
+transient-directory exclusions.
+
+A key binds:
+
+- Codefly CLI version, Core protocol version and the running CLI binary digest;
+- agent publisher/name/version/kind and the resolved binary digest;
+- OS/architecture and the declared execution environment identity;
+- phase, suite and runtime context;
+- the service manifest and source tree, its transitive service dependencies and
+  its recursively expanded internal libraries;
+- workspace and module configuration, environments and shared toolchain lock
+  files;
+- every other tracked repository byte, as one **unattributed remainder digest**.
+
+The remainder digest is what makes a key safe to reuse against. Files a task
+could consume without any declaration — shared fixtures, root tooling
+configuration, provider workflows, scripts — are not silently outside the key:
+anything the repository tracks that is not attributed to a named service or
+library is hashed into every task's identity. Over-invalidation is the
+deliberate trade: an unattributable edit invalidates every task rather than
+hiding in one. The single remaining assumption is the one the resource model
+already enforces — a task consumes only its own resource and its declared
+dependencies, so an unrelated service's directory neither enters its key nor
+its remainder.
 
 Transitive service dependencies are hashed even for standalone lint/compile
 execution: runtime scheduling and content invalidation are distinct concerns.
-Internal library dependencies are expanded recursively. Agent identity includes
-publisher, name, version, kind, and the installed executable digest; an
-unresolved binary is surfaced in `limitations` rather than silently treated as
-equivalent.
+An agent binary that cannot be resolved or hashed is surfaced in `limitations`
+rather than silently treated as equivalent, and any limitation makes the task
+ineligible for reuse.
 
-The current cache status is `identity_only`: Codefly reports a descriptive key
-but does not skip execution or restore artifacts. Version 1 is **not a complete
-effective-input identity** and must not be used to certify successful result
-reuse. An empty `limitations` array does not establish eligibility: it currently
-reports some resolution failures, not all missing execution inputs. Safe reuse
-requires a new versioned identity contract.
+### Verified result reuse
 
-### Result-reuse readiness audit
+`codefly ci run --reuse-results` looks a task's identity up in a result store
+and, on a verified hit, stands the task on that earlier execution instead of
+running it. Reuse is opt-in and requires an explicit scope:
 
-Persistent result reuse is blocked on the effective-input contract in
-[Core #445](https://github.com/codefly-dev/core/issues/445) and validated task
-planning in [CLI #611](https://github.com/codefly-dev/cli/issues/611). The current
-`Plan` selects services; phase and suite are supplied separately through
-`ScheduleOptions`. It cannot certify a submitted set of required tasks against
-the candidate checkout. The following gaps were audited in
-`cmd/ci/cache_identity.go` before enabling any hits:
-
-| Input or evidence | Version 1 coverage and reuse blocker |
+| Flag | Purpose |
 | --- | --- |
-| Candidate source and tests | Hashes current file bytes under selected resource roots, including test files, but Git-ignored files and hard-coded transient directories are excluded without agent declarations. Shared inputs outside those roots can be missed. |
-| Symlinks and generated inputs | Hashes symlink target text, not the target's consumed bytes. Generated files in excluded directories are not covered. |
-| Phase, suite and fixtures | Includes phase and suite names, but not the agent's resolved suite definition, required suite inventory or effective fixture selection. |
-| Configuration and environment | Hashes selected configuration files and a runtime-context string, not the final environment, local overrides, external configuration or protected identities for sensitive inputs. |
-| Dependencies, libraries and composition | Hashes transitive runtime service and internal library trees. These do not declare each task's actual artifact, validation and external dependency inputs or prove consuming-workspace test success. |
-| Platform and tools | Includes OS/architecture, CLI/Core version strings and an installed agent digest when available. Resolved language toolchains, runtime images, plugins and CLI binary identity are not covered. |
-| Task completion | A key contains no authenticated success, source run/reference, expiry, trust scope or required-output manifest. A Git diff baseline supplies none of these. |
-| Audits | Contains no advisory-database identity or freshness policy. Identical source cannot certify a current clean audit. |
+| `--reuse-store` | Directory holding result records and artifact blobs (`$CODEFLY_CI_RESULT_STORE`). |
+| `--reuse-environment` | Identity of the execution environment, for example the runner image digest (`$CODEFLY_CI_REUSE_ENVIRONMENT`). |
+| `--reuse-trusted-reference` | Reference whose successes may be reused; repeatable. |
+| `--reuse-reference` | Reference this run publishes under (`$CODEFLY_CI_REFERENCE`). |
+| `--reuse-run` | Identity of this run, recorded as provenance (`$CODEFLY_CI_RUN`). |
+| `--reuse-max-age` | Maximum age of a reusable result. |
+| `--reuse-audit-max-age` | Maximum age of a reusable dependency audit; zero (the default) always re-runs audits. |
 
-Once the contracts are available, integration must keep unknown or incomplete
-declarations ineligible and execute those tasks normally. Candidate identities
-must describe the actual merge revision or merge-group checkout; selecting a
-trusted reference must never replace those inputs. An ancestor's success is
-usable only after accounting for the entire intervening input delta.
+The environment identity is required and never inferred. Language toolchains,
+runtime images and plugins are resolved by agents on the host, so Codefly cannot
+hash them; naming the environment is how an operator asserts that two hosts are
+interchangeable. An unnamed environment is not matchable, so reuse refuses to
+start.
 
-Storage integrity and trust are separate requirements. A content digest detects
-changed bytes but does not authenticate who certified success. The verifier
-must use an explicitly configured trust policy outside the cached record,
-including authorized producers, reference scope, expiry and revocation.
-Untrusted PR writers must not gain protected-reference authority merely by
-writing to the same backend. Publish a complete authenticated record atomically
-only after its required artifacts are durable; verify every restored artifact
-before releasing downstream tasks. Concurrent or partial uploads, corrupt
-records, revoked trust and missing artifacts must cause execution or a clear
-gate failure.
+A record is authenticated with an HMAC over its canonical encoding, keyed by
+`CODEFLY_CI_RESULT_KEY`. Authenticity is therefore independent of the storage
+backend: a writer that can reach the backend but does not hold the key cannot
+publish a record any verifier accepts. **The key must be exposed only to runs on
+a protected reference.** Codefly additionally refuses to publish from a run whose
+own reference is not declared trusted, so a pull-request run consumes evidence
+without ever producing it.
 
-Reports must distinguish executed success, verified reuse, ineligible reuse,
-and skipped or blocked tasks. Reuse evidence must retain the original successful
-run/reference, matching versioned input identity and restored artifact digests.
-Existing full-execution release gates must retain their execution policy until
-their release contract explicitly adopts verified reuse.
+A task is reused only when every one of these holds; otherwise it executes
+normally and the report records why:
 
-Completion requires real cold/warm runs with equivalent required-task coverage,
-plus invalidation runs for agent updates, fixture-only edits, configuration and
-composition changes, and new vulnerability data. Record executed/reused task
-counts, wall time, storage and transfer costs, and total runner minutes. Neither
-these measurements nor persistent lookup, publication and restoration are
-implemented by the current identity-only reporting.
+- the identity is schema v2, complete, and carries no limitation;
+- a record exists for exactly that identity, and its signature verifies;
+- the record's outcome is a success, its reference is trusted, its environment
+  matches, and it is inside the configured freshness window;
+- every artifact the record names is restored from the store, written
+  atomically, and re-verified on disk against its recorded digest.
+
+Missing, failed, malformed, expired, untrusted, forged and unrestorable records
+all fall back to execution. A storage failure is a miss, never a success.
+
+Records are published only after a task actually executed and passed. Artifact
+bytes are re-read from the workspace and re-hashed at publication, so a record
+cannot name content that does not exist or no longer matches the report. Blobs
+are written before the record, and each write is a rename onto its final path,
+so a concurrent reader sees either the previous record or the complete new one —
+never a record whose artifacts are still uploading.
+
+Reuse is scoped to phases whose outputs Codefly can enumerate and verify. The
+`build` phase is never reused: its agent publishes container images the report
+does not record, so a hit would release a downstream task against artifacts that
+are not there. The workspace `verify` phase is never reused either, and release
+commands do not expose the flags, so existing full-execution release gates keep
+their execution policy until a release contract explicitly adopts verified
+reuse.
+
+### Reporting
+
+The report distinguishes four outcomes that a single "skipped" status used to
+blur: `passed` (this run executed the task), `reused` (this run stood on a
+verified earlier execution), `skipped` with a `status_reason` (blocked by a
+failed prerequisite, fail-fast, or never scheduled), and `failed`. The summary
+counts `passed` and `reused` separately.
+
+Each task's `cache` object reports this run's reuse outcome in `status` —
+`identity_only` when reuse is not enabled, `ineligible` when the task's identity
+or the reuse policy forbids standing on any record, `miss` when no usable record
+was found, `hit` when one was — with `status_reason` explaining anything but a
+hit. Publication is the separate axis: `stored` says this run published its own
+result for a later one. A reused task also carries `cache.reuse` with the
+producing reference, run and revision, the matched input identity, the original
+success time, and every restored artifact digest.
+
+### Audits are time-sensitive
+
+Source identity alone cannot certify a current clean audit: advisory data
+changes independently of every input a key binds. Dependency audits therefore
+have their own freshness rule, `--reuse-audit-max-age`, which defaults to zero
+— audits always re-execute unless an operator explicitly accepts a window.
+Narrowing this to an advisory-database identity rather than a wall-clock window
+needs agents to report which database they consulted.
+
+### What still needs the effective-input contract
+
+[Core #445](https://github.com/codefly-dev/core/issues/445) supplies per-phase
+and per-suite effective-input declarations. Until it lands:
+
+- the remainder digest is conservative rather than precise. Agent-declared input
+  roots would let an unattributed file invalidate only the tasks that actually
+  consume it, instead of all of them;
+- suite and fixture selection enter a key as names, not as the agent's resolved
+  suite definition and effective fixture set;
+- effective configuration enters as the configuration files a workspace tracks
+  and a runtime-context string, not as the final resolved environment;
+- toolchain and runtime-image identity rests on the operator-declared
+  environment rather than on resolved digests.
+
+None of these weaken a hit: each is either bound conservatively or makes the
+task ineligible. They bound how often a hit is possible, not whether one is
+trustworthy.
 
 ## Agent CI pipeline
 

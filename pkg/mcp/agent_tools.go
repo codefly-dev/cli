@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/agentkinds"
 	"github.com/codefly-dev/core/agents/manager"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
@@ -50,9 +51,9 @@ func (s *Server) registerAgentTools() {
 func (s *Server) agentInfo(ctx context.Context, args map[string]string) ([]Content, error) {
 	kind := resources.ServiceAgent
 	if raw := args[agentKindArg]; raw != "" {
-		mapped, ok := listAgentsKindByArg[raw]
-		if !ok {
-			return nil, fmt.Errorf("unknown agent kind %q", raw)
+		mapped, err := agentkinds.Resolve(raw)
+		if err != nil {
+			return nil, err
 		}
 		kind = mapped
 	}
