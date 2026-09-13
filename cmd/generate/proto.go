@@ -320,6 +320,16 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 		return w.Wrapf(err, "cannot create docker runner")
 	}
 
+	// A proto-gen container holds no state worth preserving: it is created,
+	// driven once and shut down in the defer below. Marking it ephemeral is what
+	// makes a leaked one recoverable at all — the exact-scope sweep compares a
+	// hash that includes the naming scope, which a later run may set differently
+	// (--naming-scope, a non-local --env, --temporary-ports), while the
+	// disposable sweep is keyed on the naming-scope-independent namespace. Only
+	// a container whose owning process is gone is ever reaped, so a concurrent
+	// generate is never disturbed.
+	runner.WithEphemeral()
+
 	// Mount the common ancestor so both proto and output paths are accessible.
 	// Work from the proto dir where buf.gen.yaml lives — buf resolves output
 	// paths relative to buf.gen.yaml's location.

@@ -70,24 +70,38 @@ error — so `companions/proto` under build, `runners/testmatrix` under test, an
 `service-mssql`'s Alembic migration runner all created unlabeled containers.
 
 `codefly generate` was the one command still projecting nothing, and it is a
-different shape of hole: it spawns no agent at all. `generate proto` and
-`generate contracts` build their containers in the CLI process itself
-(`runners.NewDockerEnvironment` in `cmd/generate/proto.go` and
-`cmd/generate/contracts.go`), so no flow ever projects for them and
+different shape of hole: it spawns no agent at all. `generate proto`,
+`generate contracts` and `generate client` build their containers in the CLI
+process itself (`runners.NewDockerEnvironment` in `cmd/generate/proto.go` and
+`cmd/generate/contracts.go` — the latter reached by both `contracts` and
+`client` through `buildDescriptorSet`), so no flow ever projects for them and
 `companions/proto` created unlabeled containers there however new its Core was.
 **Rebuilding that agent could not fix it** — there was no marker for the new
 parser to read. `cmd/generate` now projects directly, which is why it joins
 `pkg/orchestration` in `marker_projected_by`.
 
-What it projects has to be the identity a later `codefly run` resolves, or the
-label is written and still collected by nothing: these containers are not
-ephemeral, so `ReapDisposableContainers` — the cross-scope sweep keyed on the
-durable namespace — skips them, and only `ReapStaleContainers` can collect them.
-That sweep compares the exact scope hash of home, workspace and naming scope. So
-`generate` resolves the same triple a run does: the enclosing workspace and its
-`local` environment, naming scope included. Outside a workspace there is no
-ownership to resolve, and the command warns and creates unlabeled containers
-rather than stamping a different identity no sweep would ever match.
+What it projects is the identity a later `codefly run` resolves, because both go
+through the same `orchestration.ContainerRecoveryScopeFor`. That single resolver
+is the point: the identity is a hash of home, workspace and naming scope, and a
+second assembly of those inputs would drift silently — nothing fails when a
+label merely matches nothing. `TestContainerRecoveryScopeHasOneResolver` holds
+the recipe to one site.
+
+Matching the exact scope is necessary but **not sufficient**, because a run need
+not keep the naming scope `generate` saw. `--naming-scope`, a non-local `--env`,
+and the invocation id `--temporary-ports` generates each change it, and
+`ReapStaleContainers` compares a hash that includes it — so a leftover labeled
+under the declared scope would survive every such run. The containers `generate`
+builds are pure throwaways, so they are created ephemeral (`WithEphemeral`).
+That brings them under `ReapDisposableContainers`, which is keyed on the durable
+namespace of home and workspace alone and therefore collects a leftover from any
+later run in the workspace, whatever naming scope it chose. Only a container
+whose owning process is already gone is reaped (`shouldReapContainer` returns
+false while the owner is alive), so a concurrent `generate` is never disturbed.
+
+Outside a workspace there is no ownership to resolve, and the command warns once
+and creates unlabeled containers rather than stamping a different identity no
+sweep would ever match.
 
 One further hole is in the projection decision itself rather than in an agent:
 `codefly run` decides whether to project from the run's *launch* context, while

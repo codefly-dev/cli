@@ -526,6 +526,15 @@ func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot create docker runner: %w", err)
 	}
+	// A descriptor-set container holds no state worth preserving across runs: it
+	// is created, driven once and shut down in the defer below. Marking it
+	// ephemeral is what makes a leaked one recoverable at all — the exact-scope
+	// sweep compares a hash that includes the naming scope, which a later run may
+	// set differently (--naming-scope, a non-local --env, --temporary-ports),
+	// while the disposable sweep is keyed on the naming-scope-independent
+	// namespace. Only a container whose owning process is gone is ever reaped, so
+	// a concurrent generate is never disturbed.
+	runner.WithEphemeral()
 	runner.WithMount(tmpDir, "/workspace")
 	runner.WithWorkDir("/workspace")
 	// Run buf as the host user so the descriptor and buf.lock it writes into the

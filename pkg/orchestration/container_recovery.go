@@ -38,24 +38,9 @@ func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, 
 	if flow.containerRecoveryIdentity != "" {
 		return flow.containerRecoveryScope, dockerrun.SetContainerRecoveryScope(flow.containerRecoveryScope)
 	}
-	// Ownership is a hash of home, workspace and naming scope. Resolving one
-	// from a partial flow would project a DIFFERENT durable identity rather
-	// than none, and containers labeled with it match no later sweep — so
-	// refuse instead of substituting a default.
-	if flow.workspace == nil {
-		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("container recovery requires a workspace")
-	}
-	env := flow.Environment()
-	if env == nil {
-		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("container recovery requires a resolved environment")
-	}
-	home := resources.CodeflyHomeDir()
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("prepare container recovery home: %w", err)
-	}
-	scope, err := dockerrun.NewContainerRecoveryScope(home, flow.workspace.Dir(), env.NamingScope)
+	scope, err := ContainerRecoveryScopeFor(flow.workspace, flow.Environment())
 	if err != nil {
-		return scope, fmt.Errorf("resolve container recovery ownership: %w", err)
+		return scope, err
 	}
 	if err := dockerrun.SetContainerRecoveryScope(scope); err != nil {
 		return scope, err
@@ -67,6 +52,38 @@ func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, 
 		return scope, fmt.Errorf("projected container recovery identity is unreadable")
 	}
 	flow.containerRecoveryScope, flow.containerRecoveryIdentity = scope, identity
+	return scope, nil
+}
+
+// ContainerRecoveryScopeFor resolves the container-recovery ownership identity
+// from a workspace and the environment a command runs against.
+//
+// This is deliberately the only implementation of that recipe. The identity is a
+// hash of home, workspace and naming scope, and every site that projects a
+// marker has to produce a byte-identical one or the containers it labels are
+// collected by no sweep at all. A second assembly of the same three inputs
+// somewhere else would drift silently — nothing fails when a label merely
+// matches nothing — so callers outside a flow resolve through here instead of
+// rebuilding the triple. `TestContainerRecoveryScopeHasOneResolver` pins that.
+//
+// Ownership is refused rather than defaulted when either input is missing:
+// resolving from a partial context would project a DIFFERENT durable identity
+// rather than none, and containers labeled with it match no later sweep.
+func ContainerRecoveryScopeFor(workspace *resources.Workspace, env *resources.Environment) (dockerrun.ContainerRecoveryScope, error) {
+	if workspace == nil {
+		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("container recovery requires a workspace")
+	}
+	if env == nil {
+		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("container recovery requires a resolved environment")
+	}
+	home := resources.CodeflyHomeDir()
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("prepare container recovery home: %w", err)
+	}
+	scope, err := dockerrun.NewContainerRecoveryScope(home, workspace.Dir(), env.NamingScope)
+	if err != nil {
+		return scope, fmt.Errorf("resolve container recovery ownership: %w", err)
+	}
 	return scope, nil
 }
 
