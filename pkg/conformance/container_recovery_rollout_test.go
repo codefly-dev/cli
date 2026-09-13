@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"gopkg.in/yaml.v3"
 )
 
 // rolloutDocumentPath locates the human-readable view of the inventory.
@@ -219,6 +220,89 @@ func TestContainerRecoveryScopeHasOneResolver(t *testing.T) {
 	for pkg := range found {
 		if pkg != resolver {
 			t.Errorf("%s assembles the container recovery scope itself; resolve through orchestration.ContainerRecoveryScopeFor instead, or the two recipes drift into hashes that match nothing", pkg)
+		}
+	}
+}
+
+// nativeQualificationWorkflow rebuilds agents on the Core this CLI pins and
+// qualifies the native container-recovery path against the real binaries.
+const nativeQualificationWorkflow = "container-recovery-native.yml"
+
+// nativelyQualifiedAgents maps the agent repository each matrix entry rebuilds
+// to the identity the qualification resolves that build under.
+//
+// The matrix is read as a parsed document rather than from the file's text:
+// every repository name also appears in this workflow's step names, so a
+// substring test would keep reporting a deleted entry as covered.
+func nativelyQualifiedAgents(t *testing.T) map[string]string {
+	t.Helper()
+	var document struct {
+		Jobs map[string]struct {
+			Strategy struct {
+				Matrix struct {
+					Include []struct {
+						Agent      string `yaml:"agent"`
+						Repository string `yaml:"repository"`
+					} `yaml:"include"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
+		} `yaml:"jobs"`
+	}
+	path := filepath.Join(repositoryRoot(t), ".github", "workflows", nativeQualificationWorkflow)
+	if err := yaml.Unmarshal([]byte(readFile(t, path)), &document); err != nil {
+		t.Fatalf("parse %s: %v", nativeQualificationWorkflow, err)
+	}
+	qualified := map[string]string{}
+	for _, job := range document.Jobs {
+		for _, entry := range job.Strategy.Matrix.Include {
+			if entry.Agent == "" || entry.Repository == "" {
+				t.Errorf("%s has a matrix entry naming agent %q and repository %q; it must name both",
+					nativeQualificationWorkflow, entry.Agent, entry.Repository)
+				continue
+			}
+			qualified[entry.Repository] = entry.Agent
+		}
+	}
+	if len(qualified) == 0 {
+		t.Fatalf("%s qualifies no agent", nativeQualificationWorkflow)
+	}
+	return qualified
+}
+
+// TestNativeQualificationCoversEveryCompanionRow holds the native qualification
+// to the inventory. An agent that reaches a container through a Core companion
+// is exempt from the acknowledgement guard on native and Nix, so a stale binary
+// there creates unlabeled containers and nothing fails loudly — rebuilding it
+// in this workflow is the only thing that catches it. A row that falls out of
+// the matrix is a row the release gate stops covering silently, which is the
+// failure this test exists to make loud.
+func TestNativeQualificationCoversEveryCompanionRow(t *testing.T) {
+	qualified := nativelyQualifiedAgents(t)
+	classified := map[string]bool{}
+	for i := range Rollout().Agents {
+		agent := &Rollout().Agents[i]
+		if agent.Creates != CreatesInCompanion && agent.Creates != CreatesInBoth {
+			continue
+		}
+		classified[agent.Repository] = true
+		name, covered := qualified[agent.Repository]
+		if !covered {
+			t.Errorf("%s reaches a container through a Core companion, where the acknowledgement guard is exempt, but %s does not rebuild and qualify it",
+				agent.Repository, nativeQualificationWorkflow)
+			continue
+		}
+		// The identity resolves the cache path the rebuilt binary is installed
+		// at, so qualifying one row's build under another row's name qualifies
+		// neither of them.
+		if name != agent.Name {
+			t.Errorf("%s qualifies %s under agent %q, the inventory names it %q",
+				nativeQualificationWorkflow, agent.Repository, name, agent.Name)
+		}
+	}
+	for repository := range qualified {
+		if !classified[repository] {
+			t.Errorf("%s qualifies %s, which the inventory does not classify as reaching a container through a Core companion",
+				nativeQualificationWorkflow, repository)
 		}
 	}
 }

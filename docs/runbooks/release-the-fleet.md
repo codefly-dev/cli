@@ -182,12 +182,23 @@ predicate, so a Local/Nix run still never contacts a daemon.
 record for which agents this affects and what remains unqualified.
 
 `.github/workflows/container-recovery-native.yml` qualifies the path on every
-change: it rebuilds `service-go` — a `companion` row — against the Core this
-checkout pins and requires the projected identity back verbatim in the
-`codefly-container-recovery-scope` header, retaining the log as an artifact.
-Observed on 2026-09-13: rebuilt on `b3470f0096cd` it echoes the identity
-exactly, while the same source at its own pin `177cb87e85ee` returns an empty
-acknowledgement — what every published agent does today.
+change: it rebuilds every row that reaches a container through a Core companion
+— `service-go`, `service-go-grpc`, `service-rust`, `service-nextjs` and
+`service-python-fastapi` — against the Core this checkout pins and requires the
+projected identity back verbatim in the `codefly-container-recovery-scope`
+header, retaining each log as an artifact. The matrix cannot quietly shrink
+back to one row: `pkg/conformance` fails if it and the inventory disagree about
+which rows reach a container that way.
+
+Observed on 2026-09-13, rebuilt on `b3470f0096cd` and run against the real
+agent processes: all five echo the identity exactly — `go` 0.0.48, `go-grpc`
+0.1.36, `rust` 0.0.35, `nextjs` 0.0.152, `python-fastapi` 0.0.98. Building
+`service-go-grpc` on the pre-marker Core it is published against (`v0.3.27`)
+instead is rejected on the embedded-Core assertion, before the header is read
+at all — so the qualification refuses a published-generation binary rather than
+reporting an empty acknowledgement for it. That empty acknowledgement was
+recorded separately, for `service-go` at its own pin `177cb87e85ee`, and is
+what every published agent returns today.
 
 **A native run holding a container-pinned service now fails against the
 published fleet.** `preferences.codefly.yaml` overrides the launch context per

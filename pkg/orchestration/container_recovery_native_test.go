@@ -35,6 +35,12 @@ const AgentBinaryEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_BINARY"
 // moved, labelling one build with another's version.
 const AgentVersionEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_VERSION"
 
+// AgentNameEnv carries the agent the binary implements. The qualification runs
+// over every inventory row that reaches a container through a Core companion,
+// and each resolves to its own cache path, so a literal here would install one
+// row's binary under another row's identity and qualify neither.
+const AgentNameEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_NAME"
+
 // corePin is the Core release this CLI is compiled against, read from its own
 // build information so the qualification cannot drift from go.mod.
 func corePin(t *testing.T) string {
@@ -61,6 +67,8 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 	require.NotEmpty(t, source, "rebuild a companion agent on the pinned Core and set "+AgentBinaryEnv)
 	version := os.Getenv(AgentVersionEnv)
 	require.NotEmpty(t, version, "set "+AgentVersionEnv+" to the version that binary was built from")
+	name := os.Getenv(AgentNameEnv)
+	require.NotEmpty(t, name, "set "+AgentNameEnv+" to the agent that binary implements")
 
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	t.Setenv(manager.AgentSourceEnv, "local")
@@ -68,7 +76,7 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, "go:"+version)
+	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, name+":"+version)
 	require.NoError(t, err)
 	path, err := agent.Path(ctx)
 	require.NoError(t, err)
