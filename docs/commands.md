@@ -1242,8 +1242,21 @@ independently of source.
 codefly ci run --base <revision> --reuse-results \
   --reuse-store /cache/codefly-results \
   --reuse-environment ghcr.io/example/runner@sha256:... \
-  --reuse-reference "$GITHUB_REF" --reuse-trusted-reference refs/heads/main
+  --reuse-reference "$GITHUB_REF" --reuse-trusted-reference refs/heads/main \
+  --reuse-run "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
 ```
+
+A run publishing under a trusted reference needs `--reuse-run` (or
+`CODEFLY_CI_RUN`) so every success has traceable run provenance. The value must
+identify a run: one made only of separators — what
+`"$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"` collapses to wherever those variables are
+unset — does not count. Without it the run still executes and reports
+everything, and publishes nothing; `cache.status_reason` says so. A cached
+record must identify the requested service, phase and suite, and its success
+time must not be older than the configured maximum age, nor lead this run's
+clock by more than five minutes — enough for ordinary skew between a publisher
+and a consumer, not enough for a badly wrong clock to extend the window.
+Incomplete, mismatched or implausibly dated evidence causes execution.
 
 Records are authenticated with an HMAC keyed by `CODEFLY_CI_RESULT_KEY`, so
 authenticity does not depend on the storage backend. **Expose that key only to

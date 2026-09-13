@@ -841,9 +841,9 @@ func (reporter *CIReporter) publishResult(id string) {
 		reporter.mu.Unlock()
 		return
 	}
-	if !reuse.publishes() {
+	if reason := reuse.publishBlockedReason(); reason != "" {
 		reporter.mu.Unlock()
-		reporter.noteCacheDecision(id, "", "results are not published from untrusted reference "+reuse.reference)
+		reporter.noteCacheDecision(id, "", reason)
 		return
 	}
 	if !reuseVerifiableOutputs(task.Phase) {
