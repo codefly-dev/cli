@@ -799,7 +799,29 @@ codefly list project      # List projects in workspace
 codefly list module       # List modules (alias: application)
 codefly list libraries    # List workspace libraries (--remote for published versions, --json for machine output)
 codefly list jobs         # List jobs
+codefly list runnables    # List runnables (--module to scope, --json for machine output)
 ```
+
+See [Runnables](runnable.md) for what a runnable is and which parts of its
+lifecycle the CLI implements today.
+
+### `codefly show runnable <name>`
+
+Show one runnable's contract, execution bounds and dependency resolution.
+
+```bash
+codefly show runnable word-count
+codefly show runnable backend/word-count --json
+```
+
+Takes `module/name`, or a bare name when it is unambiguous across modules. It
+loads through core's strict loader, so an invalid declaration is reported as a
+load error rather than rendered partially. Each declared service dependency is
+reported as resolved or unresolved against what the workspace declares, using
+core's own binding rules — reachability and credential resolution belong to
+whoever installs and launches a binding, not to this command. An unresolved
+dependency is reported, not fatal: the command exits 0, and unattended callers
+gate on `--json` and each dependency's `resolved` field.
 
 ---
 
@@ -864,10 +886,23 @@ codefly install library authkit@^1.0.0 --language go --destination ./services/ap
 Manage service agents (the gRPC plugin processes that implement service operations).
 
 ```bash
-codefly agent info [agent-name]      # Show agent information
+codefly agent info service --agent=<name>:<version>   # Show a service agent's reported capabilities
+codefly agent info runnable --agent=<name>:<version>  # Show a runnable agent's reported capabilities
+codefly agent install <name>[:<version>]              # Download a released agent (--kind=runnable for a language agent)
 codefly agent generate [agent-name]  # Generate agent scaffolding
 codefly agent build [agent-name]     # Build an agent binary
 codefly agent ci                     # Run source, release, generated-service, and drift gates
+```
+
+`--kind` on `codefly agent install` selects the registered agent kind
+(`service`, the default, or `runnable`). A runnable language agent is named by
+its language and resolves to the `runnable-<language>` repository and executable
+through the same machinery service agents use — the CLI has no per-language
+branch.
+
+```bash
+codefly agent install python:0.0.1 --kind=runnable
+codefly agent info runnable --agent=python:0.0.1
 ```
 
 `codefly agent ci` is the provider-neutral agent-repository gate. It uses an

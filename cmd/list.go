@@ -8,7 +8,7 @@ import (
 // ListCmd represents the list command
 var ListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List jobs and other resources in the current workspace",
+	Short: "List jobs, runnables and other resources in the current workspace",
 }
 
 func init() {
@@ -16,4 +16,5 @@ func init() {
 	ListCmd.AddCommand(list.ModuleCmd)
 	ListCmd.AddCommand(list.LibraryCmd)
 	ListCmd.AddCommand(list.JobsCmd)
+	ListCmd.AddCommand(list.RunnablesCmd)
 }

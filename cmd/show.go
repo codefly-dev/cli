@@ -17,4 +17,5 @@ var ShowCmd = &cobra.Command{
 func init() {
 	ShowCmd.AddCommand(show.DependenciesCmd)
 	ShowCmd.AddCommand(show.NetworkCmd)
+	ShowCmd.AddCommand(show.RunnableCmd)
 }
