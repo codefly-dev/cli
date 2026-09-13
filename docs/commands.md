@@ -234,6 +234,17 @@ codefly run job db-migration --module=backend
 codefly run job db-migration --module=backend --with-services  # Start service dependencies first
 ```
 
+### `codefly build runnable <name>`
+
+Build and verify a native Runnable through its pinned Builder agent. `name` may
+be `module/name` or an unambiguous bare name. `--output` selects a new directory;
+`--json` emits the verified package descriptor. This does not install or invoke.
+See [Runnables](runnable.md) for prerequisites, evidence and current limits.
+
+```sh
+codefly build runnable word-count --output=/tmp/word-count-build --json
+```
+
 ### `codefly build service [name]`
 
 Build a service container image via the agent's builder.
@@ -568,6 +579,16 @@ fails.
 An unchanged request still resolves offline: the git clone cache is
 version-keyed and the verified package cache is digest-checked on every reuse,
 so a warmed-up workspace boots with the producer unreachable.
+
+**`add runnable`:**
+
+```sh
+codefly add runnable word-count --agent=python:0.0.1 --handler=handler.py --json
+```
+
+`--agent` and `--handler` are required. `--module` selects the owner, defaulting
+to the current module. Creation uses the agent over gRPC; edit the generated
+contract and handler before building. See [Runnables](runnable.md).
 
 **`add service` flags:**
 

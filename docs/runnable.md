@@ -17,6 +17,8 @@ not; nothing here is a promise about the unimplemented parts.
 
 | Command | What it does |
 | --- | --- |
+| `codefly add runnable <name> --agent=<name>:<version> --handler=<path>` | Create a declaration and scaffold through the real Builder agent |
+| `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
 | `codefly show runnable <name> [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
@@ -55,24 +57,12 @@ command's.
 None of the following exists in the CLI. There are no stub commands for them,
 because a stub would be indistinguishable from a capability:
 
-- **Create.** Scaffolding a runnable through the agent over gRPC.
-  `Builder.LoadRequest` still carries a `ServiceIdentity`, so there is no way
-  for an agent to receive a Runnable's resource, location and identity without
-  a pretend service declaration. That handoff has to be defined in core's
-  shared contract first.
-- **Build.** Requesting build material from the agent, preparing identified
-  native artifacts and assembling a `RunnablePackage`. `Builder.PackageResponse`
-  returns artifacts with kind/path/target/digest but not the native launch
-  command, generated harness identity, toolchain or effective configuration
-  evidence, so the CLI cannot receive them from trusted agent output. Deriving
-  them from `python` or a template name is exactly what this must not do.
-- **The local runner.** Executing an installed native artifact under an
-  approved execution specification. The `codefly.runnable/v1` launcher/harness
-  exchange — request/result transport, identity and deadline fields,
-  output-versus-log separation, byte limits, failure and cancellation
-  behavior — is named by the protocol but not frozen anywhere. Inventing it in
-  the CLI would make the CLI and the language agent's harness two independent
-  guesses at one boundary.
+- **The local runner.** Supervising an installed artifact through core's frozen
+  request/result protocol, with process groups, deadlines, cancellation, exact
+  log bounds and typed completion classification.
+- **Image builds.** The current Runnable build command accepts native artifacts
+  only. It rejects build/schema/completion prerequisites and internal libraries
+  whose preparation is not implemented.
 - **Register, activate, invoke, inspect.** These are Orchestration surfaces.
   The CLI calls them; it does not host a Task/effect scheduler.
 - **The Kubernetes path.** Orchestration's adapter owns durable
@@ -80,11 +70,46 @@ because a stub would be indistinguishable from a capability:
 
 Completing these paths requires coordinated work:
 
-- The three shared-contract gaps (create, build evidence, invocation framing)
-  are [codefly-dev/core#472](https://github.com/codefly-dev/core/issues/472).
-- The language agents live in [runnable-python](https://github.com/codefly-dev/runnable-python) and [runnable-go](https://github.com/codefly-dev/runnable-go). Python has a harness and packaging implementation; Go currently has typed bindings. The shared gRPC lifecycle is still to implement.
+- The shared contracts (create, build evidence, invocation framing) are tracked in [codefly-dev/core#472](https://github.com/codefly-dev/core/issues/472).
+- The language agents live in [runnable-python](https://github.com/codefly-dev/runnable-python) and [runnable-go](https://github.com/codefly-dev/runnable-go). Python implements native Builder gRPC and the shared invocation framing; Go currently has typed bindings.
 - The durable surfaces are Orchestration's, coordinated through
   [obin-ai/module-runtime#63](https://github.com/obin-ai/module-runtime/issues/63).
 
 [codefly-dev/cli#638](https://github.com/codefly-dev/cli/issues/638) is the
 milestone that tracks all of them.
+
+## Native authoring and build
+
+```sh
+codefly add runnable word-count --agent=python:0.0.1 --handler=handler.py --json
+# Edit runnables/word-count/runnable.codefly.yaml and its handler.
+codefly build runnable word-count --output=/tmp/word-count-build --json
+```
+
+Both agent and handler are explicit; the CLI has no language-specific defaults.
+A compatible development agent is required until the fleet publishes qualified
+releases. Creation rolls back a failed agent call's module reference and source.
+Building preserves failed output for inspection; choose a new directory to retry.
+The default output is `.codefly/build/runnables/module/name/version`.
+
+The CLI sends `Load(RunnableLocation)`, `RunnableBuildInputs` and `Package` over
+gRPC. It constructs the descriptor from the declaration, shared build evidence
+and `PackageArtifact.command`, validates it through core, and hashes the actual
+archive before writing the descriptor. Paths, interpreter names and language
+build tools come from the agent. No agent implementation is imported.
+
+The real-process integration test requires a separately built agent:
+
+```sh
+CODEFLY_RUNNABLE_AGENT_BINARY=/absolute/path/to/runnable-python \
+  go test -tags=integration -v ./pkg/runnable
+```
+
+This test creates through the CLI, builds, relocates the archive, removes access
+to source/prepared files, checks real typed I/O with core's codec, and checks
+rollback, duplicate output refusal and archive tampering. It is a debugging
+invocation, not an installed Orchestration task or a production CLI supervisor.
+The dedicated CI workflow pins the agent source commit.
+
+MCP create/build tools are deferred until the installation and execution surface
+is qualified. The CLI commands are available for unattended authoring now.
