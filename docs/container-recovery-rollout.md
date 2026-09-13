@@ -1,20 +1,24 @@
 # Container-recovery marker rollout inventory
 
-The CLI projects a versioned container-recovery marker into every agent it
+`codefly run` projects a versioned container-recovery marker into the agents it
 spawns. This page is the inventory the coordinated release gate in
 [cli#640](https://github.com/codefly-dev/cli/issues/640) needs: which agent
 binaries read that marker, which of them create containers, and what each one
 needs before the new CLI/fleet combination is published.
 
-`pkg/conformance/container_recovery_rollout_test.go` holds this page to the rest
-of the repository. Every language agent in the source-workspace compatibility
-roster and every agent a conformance row pins must be listed here, and a listed
-agent that creates containers cannot be marked as needing no rebuild.
+[`pkg/conformance/container_recovery.json`](../pkg/conformance/container_recovery.json)
+is the machine-readable inventory; the table below is its view, and
+`pkg/conformance` fails if the two disagree. The rules are enforced there, not
+here: an agent that creates containers cannot be marked as needing no rebuild,
+every agent the source-workspace roster or a conformance row pins must be
+classified, and a pin that cannot say which kind of agent it means is an error
+rather than a guess.
 
 ## What crosses the boundary
 
 `CODEFLY_CONTAINER_RECOVERY_SCOPE` carries `<pid>:v2:<scope>:<namespace>` from
-the CLI to each agent it spawns. Its parser is `runners/dockerrun` inside the
+`codefly run` to each agent it spawns — and from no other command, which is the
+gap the exposure section below returns to. Its parser is `runners/dockerrun` inside the
 **agent binary's own Core**, not the CLI's, so the CLI's core pin says nothing
 about whether an agent understands what it was handed. Two consumers matter:
 
@@ -47,10 +51,29 @@ path whether or not it creates containers itself.
 `TestContainerRecoveryRejectsAReleasedLegacyAgent` records that outcome against
 the published `go:0.0.47`.
 
-Native and Nix are exempt from the guard, which is where the quiet failures
+Native and Nix are exempt from the guard, which is one place the quiet failures
 live: an agent selected for a native backend that still reaches Docker through
 a Core companion creates its containers with no recovery label and nothing
 fails loudly. Those are the `companion` rows below.
+
+The other place is not a runtime context at all. **Only `codefly run` projects
+the marker** — `marker_projected_by` in the inventory records that, and a test
+fails if any other package starts or stops projecting one. An agent spawned by
+`codefly build`, `test` or `generate` therefore inherits no marker, resolves an
+empty scope, and `dockerrun` skips both recovery labels without an error. That
+is exactly the `companion` path: `companions/proto` runs under generate and
+build, `runners/testmatrix` under test, and `service-mssql`'s Alembic migration
+runner under its own lifecycle. **Rebuilding those agents does not fix that** —
+there is no marker for the new parser to read. Qualification has to cover the
+command, not only the runtime context.
+
+One further hole is in the projection decision itself rather than in an agent:
+`codefly run` decides whether to project from the run's *launch* context, while
+`preferences.codefly.yaml` overrides that context **per service**. A run
+launched native with one service pinned to a container context used to project
+no marker and skip the guard, so that service created unlabeled containers.
+`cmd/run` now decides over every context the run can select, not just the one
+it was launched with.
 
 ## Inventory
 
@@ -60,40 +83,41 @@ default branch on 2026-09-13. Archived repositories (`service-s3`,
 
 *Creates containers* is `runtime` when the agent's own code builds a
 `dockerrun` environment, `companion` when it reaches one only through a Core
-package, and `none` when no path does. *Backends* is the advertised
-`runnersbase.BackendSupport`, or `—` for a kind that declares none.
+package, and `none` when no path does — verified by resolving each repository's
+full dependency closure, not by reading its imports. *Backends* is the
+advertised `runnersbase.BackendSupport`, or `—` for a kind that declares none.
 
 | Agent | Kind | Repository | Creates containers | Backends | Rebuild |
 |---|---|---|---|---|---|
-| `codefly.dev/clickhouse` | service | `service-clickhouse` | runtime | nix, docker | required |
-| `codefly.dev/dynamodb` | service | `service-dynamodb` | runtime | docker | required |
-| `codefly.dev/envoy` | service | `service-envoy` | runtime | docker | required |
-| `codefly.dev/generic` | service | `service-generic` | none | — | required |
-| `codefly.dev/go` | service | `service-go` | companion | local, nix, docker | required |
-| `codefly.dev/go-grpc` | service | `service-go-grpc` | companion | local, nix, docker | required |
-| `codefly.dev/mssql` | service | `service-mssql` | runtime | docker | required |
-| `codefly.dev/neo4j` | service | `service-neo4j` | runtime | nix, docker | required |
-| `codefly.dev/nextjs` | service | `service-nextjs` | runtime+companion | local, nix, docker | required |
-| `codefly.dev/object-storage` | service | `service-object-storage` | runtime | docker | required |
-| `codefly.dev/postgres` | service | `service-postgres` | runtime | nix, docker | required |
-| `codefly.dev/python` | service | `service-python` | none | local, nix, docker | required |
-| `codefly.dev/python-fastapi` | service | `service-python-fastapi` | runtime+companion | local, nix, docker | required |
-| `codefly.dev/redis` | service | `service-redis` | runtime | nix, docker | required |
-| `codefly.dev/rust` | service | `service-rust` | companion | local, nix, docker | required |
-| `codefly.dev/swift` | service | `service-swift` | none | local, docker | required |
-| `codefly.dev/temporal` | service | `service-temporal` | none | local, docker | required |
-| `codefly.dev/vault` | service | `service-vault` | runtime | nix, docker | required |
-| `codefly.dev/docker` | toolbox | `toolbox-docker` | none | — | not-required |
-| `codefly.dev/grpc` | toolbox | `toolbox-grpc` | none | — | not-required |
-| `codefly.dev/nix` | toolbox | `toolbox-nix` | none | — | not-required |
-| `codefly.dev/python-repl` | toolbox | `toolbox-python-repl` | none | — | not-required |
-| `codefly.dev/web` | toolbox | `toolbox-web` | none | — | not-required |
-| `codefly.dev/sentry` | provider | `provider-sentry` | none | — | not-required |
-| `codefly.dev/stripe` | provider | `provider-stripe` | none | — | not-required |
-| `codefly.dev/unleash` | provider | `provider-unleash` | none | — | not-required |
-| `codefly.dev/saas-starter` | module | `module-saas-starter` | none | — | not-required |
-| `codefly.dev/go` | runnable | `runnable-go` | none | — | not-required |
-| `codefly.dev/python` | runnable | `runnable-python` | none | local, docker | not-required |
+| `codefly.dev/clickhouse` | codefly:service | `service-clickhouse` | runtime | nix, docker | required |
+| `codefly.dev/dynamodb` | codefly:service | `service-dynamodb` | runtime | docker | required |
+| `codefly.dev/envoy` | codefly:service | `service-envoy` | runtime | docker | required |
+| `codefly.dev/generic` | codefly:service | `service-generic` | none | — | required |
+| `codefly.dev/go` | codefly:service | `service-go` | companion | local, nix, docker | required |
+| `codefly.dev/go-grpc` | codefly:service | `service-go-grpc` | companion | local, nix, docker | required |
+| `codefly.dev/mssql` | codefly:service | `service-mssql` | runtime | docker | required |
+| `codefly.dev/neo4j` | codefly:service | `service-neo4j` | runtime | nix, docker | required |
+| `codefly.dev/nextjs` | codefly:service | `service-nextjs` | runtime+companion | local, nix, docker | required |
+| `codefly.dev/object-storage` | codefly:service | `service-object-storage` | runtime | docker | required |
+| `codefly.dev/postgres` | codefly:service | `service-postgres` | runtime | nix, docker | required |
+| `codefly.dev/python` | codefly:service | `service-python` | none | local, nix, docker | required |
+| `codefly.dev/python-fastapi` | codefly:service | `service-python-fastapi` | runtime+companion | local, nix, docker | required |
+| `codefly.dev/redis` | codefly:service | `service-redis` | runtime | nix, docker | required |
+| `codefly.dev/rust` | codefly:service | `service-rust` | companion | local, nix, docker | required |
+| `codefly.dev/swift` | codefly:service | `service-swift` | none | local, docker | required |
+| `codefly.dev/temporal` | codefly:service | `service-temporal` | none | local, docker | required |
+| `codefly.dev/vault` | codefly:service | `service-vault` | runtime | nix, docker | required |
+| `codefly.dev/docker` | codefly:toolbox | `toolbox-docker` | none | — | not-required |
+| `codefly.dev/grpc` | codefly:toolbox | `toolbox-grpc` | none | — | not-required |
+| `codefly.dev/nix` | codefly:toolbox | `toolbox-nix` | none | — | not-required |
+| `codefly.dev/python-repl` | codefly:toolbox | `toolbox-python-repl` | none | — | not-required |
+| `codefly.dev/web` | codefly:toolbox | `toolbox-web` | none | — | not-required |
+| `codefly.dev/sentry` | codefly:provider | `provider-sentry` | none | — | not-required |
+| `codefly.dev/stripe` | codefly:provider | `provider-stripe` | none | — | not-required |
+| `codefly.dev/unleash` | codefly:provider | `provider-unleash` | none | — | not-required |
+| `codefly.dev/saas-starter` | codefly:module | `module-saas-starter` | none | — | not-required |
+| `codefly.dev/go` | codefly:runnable | `runnable-go` | none | — | not-required |
+| `codefly.dev/python` | codefly:runnable | `runnable-python` | none | local, docker | not-required |
 
 Every service agent is `required` because the guard is on `Runner.Init` for any
 service resolved to a context other than `native` or `nix` — the default `free`
@@ -121,10 +145,13 @@ and Nix runners — reaches neither, and `agents/helpers/docker` only builds and
 inspects images. So, per repository:
 
 ```bash
-# runtime: the agent creates its own environment
+# runtime: the agent's own code constructs the environment
 grep -rn 'dockerrun\.NewDocker' --include='*.go' .
-# companion: it reaches one through Core
-grep -rln 'core/runners/companion\|core/runners/golang\|core/runners/rust\|core/runners/testmatrix\|core/companions/' --include='*.go' .
+# companion: Core reaches one on its behalf. Resolve the dependency CLOSURE,
+# not the imports — every agent pulls dockerrun transitively through
+# agents/services for the acknowledgement interceptor, so an import of it
+# proves nothing about container creation.
+go list -deps ./... | grep -E 'core/runners/(companion|testmatrix)$'
 ```
 
 Only `toolbox-docker` uses the Docker SDK outside this set, and its tools list
@@ -138,11 +165,15 @@ and inspect containers without creating any.
 2. Qualify the `companion` rows under a **native** backend specifically. The
    guard is exempt there, so a stale binary is invisible to it, and no CLI test
    can stand in for that path.
-3. Publish the rebuilt agents before or together with the CLI, then move
+3. Qualify the `companion` rows under `codefly build`, `test` and `generate` as
+   well as `codefly run`. Those commands project no marker, so a rebuilt agent
+   still creates unlabeled containers there; closing that needs a CLI change,
+   not a fleet rebuild, and no row in the table above records it.
+4. Publish the rebuilt agents before or together with the CLI, then move
    `pkg/sourceworkspace/compatibility.json`, the agent pins in
    `pkg/conformance/matrix.json`, and `module-saas-starter`'s composed pins onto
    the published versions.
-4. Record the qualified combinations in [the supported matrix](supported-matrix.md).
+5. Record the qualified combinations in [the supported matrix](supported-matrix.md).
 
 Mixed generations are unsupported in the other direction too, and they fail
 differently. An old CLI carrying the untagged generation projects a two-field
