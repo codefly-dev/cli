@@ -76,14 +76,14 @@ command's.
 None of the following exists in the CLI. There are no stub commands for them,
 because a stub would be indistinguishable from a capability:
 
-- **The local runner.** Supervising an installed artifact through core's frozen
-  request/result protocol, with process groups, deadlines, cancellation, exact
-  log bounds and typed completion classification.
 - **Image builds.** The current Runnable build command accepts native artifacts
   only. It rejects build/schema/completion prerequisites and internal libraries
   whose preparation is not implemented.
 - **Register, activate, invoke, inspect.** These are Orchestration surfaces.
-  The CLI calls them; it does not host a Task/effect scheduler.
+  The CLI calls them; it does not host a Task/effect scheduler. The local
+  runner below is the process boundary they dispatch *through*, not a way to
+  invoke installed work from the command line: no CLI command invokes a
+  Runnable.
 - **The Kubernetes path.** Orchestration's adapter owns durable
   invocation-to-Job identity, result handling and attempt policy.
 
@@ -125,6 +125,61 @@ whose digest matches it, and nothing would notice the current source never
 shipped. Paths, interpreter names and language
 build tools come from the agent. No agent implementation is imported.
 
+## The local runner
+
+`pkg/runnable.NativeLauncher` is the CLI's side of the physical process
+boundary: the `os/exec` equivalent for one invocation of an installed native
+binding. It is a package, not a command — Orchestration's native compute
+adapter is its caller, and this milestone's durable path is not finished until
+that adapter dispatches through it.
+
+`NewNativeLauncher(package, binding, root)` accepts an installation, where
+`root` is the directory the binding's artifact was unpacked into. Everything it
+checks is an installation fact rather than a property of one invocation, so a
+launcher that exists can dispatch: core's `VerifyBinding` ties the binding to
+the package it installs, the facility is native, the artifact is built for this
+host's `os/arch`, and the launch command is an executable file inside the
+installed root. A Kubernetes binding, another platform's artifact or a command
+pointing outside the package is refused here rather than at launch.
+
+`Invoke` supervises exactly one invocation, and an error from it means nothing
+was dispatched. Every way a dispatched process can end is a completion:
+
+- Core validates the invocation against the package (`PrepareInvocation`) and
+  classifies the observed process (`Complete`), so a timeout, a crash and a
+  harness that never wrote its result mean the same thing in every launcher.
+  The launcher additionally refuses a budget longer than the package's declared
+  timeout, and does not dispatch an invocation whose deadline has already
+  passed — spending the attempt would make a timeout look like a crash.
+- The framing is core's `codefly.runnable/v1`: three environment variables and
+  two proto3-JSON documents, written into a caller-chosen directory as
+  `invocation.json` and `result.json` and kept there as evidence. One directory
+  holds one invocation; a directory that already has either document is
+  refused, so a stale result is never read as this run's outcome.
+- The process is started as its own process group, and the **group** is the
+  unit of both supervision and cleanup: a descendant that outlives the process
+  the launcher started is still a resource this invocation acquired. Nothing
+  outside the group is touched.
+- The deadline is the launcher's own, enforced with SIGTERM then SIGKILL. A
+  result the harness already proved wins over the launcher ending the process,
+  so a harness that completed and then failed to exit still reports its outcome.
+- Cancellation follows the declared capability. Only a package declaring
+  `cancellation: signal` is interrupted when the caller's context is cancelled;
+  one declaring `none` runs to its deadline, because advertising a cancellation
+  the harness does not implement would report live work as abandoned.
+- `stdout` and `stderr` are diagnostics, captured separately and bounded by
+  `max_log_bytes`. Exceeding that bound truncates the stream and records that it
+  was truncated; it never changes the outcome, unlike `max_output_bytes`, whose
+  payload is completion data. Completion data never travels as process output.
+- The child's environment is the framing plus exactly what the caller resolved
+  for the package's declared dependencies and configurations. Nothing of the
+  CLI's own environment is inherited, so an ambient credential that happens to
+  sit in it never reaches a handler.
+
+The launcher never retries. A completion that is not `SUCCEEDED` or `FAILED`
+leaves the operation's effect unproven, and resolving it — by recomputation or
+by an effect receipt — belongs to whoever owns the package's recovery policy.
+
 The real-process integration test requires a separately built agent:
 
 ```sh
@@ -133,11 +188,15 @@ CODEFLY_RUNNABLE_AGENT_BINARY=/absolute/path/to/runnable-python \
 ```
 
 This test creates through the CLI, builds, relocates the archive, removes access
-to source/prepared files, checks real typed I/O with core's codec, and checks
-rollback, explicit-output refusal, default-output rebuild, evidence that no
-longer matches the source, and archive tampering. It is a debugging
-invocation, not an installed Orchestration task or a production CLI supervisor.
-The dedicated CI workflow pins the agent source commit.
+to source/prepared files, and then drives the real generated harness through the
+launcher: two inputs producing distinct typed outputs, an input of the wrong
+shape refused before the handler runs, and a live handler interrupted through
+the declared signal cancellation. It also checks rollback, explicit-output
+refusal, default-output rebuild, evidence that no longer matches the source, and
+archive tampering. What it proves is the launcher/harness boundary; it is not an
+installed Orchestration task, and unpacking the archive is still the test's own
+`tar` rather than an installer the CLI owns. The dedicated CI workflow pins the
+agent source commit.
 
 MCP create/build tools are deferred until the installation and execution surface
 is qualified. The CLI commands are available for unattended authoring now.
