@@ -265,14 +265,17 @@ func TestInvokeBoundsEachLogStreamWithoutChangingTheOutcome(t *testing.T) {
 	require.True(t, completion.GetLogs().GetStderr().GetTruncated())
 }
 
-func TestInvokeReportsLogVolumeWithoutASink(t *testing.T) {
+func TestInvokeCapturesNoLogBytesWithoutASink(t *testing.T) {
 	pkg := testPackage(t, []string{"harness"}, func(execution *basev0.RunnableExecution) {
 		execution.MaxLogBytes = 64
 	})
 	root := installedHarness(t, "printf '%s' 'four'\n"+writeResult(resultOf(t, "inv-1", `{"count":3}`)))
 	completion := invoke(t, t.Context(), pkg, root, runnableops.Run{Invocation: invocationFor(pkg, "inv-1", 30*time.Second)})
 
-	require.Equal(t, uint64(4), completion.GetLogs().GetStdout().GetBytes())
+	// The stream produced four bytes and the launcher kept none of them.
+	// Reporting them as captured would send a reader of this completion looking
+	// for diagnostics that were never written anywhere.
+	require.Equal(t, uint64(0), completion.GetLogs().GetStdout().GetBytes())
 	require.False(t, completion.GetLogs().GetStdout().GetTruncated())
 }
 
@@ -359,6 +362,17 @@ func TestInvokeRefusesMaterialItCannotDispatch(t *testing.T) {
 		require.ErrorContains(t, err, "names another release")
 	})
 
+	t.Run("a directory that already holds a result", func(t *testing.T) {
+		directory := filepath.Join(t.TempDir(), "invocation")
+		require.NoError(t, os.MkdirAll(directory, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, runnableops.ResultFile), []byte("{}"), 0600))
+		_, err := launcher.Invoke(t.Context(), runnableops.Run{Invocation: invocationFor(pkg, "inv-1", 30*time.Second), Directory: directory})
+		require.ErrorContains(t, err, "already holds a result document")
+		// A refusal must not leave a dispatched-looking document behind, which
+		// would also poison the directory for the retry.
+		require.NoFileExists(t, filepath.Join(directory, runnableops.InvocationFile))
+	})
+
 	t.Run("a directory that already holds an invocation", func(t *testing.T) {
 		directory := filepath.Join(t.TempDir(), "invocation")
 		_, err := launcher.Invoke(t.Context(), runnableops.Run{Invocation: invocationFor(pkg, "inv-1", 30*time.Second), Directory: directory})
@@ -406,4 +420,40 @@ func TestNewNativeLauncherRefusesAnInstallationItCannotExecute(t *testing.T) {
 		_, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), "relative/root")
 		require.ErrorContains(t, err, "must be absolute")
 	})
+}
+
+func TestInvokeReportsALauncherFailureAfterDispatchAsACompletion(t *testing.T) {
+	pkg := testPackage(t, []string{"harness"}, nil)
+	// A result path that exists but cannot be read. The handler ran, so the
+	// caller must receive an uncertain completion: an error here would say the
+	// invocation never happened, and re-dispatching it could repeat its effect.
+	root := installedHarness(t, "/bin/mkdir \"$CODEFLY__RUNNABLE_RESULT\"\n")
+	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), root)
+	require.NoError(t, err)
+
+	completion, err := launcher.Invoke(t.Context(), runnableops.Run{
+		Invocation: invocationFor(pkg, "inv-1", 30*time.Second), Directory: filepath.Join(t.TempDir(), "invocation"),
+	})
+	require.NoError(t, err, "a dispatched invocation must never come back as an error")
+	require.NotNil(t, completion)
+	// A document is there and is not this invocation's valid result, which is
+	// not the same as a process that wrote none.
+	require.Equal(t, basev0.RunnableCompletion_INVALID_OUTPUT, completion.GetOutcome())
+	require.False(t, corerunnable.OutcomeIsCertain(completion.GetOutcome()))
+	require.Contains(t, completion.GetMessage(), "read the harness result")
+}
+
+func TestInvokeDoesNotWaitOutTheDeadlineForAnUndrainedLogPipe(t *testing.T) {
+	pkg := testPackage(t, []string{"harness"}, nil)
+	// The handler completes and exits immediately but leaves a background child
+	// holding the inherited log pipe. Wait blocks until every inheritor closes
+	// it, so without a bound the invocation reports only once its deadline ends
+	// it — five minutes, on the declaration default.
+	root := installedHarness(t, "/bin/sleep 30 &\n"+writeResult(resultOf(t, "inv-1", `{"count":3}`))+"exit 0\n")
+	started := time.Now()
+	completion := invoke(t, t.Context(), pkg, root, runnableops.Run{Invocation: invocationFor(pkg, "inv-1", 60*time.Second)})
+	elapsed := time.Since(started)
+
+	require.Equal(t, basev0.RunnableCompletion_SUCCEEDED, completion.GetOutcome())
+	require.Less(t, elapsed, 20*time.Second, "the invocation waited for its deadline instead of bounding the log drain")
 }

@@ -27,9 +27,20 @@ const (
 	InvocationFile = "invocation.json"
 	ResultFile     = "result.json"
 	// terminationGrace is how long the invocation's process group gets to
-	// honour SIGTERM before the launcher escalates to SIGKILL.
+	// honour SIGTERM before the launcher escalates to SIGKILL. It is also the
+	// bound on waiting for the log pipes to drain after the process exits: a
+	// descendant holding an inherited pipe open must not pin the invocation to
+	// its whole deadline.
 	terminationGrace = 5 * time.Second
 )
+
+// ErrDispatched marks an error returned after the invocation's process was
+// started. An error without it means nothing ran, and the caller may dispatch
+// again; one carrying it means the operation may already have taken effect, so
+// dispatching again could repeat that effect. Reachable launcher failures are
+// reported in the completion rather than as an error at all, so this marks only
+// the classification failure that the launcher's own preparation rules out.
+var ErrDispatched = errors.New("the invocation was dispatched")
 
 // NativeLauncher supervises invocations of one installed native binding. It is
 // the physical process boundary: it receives an approved execution
@@ -110,11 +121,15 @@ type Run struct {
 
 // Invoke supervises one invocation and returns the launcher's typed completion.
 //
-// An error means the invocation was not dispatched at all. Every way a
-// dispatched process can end is a completion rather than an error, including
-// the ones that leave the operation's effect unproven: classifying them is
-// core's job, so a timeout, a crash and a harness that never wrote its result
-// mean the same thing in every launcher.
+// An error means the invocation was not dispatched, unless it carries
+// ErrDispatched. Every way a dispatched process can end is a completion rather
+// than an error, including the ones that leave the operation's effect unproven:
+// classifying them is core's job, so a timeout, a crash and a harness that never
+// wrote its result mean the same thing in every launcher. A launcher failure
+// after the process started — a process group that would not end, log pipes that
+// would not drain, a result document that cannot be read — is recorded in the
+// completion's message, never returned in place of the completion: a caller told
+// an invocation was not dispatched may run its effect a second time.
 func (l *NativeLauncher) Invoke(ctx context.Context, run Run) (*basev0.RunnableCompletion, error) {
 	invocation, err := corerunnable.PrepareInvocation(run.Invocation, l.pkg)
 	if err != nil {
@@ -136,12 +151,15 @@ func (l *NativeLauncher) Invoke(ctx context.Context, run Run) (*basev0.RunnableC
 	if err != nil {
 		return nil, err
 	}
-	if err = writeOnce(invocationPath, document); err != nil {
-		return nil, err
-	}
+	// The result path is checked before anything is written: a refusal must not
+	// leave this directory holding an invocation document for a run that never
+	// happened, which would also poison it for the retry.
 	if _, err = os.Lstat(resultPath); err == nil {
 		return nil, fmt.Errorf("invocation directory %s already holds a result document", run.Directory)
 	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err = writeOnce(invocationPath, document); err != nil {
 		return nil, err
 	}
 	environment, err := l.environment(invocation, invocationPath, resultPath, run.Environment)
@@ -157,29 +175,75 @@ func (l *NativeLauncher) Invoke(ctx context.Context, run Run) (*basev0.RunnableC
 	command.Dir = l.root
 	command.Env = environment
 	command.Stdout, command.Stderr = stdout, stderr
+	// Wait blocks until every inheritor of the log pipes closes them, not just
+	// the process the launcher started, so a handler that leaves a background
+	// child behind would otherwise report only once the deadline ended it.
+	command.WaitDelay = terminationGrace
 	interruptible := l.pkg.GetExecution().GetCancellation() == basev0.RunnableExecution_CANCELLATION_SIGNAL
 	observed, err := supervise(ctx, command, invocation.GetDeadline().AsTime(), interruptible)
 	if err != nil {
 		return nil, err
 	}
 	observed.Stdout, observed.Stderr = stdout.stream(), stderr.stream()
-	// The harness renames its document onto the result path, so one that exists
-	// is complete; one that is absent is no result at all rather than a partial
-	// one, and core classifies the difference.
-	if observed.Result, err = os.ReadFile(resultPath); err != nil {
-		if !os.IsNotExist(err) {
-			return nil, err
-		}
-		observed.Result = nil
+	document, readErr := readResult(resultPath)
+	observed.Result = document
+	if readErr != nil {
+		observed.Trouble = errors.Join(observed.Trouble, fmt.Errorf("read the harness result: %w", readErr))
 	}
-	return corerunnable.Complete(invocation, l.pkg, observed)
+	completion, err := corerunnable.Complete(invocation, l.pkg, observed.Observation)
+	if err != nil {
+		// Complete re-runs the preparation that already succeeded above, and
+		// rejects only a cancellation the launcher does not set unless the
+		// package declares it, so this cannot fire. It is still marked
+		// dispatched: the process ran, and no error from here may read as
+		// "never started".
+		return nil, fmt.Errorf("%w: classify invocation: %v", ErrDispatched, err)
+	}
+	if observed.Trouble != nil {
+		completion.Message = appendMessage(completion.GetMessage(), observed.Trouble.Error())
+	}
+	return completion, nil
+}
+
+// supervision is what the launcher saw of one dispatched process: the raw
+// observation core classifies, plus any launcher failure that happened after
+// the process started. Trouble never replaces the completion, because the
+// operation ran whether or not the launcher managed to tidy up after it.
+type supervision struct {
+	corerunnable.Observation
+	Trouble error
+}
+
+// readResult returns the document at path and distinguishes the two absences
+// core classifies differently: nil is no result at all, while an empty non-nil
+// document is one that is there but could not be read, which is not this
+// invocation's valid result rather than a process that never wrote one.
+func readResult(path string) ([]byte, error) {
+	document, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		return document, nil
+	case os.IsNotExist(err):
+		return nil, nil
+	case document == nil:
+		return []byte{}, err
+	default:
+		return document, err
+	}
+}
+
+func appendMessage(message, addition string) string {
+	if message == "" {
+		return addition
+	}
+	return message + "; " + addition
 }
 
 // supervise runs command as its own process group and reports raw process
 // facts. The group, not the leader, is the unit of both supervision and
 // cleanup: a descendant that outlives the process the launcher started is still
 // a resource this invocation acquired.
-func supervise(ctx context.Context, command *exec.Cmd, deadline time.Time, interruptible bool) (corerunnable.Observation, error) {
+func supervise(ctx context.Context, command *exec.Cmd, deadline time.Time, interruptible bool) (supervision, error) {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		// Nothing is dispatched. An invocation whose deadline has already
@@ -187,13 +251,16 @@ func supervise(ctx context.Context, command *exec.Cmd, deadline time.Time, inter
 		// it would spend the operation's one attempt and make a timeout
 		// indistinguishable from a crash.
 		now := time.Now()
-		return corerunnable.Observation{StartedAt: now, EndedAt: now, Ended: corerunnable.EndedOnDeadline}, nil
+		return supervision{Observation: corerunnable.Observation{StartedAt: now, EndedAt: now, Ended: corerunnable.EndedOnDeadline}}, nil
 	}
 	startedAt := time.Now()
 	group, err := base.StartOwnedProcessGroup(command)
 	if err != nil {
-		return corerunnable.Observation{}, fmt.Errorf("start invocation: %w", err)
+		return supervision{}, fmt.Errorf("start invocation: %w", err)
 	}
+	// The process is running from here on, so nothing below returns an error:
+	// a failure to end the group or to observe the exit is recorded and the
+	// caller still receives a completion it can classify.
 	var waitErr error
 	var endedAt time.Time
 	waited := make(chan struct{})
@@ -225,23 +292,29 @@ func supervise(ctx context.Context, command *exec.Cmd, deadline time.Time, inter
 	// because a cancelled invocation must still be cleaned up.
 	terminateErr := group.Terminate(context.WithoutCancel(ctx), terminationGrace)
 	<-waited
+	observed := supervision{Observation: corerunnable.Observation{StartedAt: startedAt, EndedAt: endedAt, Ended: ended}}
 	if terminateErr != nil {
-		return corerunnable.Observation{}, fmt.Errorf("end the invocation's process group: %w", terminateErr)
+		// The group may still hold live members, which the operator needs to
+		// know even when the operation itself succeeded.
+		observed.Trouble = errors.Join(observed.Trouble, fmt.Errorf("end the invocation's process group: %w", terminateErr))
 	}
-	// A non-zero exit is an observation, not a supervision failure; anything
-	// else means the launcher never saw the process end.
+	// A non-zero exit is an observation, not a supervision failure. Anything
+	// else — including the bounded wait giving up on undrained log pipes —
+	// means the launcher saw less than the whole ending.
 	var exited *exec.ExitError
 	if waitErr != nil && !errors.As(waitErr, &exited) {
-		return corerunnable.Observation{}, fmt.Errorf("supervise invocation: %w", waitErr)
+		observed.Trouble = errors.Join(observed.Trouble, fmt.Errorf("supervise invocation: %w", waitErr))
 	}
-	observation := corerunnable.Observation{StartedAt: startedAt, EndedAt: endedAt, Ended: ended}
+	if command.ProcessState == nil {
+		return observed, nil
+	}
 	if status, ok := command.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-		observation.Signal = unix.SignalName(status.Signal())
+		observed.Signal = unix.SignalName(status.Signal())
 	} else {
 		// #nosec G115 -- an exit status is -1 or 0..255, never a truncating value.
-		observation.ExitCode = int32(command.ProcessState.ExitCode())
+		observed.ExitCode = int32(command.ProcessState.ExitCode())
 	}
-	return observation, nil
+	return observed, nil
 }
 
 // environment is the whole environment the invocation's process gets: the
@@ -294,5 +367,12 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 }
 
 func (w *boundedWriter) stream() corerunnable.LogStream {
-	return corerunnable.LogStream{Bytes: min(w.produced, w.allowed), Truncated: w.produced > w.allowed}
+	truncated := w.produced > w.allowed
+	if w.to == nil {
+		// Nothing was kept, so reporting a byte count would send whoever reads
+		// this completion looking for diagnostics that were never written
+		// anywhere.
+		return corerunnable.LogStream{Truncated: truncated}
+	}
+	return corerunnable.LogStream{Bytes: min(w.produced, w.allowed), Truncated: truncated}
 }

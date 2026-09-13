@@ -142,8 +142,13 @@ host's `os/arch`, and the launch command is an executable file inside the
 installed root. A Kubernetes binding, another platform's artifact or a command
 pointing outside the package is refused here rather than at launch.
 
-`Invoke` supervises exactly one invocation, and an error from it means nothing
-was dispatched. Every way a dispatched process can end is a completion:
+`Invoke` supervises exactly one invocation. An error from it means nothing was
+dispatched, unless it carries `ErrDispatched`. A launcher failure *after* the
+process started — a process group that would not end, log pipes that would not
+drain, a result document that cannot be read — is recorded in the completion's
+message rather than returned in place of the completion: a caller told an
+invocation was never dispatched may run its effect a second time. Every way a
+dispatched process can end is a completion:
 
 - Core validates the invocation against the package (`PrepareInvocation`) and
   classifies the observed process (`Complete`), so a timeout, a crash and a
@@ -163,6 +168,10 @@ was dispatched. Every way a dispatched process can end is a completion:
 - The deadline is the launcher's own, enforced with SIGTERM then SIGKILL. A
   result the harness already proved wins over the launcher ending the process,
   so a harness that completed and then failed to exit still reports its outcome.
+  Waiting for the log pipes to drain after the process exits is bounded
+  separately, because they stay open until every inheritor closes them: a
+  handler that leaves a background child behind reports on that bound instead of
+  being pinned to its whole deadline.
 - Cancellation follows the declared capability. Only a package declaring
   `cancellation: signal` is interrupted when the caller's context is cancelled;
   one declaring `none` runs to its deadline, because advertising a cancellation
@@ -170,7 +179,9 @@ was dispatched. Every way a dispatched process can end is a completion:
 - `stdout` and `stderr` are diagnostics, captured separately and bounded by
   `max_log_bytes`. Exceeding that bound truncates the stream and records that it
   was truncated; it never changes the outcome, unlike `max_output_bytes`, whose
-  payload is completion data. Completion data never travels as process output.
+  payload is completion data. A stream given no writer reports no captured
+  bytes, since nothing was kept for a reader of the completion to go find.
+  Completion data never travels as process output.
 - The child's environment is the framing plus exactly what the caller resolved
   for the package's declared dependencies and configurations. Nothing of the
   CLI's own environment is inherited, so an ambient credential that happens to
