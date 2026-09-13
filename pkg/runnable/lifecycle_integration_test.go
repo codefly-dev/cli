@@ -155,13 +155,38 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	}
 	require.NoError(t, os.Rename(source+"-unavailable", source))
 	_, err = run("build", "runnable", "word-count", "--output="+buildDir)
-	require.Error(t, err, "existing output must not be overwritten")
-	archive, err = filepath.EvalSymlinks(archive)
-	require.NoError(t, err)
+	require.Error(t, err, "an explicit output directory must not be overwritten")
+
+	// VerifyBuild is given the path the agent reports, not a pre-resolved one:
+	// normalizing it is the CLI's job, and a symlinked output must still match.
 	platform := strings.Split(artifact.GetPlatform(), "/")
 	emitted := []*builderv0.PackageArtifact{{Kind: builderv0.PackageArtifact_ARCHIVE, Path: archive,
 		Target: &builderv0.PackageTarget{Os: platform[0], Architecture: platform[1]}, Sha256: strings.TrimPrefix(artifact.GetDigest(), "sha256:"), Command: artifact.GetCommand()}}
 	require.NoError(t, runnableops.VerifyBuild(ctx, workspace, r, pkg, emitted, filepath.Dir(archive)))
 	require.NoError(t, os.WriteFile(archive, []byte("changed after packaging"), 0600))
 	require.ErrorContains(t, runnableops.VerifyBuild(ctx, workspace, r, pkg, emitted, filepath.Dir(archive)), "content digest does not match")
+
+	// A package whose build evidence no longer describes the author's source is
+	// rejected even though every digest inside it is self-consistent: this is
+	// the stale-snapshot case the archive digest alone cannot see.
+	handler := filepath.Join(source, "handler.py")
+	edited := []byte("def handle(context, input):\n    return {\"count\": 1 + len(input[\"text\"].split())}\n")
+	original, err := os.ReadFile(handler)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(handler, edited, 0600))
+	require.ErrorContains(t, runnableops.VerifyBuild(ctx, workspace, r, pkg, emitted, filepath.Dir(archive)),
+		"packaged different bytes than the declaration references")
+	require.NoError(t, os.WriteFile(handler, original, 0600))
+
+	// The CLI-owned default directory is scratch, not a release: the ordinary
+	// edit/rebuild loop must not strand itself on its deterministic path.
+	first, err := run("build", "runnable", "word-count", "--json")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(handler, edited, 0600))
+	second, err := run("build", "runnable", "word-count", "--json")
+	require.NoError(t, err, "rebuilding into the default output must succeed")
+	firstPkg, secondPkg := &basev0.RunnablePackage{}, &basev0.RunnablePackage{}
+	require.NoError(t, protojson.Unmarshal(first, firstPkg))
+	require.NoError(t, protojson.Unmarshal(second, secondPkg))
+	require.NotEqual(t, firstPkg.GetDigest(), secondPkg.GetDigest(), "edited source must produce a different release digest")
 }

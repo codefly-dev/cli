@@ -237,7 +237,8 @@ codefly run job db-migration --module=backend --with-services  # Start service d
 ### `codefly build runnable <name>`
 
 Build and verify a native Runnable through its pinned Builder agent. `name` may
-be `module/name` or an unambiguous bare name. `--output` selects a new directory;
+be `module/name` or an unambiguous bare name. `--output` selects a new directory
+(the CLI-owned default is replaced on each build);
 `--json` emits the verified package descriptor. This does not install or invoke.
 See [Runnables](runnable.md) for prerequisites, evidence and current limits.
 

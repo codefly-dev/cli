@@ -36,14 +36,18 @@ jobs:
           GOWORK: 'off'
         run: go build -o "$RUNNER_TEMP/runnable-python" .
       - name: Create, build, relocate, invoke and verify through the CLI
+        id: qualify
         env:
           GOWORK: 'off'
         run: |
           set -o pipefail
           CODEFLY_RUNNABLE_AGENT_BINARY="$RUNNER_TEMP/runnable-python" \
             go test -tags=integration -v ./pkg/runnable | tee runnable-native.log
+      # Gate on the qualification step having actually run: with a bare
+      # always(), an earlier failure leaves no log and if-no-files-found:error
+      # adds a second, misleading red step on top of the real one.
       - name: Retain qualification evidence
-        if: always()
+        if: always() && steps.qualify.conclusion != 'skipped'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: runnable-native

@@ -18,7 +18,8 @@ var RunnableCmd = &cobra.Command{
 	Short: "Build and verify a native Runnable package through its agent",
 	Long: `Generate and prepare the loaded Runnable through its agent, package a native
 archive, and verify its release descriptor and actual artifact digest. The output
-directory must be new. The name is module/name or an unambiguous bare name.
+directory must be new; the default build directory is CLI-owned and is replaced
+on each build. The name is module/name or an unambiguous bare name.
 
 The agent owns language tooling and launch information. This command does not
 install a binding, invoke a task or build an image. Build-time service prerequisites
@@ -40,7 +41,16 @@ and internal library preparation are not yet supported.`,
 		}
 		output := runnableOutput
 		if output == "" {
-			output = filepath.Join(workspace.Dir(), ".codefly", "build", "runnables", r.Module(), r.Name, r.Version)
+			// The default lives in a directory the CLI owns, and its path is
+			// fixed by module/name/version, so a rebuild replaces it rather
+			// than stranding the edit/rebuild loop on a one-shot path. An
+			// explicit --output is the user's directory and must still be new.
+			if output, err = runnableops.DefaultOutput(workspace, r); err != nil {
+				return err
+			}
+			if err = runnableops.ResetOutput(workspace, output); err != nil {
+				return err
+			}
 		}
 		output, err = filepath.Abs(output)
 		if err != nil {
@@ -64,6 +74,6 @@ and internal library preparation are not yet supported.`,
 }
 
 func init() {
-	RunnableCmd.Flags().StringVar(&runnableOutput, "output", "", "New build directory (defaults to .codefly/build/runnables/module/name/version)")
+	RunnableCmd.Flags().StringVar(&runnableOutput, "output", "", "New build directory (default: .codefly/build/runnables/module/name/version, replaced on each build)")
 	RunnableCmd.Flags().BoolVar(&runnableJSON, "json", false, "Emit the verified Runnable package descriptor as JSON")
 }

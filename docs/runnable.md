@@ -89,13 +89,21 @@ codefly build runnable word-count --output=/tmp/word-count-build --json
 Both agent and handler are explicit; the CLI has no language-specific defaults.
 A compatible development agent is required until the fleet publishes qualified
 releases. Creation rolls back a failed agent call's module reference and source.
-Building preserves failed output for inspection; choose a new directory to retry.
-The default output is `.codefly/build/runnables/module/name/version`.
+Building preserves a failed explicit `--output` for inspection; choose a new
+directory to retry. The default output, `.codefly/build/runnables/module/name/version`,
+is a CLI-owned scratch directory and is replaced on every build, so the ordinary
+edit/rebuild loop never strands itself on its deterministic path. Release
+immutability lives in the package digest, which core's `CompareRelease` uses to
+tell an idempotent re-registration from a conflict.
 
 The CLI sends `Load(RunnableLocation)`, `RunnableBuildInputs` and `Package` over
 gRPC. It constructs the descriptor from the declaration, shared build evidence
-and `PackageArtifact.command`, validates it through core, and hashes the actual
-archive before writing the descriptor. Paths, interpreter names and language
+and `PackageArtifact.command`, validates it through core, and hashes both the
+declared build inputs and the actual archive before writing the descriptor. The
+input hashes are what tie the evidence to the author's source: without them a
+stale agent snapshot would report a stale handler digest inside a stale archive
+whose digest matches it, and nothing would notice the current source never
+shipped. Paths, interpreter names and language
 build tools come from the agent. No agent implementation is imported.
 
 The real-process integration test requires a separately built agent:
@@ -107,7 +115,8 @@ CODEFLY_RUNNABLE_AGENT_BINARY=/absolute/path/to/runnable-python \
 
 This test creates through the CLI, builds, relocates the archive, removes access
 to source/prepared files, checks real typed I/O with core's codec, and checks
-rollback, duplicate output refusal and archive tampering. It is a debugging
+rollback, explicit-output refusal, default-output rebuild, evidence that no
+longer matches the source, and archive tampering. It is a debugging
 invocation, not an installed Orchestration task or a production CLI supervisor.
 The dedicated CI workflow pins the agent source commit.
 

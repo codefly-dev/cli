@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,7 +38,9 @@ func Create(ctx context.Context, workspace *resources.Workspace, module *resourc
 	}
 	// Keep the directory if reference rollback cannot be persisted: a reference
 	// to recoverable source is better than a reference to a deleted directory.
-	module.RunnableReferences = slices.DeleteFunc(module.RunnableReferences, func(ref *resources.RunnableReference) bool { return ref.Name == name })
+	if err := removeRunnableReference(module, name); err != nil {
+		return nil, fmt.Errorf("creation failed: %w; reference rollback failed: %v; source retained at %s", createErr, err, r.Dir())
+	}
 	if err := module.Save(context.WithoutCancel(ctx)); err != nil {
 		return nil, fmt.Errorf("creation failed: %w; reference rollback failed: %v; source retained at %s", createErr, err, r.Dir())
 	}
@@ -45,6 +48,24 @@ func Create(ctx context.Context, workspace *resources.Workspace, module *resourc
 		return nil, fmt.Errorf("creation failed: %w; remove incomplete source: %v", createErr, err)
 	}
 	return nil, createErr
+}
+
+// removeRunnableReference drops exactly one runnable reference from the module.
+// Core owns AddRunnableReference but exposes no removal counterpart, so the
+// rollback has to reach the slice directly; requiring exactly one removal keeps
+// a silent no-op from being mistaken for a completed rollback. Tracked for core
+// in https://github.com/codefly-dev/core/issues/472.
+func removeRunnableReference(module *resources.Module, name string) error {
+	before := len(module.RunnableReferences)
+	module.RunnableReferences = slices.DeleteFunc(module.RunnableReferences, func(ref *resources.RunnableReference) bool { return ref.Name == name })
+	switch removed := before - len(module.RunnableReferences); removed {
+	case 1:
+		return nil
+	case 0:
+		return fmt.Errorf("module %s carries no reference to runnable %s", module.Name, name)
+	default:
+		return fmt.Errorf("module %s carried %d references to runnable %s", module.Name, removed, name)
+	}
 }
 
 func create(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, logs io.Writer) error {
@@ -77,23 +98,32 @@ func Build(ctx context.Context, workspace *resources.Workspace, r *resources.Run
 			return nil, fmt.Errorf("runnable build prerequisite %s/%s [%s] is not yet supported", dependency.Module, dependency.Name, dependency.Kind)
 		}
 	}
-	client, closeAgent, err := load(ctx, workspace, r, logs)
-	if err != nil {
+	// Claim the output directory before paying for an agent process: a reused
+	// directory is the common retry mistake and must not cost a subprocess, a
+	// gRPC handshake and a Load first.
+	if err := os.MkdirAll(filepath.Dir(output), 0700); err != nil {
 		return nil, err
 	}
-	defer closeAgent()
-	if err = os.MkdirAll(filepath.Dir(output), 0700); err != nil {
-		return nil, err
-	}
-	if err = os.Mkdir(output, 0700); err != nil {
+	if err := os.Mkdir(output, 0700); err != nil {
 		return nil, fmt.Errorf("build output must be new: %w", err)
 	}
-	inputs, err := client.RunnableBuildInputs(ctx, &builderv0.RunnableBuildInputsRequest{OutputDirectory: filepath.Join(output, "prepared")})
+	client, closeAgent, err := load(ctx, workspace, r, logs)
+	if err != nil {
+		// Nothing has written to the directory yet, so removing it keeps a
+		// failed agent start from poisoning the output path for the retry.
+		return nil, errors.Join(err, os.Remove(output))
+	}
+	defer closeAgent()
+	preparedDir := filepath.Join(output, "prepared")
+	inputs, err := client.RunnableBuildInputs(ctx, &builderv0.RunnableBuildInputsRequest{OutputDirectory: preparedDir})
 	if err != nil {
 		return nil, fmt.Errorf("agent RunnableBuildInputs: %w", err)
 	}
 	if inputs.GetState().GetState() != builderv0.RunnableBuildInputsStatus_SUCCESS || inputs.GetBuild() == nil {
 		return nil, fmt.Errorf("agent did not prepare build inputs: %s", inputs.GetState().GetMessage())
+	}
+	if err = verifyPrepared(preparedDir); err != nil {
+		return nil, err
 	}
 	artifactsDir := filepath.Join(output, "artifacts")
 	response, err := client.Package(ctx, &builderv0.PackageRequest{OutputDirectory: artifactsDir})
@@ -118,6 +148,58 @@ func Build(ctx context.Context, workspace *resources.Workspace, r *resources.Run
 		return nil, err
 	}
 	return pkg, nil
+}
+
+// buildRoot is the workspace subtree the CLI owns for scratch Runnable builds.
+var buildRoot = filepath.Join(".codefly", "build", "runnables")
+
+// DefaultOutput is the CLI-owned scratch build directory for r. It is
+// deterministic, so callers must reset it before reusing it; see ResetOutput.
+func DefaultOutput(workspace *resources.Workspace, r *resources.Runnable) (string, error) {
+	output := filepath.Join(workspace.Dir(), buildRoot, r.Module(), r.Name, r.Version)
+	if err := ownedOutput(workspace, output); err != nil {
+		return "", err
+	}
+	return output, nil
+}
+
+// ResetOutput removes a CLI-owned scratch build directory so a rebuild can
+// recreate it. Release immutability is enforced by the package digest and
+// core's CompareRelease, never by refusing to reuse a scratch directory, so
+// the edit/rebuild loop must not strand itself on a deterministic path. It
+// refuses any path outside the workspace's Runnable build root, so an explicit
+// --output can never be removed through here.
+func ResetOutput(workspace *resources.Workspace, output string) error {
+	if err := ownedOutput(workspace, output); err != nil {
+		return err
+	}
+	return os.RemoveAll(output)
+}
+
+func ownedOutput(workspace *resources.Workspace, output string) error {
+	root := filepath.Join(workspace.Dir(), buildRoot)
+	relative, err := filepath.Rel(root, output)
+	if err != nil {
+		return err
+	}
+	if !filepath.IsLocal(relative) {
+		return fmt.Errorf("build directory %s is not inside the workspace Runnable build root %s", output, root)
+	}
+	return nil
+}
+
+// verifyPrepared holds the agent to the directory contract the CLI hands it:
+// a SUCCESS from RunnableBuildInputs must have materialized build inputs at
+// the requested path, otherwise the CLI defined a location nothing wrote to.
+func verifyPrepared(directory string) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("agent reported prepared build inputs but %s is unusable: %w", directory, err)
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("agent reported prepared build inputs but wrote nothing to %s", directory)
+	}
+	return nil
 }
 
 func load(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, logs io.Writer) (builderv0.BuilderClient, func(), error) {
@@ -160,6 +242,14 @@ func load(ctx context.Context, workspace *resources.Workspace, r *resources.Runn
 
 // VerifyBuild accepts only an identified package matching the declaration and
 // the files actually emitted by the agent. It never imports agent code.
+//
+// Only build evidence and artifacts are agent-sourced. Build() constructs
+// identity, agent, contract, execution and dependencies from the declaration
+// itself, so those comparisons re-check the CLI's own construction there; they
+// do real work only when VerifyBuild re-verifies a package it did not build,
+// such as one read back from disk. Making them meaningful in the build path
+// needs the agent to return them over the wire, which PackageResponse does not
+// yet carry (codefly-dev/core#472).
 func VerifyBuild(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, pkg *basev0.RunnablePackage, emittedFiles []*builderv0.PackageArtifact, directory string) error {
 	if err := corerunnable.VerifyPackage(pkg); err != nil {
 		return fmt.Errorf("verify Runnable package: %w", err)
@@ -177,7 +267,7 @@ func VerifyBuild(ctx context.Context, workspace *resources.Workspace, r *resourc
 		return err
 	}
 	if !proto.Equal(identity, pkg.GetIdentity()) || !proto.Equal(declaration.GetAgent(), pkg.GetAgent()) || !proto.Equal(declaration.GetContract(), pkg.GetContract()) {
-		return fmt.Errorf("agent package identity, agent, contract or execution policy differs from the declaration")
+		return fmt.Errorf("agent package identity, agent or contract differs from the declaration")
 	}
 	// Canonicalize declared dependencies using the same core preparation rules,
 	// so ordering is irrelevant but omission or addition is still an error.
@@ -194,20 +284,89 @@ func VerifyBuild(ctx context.Context, workspace *resources.Workspace, r *resourc
 	if expected.GetDigest() != pkg.GetDigest() {
 		return fmt.Errorf("agent package dependencies differ from the declaration")
 	}
-	if pkg.GetBuild().GetHandler().GetPath() != r.Entrypoint.Handler {
+	if err := verifyBuildInputs(r.Dir(), pkg.GetBuild(), r.Entrypoint.Handler, r.Entrypoint.Inputs); err != nil {
+		return err
+	}
+	return verifyArtifacts(pkg.GetArtifacts(), emittedFiles, directory)
+}
+
+// verifyBuildInputs holds the agent's build evidence against the author's
+// source tree. The evidence digests are what make the package digest a content
+// address, and core's CompareRelease uses that digest to tell an idempotent
+// re-registration from a conflict. Checking only the paths would leave every
+// digest in the descriptor self-consistent within the agent's own output: an
+// agent that packaged a stale snapshot would report a stale handler digest
+// inside a stale archive whose digest matches it, and nothing would notice the
+// author's current source never shipped. The CLI holds that source, so it
+// hashes it here rather than trusting the process it exists to verify.
+func verifyBuildInputs(dir string, build *basev0.RunnableBuild, handler string, inputs []string) error {
+	if dir == "" {
+		return fmt.Errorf("runnable was not loaded from a directory; cannot verify build inputs")
+	}
+	if build.GetHandler().GetPath() != handler {
 		return fmt.Errorf("agent package handler differs from the declaration")
 	}
-	declaredInputs := slices.Clone(r.Entrypoint.Inputs)
+	declaredInputs := slices.Clone(inputs)
 	slices.Sort(declaredInputs)
-	var packagedInputs []string
-	for _, input := range pkg.GetBuild().GetInputs() {
+	packagedInputs := make([]string, 0, len(build.GetInputs()))
+	digests := make(map[string]string, len(build.GetInputs()))
+	for _, input := range build.GetInputs() {
 		packagedInputs = append(packagedInputs, input.GetPath())
+		digests[input.GetPath()] = input.GetDigest()
 	}
 	slices.Sort(packagedInputs)
 	if !slices.Equal(declaredInputs, packagedInputs) {
 		return fmt.Errorf("agent package build input paths differ from the declaration")
 	}
-	return verifyArtifacts(pkg.GetArtifacts(), emittedFiles, directory)
+	// Hash the declared path, never the agent-supplied string: the two are
+	// equal by the check above, and the declared one is the path core already
+	// confined to the runnable directory.
+	if err := verifyInputDigest(dir, handler, build.GetHandler().GetDigest(), "handler"); err != nil {
+		return err
+	}
+	for _, input := range declaredInputs {
+		if err := verifyInputDigest(dir, input, digests[input], "build input"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func verifyInputDigest(dir string, relative string, claimed string, kind string) error {
+	actual, err := digestFile(filepath.Join(dir, relative))
+	if err != nil {
+		return fmt.Errorf("verify %s %s against the source: %w", kind, relative, err)
+	}
+	if actual != claimed {
+		return fmt.Errorf("agent package %s %s digest %s does not match the source on disk (%s); the agent packaged different bytes than the declaration references", kind, relative, claimed, actual)
+	}
+	return nil
+}
+
+// digestFile returns the "sha256:<hex>" content digest of one regular file, the
+// same form the shared descriptor uses for build evidence and artifacts.
+func digestFile(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func verifyArtifacts(artifacts []*basev0.RunnableArtifact, emittedFiles []*builderv0.PackageArtifact, directory string) error {
@@ -238,31 +397,56 @@ func verifyArtifacts(artifacts []*basev0.RunnableArtifact, emittedFiles []*build
 		}
 		matched := false
 		for _, emitted := range emittedFiles {
-			if filepath.Clean(emitted.GetPath()) == file && emitted.GetKind() == builderv0.PackageArtifact_ARCHIVE && emitted.GetTarget().GetOs()+"/"+emitted.GetTarget().GetArchitecture() == artifact.GetPlatform() && "sha256:"+emitted.GetSha256() == artifact.GetDigest() && slices.Equal(emitted.GetCommand(), artifact.GetCommand()) {
+			if canonicalPath(emitted.GetPath()) == file && emitted.GetKind() == builderv0.PackageArtifact_ARCHIVE && emitted.GetTarget().GetOs()+"/"+emitted.GetTarget().GetArchitecture() == artifact.GetPlatform() && "sha256:"+emitted.GetSha256() == artifact.GetDigest() && slices.Equal(emitted.GetCommand(), artifact.GetCommand()) {
 				matched = true
 			}
 		}
 		if !matched {
 			return fmt.Errorf("native artifact %s does not match the emitted file metadata", name)
 		}
-		reader, err := os.Open(file)
+		actual, err := digestFile(file)
 		if err != nil {
 			return err
 		}
-		hash := sha256.New()
-		_, copyErr := io.Copy(hash, reader)
-		closeErr := reader.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		if "sha256:"+hex.EncodeToString(hash.Sum(nil)) != artifact.GetDigest() {
+		if actual != artifact.GetDigest() {
 			return fmt.Errorf("native artifact %s content digest does not match", name)
 		}
 	}
+	return verifyNoUnverifiedFiles(root, seen)
+}
+
+// verifyNoUnverifiedFiles rejects anything in the artifact directory the agent
+// did not report. Everything the descriptor names has just been digested, so
+// an unreported file is content the build presents as part of a verified
+// package without any evidence behind it. The descriptor itself is allowed:
+// Build writes it after verification, and a re-verification of an existing
+// build directory legitimately finds it already there.
+func verifyNoUnverifiedFiles(root string, verified map[string]bool) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if verified[entry.Name()] || entry.Name() == PackageFile {
+			continue
+		}
+		return fmt.Errorf("artifact directory contains %q, which the agent did not report as an artifact", entry.Name())
+	}
 	return nil
+}
+
+// canonicalPath puts an agent-reported path in the same form as the resolved
+// artifact root, so a build output reached through a symlink (macOS /tmp ->
+// /private/tmp) compares equal to the path the agent echoes back. Only the
+// directory is resolved: the final component must still be the regular file
+// Lstat accepted, never a link aliasing it.
+func canonicalPath(p string) string {
+	p = filepath.Clean(p)
+	dir, err := filepath.EvalSymlinks(filepath.Dir(p))
+	if err != nil {
+		return p
+	}
+	return filepath.Join(dir, filepath.Base(p))
 }
 
 func assemble(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, build *basev0.RunnableBuild, files []*builderv0.PackageArtifact) (*basev0.RunnablePackage, error) {
