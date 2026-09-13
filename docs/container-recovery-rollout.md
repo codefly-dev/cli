@@ -76,8 +76,8 @@ different shape of hole: it spawns no agent at all. `generate proto` and
 `cmd/generate/contracts.go`), so no flow ever projects for them and
 `companions/proto` created unlabeled containers there however new its Core was.
 **Rebuilding that agent could not fix it** — there was no marker for the new
-parser to read. `cmd/generate` now projects directly, which is why it is the
-second entry in `marker_projected_by`.
+parser to read. `cmd/generate` now projects directly, which is why it joins
+`pkg/orchestration` in `marker_projected_by`.
 
 What it projects has to be the identity a later `codefly run` resolves, or the
 label is written and still collected by nothing: these containers are not
