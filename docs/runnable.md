@@ -78,13 +78,11 @@ because a stub would be indistinguishable from a capability:
 - **The Kubernetes path.** Orchestration's adapter owns durable
   invocation-to-Job identity, result handling and attempt policy.
 
-Each of these is blocked on a contract or a repository that does not exist
-yet, not on CLI work:
+Completing these paths requires coordinated work:
 
 - The three shared-contract gaps (create, build evidence, invocation framing)
   are [codefly-dev/core#472](https://github.com/codefly-dev/core/issues/472).
-- The language agent lives in `codefly-dev/runnable-python`, which has not
-  been created yet.
+- The language agents live in [runnable-python](https://github.com/codefly-dev/runnable-python) and [runnable-go](https://github.com/codefly-dev/runnable-go). Python has a harness and packaging implementation; Go currently has typed bindings. The shared gRPC lifecycle is still to implement.
 - The durable surfaces are Orchestration's, coordinated through
   [obin-ai/module-runtime#63](https://github.com/obin-ai/module-runtime/issues/63).
 

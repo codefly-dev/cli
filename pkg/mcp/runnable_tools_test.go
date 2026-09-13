@@ -137,3 +137,38 @@ func TestAgentKindVocabularyCoversTheRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestRunnableAgentPinsAppearBeforeInstallation(t *testing.T) {
+	t.Chdir(writeMCPWorkspaceWithRunnable(t))
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	ctx := context.Background()
+	server, err := NewServer(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := callTool(t, server, ctx, "list_agents", `{"kind":"runnable"}`).Content[0].Text
+	for _, want := range []string{`"python"`, `"0.0.1"`, `"backend/word-count"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("pinned Runnable agent missing %s: %s", want, text)
+		}
+	}
+}
+
+func TestListRunnablesRefusesUnknownModule(t *testing.T) {
+	t.Chdir(writeMCPWorkspaceWithRunnable(t))
+	ctx := context.Background()
+	server, err := NewServer(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.listRunnables(ctx, map[string]string{fieldModule: "absent"}); err == nil {
+		t.Fatal("unknown module was reported as an empty listing")
+	}
+	content, err := server.listRunnables(ctx, map[string]string{fieldModule: "backend"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != 1 || !strings.Contains(content[0].Text, "word-count") {
+		t.Fatalf("known module missing its Runnable: %+v", content)
+	}
+}

@@ -160,30 +160,18 @@ func TestDependabotReachesEveryActionManifest(t *testing.T) {
 	}
 }
 
-// open-pull-requests-limit caps the ecosystem, not the group. With every update
-// type in a single group, one breaking major bump makes the ecosystem's only
-// pull request red — and Dependabot regenerates that same red pull request
-// every week, so every safe patch behind it is stuck with no way to land.
-// Keeping major in its own group is what keeps the patch stream moving.
-func TestMajorUpdatesAreGroupedApartFromMinorAndPatch(t *testing.T) {
+// #635 intentionally grouped all version updates, including majors and digest
+// updates, to keep one PR per ecosystem. A semver-only update-types filter
+// excludes digest updates and recreates ungrouped PRs.
+func TestVersionUpdatesUseOneCatchAllGroup(t *testing.T) {
 	for _, update := range readDependabotConfig(t).Updates {
-		var withMajor, withoutMajor int
+		if update.Limit != 1 || len(update.Groups) != 1 {
+			t.Errorf("%s: want one catch-all group and one open PR, got %d groups and limit %d", update.Ecosystem, len(update.Groups), update.Limit)
+		}
 		for name, group := range update.Groups {
-			if slices.Contains(group.UpdateTypes, "major") {
-				if len(group.UpdateTypes) != 1 {
-					t.Errorf("%s: group %q mixes major with %v; a breaking major would hold the rest hostage", update.Ecosystem, name, group.UpdateTypes)
-				}
-				withMajor++
-				continue
+			if !slices.Equal(group.Patterns, []string{"*"}) || len(group.UpdateTypes) != 0 {
+				t.Errorf("%s: group %q must include every dependency and update type, including digests", update.Ecosystem, name)
 			}
-			withoutMajor++
-		}
-		if withMajor == 0 || withoutMajor == 0 {
-			t.Errorf("%s: want a major-only group and a minor/patch group, got %d and %d", update.Ecosystem, withMajor, withoutMajor)
-		}
-		// One pull request per group, or the split above buys nothing.
-		if update.Limit < len(update.Groups) {
-			t.Errorf("%s: open-pull-requests-limit %d is below its %d groups, so a group would be capped out", update.Ecosystem, update.Limit, len(update.Groups))
 		}
 	}
 }

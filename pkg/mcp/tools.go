@@ -122,7 +122,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.listJobs)
 
-	s.RegisterTool(Tool{
+	if err := s.RegisterTool(Tool{
 		Name:        "list_runnables",
 		Description: "List runnables (typed finite operations) in a module or all runnables in the workspace, with their immutable module/name@version identity, pinned agent and execution bounds",
 		InputSchema: InputSchema{
@@ -134,7 +134,9 @@ func (s *Server) registerTools() {
 				},
 			},
 		},
-	}, s.listRunnables)
+	}, s.listRunnables); err != nil {
+		panic(fmt.Errorf("register list_runnables tool: %w", err))
+	}
 
 	// Per-service tools for Mind (design 013)
 	s.RegisterTool(Tool{
@@ -454,7 +456,9 @@ var (
 )
 
 func init() {
-	for _, registration := range resources.AgentKindRegistry() {
+	registry := resources.AgentKindRegistry()
+	for i := range registry {
+		registration := &registry[i]
 		arg := strings.TrimPrefix(string(registration.Resource), "codefly:")
 		listAgentsKindByArg[arg] = registration.Resource
 		agentKindEnumValues = append(agentKindEnumValues, arg)
@@ -519,8 +523,20 @@ func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Cont
 	}
 
 	if s.workspace != nil {
-		modules, _ := s.workspace.LoadModules(ctx)
+		modules, err := s.workspace.LoadModules(ctx)
+		if err != nil {
+			return nil, err
+		}
 		for _, mod := range modules {
+			runnables, err := mod.LoadRunnables(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("cannot load runnables of module %s: %w", mod.Name, err)
+			}
+			for _, runnable := range runnables {
+				entry := getEntry(runnable.Agent.Publisher, runnable.Agent.Name, canonicalAgentKind(string(runnable.Agent.Kind)))
+				entry.PinnedBy = append(entry.PinnedBy, mod.Name+"/"+runnable.Name)
+				entry.PinnedVersions = append(entry.PinnedVersions, runnable.Agent.Version)
+			}
 			services, _ := mod.LoadServices(ctx)
 			for _, svc := range services {
 				if svc.Agent == nil {
@@ -725,17 +741,23 @@ func (s *Server) listRunnables(ctx context.Context, args map[string]string) ([]C
 		return []Content{TextContent("No workspace loaded.")}, nil
 	}
 
-	modules, err := s.workspace.LoadModules(ctx)
+	var modules []*resources.Module
+	var err error
+	if name := args[fieldModule]; name != "" {
+		var module *resources.Module
+		module, err = s.workspace.LoadModuleFromName(ctx, name)
+		if err == nil {
+			modules = []*resources.Module{module}
+		}
+	} else {
+		modules, err = s.workspace.LoadModules(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	moduleFilter := args[fieldModule]
 	result := make([]map[string]any, 0)
 	for _, m := range modules {
-		if moduleFilter != "" && m.Name != moduleFilter {
-			continue
-		}
 		runnables, err := m.LoadRunnables(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("cannot load runnables of module %s: %w", m.Name, err)
