@@ -83,8 +83,12 @@ The first provider-neutral vertical slice is operational:
   resource ownership, timings, deterministic outcomes, blocked-by details,
   and the final error. Typed evidence includes exact integrity divergence,
   generated-file drift, audit counts, and CycloneDX SBOM artifact paths and
-  hashes. `--format json` suppresses normal narration, emits the same artifact
-  payload on stdout, and remains machine-clean on a non-zero exit;
+  hashes. Every artifact carries an explicit `subject` naming what its evidence
+  describes — `source` for a source and lockfile inventory, `unknown` when the
+  producer named none — so a source inventory is never readable as runtime-image
+  coverage, and a consumer never has to infer meaning from a missing key.
+  `--format json` suppresses normal narration, emits the same artifact payload
+  on stdout, and remains machine-clean on a non-zero exit;
 - every report task carries a schema-versioned, content-addressed cache
   identity. The key binds Codefly/Core versions, platform/runtime context,
   phase/suite, target agent metadata and resolved binary digest, workspace and
@@ -593,7 +597,7 @@ resolved from the workspace root, making the artifact location independent of
 the directory from which Codefly was invoked. Writes are atomic so a provider
 never uploads a partially serialized report.
 
-Report schema version 1 contains:
+Report schema version 2 contains:
 
 - the exact versioned affected-service plan and Codefly CLI version;
 - command, phase, and named-suite context;
@@ -607,9 +611,16 @@ Report schema version 1 contains:
   blocked prerequisite identities, and retained errors;
 - workspace/service scope and resource identity, exact base-integrity and
   generated-drift file lists, audit severity/outdated counts, and produced
-  artifact media types, paths, and SHA-256 digests;
+  artifact subjects, media types, paths, and SHA-256 digests;
 - the cache identity schema, canonical SHA-256 key, detailed input digests,
   current cache status, and any limitation that prevents safe reuse.
+
+Version 2 added the artifact `subject`. The report version names the exact field
+set the document was written against, so it is bumped whenever those contents
+change — a consumer pinned to a version is never handed a different shape under
+it. A task's `scope` is resource ownership (`workspace` or `service`); an
+artifact's `subject` is what its evidence describes (`source`, or `unknown` when
+the producer named none). They are deliberately distinct keys.
 
 Tasks are serialized in requested phase/suite order and affected-plan order,
 never goroutine completion order. `codefly ci run` registers every requested
@@ -698,7 +709,12 @@ A task is reused only when every one of these holds; otherwise it executes
 normally and the report records why:
 
 - the identity is schema v2, complete, and carries no limitation;
-- a record exists for exactly that identity, and its signature verifies;
+- a record exists for exactly that identity, it was written against the current
+  record schema, and its signature verifies. A record written against an older
+  record schema is refused as incompatible rather than as forged: the signature
+  covers the record's exact encoding, so a reader whose shape differs from the
+  writer's recomputes a different MAC, and reporting that as a failed signature
+  would be indistinguishable from real tampering;
 - the record's outcome is a success, its reference is trusted, and its producing
   run is named by a value that identifies a run rather than one made only of
   separators;

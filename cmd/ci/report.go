@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	reportSchemaVersion = 1
+	reportSchemaVersion = 2
 	reportFilename      = "report.json"
 
 	reportStatusPending   = "pending"
@@ -33,6 +33,14 @@ const (
 	reportReasonRunCancelled          = "run_cancelled"
 	reportReasonNotScheduled          = "not_scheduled"
 	reportReasonAgentNoSyncCapability = "agent_no_sync_capability"
+
+	// artifactSubjectSource is evidence about the checked-out source and its
+	// declared dependencies. artifactSubjectUnknown is the explicit subject for
+	// evidence whose producer did not name one: it is recorded rather than left
+	// absent so a consumer never has to infer meaning from a missing key, and
+	// so an unnamed subject can never be mistaken for runtime-image coverage.
+	artifactSubjectSource  = "source"
+	artifactSubjectUnknown = "unknown"
 )
 
 // CIReport is Codefly's provider-neutral record of one CI command. Task order
@@ -131,11 +139,46 @@ type CIReportIntegrityDivergence struct {
 	Reason string `json:"reason"`
 }
 
+// CIReportArtifact names one piece of evidence a task produced. Subject states
+// what the evidence describes: a source inventory and a runtime-image inventory
+// are different claims, and a consumer that cannot tell them apart reads a
+// lockfile scan as proof the shipped image was scanned. Subject is always
+// written, never omitted — evidence whose producer named no subject is recorded
+// as artifactSubjectUnknown, so "unknown" is a value a consumer can read rather
+// than a missing key it has to interpret. It is deliberately not called "scope":
+// CIReportTask.Scope is resource ownership, and one report must not use the
+// same key for two vocabularies.
 type CIReportArtifact struct {
 	Kind      string `json:"kind"`
+	Subject   string `json:"subject"`
 	Path      string `json:"path"`
 	MediaType string `json:"media_type,omitempty"`
 	SHA256    string `json:"sha256"`
+}
+
+// normalizeCIReportSubject guarantees the subject invariant at every boundary
+// where evidence enters a report, so the report can state the invariant without
+// depending on each producer to remember it.
+func normalizeCIReportSubject(artifact *CIReportArtifact) {
+	if strings.TrimSpace(artifact.Subject) == "" {
+		artifact.Subject = artifactSubjectUnknown
+	}
+}
+
+// normalizedCIReportArtifacts copies and normalizes recorded evidence. Reused
+// tasks reach the report through this path instead of recordCIReportArtifact,
+// and they must satisfy the same invariant.
+func normalizedCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
+	if artifacts == nil {
+		return nil
+	}
+	normalized := make([]CIReportArtifact, 0, len(artifacts))
+	for index := range artifacts {
+		artifact := artifacts[index]
+		normalizeCIReportSubject(&artifact)
+		normalized = append(normalized, artifact)
+	}
+	return normalized
 }
 
 type ciReportTaskContextKey struct{}
@@ -213,6 +256,7 @@ func recordCIReportArtifact(ctx context.Context, artifact CIReportArtifact) {
 	if !ok || task.reporter == nil {
 		return
 	}
+	normalizeCIReportSubject(&artifact)
 	task.reporter.mu.Lock()
 	defer task.reporter.mu.Unlock()
 	if reportTask, found := task.reporter.task(task.id); found {
@@ -817,7 +861,7 @@ func (reporter *CIReporter) attemptReuse(id string) bool {
 	task.Audit = record.Evidence.Audit
 	task.Drift = record.Evidence.Drift
 	task.Integrity = record.Evidence.Integrity
-	task.Artifacts = append([]CIReportArtifact(nil), record.Evidence.Artifacts...)
+	task.Artifacts = normalizedCIReportArtifacts(record.Evidence.Artifacts)
 	task.Cache.Status = cacheStatusHit
 	task.Cache.Reuse = &CacheReuse{
 		Reference:  record.Reference,
@@ -825,7 +869,7 @@ func (reporter *CIReporter) attemptReuse(id string) bool {
 		Revision:   record.Revision,
 		Identity:   record.Identity,
 		RecordedAt: record.RecordedAt,
-		Artifacts:  append([]CIReportArtifact(nil), record.Evidence.Artifacts...),
+		Artifacts:  normalizedCIReportArtifacts(record.Evidence.Artifacts),
 	}
 	return true
 }

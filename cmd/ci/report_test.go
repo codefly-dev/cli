@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -241,7 +242,11 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	ctx := withCIReportTask(context.Background(), reporter, id)
 	recordCIReportAudit(ctx, CIReportAudit{State: "FINDINGS", Tool: "scanner", Findings: 2, High: 1})
 	recordCIReportDrift(ctx, []string{"b.ts", "a.ts"})
-	recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Path: "sbom/worker.cdx.json", SHA256: "sha256:abc"})
+	recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: "sbom/worker.cdx.json", SHA256: "sha256:abc"})
+	// A producer that names no subject must still yield a report that states one:
+	// the "absent means unknown" rule belongs in the data, not in a convention a
+	// report.json consumer cannot see.
+	recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Path: "sbom/unnamed.cdx.json", SHA256: "sha256:def"})
 	reporter.finishTask(id, nil)
 
 	report := reporter.Finalize(nil)
@@ -259,8 +264,44 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	if serviceTask.Scope != "service" || serviceTask.Resource != "management/worker" {
 		t.Fatalf("service task scope = %#v", serviceTask)
 	}
-	if serviceTask.Audit == nil || serviceTask.Audit.High != 1 || serviceTask.Drift == nil || len(serviceTask.Artifacts) != 1 {
+	if serviceTask.Audit == nil || serviceTask.Audit.High != 1 || serviceTask.Drift == nil || len(serviceTask.Artifacts) != 2 {
 		t.Fatalf("typed task evidence = %#v", serviceTask)
+	}
+	if serviceTask.Artifacts[0].Subject != artifactSubjectSource {
+		t.Fatalf("SBOM artifact subject = %q, want %q", serviceTask.Artifacts[0].Subject, artifactSubjectSource)
+	}
+	if serviceTask.Artifacts[1].Subject != artifactSubjectUnknown {
+		t.Fatalf("unnamed artifact subject = %q, want %q", serviceTask.Artifacts[1].Subject, artifactSubjectUnknown)
+	}
+	encoded, err := marshalCIReport(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Decode rather than substring-match: the subject must land on the artifact
+	// object itself, and must not be confused with the task's own "scope", which
+	// is resource ownership and a different vocabulary entirely.
+	var decoded struct {
+		Tasks []struct {
+			Scope     string `json:"scope"`
+			Artifacts []struct {
+				Subject string `json:"subject"`
+			} `json:"artifacts"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode report JSON: %v\n%s", err, encoded)
+	}
+	if len(decoded.Tasks) != 2 || len(decoded.Tasks[1].Artifacts) != 2 {
+		t.Fatalf("serialized evidence = %#v", decoded)
+	}
+	if got := decoded.Tasks[1].Artifacts[0].Subject; got != artifactSubjectSource {
+		t.Fatalf("serialized artifact subject = %q, want %q", got, artifactSubjectSource)
+	}
+	if got := decoded.Tasks[1].Artifacts[1].Subject; got != artifactSubjectUnknown {
+		t.Fatalf("serialized unnamed artifact subject = %q, want %q", got, artifactSubjectUnknown)
+	}
+	if got := decoded.Tasks[1].Scope; got != "service" {
+		t.Fatalf("task scope vocabulary changed: %q", got)
 	}
 	serviceTask.Drift.ChangedFiles[0] = "mutated"
 	if reporter.report.Tasks[1].Drift.ChangedFiles[0] == "mutated" {

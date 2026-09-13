@@ -75,6 +75,7 @@ func runSBOMService(ctx context.Context, workspace *resources.Workspace, module 
 	}
 	recordCIReportArtifact(ctx, CIReportArtifact{
 		Kind:      "cyclonedx-sbom",
+		Subject:   artifactSubjectSource,
 		Path:      relative,
 		MediaType: "application/vnd.cyclonedx+json",
 		SHA256:    "sha256:" + resources.Hash(payload),
