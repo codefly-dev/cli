@@ -19,9 +19,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Check out qualified Runnable agent source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,6 +26,10 @@ jobs:
           repository: codefly-dev/runnable-python
           ref: 29bcbc611469c111e14fa8dbd8f95c36aec6185f
           path: .qualification-agent
+      # The pinned agent requires Go 1.27.1; CLI's 1.27.0 minimum is lower.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .qualification-agent/go.mod
       - name: Build the real agent
         working-directory: .qualification-agent
         env:
