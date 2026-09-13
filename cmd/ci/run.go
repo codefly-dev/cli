@@ -14,7 +14,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const ciPhaseVerify = "verify"
+const (
+	ciPhaseVerify = "verify"
+	ciPhaseAudit  = "audit"
+)
 
 var (
 	runSelection SelectionFlags
@@ -229,7 +232,7 @@ func runPhaseAction(phase string) Action {
 		return runSyncDriftService
 	case "test":
 		return runTestService
-	case "audit":
+	case ciPhaseAudit:
 		return runAuditService
 	case "sbom":
 		return runSBOMService
@@ -286,4 +289,5 @@ func init() {
 	RunCmd.Flags().BoolVar(&ciSBOMIncludeDev, "sbom-include-dev", true, "Include development/test dependencies in CI SBOMs")
 	bindSchedulingFlags(RunCmd)
 	bindReportFlags(RunCmd)
+	bindReuseFlags(RunCmd)
 }

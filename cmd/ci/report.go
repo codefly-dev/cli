@@ -26,6 +26,7 @@ const (
 	reportStatusFailed    = "failed"
 	reportStatusSkipped   = "skipped"
 	reportStatusCancelled = "cancelled"
+	reportStatusReused    = "reused"
 
 	reportReasonFailedPrerequisite    = "failed_prerequisite"
 	reportReasonFailFast              = "fail_fast"
@@ -52,9 +53,13 @@ type CIReport struct {
 	Error          string          `json:"error,omitempty"`
 }
 
+// CIReportSummary keeps executed success and verified reuse apart: Passed
+// counts tasks this run actually executed, Reused counts tasks that stood on a
+// verified earlier execution, and Skipped never means either.
 type CIReportSummary struct {
 	Total     int `json:"total"`
 	Passed    int `json:"passed"`
+	Reused    int `json:"reused"`
 	Failed    int `json:"failed"`
 	Skipped   int `json:"skipped"`
 	Cancelled int `json:"cancelled"`
@@ -224,6 +229,7 @@ type CIReporter struct {
 	report       CIReport
 	taskIndex    map[string]int
 	cacheBuilder *ciCacheIdentityBuilder
+	reuse        *ciResultReuse
 }
 
 func NewCIReporter(plan *Plan, command string) (*CIReporter, error) {
@@ -306,7 +312,7 @@ func (reporter *CIReporter) registerTasks(ctx context.Context, workspace *resour
 		reporter.report.Phases = append(reporter.report.Phases, phase)
 	}
 	if len(tasks) > 0 && reporter.cacheBuilder == nil {
-		reporter.cacheBuilder = newCICacheIdentityBuilder(ctx, workspace, reporter.report.CodeflyVersion)
+		reporter.cacheBuilder = newCICacheIdentityBuilder(ctx, workspace, reporter.report.CodeflyVersion, reporter.reuseEnvironment())
 	}
 
 	ids := make([]string, len(tasks))
@@ -356,7 +362,7 @@ func (reporter *CIReporter) registerWorkspaceTask(ctx context.Context, workspace
 		return id, nil
 	}
 	if reporter.cacheBuilder == nil {
-		reporter.cacheBuilder = newCICacheIdentityBuilder(ctx, workspace, reporter.report.CodeflyVersion)
+		reporter.cacheBuilder = newCICacheIdentityBuilder(ctx, workspace, reporter.report.CodeflyVersion, reporter.reuseEnvironment())
 	}
 	options := ScheduleOptions{Phase: phase, RuntimeContext: runtimeContext}
 	cacheIdentity := reporter.cacheBuilder.workspaceIdentity(options, workspace.Name)
@@ -559,6 +565,8 @@ func summarizeReportTasks(tasks []CIReportTask) CIReportSummary {
 		switch task.Status {
 		case reportStatusPassed:
 			summary.Passed++
+		case reportStatusReused:
+			summary.Reused++
 		case reportStatusFailed:
 			summary.Failed++
 		case reportStatusSkipped:
@@ -584,6 +592,11 @@ func cloneCIReport(report CIReport) CIReport {
 		cloned.Tasks[index].Cache.Inputs.Dependencies = append([]CICacheResourceDigest{}, task.Cache.Inputs.Dependencies...)
 		cloned.Tasks[index].Cache.Inputs.Libraries = append([]CICacheResourceDigest{}, task.Cache.Inputs.Libraries...)
 		cloned.Tasks[index].Cache.Limitations = append([]string(nil), task.Cache.Limitations...)
+		if task.Cache.Reuse != nil {
+			reuse := *task.Cache.Reuse
+			reuse.Artifacts = append([]CIReportArtifact(nil), task.Cache.Reuse.Artifacts...)
+			cloned.Tasks[index].Cache.Reuse = &reuse
+		}
 		if task.Audit != nil {
 			audit := *task.Audit
 			cloned.Tasks[index].Audit = &audit
@@ -705,6 +718,10 @@ func runWithCIReport(ctx context.Context, workspace *resources.Workspace, plan *
 	if err != nil {
 		return err
 	}
+	reporter.reuse, err = newCIResultReuse(ctx, workspace, &ciReuse)
+	if err != nil {
+		return err
+	}
 
 	if format == "json" {
 		cli.SuppressOutput()
@@ -735,8 +752,8 @@ func runWithCIReport(ctx context.Context, workspace *resources.Workspace, plan *
 		return result
 	}
 	if reportErr == nil {
-		cli.Header(1, "Codefly CI %s: %d passed, %d failed, %d skipped, %d cancelled", report.Status,
-			report.Summary.Passed, report.Summary.Failed, report.Summary.Skipped, report.Summary.Cancelled)
+		cli.Header(1, "Codefly CI %s: %d passed, %d reused, %d failed, %d skipped, %d cancelled", report.Status,
+			report.Summary.Passed, report.Summary.Reused, report.Summary.Failed, report.Summary.Skipped, report.Summary.Cancelled)
 		cli.Info("Report: %s", destination)
 	}
 	return result
@@ -750,5 +767,123 @@ func normalizeCIReportFormat(value string) (string, error) {
 		return "json", nil
 	default:
 		return "", fmt.Errorf("unsupported CI report format %q (use text or json)", value)
+	}
+}
+
+func (reporter *CIReporter) reuseEnvironment() string {
+	if reporter.reuse == nil {
+		return ""
+	}
+	return reporter.reuse.environment
+}
+
+// attemptReuse decides whether the task bound to id may stand on a previously
+// verified execution, and restores its artifacts when it may. Any rejection —
+// missing, stale, untrusted, unreadable or unrestorable — leaves the task
+// running so the caller executes it.
+func (reporter *CIReporter) attemptReuse(id string) bool {
+	reporter.mu.Lock()
+	reuse := reporter.reuse
+	task, ok := reporter.task(id)
+	if reuse == nil || !ok || task.Status != reportStatusRunning {
+		reporter.mu.Unlock()
+		return false
+	}
+	identity := task.Cache
+	phase := task.Phase
+	reporter.mu.Unlock()
+
+	decision := reuse.lookup(&identity, phase)
+	if decision.record == nil {
+		reporter.noteCacheDecision(id, decision.status, decision.reason)
+		return false
+	}
+	if err := reuse.restore(decision.record); err != nil {
+		reporter.noteCacheDecision(id, cacheStatusMiss, err.Error())
+		return false
+	}
+	record := decision.record
+
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	task, ok = reporter.task(id)
+	if !ok || task.Status != reportStatusRunning {
+		return false
+	}
+	now := reporter.now().UTC()
+	task.Status = reportStatusReused
+	task.FinishedAt = formatReportTime(now)
+	task.DurationMS = reportDurationMS(task.StartedAt, now)
+	task.Audit = record.Evidence.Audit
+	task.Drift = record.Evidence.Drift
+	task.Integrity = record.Evidence.Integrity
+	task.Artifacts = append([]CIReportArtifact(nil), record.Evidence.Artifacts...)
+	task.Cache.Status = cacheStatusHit
+	task.Cache.Reuse = &CacheReuse{
+		Reference:  record.Reference,
+		Run:        record.Run,
+		Revision:   record.Revision,
+		Identity:   record.Identity,
+		RecordedAt: record.RecordedAt,
+		Artifacts:  append([]CIReportArtifact(nil), record.Evidence.Artifacts...),
+	}
+	return true
+}
+
+// publishResult records a task this run actually executed and passed. Publishing
+// is an optimization for later runs: a storage failure is reported against the
+// task's cache status and never turns a real success into a failure.
+func (reporter *CIReporter) publishResult(id string) {
+	reporter.mu.Lock()
+	reuse := reporter.reuse
+	task, ok := reporter.task(id)
+	if reuse == nil || !ok || task.Status != reportStatusPassed {
+		reporter.mu.Unlock()
+		return
+	}
+	if !reuse.publishes() {
+		reporter.mu.Unlock()
+		reporter.noteCacheDecision(id, "", "results are not published from untrusted reference "+reuse.reference)
+		return
+	}
+	if !reuseVerifiableOutputs(task.Phase) {
+		reporter.mu.Unlock()
+		return
+	}
+	if eligible, reason := task.Cache.reuseEligibility(); !eligible {
+		reporter.mu.Unlock()
+		reporter.noteCacheDecision(id, cacheStatusIneligible, reason)
+		return
+	}
+	snapshot := *task
+	snapshot.Artifacts = append([]CIReportArtifact(nil), task.Artifacts...)
+	reporter.mu.Unlock()
+
+	if err := reuse.publish(&snapshot); err != nil {
+		reporter.noteCacheDecision(id, "", "result was not published: "+err.Error())
+		return
+	}
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if task, found := reporter.task(id); found {
+		task.Cache.Stored = true
+	}
+}
+
+// noteCacheDecision records what this run decided about the task's cache entry.
+// An empty status or reason leaves the recorded one in place, so publishing a
+// freshly executed result does not erase why its predecessor was not reusable.
+func (reporter *CIReporter) noteCacheDecision(id, status, reason string) {
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	task, ok := reporter.task(id)
+	if !ok {
+		return
+	}
+	if status != "" {
+		task.Cache.Status = status
+	}
+	if reason != "" {
+		task.Cache.StatusReason = reason
 	}
 }
