@@ -7,11 +7,15 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
 
-var showRunnableJSON bool
+var (
+	showRunnableJSON    bool
+	showRunnableVersion string
+)
 
 // RunnableCmd reports what a runnable declares and whether the workspace can
 // satisfy it. Loading is core's strict loader, so an invalid declaration is
@@ -24,6 +28,7 @@ builds it, its typed contract, its execution bounds, and whether each declared
 dependency resolves in this workspace.
 
 The name is module/name, or a bare name when it is unambiguous across modules.
+A name declared at several versions is ambiguous too; --version selects one.
 
 An unresolved dependency is reported, not fatal: the command exits 0 so it can
 describe every dependency in one pass. Unattended callers gate on --json and
@@ -32,6 +37,7 @@ check each dependency's "resolved" field.
 Examples:
   codefly show runnable word-count
   codefly show runnable backend/word-count
+  codefly show runnable word-count --version=0.2.0
   codefly show runnable word-count --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,24 +64,16 @@ type runnableDependencyReport struct {
 }
 
 type runnableReport struct {
-	Workspace      string                     `json:"workspace"`
-	Module         string                     `json:"module"`
-	Name           string                     `json:"name"`
-	Version        string                     `json:"version"`
-	Description    string                     `json:"description,omitempty"`
-	Agent          string                     `json:"agent"`
-	Protocol       string                     `json:"protocol"`
+	Workspace string `json:"workspace"`
+	// Identity is embedded, not nested: `show` reports a superset of what the
+	// listings report, and sharing one projection is what keeps `show
+	// runnable --json`, `list runnables --json` and the MCP list_runnables
+	// tool from describing the same runnable with different fields.
+	runnablespkg.Identity
 	Handler        string                     `json:"handler"`
 	BuildInputs    []string                   `json:"build_inputs,omitempty"`
 	Input          []runnableFieldReport      `json:"input"`
 	Output         []runnableFieldReport      `json:"output"`
-	Facilities     []string                   `json:"facilities"`
-	Timeout        string                     `json:"timeout"`
-	Cancellation   string                     `json:"cancellation"`
-	Recovery       string                     `json:"recovery"`
-	Concurrency    uint32                     `json:"concurrency,omitempty"`
-	MaxInputBytes  uint64                     `json:"max_input_bytes"`
-	MaxOutputBytes uint64                     `json:"max_output_bytes"`
 	Dependencies   []runnableDependencyReport `json:"dependencies,omitempty"`
 	Configurations []string                   `json:"workspace_configurations,omitempty"`
 }
@@ -89,7 +87,7 @@ func showRunnable(cmd *cobra.Command, name string) error {
 		return fmt.Errorf("cannot load workspace: %w", err)
 	}
 
-	runnable, err := workspace.FindRunnableByName(ctx, name)
+	runnable, err := findRunnable(ctx, workspace, name, showRunnableVersion)
 	if err != nil {
 		return fmt.Errorf("cannot load runnable %s: %w", name, err)
 	}
@@ -103,34 +101,92 @@ func showRunnable(cmd *cobra.Command, name string) error {
 	return nil
 }
 
+// findRunnable resolves a name to exactly one runnable.
+//
+// core's Module.LoadRunnableFromName returns the FIRST reference whose name
+// matches and stops, and Workspace.FindRunnableByName only detects ambiguity
+// ACROSS modules. A module that references one name twice — two releases of a
+// name, which `codefly list runnables` lists as two rows — would therefore be
+// reported as whichever reference came first, with nothing saying a second
+// exists and no way to ask for it. Enumerating the references here makes the
+// second release both visible (as an error naming every candidate) and
+// reachable (with --version).
+//
+// Only references whose name matches are loaded, so an unrelated broken
+// declaration elsewhere in the workspace still does not fail this command.
+func findRunnable(ctx context.Context, workspace *resources.Workspace, name, version string) (*resources.Runnable, error) {
+	moduleName, runnableName := resources.SplitUnique(name)
+	var modules []*resources.Module
+	if moduleName != "" {
+		mod, err := workspace.LoadModuleFromName(ctx, moduleName)
+		if err != nil {
+			return nil, err
+		}
+		modules = []*resources.Module{mod}
+	} else {
+		var err error
+		if modules, err = workspace.LoadModules(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	var matches []*resources.Runnable
+	for _, mod := range modules {
+		for _, ref := range mod.RunnableReferences {
+			if !resources.ReferenceMatch(ref.Name, runnableName) {
+				continue
+			}
+			runnable, err := mod.LoadRunnableFromReference(ctx, ref)
+			if err != nil {
+				return nil, err
+			}
+			matches = append(matches, runnable)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no runnable named %s in workspace %s", runnableName, workspace.Name)
+	}
+
+	selected := matches
+	if version != "" {
+		selected = nil
+		for _, runnable := range matches {
+			if runnable.Version == version {
+				selected = append(selected, runnable)
+			}
+		}
+		if len(selected) == 0 {
+			return nil, fmt.Errorf("no runnable %s at version %s; declared: %s",
+				runnableName, version, strings.Join(runnableIdentifiers(matches), ", "))
+		}
+	}
+	if len(selected) > 1 {
+		return nil, fmt.Errorf("runnable %s is ambiguous: %s; select one with --version",
+			runnableName, strings.Join(runnableIdentifiers(selected), ", "))
+	}
+	return selected[0], nil
+}
+
+func runnableIdentifiers(runnables []*resources.Runnable) []string {
+	identifiers := make([]string, 0, len(runnables))
+	for _, runnable := range runnables {
+		identifiers = append(identifiers, fmt.Sprintf("%s@%s", runnable.Unique(), runnable.Version))
+	}
+	return identifiers
+}
+
 func buildRunnableReport(ctx context.Context, workspace *resources.Workspace, runnable *resources.Runnable) runnableReport {
-	identity := runnable.Identity()
-	execution := runnable.Execution
 	report := runnableReport{
 		Workspace:      workspace.Name,
-		Module:         identity.Module,
-		Name:           identity.Name,
-		Version:        identity.Version,
-		Description:    runnable.Description,
-		Agent:          runnable.Agent.Identifier(),
-		Protocol:       runnable.Contract.Protocol,
+		Identity:       runnablespkg.NewIdentity(runnable),
 		Handler:        runnable.Entrypoint.Handler,
 		BuildInputs:    runnable.Entrypoint.Inputs,
 		Input:          runnableFieldReports(runnable.Contract.Input.Fields),
 		Output:         runnableFieldReports(runnable.Contract.Output.Fields),
-		Timeout:        execution.Timeout,
-		Cancellation:   string(execution.Cancellation),
-		Recovery:       string(execution.Recovery),
-		Concurrency:    execution.Concurrency,
-		MaxInputBytes:  execution.MaxInputBytes(),
-		MaxOutputBytes: execution.MaxOutputBytes(),
 		Configurations: runnable.WorkspaceConfigurationDependencies,
 	}
-	for _, facility := range execution.Facilities {
-		report.Facilities = append(report.Facilities, string(facility))
-	}
 	for _, dep := range runnable.ServiceDependencies {
-		report.Dependencies = append(report.Dependencies, resolveRunnableDependency(ctx, workspace, identity.Module, dep))
+		report.Dependencies = append(report.Dependencies, resolveRunnableDependency(ctx, workspace, report.Module, dep))
 	}
 	return report
 }
@@ -149,7 +205,7 @@ func resolveRunnableDependency(ctx context.Context, workspace *resources.Workspa
 		report.Kind = "legacy"
 	}
 	for _, endpoint := range dep.Endpoints {
-		report.Endpoints = append(report.Endpoints, endpoint.Name)
+		report.Endpoints = append(report.Endpoints, endpointSelector(endpoint))
 	}
 
 	service, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: dep.Name, Module: module})
@@ -162,6 +218,12 @@ func resolveRunnableDependency(ctx context.Context, workspace *resources.Workspa
 		return report
 	}
 
+	// Matching is by endpoint NAME because that is the only thing a runnable's
+	// binding can match on: resources.Runnable.Proto flattens each selector to
+	// endpoint.Name on the wire, and runnable/package.go's validateBindingMappings
+	// then compares mapped endpoints against those names. A selector that names
+	// no endpoint therefore flattens to "" and binds nothing, which is reported
+	// here rather than silently rendered as a blank.
 	declared := make(map[string]bool, len(service.Endpoints))
 	for _, endpoint := range service.Endpoints {
 		declared[endpoint.Name] = true
@@ -169,7 +231,7 @@ func resolveRunnableDependency(ctx context.Context, workspace *resources.Workspa
 	var missing []string
 	for _, endpoint := range dep.Endpoints {
 		if !declared[endpoint.Name] {
-			missing = append(missing, endpoint.Name)
+			missing = append(missing, endpointSelector(endpoint))
 		}
 	}
 	if len(missing) > 0 {
@@ -187,6 +249,25 @@ func resolveRunnableDependency(ctx context.Context, workspace *resources.Workspa
 	}
 	report.Resolved = true
 	return report
+}
+
+// endpointSelector renders an endpoint reference the way it was declared. A
+// reference selects by name, by api, or by both, so projecting it to its Name
+// alone renders an api-only selector ("- api: grpc") as an empty string — in
+// the report, in the JSON, and in the "declares no endpoint" message, none of
+// which then say which selector went unsatisfied. The name::api spelling is
+// core's own (resources.EndpointInformation.Identifier).
+func endpointSelector(ref *resources.EndpointReference) string {
+	switch {
+	case ref.Name == "" && ref.API == "":
+		return "<unnamed>"
+	case ref.Name == "":
+		return "::" + ref.API
+	case ref.API == "" || ref.API == ref.Name:
+		return ref.Name
+	default:
+		return ref.Name + "::" + ref.API
+	}
 }
 
 func runnableFieldReports(fields []*resources.RunnableField) []runnableFieldReport {
@@ -234,11 +315,11 @@ func printRunnableReport(cmd *cobra.Command, report *runnableReport) {
 	printRunnableSchema(cmd, report.Output, "    ")
 
 	fmt.Fprintln(out, "Execution:")
-	fmt.Fprintf(out, "  facilities:   %s\n", strings.Join(report.Facilities, ", "))
-	fmt.Fprintf(out, "  timeout:      %s\n", report.Timeout)
-	fmt.Fprintf(out, "  cancellation: %s\n", report.Cancellation)
-	fmt.Fprintf(out, "  recovery:     %s\n", report.Recovery)
-	fmt.Fprintf(out, "  payload:      %d bytes in / %d bytes out\n", report.MaxInputBytes, report.MaxOutputBytes)
+	fmt.Fprintf(out, "  facilities:   %s\n", strings.Join(report.Execution.Facilities, ", "))
+	fmt.Fprintf(out, "  timeout:      %s\n", report.Execution.Timeout)
+	fmt.Fprintf(out, "  cancellation: %s\n", report.Execution.Cancellation)
+	fmt.Fprintf(out, "  recovery:     %s\n", report.Execution.Recovery)
+	fmt.Fprintf(out, "  payload:      %d bytes in / %d bytes out\n", report.Execution.MaxInputBytes, report.Execution.MaxOutputBytes)
 
 	if len(report.Dependencies) > 0 {
 		fmt.Fprintln(out, "Dependencies:")
@@ -298,4 +379,5 @@ func printRunnableField(cmd *cobra.Command, label string, field runnableFieldRep
 
 func init() {
 	RunnableCmd.Flags().BoolVar(&showRunnableJSON, "json", false, "Emit machine-readable JSON")
+	RunnableCmd.Flags().StringVar(&showRunnableVersion, "version", "", "Select one release when a name is declared at several versions")
 }

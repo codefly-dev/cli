@@ -66,3 +66,18 @@ func TestInstallCommandReturnsValidationError(t *testing.T) {
 		t.Fatalf("validation error = %v", err)
 	}
 }
+
+// TestParseInstallAgentCanonicalizesAnAliasKind: core registers
+// "codefly:service:builder" as an ALIAS of "codefly:service". Returning the
+// alias put it in the Agent the caller then stores and reports, so the same
+// agent could be recorded under two different kinds depending on which
+// spelling was typed.
+func TestParseInstallAgentCanonicalizesAnAliasKind(t *testing.T) {
+	agent, err := parseInstallAgent(context.Background(), "go-grpc:1.0.0", "", string(resources.BuilderServiceAgent))
+	if err != nil {
+		t.Fatalf("alias kind rejected: %v", err)
+	}
+	if agent.Kind != resources.ServiceAgent {
+		t.Fatalf("alias kind = %q, want the canonical %q", agent.Kind, resources.ServiceAgent)
+	}
+}

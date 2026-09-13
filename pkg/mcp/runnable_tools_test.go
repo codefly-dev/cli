@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/agentkinds"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -112,9 +113,9 @@ func TestAgentKindVocabularyIsTheExactPublishedSet(t *testing.T) {
 		t.Fatalf("published agent kind enum = %q, want %q", agentKindEnumValues, want)
 	}
 	for _, arg := range want {
-		kind, ok := listAgentsKindByArg[arg]
-		if !ok {
-			t.Errorf("agent kind %q is advertised but not mapped", arg)
+		kind, err := agentkinds.Resolve(arg)
+		if err != nil {
+			t.Errorf("agent kind %q is advertised but does not resolve: %v", arg, err)
 			continue
 		}
 		if _, err := resources.AgentKindRegistrationFor(kind); err != nil {
@@ -132,8 +133,9 @@ func TestAgentKindVocabularyCoversTheRegistry(t *testing.T) {
 		if !slices.Contains(agentKindEnumValues, arg) {
 			t.Errorf("agent kind %q is registered in core but not advertised by the MCP tools", arg)
 		}
-		if listAgentsKindByArg[arg] != registration.Resource {
-			t.Errorf("agent kind arg %q maps to %q, want %q", arg, listAgentsKindByArg[arg], registration.Resource)
+		kind, err := agentkinds.Resolve(arg)
+		if err != nil || kind != registration.Resource {
+			t.Errorf("agent kind arg %q resolves to %q (%v), want %q", arg, kind, err, registration.Resource)
 		}
 	}
 }
