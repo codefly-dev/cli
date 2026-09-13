@@ -11,6 +11,8 @@ import (
 
 	"github.com/Masterminds/semver"
 	blangsemver "github.com/blang/semver"
+	"github.com/codefly-dev/cli/pkg/agentkinds"
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -121,6 +123,22 @@ func (s *Server) registerTools() {
 			},
 		},
 	}, s.listJobs)
+
+	if err := s.RegisterTool(Tool{
+		Name:        "list_runnables",
+		Description: "List runnables (typed finite operations) in a module or all runnables in the workspace, with their immutable module/name@version identity, pinned agent and execution bounds",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				fieldModule: {
+					Type:        "string",
+					Description: "Module to list runnables from (optional; lists every module when omitted)",
+				},
+			},
+		},
+	}, s.listRunnables); err != nil {
+		panic(fmt.Errorf("register list_runnables tool: %w", err))
+	}
 
 	// Per-service tools for Mind (design 013)
 	s.RegisterTool(Tool{
@@ -429,22 +447,12 @@ type agentListEntry struct {
 	PinnedBy          []string `json:"pinned_by"`
 }
 
-// listAgentsKindByArg maps the "kind" argument (list_agents' filter, or
-// agent_info's kind override) to the corresponding resources.AgentKind.
-var listAgentsKindByArg = map[string]resources.AgentKind{
-	"service":     resources.ServiceAgent,
-	"job":         resources.JobAgent,
-	"application": resources.ApplicationAgent,
-	"module":      resources.ModuleAgent,
-	"toolbox":     resources.ToolboxAgent,
-	"provider":    resources.ProviderAgent,
-	"solution":    resources.SolutionAgent,
-}
-
-// agentKindEnumValues is the ordered set of valid "kind" argument values,
-// shared by list_agents' and agent_info's schemas so the two tools can't
-// silently drift into advertising different kind vocabularies.
-var agentKindEnumValues = []string{"service", "job", "application", "module", "toolbox", "provider", "solution"}
+// agentKindEnumValues is the ordered kind vocabulary advertised by both
+// list_agents' and agent_info's schemas. It comes from pkg/agentkinds, which
+// owns the short-form ↔ registered-kind mapping for the whole CLI: a kind core
+// registers is one these tools can filter on, with no second list to update
+// and no second copy of the "codefly:" convention to drift.
+var agentKindEnumValues = agentkinds.Vocabulary()
 
 // legacyServiceAgentKinds recognizes the pre-migration agent.kind spelling
 // used throughout every service.codefly.yaml in this codebase (agent: kind:
@@ -504,8 +512,20 @@ func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Cont
 	}
 
 	if s.workspace != nil {
-		modules, _ := s.workspace.LoadModules(ctx)
+		modules, err := s.workspace.LoadModules(ctx)
+		if err != nil {
+			return nil, err
+		}
 		for _, mod := range modules {
+			runnables, err := mod.LoadRunnables(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("cannot load runnables of module %s: %w", mod.Name, err)
+			}
+			for _, runnable := range runnables {
+				entry := getEntry(runnable.Agent.Publisher, runnable.Agent.Name, canonicalAgentKind(string(runnable.Agent.Kind)))
+				entry.PinnedBy = append(entry.PinnedBy, mod.Name+"/"+runnable.Name)
+				entry.PinnedVersions = append(entry.PinnedVersions, runnable.Agent.Version)
+			}
 			services, _ := mod.LoadServices(ctx)
 			for _, svc := range services {
 				if svc.Agent == nil {
@@ -551,8 +571,8 @@ func (s *Server) listAgents(ctx context.Context, args map[string]string) ([]Cont
 
 	var kindFilter string
 	if raw := args[agentKindArg]; raw != "" {
-		mapped, ok := listAgentsKindByArg[raw]
-		if !ok {
+		mapped, err := agentkinds.Resolve(raw)
+		if err != nil {
 			data, _ := json.MarshalIndent([]agentListEntry{}, "", "  ")
 			return []Content{TextContent(string(data))}, nil
 		}
@@ -699,4 +719,43 @@ func (s *Server) requireWorkspace() (*resources.Workspace, error) {
 		return nil, fmt.Errorf("no workspace loaded - run from a codefly workspace directory")
 	}
 	return s.workspace, nil
+}
+
+// listRunnables reports the workspace's runnables. A runnable whose
+// declaration does not load fails the call rather than shortening the list:
+// a caller about to build or install what it finds must not be told a broken
+// runnable is absent.
+func (s *Server) listRunnables(ctx context.Context, args map[string]string) ([]Content, error) {
+	if s.workspace == nil {
+		return []Content{TextContent("No workspace loaded.")}, nil
+	}
+
+	var modules []*resources.Module
+	var err error
+	if name := args[fieldModule]; name != "" {
+		var module *resources.Module
+		module, err = s.workspace.LoadModuleFromName(ctx, name)
+		if err == nil {
+			modules = []*resources.Module{module}
+		}
+	} else {
+		modules, err = s.workspace.LoadModules(ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]runnablespkg.Identity, 0)
+	for _, m := range modules {
+		runnables, err := m.LoadRunnables(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("cannot load runnables of module %s: %w", m.Name, err)
+		}
+		for _, runnable := range runnables {
+			result = append(result, runnablespkg.NewIdentity(runnable))
+		}
+	}
+
+	data, _ := json.MarshalIndent(result, "", "  ")
+	return []Content{TextContent(string(data))}, nil
 }

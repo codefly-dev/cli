@@ -326,12 +326,14 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 			running++
 			task := tasks[index]
 			taskContext := ctx
+			reportID := ""
 			if options.Reporter != nil {
-				options.Reporter.startTask(reportTaskIDs[index])
-				taskContext = withCIReportTask(ctx, options.Reporter, reportTaskIDs[index])
+				reportID = reportTaskIDs[index]
+				options.Reporter.startTask(reportID)
+				taskContext = withCIReportTask(ctx, options.Reporter, reportID)
 			}
 			go func() {
-				results <- ciTaskResult{index: task.index, err: executePlannedService(taskContext, workspace, task.planned, action)}
+				results <- ciTaskResult{index: task.index, err: runScheduledTask(taskContext, options.Reporter, reportID, workspace, &task.planned, action)}
 			}()
 		}
 
@@ -350,6 +352,7 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 			running--
 			if options.Reporter != nil {
 				options.Reporter.finishTask(reportTaskIDs[result.index], result.err)
+				options.Reporter.publishResult(reportTaskIDs[result.index])
 			}
 			for _, resource := range tasks[result.index].resources {
 				delete(activeResources, resource)
@@ -377,6 +380,7 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 		running--
 		if options.Reporter != nil {
 			options.Reporter.finishTask(reportTaskIDs[result.index], result.err)
+			options.Reporter.publishResult(reportTaskIDs[result.index])
 		}
 		for _, resource := range tasks[result.index].resources {
 			delete(activeResources, resource)
@@ -529,6 +533,20 @@ func firstRunnableTask(ready []int, tasks []ciScheduledTask, activeResources map
 		}
 	}
 	return -1
+}
+
+// runScheduledTask stands the task on a verified earlier execution when one is
+// eligible and fully restorable, and otherwise executes it. Reuse replaces the
+// execution only after its artifacts are on disk and verified, so a dependent
+// released by this task reads the same bytes either way.
+func runScheduledTask(ctx context.Context, reporter *CIReporter, reportID string, workspace *resources.Workspace, planned *PlannedService, action Action) error {
+	if reporter != nil && reporter.attemptReuse(reportID) {
+		wool.Get(ctx).In("affectedCI").Info("Reusing verified result",
+			wool.Field("task", reportID),
+			wool.Field("service", planned.Service))
+		return nil
+	}
+	return executePlannedService(ctx, workspace, *planned, action)
 }
 
 func executePlannedService(ctx context.Context, workspace *resources.Workspace, planned PlannedService, action Action) error {

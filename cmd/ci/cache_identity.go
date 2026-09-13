@@ -17,27 +17,49 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/resources"
 )
 
 const (
-	cacheIdentitySchemaVersion = 1
+	cacheIdentitySchemaVersion = 2
 	cacheIdentityAlgorithm     = "sha256"
 	cacheStatusIdentityOnly    = "identity_only"
 	cacheStatusUnavailable     = "unavailable"
+	cacheStatusIneligible      = "ineligible"
+	cacheStatusMiss            = "miss"
+	cacheStatusHit             = "hit"
 )
 
-// CICacheIdentity is a content-addressed description of a CI task. Version 1
-// omits effective execution inputs and cannot certify result reuse.
+// CICacheIdentity is a content-addressed description of a CI task. Schema
+// version 2 binds every repository byte that is not attributed to an unrelated
+// resource, so a matching key cannot hide an undeclared input. Status is this
+// run's reuse outcome for the task; Stored is the separate question of whether
+// this run published its own result for a later one.
 type CICacheIdentity struct {
 	SchemaVersion int                  `json:"schema_version"`
 	Algorithm     string               `json:"algorithm"`
 	Key           string               `json:"key,omitempty"`
 	Status        string               `json:"status"`
+	StatusReason  string               `json:"status_reason,omitempty"`
+	Stored        bool                 `json:"stored"`
 	Inputs        CICacheIdentityInput `json:"inputs"`
 	Limitations   []string             `json:"limitations,omitempty"`
+	Reuse         *CacheReuse          `json:"reuse,omitempty"`
+}
+
+// CacheReuse records which previously verified execution a reused task stands
+// in for. It is written only after the record's signature, input identity and
+// every restored artifact digest have been verified.
+type CacheReuse struct {
+	Reference  string             `json:"reference"`
+	Run        string             `json:"run"`
+	Revision   string             `json:"revision,omitempty"`
+	Identity   string             `json:"identity"`
+	RecordedAt string             `json:"recorded_at"`
+	Artifacts  []CIReportArtifact `json:"artifacts,omitempty"`
 }
 
 type CICacheIdentityInput struct {
@@ -48,7 +70,10 @@ type CICacheIdentityInput struct {
 	Phase           string                  `json:"phase"`
 	Suite           string                  `json:"suite,omitempty"`
 	Service         string                  `json:"service"`
+	Environment     string                  `json:"environment"`
 	Agent           CICacheAgentInput       `json:"agent"`
+	CLIDigest       string                  `json:"cli_digest,omitempty"`
+	RepositoryRest  string                  `json:"repository_rest_digest,omitempty"`
 	WorkspaceDigest string                  `json:"workspace_digest"`
 	ModuleDigest    string                  `json:"module_digest"`
 	ServiceDigest   string                  `json:"service_digest"`
@@ -72,16 +97,19 @@ type CICacheResourceDigest struct {
 type ciCacheIdentityBuilder struct {
 	workspace      *resources.Workspace
 	codeflyVersion string
+	environment    string
 	repoRoot       string
 	gitFiles       []string
 	useGitFiles    bool
+	resourceRoots  []string
 	digestCache    map[string]string
 }
 
-func newCICacheIdentityBuilder(ctx context.Context, workspace *resources.Workspace, codeflyVersion string) *ciCacheIdentityBuilder {
+func newCICacheIdentityBuilder(ctx context.Context, workspace *resources.Workspace, codeflyVersion, environment string) *ciCacheIdentityBuilder {
 	builder := &ciCacheIdentityBuilder{
 		workspace:      workspace,
 		codeflyVersion: strings.TrimSpace(codeflyVersion),
+		environment:    strings.TrimSpace(environment),
 		digestCache:    map[string]string{},
 	}
 	if workspace == nil {
@@ -95,10 +123,38 @@ func newCICacheIdentityBuilder(ctx context.Context, workspace *resources.Workspa
 	if err != nil {
 		return builder
 	}
+	roots, err := attributedResourceRoots(ctx, workspace)
+	if err != nil {
+		return builder
+	}
 	builder.repoRoot = cleanAbs(repoRoot)
 	builder.gitFiles = files
+	builder.resourceRoots = roots
 	builder.useGitFiles = true
 	return builder
+}
+
+// attributedResourceRoots lists the directories whose bytes an identity already
+// attributes to a named service or library. Everything else a repository tracks
+// is unattributed: it is hashed as one remainder so no file can change without
+// changing some task identity.
+func attributedResourceRoots(ctx context.Context, workspace *resources.Workspace) ([]string, error) {
+	services, _, err := loadPlanInventory(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	roots := make([]string, 0, len(services))
+	for _, service := range services {
+		roots = append(roots, service.dir)
+	}
+	libraries, err := workspace.LoadLibraries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, library := range libraries {
+		roots = append(roots, cleanAbs(library.Dir()))
+	}
+	return sortedUnique(roots), nil
 }
 
 func gitCacheFiles(ctx context.Context, repoRoot string) ([]string, error) {
@@ -137,6 +193,7 @@ func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options Sch
 			Phase:          strings.TrimSpace(options.Phase),
 			Suite:          normalizedCacheSuite(options.Phase, options.Suite),
 			Service:        planned.Service,
+			Environment:    builder.environment,
 			Dependencies:   []CICacheResourceDigest{},
 			Libraries:      []CICacheResourceDigest{},
 		},
@@ -174,6 +231,7 @@ func (builder *ciCacheIdentityBuilder) workspaceIdentity(options ScheduleOptions
 			Phase:          strings.TrimSpace(options.Phase),
 			Suite:          normalizedCacheSuite(options.Phase, options.Suite),
 			Service:        "workspace:" + workspaceName,
+			Environment:    builder.environment,
 			Dependencies:   []CICacheResourceDigest{},
 			Libraries:      []CICacheResourceDigest{},
 		},
@@ -187,6 +245,9 @@ func (builder *ciCacheIdentityBuilder) workspaceIdentity(options ScheduleOptions
 	identity.Inputs.WorkspaceDigest, err = builder.workspaceDigest()
 	if err == nil {
 		identity.Inputs.ServiceDigest, err = builder.digestPath(builder.workspace.Dir())
+	}
+	if err == nil {
+		identity.Inputs.CLIDigest, identity.Inputs.RepositoryRest, identity.Limitations, err = builder.ambientInputs()
 	}
 	if err != nil {
 		identity.Status = cacheStatusUnavailable
@@ -236,7 +297,12 @@ func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs CICach
 		Name:      service.Agent.Name,
 		Version:   service.Agent.Version,
 	}
-	var limitations []string
+	cliDigest, repositoryRest, limitations, err := builder.ambientInputs()
+	if err != nil {
+		return inputs, limitations, err
+	}
+	inputs.CLIDigest = cliDigest
+	inputs.RepositoryRest = repositoryRest
 	agentPath, err := service.Agent.Path(ctx)
 	if err != nil {
 		limitations = append(limitations, "resolved agent binary path is unavailable")
@@ -579,4 +645,106 @@ func writeCacheRecord(hasher hash.Hash, fields ...string) {
 		_, _ = hasher.Write([]byte(field))
 	}
 	_, _ = hasher.Write([]byte{0xff})
+}
+
+// ambientInputs binds the two execution inputs that belong to no single
+// resource: the CLI binary that drives every agent, and every tracked
+// repository byte that is not attributed to a named service or library.
+func (builder *ciCacheIdentityBuilder) ambientInputs() (string, string, []string, error) {
+	var limitations []string
+	digest, err := cachedCLIDigest()
+	if err != nil {
+		limitations = append(limitations, "running CLI binary cannot be hashed")
+	}
+	rest, err := builder.repositoryRestDigest()
+	if err != nil {
+		return digest, "", limitations, fmt.Errorf("hash unattributed repository inputs: %w", err)
+	}
+	if rest == "" {
+		limitations = append(limitations, "unattributed repository inputs are unavailable without Git")
+	}
+	return digest, rest, limitations, nil
+}
+
+func (builder *ciCacheIdentityBuilder) repositoryRestDigest() (string, error) {
+	if !builder.useGitFiles {
+		return "", nil
+	}
+	if digest, ok := builder.digestCache[repositoryRestCacheEntry]; ok {
+		return digest, nil
+	}
+	hasher := sha256.New()
+	writeCacheRecord(hasher, "root", "repository")
+	for _, candidate := range builder.gitFiles {
+		if cachePathPruned(builder.repoRoot, candidate) || cacheFilePruned(candidate) {
+			continue
+		}
+		if withinAttributedResource(candidate, builder.resourceRoots) {
+			continue
+		}
+		if err := hashCacheEntry(hasher, builder.repoRoot, candidate); err != nil {
+			return "", err
+		}
+	}
+	digest := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+	builder.digestCache[repositoryRestCacheEntry] = digest
+	return digest, nil
+}
+
+// repositoryRestCacheEntry is not a filesystem path, so it cannot collide with
+// the absolute paths digestPath caches.
+const repositoryRestCacheEntry = "repository-rest"
+
+// withinAttributedResource is pathWithin specialized to the remainder scan,
+// which compares every tracked file against every resource root. Both sides are
+// already cleaned absolute paths, so a prefix test avoids the relative-path
+// allocation that scan would otherwise repeat millions of times in a large
+// workspace.
+func withinAttributedResource(path string, roots []string) bool {
+	for _, root := range roots {
+		if strings.HasPrefix(path, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+var cachedCLIDigest = sync.OnceValues(func() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	file, err := os.Open(executable)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
+})
+
+// reuseEligibility reports whether a verified successful result may stand in for
+// executing this task. Every input a rerun would consume must be bound by the
+// key; anything Codefly could not resolve keeps the task executing.
+func (identity *CICacheIdentity) reuseEligibility() (bool, string) {
+	switch {
+	case identity.SchemaVersion != cacheIdentitySchemaVersion:
+		return false, "identity schema is not the reuse contract version"
+	case identity.Key == "":
+		return false, "identity is unavailable"
+	case len(identity.Limitations) > 0:
+		return false, "identity has unresolved inputs: " + strings.Join(identity.Limitations, "; ")
+	case identity.Inputs.Environment == "":
+		return false, "no execution environment identity was declared"
+	case identity.Inputs.RepositoryRest == "":
+		return false, "unattributed repository inputs are unbound"
+	case identity.Inputs.CLIDigest == "":
+		return false, "the running CLI binary is unbound"
+	case identity.Inputs.Agent.Digest == "":
+		return false, "the resolved agent binary is unbound"
+	}
+	return true, ""
 }

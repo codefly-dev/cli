@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/core/resources"
 )
 
 func TestParseInstallAgent(t *testing.T) {
@@ -11,9 +13,11 @@ func TestParseInstallAgent(t *testing.T) {
 		name          string
 		specification string
 		override      string
+		kind          string
 		wantPublisher string
 		wantName      string
 		wantVersion   string
+		wantKind      resources.AgentKind
 		wantErr       bool
 	}{
 		{name: "latest", specification: "go-grpc", wantPublisher: "codefly.dev", wantName: "go-grpc", wantVersion: "latest"},
@@ -21,11 +25,14 @@ func TestParseInstallAgent(t *testing.T) {
 		{name: "override", specification: "redis:1.0.0", override: "2.0.0-rc.1", wantPublisher: "codefly.dev", wantName: "redis", wantVersion: "2.0.0-rc.1"},
 		{name: "traversal", specification: "../redis:1.0.0", wantErr: true},
 		{name: "bad version", specification: "redis:not-semver", wantErr: true},
+		{name: "runnable", specification: "python:0.0.1", kind: "runnable", wantPublisher: "codefly.dev", wantName: "python", wantVersion: "0.0.1", wantKind: resources.RunnableAgent},
+		{name: "registered kind form", specification: "python:0.0.1", kind: "codefly:runnable", wantPublisher: "codefly.dev", wantName: "python", wantVersion: "0.0.1", wantKind: resources.RunnableAgent},
+		{name: "unknown kind", specification: "python:0.0.1", kind: "lambda", wantErr: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			agent, err := parseInstallAgent(context.Background(), tc.specification, tc.override)
+			agent, err := parseInstallAgent(context.Background(), tc.specification, tc.override, tc.kind)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("parseInstallAgent(%q) unexpectedly succeeded: %+v", tc.specification, agent)
@@ -37,6 +44,13 @@ func TestParseInstallAgent(t *testing.T) {
 			}
 			if agent.Publisher != tc.wantPublisher || agent.Name != tc.wantName || agent.Version != tc.wantVersion {
 				t.Fatalf("parseInstallAgent(%q) = %+v", tc.specification, agent)
+			}
+			wantKind := tc.wantKind
+			if wantKind == "" {
+				wantKind = resources.ServiceAgent
+			}
+			if agent.Kind != wantKind {
+				t.Fatalf("parseInstallAgent(%q) kind = %q, want %q", tc.specification, agent.Kind, wantKind)
 			}
 		})
 	}
@@ -50,5 +64,20 @@ func TestInstallCommandReturnsValidationError(t *testing.T) {
 	err := InstallCmd.RunE(InstallCmd, []string{"../redis:1.0.0"})
 	if err == nil || !strings.Contains(err.Error(), "invalid agent") {
 		t.Fatalf("validation error = %v", err)
+	}
+}
+
+// TestParseInstallAgentCanonicalizesAnAliasKind: core registers
+// "codefly:service:builder" as an ALIAS of "codefly:service". Returning the
+// alias put it in the Agent the caller then stores and reports, so the same
+// agent could be recorded under two different kinds depending on which
+// spelling was typed.
+func TestParseInstallAgentCanonicalizesAnAliasKind(t *testing.T) {
+	agent, err := parseInstallAgent(context.Background(), "go-grpc:1.0.0", "", string(resources.BuilderServiceAgent))
+	if err != nil {
+		t.Fatalf("alias kind rejected: %v", err)
+	}
+	if agent.Kind != resources.ServiceAgent {
+		t.Fatalf("alias kind = %q, want the canonical %q", agent.Kind, resources.ServiceAgent)
 	}
 }

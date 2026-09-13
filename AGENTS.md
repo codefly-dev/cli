@@ -40,6 +40,7 @@ runbook whenever you do a multi-step operational task a second time.
 ### Reference (deep dives, not step-by-step)
 - **All CLI commands, by category** → [docs/commands.md](docs/commands.md)
 - **Orchestration engine** → [docs/orchestration.md](docs/orchestration.md)
+- **Runnables** (what the CLI does with `runnable.codefly.yaml`, and what is deliberately not implemented yet) → [docs/runnable.md](docs/runnable.md)
 - **Deployment completion stages** (rendered / applied / bootstrapped / healthy, bootstrap ordering, expand/contract schema rollout) → [docs/deployment-completion.md](docs/deployment-completion.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
 - **Supported CLI/core/agent combinations** (the conformance matrix, and why a required row cannot skip itself) → [docs/supported-matrix.md](docs/supported-matrix.md)
@@ -105,6 +106,11 @@ Each command with subcommands has a `cmd/<name>/` package. See
 - **pkg/cliupdate/** — Version stamping (`version`/`commit`/`buildDate` set via ldflags at
   release), self-update, and the release-signing certificate.
 - **pkg/platform/** / **pkg/gateway/** — Platform ops and Mind Gateway gRPC server.
+- **pkg/agentkinds/** — the one owner of the short agent kind a user types (`runnable`)
+  ↔ the kind core registers (`codefly:runnable`). Used by `codefly agent install --kind`
+  and the MCP `list_agents`/`agent_info` schemas so the convention has a single copy.
+- **pkg/runnables/** — the one projection of a `resources.Runnable` that every listing
+  surface emits (`list runnables --json`, `show runnable --json`, MCP `list_runnables`).
 - **pkg/cli/**, **pkg/builder/**, **pkg/deployments/**, **pkg/generators/**, **pkg/imports/**,
   **pkg/observability/**, **pkg/types/**, **pkg/web/** — supporting packages.
 
