@@ -2,6 +2,9 @@ package ci
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -109,7 +112,7 @@ func TestVerifiedReuseRestoresAndVerifiesRequiredArtifacts(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Scope: artifactScopeSource, Path: relative, MediaType: "application/vnd.cyclonedx+json", SHA256: artifactDigest(payload)})
+		recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: relative, MediaType: "application/vnd.cyclonedx+json", SHA256: artifactDigest(payload)})
 		return nil
 	}
 	cold := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), withReuseAction(produce), withReusePhase("sbom"))
@@ -135,8 +138,8 @@ func TestVerifiedReuseRestoresAndVerifiesRequiredArtifacts(t *testing.T) {
 	if len(warm.task(t).Artifacts) != 1 || warm.task(t).Artifacts[0].SHA256 != artifactDigest(payload) {
 		t.Fatalf("reused task artifacts = %#v", warm.task(t).Artifacts)
 	}
-	if warm.task(t).Artifacts[0].Scope != artifactScopeSource {
-		t.Fatalf("reused artifact lost its evidence scope: %#v", warm.task(t).Artifacts[0])
+	if warm.task(t).Artifacts[0].Subject != artifactSubjectSource {
+		t.Fatalf("reused artifact lost its evidence subject: %#v", warm.task(t).Artifacts[0])
 	}
 }
 
@@ -195,6 +198,13 @@ func TestVerifiedReuseFallsBackToExecutionWhenEvidenceIsUnusable(t *testing.T) {
 		"incompatible identity contract": {reason: "different identity contract", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			record.IdentitySchema = cacheIdentitySchemaVersion + 1
 			resignReuseRecord(t, store, record)
+		}},
+		// A correctly signed record in the previous on-disk shape must be refused
+		// for its schema, never for its signature: the reader adds a field the
+		// writer never encoded, so the recomputed MAC cannot match, and reporting
+		// that as "not authentic" would make an honest record look forged.
+		"legacy record shape": {reason: "schema is incompatible", damage: func(t *testing.T, store string, record *ciResultRecord) {
+			writeLegacyReuseRecord(t, store, record)
 		}},
 		"malformed record": {reason: "cannot be read", damage: func(t *testing.T, store string, record *ciResultRecord) {
 			writeCacheTestFile(t, (&ciResultStore{root: store}).recordPath(record.Identity), "{not json")
@@ -645,6 +655,90 @@ func readReuseRecord(t *testing.T, store, identity string) *ciResultRecord {
 		t.Fatalf("published record is missing: %#v %v", record, err)
 	}
 	return record
+}
+
+// legacyResultArtifact is CIReportArtifact as it was encoded before evidence
+// named a subject, and legacyResultRecord is the record that carried it.
+type legacyResultArtifact struct {
+	Kind      string `json:"kind"`
+	Path      string `json:"path"`
+	MediaType string `json:"media_type,omitempty"`
+	SHA256    string `json:"sha256"`
+}
+
+type legacyResultEvidence struct {
+	Audit     *CIReportAudit         `json:"audit,omitempty"`
+	Drift     *CIReportDrift         `json:"drift,omitempty"`
+	Integrity *CIReportIntegrity     `json:"integrity,omitempty"`
+	Artifacts []legacyResultArtifact `json:"artifacts"`
+}
+
+type legacyResultRecord struct {
+	Schema         string               `json:"schema"`
+	IdentitySchema int                  `json:"identity_schema_version"`
+	Identity       string               `json:"identity"`
+	Task           string               `json:"task"`
+	Phase          string               `json:"phase"`
+	Suite          string               `json:"suite,omitempty"`
+	Service        string               `json:"service,omitempty"`
+	Outcome        string               `json:"outcome"`
+	Reference      string               `json:"reference"`
+	Run            string               `json:"run"`
+	Revision       string               `json:"revision,omitempty"`
+	Environment    string               `json:"environment"`
+	RecordedAt     string               `json:"recorded_at"`
+	Evidence       legacyResultEvidence `json:"evidence"`
+	Signature      string               `json:"signature"`
+}
+
+// writeLegacyReuseRecord republishes a record in the pre-subject shape, signed
+// the way the binary that wrote that shape would have signed it, so the reader
+// under test faces a genuinely legacy record rather than a mutated field.
+func writeLegacyReuseRecord(t *testing.T, store string, record *ciResultRecord) {
+	t.Helper()
+	legacy := legacyResultRecord{
+		Schema:         "codefly.ci-result/v1",
+		IdentitySchema: record.IdentitySchema,
+		Identity:       record.Identity,
+		Task:           record.Task,
+		Phase:          record.Phase,
+		Suite:          record.Suite,
+		Service:        record.Service,
+		Outcome:        record.Outcome,
+		Reference:      record.Reference,
+		Run:            record.Run,
+		Revision:       record.Revision,
+		Environment:    record.Environment,
+		RecordedAt:     record.RecordedAt,
+		Evidence: legacyResultEvidence{
+			Audit:     record.Evidence.Audit,
+			Drift:     record.Evidence.Drift,
+			Integrity: record.Evidence.Integrity,
+			Artifacts: []legacyResultArtifact{},
+		},
+	}
+	for _, artifact := range record.Evidence.Artifacts {
+		legacy.Evidence.Artifacts = append(legacy.Evidence.Artifacts, legacyResultArtifact{
+			Kind:      artifact.Kind,
+			Path:      artifact.Path,
+			MediaType: artifact.MediaType,
+			SHA256:    artifact.SHA256,
+		})
+	}
+	unsigned := legacy
+	unsigned.Signature = ""
+	payload, err := json.Marshal(&unsigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := hmac.New(sha256.New, []byte("reuse-test-signing-key"))
+	mac.Write(payload)
+	legacy.Signature = ciResultSignatureAlg + ":" + hex.EncodeToString(mac.Sum(nil))
+	encoded, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCacheTestFile(t, (&ciResultStore{root: store}).recordPath(record.Identity), string(encoded))
 }
 
 func resignReuseRecord(t *testing.T, store string, record *ciResultRecord) {
