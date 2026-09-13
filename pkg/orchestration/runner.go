@@ -77,6 +77,10 @@ type Runner struct {
 
 	runtimeContext string
 
+	// containerRecoveryIdentity is the ownership acknowledgement this runner's
+	// flow projected, set by Flow.configureRunner.
+	containerRecoveryIdentity string
+
 	// Path fixture Name
 	fixture string
 

@@ -166,7 +166,7 @@ endpoints:
 			namingScope, namingScopeExplicit = tc.flag, tc.explicit
 			resolved, err := newRunFlow(ctx, workspace, module, service)
 			require.NoError(t, err)
-			actual, err := prepareContainerRecovery(workspace, resolved)
+			actual, err := resolved.ContainerRecoveryScope()
 			require.NoError(t, err)
 			expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), tc.want)
 			require.NoError(t, err)
@@ -179,7 +179,7 @@ endpoints:
 	isolated, err := newRunFlow(ctx, workspace, module, service)
 	require.NoError(t, err)
 	require.NotEmpty(t, isolated.Environment().NamingScope)
-	actual, err := prepareContainerRecovery(workspace, isolated)
+	actual, err := isolated.ContainerRecoveryScope()
 	require.NoError(t, err)
 	expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), isolated.Environment().NamingScope)
 	require.NoError(t, err)

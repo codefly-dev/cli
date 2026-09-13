@@ -1,7 +1,8 @@
 # Container-recovery marker rollout inventory
 
-`codefly run` projects a versioned container-recovery marker into the agents it
-spawns. This page is the inventory the coordinated release gate in
+`codefly` projects a versioned container-recovery marker into the agents it
+spawns, from `Flow.InitManagers` — so every command that spawns one projects it,
+not only `codefly run`. This page is the inventory the coordinated release gate in
 [cli#640](https://github.com/codefly-dev/cli/issues/640) needs: which agent
 binaries read that marker, which of them create containers, and what each one
 needs before the new CLI/fleet combination is published.
@@ -56,16 +57,25 @@ live: an agent selected for a native backend that still reaches Docker through
 a Core companion creates its containers with no recovery label and nothing
 fails loudly. Those are the `companion` rows below.
 
-The other place is not a runtime context at all. **Only `codefly run` projects
-the marker** — `marker_projected_by` in the inventory records that, and a test
-fails if any other package starts or stops projecting one. An agent spawned by
-`codefly build`, `test` or `generate` therefore inherits no marker, resolves an
-empty scope, and `dockerrun` skips both recovery labels without an error. That
-is exactly the `companion` path: `companions/proto` runs under generate and
-build, `runners/testmatrix` under test, and `service-mssql`'s Alembic migration
-runner under its own lifecycle. **Rebuilding those agents does not fix that** —
-there is no marker for the new parser to read. Qualification has to cover the
-command, not only the runtime context.
+The other place is not a runtime context at all. **Every command that spawns an
+agent projects the marker**, because projection happens in `Flow.InitManagers`
+(`pkg/orchestration`) rather than in any one command: `codefly run`, `build`,
+`test`, `ci`, `deploy`, `sync` and `validation` all funnel through it, as do
+`pkg/gitops` and the SDK/daemon run path in `pkg/control`. `marker_projected_by`
+in the inventory records the projecting package, and a test fails if any other
+package starts or stops projecting one. Until that moved, only `codefly run`
+projected: an agent spawned by `codefly build` or `test` inherited no marker,
+resolved an empty scope, and `dockerrun` skipped both recovery labels without an
+error — so `companions/proto` under build, `runners/testmatrix` under test, and
+`service-mssql`'s Alembic migration runner all created unlabeled containers.
+
+`codefly generate` is the one command still projecting nothing, and it is a
+different shape of hole: it spawns no agent at all. `generate proto` builds its
+container in the CLI process itself (`runners.NewDockerEnvironment` in
+`cmd/generate/proto.go`), so no flow projects for it and `companions/proto`
+creates unlabeled containers there however new its Core is. **Rebuilding that
+agent does not fix it** — there is no marker for the new parser to read.
+Qualification has to cover the command, not only the runtime context.
 
 One further hole is in the projection decision itself rather than in an agent:
 `codefly run` decides whether to project from the run's *launch* context, while
@@ -165,10 +175,12 @@ and inspect containers without creating any.
 2. Qualify the `companion` rows under a **native** backend specifically. The
    guard is exempt there, so a stale binary is invisible to it, and no CLI test
    can stand in for that path.
-3. Qualify the `companion` rows under `codefly build`, `test` and `generate` as
-   well as `codefly run`. Those commands project no marker, so a rebuilt agent
-   still creates unlabeled containers there; closing that needs a CLI change,
-   not a fleet rebuild, and no row in the table above records it.
+3. Qualify the `companion` rows under `codefly build` and `test` as well as
+   `codefly run`. Those commands now project a marker, so a rebuilt agent is
+   what makes them label correctly — and that pairing is unqualified, on a path
+   no row in the table above records. `codefly generate` still projects none
+   (it creates its container in the CLI process, not through an agent), so a
+   rebuilt agent does not help there and closing it needs a further CLI change.
 4. Publish the rebuilt agents before or together with the CLI, then move
    `pkg/sourceworkspace/compatibility.json`, the agent pins in
    `pkg/conformance/matrix.json`, and `module-saas-starter`'s composed pins onto

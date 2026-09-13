@@ -119,6 +119,10 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 	} {
 		runner := &Runner{
 			runtimeContext: runtimeContext,
+			// What Flow.configureRunner hands every runner it builds. Without
+			// it validateContainerRecovery has no identity to hold the agent
+			// to and accepts anything, qualifying nothing.
+			containerRecoveryIdentity: dockerrun.InheritedContainerRecoveryScope(),
 			instance: &services.Instance{
 				Identity:               &resources.ServiceIdentity{Name: "api", Module: "app"},
 				ContainerRecoveryScope: acknowledgement,
