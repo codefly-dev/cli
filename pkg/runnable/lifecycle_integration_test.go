@@ -5,6 +5,7 @@ package runnable_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,8 +87,11 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	require.NoError(t, err)
 	r.Contract.Input.Fields = []*resources.RunnableField{{Name: "text", Type: "string"}}
 	r.Contract.Output.Fields = []*resources.RunnableField{{Name: "count", Type: "integer"}}
+	r.Execution.Cancellation = resources.RunnableCancellationSignal
 	require.NoError(t, r.Save(ctx))
-	require.NoError(t, os.WriteFile(filepath.Join(source, "handler.py"), []byte("def handle(context, input):\n    return {\"count\": len(input[\"text\"].split())}\n"), 0600))
+	// The handler runs long on one reserved input so the launcher's
+	// interruption of a live harness is qualified against the real one.
+	require.NoError(t, os.WriteFile(filepath.Join(source, "handler.py"), []byte("import time\n\n\ndef handle(context, input):\n    if input[\"text\"] == \"sleep\":\n        time.sleep(30)\n    return {\"count\": len(input[\"text\"].split())}\n"), 0600))
 	buildDir := filepath.Join(root, "build")
 	encoded, err := run("build", "runnable", "word-count", "--output="+buildDir, "--json")
 	require.NoError(t, err)
@@ -103,10 +107,37 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	unpack := exec.CommandContext(ctx, "tar", "-xzf", archive, "-C", installed)
 	output, err = unpack.CombinedOutput()
 	require.NoError(t, err, string(output))
+	binding, err := corerunnable.PrepareBinding(&basev0.RunnableBinding{
+		Schema: corerunnable.BindingSchemaV1, Identity: pkg.GetIdentity(), PackageDigest: pkg.GetDigest(),
+		Facility: &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE}, Artifact: artifact,
+	}, pkg)
+	require.NoError(t, err)
+	launcher, err := runnableops.NewNativeLauncher(pkg, binding, installed)
+	require.NoError(t, err)
 	// The native archive must work after both author source and prepared files disappear.
 	require.NoError(t, os.Rename(source, source+"-unavailable"))
 	require.NoError(t, os.RemoveAll(filepath.Join(buildDir, "prepared")))
-	for _, test := range []struct {
+
+	// Every invocation below goes through the CLI's launcher, so what is
+	// qualified is the real framing between it and the agent's generated
+	// harness: the documents, the process boundary and the typed completion.
+	invocations := filepath.Join(root, "invocations")
+	invoke := func(ctx context.Context, id string, input string) (*basev0.RunnableCompletion, string, string) {
+		issued := time.Now()
+		var out, logs strings.Builder
+		completed, err := launcher.Invoke(ctx, runnableops.Run{
+			Invocation: &basev0.RunnableInvocation{
+				Protocol: corerunnable.ProtocolV1, Runnable: pkg.GetIdentity(), InvocationId: id, IntentId: "intent-" + id,
+				IssuedAt: timestamppb.New(issued), Deadline: timestamppb.New(issued.Add(90 * time.Second)), Input: []byte(input),
+			},
+			Directory: filepath.Join(invocations, id), Stdout: &out, Stderr: &logs,
+		})
+		require.NoError(t, err)
+		require.FileExists(t, filepath.Join(invocations, id, runnableops.InvocationFile), "the dispatched document is retained as evidence")
+		t.Logf("id=%s input=%s outcome=%s output=%s stderr=%s", id, input, completed.GetOutcome(), completed.GetResult().GetOutput(), logs.String())
+		return completed, out.String(), logs.String()
+	}
+	for i, test := range []struct {
 		input   string
 		count   int
 		outcome basev0.RunnableCompletion_Outcome
@@ -115,44 +146,37 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 		{`{"text":"four five"}`, 2, basev0.RunnableCompletion_SUCCEEDED},
 		{`{"text":42}`, 0, basev0.RunnableCompletion_CRASHED},
 	} {
-		started := time.Now()
-		inv, err := corerunnable.PrepareInvocation(&basev0.RunnableInvocation{
-			Protocol: corerunnable.ProtocolV1, Runnable: pkg.GetIdentity(), InvocationId: "inv-1", IntentId: "intent-1",
-			IssuedAt: timestamppb.New(started), Deadline: timestamppb.New(started.Add(10 * time.Second)), Input: []byte(test.input),
-		}, pkg)
-		require.NoError(t, err)
-		requestPath := filepath.Join(t.TempDir(), "invocation.json")
-		resultPath := filepath.Join(t.TempDir(), "result.json")
-		request, err := corerunnable.EncodeInvocation(inv)
-		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(requestPath, request, 0600))
-		argv := artifact.GetCommand()
-		invoke := exec.CommandContext(ctx, filepath.Join(installed, argv[0]), argv[1:]...)
-		invoke.Dir = installed
-		invoke.Env = os.Environ()
-		for key, value := range corerunnable.InvocationEnvironment(inv, requestPath, resultPath) {
-			invoke.Env = append(invoke.Env, key+"="+value)
-		}
-		diagnostics, runErr := invoke.CombinedOutput()
-		require.NotNil(t, invoke.ProcessState, "start invocation: %v", runErr)
-		result, err := os.ReadFile(resultPath)
-		if err != nil {
-			require.True(t, os.IsNotExist(err), "%v", err)
-		}
-		completed, err := corerunnable.Complete(inv, pkg, corerunnable.Observation{Result: result, ExitCode: int32(invoke.ProcessState.ExitCode()), StartedAt: started, EndedAt: time.Now()})
-		require.NoError(t, err)
-		require.Equal(t, test.outcome, completed.GetOutcome(), string(diagnostics))
+		completed, out, logs := invoke(ctx, fmt.Sprintf("inv-%d", i), test.input)
+		require.Equal(t, test.outcome, completed.GetOutcome(), logs)
 		if test.outcome == basev0.RunnableCompletion_SUCCEEDED {
 			var output struct {
 				Count int `json:"count"`
 			}
 			require.NoError(t, json.Unmarshal(completed.GetResult().GetOutput(), &output))
 			require.Equal(t, test.count, output.Count)
+			// Completion data never travels as process output.
+			require.Empty(t, out)
+			require.Equal(t, uint64(0), completed.GetLogs().GetStdout().GetBytes())
 		} else {
 			require.False(t, corerunnable.OutcomeIsCertain(completed.GetOutcome()))
+			// Wrong input shape is refused before the handler runs, and the
+			// refusal is a diagnostic rather than a completion.
+			require.Contains(t, logs, "invalid_input")
+			require.Nil(t, completed.GetResult())
 		}
-		t.Logf("input=%s outcome=%s output=%s", test.input, completed.GetOutcome(), completed.GetResult().GetOutput())
 	}
+
+	// Interrupting a live harness: the package declares signal cancellation, so
+	// the launcher may end the process group and the outcome stays uncertain.
+	interrupting, interrupt := context.WithCancel(ctx)
+	go func() {
+		time.Sleep(2 * time.Second)
+		interrupt()
+	}()
+	completed, _, logs := invoke(interrupting, "inv-canceled", `{"text":"sleep"}`)
+	interrupt()
+	require.Equal(t, basev0.RunnableCompletion_CANCELED, completed.GetOutcome(), logs)
+	require.False(t, corerunnable.OutcomeIsCertain(completed.GetOutcome()))
 	require.NoError(t, os.Rename(source+"-unavailable", source))
 	_, err = run("build", "runnable", "word-count", "--output="+buildDir)
 	require.Error(t, err, "an explicit output directory must not be overwritten")
