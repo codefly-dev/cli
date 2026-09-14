@@ -131,11 +131,33 @@ type CIReportIntegrityDivergence struct {
 	Reason string `json:"reason"`
 }
 
+// CIReportArtifact names one piece of evidence a task produced. Image evidence
+// additionally carries the digest and platform it was scanned from and the
+// service-owned images that scan satisfies: one digest shared by several
+// services is scanned and written once, and Subjects is what keeps every
+// association to it.
 type CIReportArtifact struct {
-	Kind      string `json:"kind"`
-	Path      string `json:"path"`
-	MediaType string `json:"media_type,omitempty"`
-	SHA256    string `json:"sha256"`
+	Kind      string                 `json:"kind"`
+	Path      string                 `json:"path"`
+	MediaType string                 `json:"media_type,omitempty"`
+	SHA256    string                 `json:"sha256"`
+	Digest    string                 `json:"digest,omitempty"`
+	Platform  string                 `json:"platform,omitempty"`
+	Subjects  []CIReportImageSubject `json:"subjects,omitempty"`
+}
+
+type CIReportImageSubject struct {
+	Service   string `json:"service"`
+	Role      string `json:"role,omitempty"`
+	Reference string `json:"reference,omitempty"`
+}
+
+func cloneCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
+	cloned := append([]CIReportArtifact(nil), artifacts...)
+	for index, artifact := range artifacts {
+		cloned[index].Subjects = append([]CIReportImageSubject(nil), artifact.Subjects...)
+	}
+	return cloned
 }
 
 type ciReportTaskContextKey struct{}
@@ -594,7 +616,7 @@ func cloneCIReport(report CIReport) CIReport {
 		cloned.Tasks[index].Cache.Limitations = append([]string(nil), task.Cache.Limitations...)
 		if task.Cache.Reuse != nil {
 			reuse := *task.Cache.Reuse
-			reuse.Artifacts = append([]CIReportArtifact(nil), task.Cache.Reuse.Artifacts...)
+			reuse.Artifacts = cloneCIReportArtifacts(task.Cache.Reuse.Artifacts)
 			cloned.Tasks[index].Cache.Reuse = &reuse
 		}
 		if task.Audit != nil {
@@ -608,7 +630,7 @@ func cloneCIReport(report CIReport) CIReport {
 			integrity := cloneCIReportIntegrity(*task.Integrity)
 			cloned.Tasks[index].Integrity = &integrity
 		}
-		cloned.Tasks[index].Artifacts = append([]CIReportArtifact(nil), task.Artifacts...)
+		cloned.Tasks[index].Artifacts = cloneCIReportArtifacts(task.Artifacts)
 	}
 	return cloned
 }

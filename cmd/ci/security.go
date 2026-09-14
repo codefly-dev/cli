@@ -20,7 +20,56 @@ var (
 	ciAuditIncludeDev      bool
 	ciAuditFailOnVuln      bool
 	ciSBOMIncludeDev       bool
+	ciImageSBOM            bool
 )
+
+// recordImageSBOMEvidence persists one CycloneDX document per scanned image.
+// The artifact is named by the digest and platform actually scanned, which is
+// the scan identity: identical digests deduplicate onto one file while each
+// service's own task still records its association to it.
+func recordImageSBOMEvidence(ctx context.Context, workspace *resources.Workspace, evidence []*builderv0.ImageSBOM) error {
+	for _, image := range evidence {
+		payload, err := coresbom.MarshalCycloneDXJSON(image.GetBom())
+		if err != nil {
+			return fmt.Errorf("encode CycloneDX for %s: %w", image.GetDigest(), err)
+		}
+		payload = append(payload, '\n')
+		relative, err := writeCIArtifact(workspace, filepath.Join("sbom", "image", imageEvidenceFilename(image)), payload)
+		if err != nil {
+			return err
+		}
+		recordCIReportArtifact(ctx, CIReportArtifact{
+			Kind:      "cyclonedx-image-sbom",
+			Path:      relative,
+			MediaType: "application/vnd.cyclonedx+json",
+			SHA256:    "sha256:" + resources.Hash(payload),
+			Digest:    image.GetDigest(),
+			Platform:  image.GetPlatform(),
+			Subjects:  imageEvidenceSubjects(image),
+		})
+	}
+	return nil
+}
+
+func imageEvidenceFilename(image *builderv0.ImageSBOM) string {
+	name := safeCIArtifactName(strings.TrimPrefix(image.GetDigest(), "sha256:"))
+	if platform := image.GetPlatform(); platform != "" {
+		name += "--" + safeCIArtifactName(platform)
+	}
+	return name + ".cdx.json"
+}
+
+func imageEvidenceSubjects(image *builderv0.ImageSBOM) []CIReportImageSubject {
+	subjects := make([]CIReportImageSubject, 0, len(image.GetSubjects()))
+	for _, subject := range image.GetSubjects() {
+		subjects = append(subjects, CIReportImageSubject{
+			Service:   subject.GetService(),
+			Role:      subject.GetRole(),
+			Reference: subject.GetReference(),
+		})
+	}
+	return subjects
+}
 
 func runAuditService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
 	w := wool.Get(ctx).In("ciAudit", wool.ThisField(resources.WithUnique(service)))

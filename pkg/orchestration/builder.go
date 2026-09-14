@@ -49,6 +49,8 @@ type Builder struct {
 	push        bool
 	imageDigest string
 
+	imageEvidence []*builderv0.ImageSBOM
+
 	syncResponse     *builderv0.SyncResponse
 	syncSkipped      bool
 	deploymentOutput *builderv0.DeploymentOutput
@@ -78,6 +80,12 @@ func (b *Builder) DeploymentOutput() *builderv0.DeploymentOutput {
 // builder pushed, or "" when it built without pushing.
 func (b *Builder) ImageDigest() string {
 	return b.imageDigest
+}
+
+// ImageEvidence returns the digest-bound image SBOMs this builder collected, or
+// nil when the flow did not ask for them.
+func (b *Builder) ImageEvidence() []*builderv0.ImageSBOM {
+	return b.imageEvidence
 }
 
 func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
@@ -282,11 +290,12 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for build")
 	}
 
+	buildResult := dockerBuildResult(resp.Result)
 	if plan != nil {
 		if err = b.buildFromPlan(ctx, outputDir, plan); err != nil {
 			return nil, err
 		}
-	} else if buildResult := dockerBuildResult(resp.Result); buildResult != nil {
+	} else if buildResult != nil {
 		if b.world.Push {
 			w.Info("Pushing docker image", wool.Field("result", resp.Result))
 			for _, im := range buildResult.Images {
@@ -316,6 +325,12 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 			} else {
 				b.imageDigest = digest
 			}
+		}
+	}
+
+	if b.world.CollectImageSBOM {
+		if err = b.collectImageEvidence(ctx, plan, buildResult); err != nil {
+			return nil, err
 		}
 	}
 
