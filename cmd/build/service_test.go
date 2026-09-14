@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -38,7 +39,7 @@ func TestServiceCommandKeepsImageEvidenceOptIn(t *testing.T) {
 // evidence publishes nothing and cannot fail on a flow it does not consult.
 func TestPublishImageEvidenceIsANoOpWhenNotRequested(t *testing.T) {
 	imageSBOM = false
-	if err := publishImageEvidence(nil, nil); err != nil {
+	if err := publishImageEvidence(context.Background(), nil, nil); err != nil {
 		t.Fatalf("publishing without --image-sbom returned %v", err)
 	}
 }
