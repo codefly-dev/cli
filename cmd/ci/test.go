@@ -65,6 +65,9 @@ func runTestServiceForSuite(suite string, failFast bool) Action {
 			if err := testService(ctx, flow); err != nil {
 				return w.Wrapf(err, "Cannot test service")
 			}
+			if flow.OriginTestSkipped() {
+				recordCIReportSkip(ctx, reportReasonAgentNoTestCapability)
+			}
 			return nil
 		})
 	}

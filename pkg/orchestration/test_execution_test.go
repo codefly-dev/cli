@@ -79,7 +79,6 @@ func TestResolveTestExecutionRejectsInvalidAuthoritativeContracts(t *testing.T) 
 		{name: "no default", info: testInformation(&agentv0.TestSuiteCapability{Name: "unit", DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE}), want: "does not advertise a default"},
 		{name: "multiple defaults", info: testInformation(valid, valid), want: "multiple default"},
 		{name: "unspecified mode", info: testInformation(&agentv0.TestSuiteCapability{Name: "unit", DefaultSuite: true}), want: "incomplete dependency mode"},
-		{name: "test unsupported", info: &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{Test: &agentv0.TestValidationCapability{}}}, want: "explicitly unsupported"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

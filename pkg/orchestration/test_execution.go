@@ -13,6 +13,10 @@ type testExecution struct {
 	Request        *runtimev0.TestRequest
 	DependencyMode agentv0.TestDependencyMode
 	legacy         bool
+	// skipped marks an agent that owns no test suites at all. Having no tests
+	// is a legitimate answer, distinct from tests that failed to run, so it
+	// degrades like lint and compile rather than failing the phase.
+	skipped bool
 }
 
 func (execution testExecution) DisplaySuite() string {
@@ -42,7 +46,11 @@ func resolveTestExecution(info *agentv0.AgentInformation, request *runtimev0.Tes
 
 	test := info.GetValidation().GetTest()
 	if !test.GetSupported() {
-		return testExecution{}, fmt.Errorf("test is explicitly unsupported by the agent validation contract")
+		return testExecution{
+			Request:        request,
+			DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
+			skipped:        true,
+		}, nil
 	}
 	requested := strings.TrimSpace(request.GetSuite())
 	var selected *agentv0.TestSuiteCapability

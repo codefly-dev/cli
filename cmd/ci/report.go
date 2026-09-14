@@ -33,6 +33,7 @@ const (
 	reportReasonRunCancelled          = "run_cancelled"
 	reportReasonNotScheduled          = "not_scheduled"
 	reportReasonAgentNoSyncCapability = "agent_no_sync_capability"
+	reportReasonAgentNoTestCapability = "agent_no_test_capability"
 
 	// artifactSubjectSource is evidence about the checked-out source and its
 	// declared dependencies; artifactSubjectImage is evidence about a runtime

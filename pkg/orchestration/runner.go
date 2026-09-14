@@ -107,6 +107,11 @@ type Runner struct {
 	// serviceRunningForTest preserves an explicitly started target for suites
 	// whose advertised dependency mode is START_STACK.
 	serviceRunningForTest bool
+
+	// testSkipped records that the agent advertises no test capability, so no
+	// Test RPC was dispatched. Read by Flow so the CLI and the CI report can
+	// show a skip instead of an unearned pass.
+	testSkipped bool
 }
 
 // WithTestRequest stores the TestRequest to forward to the agent on Test().
@@ -123,6 +128,12 @@ func (runner *Runner) WithServiceRunningForTest(running bool) {
 // if this runner has not been tested (or the RPC failed before responding).
 func (runner *Runner) TestResponse() *runtimev0.TestResponse {
 	return runner.testResponse
+}
+
+// TestSkipped reports whether Test returned without dispatching an RPC because
+// the agent advertises no test capability.
+func (runner *Runner) TestSkipped() bool {
+	return runner.testSkipped
 }
 
 type Callback func(ctx context.Context, action Action) error
@@ -889,7 +900,9 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 	w.Debug("test")
 	advertised, supported := validationSupport(runner.instance.Info, RuntimeTest)
 	if advertised && !supported {
-		return nil, w.NewError("test is not supported by the validation contract for %s", runner.Unique())
+		runner.testSkipped = true
+		w.Info("test is explicitly unsupported by this agent; skipping")
+		return OnInit(), nil
 	}
 
 	if !runner.serviceRunningForTest {
