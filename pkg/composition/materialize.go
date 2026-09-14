@@ -1,4 +1,4 @@
-package run
+package composition
 
 import (
 	"context"
@@ -14,11 +14,22 @@ import (
 
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/core/resources"
 )
 
-// materializePinnedModules pulls every composed module that resolves to a pinned
+// overlayLockTimeout bounds how long one run waits for another to finish its
+// overlay critical section. It is a var so a test can shorten it: the behavior
+// worth exercising is what a run does once the wait is exhausted, not the wait.
+var overlayLockTimeout = 5 * time.Minute
+
+// overlayLockPath is the cross-process lock guarding the overlay under writeDir.
+// Keyed by the directory written rather than the workspace, so two workspaces
+// sharing an ancestor overlay serialize against each other.
+func overlayLockPath(writeDir string) string {
+	return filepath.Join(resources.CodeflyHomeDir(), "locks", fmt.Sprintf("%x.overlay.lock", sha256.Sum256([]byte(filepath.Clean(writeDir)))))
+}
+
+// MaterializePinnedModules pulls every composed module that resolves to a pinned
 // artifact into the local module cache and points the overlay core loads at that
 // cache directory. Core classifies a `source@version` reference as pinned but
 // refuses to load it (there is no module-artifact store); this is the CLI-side
@@ -30,7 +41,7 @@ import (
 // Only pinned identities are managed: a module the user is actively editing (a
 // committed path, or an overlay `path`/`worktree` pointing outside the cache) is
 // left untouched. Everything the CLI itself materializes is recorded as a
-// receipt in the composition.ResolutionRecordName sidecar, which is what keeps
+// receipt in the ResolutionRecordName sidecar, which is what keeps
 // machine output distinguishable from a user checkout — including the `git:
 // true` escape hatch, whose directive an overlay entry cannot hold beside the
 // path it produced (core admits exactly one of path/worktree/pinned/git per
@@ -46,9 +57,9 @@ import (
 // failed upgrade silently keeps shipping the previous version. So the path is
 // dropped from the overlay and materialization fails closed, naming the
 // requested version and the one that path resolved to.
-func materializePinnedModules(ctx context.Context, workspace *resources.Workspace) error {
+func MaterializePinnedModules(ctx context.Context, workspace *resources.Workspace) error {
 	writeDir := workspace.Dir()
-	if dir := composition.NearestOverlayDir(workspace.Dir()); dir != "" {
+	if dir := NearestOverlayDir(workspace.Dir()); dir != "" {
 		writeDir = dir
 	}
 	// The whole read-decide-write cycle below (load the overlay, decide what
@@ -59,14 +70,13 @@ func materializePinnedModules(ctx context.Context, workspace *resources.Workspac
 	// the second writer's full-map write would silently clobber whatever the
 	// first writer had just added. A cross-process lock keyed on writeDir
 	// serializes that cycle instead.
-	lockPath := filepath.Join(resources.CodeflyHomeDir(), "locks", fmt.Sprintf("%x.overlay.lock", sha256.Sum256([]byte(filepath.Clean(writeDir)))))
-	return composition.WithFileLock(lockPath, 5*time.Minute, func() error {
+	return WithFileLock(overlayLockPath(writeDir), overlayLockTimeout, func() error {
 		return materializePinnedModulesLocked(ctx, workspace, writeDir)
 	})
 }
 
-// materializePinnedModulesLocked is materializePinnedModules' body, run while
-// composition.WithFileLock holds the overlay lock for writeDir.
+// materializePinnedModulesLocked is MaterializePinnedModules' body, run while
+// WithFileLock holds the overlay lock for writeDir.
 func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Workspace, writeDir string) error {
 	// Resolve against the same overlay core will use: LoadLocalOverlay searches
 	// upward, so a directive in an ancestor codefly.local.yaml (the shared-monorepo
@@ -91,9 +101,9 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 	// empty: treating it as empty would silently resolve a module the user opted
 	// out of verification for through the verified package instead, and would
 	// reclassify every machine path as a checkout the user manages.
-	receipts, err := composition.LoadResolutionReceipts(writeDir)
+	receipts, err := LoadResolutionReceipts(writeDir)
 	if err != nil {
-		return fmt.Errorf("cannot load %s: %w", composition.ResolutionRecordName, err)
+		return fmt.Errorf("cannot load %s: %w", ResolutionRecordName, err)
 	}
 	cacheRoot := pinnedModuleCacheRoot()
 	verifiedCacheRoot := verifiedPinnedModuleCacheRoot(workspace.Dir())
@@ -106,8 +116,8 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 		if !pinnedManaged(ref, directive, receipt.ResolvedPath(), cacheRoot, verifiedCacheRoot) {
 			continue
 		}
-		mode := composition.ResolutionModeFor(directive, receipt)
-		gitFallback := mode == composition.ResolutionModeGit
+		mode := ResolutionModeFor(directive, receipt)
+		gitFallback := mode == ResolutionModeGit
 		if receipt != nil && receipt.Mode != mode {
 			// The user changed how this module is materialized — an explicit
 			// `pinned: true` revoking a git opt-out, or a `git: true` opting out
@@ -117,7 +127,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			delete(receipts, ref.Name)
 			recorded = true
 		}
-		resolved, err := resolvePinnedModule(ctx, workspace.Dir(), ref, cacheRoot, gitFallback)
+		resolved, err := materializeModule(ctx, workspace.Dir(), ref, cacheRoot, gitFallback)
 		if err != nil {
 			if directive == nil || directive.Path == "" {
 				// Nothing was materialized for this module, so nothing stale can be
@@ -146,7 +156,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			changed = true
 			continue
 		}
-		if updateReceipt(receipts, ref.Name, &composition.ResolutionReceipt{
+		if updateReceipt(receipts, ref.Name, &ResolutionReceipt{
 			Source: ref.Source, Module: ref.Module, Requested: ref.Version,
 			Mode: mode, Version: resolved.version, Path: resolved.dir,
 			Digest: resolved.digest, Commit: resolved.commit,
@@ -162,7 +172,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			if directive != nil && directive.Git {
 				// The user wrote this entry by hand; say that it is being consumed
 				// rather than let them discover the rewrite as a surprise diff.
-				cli.Info("module <%s> resolves to its git clone at %s; `git: true` is now recorded in %s", ref.Name, resolved.dir, composition.ResolutionRecordName)
+				cli.Info("module <%s> resolves to its git clone at %s; `git: true` is now recorded in %s", ref.Name, resolved.dir, ResolutionRecordName)
 			}
 			overlay.Resolve[ref.Name] = &entry
 			changed = true
@@ -180,11 +190,11 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 	// leave an overlay path with no receipt — machine output the CLI would then
 	// mistake for a checkout the user manages, and never refresh again.
 	if recorded {
-		if err := composition.SaveResolutionReceipts(ctx, writeDir, receipts); err != nil {
-			return fmt.Errorf("cannot save %s: %w", composition.ResolutionRecordName, err)
+		if err := SaveResolutionReceipts(ctx, writeDir, receipts); err != nil {
+			return fmt.Errorf("cannot save %s: %w", ResolutionRecordName, err)
 		}
-		if err := ensureIgnored(writeDir, composition.ResolutionRecordName); err != nil {
-			return fmt.Errorf("cannot gitignore %s: %w", composition.ResolutionRecordName, err)
+		if err := ensureIgnored(writeDir, ResolutionRecordName); err != nil {
+			return fmt.Errorf("cannot gitignore %s: %w", ResolutionRecordName, err)
 		}
 	}
 	if changed {
@@ -205,70 +215,134 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 // what is requested now and what the path it drops resolved to — because the
 // whole failure is that those two disagree and the second was being run as if it
 // answered the first.
-func staleResolutionError(ref *resources.ModuleReference, receipt *composition.ResolutionReceipt, path string, err error) error {
+func staleResolutionError(ref *resources.ModuleReference, receipt *ResolutionReceipt, path string, err error) error {
 	return fmt.Errorf("module <%s>: cannot resolve requested version %s: %w; its previously %s no longer answers that request and has been dropped from %s",
 		ref.Name, requestedVersionLabel(ref.Version), err, previousMaterializationLabel(receipt, path), resources.LocalOverlayConfigurationName)
 }
 
 // previousMaterializationLabel describes what the overlay is currently pointing
 // at, naming the version it resolved to when a receipt records one.
-func previousMaterializationLabel(receipt *composition.ResolutionReceipt, path string) string {
+func previousMaterializationLabel(receipt *ResolutionReceipt, path string) string {
 	if receipt != nil && receipt.Version != "" {
 		return fmt.Sprintf("resolved version %s at %s", receipt.Version, path)
 	}
 	return "materialization at " + path
 }
 
-// checkMaterializationsAnswerRequests fails a run whose overlay selects a
-// materialization the CLI wrote for a different request than the workspace makes
-// now. Only `run solution` materializes, so without this a `run service` after a
-// version bump loads the checkout the *previous* request resolved to and boots
-// it as an ordinary local module — the same stale resolution materialization
-// fails closed on, reached through the entry point that never materializes.
+// EnsurePinnedModules materializes every composed pinned module of workspace
+// that is not already materialized for the request the workspace makes now.
+// Every run-shaped entry point resolves through this — `run service`, `run job`,
+// `run command`, `test service`, the dependency stacks the SDK spawns as `run
+// service --exclude-root`, and the control plane's Run/Test/Build drivers —
+// because a module composed by identity is classified as pinned by core and
+// refused as a local checkout: without it the workspace fails to load anywhere
+// except `run solution`, until someone has run that once on the machine.
 //
-// It needs no network and pulls nothing: the receipt already records which
-// request its path answered, so this is a pure comparison. Only a path the
-// receipt itself names is judged — any other path is a checkout the user
-// manages, which no committed version governs.
-func checkMaterializationsAnswerRequests(ctx context.Context, workspace *resources.Workspace) error {
-	overlay, err := resources.LoadLocalOverlay(ctx, workspace.Dir())
+// A module whose receipt already answers its request is left alone, so a
+// workspace whose composition is fully materialized resolves with no network and
+// without taking the overlay lock at all. That is also what keeps a bare `run
+// service` from quietly changing what it boots: a `latest` reference keeps
+// resolving to the version it was materialized at rather than upgrading under a
+// run that only asked to start a service. `run solution` re-resolves
+// unconditionally, and is how a floating reference is moved forward.
+//
+// A module that cannot be pulled is deliberately re-attempted on every later run
+// rather than remembered as failed. The usual causes — absent credentials, an
+// unreachable remote — are fixed outside codefly, so caching the failure would
+// leave `run service` refusing work that would now succeed and reintroduce the
+// "run `codefly run solution` first" step this exists to remove. The standing
+// cost is one tag lookup per run per module that is not materialized; a
+// composition that fully materializes pays nothing.
+//
+// Materialization is also what invalidates. When a request can no longer be
+// resolved while a previous materialization is still selected, that path is
+// dropped from the overlay and the run fails closed, rather than booting the
+// version the *previous* request resolved to. So this writes to
+// codefly.local.yaml on some failing runs, by design: leaving the stale pointer
+// behind is what would let a failed upgrade keep silently shipping the old one.
+func EnsurePinnedModules(ctx context.Context, workspace *resources.Workspace) error {
+	answered, err := pinnedRequestsAnswered(ctx, workspace)
 	if err != nil {
-		return fmt.Errorf("cannot load local overlay: %w", err)
+		return err
 	}
-	if overlay == nil {
+	if answered {
 		return nil
 	}
+	err = MaterializePinnedModules(ctx, workspace)
+	if !errors.Is(err, ErrLockTimeout) {
+		return err
+	}
+	// Another run held the overlay lock for the whole wait. It was almost
+	// certainly materializing this same workspace — concurrent `run service`
+	// processes from one SDK dependency stack all arrive here together on a cold
+	// machine — so ask again before failing. When the holder resolved what this
+	// run needed, its precondition is satisfied and there is nothing to fail on.
+	answered, answeredErr := pinnedRequestsAnswered(ctx, workspace)
+	if answeredErr != nil {
+		return errors.Join(err, answeredErr)
+	}
+	if answered {
+		return nil
+	}
+	return err
+}
+
+// pinnedRequestsAnswered reports whether every composed pinned module is already
+// materialized for the request the workspace makes now. It needs no network and
+// pulls nothing: the receipt records which request its path answered, so this is
+// a pure comparison — the fast path that decides whether materialization has any
+// work to do at all.
+//
+// A module is answered when the overlay selects the very path that module's
+// receipt records and that receipt was written for this exact request. Everything
+// else is unanswered and must be materialized: an entry the CLI has never written
+// (the clean-machine case), a path whose receipt answers an older version, and a
+// `git: true` or `pinned: true` directive, which names a resolution strategy
+// rather than a location. A module the user manages — a committed path, or an
+// overlay `path`/`worktree` of their own — is governed by no committed version,
+// so it is never what makes a workspace unanswered.
+func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace) (bool, error) {
+	overlay, err := resources.LoadLocalOverlay(ctx, workspace.Dir())
+	if err != nil {
+		return false, fmt.Errorf("cannot load local overlay: %w", err)
+	}
 	recordDir := workspace.Dir()
-	if dir := composition.NearestOverlayDir(workspace.Dir()); dir != "" {
+	if dir := NearestOverlayDir(workspace.Dir()); dir != "" {
 		recordDir = dir
 	}
-	receipts, err := composition.LoadResolutionReceipts(recordDir)
+	receipts, err := LoadResolutionReceipts(recordDir)
 	if err != nil {
-		return fmt.Errorf("cannot load %s: %w", composition.ResolutionRecordName, err)
+		return false, fmt.Errorf("cannot load %s: %w", ResolutionRecordName, err)
 	}
-	var stale []error
+	cacheRoot := pinnedModuleCacheRoot()
+	verifiedCacheRoot := verifiedPinnedModuleCacheRoot(workspace.Dir())
 	for _, ref := range workspace.Modules {
-		if ref.Source == "" || ref.PathOverride != nil {
-			continue
+		var directive *resources.ModuleResolveDirective
+		if overlay != nil {
+			directive = overlay.Resolve[ref.Name]
 		}
-		directive := overlay.Resolve[ref.Name]
 		receipt := receipts[ref.Name]
+		if !pinnedManaged(ref, directive, receipt.ResolvedPath(), cacheRoot, verifiedCacheRoot) {
+			continue
+		}
 		if directive == nil || directive.Path == "" || directive.Path != receipt.ResolvedPath() {
-			continue
+			return false, nil
 		}
-		if receipt.Answers(ref, composition.ResolutionModeFor(directive, receipt)) {
-			continue
+		if !receipt.Answers(ref, ResolutionModeFor(directive, receipt)) {
+			return false, nil
 		}
-		stale = append(stale, fmt.Errorf("module <%s>: requested version %s has not been resolved; %s still selects its previously %s, which answers a different request — run `codefly run solution` to resolve it",
-			ref.Name, requestedVersionLabel(ref.Version), resources.LocalOverlayConfigurationName,
-			previousMaterializationLabel(receipt, directive.Path)))
 	}
-	return errors.Join(stale...)
+	return true, nil
 }
+
+// latestVersion is the floating reference: the constraint that asks for the
+// highest published version rather than naming one. An absent version means the
+// same thing.
+const latestVersion = "latest"
 
 func requestedVersionLabel(version string) string {
 	if strings.TrimSpace(version) == "" {
-		return "latest"
+		return latestVersion
 	}
 	return version
 }
@@ -276,7 +350,7 @@ func requestedVersionLabel(version string) string {
 // updateReceipt stores the receipt for name, reporting whether it differs from
 // the one already recorded — an unchanged receipt must not dirty the sidecar, so
 // a steady-state run rewrites nothing.
-func updateReceipt(receipts map[string]*composition.ResolutionReceipt, name string, receipt *composition.ResolutionReceipt) bool {
+func updateReceipt(receipts map[string]*ResolutionReceipt, name string, receipt *ResolutionReceipt) bool {
 	if previous, ok := receipts[name]; ok && *previous == *receipt {
 		return false
 	}
@@ -287,7 +361,7 @@ func updateReceipt(receipts map[string]*composition.ResolutionReceipt, name stri
 // pruneStaleReceipts drops receipts for modules that are no longer composed, so
 // a removed dependency does not silently re-enter unverified resolution if it is
 // composed again later. Reports whether it changed the map.
-func pruneStaleReceipts(receipts map[string]*composition.ResolutionReceipt, modules []*resources.ModuleReference) bool {
+func pruneStaleReceipts(receipts map[string]*ResolutionReceipt, modules []*resources.ModuleReference) bool {
 	present := make(map[string]bool, len(modules))
 	for _, ref := range modules {
 		present[ref.Name] = true
@@ -312,11 +386,11 @@ type materialization struct {
 	commit  string
 }
 
-// resolvePinnedModule resolves ref to a materialization: through the verified
-// module package (composition.ResolvePinnedModule) by default, or through the
+// materializeModule resolves ref to a materialization: through the verified
+// module package (ResolvePinnedModule) by default, or through the
 // unverified git clone when the workspace has opted this module out via
 // `resolve.<name>.git: true`.
-func resolvePinnedModule(ctx context.Context, workspaceDir string, ref *resources.ModuleReference, cacheRoot string, gitFallback bool) (*materialization, error) {
+func materializeModule(ctx context.Context, workspaceDir string, ref *resources.ModuleReference, cacheRoot string, gitFallback bool) (*materialization, error) {
 	if gitFallback {
 		cli.Warning("unverified git clone for %s", ref.Name)
 		dir, tag, err := ensurePinnedArtifact(ctx, ref, cacheRoot)
@@ -325,7 +399,7 @@ func resolvePinnedModule(ctx context.Context, workspaceDir string, ref *resource
 		}
 		return &materialization{dir: dir, version: tag}, nil
 	}
-	resolved, err := composition.ResolvePinnedModule(ctx, workspaceDir, ref)
+	resolved, err := ResolvePinnedModule(ctx, workspaceDir, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +407,7 @@ func resolvePinnedModule(ctx context.Context, workspaceDir string, ref *resource
 }
 
 // verifiedPinnedModuleCacheRoot is the workspace-scoped, content-addressed
-// module cache composition.NewMaterializer(workspaceDir) writes into. Cache
+// module cache NewMaterializer(workspaceDir) writes into. Cache
 // roots are workspace-scoped (a workspace-relative digest tree), while the
 // git-clone fallback's cache root is process-global (pinnedModuleCacheRoot);
 // both are recognized when deciding whether an overlay path is CLI-managed.
@@ -346,7 +420,7 @@ func verifiedPinnedModuleCacheRoot(workspaceDir string) string {
 // pointer at a stale checkout. Only entries the CLI itself wrote are removed —
 // a path under a cache root, or one matching the path on that module's receipt;
 // user directives are never touched. Reports whether it changed the map.
-func pruneStalePinnedEntries(resolve map[string]*resources.ModuleResolveDirective, modules []*resources.ModuleReference, receipts map[string]*composition.ResolutionReceipt, cacheRoots ...string) bool {
+func pruneStalePinnedEntries(resolve map[string]*resources.ModuleResolveDirective, modules []*resources.ModuleReference, receipts map[string]*ResolutionReceipt, cacheRoots ...string) bool {
 	present := make(map[string]bool, len(modules))
 	for _, ref := range modules {
 		present[ref.Name] = true
@@ -397,7 +471,7 @@ func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleRe
 // — no network — when the checkout is already present, so a cached solution
 // boots offline.
 func ensurePinnedArtifact(ctx context.Context, ref *resources.ModuleReference, cacheRoot string) (string, string, error) {
-	url := composition.PinnedSourceURL(ref.Source)
+	url := PinnedSourceURL(ref.Source)
 	sourceCache := filepath.Join(cacheRoot, filepath.FromSlash(ref.Source))
 	tag, err := resolvePinnedTag(ctx, url, ref.Version, sourceCache)
 	if err != nil {
@@ -466,7 +540,7 @@ func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout stri
 // differs from `latest`, which selects a pre-release when no stable tag exists.
 func resolvePinnedTag(ctx context.Context, url, version, sourceCache string) (string, error) {
 	version = strings.TrimSpace(version)
-	if version == "" || version == "latest" {
+	if version == "" || version == latestVersion {
 		return highestTag(ctx, url, sourceCache, nil, version)
 	}
 	if _, err := semver.NewVersion(strings.TrimPrefix(version, "v")); err == nil {

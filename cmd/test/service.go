@@ -64,6 +64,14 @@ Examples:
 		if isHeadless {
 			loadRequired = common.LoadRequiredNonInteractiveE
 		}
+		// Tests resolve composed pinned modules the same way a run does: a
+		// workspace that composes a module by identity cannot load it as a local
+		// checkout until the CLI has pulled it, so without this the load below
+		// fails on every machine that has not run `run solution` first.
+		if err := common.ResolvePinnedModulesForRun(ctx); err != nil {
+			return err
+		}
+
 		workspace, module, service, err := loadRequired(ctx, args)
 		if err != nil {
 			return fmt.Errorf("cannot load required service: %w", err)

@@ -39,15 +39,9 @@ func runJob(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace, err := common.LoadWorkspace(ctx)
+	workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 	if err != nil {
 		return fmt.Errorf("cannot load workspace: %w", err)
-	}
-	// Like `run service`, this entry point never materializes, so a composed
-	// module whose committed version changed since the last materialization
-	// would otherwise run against the checkout the previous request resolved to.
-	if err = checkMaterializationsAnswerRequests(ctx, workspace); err != nil {
-		return err
 	}
 
 	// Get module

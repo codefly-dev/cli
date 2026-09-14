@@ -38,6 +38,20 @@ var ServiceCmd = &cobra.Command{
 	RunE:  runServiceCommand,
 }
 
+// resolveRunPins materializes the workspace's composed pinned modules unless the
+// caller already did, which pinsAlreadyResolved records.
+//
+// The signal travels as package state rather than a parameter because this
+// function is cobra's RunE and the whole run path reads its inputs that way;
+// widening the signature would also rewrite a declaration line that carries a
+// long-standing complexity finding, which would then read as newly introduced.
+func resolveRunPins(ctx context.Context) error {
+	if pinsAlreadyResolved {
+		return nil
+	}
+	return common.ResolvePinnedModulesForRun(ctx)
+}
+
 func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	if err := validateOpenDashboardFlag(openDashboard, withCLIServer); err != nil {
 		return err
@@ -122,6 +136,14 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	var module *resources.Module
 	var service *resources.Service
 
+	// Materialize composed pinned modules before resolving the service: a module
+	// referenced by identity is not loadable as a local checkout until the CLI
+	// has pulled it, so the load below is precisely what fails without this —
+	// including for the dependency stacks the SDK spawns here.
+	if err := resolveRunPins(ctx); err != nil {
+		return err
+	}
+
 	var err error
 	if servicePath != "" {
 		workspace, module, service, err = common.LoadWithServicePathOverrideE(ctx, servicePath)
@@ -130,14 +152,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 	if err != nil {
 		return fmt.Errorf("cannot load required service: %w", err)
-	}
-
-	// This entry point never materializes (only `run solution` does), so a
-	// composed module whose committed version changed since the last
-	// materialization would otherwise boot the checkout the previous request
-	// resolved to. Refuse instead, before anything starts.
-	if err := checkMaterializationsAnswerRequests(ctx, workspace); err != nil {
-		return err
 	}
 
 	if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
