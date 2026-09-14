@@ -122,6 +122,16 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	var module *resources.Module
 	var service *resources.Service
 
+	// Materialize composed pinned modules before resolving the service: a module
+	// referenced by identity is not loadable as a local checkout until the CLI
+	// has pulled it, so the load below is precisely what fails without this —
+	// including for the dependency stacks the SDK spawns here. The workspace it
+	// returns is dropped because the loaders re-find it themselves; what this
+	// call leaves behind is the overlay they then read.
+	if _, err := common.LoadWorkspaceWithPinnedModules(ctx); err != nil {
+		return err
+	}
+
 	var err error
 	if servicePath != "" {
 		workspace, module, service, err = common.LoadWithServicePathOverrideE(ctx, servicePath)
@@ -130,14 +140,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 	if err != nil {
 		return fmt.Errorf("cannot load required service: %w", err)
-	}
-
-	// This entry point never materializes (only `run solution` does), so a
-	// composed module whose committed version changed since the last
-	// materialization would otherwise boot the checkout the previous request
-	// resolved to. Refuse instead, before anything starts.
-	if err := checkMaterializationsAnswerRequests(ctx, workspace); err != nil {
-		return err
 	}
 
 	if err := common.WithSilenceE(ctx, workspace, silent); err != nil {

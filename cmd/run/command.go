@@ -65,6 +65,13 @@ func runManagedCommand(argv []string) (returnErr error) {
 	ctx, stopSignals := common.SignalContext(ctx)
 	defer stopSignals()
 
+	// The preflight below identifies the current service by loading the
+	// workspace's own, and the nested `run service` the SDK spawns loads the
+	// whole graph: both need composed pinned modules materialized first.
+	if _, err := common.LoadWorkspaceWithPinnedModules(ctx); err != nil {
+		return err
+	}
+
 	// ARCHITECTURE: Resolve the service before the Core SDK creates its nested
 	// headless `run service` process. A managed command has no interactive
 	// service-selection phase: the current path (or a deterministic module

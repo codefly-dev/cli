@@ -40,7 +40,7 @@ var SolutionCmd = &cobra.Command{
 		// Pull composed modules that resolve to a pinned artifact into the local
 		// cache and point the overlay at them, so the delegated run below loads
 		// them as local checkouts instead of erroring on an unfetched coordinate.
-		if err = materializePinnedModules(ctx, workspace); err != nil {
+		if err = common.MaterializePinnedModules(ctx, workspace); err != nil {
 			done()
 			return err
 		}
