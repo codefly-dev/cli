@@ -29,8 +29,6 @@ const (
 
 // Attachment records one document attached to one image in a registry.
 type Attachment struct {
-	// Repository is the registry repository the evidence was attached in.
-	Repository string
 	// Subject is the digest of the image the evidence refers to.
 	Subject string
 	// Platform is the OCI platform the attached inventory covers.
@@ -54,7 +52,15 @@ type Attachment struct {
 // subject descriptor is read from the registry rather than assembled locally, so
 // a digest that was never pushed, or that no longer resolves, fails here instead
 // of producing an attachment that refers to nothing.
-func Attach(ctx context.Context, documents []Document, options ...remote.Option) ([]Attachment, error) {
+//
+// insecure reports which registries are reached without TLS, so evidence
+// resolves a registry the same way the push that put the image there did. A nil
+// predicate resolves every registry over HTTPS.
+//
+// The attachments made before a failure are returned with the error. They are
+// already in the registry, and reporting the failure as though nothing landed
+// would understate the coverage that exists.
+func Attach(ctx context.Context, documents []Document, insecure func(registry string) bool, options ...remote.Option) ([]Attachment, error) {
 	options = append([]remote.Option{
 		remote.WithContext(ctx),
 		remote.WithAuthFromKeychain(authn.DefaultKeychain),
@@ -63,14 +69,14 @@ func Attach(ctx context.Context, documents []Document, options ...remote.Option)
 	attachments := make([]Attachment, 0, len(documents))
 	for index := range documents {
 		document := &documents[index]
-		repositories, err := repositories(document)
+		repositories, err := repositories(document, insecure)
 		if err != nil {
-			return nil, err
+			return attachments, err
 		}
 		for _, repository := range repositories {
 			attachment, err := attach(document, repository, options)
 			if err != nil {
-				return nil, err
+				return attachments, err
 			}
 			attachments = append(attachments, attachment)
 		}
@@ -96,10 +102,9 @@ func attach(document *Document, repository name.Repository, options []remote.Opt
 		return Attachment{}, fmt.Errorf("cannot attach image evidence to %s: %w", image, err)
 	}
 	return Attachment{
-		Repository: repository.Name(),
-		Subject:    document.Digest,
-		Platform:   document.Platform,
-		Digest:     digest.String(),
+		Subject:  document.Digest,
+		Platform: document.Platform,
+		Digest:   digest.String(),
 	}, nil
 }
 
@@ -157,8 +162,9 @@ func annotations(document *Document) map[string]string {
 // in, from the references of the services it covers. Evidence with no reference
 // to attach to is a failure rather than a skip: a build cannot report complete
 // coverage for an image it could not name.
-func repositories(document *Document) ([]name.Repository, error) {
-	seen := map[string]name.Repository{}
+func repositories(document *Document, insecure func(registry string) bool) ([]name.Repository, error) {
+	var repositories []name.Repository
+	seen := map[string]bool{}
 	for _, association := range document.Associations {
 		if association.Reference == "" {
 			continue
@@ -168,19 +174,21 @@ func repositories(document *Document) ([]name.Repository, error) {
 			return nil, fmt.Errorf("cannot parse the image reference %q of %s: %w", association.Reference, document.Digest, err)
 		}
 		repository := reference.Context()
-		seen[repository.Name()] = repository
+		if seen[repository.Name()] {
+			continue
+		}
+		seen[repository.Name()] = true
+		if insecure != nil && insecure(repository.RegistryStr()) {
+			repository, err = name.NewRepository(repository.Name(), name.Insecure)
+			if err != nil {
+				return nil, fmt.Errorf("cannot resolve the insecure registry of %q: %w", association.Reference, err)
+			}
+		}
+		repositories = append(repositories, repository)
 	}
-	if len(seen) == 0 {
+	if len(repositories) == 0 {
 		return nil, fmt.Errorf("image evidence for %s names no image reference to attach it to", document.Digest)
 	}
-	names := make([]string, 0, len(seen))
-	for repository := range seen {
-		names = append(names, repository)
-	}
-	sort.Strings(names)
-	repositories := make([]name.Repository, 0, len(names))
-	for _, repository := range names {
-		repositories = append(repositories, seen[repository])
-	}
+	slices.SortFunc(repositories, func(a, b name.Repository) int { return strings.Compare(a.Name(), b.Name()) })
 	return repositories, nil
 }

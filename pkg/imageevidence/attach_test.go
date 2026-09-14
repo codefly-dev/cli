@@ -80,7 +80,7 @@ func TestAttachMakesEvidenceDiscoverableFromTheImageDigestAlone(t *testing.T) {
 
 	documents := documentsFor(t, scanned(digest, "linux/amd64",
 		&builderv0.ImageSubject{Service: "web/api", Role: "app", Reference: reference}))
-	attachments, err := Attach(context.Background(), documents)
+	attachments, err := Attach(context.Background(), documents, nil)
 	require.NoError(t, err)
 	require.Len(t, attachments, 1)
 	require.Equal(t, digest, attachments[0].Subject)
@@ -118,9 +118,9 @@ func TestAttachingTheSameEvidenceTwiceLeavesOneReferrer(t *testing.T) {
 	documents := documentsFor(t, scanned(digest, "linux/amd64",
 		&builderv0.ImageSubject{Service: "web/api", Reference: reference}))
 
-	first, err := Attach(context.Background(), documents)
+	first, err := Attach(context.Background(), documents, nil)
 	require.NoError(t, err)
-	second, err := Attach(context.Background(), documents)
+	second, err := Attach(context.Background(), documents, nil)
 	require.NoError(t, err)
 	require.Equal(t, first, second, "the same evidence produced a different artifact")
 
@@ -136,7 +136,7 @@ func TestAttachRefusesADigestTheRegistryDoesNotHave(t *testing.T) {
 	stale := "sha256:" + strings.Repeat("a", 64)
 
 	_, err := Attach(context.Background(), documentsFor(t, scanned(stale, "linux/amd64",
-		&builderv0.ImageSubject{Service: "web/api", Reference: reference})))
+		&builderv0.ImageSubject{Service: "web/api", Reference: reference})), nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), stale)
 }
@@ -146,7 +146,7 @@ func TestAttachRefusesADigestTheRegistryDoesNotHave(t *testing.T) {
 func TestAttachRefusesEvidenceThatNamesNoImage(t *testing.T) {
 	_, err := Attach(context.Background(), documentsFor(t,
 		scanned("sha256:"+strings.Repeat("b", 64), "linux/amd64",
-			&builderv0.ImageSubject{Service: "web/api"})))
+			&builderv0.ImageSubject{Service: "web/api"})), nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "names no image reference")
 }
@@ -162,7 +162,7 @@ func TestAttachCoversEveryPlatformSeparately(t *testing.T) {
 	attachments, err := Attach(context.Background(), documentsFor(t,
 		scanned(amd64, "linux/amd64", &builderv0.ImageSubject{Service: "web/api", Reference: reference}),
 		scanned(arm64, "linux/arm64", &builderv0.ImageSubject{Service: "web/api", Reference: reference}),
-	))
+	), nil)
 	require.NoError(t, err)
 	require.Len(t, attachments, 2)
 
@@ -185,7 +185,7 @@ func TestAttachRecordsEveryServiceSharingADigest(t *testing.T) {
 	attachments, err := Attach(context.Background(), documentsFor(t,
 		scanned(digest, "linux/amd64", &builderv0.ImageSubject{Service: "web/api", Reference: reference}),
 		scanned(digest, "linux/amd64", &builderv0.ImageSubject{Service: "billing/worker", Reference: reference}),
-	))
+	), nil)
 	require.NoError(t, err)
 	require.Len(t, attachments, 1, "one digest is attached to once")
 
@@ -208,7 +208,7 @@ func TestAttachKeepsDivergentInventoriesOfOneImageApart(t *testing.T) {
 	)
 	require.Len(t, documents, 2, "divergent scans collapsed before reaching the registry")
 
-	attachments, err := Attach(context.Background(), documents)
+	attachments, err := Attach(context.Background(), documents, nil)
 	require.NoError(t, err)
 	require.Len(t, attachments, 2)
 	require.NotEqual(t, attachments[0].Digest, attachments[1].Digest,
@@ -234,12 +234,50 @@ func TestAttachReachesEveryRepositoryTheImageWasPushedTo(t *testing.T) {
 		scanned(digest, "linux/amd64",
 			&builderv0.ImageSubject{Service: "web/api", Reference: reference},
 			&builderv0.ImageSubject{Service: "billing/worker", Reference: mirror}),
-	))
+	), nil)
 	require.NoError(t, err)
 	require.Len(t, attachments, 2)
 
 	require.Len(t, referrersOf(t, host, "web/api", digest), 1)
 	require.Len(t, referrersOf(t, host, "billing/worker", digest), 1)
+}
+
+// A registry the daemon reaches without TLS has to be resolved the same way
+// here. Otherwise a build pushes over plain HTTP and then fails attaching,
+// because a reference resolves over HTTPS unless something says not to.
+func TestRepositoriesResolveAnInsecureRegistryWithoutTLS(t *testing.T) {
+	document := &Document{
+		Digest:       "sha256:" + strings.Repeat("a", 64),
+		Associations: []Association{{Service: "web/api", Reference: "registry.corp:5000/web/api:build"}},
+	}
+
+	secure, err := repositories(document, nil)
+	require.NoError(t, err)
+	require.Equal(t, "https", secure[0].Scheme(), "a registry nothing declared insecure lost its TLS")
+
+	insecure, err := repositories(document, func(registry string) bool {
+		return registry == "registry.corp:5000"
+	})
+	require.NoError(t, err)
+	require.Equal(t, "http", insecure[0].Scheme(), "the daemon's insecure registry was resolved over TLS")
+}
+
+// Attachments already written are real coverage. Reporting a mid-way failure as
+// though nothing landed understates what the registry holds, and an audit
+// reading that report would under-count it.
+func TestAttachReportsWhatLandedBeforeItFailed(t *testing.T) {
+	host := registryAt(t, true)
+	reference, digest := pushed(t, host, "web/api")
+	stale := "sha256:" + strings.Repeat("e", 64)
+
+	attachments, err := Attach(context.Background(), documentsFor(t,
+		scanned(digest, "linux/amd64", &builderv0.ImageSubject{Service: "web/api", Reference: reference}),
+		scanned(stale, "linux/amd64", &builderv0.ImageSubject{Service: "web/api", Reference: reference}),
+	), nil)
+	require.Error(t, err)
+	require.Len(t, attachments, 1, "the attachment that landed was reported as lost")
+	require.Equal(t, digest, attachments[0].Subject)
+	require.Len(t, referrersOf(t, host, "web/api", digest), 1, "the reported attachment is not in the registry")
 }
 
 // Registries that predate OCI 1.1 serve no referrers API. The evidence still has
@@ -250,7 +288,7 @@ func TestAttachWorksOnARegistryWithoutTheReferrersAPI(t *testing.T) {
 	reference, digest := pushed(t, host, "web/api")
 
 	_, err := Attach(context.Background(), documentsFor(t, scanned(digest, "linux/amd64",
-		&builderv0.ImageSubject{Service: "web/api", Reference: reference})))
+		&builderv0.ImageSubject{Service: "web/api", Reference: reference})), nil)
 	require.NoError(t, err)
 
 	referrers := referrersOf(t, host, "web/api", digest)

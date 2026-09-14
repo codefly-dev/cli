@@ -302,7 +302,10 @@ With `--push`, the same evidence is additionally attached to each image in the
 registry as an OCI 1.1 referrers artifact, so a consumer holding nothing but an
 image digest resolves the inventory from the repository it pulled from — no
 published directory has to have been carried anywhere. Registries without the
-referrers API are covered through the fallback tag scheme. The attachment is made
+referrers API are covered through the fallback tag scheme, and a registry the
+Docker daemon is configured to reach without TLS — through `insecure-registries`
+— is resolved the same way here, because the push that put the image there went
+through that daemon. The attachment is made
 against the image already in the registry, so a digest that was never pushed
 fails rather than producing an attachment that refers to nothing; because it runs
 after the push, a failure there reports that the shipped images are not fully

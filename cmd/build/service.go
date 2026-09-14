@@ -211,11 +211,20 @@ func publishImageEvidence(ctx context.Context, workspace *resources.Workspace, f
 		cli.Warning("Image SBOM evidence at %s covers locally loaded images; their digests are not in a registry", directory)
 		return nil
 	}
+	// The push resolved its registry through the docker daemon, so attachment
+	// has to ask the daemon how that registry is reached rather than assume TLS.
+	// Failing to ask leaves every registry on HTTPS, which is what happens
+	// without this answer: a plain-HTTP registry then fails loudly below instead
+	// of passing as covered.
+	insecure, configErr := builder.InsecureRegistry(ctx)
+	if configErr != nil {
+		cli.Warning("Cannot read the docker registry configuration (%v); resolving registries over HTTPS only", configErr)
+	}
 	// The images are already in the registry, so this cannot undo what shipped;
 	// it can only report that the shipped images are not fully covered.
-	attachments, err := imageevidence.Attach(ctx, documents)
+	attachments, err := imageevidence.Attach(ctx, documents, insecure)
 	if err != nil {
-		return fmt.Errorf("images are pushed but their evidence could not be attached in the registry: %w", err)
+		return fmt.Errorf("images are pushed; %d evidence attachment(s) landed before this failed: %w", len(attachments), err)
 	}
 	cli.Info("Attached image SBOM evidence to %d image(s) in the registry", len(attachments))
 	return nil
