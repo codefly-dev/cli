@@ -28,12 +28,19 @@ var (
 // the scan identity: identical digests deduplicate onto one file while each
 // service's own task still records its association to it.
 func recordImageSBOMEvidence(ctx context.Context, workspace *resources.Workspace, evidence []*builderv0.ImageSBOM) error {
+	// Everything is encoded before anything is written, so a document that fails
+	// to encode cannot leave the earlier images of the same build stranded in the
+	// output directory as evidence of a run that failed.
+	payloads := make([][]byte, 0, len(evidence))
 	for _, image := range evidence {
 		payload, err := coresbom.MarshalCycloneDXJSON(image.GetBom())
 		if err != nil {
 			return fmt.Errorf("encode CycloneDX for %s: %w", image.GetDigest(), err)
 		}
-		payload = append(payload, '\n')
+		payloads = append(payloads, append(payload, '\n'))
+	}
+	for index, image := range evidence {
+		payload := payloads[index]
 		relative, err := writeCIArtifact(workspace, filepath.Join("sbom", "image", imageEvidenceFilename(image)), payload)
 		if err != nil {
 			return err

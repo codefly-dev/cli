@@ -328,16 +328,19 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		}
 	}
 
-	if b.world.CollectImageSBOM {
-		if err = b.collectImageEvidence(ctx, plan, buildResult); err != nil {
-			return nil, err
-		}
-	}
-
 	// Record the durable recipe only after the build succeeded, so the committed
 	// archive never advertises a recipe that failed verification or never built.
 	if err = recordBuildRecipe(ctx, b.instance.Service, plan); err != nil {
 		return nil, w.Wrapf(err, "cannot record build recipe")
+	}
+
+	// Evidence is gathered after the recipe is durable: the image is already
+	// built, and on a pushed build already published, so failing the evidence
+	// gate must not also leave the recipe that produced it unrecorded.
+	if b.world.CollectImageSBOM {
+		if err = b.collectImageEvidence(ctx, plan, buildResult); err != nil {
+			return nil, err
+		}
 	}
 
 	return outputProperty, nil
