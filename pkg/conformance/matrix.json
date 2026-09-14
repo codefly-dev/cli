@@ -53,7 +53,7 @@
         {
           "publisher": "codefly.dev",
           "name": "redis",
-          "version": "0.0.74"
+          "version": "0.0.88"
         }
       ],
       "ci": [

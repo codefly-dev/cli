@@ -73,7 +73,7 @@ module: app
 agent:
     kind: codefly:service
     name: redis
-    version: 0.0.74
+    version: 0.0.88
     publisher: codefly.dev
 endpoints:
     - name: tcp
@@ -88,7 +88,7 @@ module: app
 agent:
     kind: codefly:service
     name: redis
-    version: 0.0.74
+    version: 0.0.88
     publisher: codefly.dev
 endpoints:
     - name: tcp

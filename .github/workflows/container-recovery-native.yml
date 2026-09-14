@@ -38,7 +38,7 @@ jobs:
             ref: c77770bcfad2478a8add9890f102a92f8000586d
           - agent: go-grpc
             repository: service-go-grpc
-            ref: 45a2821fe205a5112d159757f95d0d9f299499ab
+            ref: 740632fa0bd450499dc2435f2c9aaee77cff9817
           - agent: rust
             repository: service-rust
             ref: 14ca465eb7ac78400497e8f6475b84f3f01ed587

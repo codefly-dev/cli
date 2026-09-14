@@ -93,23 +93,23 @@ func TestBuildInventoryDistinguishesSourcePinFromPromotionCandidate(t *testing.T
 		Version:   "latest",
 	}
 	releases := []releaseInfo{
-		{version: "0.0.52", platforms: []string{ciPlatform}},
-		{version: "0.0.53", platforms: []string{ciPlatform}},
+		{version: "0.0.62", platforms: []string{ciPlatform}},
+		{version: "0.0.63", platforms: []string{ciPlatform}},
 	}
 
-	inv := buildInventory(agent, releases, []string{"0.0.52", "0.0.53"}, nil, nil, nil, false)
+	inv := buildInventory(agent, releases, []string{"0.0.62", "0.0.63"}, nil, nil, nil, false)
 
-	if inv.LatestResolvable != "0.0.53" {
-		t.Fatalf("latest resolvable = %q, want 0.0.53", inv.LatestResolvable)
+	if inv.LatestResolvable != "0.0.63" {
+		t.Fatalf("latest resolvable = %q, want 0.0.63", inv.LatestResolvable)
 	}
 	if inv.SourceWorkspace == nil {
 		t.Fatal("source-workspace status missing")
 	}
-	if inv.SourceWorkspace.WillLaunch != "0.0.52" {
-		t.Fatalf("source checkout version = %q, want pinned 0.0.52", inv.SourceWorkspace.WillLaunch)
+	if inv.SourceWorkspace.WillLaunch != "0.0.62" {
+		t.Fatalf("source checkout version = %q, want pinned 0.0.62", inv.SourceWorkspace.WillLaunch)
 	}
-	if !inv.SourceWorkspace.Stale || inv.SourceWorkspace.PromotionCandidate != "0.0.53" {
-		t.Fatalf("source-workspace status = %+v, want stale promotion candidate 0.0.53", inv.SourceWorkspace)
+	if !inv.SourceWorkspace.Stale || inv.SourceWorkspace.PromotionCandidate != "0.0.63" {
+		t.Fatalf("source-workspace status = %+v, want stale promotion candidate 0.0.63", inv.SourceWorkspace)
 	}
 	if len(inv.SourceWorkspace.Markers) == 0 {
 		t.Fatal("source-workspace marker families missing")
