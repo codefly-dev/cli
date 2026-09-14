@@ -4,7 +4,7 @@
     {
       "publisher": "codefly.dev",
       "name": "go",
-      "version": "0.0.47",
+      "version": "0.0.48",
       "markers": [
         "go.mod"
       ],
@@ -31,7 +31,7 @@
     {
       "publisher": "codefly.dev",
       "name": "nextjs",
-      "version": "0.0.152",
+      "version": "0.0.153",
       "markers": [
         "package.json"
       ],

@@ -29,12 +29,14 @@ import (
 func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	agentSource := os.Getenv("CODEFLY_RUNNABLE_AGENT_BINARY")
 	require.NotEmpty(t, agentSource, "build runnable-python and set CODEFLY_RUNNABLE_AGENT_BINARY")
+	agentVersion := os.Getenv("CODEFLY_RUNNABLE_AGENT_VERSION")
+	require.NotEmpty(t, agentVersion, "set CODEFLY_RUNNABLE_AGENT_VERSION to the built agent's manifest version")
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
 	root := t.TempDir()
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(root, "home"))
 	t.Setenv(manager.AgentSourceEnv, "local")
-	agent, err := resources.ParseAgent(ctx, resources.RunnableAgent, "codefly.dev/python:0.0.1")
+	agent, err := resources.ParseAgent(ctx, resources.RunnableAgent, "codefly.dev/python:"+agentVersion)
 	require.NoError(t, err)
 	agentPath, err := agent.Path(ctx)
 	require.NoError(t, err)
@@ -67,7 +69,7 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, string(help), "--json")
 	}
-	_, err = run("add", "runnable", "invalid", "--agent=python:0.0.1", "--handler=handler.invalid")
+	_, err = run("add", "runnable", "invalid", "--agent=python:"+agentVersion, "--handler=handler.invalid")
 	require.Error(t, err)
 	require.NoDirExists(t, filepath.Join(workspaceDir, "runnables", "invalid"))
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
@@ -75,7 +77,7 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	_, err = workspace.FindRunnableByName(ctx, "invalid")
 	require.Error(t, err, "failed creation must roll back its module reference")
 
-	created, err := run("add", "runnable", "word-count", "--agent=python:0.0.1", "--handler=handler.py", "--json")
+	created, err := run("add", "runnable", "word-count", "--agent=python:"+agentVersion, "--handler=handler.py", "--json")
 	require.NoError(t, err)
 	var receipt map[string]string
 	require.NoError(t, json.Unmarshal(created, &receipt))
@@ -109,13 +111,9 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	require.NoError(t, err, string(output))
 	binding, err := corerunnable.PrepareBinding(&basev0.RunnableBinding{
 		Schema: corerunnable.BindingSchemaV1, Identity: pkg.GetIdentity(), PackageDigest: pkg.GetDigest(),
-		Facility: &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE}, Implementation: &basev0.RunnableBinding_Artifact{Artifact: artifact},
-		Target: &basev0.RunnableTarget{
-			Schema: corerunnable.TargetSchemaV1, Environment: "local", Revision: "test",
-			Coordinates: &basev0.RunnableTarget_Host{Host: &basev0.RunnableHostTarget{
-				Launcher: "native", InstallPath: installed,
-			}},
-		},
+		Facility:       &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE},
+		Implementation: &basev0.RunnableBinding_Artifact{Artifact: artifact},
+		Target:         nativeTarget(installed),
 	}, pkg)
 	require.NoError(t, err)
 	launcher, err := runnableops.NewNativeLauncher(pkg, binding, installed)
@@ -134,6 +132,8 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 		completed, err := launcher.Invoke(ctx, runnableops.Run{
 			Invocation: &basev0.RunnableInvocation{
 				Protocol: corerunnable.ProtocolV1, Runnable: pkg.GetIdentity(), InvocationId: id, IntentId: "intent-" + id,
+				// Recompute may carry the caller's shared effect identity too.
+				EffectId: "effect-" + id,
 				IssuedAt: timestamppb.New(issued), Deadline: timestamppb.New(issued.Add(90 * time.Second)), Input: []byte(input),
 			},
 			Directory: filepath.Join(invocations, id), Stdout: &out, Stderr: &logs,
@@ -182,6 +182,8 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	completed, _, logs := invoke(interrupting, "inv-canceled", `{"text":"sleep"}`)
 	interrupt()
 	require.Equal(t, basev0.RunnableCompletion_CANCELED, completed.GetOutcome(), logs)
+	require.Equal(t, basev0.RunnableResult_INTERRUPTED, completed.GetResult().GetStatus(), logs)
+	require.Empty(t, completed.GetResult().GetOutput())
 	require.False(t, corerunnable.OutcomeIsCertain(completed.GetOutcome()))
 	require.NoError(t, os.Rename(source+"-unavailable", source))
 	_, err = run("build", "runnable", "word-count", "--output="+buildDir)

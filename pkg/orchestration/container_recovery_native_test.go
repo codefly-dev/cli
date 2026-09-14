@@ -24,9 +24,8 @@ import (
 )
 
 // AgentBinaryEnv names the agent under qualification. It is a binary rather
-// than a published pin because no released agent embeds a Core that carries the
-// marker, so the only way to qualify the fleet's next generation is to rebuild
-// one from source against the Core this CLI pins.
+// than a fixed release pin so CI can rebuild against the Core this CLI pins.
+// Release qualification can also supply a downloaded published binary.
 const AgentBinaryEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_BINARY"
 
 // AgentVersionEnv carries the version the binary in AgentBinaryEnv was built
@@ -34,6 +33,19 @@ const AgentBinaryEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_BINARY"
 // cache-path component: a literal would keep passing after the qualified source
 // moved, labelling one build with another's version.
 const AgentVersionEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_VERSION"
+
+// AgentNameEnv carries the agent the binary implements. The qualification runs
+// over every inventory row that reaches a container through a Core companion,
+// and each resolves to its own cache path, so a literal here would install one
+// row's binary under another row's identity and qualify neither.
+const AgentNameEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_NAME"
+
+// AgentRepositoryEnv carries the repository the binary was built from. The
+// identity in AgentNameEnv only selects the cache path the binary is installed
+// at, and an agent answers the acknowledgement the same way wherever it sits —
+// so without holding the build to a repository, a row qualifies whatever
+// binary it was handed rather than the agent it claims to cover.
+const AgentRepositoryEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_REPOSITORY"
 
 // corePin is the Core release this CLI is compiled against, read from its own
 // build information so the qualification cannot drift from go.mod.
@@ -61,6 +73,10 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 	require.NotEmpty(t, source, "rebuild a companion agent on the pinned Core and set "+AgentBinaryEnv)
 	version := os.Getenv(AgentVersionEnv)
 	require.NotEmpty(t, version, "set "+AgentVersionEnv+" to the version that binary was built from")
+	name := os.Getenv(AgentNameEnv)
+	require.NotEmpty(t, name, "set "+AgentNameEnv+" to the agent that binary implements")
+	repository := os.Getenv(AgentRepositoryEnv)
+	require.NotEmpty(t, repository, "set "+AgentRepositoryEnv+" to the repository that binary was built from")
 
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	t.Setenv(manager.AgentSourceEnv, "local")
@@ -68,7 +84,7 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, "go:"+version)
+	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, name+":"+version)
 	require.NoError(t, err)
 	path, err := agent.Path(ctx)
 	require.NoError(t, err)
@@ -79,6 +95,13 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 
 	build, err := buildinfo.ReadFile(path)
 	require.NoError(t, err)
+	// Every assertion below reads the binary, and nothing else establishes
+	// which agent that binary is: it was installed under an identity this test
+	// was told, and it answers the same way whatever identity that was. Hold
+	// it to the repository the caller claims to be qualifying, or a row passes
+	// while covering a different agent's build.
+	require.Equal(t, "github.com/codefly-dev/"+repository, build.Main.Path,
+		"the binary under qualification was built from %s, not the repository this qualification names", build.Main.Path)
 	var agentCore string
 	for _, dep := range build.Deps {
 		if dep.Path == "github.com/codefly-dev/core" {

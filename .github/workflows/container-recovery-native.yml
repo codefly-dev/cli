@@ -5,6 +5,11 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # Nothing else refreshes the agent refs pinned below: Dependabot's
+    # ecosystems do not cover a `ref:` input, so left alone this gate would go
+    # on reporting the fleet qualified while qualifying months-old source.
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
@@ -17,23 +22,46 @@ jobs:
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      # Every row is a separate release-gate answer, so one agent failing must
+      # not cancel the others: a half-reported matrix reads as "the rest are
+      # fine" when they were never run.
+      fail-fast: false
+      matrix:
+        # Every inventory row that reaches a container through a Core companion
+        # — the rows the acknowledgement guard cannot see on native or Nix.
+        # pkg/conformance fails if this set and the inventory disagree, and if
+        # a repository is named twice.
+        include:
+          - agent: go
+            repository: service-go
+            ref: c77770bcfad2478a8add9890f102a92f8000586d
+          - agent: go-grpc
+            repository: service-go-grpc
+            ref: 45a2821fe205a5112d159757f95d0d9f299499ab
+          - agent: rust
+            repository: service-rust
+            ref: 14ca465eb7ac78400497e8f6475b84f3f01ed587
+          - agent: nextjs
+            repository: service-nextjs
+            ref: 0f2173300c398be19358993770e273d929b40c23
+          - agent: python-fastapi
+            repository: service-python-fastapi
+            ref: 39395b622febe9630098abe82ba79ad736f00fb7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      # A companion-row service agent: it never builds a Docker environment of
-      # its own, so the acknowledgement guard the CLI applies to Docker and free
-      # selections never sees it, and only this qualification does.
-      - name: Check out the companion agent source
+      - name: Check out the ${{ matrix.agent }} agent source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: codefly-dev/service-go
-          ref: d0711dcdb6354be2f95c3b5fe7ad74cfb435d25d
+          repository: codefly-dev/${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
           path: .qualification-agent
-      # No published agent embeds a Core carrying the marker, so the fleet's
-      # next generation has to be rebuilt here to be qualified at all. Taking
-      # the revision from this checkout is what keeps the two sides identical.
+      # Rebuild the pinned compatible source on this CLI's Core revision to
+      # catch future contract drift. Published-artifact qualification remains
+      # a separate coordinated-release requirement.
       - name: Rebuild the agent on the Core this CLI pins
         env:
           GOWORK: 'off'
@@ -45,8 +73,10 @@ jobs:
           go build -o "$RUNNER_TEMP/companion-agent" .
           # Carry the agent's own declared version through to the test: it
           # names the build under qualification, so a literal in the test
-          # would keep passing after the pinned ref above moved.
-          version=$(sed -n 's/^version:[[:space:]]*//p' agent.codefly.yaml)
+          # would keep passing after the pinned ref above moved. Take one
+          # line: a second `version:` key would otherwise write a multi-line
+          # value, which GITHUB_ENV only accepts behind a delimiter.
+          version=$(sed -n 's/^version:[[:space:]]*//p' agent.codefly.yaml | head -1)
           test -n "$version"
           echo "CODEFLY_CONTAINER_RECOVERY_AGENT_VERSION=${version}" >> "$GITHUB_ENV"
       - name: Qualify the native container-recovery path
@@ -54,11 +84,13 @@ jobs:
         env:
           GOWORK: 'off'
           CODEFLY_CONTAINER_RECOVERY_AGENT_BINARY: ${{ runner.temp }}/companion-agent
+          CODEFLY_CONTAINER_RECOVERY_AGENT_NAME: ${{ matrix.agent }}
+          CODEFLY_CONTAINER_RECOVERY_AGENT_REPOSITORY: ${{ matrix.repository }}
         run: |
           set -o pipefail
           go test -tags=integration -v -count=1 \
             -run TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery \
-            ./pkg/orchestration | tee container-recovery-native.log
+            ./pkg/orchestration | tee "container-recovery-native-${{ matrix.agent }}.log"
       # Gate on the qualification step having actually run: with a bare
       # always(), an earlier failure leaves no log and if-no-files-found:error
       # adds a second, misleading red step on top of the real one.
@@ -66,6 +98,45 @@ jobs:
         if: always() && steps.qualify.conclusion != 'skipped'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: container-recovery-native
-          path: container-recovery-native.log
+          name: container-recovery-native-${{ matrix.agent }}
+          path: container-recovery-native-${{ matrix.agent }}.log
           if-no-files-found: error
+
+  pins:
+    # Scheduled only. A pinned ref going stale is the fleet moving, not a
+    # property of the pull request under test, so this must never redden an
+    # unrelated PR — but a release gate whose evidence ages unnoticed is the
+    # drift the qualification above exists to catch, one level up: that job
+    # proves the pinned source is qualified, never that the pinned source is
+    # still what the fleet publishes.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Report every pin its default branch has moved past
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          # Read the matrix above rather than restating the pins here: a second
+          # copy is one more thing that can quietly disagree with the first.
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet --disable-pip-version-check pyyaml
+          python3 - <<'PY' > pins.txt
+          import yaml
+          workflow = yaml.safe_load(open(".github/workflows/container-recovery-native.yml"))
+          for entry in workflow["jobs"]["native"]["strategy"]["matrix"]["include"]:
+              print(entry["repository"], entry["ref"])
+          PY
+          test -s pins.txt
+          stale=0
+          while read -r repository ref; do
+            tip=$(gh api "repos/codefly-dev/${repository}/commits?per_page=1" --jq '.[0].sha')
+            if [ "$tip" = "$ref" ]; then
+              echo "${repository} is qualified at its default branch tip"
+            else
+              echo "::error::${repository} is qualified at ${ref}, but its default branch is at ${tip}; requalify it or the gate is reporting stale source"
+              stale=1
+            fi
+          done < pins.txt
+          exit "$stale"
