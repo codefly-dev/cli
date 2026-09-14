@@ -132,6 +132,8 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 		completed, err := launcher.Invoke(ctx, runnableops.Run{
 			Invocation: &basev0.RunnableInvocation{
 				Protocol: corerunnable.ProtocolV1, Runnable: pkg.GetIdentity(), InvocationId: id, IntentId: "intent-" + id,
+				// Recompute may carry the caller's shared effect identity too.
+				EffectId: "effect-" + id,
 				IssuedAt: timestamppb.New(issued), Deadline: timestamppb.New(issued.Add(90 * time.Second)), Input: []byte(input),
 			},
 			Directory: filepath.Join(invocations, id), Stdout: &out, Stderr: &logs,
@@ -180,6 +182,8 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	completed, _, logs := invoke(interrupting, "inv-canceled", `{"text":"sleep"}`)
 	interrupt()
 	require.Equal(t, basev0.RunnableCompletion_CANCELED, completed.GetOutcome(), logs)
+	require.Equal(t, basev0.RunnableResult_INTERRUPTED, completed.GetResult().GetStatus(), logs)
+	require.Empty(t, completed.GetResult().GetOutput())
 	require.False(t, corerunnable.OutcomeIsCertain(completed.GetOutcome()))
 	require.NoError(t, os.Rename(source+"-unavailable", source))
 	_, err = run("build", "runnable", "word-count", "--output="+buildDir)
