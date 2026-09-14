@@ -222,5 +222,23 @@ released CLI projects no marker at all, and a new-core agent under it resolves
 an empty scope and creates its containers with no recovery label and no error.
 Upgrade the pair together.
 
+Both of those are decided inside the agent, at container creation. What reaches
+the CLI is only the resolved identity, which is what an agent echoes as its
+acknowledgement and all `Runner.Init`'s guard compares — and a refused marker
+and a missing one both resolve to nothing. **The guard cannot tell the two
+apart, and catches neither**, which is why this gate is a rebuild of the fleet
+rather than a check the CLI could make on its own.
+`TestPinnedCoreMarkerResolutionsMatchTheRollout` pins each generation's
+resolution against the Core this CLI pins, including the untagged marker that
+carried the exact scope alone — the one field every revision agreed on, and so
+the only one still honored. The creation-time half, where the refusal and the
+missing marker diverge, belongs to Core and is covered there
+(`runners/dockerrun`, `TestContainerRecoveryScopeAgentProcess`); it is not
+reachable from this repository, whose only exported route to a container pings a
+daemon. `TestFlowProjectsOverAnInheritedForeignMarker` covers the case where
+this CLI is itself launched under another generation's marker, refused or
+well-formed: it must project its own ownership over what it inherited rather
+than adopt it.
+
 The ordering and publishing mechanics live in
 [the fleet release runbook](runbooks/release-the-fleet.md).
