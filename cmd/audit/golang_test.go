@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestGoCommandReturnsErrors(t *testing.T) {
@@ -27,5 +28,31 @@ func TestRunGoAuditUsesManagedGovulncheck(t *testing.T) {
 	_, err := RunGoAudit(context.Background(), t.TempDir(), defaultStaleAfterDays, true)
 	if err != nil {
 		t.Fatalf("RunGoAudit error = %v", err)
+	}
+}
+
+// staleSuppressions only warns on a reviewed date it cannot parse, so a typo
+// introduced while bumping one silently exempts that entry from the review
+// clock instead of failing the gate.
+func TestCommittedSuppressionsAreWellFormed(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	supps, path, err := LoadSuppressions(wd)
+	if err != nil {
+		t.Fatalf("LoadSuppressions error = %v", err)
+	}
+	if path == "" {
+		t.Fatal("no .govulncheck.yaml found walking up from cmd/audit")
+	}
+	for _, s := range supps {
+		if s.ID == "" || s.Module == "" || s.Reason == "" {
+			t.Errorf("%s: entry %+v is missing id, module or reason", path, s)
+			continue
+		}
+		if _, err := time.Parse("2006-01-02", s.Reviewed); err != nil {
+			t.Errorf("%s: %s has an unparseable reviewed date %q", path, s.ID, s.Reviewed)
+		}
 	}
 }
