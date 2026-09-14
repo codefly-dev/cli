@@ -315,7 +315,7 @@ func TestCloneCIReportArtifactsDoesNotShareImageAssociations(t *testing.T) {
 		Subject:      artifactSubjectImage,
 		Digest:       "sha256:abc",
 		Platform:     "linux/amd64",
-		Associations: []CIReportImageAssociation{{Service: "web/frontend", Role: "runtime"}},
+		Associations: []ImageAssociation{{Service: "web/frontend", Role: "runtime"}},
 	}}
 	cloned := cloneCIReportArtifacts(original)
 	cloned[0].Associations[0].Service = "mutated"

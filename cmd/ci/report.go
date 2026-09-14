@@ -157,19 +157,19 @@ type CIReportIntegrityDivergence struct {
 // scanned and stored once and Associations is what keeps every service's claim
 // on it rather than collapsing them.
 type CIReportArtifact struct {
-	Kind         string                     `json:"kind"`
-	Subject      string                     `json:"subject"`
-	Path         string                     `json:"path"`
-	MediaType    string                     `json:"media_type,omitempty"`
-	SHA256       string                     `json:"sha256"`
-	Digest       string                     `json:"digest,omitempty"`
-	Platform     string                     `json:"platform,omitempty"`
-	Associations []CIReportImageAssociation `json:"associations,omitempty"`
+	Kind         string             `json:"kind"`
+	Subject      string             `json:"subject"`
+	Path         string             `json:"path"`
+	MediaType    string             `json:"media_type,omitempty"`
+	SHA256       string             `json:"sha256"`
+	Digest       string             `json:"digest,omitempty"`
+	Platform     string             `json:"platform,omitempty"`
+	Associations []ImageAssociation `json:"associations,omitempty"`
 }
 
-// CIReportImageAssociation names one service-owned image that a single scan
+// ImageAssociation names one service-owned image that a single scan
 // covers, in the role the image plays for that service.
-type CIReportImageAssociation struct {
+type ImageAssociation struct {
 	Service   string `json:"service"`
 	Role      string `json:"role,omitempty"`
 	Reference string `json:"reference,omitempty"`
@@ -183,8 +183,8 @@ func cloneCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
 		return nil
 	}
 	cloned := append([]CIReportArtifact(nil), artifacts...)
-	for index, artifact := range artifacts {
-		cloned[index].Associations = append([]CIReportImageAssociation(nil), artifact.Associations...)
+	for index := range artifacts {
+		cloned[index].Associations = append([]ImageAssociation(nil), artifacts[index].Associations...)
 	}
 	return cloned
 }

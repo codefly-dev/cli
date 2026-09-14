@@ -95,7 +95,7 @@ func TestImageEvidenceAssociationsKeepEveryServiceClaim(t *testing.T) {
 		{Service: "management/worker", Role: "runtime", Reference: "repo/worker:v1"},
 		{Service: "billing/accounts", Role: "migration"},
 	}}
-	want := []CIReportImageAssociation{
+	want := []ImageAssociation{
 		{Service: "management/worker", Role: "runtime", Reference: "repo/worker:v1"},
 		{Service: "billing/accounts", Role: "migration"},
 	}

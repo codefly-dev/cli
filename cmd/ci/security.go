@@ -60,10 +60,10 @@ func imageEvidenceFilename(image *builderv0.ImageSBOM) string {
 	return name + ".cdx.json"
 }
 
-func imageEvidenceAssociations(image *builderv0.ImageSBOM) []CIReportImageAssociation {
-	associations := make([]CIReportImageAssociation, 0, len(image.GetSubjects()))
+func imageEvidenceAssociations(image *builderv0.ImageSBOM) []ImageAssociation {
+	associations := make([]ImageAssociation, 0, len(image.GetSubjects()))
 	for _, subject := range image.GetSubjects() {
-		associations = append(associations, CIReportImageAssociation{
+		associations = append(associations, ImageAssociation{
 			Service:   subject.GetService(),
 			Role:      subject.GetRole(),
 			Reference: subject.GetReference(),
