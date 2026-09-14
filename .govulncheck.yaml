@@ -27,41 +27,40 @@ suppressions:
       release artifacts during `codefly` self-update — an intended,
       signature-verification code path, not spurious. That module is
       pinned via codefly-dev/core and cannot be migrated from this repo.
-      Follow-up: core migrates releaseupdate/go-selfupdate off
-      x/crypto/openpgp; re-review at the staleness deadline and drop this
-      entry once that lands.
-    reviewed: 2026-07-30
-
-  - id: GO-2026-5668
-    module: github.com/docker/docker
-    reason: |
-      Docker `docker cp` symlink-swap race that can create arbitrary empty
-      files on the host. The vulnerable path is the copy-to/from-container
-      archive extraction; the CLI never calls CopyToContainer /
-      CopyFromContainer (grep-verified) — it only uses the client for
-      Container{Create,Start,Stop,Inspect,...}, image pulls, and log
-      stream demux (stdcopy). Verified via govulncheck traces: every
-      reachable trace is a client call or package-init chain in the shared
-      module graph, none reach the copy/archive code.
-      Upstream fix: pending Moby release (no CVE-fixed version yet).
-    reviewed: 2026-07-30
+      2026-09-14 re-review: still Fixed: N/A. Every trace is the
+      pkg/cliupdate → releaseupdate.init → openpgp/{armor,elgamal,packet,
+      s2k} package-init chain, plus one openpgp/errors StructuralError
+      .Error reached through generic error formatting — no new call path.
+      Follow-up unchanged and still not landed: core migrates
+      releaseupdate/go-selfupdate off x/crypto/openpgp. Drop this entry
+      once that ships.
+    reviewed: 2026-09-14
 
   - id: GO-2026-4887
     module: github.com/docker/docker
     reason: |
       Moby AuthZ plugin bypass on oversized request bodies. The vuln is
       daemon-side (HTTP request handler with AuthZ plugins). We only use
-      the client subpackage (Container{Start,Stop,Inspect,...}). Verified
-      via govulncheck traces: none reach plugins/authorization code —
-      they are all package-init chains in the shared module graph.
-      Upstream fix: pending Moby release (no CVE-fixed version yet).
-    reviewed: 2026-07-30
+      the client subpackage (Container{Start,Stop,Inspect,...}) and
+      api/types — never daemon or pkg/authorization.
+      2026-09-14 re-review: all 69 reported traces re-checked; every one
+      is a client/api-types call or a package-init chain in the shared
+      module graph. The advisory is UNREVIEWED in the Go vuln DB and
+      carries no symbol data, so govulncheck can only attribute it at
+      module granularity — reachability analysis can never clear it.
+      Upstream fix: only in github.com/moby/moby/v2 >= 2.0.0-beta.8. That
+      is a renamed module and still pre-release; github.com/docker/docker
+      publishes no v29 tag, so no dependency bump makes this actionable.
+    reviewed: 2026-09-14
 
   - id: GO-2026-4883
     module: github.com/docker/docker
     reason: |
       Moby plugin privilege off-by-one. Daemon-side plugin installation
-      validation; we never install Docker plugins via the API. Verified
-      unreachable — no trace path reaches pkg/authorization/ code.
-      Upstream fix: pending Moby release.
-    reviewed: 2026-07-30
+      validation; we never install Docker plugins via the API.
+      2026-09-14 re-review: identical trace set and the same UNREVIEWED,
+      module-granularity attribution as GO-2026-4887 — no path reaches
+      pkg/authorization.
+      Upstream fix: only in github.com/moby/moby/v2 >= 2.0.0-beta.8, the
+      renamed pre-release module; unreachable from docker/docker v28.
+    reviewed: 2026-09-14
