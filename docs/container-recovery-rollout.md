@@ -204,10 +204,13 @@ and inspect containers without creating any.
 3. Qualify the `companion` rows under `codefly build` and `test` as well as
    `codefly run`. Those commands now project a marker, so a rebuilt agent is
    what makes them label correctly — and that pairing is unqualified, on a path
-   no row in the table above records. `codefly generate` projects for the
-   containers it builds in-process, which needs no agent rebuild to take
-   effect; qualify that its containers carry `codefly.recovery-scope` and that
-   a later run in the same workspace collects one left behind.
+   no row in the table above records. `codefly generate` is the exception that
+   is now **qualified**: it builds its containers in-process, so no agent
+   rebuild is involved, and
+   `TestAnInterruptedGenerateLeavesARecoverableContainer` drives one against a
+   real daemon — an interrupted generate's container carries
+   `codefly.recovery-scope`, the exact-scope sweep of a run that renamed the
+   naming scope walks past it, and the disposable sweep collects it.
 4. Publish the rebuilt agents before or together with the CLI, then move
    `pkg/sourceworkspace/compatibility.json`, the agent pins in
    `pkg/conformance/matrix.json`, and `module-saas-starter`'s composed pins onto

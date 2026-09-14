@@ -2,6 +2,9 @@ package generate
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,6 +200,82 @@ func TestGenerateResolvesOwnershipOncePerCommand(t *testing.T) {
 	projectContainerRecovery(context.Background())
 	if identity := dockerrun.InheritedContainerRecoveryScope(); identity != first {
 		t.Fatalf("ownership re-resolved mid-command: %q then %q", first, identity)
+	}
+}
+
+// calledIn returns the names of every function called somewhere inside body,
+// whether through a receiver or not.
+func calledIn(body ast.Node) map[string]bool {
+	called := map[string]bool{}
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			called[fun.Sel.Name] = true
+		case *ast.Ident:
+			called[fun.Name] = true
+		}
+		return true
+	})
+	return called
+}
+
+// TestEveryGenerateContainerIsOwnedAndDisposable holds the two calls that make
+// a container this command builds recoverable to the function that builds it.
+//
+// Neither can be left out without going silent. Without the projection the
+// container carries no recovery label at all and no sweep on any Core
+// generation matches it; without WithEphemeral it carries one, but only the
+// exact-scope sweep can see it — so a later run that chose a different naming
+// scope walks past it forever. Nothing fails in either case: a label that
+// matches nothing looks exactly like a label that matches.
+//
+// The Docker qualification drives one such container end to end. This is what
+// makes that proof transfer to the command rather than to the one call site it
+// happened to exercise.
+func TestEveryGenerateContainerIsOwnedAndDisposable(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read cmd/generate: %v", err)
+	}
+	fset := token.NewFileSet()
+	builders := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, parseErr := parser.ParseFile(fset, name, nil, 0)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", name, parseErr)
+		}
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			called := calledIn(function.Body)
+			if !called["NewDockerEnvironment"] {
+				continue
+			}
+			builders++
+			if !called["projectContainerRecovery"] {
+				t.Errorf("%s: %s builds a container without projecting container recovery ownership; it would carry no recovery label and no sweep could ever collect it",
+					name, function.Name.Name)
+			}
+			if !called["WithEphemeral"] {
+				t.Errorf("%s: %s builds a container that is not ephemeral; only a run keeping generate's exact naming scope could ever collect a leftover",
+					name, function.Name.Name)
+			}
+		}
+	}
+	// The assertions above are vacuously true for a package that builds no
+	// containers, which is also what a renamed constructor looks like.
+	if builders == 0 {
+		t.Fatal("no function in cmd/generate builds a docker environment; this test no longer holds anything")
 	}
 }
 

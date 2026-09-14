@@ -193,6 +193,22 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestCIBuildOrdersRealImagePrerequisites$' ./cmd/ci -v
 
+      # Keep the tag in step with qualificationImage in
+      # cmd/generate/container_recovery_docker_test.go.
+      - name: Pull the interrupted-generate proof's image
+        if: matrix.gate == 'control-integration'
+        run: docker pull alpine:3.22
+
+      # `codefly generate` builds its containers in the CLI process rather than
+      # through an agent, so no fleet rebuild can make them recoverable and no
+      # unit test can prove they are: the labels and the sweep that reads them
+      # only exist against a real daemon. This is the only container-recovery
+      # dimension the CLI can qualify without a rebuilt, published agent —
+      # cli#658 carries the rest.
+      - name: Run the interrupted-generate container-recovery proof
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestAnInterruptedGenerateLeavesARecoverableContainer$' ./cmd/generate -v
+
       # Always-run so a failed or filtered-out test still has to account for
       # the rows its job claimed. Keep these last: they audit every step above.
       - name: Verify conformance receipts

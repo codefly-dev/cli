@@ -199,7 +199,32 @@ than silently creating unlabeled containers. That is the intended outcome and
 the reason the rebuild gates the release — but it is a new, loud failure on a
 path that used to be silent, so expect it as soon as this ships.
 
-This closes the CLI-side half of the native `companion` qualification. It does
-not lift the release gate: the remaining rebuild, qualification, publishing and
-matrix items are carried in
-[cli#647](https://github.com/codefly-dev/cli/issues/647).
+This closes the CLI-side half of the native `companion` qualification.
+
+### `codefly generate` is qualified against a real daemon
+
+`generate` is the one command that reaches Docker without spawning an agent:
+`generate proto`, `contracts` and `client` build their containers in the CLI
+process itself. No fleet rebuild can make those recoverable — there is no agent
+in the path — and no unit test can prove they are, because the labels and the
+sweeps that read them exist only against a real daemon.
+
+`TestAnInterruptedGenerateLeavesARecoverableContainer` runs in `go.yml`'s
+`control-integration` gate. It re-execs an interrupted generate — a process that
+builds its container and dies before the defer that would shut it down — and
+then requires that the leftover carries `codefly.recovery-scope` and the durable
+namespace, that a later run's *exact-scope* sweep walks past it once that run
+renamed the naming scope, and that the disposable sweep collects it. Observed
+2026-09-13 against Docker 29.4.0.
+
+Expect the exact-scope sweep to miss these containers: that is the documented
+behavior, not a defect. A run is free to choose a different naming scope
+(`--naming-scope`, a non-local `--env`, the invocation id `--temporary-ports`
+generates), and the exact-scope hash includes it. What collects the leftover is
+the disposable sweep, keyed on the naming-scope-independent namespace, and it
+reaches these containers only because `generate` marks them ephemeral.
+
+This is the only container-recovery dimension the CLI can qualify on its own.
+It does not lift the release gate: the remaining rebuild, qualification,
+publishing and matrix items are carried in
+[cli#662](https://github.com/codefly-dev/cli/issues/662).
