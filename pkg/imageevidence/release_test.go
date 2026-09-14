@@ -207,6 +207,23 @@ func TestPublishLeavesThePreviousReleaseIntactWhenADocumentCannotBeWritten(t *te
 	require.FileExists(t, filepath.Join(directory, index.Images[0].Path), "the index points at a document that is gone")
 }
 
+// A build owing evidence for no image records that explicitly: an absent
+// directory cannot be told apart from a build that never collected. The empty
+// list must survive encoding as a list rather than as null, so a consumer reads
+// "covered nothing" instead of having to interpret a missing value.
+func TestPublishRecordsAnEmptyIndexWhenThereIsNoEvidence(t *testing.T) {
+	directory := t.TempDir()
+
+	index, err := Publish(directory, nil, true)
+	require.NoError(t, err)
+	require.Empty(t, index.Images)
+
+	manifest, err := os.ReadFile(filepath.Join(directory, IndexFilename))
+	require.NoError(t, err)
+	require.Contains(t, string(manifest), `"images": []`)
+	require.NotContains(t, string(manifest), `"images": null`)
+}
+
 // A build that does not push scans an image that exists only in the local
 // daemon, whose digest resolves in no registry. Without this the artifact is
 // indistinguishable from evidence for a shipped image.
