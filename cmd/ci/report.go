@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	reportSchemaVersion = 1
+	reportSchemaVersion = 3
 	reportFilename      = "report.json"
 
 	reportStatusPending   = "pending"
@@ -33,6 +33,17 @@ const (
 	reportReasonRunCancelled          = "run_cancelled"
 	reportReasonNotScheduled          = "not_scheduled"
 	reportReasonAgentNoSyncCapability = "agent_no_sync_capability"
+
+	// artifactSubjectSource is evidence about the checked-out source and its
+	// declared dependencies; artifactSubjectImage is evidence about a runtime
+	// image, bound to the digest and platform that were actually scanned.
+	// artifactSubjectUnknown is the explicit subject for evidence whose producer
+	// did not name one: it is recorded rather than left absent so a consumer
+	// never has to infer meaning from a missing key, and so an unnamed subject
+	// can never be mistaken for runtime-image coverage.
+	artifactSubjectSource  = "source"
+	artifactSubjectImage   = "image"
+	artifactSubjectUnknown = "unknown"
 )
 
 // CIReport is Codefly's provider-neutral record of one CI command. Task order
@@ -131,33 +142,74 @@ type CIReportIntegrityDivergence struct {
 	Reason string `json:"reason"`
 }
 
-// CIReportArtifact names one piece of evidence a task produced. Image evidence
-// additionally carries the digest and platform it was scanned from and the
-// service-owned images that scan satisfies: one digest shared by several
-// services is scanned and written once, and Subjects is what keeps every
-// association to it.
+// CIReportArtifact names one piece of evidence a task produced. Subject states
+// what the evidence describes: a source inventory and a runtime-image inventory
+// are different claims, and a consumer that cannot tell them apart reads a
+// lockfile scan as proof the shipped image was scanned. Subject is always
+// written, never omitted — evidence whose producer named no subject is recorded
+// as artifactSubjectUnknown, so "unknown" is a value a consumer can read rather
+// than a missing key it has to interpret. It is deliberately not called "scope":
+// CIReportTask.Scope is resource ownership, and one report must not use the
+// same key for two vocabularies.
+//
+// Image evidence additionally carries the digest and platform it was scanned
+// from. One scan can satisfy several services at once, so an identical digest is
+// scanned and stored once and Associations is what keeps every service's claim
+// on it rather than collapsing them.
 type CIReportArtifact struct {
-	Kind      string                 `json:"kind"`
-	Path      string                 `json:"path"`
-	MediaType string                 `json:"media_type,omitempty"`
-	SHA256    string                 `json:"sha256"`
-	Digest    string                 `json:"digest,omitempty"`
-	Platform  string                 `json:"platform,omitempty"`
-	Subjects  []CIReportImageSubject `json:"subjects,omitempty"`
+	Kind         string                     `json:"kind"`
+	Subject      string                     `json:"subject"`
+	Path         string                     `json:"path"`
+	MediaType    string                     `json:"media_type,omitempty"`
+	SHA256       string                     `json:"sha256"`
+	Digest       string                     `json:"digest,omitempty"`
+	Platform     string                     `json:"platform,omitempty"`
+	Associations []CIReportImageAssociation `json:"associations,omitempty"`
 }
 
-type CIReportImageSubject struct {
+// CIReportImageAssociation names one service-owned image that a single scan
+// covers, in the role the image plays for that service.
+type CIReportImageAssociation struct {
 	Service   string `json:"service"`
 	Role      string `json:"role,omitempty"`
 	Reference string `json:"reference,omitempty"`
 }
 
+// cloneCIReportArtifacts deep-copies recorded evidence. Artifacts were all
+// scalar until image evidence added a slice, so a plain copy would leave a
+// finalized report sharing associations with live reporter state.
 func cloneCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
+	if artifacts == nil {
+		return nil
+	}
 	cloned := append([]CIReportArtifact(nil), artifacts...)
 	for index, artifact := range artifacts {
-		cloned[index].Subjects = append([]CIReportImageSubject(nil), artifact.Subjects...)
+		cloned[index].Associations = append([]CIReportImageAssociation(nil), artifact.Associations...)
 	}
 	return cloned
+}
+
+// normalizeCIReportSubject guarantees the subject invariant at every boundary
+// where evidence enters a report, so the report can state the invariant without
+// depending on each producer to remember it.
+func normalizeCIReportSubject(artifact *CIReportArtifact) {
+	if strings.TrimSpace(artifact.Subject) == "" {
+		artifact.Subject = artifactSubjectUnknown
+	}
+}
+
+// normalizedCIReportArtifacts copies and normalizes recorded evidence. Reused
+// tasks reach the report through this path instead of recordCIReportArtifact,
+// and they must satisfy the same invariant.
+func normalizedCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
+	if artifacts == nil {
+		return nil
+	}
+	normalized := cloneCIReportArtifacts(artifacts)
+	for index := range normalized {
+		normalizeCIReportSubject(&normalized[index])
+	}
+	return normalized
 }
 
 type ciReportTaskContextKey struct{}
@@ -235,6 +287,7 @@ func recordCIReportArtifact(ctx context.Context, artifact CIReportArtifact) {
 	if !ok || task.reporter == nil {
 		return
 	}
+	normalizeCIReportSubject(&artifact)
 	task.reporter.mu.Lock()
 	defer task.reporter.mu.Unlock()
 	if reportTask, found := task.reporter.task(task.id); found {
@@ -839,7 +892,7 @@ func (reporter *CIReporter) attemptReuse(id string) bool {
 	task.Audit = record.Evidence.Audit
 	task.Drift = record.Evidence.Drift
 	task.Integrity = record.Evidence.Integrity
-	task.Artifacts = append([]CIReportArtifact(nil), record.Evidence.Artifacts...)
+	task.Artifacts = normalizedCIReportArtifacts(record.Evidence.Artifacts)
 	task.Cache.Status = cacheStatusHit
 	task.Cache.Reuse = &CacheReuse{
 		Reference:  record.Reference,
@@ -847,7 +900,7 @@ func (reporter *CIReporter) attemptReuse(id string) bool {
 		Revision:   record.Revision,
 		Identity:   record.Identity,
 		RecordedAt: record.RecordedAt,
-		Artifacts:  append([]CIReportArtifact(nil), record.Evidence.Artifacts...),
+		Artifacts:  normalizedCIReportArtifacts(record.Evidence.Artifacts),
 	}
 	return true
 }
@@ -878,7 +931,7 @@ func (reporter *CIReporter) publishResult(id string) {
 		return
 	}
 	snapshot := *task
-	snapshot.Artifacts = append([]CIReportArtifact(nil), task.Artifacts...)
+	snapshot.Artifacts = cloneCIReportArtifacts(task.Artifacts)
 	reporter.mu.Unlock()
 
 	if err := reuse.publish(&snapshot); err != nil {

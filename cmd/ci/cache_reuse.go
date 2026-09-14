@@ -19,7 +19,16 @@ import (
 )
 
 const (
-	ciResultRecordSchema = "codefly.ci-result/v1"
+	// ciResultRecordSchema names the exact signed byte layout of a record, not
+	// just its meaning. The signature covers a JSON encoding of every field,
+	// and encoding/json silently drops keys a reader's struct does not declare,
+	// so a reader that re-marshals a record written by a different shape
+	// recomputes a different MAC and reports an honest record as forged. Any
+	// change to ciResultRecord or the evidence it carries — including adding an
+	// additive, omitempty field — must therefore bump this constant, so the
+	// mismatch is refused as an incompatible schema instead of a failed
+	// signature. v2 adds the artifact subject to the evidence payload.
+	ciResultRecordSchema = "codefly.ci-result/v2"
 	ciResultOutcomePass  = "passed"
 	ciResultSignatureAlg = "hmac-sha256"
 	// ciResultKeyVariable carries the signing key out of band. Only runs on a

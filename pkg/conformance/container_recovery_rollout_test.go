@@ -135,8 +135,19 @@ func TestRolloutCoversEveryPinnedAgent(t *testing.T) {
 // inherits.
 var markerProjection = regexp.MustCompile(`dockerrun\.SetContainerRecoveryScope\(`)
 
+// scopeResolution matches an assembly of the ownership hash inputs — the
+// recipe, as opposed to markerProjection's act of publishing its result.
+var scopeResolution = regexp.MustCompile(`dockerrun\.NewContainerRecoveryScope\(`)
+
 // projectionSites returns every non-test package that projects the marker.
 func projectionSites(t *testing.T) map[string]bool {
+	t.Helper()
+	return sitesMatching(t, markerProjection)
+}
+
+// sitesMatching returns every non-test package containing a call the pattern
+// matches.
+func sitesMatching(t *testing.T, pattern *regexp.Regexp) map[string]bool {
 	t.Helper()
 	root := repositoryRoot(t)
 	sites := map[string]bool{}
@@ -153,7 +164,7 @@ func projectionSites(t *testing.T) map[string]bool {
 		if !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			return nil
 		}
-		if !markerProjection.MatchString(readFile(t, path)) {
+		if !pattern.MatchString(readFile(t, path)) {
 			return nil
 		}
 		pkg, relErr := filepath.Rel(root, filepath.Dir(path))
@@ -187,6 +198,27 @@ func TestMarkerProjectionSitesMatchTheInventory(t *testing.T) {
 	for pkg := range found {
 		if !declared[pkg] {
 			t.Errorf("%s projects the container recovery marker but the rollout does not list it; agents spawned elsewhere create unlabeled containers, so the qualification list depends on this set", pkg)
+		}
+	}
+}
+
+// TestContainerRecoveryScopeHasOneResolver keeps the ownership recipe to a
+// single implementation. The identity is a hash of home, workspace and naming
+// scope, and every projecting site has to produce a byte-identical one. A label
+// that is well-formed but not the hash the sweep compares is collected by
+// nothing and fails silently — no error, no diagnostic, just containers piling
+// up. So a second assembly of those inputs is the bug itself, not a duplication
+// smell: callers outside pkg/orchestration resolve through
+// orchestration.ContainerRecoveryScopeFor rather than rebuilding the triple.
+func TestContainerRecoveryScopeHasOneResolver(t *testing.T) {
+	const resolver = "pkg/orchestration"
+	found := sitesMatching(t, scopeResolution)
+	if !found[resolver] {
+		t.Errorf("%s no longer resolves the container recovery scope; the single-resolver guarantee has moved or been lost", resolver)
+	}
+	for pkg := range found {
+		if pkg != resolver {
+			t.Errorf("%s assembles the container recovery scope itself; resolve through orchestration.ContainerRecoveryScopeFor instead, or the two recipes drift into hashes that match nothing", pkg)
 		}
 	}
 }

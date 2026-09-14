@@ -90,16 +90,16 @@ func TestImageEvidenceFilenameKeysOnTheScanIdentity(t *testing.T) {
 	}
 }
 
-func TestImageEvidenceSubjectsKeepEveryServiceAssociation(t *testing.T) {
+func TestImageEvidenceAssociationsKeepEveryServiceClaim(t *testing.T) {
 	image := &builderv0.ImageSBOM{Subjects: []*builderv0.ImageSubject{
 		{Service: "management/worker", Role: "runtime", Reference: "repo/worker:v1"},
 		{Service: "billing/accounts", Role: "migration"},
 	}}
-	want := []CIReportImageSubject{
+	want := []CIReportImageAssociation{
 		{Service: "management/worker", Role: "runtime", Reference: "repo/worker:v1"},
 		{Service: "billing/accounts", Role: "migration"},
 	}
-	if got := imageEvidenceSubjects(image); !reflect.DeepEqual(got, want) {
-		t.Fatalf("subjects = %#v, want %#v", got, want)
+	if got := imageEvidenceAssociations(image); !reflect.DeepEqual(got, want) {
+		t.Fatalf("associations = %#v, want %#v", got, want)
 	}
 }

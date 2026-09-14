@@ -39,13 +39,14 @@ func recordImageSBOMEvidence(ctx context.Context, workspace *resources.Workspace
 			return err
 		}
 		recordCIReportArtifact(ctx, CIReportArtifact{
-			Kind:      "cyclonedx-image-sbom",
-			Path:      relative,
-			MediaType: "application/vnd.cyclonedx+json",
-			SHA256:    "sha256:" + resources.Hash(payload),
-			Digest:    image.GetDigest(),
-			Platform:  image.GetPlatform(),
-			Subjects:  imageEvidenceSubjects(image),
+			Kind:         "cyclonedx-image-sbom",
+			Subject:      artifactSubjectImage,
+			Path:         relative,
+			MediaType:    "application/vnd.cyclonedx+json",
+			SHA256:       "sha256:" + resources.Hash(payload),
+			Digest:       image.GetDigest(),
+			Platform:     image.GetPlatform(),
+			Associations: imageEvidenceAssociations(image),
 		})
 	}
 	return nil
@@ -59,16 +60,16 @@ func imageEvidenceFilename(image *builderv0.ImageSBOM) string {
 	return name + ".cdx.json"
 }
 
-func imageEvidenceSubjects(image *builderv0.ImageSBOM) []CIReportImageSubject {
-	subjects := make([]CIReportImageSubject, 0, len(image.GetSubjects()))
+func imageEvidenceAssociations(image *builderv0.ImageSBOM) []CIReportImageAssociation {
+	associations := make([]CIReportImageAssociation, 0, len(image.GetSubjects()))
 	for _, subject := range image.GetSubjects() {
-		subjects = append(subjects, CIReportImageSubject{
+		associations = append(associations, CIReportImageAssociation{
 			Service:   subject.GetService(),
 			Role:      subject.GetRole(),
 			Reference: subject.GetReference(),
 		})
 	}
-	return subjects
+	return associations
 }
 
 func runAuditService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
@@ -124,6 +125,7 @@ func runSBOMService(ctx context.Context, workspace *resources.Workspace, module 
 	}
 	recordCIReportArtifact(ctx, CIReportArtifact{
 		Kind:      "cyclonedx-sbom",
+		Subject:   artifactSubjectSource,
 		Path:      relative,
 		MediaType: "application/vnd.cyclonedx+json",
 		SHA256:    "sha256:" + resources.Hash(payload),

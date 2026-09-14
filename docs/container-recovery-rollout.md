@@ -17,9 +17,9 @@ rather than a guess.
 
 ## What crosses the boundary
 
-`CODEFLY_CONTAINER_RECOVERY_SCOPE` carries `<pid>:v2:<scope>:<namespace>` from
-`codefly run` to each agent it spawns — and from no other command, which is the
-gap the exposure section below returns to. Its parser is `runners/dockerrun` inside the
+`CODEFLY_CONTAINER_RECOVERY_SCOPE` carries `<pid>:v2:<scope>:<namespace>` to each
+agent a command spawns, and to the containers the CLI process builds itself.
+Its parser is `runners/dockerrun` inside the
 **agent binary's own Core**, not the CLI's, so the CLI's core pin says nothing
 about whether an agent understands what it was handed. Two consumers matter:
 
@@ -69,13 +69,39 @@ resolved an empty scope, and `dockerrun` skipped both recovery labels without an
 error — so `companions/proto` under build, `runners/testmatrix` under test, and
 `service-mssql`'s Alembic migration runner all created unlabeled containers.
 
-`codefly generate` is the one command still projecting nothing, and it is a
-different shape of hole: it spawns no agent at all. `generate proto` builds its
-container in the CLI process itself (`runners.NewDockerEnvironment` in
-`cmd/generate/proto.go`), so no flow projects for it and `companions/proto`
-creates unlabeled containers there however new its Core is. **Rebuilding that
-agent does not fix it** — there is no marker for the new parser to read.
-Qualification has to cover the command, not only the runtime context.
+`codefly generate` was the one command still projecting nothing, and it is a
+different shape of hole: it spawns no agent at all. `generate proto`,
+`generate contracts` and `generate client` build their containers in the CLI
+process itself (`runners.NewDockerEnvironment` in `cmd/generate/proto.go` and
+`cmd/generate/contracts.go` — the latter reached by both `contracts` and
+`client` through `buildDescriptorSet`), so no flow ever projects for them and
+`companions/proto` created unlabeled containers there however new its Core was.
+**Rebuilding that agent could not fix it** — there was no marker for the new
+parser to read. `cmd/generate` now projects directly, which is why it joins
+`pkg/orchestration` in `marker_projected_by`.
+
+What it projects is the identity a later `codefly run` resolves, because both go
+through the same `orchestration.ContainerRecoveryScopeFor`. That single resolver
+is the point: the identity is a hash of home, workspace and naming scope, and a
+second assembly of those inputs would drift silently — nothing fails when a
+label merely matches nothing. `TestContainerRecoveryScopeHasOneResolver` holds
+the recipe to one site.
+
+Matching the exact scope is necessary but **not sufficient**, because a run need
+not keep the naming scope `generate` saw. `--naming-scope`, a non-local `--env`,
+and the invocation id `--temporary-ports` generates each change it, and
+`ReapStaleContainers` compares a hash that includes it — so a leftover labeled
+under the declared scope would survive every such run. The containers `generate`
+builds are pure throwaways, so they are created ephemeral (`WithEphemeral`).
+That brings them under `ReapDisposableContainers`, which is keyed on the durable
+namespace of home and workspace alone and therefore collects a leftover from any
+later run in the workspace, whatever naming scope it chose. Only a container
+whose owning process is already gone is reaped (`shouldReapContainer` returns
+false while the owner is alive), so a concurrent `generate` is never disturbed.
+
+Outside a workspace there is no ownership to resolve, and the command warns once
+and creates unlabeled containers rather than stamping a different identity no
+sweep would ever match.
 
 One further hole is in the projection decision itself rather than in an agent:
 `codefly run` decides whether to project from the run's *launch* context, while
@@ -178,9 +204,10 @@ and inspect containers without creating any.
 3. Qualify the `companion` rows under `codefly build` and `test` as well as
    `codefly run`. Those commands now project a marker, so a rebuilt agent is
    what makes them label correctly — and that pairing is unqualified, on a path
-   no row in the table above records. `codefly generate` still projects none
-   (it creates its container in the CLI process, not through an agent), so a
-   rebuilt agent does not help there and closing it needs a further CLI change.
+   no row in the table above records. `codefly generate` projects for the
+   containers it builds in-process, which needs no agent rebuild to take
+   effect; qualify that its containers carry `codefly.recovery-scope` and that
+   a later run in the same workspace collects one left behind.
 4. Publish the rebuilt agents before or together with the CLI, then move
    `pkg/sourceworkspace/compatibility.json`, the agent pins in
    `pkg/conformance/matrix.json`, and `module-saas-starter`'s composed pins onto
@@ -194,6 +221,24 @@ trailing field is a group or a namespace, so container creation fails loudly. A
 released CLI projects no marker at all, and a new-core agent under it resolves
 an empty scope and creates its containers with no recovery label and no error.
 Upgrade the pair together.
+
+Both of those are decided inside the agent, at container creation. What reaches
+the CLI is only the resolved identity, which is what an agent echoes as its
+acknowledgement and all `Runner.Init`'s guard compares — and a refused marker
+and a missing one both resolve to nothing. **The guard cannot tell the two
+apart, and catches neither**, which is why this gate is a rebuild of the fleet
+rather than a check the CLI could make on its own.
+`TestPinnedCoreMarkerResolutionsMatchTheRollout` pins each generation's
+resolution against the Core this CLI pins, including the untagged marker that
+carried the exact scope alone — the one field every revision agreed on, and so
+the only one still honored. The creation-time half, where the refusal and the
+missing marker diverge, belongs to Core and is covered there
+(`runners/dockerrun`, `TestContainerRecoveryScopeAgentProcess`); it is not
+reachable from this repository, whose only exported route to a container pings a
+daemon. `TestFlowProjectsOverAnInheritedForeignMarker` covers the case where
+this CLI is itself launched under another generation's marker, refused or
+well-formed: it must project its own ownership over what it inherited rather
+than adopt it.
 
 The ordering and publishing mechanics live in
 [the fleet release runbook](runbooks/release-the-fleet.md).
