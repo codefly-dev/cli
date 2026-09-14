@@ -209,6 +209,20 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestAnInterruptedGenerateLeavesARecoverableContainer$' ./cmd/generate -v
 
+      # The source-workspace pin is promoted by hand through `codefly agent
+      # promote-source`, which qualifies a candidate only through `codefly test
+      # source`. This drives the pin the binary actually embeds against the
+      # contracts that gate never reaches — Builder.SBOM, Builder.Package, and a
+      # go.work-governed checkout — so a promotion cannot land on a release that
+      # regressed one of them. It downloads the pinned agent, so it needs
+      # network but no Docker. It claims no conformance row: a roster pin is not
+      # a docs/supported-matrix.md row.
+      - name: Qualify the embedded source-workspace pin
+        if: matrix.gate == 'control-integration'
+        env:
+          CODEFLY_SOURCE_PIN_QUALIFY: "1"
+        run: go test -tags=integration -run '^TestPinnedGoAgentAnswersSourceContractsForAGoWorkCheckout$' ./pkg/sourceworkspace -v
+
       # Always-run so a failed or filtered-out test still has to account for
       # the rows its job claimed. Keep these last: they audit every step above.
       - name: Verify conformance receipts
