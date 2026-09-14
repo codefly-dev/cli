@@ -3,11 +3,13 @@ package build
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -61,11 +63,18 @@ var ModuleCmd = &cobra.Command{
 
 		cli.Header(1, "Building module %s for env %s", module.Name, env.Name)
 
+		// Every service's evidence is published together: each flow holds only its
+		// own, and publishing them one at a time would leave an index describing
+		// the service built last.
+		collected := map[string][]*builderv0.ImageSBOM{}
 		for _, ref := range module.ServiceReferences {
 			cli.Header(2, "Building service %s", ref.Name)
-			if err := buildOneService(ctx, workspace, module, ref.Name, env); err != nil {
+			if err := buildOneService(ctx, workspace, module, ref.Name, env, collected); err != nil {
 				return fmt.Errorf("cannot build service %s: %w", ref.Name, err)
 			}
+		}
+		if err := publishCollectedImageEvidence(workspace, module.Name, collected); err != nil {
+			return err
 		}
 
 		cli.Header(1, "Module build done!")
@@ -73,7 +82,7 @@ var ModuleCmd = &cobra.Command{
 	},
 }
 
-func buildOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment) error {
+func buildOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment, collected map[string][]*builderv0.ImageSBOM) error {
 	w := wool.Get(ctx).In("buildModule.buildOneService", wool.NameField(name))
 
 	service, err := module.LoadServiceFromName(ctx, name)
@@ -91,6 +100,7 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 	}
 	flow.WithBuildCache(cache)
 	flow.WithPush(push)
+	flow.WithImageSBOM(imageSBOM)
 	flow.WithOutputSink(cli.NewOutputSink())
 	stopped := false
 	defer func() {
@@ -108,6 +118,9 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 	if err := flow.Build(ctx); err != nil {
 		return w.Wrapf(err, "build failed")
 	}
+	for unique, evidence := range flow.ImageEvidence() {
+		collected[unique] = evidence
+	}
 	err = flow.Stop()
 	stopped = true
 	return err
@@ -119,4 +132,6 @@ func init() {
 	ModuleCmd.Flags().StringVar(&org, "org", "", "Image registry override (wins over env's registry.url)")
 	ModuleCmd.Flags().BoolVar(&push, "push", false, "Push the images to the registry")
 	ModuleCmd.Flags().StringVar(&envInput, "env", "local", "Environment to build for (looks up registry/cluster from workspace.codefly.yaml)")
+	ModuleCmd.Flags().BoolVar(&imageSBOM, "image-sbom", false, "Require digest-bound image SBOM evidence for every image the build produces")
+	ModuleCmd.Flags().StringVar(&imageSBOMDirectory, "image-sbom-dir", filepath.Join(".codefly", "sbom", "image"), "Directory to publish image SBOM evidence into")
 }

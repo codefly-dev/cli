@@ -26,6 +26,22 @@ func TestModuleCommandReturnsErrorsThroughCobra(t *testing.T) {
 	}
 }
 
+// Collection runs a container scanner that fails a render whose agent cannot
+// serve image scope, which no released agent does yet, so the snapshot keeps the
+// opt-in off by default. Only the snapshot carries it: render was not asked to.
+func TestGitOpsSnapshotKeepsImageEvidenceOptIn(t *testing.T) {
+	flag := gitOpsSnapshotCmd.Flags().Lookup("image-sbom")
+	if flag == nil {
+		t.Fatal("gitops snapshot does not accept --image-sbom")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("gitops snapshot --image-sbom defaults to %q, want off", flag.DefValue)
+	}
+	if gitOpsRenderCmd.Flags().Lookup("image-sbom") != nil {
+		t.Fatal("gitops render grew an --image-sbom flag it was not asked for")
+	}
+}
+
 func TestGitOpsCommandExposesCompletePromotionLifecycle(t *testing.T) {
 	names := map[string]bool{}
 	for _, command := range GitOpsCmd.Commands() {

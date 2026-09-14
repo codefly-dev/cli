@@ -23,7 +23,10 @@ type ProduceRequest struct {
 	// StandAlone renders a single service without its dependencies. It applies
 	// only when Service is set and is ignored for a whole-module render.
 	StandAlone bool
-	Sink       orchestration.OutputSink
+	// ImageSBOM requires a digest-bound image SBOM for every image the render
+	// pushes and publishes it into the rendered tree.
+	ImageSBOM bool
+	Sink      orchestration.OutputSink
 }
 
 // ManifestProducer renders a validated, transport-neutral manifest bundle.
@@ -108,9 +111,9 @@ type flowProducer struct{}
 
 func (flowProducer) Produce(ctx context.Context, request ProduceRequest) (RenderResult, error) {
 	if request.Service == nil {
-		return RenderModule(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink)
+		return RenderModule(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink, request.ImageSBOM)
 	}
-	return RenderService(ctx, request.Workspace, request.Module, request.Service, request.Environment, request.AppProject, request.StandAlone, request.Sink)
+	return RenderService(ctx, request.Workspace, request.Module, request.Service, request.Environment, request.AppProject, request.StandAlone, request.Sink, request.ImageSBOM)
 }
 
 type repositoryPublisher struct{}

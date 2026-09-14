@@ -306,6 +306,14 @@ with `--stand-alone`. Collection is opt-in because it runs a container scanner
 and fails a build whose agent cannot serve image scope, which no released agent
 does yet.
 
+`codefly build module` accepts the same two flags and pushes every service in the
+module. It publishes one directory covering all of them — each service is built
+through its own flow, and publishing them one at a time would leave an
+`index.json` describing only the service built last — under a subdirectory named
+after the module. The module scope matters because publishing removes documents
+the new index no longer names: two modules sharing one directory would delete
+each other's evidence rather than merely leaving it unindexed.
+
 ### `codefly test service [name]`
 
 Run one service's tests through its agent Test RPC. This is the focused local
@@ -374,6 +382,25 @@ manifests, invokes module agents for transport-neutral topology bundles, and
 installs the selected environment resources and exact service graph under
 `deployments/modules/<module>`. The installed
 `.codefly-render.json` contains the sorted file inventory and aggregate digest.
+
+`codefly deploy gitops snapshot` pushes and resolves immutable manifest digests.
+Pass `--image-sbom` to require a digest-bound CycloneDX inventory for every image
+it pushes and publish it into the rendered tree, under
+`services/<service>/sbom/image/` with an `index.json` resolving a digest and
+platform to its document. Evidence is written inside the unit whose manifests pin
+those digests — a service snapshot admits no path outside its unit graph — so the
+same reviewed promotion that moves a manifest moves its evidence, and the render
+inventory and aggregate digest cover both. A snapshot is not stand-alone, so
+evidence is collected for every service it built, not only the named one; each of
+those images is pushed.
+
+A snapshot that owed evidence for no image records an explicit empty index, so
+"covered nothing" stays distinguishable from "collection never ran". A service the
+environment manages is refused rather than published: its rendered directory is
+replaced or removed once the bundle is retained, so evidence written there would
+be destroyed while the render reported success. Collection is opt-in because it
+runs a container scanner and fails the snapshot when an agent cannot serve image
+scope, which no released agent does yet.
 Publish clones the selected GitOps repository, commits and advertises the
 immutable service/module snapshot, derives exact AppProject authority from that
 snapshot, and adds CLI-owned Applications pinned to its commit and paths. It

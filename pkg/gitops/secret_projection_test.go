@@ -684,7 +684,7 @@ agent:
 	if env == nil {
 		t.Fatal("prod environment did not load")
 	}
-	_, err = RenderService(ctx, workspace, &resources.Module{Name: "web"}, &resources.Service{Name: "web"}, env, "", false, nil)
+	_, err = RenderService(ctx, workspace, &resources.Module{Name: "web"}, &resources.Service{Name: "web"}, env, "", false, nil, false)
 	if err == nil {
 		t.Fatal("expected RenderService to reject the unknown service-secrets override")
 	}

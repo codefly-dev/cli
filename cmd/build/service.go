@@ -173,10 +173,24 @@ func buildService(ctx context.Context, flow *orchestration.Flow) error {
 // not stand-alone builds its dependencies, and a pushed one publishes their
 // images too, so discarding their evidence would leave shipped images uncovered.
 func publishImageEvidence(workspace *resources.Workspace, flow *orchestration.Flow) error {
+	return publishCollectedImageEvidence(workspace, "", flow.ImageEvidence())
+}
+
+// publishCollectedImageEvidence publishes evidence keyed by service as one
+// directory with one index. A module builds its services through separate flows,
+// and publishing each flow on its own would leave an index describing only the
+// service published last.
+//
+// It owns the opt-in gate so that every caller honours it, rather than each call
+// site repeating a check one of them can forget.
+//
+// scope, when set, is a subdirectory of the configured directory. Publishing
+// removes generated documents the new index no longer names, so two modules
+// publishing into one directory would delete each other's evidence.
+func publishCollectedImageEvidence(workspace *resources.Workspace, scope string, collected map[string][]*builderv0.ImageSBOM) error {
 	if !imageSBOM {
 		return nil
 	}
-	collected := flow.ImageEvidence()
 	uniques := make([]string, 0, len(collected))
 	for unique := range collected {
 		uniques = append(uniques, unique)
@@ -193,6 +207,9 @@ func publishImageEvidence(workspace *resources.Workspace, flow *orchestration.Fl
 	directory := imageSBOMDirectory
 	if !filepath.IsAbs(directory) {
 		directory = filepath.Join(workspace.Dir(), directory)
+	}
+	if scope != "" {
+		directory = filepath.Join(directory, scope)
 	}
 	index, err := imageevidence.Publish(directory, documents, push)
 	if err != nil {

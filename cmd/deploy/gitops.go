@@ -66,7 +66,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		result, err := gitops.RenderModuleSnapshot(ctx, workspace, module, env, gitOpsProject, cli.NewOutputSink())
+		result, err := gitops.RenderModuleSnapshot(ctx, workspace, module, env, gitOpsProject, cli.NewOutputSink(), gitOpsImageSBOM)
 		if err != nil {
 			return err
 		}
@@ -465,6 +465,7 @@ var (
 	gitOpsYes                      bool
 	gitOpsLocal                    bool
 	gitOpsAllowUnresolvedContracts bool
+	gitOpsImageSBOM                bool
 )
 
 func init() {
@@ -475,6 +476,8 @@ func init() {
 	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd} {
 		command.Flags().StringVar(&gitOpsProject, "app-project", "", "AppProject contract for cluster-scoped resources")
 	}
+	gitOpsSnapshotCmd.Flags().BoolVar(&gitOpsImageSBOM, "image-sbom", false,
+		"Require digest-bound image SBOM evidence for every image the snapshot pushes and publish it into the rendered tree")
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsBranch, "promotion-branch", "", "Promotion branch (deterministic default when empty)")
 		command.Flags().BoolVar(&gitOpsLocal, "local", false, "Use a disposable local file Git remote for k3d qualification")

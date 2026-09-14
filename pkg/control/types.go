@@ -248,6 +248,9 @@ type GitOpsRenderRequest struct {
 	Service    string
 	Env        string
 	AppProject string
+	// ImageSBOM requires a digest-bound image SBOM for every image the render
+	// pushes and publishes it into the rendered tree.
+	ImageSBOM bool
 }
 
 // --- Source ---
