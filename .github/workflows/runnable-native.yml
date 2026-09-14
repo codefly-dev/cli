@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: codefly-dev/runnable-python
-          ref: 29bcbc611469c111e14fa8dbd8f95c36aec6185f
+          ref: 02f8241e0f659feaf80d9f3a518cd1c644fdb0a8
           path: .qualification-agent
       # The pinned agent requires Go 1.27.1; CLI's 1.27.0 minimum is lower.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -34,7 +34,12 @@ jobs:
         working-directory: .qualification-agent
         env:
           GOWORK: 'off'
-        run: go build -o "$RUNNER_TEMP/runnable-python" .
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/runnable-python" .
+          version=$(sed -n 's/^version:[[:space:]]*//p' agent.codefly.yaml)
+          test -n "$version"
+          echo "CODEFLY_RUNNABLE_AGENT_VERSION=${version}" >> "$GITHUB_ENV"
       - name: Create, build, relocate, invoke and verify through the CLI
         id: qualify
         env:

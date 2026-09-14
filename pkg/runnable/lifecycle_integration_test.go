@@ -29,12 +29,14 @@ import (
 func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	agentSource := os.Getenv("CODEFLY_RUNNABLE_AGENT_BINARY")
 	require.NotEmpty(t, agentSource, "build runnable-python and set CODEFLY_RUNNABLE_AGENT_BINARY")
+	agentVersion := os.Getenv("CODEFLY_RUNNABLE_AGENT_VERSION")
+	require.NotEmpty(t, agentVersion, "set CODEFLY_RUNNABLE_AGENT_VERSION to the built agent's manifest version")
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
 	root := t.TempDir()
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(root, "home"))
 	t.Setenv(manager.AgentSourceEnv, "local")
-	agent, err := resources.ParseAgent(ctx, resources.RunnableAgent, "codefly.dev/python:0.0.1")
+	agent, err := resources.ParseAgent(ctx, resources.RunnableAgent, "codefly.dev/python:"+agentVersion)
 	require.NoError(t, err)
 	agentPath, err := agent.Path(ctx)
 	require.NoError(t, err)
@@ -67,7 +69,7 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, string(help), "--json")
 	}
-	_, err = run("add", "runnable", "invalid", "--agent=python:0.0.1", "--handler=handler.invalid")
+	_, err = run("add", "runnable", "invalid", "--agent=python:"+agentVersion, "--handler=handler.invalid")
 	require.Error(t, err)
 	require.NoDirExists(t, filepath.Join(workspaceDir, "runnables", "invalid"))
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
@@ -75,7 +77,7 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	_, err = workspace.FindRunnableByName(ctx, "invalid")
 	require.Error(t, err, "failed creation must roll back its module reference")
 
-	created, err := run("add", "runnable", "word-count", "--agent=python:0.0.1", "--handler=handler.py", "--json")
+	created, err := run("add", "runnable", "word-count", "--agent=python:"+agentVersion, "--handler=handler.py", "--json")
 	require.NoError(t, err)
 	var receipt map[string]string
 	require.NoError(t, json.Unmarshal(created, &receipt))
@@ -109,7 +111,9 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	require.NoError(t, err, string(output))
 	binding, err := corerunnable.PrepareBinding(&basev0.RunnableBinding{
 		Schema: corerunnable.BindingSchemaV1, Identity: pkg.GetIdentity(), PackageDigest: pkg.GetDigest(),
-		Facility: &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE}, Artifact: artifact,
+		Facility:       &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE},
+		Implementation: &basev0.RunnableBinding_Artifact{Artifact: artifact},
+		Target:         nativeTarget(installed),
 	}, pkg)
 	require.NoError(t, err)
 	launcher, err := runnableops.NewNativeLauncher(pkg, binding, installed)

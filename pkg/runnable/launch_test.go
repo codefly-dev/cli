@@ -67,14 +67,25 @@ func testPackage(t *testing.T, command []string, adjust func(*basev0.RunnableExe
 	return pkg
 }
 
-func testBinding(t *testing.T, pkg *basev0.RunnablePackage) *basev0.RunnableBinding {
+func testBinding(t *testing.T, pkg *basev0.RunnablePackage, root string) *basev0.RunnableBinding {
 	t.Helper()
 	binding, err := corerunnable.PrepareBinding(&basev0.RunnableBinding{
 		Schema: corerunnable.BindingSchemaV1, Identity: pkg.GetIdentity(), PackageDigest: pkg.GetDigest(),
-		Facility: &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE}, Artifact: pkg.GetArtifacts()[0],
+		Facility:       &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE},
+		Implementation: &basev0.RunnableBinding_Artifact{Artifact: pkg.GetArtifacts()[0]},
+		Target:         nativeTarget(root),
 	}, pkg)
 	require.NoError(t, err)
 	return binding
+}
+
+func nativeTarget(root string) *basev0.RunnableTarget {
+	return &basev0.RunnableTarget{
+		Schema: corerunnable.TargetSchemaV1, Environment: "local", Revision: "installation-1",
+		Coordinates: &basev0.RunnableTarget_Host{Host: &basev0.RunnableHostTarget{
+			Launcher: "codefly", InstallPath: root,
+		}},
+	}
 }
 
 // installedHarness writes body as the installed artifact's launch command and
@@ -119,7 +130,7 @@ func invocationFor(pkg *basev0.RunnablePackage, id string, budget time.Duration)
 // invoke runs one invocation of an installed harness and returns its completion.
 func invoke(t *testing.T, ctx context.Context, pkg *basev0.RunnablePackage, root string, run runnableops.Run) *basev0.RunnableCompletion {
 	t.Helper()
-	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), root)
+	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, root), root)
 	require.NoError(t, err)
 	if run.Directory == "" {
 		run.Directory = filepath.Join(t.TempDir(), "invocation")
@@ -166,6 +177,7 @@ func TestInvokeDoesNotAcceptAnExitStatusAsACompletion(t *testing.T) {
 		{"a process that wrote no result", "exit 0\n", basev0.RunnableCompletion_MISSING_OUTPUT},
 		{"a process that crashed", "exit 7\n", basev0.RunnableCompletion_CRASHED},
 		{"another invocation's result", writeResult(`{"protocol":"codefly.runnable/v1","invocation_id":"inv-2","status":"SUCCEEDED","output":"e30="}`), basev0.RunnableCompletion_INVALID_OUTPUT},
+		{"an empty result", writeResult(""), basev0.RunnableCompletion_INVALID_OUTPUT},
 		{"a malformed result", writeResult("not a document"), basev0.RunnableCompletion_INVALID_OUTPUT},
 		{"a result with no payload", writeResult(`{"protocol":"codefly.runnable/v1","invocation_id":"inv-1","status":"SUCCEEDED"}`), basev0.RunnableCompletion_INVALID_OUTPUT},
 	} {
@@ -299,7 +311,8 @@ func TestInvokePassesOnlyTheFramingAndTheResolvedEnvironment(t *testing.T) {
 
 func TestInvokeRefusesAResolvedEnvironmentThatSetsTheFraming(t *testing.T) {
 	pkg := testPackage(t, []string{"harness"}, nil)
-	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), installedHarness(t, "exit 0\n"))
+	root := installedHarness(t, "exit 0\n")
+	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, root), root)
 	require.NoError(t, err)
 
 	_, err = launcher.Invoke(t.Context(), runnableops.Run{
@@ -345,14 +358,14 @@ func TestInvokeDoesNotDispatchAnInvocationWhoseDeadlineHasPassed(t *testing.T) {
 func TestInvokeRefusesMaterialItCannotDispatch(t *testing.T) {
 	pkg := testPackage(t, []string{"harness"}, nil)
 	root := installedHarness(t, "exit 0\n")
-	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), root)
+	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, root), root)
 	require.NoError(t, err)
 
 	t.Run("a budget longer than the declared timeout", func(t *testing.T) {
 		_, err := launcher.Invoke(t.Context(), runnableops.Run{
 			Invocation: invocationFor(pkg, "inv-1", 3*time.Hour), Directory: filepath.Join(t.TempDir(), "invocation"),
 		})
-		require.ErrorContains(t, err, "longer than the package's declared timeout")
+		require.ErrorContains(t, err, "the package declares a timeout")
 	})
 
 	t.Run("an invocation of another release", func(t *testing.T) {
@@ -383,19 +396,27 @@ func TestInvokeRefusesMaterialItCannotDispatch(t *testing.T) {
 }
 
 func TestNewNativeLauncherRefusesAnInstallationItCannotExecute(t *testing.T) {
+	t.Run("a different installation directory", func(t *testing.T) {
+		pkg := testPackage(t, []string{"harness"}, nil)
+		root := installedHarness(t, "exit 0\n")
+		_, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, t.TempDir()), root)
+		require.ErrorContains(t, err, "differs from the binding's install path")
+	})
+
 	t.Run("an artifact built for another platform", func(t *testing.T) {
 		pkg := testPackage(t, []string{"harness"}, nil)
 		pkg.GetArtifacts()[0].Platform = "plan9/386"
 		pkg.Digest = ""
 		pkg, err := corerunnable.PreparePackage(pkg)
 		require.NoError(t, err)
-		_, err = runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), installedHarness(t, "exit 0\n"))
+		root := installedHarness(t, "exit 0\n")
+		_, err = runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, root), root)
 		require.ErrorContains(t, err, "built for plan9/386")
 	})
 
 	t.Run("a binding that does not install the package", func(t *testing.T) {
 		pkg := testPackage(t, []string{"harness"}, nil)
-		binding := testBinding(t, pkg)
+		binding := testBinding(t, pkg, t.TempDir())
 		binding.CredentialReferences = []string{"tampered-after-installation"}
 		_, err := runnableops.NewNativeLauncher(pkg, binding, installedHarness(t, "exit 0\n"))
 		require.ErrorContains(t, err, "verify installed binding")
@@ -403,7 +424,8 @@ func TestNewNativeLauncherRefusesAnInstallationItCannotExecute(t *testing.T) {
 
 	t.Run("a launch command outside the installed package", func(t *testing.T) {
 		pkg := testPackage(t, []string{"../escape"}, nil)
-		_, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), installedHarness(t, "exit 0\n"))
+		root := installedHarness(t, "exit 0\n")
+		_, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, root), root)
 		require.ErrorContains(t, err, "inside the installed package")
 	})
 
@@ -411,13 +433,13 @@ func TestNewNativeLauncherRefusesAnInstallationItCannotExecute(t *testing.T) {
 		pkg := testPackage(t, []string{"handler.py"}, nil)
 		root := installedHarness(t, "exit 0\n")
 		require.NoError(t, os.WriteFile(filepath.Join(root, "handler.py"), []byte("print()\n"), 0600))
-		_, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), root)
+		_, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, root), root)
 		require.ErrorContains(t, err, "is not an executable file")
 	})
 
 	t.Run("a relative installed root", func(t *testing.T) {
 		pkg := testPackage(t, []string{"harness"}, nil)
-		_, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), "relative/root")
+		_, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, t.TempDir()), "relative/root")
 		require.ErrorContains(t, err, "must be absolute")
 	})
 }
@@ -428,7 +450,7 @@ func TestInvokeReportsALauncherFailureAfterDispatchAsACompletion(t *testing.T) {
 	// caller must receive an uncertain completion: an error here would say the
 	// invocation never happened, and re-dispatching it could repeat its effect.
 	root := installedHarness(t, "/bin/mkdir \"$CODEFLY__RUNNABLE_RESULT\"\n")
-	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg), root)
+	launcher, err := runnableops.NewNativeLauncher(pkg, testBinding(t, pkg, root), root)
 	require.NoError(t, err)
 
 	completion, err := launcher.Invoke(t.Context(), runnableops.Run{
