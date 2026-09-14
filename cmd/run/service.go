@@ -35,10 +35,24 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Start a service locally with its dependency graph",
 	Args:  cobra.MaximumNArgs(1),
-	RunE:  runServiceCommand,
+	RunE:  func(cmd *cobra.Command, args []string) error { return runServiceCommand(cmd, args, false) },
 }
 
-func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
+// resolveRunPins materializes the workspace's composed pinned modules unless the
+// caller already did. `run solution` materializes unconditionally before
+// delegating to this path, and repeating it there would re-attempt a pull that
+// already failed once in the same invocation — a second round trip and a
+// duplicate warning for a request nothing has changed since.
+func resolveRunPins(ctx context.Context, alreadyResolved bool) error {
+	if alreadyResolved {
+		return nil
+	}
+	return common.ResolvePinnedModulesForRun(ctx)
+}
+
+// pinsResolved says the caller has already materialized this workspace's
+// composed pinned modules; see resolveRunPins.
+func runServiceCommand(cmd *cobra.Command, args []string, pinsResolved bool) (returnErr error) {
 	if err := validateOpenDashboardFlag(openDashboard, withCLIServer); err != nil {
 		return err
 	}
@@ -125,10 +139,8 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// Materialize composed pinned modules before resolving the service: a module
 	// referenced by identity is not loadable as a local checkout until the CLI
 	// has pulled it, so the load below is precisely what fails without this —
-	// including for the dependency stacks the SDK spawns here. The workspace it
-	// returns is dropped because the loaders re-find it themselves; what this
-	// call leaves behind is the overlay they then read.
-	if _, err := common.LoadWorkspaceWithPinnedModules(ctx); err != nil {
+	// including for the dependency stacks the SDK spawns here.
+	if err := resolveRunPins(ctx, pinsResolved); err != nil {
 		return err
 	}
 

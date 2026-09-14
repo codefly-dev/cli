@@ -186,7 +186,7 @@ func moduleSubdir(dir, module string) (string, error) {
 
 func exactPinnedVersion(version string) (string, bool) {
 	version = strings.TrimSpace(version)
-	if version == "" || version == "latest" {
+	if version == "" || version == latestVersion {
 		return "", false
 	}
 	parsed, err := semver.NewVersion(strings.TrimPrefix(version, "v"))
@@ -432,7 +432,7 @@ func resolvePackageVersion(ctx context.Context, client *github.Client, owner, re
 	}
 	versionSpec = strings.TrimSpace(versionSpec)
 	var constraint *semver.Constraints
-	if versionSpec != "" && versionSpec != "latest" {
+	if versionSpec != "" && versionSpec != latestVersion {
 		var err error
 		constraint, err = semver.NewConstraint(versionSpec)
 		if err != nil {
@@ -713,7 +713,7 @@ func (receipt *ResolutionReceipt) ResolvedPath() string {
 func requestedVersion(version string) string {
 	version = strings.TrimSpace(version)
 	if version == "" {
-		return "latest"
+		return latestVersion
 	}
 	bare := strings.TrimPrefix(version, "v")
 	if _, err := semver.NewVersion(bare); err == nil {

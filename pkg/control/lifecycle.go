@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
@@ -36,11 +37,33 @@ func (p *planeImpl) loadTarget(ctx context.Context, name string) (*resources.Wor
 	return ws, module, service, nil
 }
 
+// resolvePinnedModules materializes the composed pinned modules of the plane's
+// workspace. The plane loads from an explicit root rather than the process
+// working directory, so it cannot share cmd/common's cwd-based helper — but it
+// runs the same materialization, so a lifecycle driven here and the same one
+// driven from the command line resolve a composed module identically.
+func (p *planeImpl) resolvePinnedModules(ctx context.Context) error {
+	ws, err := p.workspace(ctx)
+	if err != nil {
+		return err
+	}
+	return composition.EnsurePinnedModules(ctx, ws)
+}
+
 // buildFlow performs the construction shared by every lifecycle driver: resolve
 // the target, select the environment, create the flow in the given mode, apply
 // caller configuration, spawn agents (InitManagers), and Load (which builds the
 // mode's policy + playbook). The returned flow is ready to drive.
 func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name, envName string, configure func(*resources.Workspace, *orchestration.Flow) error) (*orchestration.Flow, error) {
+	// Resolve composed pinned modules before loadTarget: it finds the service by
+	// loading the workspace's modules, and a module composed by identity is not
+	// loadable as a checkout until the CLI has pulled it. Without this, driving a
+	// run or test through the control plane (the MCP `run_service` and
+	// `test_service` tools) fails on exactly the workspaces the command-line
+	// entry points now handle.
+	if err := p.resolvePinnedModules(ctx); err != nil {
+		return nil, err
+	}
 	ws, module, service, err := p.loadTarget(ctx, name)
 	if err != nil {
 		return nil, err

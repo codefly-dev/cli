@@ -2,6 +2,7 @@ package composition
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,13 @@ import (
 
 	"github.com/gofrs/flock"
 )
+
+// ErrLockTimeout reports that the lock could not be acquired before the timeout
+// elapsed — someone else is still inside their critical section. It is a
+// distinct error because waiting out a holder is not the same failure as the
+// work itself failing: a caller whose work that holder may have just completed
+// can re-check its own precondition instead of failing the operation.
+var ErrLockTimeout = errors.New("timed out acquiring lock")
 
 // WithFileLock runs fn while holding an exclusive, cross-process lock on
 // lockPath, waiting up to timeout to acquire it. It serializes read-modify-
@@ -24,11 +32,15 @@ func WithFileLock(lockPath string, timeout time.Duration, fn func() error) error
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	locked, err := lock.TryLockContext(ctx, 50*time.Millisecond)
+	// A deadline here is this function's own timeout expiring — the context is
+	// derived from Background, never from the caller — so it means the holder
+	// outlasted the wait, not that anything is wrong with the lock. It arrives as
+	// an error rather than locked=false, so both spellings map to ErrLockTimeout.
+	if errors.Is(err, context.DeadlineExceeded) || (err == nil && !locked) {
+		return fmt.Errorf("%w %s", ErrLockTimeout, lockPath)
+	}
 	if err != nil {
 		return fmt.Errorf("acquire lock %s: %w", lockPath, err)
-	}
-	if !locked {
-		return fmt.Errorf("timed out acquiring lock %s", lockPath)
 	}
 	defer func() {
 		_ = lock.Unlock()

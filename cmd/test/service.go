@@ -68,7 +68,7 @@ Examples:
 		// workspace that composes a module by identity cannot load it as a local
 		// checkout until the CLI has pulled it, so without this the load below
 		// fails on every machine that has not run `run solution` first.
-		if _, err := common.LoadWorkspaceWithPinnedModules(ctx); err != nil {
+		if err := common.ResolvePinnedModulesForRun(ctx); err != nil {
 			return err
 		}
 

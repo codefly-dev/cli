@@ -1,4 +1,4 @@
-package common
+package composition
 
 import (
 	"context"
@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/composition/pinnedfixture"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -674,8 +674,8 @@ func TestPruneStalePinnedEntries(t *testing.T) {
 	modules := []*resources.ModuleReference{{Name: "kept", Source: "owner/kept"}}
 	// "moved" is a clone this CLI wrote before CODEFLY_HOME moved: the receipt,
 	// not the cache-root shape, is what marks it as ours to prune.
-	receipts := map[string]*composition.ResolutionReceipt{
-		"moved": {Mode: composition.ResolutionModeGit, Path: movedHomeClone},
+	receipts := map[string]*ResolutionReceipt{
+		"moved": {Mode: ResolutionModeGit, Path: movedHomeClone},
 	}
 
 	if !pruneStalePinnedEntries(resolve, modules, receipts, cacheRoot) {
@@ -733,7 +733,7 @@ func TestMaterializePinnedModulesGitOptOutSurvivesRepeatedRuns(t *testing.T) {
 	}
 	// Consuming a hand-written directive is announced: the user must not discover
 	// the rewrite later as an unexplained diff.
-	if !strings.Contains(narration.String(), composition.ResolutionRecordName) {
+	if !strings.Contains(narration.String(), ResolutionRecordName) {
 		t.Fatalf("the rewrite of `git: true` was not announced: %q", narration.String())
 	}
 
@@ -781,7 +781,7 @@ func TestMaterializePinnedModulesGitOptOutSurvivesRepeatedRuns(t *testing.T) {
 
 	// The choice the overlay can no longer express is recorded beside it, and
 	// the record is gitignored like the overlay itself.
-	record, err := composition.LoadResolutionReceipts(workspaceDir)
+	record, err := LoadResolutionReceipts(workspaceDir)
 	if err != nil {
 		t.Fatalf("load resolution record: %v", err)
 	}
@@ -789,11 +789,11 @@ func TestMaterializePinnedModulesGitOptOutSurvivesRepeatedRuns(t *testing.T) {
 	if receipt == nil || receipt.Path != bumped.Path {
 		t.Fatalf("record must hold the clone the overlay points at, got %+v want %s", receipt, bumped.Path)
 	}
-	if receipt.Mode != composition.ResolutionModeGit || receipt.Requested != "v0.0.2" || receipt.Version != "v0.0.2" {
+	if receipt.Mode != ResolutionModeGit || receipt.Requested != "v0.0.2" || receipt.Version != "v0.0.2" {
 		t.Fatalf("receipt must bind the request it answered, got %+v", receipt)
 	}
 	gitignore, err := os.ReadFile(filepath.Join(workspaceDir, ".gitignore"))
-	if err != nil || !strings.Contains(string(gitignore), composition.ResolutionRecordName) {
+	if err != nil || !strings.Contains(string(gitignore), ResolutionRecordName) {
 		t.Fatalf(".gitignore does not ignore the record: %q (%v)", gitignore, err)
 	}
 }
@@ -879,7 +879,7 @@ func TestMaterializePinnedModulesPinnedDirectiveRevokesGitRecord(t *testing.T) {
 	if directive := overlay.Resolve["saas"]; directive == nil || !directive.Pinned {
 		t.Fatalf("revoked entry must stay pinned, not be re-pointed at a clone: %+v", directive)
 	}
-	record, err := composition.LoadResolutionReceipts(workspaceDir)
+	record, err := LoadResolutionReceipts(workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -918,7 +918,7 @@ func TestMaterializePinnedModulesPrunesGitRecordForRemovedModule(t *testing.T) {
 	if err = MaterializePinnedModules(ctx, workspace); err != nil {
 		t.Fatalf("materialize after removal: %v", err)
 	}
-	record, err := composition.LoadResolutionReceipts(workspaceDir)
+	record, err := LoadResolutionReceipts(workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1048,7 +1048,7 @@ func TestMaterializePinnedModulesRejectsStaleGitCheckoutAfterFailedBump(t *testi
 	// The receipt is kept, not dropped: it is what still identifies the dropped
 	// path as machine output. What must be true is that it answers no current
 	// request, so it makes nothing eligible.
-	receipts, err := composition.LoadResolutionReceipts(workspaceDir)
+	receipts, err := LoadResolutionReceipts(workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1056,7 +1056,7 @@ func TestMaterializePinnedModulesRejectsStaleGitCheckoutAfterFailedBump(t *testi
 	if receipt == nil || receipt.Path != resolvedPath {
 		t.Fatalf("the receipt must keep naming the materialization it wrote: %+v", receipt)
 	}
-	if receipt.Answers(workspace.Modules[0], composition.ResolutionModeGit) {
+	if receipt.Answers(workspace.Modules[0], ResolutionModeGit) {
 		t.Fatalf("the kept receipt must not answer the new request: %+v", receipt)
 	}
 }
@@ -1110,9 +1110,9 @@ func TestMaterializePinnedModulesRecoversFromReceiptWrittenWithoutOverlay(t *tes
 	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
 	writeGitFallbackOverlay(t, workspaceDir, "saas")
 	orphan := filepath.Join(pinnedModuleCacheRoot(), filepath.FromSlash(source), "v0.0.1")
-	if err := composition.SaveResolutionReceipts(ctx, workspaceDir, map[string]*composition.ResolutionReceipt{
+	if err := SaveResolutionReceipts(ctx, workspaceDir, map[string]*ResolutionReceipt{
 		"saas": {
-			Source: source, Requested: "v0.0.1", Mode: composition.ResolutionModeGit,
+			Source: source, Requested: "v0.0.1", Mode: ResolutionModeGit,
 			Version: "v0.0.1", Path: orphan,
 		},
 	}); err != nil {
@@ -1161,7 +1161,7 @@ func TestMaterializePinnedModulesRejectsMigratedRecordThatAnswersNoRequest(t *te
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workspaceDir, composition.ResolutionRecordName),
+	if err := os.WriteFile(filepath.Join(workspaceDir, ResolutionRecordName),
 		[]byte("git-resolved:\n    saas: "+stale+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1215,12 +1215,12 @@ func TestMaterializePinnedModulesRejectsStaleVerifiedPackageAfterFailedBump(t *t
 	if !underDir(verifiedPinnedModuleCacheRoot(workspaceDir), verified) {
 		t.Fatalf("verified resolution must land in the workspace cache, got %q", verified)
 	}
-	receipts, err := composition.LoadResolutionReceipts(workspaceDir)
+	receipts, err := LoadResolutionReceipts(workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	receipt := receipts["saas"]
-	if receipt == nil || receipt.Mode != composition.ResolutionModeVerified || receipt.Digest == "" || receipt.Commit != pinnedfixture.Commit {
+	if receipt == nil || receipt.Mode != ResolutionModeVerified || receipt.Digest == "" || receipt.Commit != pinnedfixture.Commit {
 		t.Fatalf("a verified receipt must carry the digest and commit it verified: %+v", receipt)
 	}
 
@@ -1328,12 +1328,12 @@ func TestMaterializePinnedModulesRevokedGitOptOutDoesNotKeepTheClone(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	receipts, err := composition.LoadResolutionReceipts(workspaceDir)
+	receipts, err := LoadResolutionReceipts(workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipts["saas"].Mode = composition.ResolutionModeVerified
-	if err = composition.SaveResolutionReceipts(ctx, workspaceDir, receipts); err != nil {
+	receipts["saas"].Mode = ResolutionModeVerified
+	if err = SaveResolutionReceipts(ctx, workspaceDir, receipts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1580,9 +1580,9 @@ func TestPinnedRequestsAnsweredIgnoresUserCheckouts(t *testing.T) {
 
 // The whole point of the shared path: a workspace composing a module by identity
 // is unloadable until the CLI pulls it, and every run-shaped entry point now
-// loads through the materialization that makes it loadable — no prior `run
+// resolves through the materialization that makes it loadable — no prior `run
 // solution` on the machine.
-func TestLoadWorkspaceWithPinnedModulesMaterializesForEveryEntryPoint(t *testing.T) {
+func TestEnsurePinnedModulesMaterializesForEveryEntryPoint(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	source := initModuleRepo(t, "", "v0.0.1")
 	ctx := context.Background()
@@ -1590,9 +1590,8 @@ func TestLoadWorkspaceWithPinnedModulesMaterializesForEveryEntryPoint(t *testing
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
 	writeGitFallbackOverlay(t, workspaceDir, "saas")
-	t.Chdir(workspaceDir)
 
-	unresolved, err := LoadWorkspace(ctx)
+	unresolved, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1600,9 +1599,13 @@ func TestLoadWorkspaceWithPinnedModulesMaterializesForEveryEntryPoint(t *testing
 		t.Fatal("a pinned module must not be loadable as a checkout before it is materialized")
 	}
 
-	workspace, err := LoadWorkspaceWithPinnedModules(ctx)
-	if err != nil {
+	if err = EnsurePinnedModules(ctx, unresolved); err != nil {
 		t.Fatalf("the shared run path must materialize the pinned module: %v", err)
+	}
+	// Reloaded the way a caller does once the overlay has been written.
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
 	}
 	module, err := workspace.LoadModuleFromReference(ctx, workspace.Modules[0])
 	if err != nil {
@@ -1614,9 +1617,9 @@ func TestLoadWorkspaceWithPinnedModulesMaterializesForEveryEntryPoint(t *testing
 }
 
 // Materialization is the exception, not the rule: once a receipt answers the
-// request, the shared run path resolves the workspace without touching the
-// network at all, so a run stays bootable offline and costs no round trip.
-func TestLoadWorkspaceWithPinnedModulesSkipsNetworkWhenReceiptsAnswer(t *testing.T) {
+// request, the shared run path resolves without touching the network at all, so
+// a run stays bootable offline and costs no round trip.
+func TestEnsurePinnedModulesSkipsNetworkWhenReceiptsAnswer(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	fixture := pinnedfixture.New(t)
 	fixture.AddRelease(t, "0.1.0")
@@ -1626,20 +1629,172 @@ func TestLoadWorkspaceWithPinnedModulesSkipsNetworkWhenReceiptsAnswer(t *testing
 	workspaceDir := t.TempDir()
 	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
 	writeVerifiedWorkspace(t, workspaceDir, fixture, "0.1.0")
-	t.Chdir(workspaceDir)
 
-	if _, err := LoadWorkspaceWithPinnedModules(ctx); err != nil {
-		t.Fatalf("first load must materialize the verified package: %v", err)
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = EnsurePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("first resolve must materialize the verified package: %v", err)
 	}
 	pulled := fixture.Requests()
 	if pulled == 0 {
-		t.Fatal("the first load must have pulled the module package")
+		t.Fatal("the first resolve must have pulled the module package")
 	}
 
-	if _, err := LoadWorkspaceWithPinnedModules(ctx); err != nil {
-		t.Fatalf("second load: %v", err)
+	if err = EnsurePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("second resolve: %v", err)
 	}
 	if served := fixture.Requests() - pulled; served != 0 {
 		t.Fatalf("a receipt that answers the request must need no network, got %d request(s)", served)
+	}
+}
+
+// A module that cannot be pulled must stay re-attemptable. Remembering the
+// failure would be the cheaper steady state, but it would also mean that fixing
+// the actual cause — credentials, connectivity — left `run service` still
+// refusing, recreating the "run `codefly run solution` first" trap. So the
+// module stays unanswered and the next run tries again.
+func TestEnsurePinnedModulesRetriesAfterAFailedPull(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	unreachable := "file://" + filepath.Join(t.TempDir(), "no-such-repo")
+	writeSolutionWorkspace(t, workspaceDir, unreachable, "v0.0.1")
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Best effort: one unpullable module never blocks an otherwise-bootable run.
+	if err = EnsurePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("an unpullable module must not fail the run: %v", err)
+	}
+	answered, err := pinnedRequestsAnswered(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answered {
+		t.Fatal("a module that was never materialized must not count as answered, or the retry would never happen")
+	}
+
+	// The cause is fixed (here: the source starts resolving). The very next run
+	// must pick it up, with no special command in between.
+	writeSolutionWorkspace(t, workspaceDir, initModuleRepo(t, "", "v0.0.1"), "v0.0.1")
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = EnsurePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("the run after the cause is fixed must resolve: %v", err)
+	}
+	if answered, err = pinnedRequestsAnswered(ctx, workspace); err != nil || !answered {
+		t.Fatalf("the module must be materialized once its source resolves (answered=%v, err=%v)", answered, err)
+	}
+}
+
+// Concurrent `run service` processes from one SDK dependency stack all reach
+// materialization together on a cold machine and queue on the overlay lock. A
+// waiter that gives up must not fail a run whose work the holder just finished —
+// otherwise a slow first pull turns every sibling run into a spurious failure.
+func TestEnsurePinnedModulesProceedsWhenTheLockHolderDidTheWork(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const wait = 500 * time.Millisecond
+	previous := overlayLockTimeout
+	overlayLockTimeout = wait
+	t.Cleanup(func() { overlayLockTimeout = previous })
+
+	// Stand in for the sibling run: materialize inside the lock — well within
+	// this run's wait — then keep holding it well past that wait, so this run is
+	// forced down the timeout path with the work already done behind it.
+	holderDone := make(chan struct{})
+	holding := make(chan struct{})
+	go func() {
+		defer close(holderDone)
+		_ = WithFileLock(overlayLockPath(workspaceDir), time.Minute, func() error {
+			close(holding)
+			if err := materializePinnedModulesLocked(ctx, workspace, workspaceDir); err != nil {
+				return err
+			}
+			time.Sleep(4 * wait)
+			return nil
+		})
+	}()
+	<-holding
+
+	start := time.Now()
+	err = EnsurePinnedModules(ctx, workspace)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("a run whose precondition the lock holder satisfied must proceed, got: %v", err)
+	}
+	// Without this the test would pass just as happily by never contending at
+	// all — the timeout path, which is the whole point, would go unexercised.
+	if elapsed < wait {
+		t.Fatalf("the run returned in %s without waiting out the lock, so the timeout path was never taken", elapsed)
+	}
+	<-holderDone
+}
+
+// Failing closed is the whole reason materialization may write on a failing run:
+// when the bumped version cannot be resolved, the path the *previous* request
+// resolved to must stop being selected, or the run silently keeps shipping it.
+func TestEnsurePinnedModulesFailsClosedAndDropsTheStalePath(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = EnsurePinnedModules(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := overlay.Resolve["saas"].Path
+
+	// Bump to a version that was never published.
+	writeSolutionWorkspace(t, workspaceDir, source, "v9.9.9")
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = EnsurePinnedModules(ctx, workspace)
+	if err == nil {
+		t.Fatal("an unresolvable bump must fail the run rather than boot the previous version")
+	}
+	for _, want := range []string{"saas", "v9.9.9", "v0.0.1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must name the module and both versions, got: %v", err)
+		}
+	}
+	overlay, err = resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if directive := overlay.Resolve["saas"]; directive != nil && directive.Path == stale {
+		t.Fatalf("the stale path must stop being selected once it answers no request: %+v", directive)
 	}
 }

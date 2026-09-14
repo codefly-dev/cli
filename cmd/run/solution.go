@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution/manifest"
@@ -40,7 +41,7 @@ var SolutionCmd = &cobra.Command{
 		// Pull composed modules that resolve to a pinned artifact into the local
 		// cache and point the overlay at them, so the delegated run below loads
 		// them as local checkouts instead of erroring on an unfetched coordinate.
-		if err = common.MaterializePinnedModules(ctx, workspace); err != nil {
+		if err = composition.MaterializePinnedModules(ctx, workspace); err != nil {
 			done()
 			return err
 		}
@@ -60,8 +61,12 @@ var SolutionCmd = &cobra.Command{
 		// Delegate to the run-service path with the resolved entry. It reloads
 		// the workspace and boots the full dependency graph — reusing every run
 		// flag default seeded by ServiceCmd's init, plus the solution-facing
-		// flags registered below (which bind the same package vars).
-		return runServiceCommand(cmd, []string{entry})
+		// flags registered below (which bind the same package vars). The pins are
+		// declared resolved: materialization above already ran unconditionally,
+		// so letting the delegate run it again would re-attempt any pull that
+		// warned there — a second round trip and a duplicate warning, for a
+		// request nothing has changed since.
+		return runServiceCommand(cmd, []string{entry}, true)
 	},
 }
 
