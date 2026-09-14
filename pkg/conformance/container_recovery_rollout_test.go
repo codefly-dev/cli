@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"gopkg.in/yaml.v3"
 )
 
 // rolloutDocumentPath locates the human-readable view of the inventory.
@@ -219,6 +221,179 @@ func TestContainerRecoveryScopeHasOneResolver(t *testing.T) {
 	for pkg := range found {
 		if pkg != resolver {
 			t.Errorf("%s assembles the container recovery scope itself; resolve through orchestration.ContainerRecoveryScopeFor instead, or the two recipes drift into hashes that match nothing", pkg)
+		}
+	}
+}
+
+// nativeQualificationWorkflow rebuilds agents on the Core this CLI pins and
+// qualifies the native container-recovery path against the real binaries.
+const nativeQualificationWorkflow = "container-recovery-native.yml"
+
+// nativelyQualifiedAgents maps the agent repository each matrix entry rebuilds
+// to the identity the qualification resolves that build under.
+func nativelyQualifiedAgents(t *testing.T) map[string]string {
+	t.Helper()
+	path := filepath.Join(repositoryRoot(t), ".github", "workflows", nativeQualificationWorkflow)
+	qualified, problems, err := parseNativelyQualifiedAgents(readFile(t, path))
+	if err != nil {
+		t.Fatalf("parse %s: %v", nativeQualificationWorkflow, err)
+	}
+	for _, problem := range problems {
+		t.Errorf("%s %s", nativeQualificationWorkflow, problem)
+	}
+	if len(qualified) == 0 {
+		t.Fatalf("%s qualifies no agent", nativeQualificationWorkflow)
+	}
+	return qualified
+}
+
+// parseNativelyQualifiedAgents reads the qualification matrix out of a workflow
+// document, returning what it qualifies and everything wrong with how it says
+// so.
+//
+// The matrix is read as a parsed document rather than from the file's text:
+// every repository name also appears in this workflow's step names, so a
+// substring test would keep reporting a deleted entry as covered.
+//
+// A repository named twice is reported rather than merged. Merging would keep
+// whichever row YAML order puts last, so a duplicate carrying the wrong
+// identity would be caught or missed depending on where it was pasted — and
+// the job it expands into passes either way, because the rebuilt binary
+// answers the acknowledgement the same whatever identity it was installed
+// under.
+func parseNativelyQualifiedAgents(payload string) (map[string]string, []string, error) {
+	var document struct {
+		Jobs map[string]struct {
+			Strategy struct {
+				Matrix struct {
+					Include []struct {
+						Agent      string `yaml:"agent"`
+						Repository string `yaml:"repository"`
+					} `yaml:"include"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(payload), &document); err != nil {
+		return nil, nil, err
+	}
+	qualified := map[string]string{}
+	var problems []string
+	for _, job := range document.Jobs {
+		for _, entry := range job.Strategy.Matrix.Include {
+			switch {
+			case entry.Agent == "" || entry.Repository == "":
+				problems = append(problems, fmt.Sprintf("has a matrix entry naming agent %q and repository %q; it must name both",
+					entry.Agent, entry.Repository))
+			case qualified[entry.Repository] != "":
+				problems = append(problems, fmt.Sprintf("qualifies %s twice, as %q and %q; each repository must appear once, or which identity survives depends on row order",
+					entry.Repository, qualified[entry.Repository], entry.Agent))
+			default:
+				qualified[entry.Repository] = entry.Agent
+			}
+		}
+	}
+	return qualified, problems, nil
+}
+
+// TestNativeQualificationMatrixRejectsADuplicateRepository pins the reason the
+// matrix is not folded into a map blindly. Two rows naming one repository
+// collapse to whichever comes last, so the same mistake passes or fails on
+// where it was pasted — and neither outcome is caught downstream, because the
+// qualification job holds the binary to its repository but cannot know the
+// matrix meant to name that repository only once.
+func TestNativeQualificationMatrixRejectsADuplicateRepository(t *testing.T) {
+	matrix := func(first, second string) string {
+		return `
+jobs:
+  native:
+    strategy:
+      matrix:
+        include:
+          - agent: ` + first + `
+            repository: service-rust
+            ref: 1111111111111111111111111111111111111111
+          - agent: ` + second + `
+            repository: service-rust
+            ref: 2222222222222222222222222222222222222222
+`
+	}
+	// Both orders must report, which is exactly what a last-wins map does not.
+	for _, order := range []struct{ first, second string }{
+		{"totally-wrong", "rust"},
+		{"rust", "totally-wrong"},
+	} {
+		qualified, problems, err := parseNativelyQualifiedAgents(matrix(order.first, order.second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(problems) != 1 || !strings.Contains(problems[0], "qualifies service-rust twice") {
+			t.Errorf("matrix listing service-rust as %q then %q reported %v, want one duplicate report",
+				order.first, order.second, problems)
+		}
+		if len(qualified) != 1 {
+			t.Errorf("a duplicated repository must not expand the qualified set, got %v", qualified)
+		}
+	}
+
+	// A matrix naming each repository once stays silent, so the report above
+	// is about the duplication and not about the shape of the document.
+	_, problems, err := parseNativelyQualifiedAgents(`
+jobs:
+  native:
+    strategy:
+      matrix:
+        include:
+          - agent: rust
+            repository: service-rust
+            ref: 1111111111111111111111111111111111111111
+          - agent: go
+            repository: service-go
+            ref: 2222222222222222222222222222222222222222
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("a matrix naming each repository once reported %v", problems)
+	}
+}
+
+// TestNativeQualificationCoversEveryCompanionRow holds the native qualification
+// to the inventory. An agent that reaches a container through a Core companion
+// is exempt from the acknowledgement guard on native and Nix, so a stale binary
+// there creates unlabeled containers and nothing fails loudly — rebuilding it
+// in this workflow is the only thing that catches it. A row that falls out of
+// the matrix is a row the release gate stops covering silently, which is the
+// failure this test exists to make loud.
+func TestNativeQualificationCoversEveryCompanionRow(t *testing.T) {
+	qualified := nativelyQualifiedAgents(t)
+	rollout := Rollout()
+	classified := map[string]bool{}
+	for i := range rollout.Agents {
+		agent := &rollout.Agents[i]
+		if agent.Creates != CreatesInCompanion && agent.Creates != CreatesInBoth {
+			continue
+		}
+		classified[agent.Repository] = true
+		name, covered := qualified[agent.Repository]
+		if !covered {
+			t.Errorf("%s reaches a container through a Core companion, where the acknowledgement guard is exempt, but %s does not rebuild and qualify it",
+				agent.Repository, nativeQualificationWorkflow)
+			continue
+		}
+		// The identity resolves the cache path the rebuilt binary is installed
+		// at, so qualifying one row's build under another row's name qualifies
+		// neither of them.
+		if name != agent.Name {
+			t.Errorf("%s qualifies %s under agent %q, the inventory names it %q",
+				nativeQualificationWorkflow, agent.Repository, name, agent.Name)
+		}
+	}
+	for repository := range qualified {
+		if !classified[repository] {
+			t.Errorf("%s qualifies %s, which the inventory does not classify as reaching a container through a Core companion",
+				nativeQualificationWorkflow, repository)
 		}
 	}
 }

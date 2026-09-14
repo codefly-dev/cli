@@ -182,12 +182,32 @@ predicate, so a Local/Nix run still never contacts a daemon.
 record for which agents this affects and what remains unqualified.
 
 `.github/workflows/container-recovery-native.yml` qualifies the path on every
-change: it rebuilds `service-go` — a `companion` row — against the Core this
-checkout pins and requires the projected identity back verbatim in the
-`codefly-container-recovery-scope` header, retaining the log as an artifact.
-Observed on 2026-09-13: rebuilt on `b3470f0096cd` it echoes the identity
-exactly, while the same source at its own pin `177cb87e85ee` returns an empty
-acknowledgement — what every published agent does today.
+change: it rebuilds every row that reaches a container through a Core companion
+— `service-go`, `service-go-grpc`, `service-rust`, `service-nextjs` and
+`service-python-fastapi` — against the Core this checkout pins and requires the
+projected identity back verbatim in the `codefly-container-recovery-scope`
+header, retaining each log as an artifact. The matrix cannot quietly shrink
+back to one row: `pkg/conformance` fails if it and the inventory disagree about
+which rows reach a container that way, or if one repository is listed twice.
+
+Each rebuilt binary is held to the repository its row names, read from the
+binary's own build information. The agent identity a row carries only selects
+the cache path the binary is installed at, and an agent answers the
+acknowledgement the same wherever it sits, so without that check a row passes
+while qualifying a different agent's build entirely. Separately, a weekly
+scheduled job reports any pinned ref whose default branch has moved past it:
+nothing else refreshes those pins, and a gate qualifying source the fleet no
+longer publishes reports success for work nobody did.
+
+Observed on 2026-09-13, rebuilt on `b3470f0096cd` and run against the real
+agent processes: all five echo the identity exactly — `go` 0.0.48, `go-grpc`
+0.1.36, `rust` 0.0.35, `nextjs` 0.0.152, `python-fastapi` 0.0.98. Building
+`service-go-grpc` on the pre-marker Core it is published against (`v0.3.27`)
+instead is rejected on the embedded-Core assertion, before the header is read
+at all — so the qualification refuses a published-generation binary rather than
+reporting an empty acknowledgement for it. That empty acknowledgement was
+recorded separately, for `service-go` at its own pin `177cb87e85ee`, and is
+what every published agent returns today.
 
 **A native run holding a container-pinned service now fails against the
 published fleet.** `preferences.codefly.yaml` overrides the launch context per
@@ -199,7 +219,32 @@ than silently creating unlabeled containers. That is the intended outcome and
 the reason the rebuild gates the release — but it is a new, loud failure on a
 path that used to be silent, so expect it as soon as this ships.
 
-This closes the CLI-side half of the native `companion` qualification. It does
-not lift the release gate: the remaining rebuild, qualification, publishing and
-matrix items are carried in
-[cli#647](https://github.com/codefly-dev/cli/issues/647).
+This closes the CLI-side half of the native `companion` qualification.
+
+### `codefly generate` is qualified against a real daemon
+
+`generate` is the one command that reaches Docker without spawning an agent:
+`generate proto`, `contracts` and `client` build their containers in the CLI
+process itself. No fleet rebuild can make those recoverable — there is no agent
+in the path — and no unit test can prove they are, because the labels and the
+sweeps that read them exist only against a real daemon.
+
+`TestAnInterruptedGenerateLeavesARecoverableContainer` runs in `go.yml`'s
+`control-integration` gate. It re-execs an interrupted generate — a process that
+builds its container and dies before the defer that would shut it down — and
+then requires that the leftover carries `codefly.recovery-scope` and the durable
+namespace, that a later run's *exact-scope* sweep walks past it once that run
+renamed the naming scope, and that the disposable sweep collects it. Observed
+2026-09-13 against Docker 29.4.0.
+
+Expect the exact-scope sweep to miss these containers: that is the documented
+behavior, not a defect. A run is free to choose a different naming scope
+(`--naming-scope`, a non-local `--env`, the invocation id `--temporary-ports`
+generates), and the exact-scope hash includes it. What collects the leftover is
+the disposable sweep, keyed on the naming-scope-independent namespace, and it
+reaches these containers only because `generate` marks them ephemeral.
+
+This is the only container-recovery dimension the CLI can qualify on its own.
+It does not lift the release gate: the remaining rebuild, qualification,
+publishing and matrix items are carried in
+[cli#662](https://github.com/codefly-dev/cli/issues/662).
