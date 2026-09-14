@@ -31,6 +31,7 @@ func (p *planeImpl) RenderGitOps(ctx context.Context, request GitOpsRenderReques
 	}
 	produce := gitops.ProduceRequest{
 		Workspace: workspace, Module: module, Environment: env, AppProject: request.AppProject,
+		ImageSBOM: request.ImageSBOM,
 	}
 	if request.Service != "" {
 		service, err := module.LoadServiceFromName(ctx, request.Service)

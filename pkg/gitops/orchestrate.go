@@ -9,17 +9,23 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/imageevidence"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
-func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
-	return renderModuleTree(ctx, workspace, module, env, project, sink, true)
+// imageEvidenceDir is the subdirectory of a rendered unit holding its published
+// image SBOM evidence. It mirrors the CI report's own sbom/image layout, so a
+// consumer finds evidence under the same relative path in either place.
+var imageEvidenceDir = filepath.Join("sbom", "image")
+
+func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink, collectImageSBOM bool) (RenderResult, error) {
+	return renderModuleTree(ctx, workspace, module, env, project, sink, true, collectImageSBOM)
 }
 
-func RenderModuleSnapshot(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
-	return renderModuleTree(ctx, workspace, module, env, project, sink, false)
+func RenderModuleSnapshot(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink, collectImageSBOM bool) (RenderResult, error) {
+	return renderModuleTree(ctx, workspace, module, env, project, sink, false, collectImageSBOM)
 }
 
 func renderModuleTree(
@@ -30,6 +36,7 @@ func renderModuleTree(
 	project string,
 	sink orchestration.OutputSink,
 	includeBootstrap bool,
+	collectImageSBOM bool,
 ) (RenderResult, error) {
 	if err := workspace.ValidateEnvironments(ctx); err != nil {
 		return RenderResult{}, err
@@ -87,25 +94,23 @@ func renderModuleTree(
 		}
 		outputs := make(map[string]*builderv0.DeploymentOutput)
 		for _, service := range roots {
-			if err := renderServiceFlow(
-				ctx,
-				workspace,
-				module,
-				service,
-				env,
-				false,
-				sink,
-				func(_ *resources.Module, rendered *resources.Service) string {
+			if err := renderServiceFlow(ctx, &serviceFlowRequest{
+				workspace: workspace,
+				module:    module,
+				service:   service,
+				env:       env,
+				sink:      sink,
+				destination: func(_ *resources.Module, rendered *resources.Service) string {
 					serviceDir, _ := unitDirectory(UnitKindService)
 					return filepath.Join(stage, serviceDir, rendered.Name)
 				},
-				func(rendered map[string]*builderv0.DeploymentOutput) {
+				record: func(rendered map[string]*builderv0.DeploymentOutput) {
 					for unique, output := range rendered {
 						outputs[unique] = output
 					}
 				},
-				nil,
-			); err != nil {
+				collectImageSBOM: collectImageSBOM,
+			}); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
 		}
@@ -272,7 +277,7 @@ func copyEnvironmentBootstrap(source, environment, destination string) error {
 	return nil
 }
 
-func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
+func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, project string, standAlone bool, sink orchestration.OutputSink, collectImageSBOM bool) (RenderResult, error) {
 	if err := workspace.ValidateEnvironments(ctx); err != nil {
 		return RenderResult{}, err
 	}
@@ -296,18 +301,17 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 			return err
 		}
 		var graph map[string]*resources.Service
-		if err := renderServiceFlow(
-			ctx,
-			workspace,
-			module,
-			service,
-			env,
-			standAlone,
-			sink,
-			serviceRenderDestinations(stage),
-			nil,
-			func(services map[string]*resources.Service) { graph = services },
-		); err != nil {
+		if err := renderServiceFlow(ctx, &serviceFlowRequest{
+			workspace:        workspace,
+			module:           module,
+			service:          service,
+			env:              env,
+			standAlone:       standAlone,
+			sink:             sink,
+			destination:      serviceRenderDestinations(stage),
+			recordServices:   func(services map[string]*resources.Service) { graph = services },
+			collectImageSBOM: collectImageSBOM,
+		}); err != nil {
 			return err
 		}
 		if err := projectRenderedServiceSecrets(stage, env); err != nil {
@@ -387,27 +391,36 @@ func prepareSnapshotRegistry(ctx context.Context, env *resources.Environment) er
 	return nil
 }
 
-func renderServiceFlow(
-	ctx context.Context,
-	workspace *resources.Workspace,
-	module *resources.Module,
-	service *resources.Service,
-	env *resources.Environment,
-	standAlone bool,
-	sink orchestration.OutputSink,
-	destination func(*resources.Module, *resources.Service) string,
-	record func(map[string]*builderv0.DeploymentOutput),
-	recordServices func(map[string]*resources.Service),
-) (result error) {
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
+// serviceFlowRequest names everything one service's snapshot flow needs. The
+// flow already took ten positional parameters, so the image-evidence opt-in
+// arrives as a field rather than an eleventh argument.
+type serviceFlowRequest struct {
+	workspace      *resources.Workspace
+	module         *resources.Module
+	service        *resources.Service
+	env            *resources.Environment
+	standAlone     bool
+	sink           orchestration.OutputSink
+	destination    func(*resources.Module, *resources.Service) string
+	record         func(map[string]*builderv0.DeploymentOutput)
+	recordServices func(map[string]*resources.Service)
+	// collectImageSBOM requires a digest-bound image SBOM for every image this
+	// render pushes and publishes it into the rendered tree. It stays opt-in
+	// while no released agent serves image scope.
+	collectImageSBOM bool
+}
+
+func renderServiceFlow(ctx context.Context, request *serviceFlowRequest) (result error) {
+	flow, err := orchestration.NewFlow(ctx, request.workspace, request.module, request.service, request.env, orchestration.SnapshotMode)
 	if err != nil {
 		return err
 	}
 	flow.WithPush(true)
-	if sink != nil {
-		flow.WithOutputSink(sink)
+	if request.sink != nil {
+		flow.WithOutputSink(request.sink)
 	}
-	flow.WithStandAlone(standAlone)
+	flow.WithStandAlone(request.standAlone)
+	flow.WithImageSBOM(request.collectImageSBOM)
 	defer func() {
 		if stopErr := flow.Stop(); result == nil && stopErr != nil {
 			result = stopErr
@@ -420,17 +433,22 @@ func renderServiceFlow(
 		return err
 	}
 	flow.WithDeploymentManager(gitOpsDeploymentOutputManager{})
-	flow.WithDeploymentDestination(destination)
+	flow.WithDeploymentDestination(request.destination)
 	flow.WithKubernetesOutputProfile(
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
 	)
 	if err := flow.Deploy(ctx); err != nil {
 		return err
 	}
-	if record != nil {
-		record(flow.DeploymentOutputs())
+	if request.collectImageSBOM {
+		if err := publishFlowImageEvidence(flow, request.destination); err != nil {
+			return err
+		}
 	}
-	if recordServices != nil {
+	if request.record != nil {
+		request.record(flow.DeploymentOutputs())
+	}
+	if request.recordServices != nil {
 		services := map[string]*resources.Service{}
 		for _, unique := range flow.OrderedServiceUniques() {
 			loaded, err := flow.ServiceFromUnique(unique)
@@ -439,7 +457,41 @@ func renderServiceFlow(
 			}
 			services[unique] = loaded
 		}
-		recordServices(services)
+		request.recordServices(services)
+	}
+	return nil
+}
+
+// publishFlowImageEvidence writes each service's image evidence into that
+// service's own rendered directory, so the evidence is promoted by the same
+// commit as the manifests pinning the digests it covers.
+//
+// It must live inside the unit graph: a service snapshot admits no path outside
+// it, so a shared directory at the tree root would be rejected as unexpected.
+//
+// A snapshot flow is not stand-alone, so every service it built collected
+// evidence and all of it covers pushed images — the origin's alone would leave
+// dependency images uncovered.
+func publishFlowImageEvidence(flow *orchestration.Flow, destination func(*resources.Module, *resources.Service) string) error {
+	for unique, evidence := range flow.ImageEvidence() {
+		service, err := flow.ServiceFromUnique(unique)
+		if err != nil {
+			return err
+		}
+		identity, err := service.Identity()
+		if err != nil {
+			return err
+		}
+		documents, err := imageevidence.Documents(evidence)
+		if err != nil {
+			return err
+		}
+		// A dependency can belong to another module, and the tree places it under
+		// that module. The destinations key on the module's name alone.
+		root := destination(&resources.Module{Name: identity.Module}, service)
+		if _, err := imageevidence.Publish(filepath.Join(root, imageEvidenceDir), documents); err != nil {
+			return fmt.Errorf("publish image evidence for %s: %w", unique, err)
+		}
 	}
 	return nil
 }

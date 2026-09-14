@@ -176,7 +176,14 @@ func publishImageEvidence(workspace *resources.Workspace, flow *orchestration.Fl
 	if !imageSBOM {
 		return nil
 	}
-	collected := flow.ImageEvidence()
+	return publishCollectedImageEvidence(workspace, flow.ImageEvidence())
+}
+
+// publishCollectedImageEvidence publishes evidence keyed by service as one
+// directory with one index. A module builds its services through separate flows,
+// and publishing each flow on its own would leave an index describing only the
+// service published last.
+func publishCollectedImageEvidence(workspace *resources.Workspace, collected map[string][]*builderv0.ImageSBOM) error {
 	uniques := make([]string, 0, len(collected))
 	for unique := range collected {
 		uniques = append(uniques, unique)

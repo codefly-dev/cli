@@ -172,7 +172,7 @@ name: infra
 		t.Fatalf("test env must declare no registry, got %+v", env.Registry)
 	}
 
-	if _, err := RenderModule(ctx, workspace, module, env, "", nil); err != nil {
+	if _, err := RenderModule(ctx, workspace, module, env, "", nil, false); err != nil {
 		t.Fatalf("registry-less render of a service-less module failed: %v", err)
 	}
 }
@@ -251,7 +251,7 @@ contracts:
 		t.Fatal("prod environment did not load")
 	}
 
-	_, err = RenderService(ctx, workspace, module, service, env, "", false, nil)
+	_, err = RenderService(ctx, workspace, module, service, env, "", false, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "module package manifest") {
 		t.Fatalf("RenderService error = %v, want it to surface the invalid module package manifest", err)
 	}

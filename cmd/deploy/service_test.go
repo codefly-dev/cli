@@ -26,6 +26,21 @@ func TestModuleCommandReturnsErrorsThroughCobra(t *testing.T) {
 	}
 }
 
+// Both renders push and resolve immutable digests, and collection runs a
+// container scanner that fails a render whose agent cannot serve image scope,
+// which no released agent does yet — so each keeps the opt-in off by default.
+func TestGitOpsRenderCommandsKeepImageEvidenceOptIn(t *testing.T) {
+	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd} {
+		flag := command.Flags().Lookup("image-sbom")
+		if flag == nil {
+			t.Fatalf("gitops %s does not accept --image-sbom", command.Name())
+		}
+		if flag.DefValue != "false" {
+			t.Fatalf("gitops %s --image-sbom defaults to %q, want off", command.Name(), flag.DefValue)
+		}
+	}
+}
+
 func TestGitOpsCommandExposesCompletePromotionLifecycle(t *testing.T) {
 	names := map[string]bool{}
 	for _, command := range GitOpsCmd.Commands() {
