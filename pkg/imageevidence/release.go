@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 )
 
@@ -17,9 +18,15 @@ const indexVersion = 1
 // Index is the manifest written beside the documents. A pushed image is
 // identified by its digest, so a consumer holding an image reference resolves
 // its evidence by matching the digest here rather than by guessing a filename.
+//
+// RegistryBacked records whether the digests below were resolved from a push.
+// A build that does not push scans an image that exists only in the local
+// daemon, whose digest resolves in no registry; without this the two are
+// indistinguishable and local evidence reads as evidence for a shipped image.
 type Index struct {
-	Version int         `json:"version"`
-	Images  []IndexItem `json:"images"`
+	Version        int         `json:"version"`
+	RegistryBacked bool        `json:"registry_backed"`
+	Images         []IndexItem `json:"images"`
 }
 
 // IndexItem points at one document and carries the scan identity it is bound to
@@ -41,8 +48,15 @@ type IndexItem struct {
 // Items are ordered by document name so the same build publishes a
 // byte-identical index, and every write is atomic so a reader never observes a
 // half-written document or an index pointing at one.
-func Publish(directory string, documents []Document) (Index, error) {
-	index := Index{Version: indexVersion, Images: make([]IndexItem, 0, len(documents))}
+//
+// The order of the three steps is what keeps a failure honest. Documents are
+// written first, the index second, superseded documents only once the index
+// naming them is durable. A run that fails part-way therefore leaves the
+// previous index and every document it names intact — an older release, still
+// internally consistent — rather than a current index pointing at documents
+// that were never written.
+func Publish(directory string, documents []Document, registryBacked bool) (Index, error) {
+	index := Index{Version: indexVersion, RegistryBacked: registryBacked, Images: make([]IndexItem, 0, len(documents))}
 	for _, document := range documents {
 		if err := writeAtomic(filepath.Join(directory, document.Name), document.Payload); err != nil {
 			return Index{}, err
@@ -64,7 +78,42 @@ func Publish(directory string, documents []Document) (Index, error) {
 	if err := writeAtomic(filepath.Join(directory, IndexFilename), append(manifest, '\n')); err != nil {
 		return Index{}, err
 	}
+	if err := pruneSuperseded(directory, index); err != nil {
+		return index, err
+	}
 	return index, nil
+}
+
+// generatedDocument matches a name Filename produced: a 64-character image
+// digest, optionally followed by a platform and a content qualifier. It is what
+// bounds pruning to this mechanism's own output — a source SBOM named after its
+// module and service cannot match it, so sharing a directory never costs a file
+// this package did not write.
+var generatedDocument = regexp.MustCompile(`^[0-9a-f]{64}(--[0-9A-Za-z._-]+)*\.cdx\.json$`)
+
+// pruneSuperseded removes documents an earlier run published that this index no
+// longer names. A published directory is reused across builds, so a superseded
+// document left behind lets a consumer that reads the directory rather than the
+// index attribute a previous release's image to this one.
+func pruneSuperseded(directory string, index Index) error {
+	published := map[string]bool{}
+	for _, item := range index.Images {
+		published[item.Path] = true
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("read image evidence directory: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || published[name] || !generatedDocument.MatchString(name) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(directory, name)); err != nil {
+			return fmt.Errorf("remove superseded image evidence %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func writeAtomic(destination string, payload []byte) error {

@@ -21,6 +21,14 @@ import (
 // MediaType is the CycloneDX JSON media type every document is recorded under.
 const MediaType = "application/vnd.cyclonedx+json"
 
+// documentSuffix ends every generated document name. contentQualifierLength is
+// how much of a document's checksum distinguishes two differing inventories of
+// one image.
+const (
+	documentSuffix         = ".cdx.json"
+	contentQualifierLength = 12
+)
+
 // Association names one service-owned image that a single scan covers, in the
 // role the image plays for that service.
 type Association struct {
@@ -45,27 +53,16 @@ type Document struct {
 //
 // All documents are encoded before any is returned, so a caller writing them in
 // order cannot leave the earlier images of a failed run stranded on disk.
-//
-// Images sharing a scan identity collapse onto one document carrying both sets
-// of associations: the same digest scanned for several services is stored once,
-// and merging rather than overwriting is what keeps every service's claim on it.
 func Documents(evidence []*builderv0.ImageSBOM) ([]Document, error) {
-	documents := make([]Document, 0, len(evidence))
-	at := map[string]int{}
+	encoded := make([]Document, 0, len(evidence))
 	for _, image := range evidence {
 		payload, err := coresbom.MarshalCycloneDXJSON(image.GetBom())
 		if err != nil {
 			return nil, fmt.Errorf("encode CycloneDX for %s: %w", image.GetDigest(), err)
 		}
 		payload = append(payload, '\n')
-		name := Filename(image)
-		if index, seen := at[name]; seen {
-			documents[index].Associations = mergeAssociations(documents[index].Associations, Associations(image))
-			continue
-		}
-		at[name] = len(documents)
-		documents = append(documents, Document{
-			Name:         name,
+		encoded = append(encoded, Document{
+			Name:         Filename(image),
 			Payload:      payload,
 			Digest:       image.GetDigest(),
 			Platform:     image.GetPlatform(),
@@ -73,7 +70,56 @@ func Documents(evidence []*builderv0.ImageSBOM) ([]Document, error) {
 			Associations: Associations(image),
 		})
 	}
-	return documents, nil
+	return collapse(encoded), nil
+}
+
+// collapse merges evidence that is the same scan and keeps apart evidence that
+// is not.
+//
+// One digest can be scanned independently by several agents — a shared base
+// image, or a migration image one service builds and another deploys — and
+// their inventories can genuinely differ, by scanner version or by what each
+// was able to see. Collapsing those onto one document would publish one
+// service's inventory as another service's coverage, which claims coverage that
+// was never established. Only byte-identical documents therefore merge their
+// associations; divergent ones are all kept, under names qualified by content
+// so neither overwrites the other.
+//
+// Divergence is not an error: two honest scans of one image differ in their
+// CycloneDX serial number alone, so failing here would reject the very case
+// that sharing a digest across services exists to describe.
+func collapse(encoded []Document) []Document {
+	var documents []Document
+	at := map[string]int{}
+	variants := map[string]int{}
+	for _, document := range encoded {
+		key := document.Name + "\x00" + document.SHA256
+		if index, seen := at[key]; seen {
+			documents[index].Associations = mergeAssociations(documents[index].Associations, document.Associations)
+			continue
+		}
+		at[key] = len(documents)
+		variants[document.Name]++
+		documents = append(documents, document)
+	}
+	for index := range documents {
+		if variants[documents[index].Name] > 1 {
+			documents[index].Name = qualify(documents[index].Name, documents[index].SHA256)
+		}
+	}
+	return documents
+}
+
+// qualify appends a document's own checksum to its name, so two differing
+// inventories of one image are both retrievable. It depends only on content,
+// never on the order the scans arrived in, so a build publishes the same names
+// every time.
+func qualify(name, checksum string) string {
+	short := strings.TrimPrefix(checksum, "sha256:")
+	if len(short) > contentQualifierLength {
+		short = short[:contentQualifierLength]
+	}
+	return strings.TrimSuffix(name, documentSuffix) + "--" + short + documentSuffix
 }
 
 // Filename names a document by the digest and platform actually scanned — the
@@ -83,7 +129,7 @@ func Filename(image *builderv0.ImageSBOM) string {
 	if platform := image.GetPlatform(); platform != "" {
 		name += "--" + SafeName(platform)
 	}
-	return name + ".cdx.json"
+	return name + documentSuffix
 }
 
 // Associations projects the service subjects one scan covers.

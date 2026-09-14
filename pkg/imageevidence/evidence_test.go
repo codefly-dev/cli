@@ -115,3 +115,69 @@ func TestDocumentsBindEachPayloadToItsScanIdentityAndChecksum(t *testing.T) {
 func TestSafeNameCannotEscapeTheEvidenceDirectory(t *testing.T) {
 	require.Equal(t, "--etc-passwd", SafeName("../etc/passwd"))
 }
+
+func divergent(digest, component string, subject *builderv0.ImageSubject) *builderv0.ImageSBOM {
+	image := scanned(digest, "linux/amd64", subject)
+	image.Bom = &agentv0.Bom{
+		BomFormat:   "CycloneDX",
+		SpecVersion: "1.5",
+		Version:     1,
+		Metadata:    &agentv0.Metadata{Component: &agentv0.Component{Name: "image", Version: "v1"}},
+		Components:  []*agentv0.Component{{Name: component, Version: "1"}},
+	}
+	return image
+}
+
+// Two agents can scan one digest independently and return different
+// inventories. Collapsing them onto one document published one service's
+// inventory as the other's coverage — a claim no scan established.
+func TestDocumentsKeepDivergentInventoriesOfOneImageApart(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+
+	documents, err := Documents([]*builderv0.ImageSBOM{
+		divergent(digest, "only-in-api", &builderv0.ImageSubject{Service: "web/api"}),
+		divergent(digest, "only-in-worker", &builderv0.ImageSubject{Service: "billing/worker"}),
+	})
+	require.NoError(t, err)
+	require.Len(t, documents, 2, "divergent scans of one image are two pieces of evidence")
+	require.NotEqual(t, documents[0].Name, documents[1].Name, "divergent documents must not overwrite each other")
+
+	for _, document := range documents {
+		require.Len(t, document.Associations, 1, "a divergent scan covers only the service that produced it")
+	}
+	require.Contains(t, string(documents[0].Payload), "only-in-api")
+	require.Contains(t, string(documents[1].Payload), "only-in-worker")
+}
+
+// Naming a divergent document after its content keeps a build reproducible: the
+// same two scans must publish the same two names whichever arrived first.
+func TestDocumentsNameDivergentInventoriesIndependentlyOfOrder(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	api := divergent(digest, "only-in-api", &builderv0.ImageSubject{Service: "web/api"})
+	worker := divergent(digest, "only-in-worker", &builderv0.ImageSubject{Service: "billing/worker"})
+
+	forward, err := Documents([]*builderv0.ImageSBOM{api, worker})
+	require.NoError(t, err)
+	reversed, err := Documents([]*builderv0.ImageSBOM{worker, api})
+	require.NoError(t, err)
+
+	require.ElementsMatch(t,
+		[]string{forward[0].Name, forward[1].Name},
+		[]string{reversed[0].Name, reversed[1].Name},
+	)
+}
+
+// An identical scan reported for two services is still one scan, and must still
+// collapse onto one document naming both.
+func TestDocumentsStillMergeIdenticalScansAcrossServices(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("c", 64)
+
+	documents, err := Documents([]*builderv0.ImageSBOM{
+		divergent(digest, "shared", &builderv0.ImageSubject{Service: "web/api"}),
+		divergent(digest, "shared", &builderv0.ImageSubject{Service: "billing/worker"}),
+	})
+	require.NoError(t, err)
+	require.Len(t, documents, 1)
+	require.Len(t, documents[0].Associations, 2)
+	require.Equal(t, Filename(scanned(digest, "linux/amd64")), documents[0].Name, "an undisputed scan keeps its scan-identity name")
+}

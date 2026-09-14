@@ -194,9 +194,19 @@ func publishImageEvidence(workspace *resources.Workspace, flow *orchestration.Fl
 	if !filepath.IsAbs(directory) {
 		directory = filepath.Join(workspace.Dir(), directory)
 	}
-	index, err := imageevidence.Publish(directory, documents)
+	index, err := imageevidence.Publish(directory, documents, push)
 	if err != nil {
 		return err
+	}
+	if len(index.Images) == 0 {
+		// Recorded rather than skipped: an absent directory cannot be told apart
+		// from a build that never collected, while an empty index states that
+		// this build owed evidence for no image.
+		cli.Info("No image to cover; recorded empty image SBOM evidence at %s", directory)
+		return nil
+	}
+	if !push {
+		cli.Warning("Image SBOM evidence at %s covers locally loaded images; their digests are not in a registry", directory)
 	}
 	cli.Info("Published image SBOM evidence for %d image(s) to %s", len(index.Images), directory)
 	return nil

@@ -16,7 +16,7 @@ func published(t *testing.T, evidence ...*builderv0.ImageSBOM) (string, Index) {
 	documents, err := Documents(evidence)
 	require.NoError(t, err)
 	directory := t.TempDir()
-	index, err := Publish(directory, documents)
+	index, err := Publish(directory, documents, true)
 	require.NoError(t, err)
 	return directory, index
 }
@@ -99,9 +99,9 @@ func TestPublishOrdersTheIndexDeterministically(t *testing.T) {
 	require.NoError(t, err)
 
 	forwardDirectory, reversedDirectory := t.TempDir(), t.TempDir()
-	_, err = Publish(forwardDirectory, forward)
+	_, err = Publish(forwardDirectory, forward, true)
 	require.NoError(t, err)
-	_, err = Publish(reversedDirectory, reversed)
+	_, err = Publish(reversedDirectory, reversed, true)
 	require.NoError(t, err)
 
 	forwardManifest, err := os.ReadFile(filepath.Join(forwardDirectory, IndexFilename))
@@ -118,8 +118,109 @@ func TestPublishCreatesTheEvidenceDirectory(t *testing.T) {
 	require.NoError(t, err)
 
 	directory := filepath.Join(t.TempDir(), "sbom", "image")
-	index, err := Publish(directory, documents)
+	index, err := Publish(directory, documents, true)
 	require.NoError(t, err)
 	require.Len(t, index.Images, 1)
 	require.FileExists(t, filepath.Join(directory, IndexFilename))
+}
+
+// The directory is reused across builds. A superseded document left behind lets
+// a consumer that globs the directory rather than reading the index attribute a
+// previous release's image to this one.
+func TestPublishRemovesEvidenceSupersededByALaterBuild(t *testing.T) {
+	superseded := "sha256:" + strings.Repeat("a", 64)
+	current := "sha256:" + strings.Repeat("b", 64)
+	directory := t.TempDir()
+
+	first, err := Documents([]*builderv0.ImageSBOM{
+		scanned(superseded, "linux/amd64", &builderv0.ImageSubject{Service: "web/api"}),
+	})
+	require.NoError(t, err)
+	_, err = Publish(directory, first, true)
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(directory, first[0].Name))
+
+	second, err := Documents([]*builderv0.ImageSBOM{
+		scanned(current, "linux/amd64", &builderv0.ImageSubject{Service: "web/api"}),
+	})
+	require.NoError(t, err)
+	index, err := Publish(directory, second, true)
+	require.NoError(t, err)
+
+	require.Len(t, index.Images, 1)
+	require.FileExists(t, filepath.Join(directory, second[0].Name))
+	require.NoFileExists(t, filepath.Join(directory, first[0].Name), "a superseded release's evidence survived into this one")
+}
+
+// Pruning must be bounded to this mechanism's own output: the directory can be
+// shared, and a source SBOM named after its module and service is not ours to
+// delete.
+func TestPublishLeavesFilesItDidNotWriteAlone(t *testing.T) {
+	directory := t.TempDir()
+	foreign := filepath.Join(directory, "web--api.cdx.json")
+	require.NoError(t, os.WriteFile(foreign, []byte("{}\n"), 0o644))
+	notes := filepath.Join(directory, "notes.txt")
+	require.NoError(t, os.WriteFile(notes, []byte("keep me\n"), 0o644))
+
+	documents, err := Documents([]*builderv0.ImageSBOM{
+		scanned("sha256:"+strings.Repeat("c", 64), "linux/amd64", &builderv0.ImageSubject{Service: "web/api"}),
+	})
+	require.NoError(t, err)
+	_, err = Publish(directory, documents, true)
+	require.NoError(t, err)
+
+	require.FileExists(t, foreign, "a source SBOM sharing the directory was deleted")
+	require.FileExists(t, notes)
+}
+
+// Writing the index before pruning, and pruning last, is what keeps a failed
+// run honest: the previous release stays internally consistent instead of
+// becoming an index that points at documents which were never written.
+func TestPublishLeavesThePreviousReleaseIntactWhenADocumentCannotBeWritten(t *testing.T) {
+	previousDigest := "sha256:" + strings.Repeat("a", 64)
+	directory := t.TempDir()
+
+	previous, err := Documents([]*builderv0.ImageSBOM{
+		scanned(previousDigest, "linux/amd64", &builderv0.ImageSubject{Service: "web/api"}),
+	})
+	require.NoError(t, err)
+	_, err = Publish(directory, previous, true)
+	require.NoError(t, err)
+
+	next, err := Documents([]*builderv0.ImageSBOM{
+		scanned("sha256:"+strings.Repeat("b", 64), "linux/amd64", &builderv0.ImageSubject{Service: "web/api"}),
+		scanned("sha256:"+strings.Repeat("c", 64), "linux/amd64", &builderv0.ImageSubject{Service: "web/api"}),
+	})
+	require.NoError(t, err)
+	// A directory where the second document belongs makes its write fail.
+	require.NoError(t, os.Mkdir(filepath.Join(directory, next[1].Name), 0o755))
+
+	_, err = Publish(directory, next, true)
+	require.Error(t, err, "a document that cannot be written must fail the publication")
+
+	manifest, err := os.ReadFile(filepath.Join(directory, IndexFilename))
+	require.NoError(t, err)
+	var index Index
+	require.NoError(t, json.Unmarshal(manifest, &index))
+	require.Len(t, index.Images, 1)
+	require.Equal(t, previousDigest, index.Images[0].Digest, "the index advertised a release that was never published")
+	require.FileExists(t, filepath.Join(directory, index.Images[0].Path), "the index points at a document that is gone")
+}
+
+// A build that does not push scans an image that exists only in the local
+// daemon, whose digest resolves in no registry. Without this the artifact is
+// indistinguishable from evidence for a shipped image.
+func TestPublishRecordsWhetherDigestsAreRegistryBacked(t *testing.T) {
+	documents, err := Documents([]*builderv0.ImageSBOM{
+		scanned("sha256:"+strings.Repeat("d", 64), "linux/amd64", &builderv0.ImageSubject{Service: "web/api"}),
+	})
+	require.NoError(t, err)
+
+	local, err := Publish(t.TempDir(), documents, false)
+	require.NoError(t, err)
+	require.False(t, local.RegistryBacked)
+
+	pushed, err := Publish(t.TempDir(), documents, true)
+	require.NoError(t, err)
+	require.True(t, pushed.RegistryBacked)
 }
