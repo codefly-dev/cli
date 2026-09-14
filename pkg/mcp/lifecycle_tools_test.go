@@ -160,7 +160,7 @@ module: infra
 agent:
     kind: codefly:service
     name: postgres
-    version: 0.0.130
+    version: 0.0.133
     publisher: codefly.dev
 endpoints:
     - name: tcp

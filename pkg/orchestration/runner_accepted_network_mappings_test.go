@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +80,9 @@ func boundMappings(proposed []*basev0.NetworkMapping) ([]*basev0.NetworkMapping,
 			server := grpc.NewServer()
 			healthv1.RegisterHealthServer(server, health.NewServer())
 			go func() { _ = server.Serve(listener) }()
+		} else {
+			server := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
+			go func() { _ = server.Serve(listener) }()
 		}
 		accepted = append(accepted, &basev0.NetworkMapping{
 			Endpoint: endpoint,
@@ -133,6 +138,9 @@ func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*ru
 		if mappings, err = boundMappings(mappings); err != nil {
 			return nil, err
 		}
+		// Every reported endpoint must outlive the allocator's local variables.
+		// Exercise that lifetime before the parent probes the accepted ports.
+		runtime.GC()
 	}
 	switch agent.mode {
 	case realAgentOmit:
