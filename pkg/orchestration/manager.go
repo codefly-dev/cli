@@ -131,6 +131,13 @@ func (manager *Manager) BuilderImageDigest() string {
 	return manager.Builder.ImageDigest()
 }
 
+func (manager *Manager) BuilderImageEvidence() []*builderv0.ImageSBOM {
+	if manager.Builder == nil {
+		return nil
+	}
+	return manager.Builder.ImageEvidence()
+}
+
 func (manager *Manager) RunnerDoLoad(ctx context.Context) (*OutputProperty, error) {
 	return manager.Runner.Load(ctx)
 }

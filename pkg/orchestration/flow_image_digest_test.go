@@ -4,20 +4,25 @@ import (
 	"strings"
 	"testing"
 
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
-// digestManager is a stand-in IManager that only reports a unique and a builder
-// image digest — the two methods OriginImageDigest touches.
+// digestManager is a stand-in IManager that only reports a unique, a builder
+// image digest and its image evidence — the methods OriginImageDigest and
+// OriginImageEvidence touch.
 type digestManager struct {
 	IManager
-	unique string
-	digest string
+	unique   string
+	digest   string
+	evidence []*builderv0.ImageSBOM
 }
 
 func (m *digestManager) Unique() string             { return m.unique }
 func (m *digestManager) BuilderImageDigest() string { return m.digest }
+
+func (m *digestManager) BuilderImageEvidence() []*builderv0.ImageSBOM { return m.evidence }
 
 func TestOriginImageDigestReturnsOriginBuildersDigest(t *testing.T) {
 	service := &resources.Service{Name: "frontend"}
@@ -50,4 +55,36 @@ func TestOriginImageDigestEmptyWhenNothingPushed(t *testing.T) {
 
 func TestOriginImageDigestNilHubIsEmpty(t *testing.T) {
 	require.Equal(t, "", (&Flow{}).OriginImageDigest())
+}
+
+func TestOriginImageEvidenceReturnsOriginBuildersEvidence(t *testing.T) {
+	service := &resources.Service{Name: "frontend"}
+	service.WithModule("web")
+	origin := resources.WithUnique(service).Unique()
+	evidence := []*builderv0.ImageSBOM{{Digest: "sha256:" + strings.Repeat("a", 64), Platform: "linux/amd64"}}
+
+	// Dependencies are built and scanned too; the caller's subject is the origin.
+	flow := &Flow{
+		originService: service,
+		hub: &Hub{managers: []IManager{
+			&digestManager{unique: "web/api", evidence: []*builderv0.ImageSBOM{{Digest: "sha256:" + strings.Repeat("b", 64)}}},
+			&digestManager{unique: origin, evidence: evidence},
+		}},
+	}
+
+	require.Equal(t, evidence, flow.OriginImageEvidence())
+}
+
+func TestOriginImageEvidenceNilWhenNothingCollected(t *testing.T) {
+	service := &resources.Service{Name: "frontend"}
+	service.WithModule("web")
+	flow := &Flow{
+		originService: service,
+		hub:           &Hub{managers: []IManager{&digestManager{unique: resources.WithUnique(service).Unique()}}},
+	}
+	require.Nil(t, flow.OriginImageEvidence())
+}
+
+func TestOriginImageEvidenceNilHubIsEmpty(t *testing.T) {
+	require.Nil(t, (&Flow{}).OriginImageEvidence())
 }

@@ -186,6 +186,13 @@ type World struct {
 	// resolves the digest unconditionally because its manifest pins it.
 	CaptureImageDigest bool
 
+	// CollectImageSBOM requires digest-bound image SBOM evidence for every image
+	// a build produces. It is opt-in per flow: collecting evidence runs a
+	// container scanner and fails the build when coverage is incomplete, so a
+	// caller that does not consume the evidence neither pays for it nor fails on
+	// an agent that cannot yet serve it.
+	CollectImageSBOM bool
+
 	Workspace               *resources.Workspace
 	DeploymentDestination   func(*resources.Module, *resources.Service) string
 	KubernetesOutputProfile builderv0.KubernetesOutputProfile
@@ -889,6 +896,29 @@ func (flow *Flow) OriginImageDigest() string {
 		return source.BuilderImageDigest()
 	}
 	return ""
+}
+
+// OriginImageEvidence returns the digest-bound image SBOMs the origin service's
+// build collected. A build with dependencies collects evidence for each of
+// them; only the origin's is the caller's subject.
+func (flow *Flow) OriginImageEvidence() []*builderv0.ImageSBOM {
+	if flow == nil || flow.hub == nil {
+		return nil
+	}
+	origin := resources.WithUnique(flow.originService).Unique()
+	for _, manager := range flow.hub.managers {
+		if manager.Unique() != origin {
+			continue
+		}
+		source, ok := manager.(interface {
+			BuilderImageEvidence() []*builderv0.ImageSBOM
+		})
+		if !ok {
+			return nil
+		}
+		return source.BuilderImageEvidence()
+	}
+	return nil
 }
 
 func (flow *Flow) Build(ctx context.Context) error {
@@ -1789,6 +1819,10 @@ func (flow *Flow) WithBuildxBuilder(name string) {
 
 func (flow *Flow) WithImageDigest(capture bool) {
 	flow.world.CaptureImageDigest = capture
+}
+
+func (flow *Flow) WithImageSBOM(collect bool) {
+	flow.world.CollectImageSBOM = collect
 }
 
 func (flow *Flow) WithRuntimeContext(runtimeContext string) {

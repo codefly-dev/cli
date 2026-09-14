@@ -64,7 +64,10 @@ func runBuildService(ctx context.Context, workspace *resources.Workspace, module
 		if err := buildService(ctx, flow); err != nil {
 			return w.Wrapf(err, "Cannot build service")
 		}
-		return nil
+		if !ciImageSBOM {
+			return nil
+		}
+		return recordImageSBOMEvidence(ctx, workspace, flow.OriginImageEvidence())
 	})
 }
 
@@ -89,6 +92,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 		return nil, err
 	}
 	flow.WithBuildCache(cache)
+	flow.WithImageSBOM(ciImageSBOM)
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
@@ -125,6 +129,7 @@ func init() {
 	BuildCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")
 	BuildCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	BuildCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
+	BuildCmd.Flags().BoolVar(&ciImageSBOM, "image-sbom", false, "Require digest-bound image SBOM evidence for every image the build produces")
 	bindSchedulingFlags(BuildCmd)
 	bindReportFlags(BuildCmd)
 }

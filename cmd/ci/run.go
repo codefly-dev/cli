@@ -287,6 +287,7 @@ func init() {
 	RunCmd.Flags().BoolVar(&ciAuditIncludeDev, "audit-include-dev", false, "Include development/test-only dependencies in audit evidence")
 	RunCmd.Flags().BoolVar(&ciAuditFailOnVuln, "fail-on-vuln", true, "Fail audit on HIGH or CRITICAL vulnerabilities")
 	RunCmd.Flags().BoolVar(&ciSBOMIncludeDev, "sbom-include-dev", true, "Include development/test dependencies in CI SBOMs")
+	RunCmd.Flags().BoolVar(&ciImageSBOM, "image-sbom", false, "Require digest-bound image SBOM evidence for every image the build phase produces")
 	bindSchedulingFlags(RunCmd)
 	bindReportFlags(RunCmd)
 	bindReuseFlags(RunCmd)

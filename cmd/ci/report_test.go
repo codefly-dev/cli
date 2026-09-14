@@ -309,6 +309,21 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	}
 }
 
+func TestCloneCIReportArtifactsDoesNotShareImageAssociations(t *testing.T) {
+	original := []CIReportArtifact{{
+		Kind:         "cyclonedx-image-sbom",
+		Subject:      artifactSubjectImage,
+		Digest:       "sha256:abc",
+		Platform:     "linux/amd64",
+		Associations: []ImageAssociation{{Service: "web/frontend", Role: "runtime"}},
+	}}
+	cloned := cloneCIReportArtifacts(original)
+	cloned[0].Associations[0].Service = "mutated"
+	if original[0].Associations[0].Service != "web/frontend" {
+		t.Fatal("finalized report shares image associations with reporter state")
+	}
+}
+
 func TestCIReportSkipMarksRunningTaskSkipped(t *testing.T) {
 	_, workspace := loadSchedulerFixture(t)
 	plan := &Plan{SchemaVersion: planSchemaVersion, Workspace: workspace.Name, ChangedFiles: []string{}, Services: []PlannedService{

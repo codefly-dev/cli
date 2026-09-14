@@ -1224,6 +1224,23 @@ default gate is `verify`, `sync-drift`, `lint`, `compile`, `test`, `audit`,
 `sbom`, and `build`; reports retain typed integrity, drift, audit, and artifact
 evidence.
 
+`codefly ci build` and the build phase of `codefly ci run` accept
+`--image-sbom`, which requires a digest-bound CycloneDX inventory for every
+image the build produces. Each document is written under `sbom/image/` and named
+by the digest and platform actually scanned, so multi-image and multi-platform
+outputs never collide while one digest shared by several services is stored
+once; the report entry carries that digest, the platform, and every service
+association. Incomplete coverage — a failed scan, a missing image, a stale
+digest, or an omitted platform — fails the build instead of being reported as
+covered. What is owed follows what the build actually made: a build that pushes
+writes every declared platform into one manifest list and owes evidence for all
+of them, while a build that does not push loads a single platform per recipe and
+owes evidence for that one alone. The report names the platform each document
+covers, so a local build is never a claim about the platforms it did not build.
+It is opt-in because collecting evidence runs a container scanner and
+needs an agent that serves image-scope SBOMs. The `sbom` phase is unchanged and
+remains source-scoped evidence, which never counts as image coverage.
+
 ### Verified result reuse
 
 `codefly ci run --reuse-results` stands a task on a previously verified

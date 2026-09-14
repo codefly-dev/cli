@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	reportSchemaVersion = 2
+	reportSchemaVersion = 3
 	reportFilename      = "report.json"
 
 	reportStatusPending   = "pending"
@@ -35,11 +35,14 @@ const (
 	reportReasonAgentNoSyncCapability = "agent_no_sync_capability"
 
 	// artifactSubjectSource is evidence about the checked-out source and its
-	// declared dependencies. artifactSubjectUnknown is the explicit subject for
-	// evidence whose producer did not name one: it is recorded rather than left
-	// absent so a consumer never has to infer meaning from a missing key, and
-	// so an unnamed subject can never be mistaken for runtime-image coverage.
+	// declared dependencies; artifactSubjectImage is evidence about a runtime
+	// image, bound to the digest and platform that were actually scanned.
+	// artifactSubjectUnknown is the explicit subject for evidence whose producer
+	// did not name one: it is recorded rather than left absent so a consumer
+	// never has to infer meaning from a missing key, and so an unnamed subject
+	// can never be mistaken for runtime-image coverage.
 	artifactSubjectSource  = "source"
+	artifactSubjectImage   = "image"
 	artifactSubjectUnknown = "unknown"
 )
 
@@ -148,12 +151,42 @@ type CIReportIntegrityDivergence struct {
 // than a missing key it has to interpret. It is deliberately not called "scope":
 // CIReportTask.Scope is resource ownership, and one report must not use the
 // same key for two vocabularies.
+//
+// Image evidence additionally carries the digest and platform it was scanned
+// from. One scan can satisfy several services at once, so an identical digest is
+// scanned and stored once and Associations is what keeps every service's claim
+// on it rather than collapsing them.
 type CIReportArtifact struct {
-	Kind      string `json:"kind"`
-	Subject   string `json:"subject"`
-	Path      string `json:"path"`
-	MediaType string `json:"media_type,omitempty"`
-	SHA256    string `json:"sha256"`
+	Kind         string             `json:"kind"`
+	Subject      string             `json:"subject"`
+	Path         string             `json:"path"`
+	MediaType    string             `json:"media_type,omitempty"`
+	SHA256       string             `json:"sha256"`
+	Digest       string             `json:"digest,omitempty"`
+	Platform     string             `json:"platform,omitempty"`
+	Associations []ImageAssociation `json:"associations,omitempty"`
+}
+
+// ImageAssociation names one service-owned image that a single scan
+// covers, in the role the image plays for that service.
+type ImageAssociation struct {
+	Service   string `json:"service"`
+	Role      string `json:"role,omitempty"`
+	Reference string `json:"reference,omitempty"`
+}
+
+// cloneCIReportArtifacts deep-copies recorded evidence. Artifacts were all
+// scalar until image evidence added a slice, so a plain copy would leave a
+// finalized report sharing associations with live reporter state.
+func cloneCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
+	if artifacts == nil {
+		return nil
+	}
+	cloned := append([]CIReportArtifact(nil), artifacts...)
+	for index := range artifacts {
+		cloned[index].Associations = append([]ImageAssociation(nil), artifacts[index].Associations...)
+	}
+	return cloned
 }
 
 // normalizeCIReportSubject guarantees the subject invariant at every boundary
@@ -172,11 +205,9 @@ func normalizedCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifac
 	if artifacts == nil {
 		return nil
 	}
-	normalized := make([]CIReportArtifact, 0, len(artifacts))
-	for index := range artifacts {
-		artifact := artifacts[index]
-		normalizeCIReportSubject(&artifact)
-		normalized = append(normalized, artifact)
+	normalized := cloneCIReportArtifacts(artifacts)
+	for index := range normalized {
+		normalizeCIReportSubject(&normalized[index])
 	}
 	return normalized
 }
@@ -638,7 +669,7 @@ func cloneCIReport(report CIReport) CIReport {
 		cloned.Tasks[index].Cache.Limitations = append([]string(nil), task.Cache.Limitations...)
 		if task.Cache.Reuse != nil {
 			reuse := *task.Cache.Reuse
-			reuse.Artifacts = append([]CIReportArtifact(nil), task.Cache.Reuse.Artifacts...)
+			reuse.Artifacts = cloneCIReportArtifacts(task.Cache.Reuse.Artifacts)
 			cloned.Tasks[index].Cache.Reuse = &reuse
 		}
 		if task.Audit != nil {
@@ -652,7 +683,7 @@ func cloneCIReport(report CIReport) CIReport {
 			integrity := cloneCIReportIntegrity(*task.Integrity)
 			cloned.Tasks[index].Integrity = &integrity
 		}
-		cloned.Tasks[index].Artifacts = append([]CIReportArtifact(nil), task.Artifacts...)
+		cloned.Tasks[index].Artifacts = cloneCIReportArtifacts(task.Artifacts)
 	}
 	return cloned
 }
@@ -900,7 +931,7 @@ func (reporter *CIReporter) publishResult(id string) {
 		return
 	}
 	snapshot := *task
-	snapshot.Artifacts = append([]CIReportArtifact(nil), task.Artifacts...)
+	snapshot.Artifacts = cloneCIReportArtifacts(task.Artifacts)
 	reporter.mu.Unlock()
 
 	if err := reuse.publish(&snapshot); err != nil {
