@@ -71,7 +71,17 @@ func testBinding(t *testing.T, pkg *basev0.RunnablePackage) *basev0.RunnableBind
 	t.Helper()
 	binding, err := corerunnable.PrepareBinding(&basev0.RunnableBinding{
 		Schema: corerunnable.BindingSchemaV1, Identity: pkg.GetIdentity(), PackageDigest: pkg.GetDigest(),
-		Facility: &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE}, Artifact: pkg.GetArtifacts()[0],
+		Facility: &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE}, Implementation: &basev0.RunnableBinding_Artifact{Artifact: pkg.GetArtifacts()[0]},
+		// The launcher takes the installed root as its own argument, so this path
+		// is only the absolute one core requires of a host target. Deriving it
+		// from each caller's root would make the relative-root case fail here,
+		// inside binding preparation, instead of in the launcher it exercises.
+		Target: &basev0.RunnableTarget{
+			Schema: corerunnable.TargetSchemaV1, Environment: "local", Revision: "test",
+			Coordinates: &basev0.RunnableTarget_Host{Host: &basev0.RunnableHostTarget{
+				Launcher: "native", InstallPath: "/opt/codefly/runnables/test",
+			}},
+		},
 	}, pkg)
 	require.NoError(t, err)
 	return binding

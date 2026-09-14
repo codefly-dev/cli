@@ -109,7 +109,13 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 	require.NoError(t, err, string(output))
 	binding, err := corerunnable.PrepareBinding(&basev0.RunnableBinding{
 		Schema: corerunnable.BindingSchemaV1, Identity: pkg.GetIdentity(), PackageDigest: pkg.GetDigest(),
-		Facility: &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE}, Artifact: artifact,
+		Facility: &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE}, Implementation: &basev0.RunnableBinding_Artifact{Artifact: artifact},
+		Target: &basev0.RunnableTarget{
+			Schema: corerunnable.TargetSchemaV1, Environment: "local", Revision: "test",
+			Coordinates: &basev0.RunnableTarget_Host{Host: &basev0.RunnableHostTarget{
+				Launcher: "native", InstallPath: installed,
+			}},
+		},
 	}, pkg)
 	require.NoError(t, err)
 	launcher, err := runnableops.NewNativeLauncher(pkg, binding, installed)
