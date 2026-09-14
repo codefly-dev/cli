@@ -53,7 +53,6 @@ type NativeLauncher struct {
 	root       string
 	executable string
 	arguments  []string
-	budget     time.Duration
 }
 
 // NewNativeLauncher accepts an installed native binding this host can execute,
@@ -78,6 +77,9 @@ func NewNativeLauncher(pkg *basev0.RunnablePackage, binding *basev0.RunnableBind
 	if !filepath.IsAbs(root) {
 		return nil, fmt.Errorf("installed root %s must be absolute", root)
 	}
+	if installed := binding.GetTarget().GetHost().GetInstallPath(); filepath.Clean(root) != filepath.Clean(installed) {
+		return nil, fmt.Errorf("installed root %s differs from the binding's install path %s", root, installed)
+	}
 	argv := artifact.GetCommand()
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("installed native artifact carries no launch command")
@@ -95,7 +97,6 @@ func NewNativeLauncher(pkg *basev0.RunnablePackage, binding *basev0.RunnableBind
 	}
 	return &NativeLauncher{
 		pkg: pkg, root: root, executable: executable, arguments: argv[1:],
-		budget: pkg.GetExecution().GetTimeout().AsDuration(),
 	}, nil
 }
 
@@ -134,10 +135,6 @@ func (l *NativeLauncher) Invoke(ctx context.Context, run Run) (*basev0.RunnableC
 	invocation, err := corerunnable.PrepareInvocation(run.Invocation, l.pkg)
 	if err != nil {
 		return nil, err
-	}
-	budget := invocation.GetDeadline().AsTime().Sub(invocation.GetIssuedAt().AsTime())
-	if budget > l.budget {
-		return nil, fmt.Errorf("invocation budget %s is longer than the package's declared timeout %s", budget, l.budget)
 	}
 	if !filepath.IsAbs(run.Directory) {
 		return nil, fmt.Errorf("invocation directory %s must be absolute", run.Directory)
@@ -186,17 +183,16 @@ func (l *NativeLauncher) Invoke(ctx context.Context, run Run) (*basev0.RunnableC
 	}
 	observed.Stdout, observed.Stderr = stdout.stream(), stderr.stream()
 	document, readErr := readResult(resultPath)
+	observed.ResultPresent = document != nil
 	observed.Result = document
 	if readErr != nil {
 		observed.Trouble = errors.Join(observed.Trouble, fmt.Errorf("read the harness result: %w", readErr))
 	}
 	completion, err := corerunnable.Complete(invocation, l.pkg, observed.Observation)
 	if err != nil {
-		// Complete re-runs the preparation that already succeeded above, and
-		// rejects only a cancellation the launcher does not set unless the
-		// package declares it, so this cannot fire. It is still marked
-		// dispatched: the process ran, and no error from here may read as
-		// "never started".
+		// Complete validates the invocation and the process observation. Any
+		// classification error is still dispatched: the process ran, and no
+		// error from here may read as "never started".
 		return nil, fmt.Errorf("%w: classify invocation: %v", ErrDispatched, err)
 	}
 	if observed.Trouble != nil {

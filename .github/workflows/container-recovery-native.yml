@@ -35,19 +35,19 @@ jobs:
         include:
           - agent: go
             repository: service-go
-            ref: d0711dcdb6354be2f95c3b5fe7ad74cfb435d25d
+            ref: c77770bcfad2478a8add9890f102a92f8000586d
           - agent: go-grpc
             repository: service-go-grpc
-            ref: 4a5c4bfe5877dcbcf8bbb9e67cf3e46a50a675d6
+            ref: 45a2821fe205a5112d159757f95d0d9f299499ab
           - agent: rust
             repository: service-rust
-            ref: 07ef97e5aef0b74ebc0352d671563bfb1b0b078c
+            ref: 14ca465eb7ac78400497e8f6475b84f3f01ed587
           - agent: nextjs
             repository: service-nextjs
-            ref: 78ccccbe0590b239103da7657a1243a216bf0a99
+            ref: 0f2173300c398be19358993770e273d929b40c23
           - agent: python-fastapi
             repository: service-python-fastapi
-            ref: dc676f0d91c1ff658d00831b2e1567c57bf3de28
+            ref: 39395b622febe9630098abe82ba79ad736f00fb7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -59,9 +59,9 @@ jobs:
           repository: codefly-dev/${{ matrix.repository }}
           ref: ${{ matrix.ref }}
           path: .qualification-agent
-      # No published agent embeds a Core carrying the marker, so the fleet's
-      # next generation has to be rebuilt here to be qualified at all. Taking
-      # the revision from this checkout is what keeps the two sides identical.
+      # Rebuild the pinned compatible source on this CLI's Core revision to
+      # catch future contract drift. Published-artifact qualification remains
+      # a separate coordinated-release requirement.
       - name: Rebuild the agent on the Core this CLI pins
         env:
           GOWORK: 'off'

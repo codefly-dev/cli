@@ -24,9 +24,8 @@ import (
 )
 
 // AgentBinaryEnv names the agent under qualification. It is a binary rather
-// than a published pin because no released agent embeds a Core that carries the
-// marker, so the only way to qualify the fleet's next generation is to rebuild
-// one from source against the Core this CLI pins.
+// than a fixed release pin so CI can rebuild against the Core this CLI pins.
+// Release qualification can also supply a downloaded published binary.
 const AgentBinaryEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_BINARY"
 
 // AgentVersionEnv carries the version the binary in AgentBinaryEnv was built
