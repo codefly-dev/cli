@@ -67,7 +67,8 @@ suppressions:
       daemon-side (HTTP request handler with AuthZ plugins). We only use
       the client subpackage (Container{Start,Stop,Inspect,...}). Verified
       via govulncheck traces: none reach plugins/authorization code —
-      they are all package-init chains in the shared module graph.
+      every reachable trace is a docker client API call or a package-init
+      chain in the shared module graph.
       Upstream fix: pending Moby release (no CVE-fixed version yet).
       Re-verified 2026-09-14: govulncheck still reports this against
       github.com/docker/docker@v28.5.2+incompatible with Fixed in: N/A.
