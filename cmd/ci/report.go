@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/imageevidence"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -168,12 +169,10 @@ type CIReportArtifact struct {
 }
 
 // ImageAssociation names one service-owned image that a single scan
-// covers, in the role the image plays for that service.
-type ImageAssociation struct {
-	Service   string `json:"service"`
-	Role      string `json:"role,omitempty"`
-	Reference string `json:"reference,omitempty"`
-}
+// covers, in the role the image plays for that service. A report and a
+// published release directory must describe an association identically, so both
+// name the same type rather than keeping a copy each.
+type ImageAssociation = imageevidence.Association
 
 // cloneCIReportArtifacts deep-copies recorded evidence. Artifacts were all
 // scalar until image evidence added a slice, so a plain copy would leave a

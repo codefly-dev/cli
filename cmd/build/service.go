@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"sort"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/imageevidence"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -73,6 +77,9 @@ var ServiceCmd = &cobra.Command{
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if err := publishImageEvidence(workspace, flow); err != nil {
+			return err
+		}
 		reportDigest()
 		cli.Header(1, "Work done!")
 		return nil
@@ -128,6 +135,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 	flow.WithPush(push)
 	flow.WithBuildxBuilder(buildxBuilder)
 	flow.WithImageDigest(true)
+	flow.WithImageSBOM(imageSBOM)
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithStandAlone(standAlone)
 	err = flow.InitManagers(ctx)
@@ -156,6 +164,44 @@ func buildService(ctx context.Context, flow *orchestration.Flow) error {
 
 }
 
+// publishImageEvidence writes the evidence this build collected into a
+// directory that travels with the images it pushed, so published evidence is
+// retrievable from the release itself rather than only from the run that
+// produced it.
+//
+// Every service's evidence is published, not only the origin's: a build that is
+// not stand-alone builds its dependencies, and a pushed one publishes their
+// images too, so discarding their evidence would leave shipped images uncovered.
+func publishImageEvidence(workspace *resources.Workspace, flow *orchestration.Flow) error {
+	if !imageSBOM {
+		return nil
+	}
+	collected := flow.ImageEvidence()
+	uniques := make([]string, 0, len(collected))
+	for unique := range collected {
+		uniques = append(uniques, unique)
+	}
+	sort.Strings(uniques)
+	var evidence []*builderv0.ImageSBOM
+	for _, unique := range uniques {
+		evidence = append(evidence, collected[unique]...)
+	}
+	documents, err := imageevidence.Documents(evidence)
+	if err != nil {
+		return err
+	}
+	directory := imageSBOMDirectory
+	if !filepath.IsAbs(directory) {
+		directory = filepath.Join(workspace.Dir(), directory)
+	}
+	index, err := imageevidence.Publish(directory, documents)
+	if err != nil {
+		return err
+	}
+	cli.Info("Published image SBOM evidence for %d image(s) to %s", len(index.Images), directory)
+	return nil
+}
+
 var buildCacheFlags common.BuildCacheFlags
 
 var standAlone bool
@@ -163,6 +209,8 @@ var org string
 var push bool
 var envInput string
 var buildxBuilder string
+var imageSBOM bool
+var imageSBOMDirectory string
 
 func init() {
 	buildCacheFlags.Bind(ServiceCmd)
@@ -171,4 +219,6 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&push, "push", false, "Push the image to the repository")
 	ServiceCmd.Flags().StringVar(&envInput, "env", "local", "Environment to build for (looks up registry/cluster from workspace.codefly.yaml)")
 	ServiceCmd.Flags().StringVar(&buildxBuilder, "builder", "", "docker buildx builder to run the build on (e.g. a native amd64 buildkit) to avoid local QEMU emulation")
+	ServiceCmd.Flags().BoolVar(&imageSBOM, "image-sbom", false, "Require digest-bound image SBOM evidence for every image the build produces")
+	ServiceCmd.Flags().StringVar(&imageSBOMDirectory, "image-sbom-dir", filepath.Join(".codefly", "sbom", "image"), "Directory to publish image SBOM evidence into")
 }

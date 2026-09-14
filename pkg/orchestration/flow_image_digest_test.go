@@ -88,3 +88,47 @@ func TestOriginImageEvidenceNilWhenNothingCollected(t *testing.T) {
 func TestOriginImageEvidenceNilHubIsEmpty(t *testing.T) {
 	require.Nil(t, (&Flow{}).OriginImageEvidence())
 }
+
+// A build that is not stand-alone pushes its dependencies' images too, so their
+// evidence covers shipped images and a publisher must be able to reach it.
+func TestImageEvidenceCoversEveryServiceThatCollected(t *testing.T) {
+	service := &resources.Service{Name: "frontend"}
+	service.WithModule("web")
+	origin := resources.WithUnique(service).Unique()
+	originEvidence := []*builderv0.ImageSBOM{{Digest: "sha256:" + strings.Repeat("a", 64), Platform: "linux/amd64"}}
+	dependencyEvidence := []*builderv0.ImageSBOM{{Digest: "sha256:" + strings.Repeat("b", 64), Platform: "linux/amd64"}}
+
+	flow := &Flow{
+		originService: service,
+		hub: &Hub{managers: []IManager{
+			&digestManager{unique: "web/api", evidence: dependencyEvidence},
+			&digestManager{unique: origin, evidence: originEvidence},
+		}},
+	}
+
+	require.Equal(t, map[string][]*builderv0.ImageSBOM{
+		"web/api": dependencyEvidence,
+		origin:    originEvidence,
+	}, flow.ImageEvidence())
+}
+
+func TestImageEvidenceOmitsServicesThatCollectedNothing(t *testing.T) {
+	service := &resources.Service{Name: "frontend"}
+	service.WithModule("web")
+	origin := resources.WithUnique(service).Unique()
+	evidence := []*builderv0.ImageSBOM{{Digest: "sha256:" + strings.Repeat("a", 64)}}
+
+	flow := &Flow{
+		originService: service,
+		hub: &Hub{managers: []IManager{
+			&digestManager{unique: "web/api"},
+			&digestManager{unique: origin, evidence: evidence},
+		}},
+	}
+
+	require.Equal(t, map[string][]*builderv0.ImageSBOM{origin: evidence}, flow.ImageEvidence())
+}
+
+func TestImageEvidenceNilHubIsEmpty(t *testing.T) {
+	require.Empty(t, (&Flow{}).ImageEvidence())
+}

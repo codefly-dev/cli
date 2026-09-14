@@ -921,6 +921,30 @@ func (flow *Flow) OriginImageEvidence() []*builderv0.ImageSBOM {
 	return nil
 }
 
+// ImageEvidence returns the image SBOMs every service in the flow collected,
+// keyed by service. A build that is not stand-alone builds its dependencies —
+// and when pushing, publishes their images too — so their evidence is as
+// release-grade as the origin's, and keeping only the origin's would discard
+// evidence for images that were actually shipped.
+func (flow *Flow) ImageEvidence() map[string][]*builderv0.ImageSBOM {
+	evidence := map[string][]*builderv0.ImageSBOM{}
+	if flow == nil || flow.hub == nil {
+		return evidence
+	}
+	for _, manager := range flow.hub.managers {
+		source, ok := manager.(interface {
+			BuilderImageEvidence() []*builderv0.ImageSBOM
+		})
+		if !ok {
+			continue
+		}
+		if collected := source.BuilderImageEvidence(); len(collected) > 0 {
+			evidence[manager.Unique()] = collected
+		}
+	}
+	return evidence
+}
+
 func (flow *Flow) Build(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Build")
 	// In stand-alone Mode, we set an ignore policy
