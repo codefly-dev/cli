@@ -298,6 +298,19 @@ index no longer names are removed, so a superseded release's evidence cannot be
 mistaken for the current one. Files it did not write — a source SBOM sharing the
 directory, say — are left alone.
 
+With `--push`, the same evidence is additionally attached to each image in the
+registry as an OCI 1.1 referrers artifact, so a consumer holding nothing but an
+image digest resolves the inventory from the repository it pulled from — no
+published directory has to have been carried anywhere. Registries without the
+referrers API are covered through the fallback tag scheme. The attachment is made
+against the image already in the registry, so a digest that was never pushed
+fails rather than producing an attachment that refers to nothing; because it runs
+after the push, a failure there reports that the shipped images are not fully
+covered and never that the push itself failed. Attaching the same evidence again
+is a no-op: nothing in the artifact varies between runs, so a rebuilt image does
+not accumulate a referrer per build. A build without `--push` has no registry to
+attach to and publishes the directory alone.
+
 Unlike `codefly ci build`, this command is not stand-alone by default, so a build
 that resolves its dependencies builds and, when pushing, publishes their images
 too; evidence is collected and published for every one of those services rather

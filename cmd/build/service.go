@@ -77,7 +77,7 @@ var ServiceCmd = &cobra.Command{
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := publishImageEvidence(workspace, flow); err != nil {
+		if err := publishImageEvidence(ctx, workspace, flow); err != nil {
 			return err
 		}
 		reportDigest()
@@ -167,12 +167,13 @@ func buildService(ctx context.Context, flow *orchestration.Flow) error {
 // publishImageEvidence writes the evidence this build collected into a
 // directory that travels with the images it pushed, so published evidence is
 // retrievable from the release itself rather than only from the run that
-// produced it.
+// produced it. A pushed build also attaches it to the images themselves, which
+// is the form a consumer holding nothing but a digest can resolve.
 //
 // Every service's evidence is published, not only the origin's: a build that is
 // not stand-alone builds its dependencies, and a pushed one publishes their
 // images too, so discarding their evidence would leave shipped images uncovered.
-func publishImageEvidence(workspace *resources.Workspace, flow *orchestration.Flow) error {
+func publishImageEvidence(ctx context.Context, workspace *resources.Workspace, flow *orchestration.Flow) error {
 	if !imageSBOM {
 		return nil
 	}
@@ -205,10 +206,18 @@ func publishImageEvidence(workspace *resources.Workspace, flow *orchestration.Fl
 		cli.Info("No image to cover; recorded empty image SBOM evidence at %s", directory)
 		return nil
 	}
+	cli.Info("Published image SBOM evidence for %d image(s) to %s", len(index.Images), directory)
 	if !push {
 		cli.Warning("Image SBOM evidence at %s covers locally loaded images; their digests are not in a registry", directory)
+		return nil
 	}
-	cli.Info("Published image SBOM evidence for %d image(s) to %s", len(index.Images), directory)
+	// The images are already in the registry, so this cannot undo what shipped;
+	// it can only report that the shipped images are not fully covered.
+	attachments, err := imageevidence.Attach(ctx, documents)
+	if err != nil {
+		return fmt.Errorf("images are pushed but their evidence could not be attached in the registry: %w", err)
+	}
+	cli.Info("Attached image SBOM evidence to %d image(s) in the registry", len(attachments))
 	return nil
 }
 
