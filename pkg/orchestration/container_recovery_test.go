@@ -229,19 +229,28 @@ func containerRecoveryDigests(t *testing.T) (string, string) {
 	return id, namespace
 }
 
-// Mixed CLI and agent generations are unsupported in both directions, and the
-// rollout tells the operator they fail differently: a marker from the untagged
-// generation is refused outright, while a released CLI writes none and leaves
-// containers unlabeled without raising anything. Both outcomes are decided by
-// the agent's own Core at container creation, and the only thing that reaches
-// the CLI is the identity resolved here — which is what an agent echoes as its
-// acknowledgement, and all the guard on Runner.Init ever compares.
+// unownedPID is a pid no live process holds. Deriving one from os.Getpid()
+// reads as safer and is not: the parser compares against the parent Core
+// captured when it initialized, and os.Getppid() stops matching that the moment
+// this process is reparented — so a derived neighbour can collide with the
+// retained parent and have its marker accepted.
+const unownedPID = 999999999
+
+// The rollout and the fleet runbook tell the operator how each generation's
+// marker is read, and this CLI's own Core is what reads it. Core owns that
+// behavior and tests it directly, including the container creation these
+// resolutions feed — which is unreachable from here, because
+// desiredContainerConfigs is unexported and NewDockerEnvironment pings a
+// daemon. What this pins is the CLI's documented dependency on that behavior: a
+// Core bump changing any row below would leave the release guidance wrong with
+// every test in this repository still green.
 //
-// So a refused marker and a missing one are indistinguishable to the CLI: both
-// resolve to nothing. Neither direction is something the guard can catch, which
-// is why the release gate is a rebuild of the fleet rather than a check the CLI
-// could make on its own.
-func TestMixedGenerationContainerRecoveryMarkersResolve(t *testing.T) {
+// The rollout's claim that the two unsupported directions "fail differently" is
+// true only at creation. The identity resolved here is the whole of what an
+// agent echoes as its acknowledgement and all Runner.Init's guard compares, and
+// a refused marker and a missing one both resolve to nothing — so the guard
+// catches neither direction.
+func TestPinnedCoreMarkerResolutionsMatchTheRollout(t *testing.T) {
 	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
 	id, namespace := containerRecoveryDigests(t)
 	// A host that cannot prove a durable identity projects the exact scope
@@ -252,17 +261,11 @@ func TestMixedGenerationContainerRecoveryMarkersResolve(t *testing.T) {
 	if trailing == "" {
 		trailing = id
 	}
-	// A marker is honored for the process that wrote it and for the child that
-	// inherited it at exec, and for nothing else.
-	foreign := os.Getpid() + 1
-	if foreign == os.Getppid() {
-		foreign++
-	}
 	for _, tc := range []struct{ name, marker, identity string }{
 		{"a released CLI projects nothing", "", ""},
 		{"the untagged generation, ambiguous trailing field", fmt.Sprintf("%d:%s:%s", os.Getpid(), id, trailing), ""},
 		{"the untagged generation, exact scope alone", fmt.Sprintf("%d:%s", os.Getpid(), id), id + ":"},
-		{"neither this process nor its parent", fmt.Sprintf("%d:v2:%s:%s", foreign, id, trailing), ""},
+		{"neither this process nor its parent", fmt.Sprintf("%d:v2:%s:%s", unownedPID, id, trailing), ""},
 		{"this generation", fmt.Sprintf("%d:v2:%s:%s", os.Getpid(), id, namespace), id + ":" + namespace},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,28 +277,53 @@ func TestMixedGenerationContainerRecoveryMarkersResolve(t *testing.T) {
 
 // A CLI of this generation can itself be launched under a marker another one
 // left behind — a nested run, the re-exec'd daemon, an agent shelling out. The
-// flow has to project its own ownership over whatever it inherited: agents
-// spawned under a marker this generation refuses create no containers at all,
-// and agents spawned under another flow's identity label theirs with ownership
-// no sweep of this flow can ever match.
+// flow has to project its own ownership over whatever it inherited, and the two
+// shapes it can inherit fail differently if it does not. A marker this
+// generation refuses leaves its agents creating no containers at all. One that
+// parses is worse and quieter: the agents label containers with another owner's
+// identity, which no sweep of this flow can ever match, so the leak this
+// recovery exists to collect resumes silently.
 func TestFlowProjectsOverAnInheritedForeignMarker(t *testing.T) {
-	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
-	id, namespace := containerRecoveryDigests(t)
-	trailing := namespace
-	if trailing == "" {
-		trailing = id
+	for _, tc := range []struct {
+		name   string
+		tagged bool
+	}{
+		{"a marker this generation refuses", false},
+		{"another flow's well-formed marker", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create the home directory here rather than relying on
+			// InitManagers to do it: resolving the expected ownership below
+			// walks that path, so a flow that never projected would fail this
+			// on a missing directory instead of on the ownership it projected.
+			home := filepath.Join(t.TempDir(), "home")
+			require.NoError(t, os.MkdirAll(home, 0o700))
+			t.Setenv(resources.CodeflyHomeEnv, home)
+			t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+			id, namespace := containerRecoveryDigests(t)
+			trailing := namespace
+			if trailing == "" {
+				trailing = id
+			}
+			inherited := fmt.Sprintf("%d:%s:%s", os.Getpid(), id, trailing)
+			if tc.tagged {
+				inherited = fmt.Sprintf("%d:v2:%s:%s", os.Getpid(), id, namespace)
+			}
+			t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, inherited)
+			foreign := dockerrun.InheritedContainerRecoveryScope()
+			require.Equal(t, tc.tagged, foreign != "", "the fixture must be a marker this generation reads as expected")
+
+			flow, workspace := newProjectionWorkspaceFlow(t, RunMode, false)
+			require.NoError(t, flow.InitManagers(context.Background()))
+
+			expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), "from-yaml")
+			require.NoError(t, err)
+			scope, err := flow.ContainerRecoveryScope()
+			require.NoError(t, err)
+			require.Equal(t, expected, scope)
+			projected := dockerrun.InheritedContainerRecoveryScope()
+			require.NotEmpty(t, projected)
+			require.NotEqual(t, foreign, projected, "the flow must project its own ownership, not adopt what it inherited")
+		})
 	}
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, fmt.Sprintf("%d:%s:%s", os.Getpid(), id, trailing))
-	require.Empty(t, dockerrun.InheritedContainerRecoveryScope(), "the fixture must be a marker this generation refuses")
-
-	flow, workspace := newProjectionWorkspaceFlow(t, RunMode, false)
-	require.NoError(t, flow.InitManagers(context.Background()))
-
-	expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), "from-yaml")
-	require.NoError(t, err)
-	scope, err := flow.ContainerRecoveryScope()
-	require.NoError(t, err)
-	require.Equal(t, expected, scope)
-	require.NotEmpty(t, dockerrun.InheritedContainerRecoveryScope())
 }
