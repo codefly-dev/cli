@@ -35,24 +35,24 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Start a service locally with its dependency graph",
 	Args:  cobra.MaximumNArgs(1),
-	RunE:  func(cmd *cobra.Command, args []string) error { return runServiceCommand(cmd, args, false) },
+	RunE:  runServiceCommand,
 }
 
 // resolveRunPins materializes the workspace's composed pinned modules unless the
-// caller already did. `run solution` materializes unconditionally before
-// delegating to this path, and repeating it there would re-attempt a pull that
-// already failed once in the same invocation — a second round trip and a
-// duplicate warning for a request nothing has changed since.
-func resolveRunPins(ctx context.Context, alreadyResolved bool) error {
-	if alreadyResolved {
+// caller already did, which pinsAlreadyResolved records.
+//
+// The signal travels as package state rather than a parameter because this
+// function is cobra's RunE and the whole run path reads its inputs that way;
+// widening the signature would also rewrite a declaration line that carries a
+// long-standing complexity finding, which would then read as newly introduced.
+func resolveRunPins(ctx context.Context) error {
+	if pinsAlreadyResolved {
 		return nil
 	}
 	return common.ResolvePinnedModulesForRun(ctx)
 }
 
-// pinsResolved says the caller has already materialized this workspace's
-// composed pinned modules; see resolveRunPins.
-func runServiceCommand(cmd *cobra.Command, args []string, pinsResolved bool) (returnErr error) {
+func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	if err := validateOpenDashboardFlag(openDashboard, withCLIServer); err != nil {
 		return err
 	}
@@ -140,7 +140,7 @@ func runServiceCommand(cmd *cobra.Command, args []string, pinsResolved bool) (re
 	// referenced by identity is not loadable as a local checkout until the CLI
 	// has pulled it, so the load below is precisely what fails without this —
 	// including for the dependency stacks the SDK spawns here.
-	if err := resolveRunPins(ctx, pinsResolved); err != nil {
+	if err := resolveRunPins(ctx); err != nil {
 		return err
 	}
 

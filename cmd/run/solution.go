@@ -66,7 +66,9 @@ var SolutionCmd = &cobra.Command{
 		// so letting the delegate run it again would re-attempt any pull that
 		// warned there — a second round trip and a duplicate warning, for a
 		// request nothing has changed since.
-		return runServiceCommand(cmd, []string{entry}, true)
+		pinsAlreadyResolved = true
+		defer func() { pinsAlreadyResolved = false }()
+		return runServiceCommand(cmd, []string{entry})
 	},
 }
 

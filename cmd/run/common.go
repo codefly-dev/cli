@@ -73,6 +73,15 @@ var namingScopeExplicit bool
 // independent package test processes cannot collide with each other.
 var temporaryPorts bool
 
+// pinsAlreadyResolved records that the caller materialized this workspace's
+// composed pinned modules before delegating to the run path, so the run path
+// does not repeat it: `run solution` materializes unconditionally, and a second
+// pass would re-attempt a pull that already failed in the same invocation — a
+// wasted round trip and a duplicate warning for a request nothing has changed
+// since. Set and cleared around the delegation, so a repeated in-process
+// invocation cannot inherit it.
+var pinsAlreadyResolved bool
+
 // Runtime context
 var runtimeContext string
 
