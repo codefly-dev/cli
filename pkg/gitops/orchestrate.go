@@ -18,7 +18,7 @@ import (
 // imageEvidenceDir is the subdirectory of a rendered unit holding its published
 // image SBOM evidence. It mirrors the CI report's own sbom/image layout, so a
 // consumer finds evidence under the same relative path in either place.
-var imageEvidenceDir = filepath.Join("sbom", "image")
+const imageEvidenceDir = "sbom/image"
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink, collectImageSBOM bool) (RenderResult, error) {
 	return renderModuleTree(ctx, workspace, module, env, project, sink, true, collectImageSBOM)
@@ -93,6 +93,7 @@ func renderModuleTree(
 			}
 		}
 		outputs := make(map[string]*builderv0.DeploymentOutput)
+		managed := managedServiceNames(env)
 		for _, service := range roots {
 			if err := renderServiceFlow(ctx, &serviceFlowRequest{
 				workspace: workspace,
@@ -110,6 +111,7 @@ func renderModuleTree(
 					}
 				},
 				collectImageSBOM: collectImageSBOM,
+				managed:          managed,
 			}); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
@@ -201,6 +203,17 @@ func renderModuleTree(
 		}
 		return nil
 	})
+}
+
+// managedServiceNames names the services the environment manages. Their rendered
+// directories are replaced or removed once their bundle is retained, so they
+// cannot carry image evidence.
+func managedServiceNames(env *resources.Environment) map[string]bool {
+	managed := make(map[string]bool, len(env.ManagedServices))
+	for name := range env.ManagedServices {
+		managed[name] = true
+	}
+	return managed
 }
 
 func moduleRenderRoots(module string, services []*resources.Service) ([]*resources.Service, error) {
@@ -404,6 +417,10 @@ type serviceFlowRequest struct {
 	destination    func(*resources.Module, *resources.Service) string
 	record         func(map[string]*builderv0.DeploymentOutput)
 	recordServices func(map[string]*resources.Service)
+	// managed names the services the environment manages. Their rendered
+	// directories are replaced or removed after the flow runs, so they cannot
+	// carry evidence. Empty for a render that does not retain managed bundles.
+	managed map[string]bool
 	// collectImageSBOM requires a digest-bound image SBOM for every image this
 	// render pushes and publishes it into the rendered tree. It stays opt-in
 	// while no released agent serves image scope.
@@ -441,7 +458,7 @@ func renderServiceFlow(ctx context.Context, request *serviceFlowRequest) (result
 		return err
 	}
 	if request.collectImageSBOM {
-		if err := publishFlowImageEvidence(flow, request.destination); err != nil {
+		if err := publishFlowImageEvidence(flow, request); err != nil {
 			return err
 		}
 	}
@@ -472,9 +489,33 @@ func renderServiceFlow(ctx context.Context, request *serviceFlowRequest) (result
 // A snapshot flow is not stand-alone, so every service it built collected
 // evidence and all of it covers pushed images — the origin's alone would leave
 // dependency images uncovered.
-func publishFlowImageEvidence(flow *orchestration.Flow, destination func(*resources.Module, *resources.Service) string) error {
-	for unique, evidence := range flow.ImageEvidence() {
-		service, err := flow.ServiceFromUnique(unique)
+func publishFlowImageEvidence(flow *orchestration.Flow, request *serviceFlowRequest) error {
+	return publishImageEvidenceInto(flow.ImageEvidence(), flow.OrderedServiceUniques(), flow.ServiceFromUnique, request)
+}
+
+// publishImageEvidenceInto places each service's evidence inside that service's
+// own rendered directory.
+//
+// A managed service is refused rather than published: retainManagedBundle
+// removes or wholesale-replaces its rendered directory after this has run, so
+// evidence written there is destroyed. The render pushed that image, so
+// succeeding anyway would report a shipped image as covered by evidence that no
+// longer exists.
+//
+// A flow that collected nothing records an explicit empty index in the origin's
+// directory. An absent directory cannot be told apart from collection that never
+// ran, which is the distinction this evidence exists to make.
+//
+// Every digest here was resolved from a registry: renderServiceFlow always
+// pushes, so the published index is registry-backed.
+func publishImageEvidenceInto(
+	evidence map[string][]*builderv0.ImageSBOM,
+	built []string,
+	resolve func(string) (*resources.Service, error),
+	request *serviceFlowRequest,
+) error {
+	for _, unique := range built {
+		service, err := resolve(unique)
 		if err != nil {
 			return err
 		}
@@ -482,18 +523,57 @@ func publishFlowImageEvidence(flow *orchestration.Flow, destination func(*resour
 		if err != nil {
 			return err
 		}
-		documents, err := imageevidence.Documents(evidence)
+		if request.managed[identity.Name] {
+			return fmt.Errorf(
+				"service %s is managed by environment %s: its rendered directory is replaced after evidence is written, so image SBOM evidence cannot be promoted for it",
+				unique, request.env.Name,
+			)
+		}
+	}
+	if len(evidence) == 0 {
+		directory, err := serviceEvidenceDirectory(request.service, request.destination)
 		if err != nil {
 			return err
 		}
-		// A dependency can belong to another module, and the tree places it under
-		// that module. The destinations key on the module's name alone.
-		root := destination(&resources.Module{Name: identity.Module}, service)
-		if _, err := imageevidence.Publish(filepath.Join(root, imageEvidenceDir), documents); err != nil {
+		if _, err := imageevidence.Publish(directory, nil, true); err != nil {
+			return fmt.Errorf("record empty image evidence for %s: %w", request.service.Name, err)
+		}
+		return nil
+	}
+	for unique, collected := range evidence {
+		service, err := resolve(unique)
+		if err != nil {
+			return err
+		}
+		documents, err := imageevidence.Documents(collected)
+		if err != nil {
+			return err
+		}
+		directory, err := serviceEvidenceDirectory(service, request.destination)
+		if err != nil {
+			return err
+		}
+		if _, err := imageevidence.Publish(directory, documents, true); err != nil {
 			return fmt.Errorf("publish image evidence for %s: %w", unique, err)
 		}
 	}
 	return nil
+}
+
+// serviceEvidenceDirectory resolves where one service's evidence belongs. A
+// dependency can belong to another module, and the tree places it under that
+// module, so the directory is derived from the service's own identity; the
+// destinations key on the module's name alone.
+func serviceEvidenceDirectory(
+	service *resources.Service,
+	destination func(*resources.Module, *resources.Service) string,
+) (string, error) {
+	identity, err := service.Identity()
+	if err != nil {
+		return "", err
+	}
+	root := destination(&resources.Module{Name: identity.Module}, service)
+	return filepath.Join(root, filepath.FromSlash(imageEvidenceDir)), nil
 }
 
 type gitOpsDeploymentOutputManager struct{}

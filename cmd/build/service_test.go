@@ -34,8 +34,8 @@ func TestServiceCommandKeepsImageEvidenceOptIn(t *testing.T) {
 	}
 }
 
-// The gate is checked before the flow is read, so a build that never asked for
-// evidence publishes nothing and cannot fail on a flow it does not consult.
+// The publisher owns the opt-in gate, so a build that never asked for evidence
+// publishes nothing however it is reached.
 func TestPublishImageEvidenceIsANoOpWhenNotRequested(t *testing.T) {
 	imageSBOM = false
 	if err := publishImageEvidence(nil, nil); err != nil {

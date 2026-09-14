@@ -73,10 +73,8 @@ var ModuleCmd = &cobra.Command{
 				return fmt.Errorf("cannot build service %s: %w", ref.Name, err)
 			}
 		}
-		if imageSBOM {
-			if err := publishCollectedImageEvidence(workspace, collected); err != nil {
-				return err
-			}
+		if err := publishCollectedImageEvidence(workspace, module.Name, collected); err != nil {
+			return err
 		}
 
 		cli.Header(1, "Module build done!")

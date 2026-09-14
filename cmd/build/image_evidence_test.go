@@ -59,13 +59,14 @@ func TestPublishCollectedImageEvidenceKeepsEveryServiceInOneIndex(t *testing.T) 
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), dir)
 	require.NoError(t, err)
 
-	previousDirectory := imageSBOMDirectory
-	t.Cleanup(func() { imageSBOMDirectory = previousDirectory })
+	previousDirectory, previousFlag := imageSBOMDirectory, imageSBOM
+	t.Cleanup(func() { imageSBOMDirectory, imageSBOM = previousDirectory, previousFlag })
 	imageSBOMDirectory = filepath.Join("evidence", "image")
+	imageSBOM = true
 
 	accounts := "sha256:" + strings.Repeat("a", 64)
 	store := "sha256:" + strings.Repeat("b", 64)
-	require.NoError(t, publishCollectedImageEvidence(workspace, map[string][]*builderv0.ImageSBOM{
+	require.NoError(t, publishCollectedImageEvidence(workspace, "", map[string][]*builderv0.ImageSBOM{
 		"users/accounts": {scannedImage(accounts, "users/accounts")},
 		"users/store":    {scannedImage(store, "users/store")},
 	}))
@@ -81,4 +82,40 @@ func TestPublishCollectedImageEvidenceKeepsEveryServiceInOneIndex(t *testing.T) 
 	}
 	require.Len(t, index.Images, 2)
 	require.True(t, digests[accounts] && digests[store], "the index lost a service's image: %+v", index.Images)
+}
+
+// Publishing removes generated documents the new index no longer names, so two
+// modules publishing into one directory would delete each other's evidence
+// rather than merely leaving it unindexed.
+func TestPublishCollectedImageEvidenceScopesModulesSoTheyCannotDeleteEachOther(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, resources.WorkspaceConfigurationName),
+		[]byte("name: evidence\nlayout: modules\n"), 0o600))
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), dir)
+	require.NoError(t, err)
+
+	previousDirectory, previousFlag := imageSBOMDirectory, imageSBOM
+	t.Cleanup(func() { imageSBOMDirectory, imageSBOM = previousDirectory, previousFlag })
+	imageSBOMDirectory = filepath.Join("evidence", "image")
+	imageSBOM = true
+
+	users := "sha256:" + strings.Repeat("c", 64)
+	billing := "sha256:" + strings.Repeat("d", 64)
+	require.NoError(t, publishCollectedImageEvidence(workspace, "users", map[string][]*builderv0.ImageSBOM{
+		"users/accounts": {scannedImage(users, "users/accounts")},
+	}))
+	require.NoError(t, publishCollectedImageEvidence(workspace, "billing", map[string][]*builderv0.ImageSBOM{
+		"billing/worker": {scannedImage(billing, "billing/worker")},
+	}))
+
+	for module, digest := range map[string]string{"users": users, "billing": billing} {
+		payload, readErr := os.ReadFile(filepath.Join(dir, "evidence", "image", module, imageevidence.IndexFilename))
+		require.NoError(t, readErr, "module %s lost its evidence to another module's build", module)
+		var index imageevidence.Index
+		require.NoError(t, json.Unmarshal(payload, &index))
+		require.Len(t, index.Images, 1)
+		require.Equal(t, digest, index.Images[0].Digest)
+		require.FileExists(t, filepath.Join(dir, "evidence", "image", module, index.Images[0].Path))
+	}
 }

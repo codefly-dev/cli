@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/imageevidence"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 )
 
 func scannedImage(digest string) *builderv0.ImageSBOM {
@@ -46,7 +47,7 @@ func publishUnitEvidence(t *testing.T, directory, digest string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := imageevidence.Publish(directory, documents); err != nil {
+	if _, err := imageevidence.Publish(directory, documents, true); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -76,7 +77,7 @@ func renderUnitWithEvidence(t *testing.T, evidence func(stage string)) (string, 
 func TestSnapshotAcceptsImageEvidenceInsideItsServiceUnit(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	destination, err := renderUnitWithEvidence(t, func(stage string) {
-		publishUnitEvidence(t, filepath.Join(stage, "services", "accounts", imageEvidenceDir), digest)
+		publishUnitEvidence(t, filepath.Join(stage, "services", "accounts", filepath.FromSlash(imageEvidenceDir)), digest)
 	})
 	if err != nil {
 		t.Fatalf("render with in-unit image evidence failed: %v", err)
@@ -85,7 +86,7 @@ func TestSnapshotAcceptsImageEvidenceInsideItsServiceUnit(t *testing.T) {
 		t.Fatalf("snapshot rejected evidence inside its own service unit: %v", err)
 	}
 
-	index := filepath.Join(destination, "services", "accounts", imageEvidenceDir, imageevidence.IndexFilename)
+	index := filepath.Join(destination, "services", "accounts", filepath.FromSlash(imageEvidenceDir), imageevidence.IndexFilename)
 	if _, err := os.Stat(index); err != nil {
 		t.Fatalf("published evidence index did not survive the render: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestSnapshotAcceptsImageEvidenceInsideItsServiceUnit(t *testing.T) {
 func TestSnapshotRejectsImageEvidenceOutsideTheServiceGraph(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("b", 64)
 	destination, err := renderUnitWithEvidence(t, func(stage string) {
-		publishUnitEvidence(t, filepath.Join(stage, imageEvidenceDir), digest)
+		publishUnitEvidence(t, filepath.Join(stage, filepath.FromSlash(imageEvidenceDir)), digest)
 	})
 	if err != nil {
 		t.Fatalf("render failed before the snapshot could be validated: %v", err)
@@ -120,5 +121,67 @@ func TestSnapshotRejectsImageEvidenceOutsideTheServiceGraph(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unexpected path") && !strings.Contains(err.Error(), "outside the exact service graph") {
 		t.Fatalf("snapshot rejected root evidence for the wrong reason: %v", err)
+	}
+}
+
+func evidenceRequest(stage string, origin *resources.Service, managed map[string]bool) *serviceFlowRequest {
+	return &serviceFlowRequest{
+		service: origin,
+		env:     &resources.Environment{Name: "production"},
+		destination: func(_ *resources.Module, service *resources.Service) string {
+			return filepath.Join(stage, "services", service.Name)
+		},
+		managed: managed,
+	}
+}
+
+func unitEvidenceIndex(stage, service string) string {
+	return filepath.Join(stage, "services", service, filepath.FromSlash(imageEvidenceDir), imageevidence.IndexFilename)
+}
+
+// retainManagedBundle removes or wholesale-replaces a managed service's rendered
+// directory after the flow has run, so evidence written there is destroyed. The
+// render already pushed that image, so publishing and reporting success would
+// claim coverage that no longer exists on disk.
+func TestSnapshotEvidenceRefusesAManagedServiceWhoseDirectoryIsReplaced(t *testing.T) {
+	stage := t.TempDir()
+	postgres := &resources.Service{Name: "postgres"}
+	postgres.WithModule("platform")
+	request := evidenceRequest(stage, postgres, map[string]bool{"postgres": true})
+	resolve := func(string) (*resources.Service, error) { return postgres, nil }
+
+	err := publishImageEvidenceInto(
+		map[string][]*builderv0.ImageSBOM{"platform/postgres": {scannedImage("sha256:" + strings.Repeat("a", 64))}},
+		[]string{"platform/postgres"}, resolve, request,
+	)
+	if err == nil {
+		t.Fatal("evidence was published into a managed unit that is replaced right after")
+	}
+	if !strings.Contains(err.Error(), "managed") {
+		t.Fatalf("error does not name the managed unit as the cause: %v", err)
+	}
+	if _, statErr := os.Stat(unitEvidenceIndex(stage, "postgres")); !os.IsNotExist(statErr) {
+		t.Fatalf("evidence was written for a managed service: %v", statErr)
+	}
+}
+
+// An absent directory cannot be told apart from collection that never ran, so a
+// render owing evidence for no image has to record that explicitly.
+func TestSnapshotEvidenceRecordsAnEmptyIndexWhenNothingWasCollected(t *testing.T) {
+	stage := t.TempDir()
+	accounts := &resources.Service{Name: "accounts"}
+	accounts.WithModule("users")
+	request := evidenceRequest(stage, accounts, nil)
+	resolve := func(string) (*resources.Service, error) { return accounts, nil }
+
+	if err := publishImageEvidenceInto(nil, []string{"users/accounts"}, resolve, request); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(unitEvidenceIndex(stage, "accounts"))
+	if err != nil {
+		t.Fatalf("a render that collected nothing recorded nothing: %v", err)
+	}
+	if !strings.Contains(string(payload), `"images": []`) {
+		t.Fatalf("empty evidence is not an explicit empty list: %s", payload)
 	}
 }
