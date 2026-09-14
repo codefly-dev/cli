@@ -237,6 +237,12 @@ namespace, that a later run's *exact-scope* sweep walks past it once that run
 renamed the naming scope, and that the disposable sweep collects it. Observed
 2026-09-13 against Docker 29.4.0.
 
+A host that can prove no durable identity **fails** this proof rather than
+skipping it. The disposable sweep is keyed on that namespace and does nothing
+without one, so a skip would leave the gate green having checked the labels and
+neither sweep — which is the silent pass the proof exists to close. Expect it
+on a runner with no usable machine identity, such as a container-based job.
+
 Expect the exact-scope sweep to miss these containers: that is the documented
 behavior, not a defect. A run is free to choose a different naming scope
 (`--naming-scope`, a non-local `--env`, the invocation id `--temporary-ports`

@@ -33,6 +33,11 @@ const interruptedGenerateEnv = "CODEFLY_TEST_INTERRUPTED_GENERATE"
 // parent can find what it left behind.
 const generateContainerNameEnv = "CODEFLY_TEST_INTERRUPTED_GENERATE_CONTAINER"
 
+// interruptedGenerateMarker is how the parent knows the child really ran. A
+// `-test.run` regex that matches nothing exits 0, so without this a renamed or
+// build-tag-excluded helper would be read as a successful build.
+const interruptedGenerateMarker = "container built; exiting without shutdown"
+
 // TestInterruptedGenerateHelper is the child process: a `generate` that builds
 // its container and is killed before the defer that shuts it down. It creates
 // the container the way the real call sites do — the marker projected by
@@ -62,6 +67,7 @@ func TestInterruptedGenerateHelper(t *testing.T) {
 	if err = runner.Init(ctx); err != nil {
 		t.Fatalf("init docker environment: %v", err)
 	}
+	fmt.Fprintln(os.Stdout, interruptedGenerateMarker)
 }
 
 // TestAnInterruptedGenerateLeavesARecoverableContainer qualifies `codefly
@@ -92,8 +98,13 @@ func TestAnInterruptedGenerateLeavesARecoverableContainer(t *testing.T) {
 	if generatedScope == "" {
 		t.Fatal("the workspace resolved no container recovery ownership")
 	}
+	// A durable namespace is a precondition of this qualification, not an
+	// optional extra. The disposable sweep is keyed on it and returns without
+	// doing anything when it is empty, so skipping here would leave the gate
+	// green having checked the labels and neither sweep — the silent pass this
+	// proof exists to close. Fail instead, and say what the host is missing.
 	if generatedNamespace == "" {
-		t.Skip("host has no durable identity; cross-scope recovery is unavailable here by design")
+		t.Fatal("this host proves no durable identity (no usable /etc/machine-id, /var/lib/dbus/machine-id or product UUID), so ReapDisposableContainers cannot be qualified here; run this gate on a host that has a machine identity")
 	}
 
 	name := fmt.Sprintf("generate-recovery-%d", time.Now().UnixMilli())
@@ -110,8 +121,16 @@ func TestAnInterruptedGenerateLeavesARecoverableContainer(t *testing.T) {
 		resources.CodeflyHomeEnv+"="+home,
 		runners.ContainerRecoveryScopeEnvironment+"=",
 	)
-	if output, err := child.CombinedOutput(); err != nil {
+	output, err := child.CombinedOutput()
+	if err != nil {
 		t.Fatalf("the interrupted generate did not build its container: %v: %s", err, output)
+	}
+	// Exit 0 is not evidence the child ran: `go test` exits 0 when its -test.run
+	// matches nothing, which is what a renamed or build-tag-excluded helper
+	// produces. Require the helper's own marker instead.
+	if !strings.Contains(string(output), interruptedGenerateMarker) {
+		t.Fatalf("the interrupted generate never ran (no %q in its output); the helper is missing or its name no longer matches\n%s",
+			interruptedGenerateMarker, output)
 	}
 	if !containerExists(t, container) {
 		t.Fatal("the interrupted generate left no container behind; there is nothing to recover")

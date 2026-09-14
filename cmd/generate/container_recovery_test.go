@@ -203,24 +203,32 @@ func TestGenerateResolvesOwnershipOncePerCommand(t *testing.T) {
 	}
 }
 
-// calledIn returns the names of every function called somewhere inside body,
-// whether through a receiver or not.
-func calledIn(body ast.Node) map[string]bool {
-	called := map[string]bool{}
-	ast.Inspect(body, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		switch fun := call.Fun.(type) {
-		case *ast.SelectorExpr:
-			called[fun.Sel.Name] = true
-		case *ast.Ident:
-			called[fun.Name] = true
-		}
-		return true
-	})
-	return called
+// callSite records where a function calls something. Only a call that runs
+// where it is written carries a position: a deferred one runs after the
+// container already exists, so counting it would accept exactly the ordering
+// this test exists to reject.
+type callSite struct {
+	first    token.Pos
+	found    bool
+	deferred bool
+}
+
+func (c *callSite) add(pos token.Pos, deferred bool) {
+	if deferred {
+		c.deferred = true
+		return
+	}
+	if !c.found || pos < c.first {
+		c.first = pos
+	}
+	c.found = true
+}
+
+// containerBuilders are the Core constructors that create a recovery-labeled
+// container, matched by selector alone so an import under any alias counts.
+var containerBuilders = map[string]bool{
+	"NewDockerEnvironment":         true,
+	"NewDockerHeadlessEnvironment": true,
 }
 
 // TestEveryGenerateContainerIsOwnedAndDisposable holds the two calls that make
@@ -232,6 +240,13 @@ func calledIn(body ast.Node) map[string]bool {
 // exact-scope sweep can see it — so a later run that chose a different naming
 // scope walks past it forever. Nothing fails in either case: a label that
 // matches nothing looks exactly like a label that matches.
+//
+// Presence alone is not the property, and that is the subtle half. Core reads
+// both the marker and the ephemeral flag while it assembles the container
+// configuration, which happens inside Init — so a call that merely appears
+// somewhere in the function, but runs after Init or out of a defer, leaves the
+// container unlabeled while every call a presence check could count is still
+// there. Each is therefore ordered against Init.
 //
 // The Docker qualification drives one such container end to end. This is what
 // makes that proof transfer to the command rather than to the one call site it
@@ -257,17 +272,84 @@ func TestEveryGenerateContainerIsOwnedAndDisposable(t *testing.T) {
 			if !ok || function.Body == nil {
 				continue
 			}
-			called := calledIn(function.Body)
-			if !called["NewDockerEnvironment"] {
+			// Deferred regions are collected as source ranges rather than by
+			// matching the deferred call itself, so a call buried in a
+			// `defer func() { ... }()` closure is recognized too — that shape is
+			// written above Init in this package, so comparing positions alone
+			// would read it as correctly ordered.
+			var deferred [][2]token.Pos
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				switch node.(type) {
+				case *ast.DeferStmt, *ast.GoStmt:
+					deferred = append(deferred, [2]token.Pos{node.Pos(), node.End()})
+				}
+				return true
+			})
+			isDeferred := func(pos token.Pos) bool {
+				for _, region := range deferred {
+					if pos >= region[0] && pos < region[1] {
+						return true
+					}
+				}
+				return false
+			}
+
+			var builds, projects, ephemeral, initializes callSite
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, isCall := node.(*ast.CallExpr)
+				if !isCall {
+					return true
+				}
+				switch callee := call.Fun.(type) {
+				case *ast.SelectorExpr:
+					switch {
+					case containerBuilders[callee.Sel.Name]:
+						builds.add(call.Pos(), isDeferred(call.Pos()))
+					case callee.Sel.Name == "WithEphemeral":
+						ephemeral.add(call.Pos(), isDeferred(call.Pos()))
+					case callee.Sel.Name == "Init":
+						initializes.add(call.Pos(), isDeferred(call.Pos()))
+					}
+				case *ast.Ident:
+					if callee.Name == "projectContainerRecovery" {
+						projects.add(call.Pos(), isDeferred(call.Pos()))
+					}
+				}
+				return true
+			})
+			if !builds.found && !builds.deferred {
 				continue
 			}
 			builders++
-			if !called["projectContainerRecovery"] {
+
+			// Without an Init here the runner is handed somewhere else, and
+			// nothing in this function orders ownership against the moment the
+			// container is created.
+			if !initializes.found {
+				t.Errorf("%s: %s builds a container but never initializes it here, so no ordering can be checked; initialize it in this function or its ownership is unverifiable",
+					name, function.Name.Name)
+				continue
+			}
+			switch {
+			case projects.deferred && !projects.found:
+				t.Errorf("%s: %s projects container recovery ownership from a defer, which runs after the container is created; it would carry no recovery label",
+					name, function.Name.Name)
+			case !projects.found:
 				t.Errorf("%s: %s builds a container without projecting container recovery ownership; it would carry no recovery label and no sweep could ever collect it",
 					name, function.Name.Name)
+			case projects.first > initializes.first:
+				t.Errorf("%s: %s projects container recovery ownership after Init; Core reads the marker while assembling the container configuration, so the container is created with no recovery label",
+					name, function.Name.Name)
 			}
-			if !called["WithEphemeral"] {
+			switch {
+			case ephemeral.deferred && !ephemeral.found:
+				t.Errorf("%s: %s marks the container ephemeral from a defer, which runs after it is created; the ephemeral label is never applied",
+					name, function.Name.Name)
+			case !ephemeral.found:
 				t.Errorf("%s: %s builds a container that is not ephemeral; only a run keeping generate's exact naming scope could ever collect a leftover",
+					name, function.Name.Name)
+			case ephemeral.first > initializes.first:
+				t.Errorf("%s: %s marks the container ephemeral after Init; the flag is read while assembling the container configuration, so the container is created non-disposable",
 					name, function.Name.Name)
 			}
 		}
