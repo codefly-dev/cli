@@ -98,7 +98,7 @@
         {
           "publisher": "codefly.dev",
           "name": "postgres",
-          "version": "0.0.130"
+          "version": "0.0.133"
         }
       ],
       "blockers": [
