@@ -814,6 +814,28 @@ func (flow *Flow) OriginTestResponse() *runtimev0.TestResponse {
 	return nil
 }
 
+// OriginTestSkipped reports whether the origin service's tests were skipped
+// because its agent advertises no test capability. An agent that owns no suites
+// is neither a pass nor a failure: there was nothing to run.
+func (flow *Flow) OriginTestSkipped() bool {
+	if flow == nil || flow.hub == nil {
+		return false
+	}
+	origin := resources.WithUnique(flow.originService).Unique()
+	for _, manager := range flow.hub.managers {
+		if manager == nil || manager.Unique() != origin {
+			continue
+		}
+		if source, ok := manager.(interface {
+			RunnerTestSkipped() bool
+		}); ok {
+			return source.RunnerTestSkipped()
+		}
+		return false
+	}
+	return false
+}
+
 // OriginSyncResponse returns the structured SyncResponse from the origin
 // service's Builder.Sync RPC, or nil if it was never synchronized.
 func (flow *Flow) OriginSyncResponse() *builderv0.SyncResponse {
@@ -1693,6 +1715,10 @@ func (flow *Flow) configureTestExecution(runner *Runner) error {
 	flow.standAlone = execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
 	runner.WithTestRequest(execution.Request)
 	runner.WithServiceRunningForTest(execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
+	if execution.skipped {
+		flow.output().Info("Agent for <%s> advertises no test suites; skipping tests", runner.Unique())
+		return nil
+	}
 	flow.output().Info("Test suite <%s> for <%s> uses dependency mode %s", execution.DisplaySuite(), runner.Unique(), execution.DependencyMode.String())
 	return nil
 }

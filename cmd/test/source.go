@@ -109,6 +109,10 @@ var SourceCmd = &cobra.Command{
 		if stopErr != nil {
 			return fmt.Errorf("source tests passed but cleanup failed: %w", stopErr)
 		}
+		if flow != nil && flow.OriginTestSkipped() {
+			cli.Header(1, "No source tests: %s advertises no test suites", prepared.Service.Agent.Identifier())
+			return nil
+		}
 		cli.Header(1, "Source tests passed through %s", prepared.Service.Agent.Identifier())
 		return nil
 	},

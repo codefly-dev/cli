@@ -129,6 +129,12 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 	if err := flow.Start(ctx); err != nil {
 		return CheckResult{}, fmt.Errorf("test %s: %w", req.Service, err)
 	}
+	if flow.OriginTestSkipped() {
+		return CheckResult{
+			Passed: true,
+			Output: fmt.Sprintf("%s advertises no test suites; skipped", req.Service),
+		}, nil
+	}
 	resp := flow.OriginTestResponse()
 	return CheckResult{
 		Passed: orchestration.TestSucceeded(resp),

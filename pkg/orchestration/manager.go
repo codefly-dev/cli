@@ -177,6 +177,13 @@ func (manager *Manager) RunnerTestResponse() *runtimev0.TestResponse {
 	return manager.Runner.TestResponse()
 }
 
+func (manager *Manager) RunnerTestSkipped() bool {
+	if manager.Runner == nil {
+		return false
+	}
+	return manager.Runner.TestSkipped()
+}
+
 func (manager *Manager) DoSetCallback(callback func(ctx context.Context, action Action) error) {
 	manager.SetCallback(callback)
 }

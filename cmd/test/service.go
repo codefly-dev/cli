@@ -143,6 +143,10 @@ Examples:
 		if stopErr != nil {
 			return fmt.Errorf("tests passed but service cleanup failed: %w", stopErr)
 		}
+		if flow != nil && flow.OriginTestSkipped() {
+			fmt.Printf("[codefly] No tests for %s: agent advertises no test suites\n", serviceName)
+			return nil
+		}
 		fmt.Printf("[codefly] Tests passed for %s\n", serviceName)
 		return nil
 	},

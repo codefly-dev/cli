@@ -367,3 +367,31 @@ func assertReportTask(t *testing.T, task CIReportTask, status, reason string) {
 		t.Fatalf("task %s outcome = %s/%s, want %s/%s", task.ID, task.Status, task.StatusReason, status, reason)
 	}
 }
+
+func TestCIReportRecordsAgentWithoutTestCapabilityAsSkipped(t *testing.T) {
+	_, workspace := loadSchedulerFixture(t)
+	plan := &Plan{SchemaVersion: planSchemaVersion, Workspace: workspace.Name, ChangedFiles: []string{}, Services: []PlannedService{
+		{Service: "management/worker"},
+	}}
+	reporter := fixedCIReporter(t, plan)
+	options := ScheduleOptions{Jobs: 1, FailFast: true, Phase: "test", Reporter: reporter}
+	if err := prepareCIReportTasks(context.Background(), workspace, plan, options); err != nil {
+		t.Fatal(err)
+	}
+	id := reportTaskID("test", "", "management/worker")
+	reporter.startTask(id)
+	ctx := withCIReportTask(context.Background(), reporter, id)
+	recordCIReportSkip(ctx, reportReasonAgentNoTestCapability)
+	// The action returns nil for a skipped agent: an agent owning no suites
+	// must not be summarized as a passing test run.
+	reporter.finishTask(id, nil)
+
+	report := reporter.Finalize(nil)
+	assertReportTask(t, report.Tasks[0], reportStatusSkipped, reportReasonAgentNoTestCapability)
+	if got, want := report.Summary, (CIReportSummary{Total: 1, Skipped: 1}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("summary = %#v, want %#v", got, want)
+	}
+	if report.Status != reportStatusPassed {
+		t.Fatalf("status = %s, want %s", report.Status, reportStatusPassed)
+	}
+}
