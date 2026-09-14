@@ -278,6 +278,34 @@ Dockerfile expects the service directory as the build context (it `COPY`s
 `builder/…` paths); restore `builder/` from the archive, then rebuild directly,
 e.g. `docker buildx build --platform linux/amd64 -f services/<svc>/builder/Dockerfile services/<svc>`.
 
+Pass `--image-sbom` to require a digest-bound CycloneDX inventory for every image
+the build produces, and `--image-sbom-dir` to choose where it is published
+(default `.codefly/sbom/image`, resolved against the workspace root, not the
+current directory, so every build of a workspace publishes to one place). Each
+document is named by the digest and platform actually scanned, so multi-image and
+multi-platform outputs never collide, and an `index.json` beside them resolves an
+image digest and platform to its document. That directory is the retrievable form
+of the evidence: it travels with the images the build pushed instead of living
+only in the report of the run that produced it. Incomplete coverage — a failed
+scan, a missing image, a stale digest, or an omitted platform — fails the build
+rather than being reported as covered.
+
+The index records `registry_backed`. Only a build that pushes resolves digests
+from a registry; without `--push` the evidence covers images loaded into the
+local daemon, whose digests resolve nowhere else, and the command says so. The
+directory is rewritten on each build: documents this command wrote that the new
+index no longer names are removed, so a superseded release's evidence cannot be
+mistaken for the current one. Files it did not write — a source SBOM sharing the
+directory, say — are left alone.
+
+Unlike `codefly ci build`, this command is not stand-alone by default, so a build
+that resolves its dependencies builds and, when pushing, publishes their images
+too; evidence is collected and published for every one of those services rather
+than the named service alone, because each of those images is shipped. Narrow it
+with `--stand-alone`. Collection is opt-in because it runs a container scanner
+and fails a build whose agent cannot serve image scope, which no released agent
+does yet.
+
 ### `codefly test service [name]`
 
 Run one service's tests through its agent Test RPC. This is the focused local

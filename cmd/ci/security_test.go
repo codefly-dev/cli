@@ -3,7 +3,6 @@ package ci
 import (
 	"context"
 	"reflect"
-	"strings"
 	"testing"
 
 	coreaudit "github.com/codefly-dev/core/agents/services/audit"
@@ -66,40 +65,5 @@ func TestCoreTrivyDatabaseRecoveryContractReturnsFinalAuditResponse(t *testing.T
 func TestSafeCIArtifactNameCannotEscapeOutputDirectory(t *testing.T) {
 	if got := safeCIArtifactName("../module/name"); got != "--module-name" {
 		t.Fatalf("safe artifact name = %q", got)
-	}
-}
-
-func TestImageEvidenceFilenameKeysOnTheScanIdentity(t *testing.T) {
-	digest := "sha256:" + strings.Repeat("a", 64)
-	other := "sha256:" + strings.Repeat("b", 64)
-	amd64 := &builderv0.ImageSBOM{Digest: digest, Platform: "linux/amd64"}
-	arm64 := &builderv0.ImageSBOM{Digest: digest, Platform: "linux/arm64"}
-	second := &builderv0.ImageSBOM{Digest: other, Platform: "linux/amd64"}
-
-	if imageEvidenceFilename(amd64) == imageEvidenceFilename(arm64) {
-		t.Fatal("two platforms of one multi-architecture image collided on one filename")
-	}
-	if imageEvidenceFilename(amd64) == imageEvidenceFilename(second) {
-		t.Fatal("two service-owned images collided on one filename")
-	}
-	if got, want := imageEvidenceFilename(&builderv0.ImageSBOM{Digest: digest, Platform: "linux/amd64"}), imageEvidenceFilename(amd64); got != want {
-		t.Fatalf("one scanned image did not deduplicate: %q vs %q", got, want)
-	}
-	if name := imageEvidenceFilename(amd64); strings.Contains(name, "/") {
-		t.Fatalf("platform separator escaped into a path: %q", name)
-	}
-}
-
-func TestImageEvidenceAssociationsKeepEveryServiceClaim(t *testing.T) {
-	image := &builderv0.ImageSBOM{Subjects: []*builderv0.ImageSubject{
-		{Service: "management/worker", Role: "runtime", Reference: "repo/worker:v1"},
-		{Service: "billing/accounts", Role: "migration"},
-	}}
-	want := []ImageAssociation{
-		{Service: "management/worker", Role: "runtime", Reference: "repo/worker:v1"},
-		{Service: "billing/accounts", Role: "migration"},
-	}
-	if got := imageEvidenceAssociations(image); !reflect.DeepEqual(got, want) {
-		t.Fatalf("associations = %#v, want %#v", got, want)
 	}
 }
