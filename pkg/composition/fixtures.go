@@ -5,29 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	corecomposition "github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 )
 
-// ComposedPackageManifests returns the package manifest of every module the
-// workspace composes, in workspace declaration order.
+// composedPackageManifests returns the package manifest of every module the
+// workspace composes, in workspace declaration order, along with whatever kept
+// that answer from being complete.
 //
-// Most modules compose no package and ship no manifest, so an absent one is
-// skipped rather than reported. A manifest that exists but does not load is
-// reported: that is a defect in the module, and treating it as "composes
-// nothing" would answer with a fixture set missing whatever it declares.
-func ComposedPackageManifests(ctx context.Context, workspace *resources.Workspace) ([]*corecomposition.PackageManifest, error) {
+// Most modules compose no package and ship no manifest, so an absent one is not
+// a problem. A module that does not resolve, or whose manifest exists and does
+// not load, is returned as a problem rather than an error: whether an
+// incomplete picture is fatal belongs to the caller. Listing fixtures must
+// report it; refusing to boot over a package the run never had to read must
+// not.
+func composedPackageManifests(ctx context.Context, workspace *resources.Workspace) ([]*corecomposition.PackageManifest, []error) {
 	var manifests []*corecomposition.PackageManifest
+	var problems []error
 	for _, ref := range workspace.Modules {
 		dir, err := ResolveComposedModuleDir(ctx, workspace, ref)
 		if err != nil {
-			// Materializing composed pinned modules is best effort — it warns and
-			// carries on when a pull fails — so a module with no local checkout
-			// declares nothing this invocation rather than failing a command that
-			// never had to load it.
-			cli.Warning("cannot resolve composed module <%s>: %v; skipping the fixtures it declares", ref.Name, err)
+			problems = append(problems, fmt.Errorf("cannot resolve composed module %q: %w", ref.Name, err))
 			continue
 		}
 		manifest, err := corecomposition.LoadPackageManifest(dir)
@@ -35,40 +36,56 @@ func ComposedPackageManifests(ctx context.Context, workspace *resources.Workspac
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return nil, fmt.Errorf("module %q: %w", ref.Name, err)
+			problems = append(problems, fmt.Errorf("module %q: %w", ref.Name, err))
+			continue
 		}
 		manifests = append(manifests, manifest)
 	}
-	return manifests, nil
+	return manifests, problems
 }
 
 // WorkspaceFixtures returns the fixtures the workspace's composed packages
-// declare, sorted by name. Two packages declaring the same name collide, and
-// core reports that rather than letting a selection name two seeds.
-func WorkspaceFixtures(ctx context.Context, workspace *resources.Workspace) ([]corecomposition.ProvidedFixture, error) {
-	manifests, err := ComposedPackageManifests(ctx, workspace)
+// declare, sorted by name, together with everything that kept that from being a
+// complete answer: a package that could not be read, and a name two packages
+// both declare.
+//
+// A collision does not suppress the listing. This is the command a user runs to
+// diagnose one, so it reports the collision and still names what each package
+// declares — core's Fixtures returns nothing at all in that case, which would
+// withhold exactly the data needed to act on it.
+func WorkspaceFixtures(ctx context.Context, workspace *resources.Workspace) ([]corecomposition.ProvidedFixture, []error) {
+	manifests, problems := composedPackageManifests(ctx, workspace)
+	fixtures, err := corecomposition.Fixtures(manifests...)
 	if err != nil {
-		return nil, err
+		problems = append(problems, err)
+		for _, manifest := range manifests {
+			fixtures = append(fixtures, manifest.Fixtures...)
+		}
+		sort.Slice(fixtures, func(i, j int) bool { return fixtures[i].Name < fixtures[j].Name })
 	}
-	return corecomposition.Fixtures(manifests...)
+	return fixtures, problems
 }
 
-// ValidateFixtureSelection resolves a fixture selection against the composed
-// packages' manifests, so a typo fails at load — naming the fixtures that do
-// exist — instead of booting the whole stack and failing somewhere inside it.
+// ValidateFixtureSelection resolves the fixture a run has selected against the
+// composed packages' manifests, so a typo fails at load — naming the fixtures
+// that do exist — instead of booting the whole stack and failing somewhere
+// inside it.
 //
-// A workspace whose composed packages declare no fixture at all is left alone.
-// The selection predates the manifest schema and still travels to the runtime
-// as CODEFLY__FIXTURE, so resolving against an empty set would refuse every
-// workspace naming a fixture its own services implement.
+// Callers pass the RESOLVED selection, not the raw --fixture flag: an
+// environment declares the fixture its runtime uses, so a workspace that names
+// one in workspace.codefly.yaml reaches here with the flag unset and a typo
+// there is just as undeliverable.
+//
+// Two cases deliberately pass. A workspace whose composed packages declare no
+// fixture at all is left alone: the selection predates the manifest schema and
+// still travels to the runtime as CODEFLY__FIXTURE. And a selection cannot be
+// called a typo while a package this workspace composes could not be read —
+// that package may be the one declaring it.
 func ValidateFixtureSelection(ctx context.Context, workspace *resources.Workspace, name string) error {
 	if name == "" {
 		return nil
 	}
-	manifests, err := ComposedPackageManifests(ctx, workspace)
-	if err != nil {
-		return err
-	}
+	manifests, problems := composedPackageManifests(ctx, workspace)
 	declared, err := corecomposition.Fixtures(manifests...)
 	if err != nil {
 		return err
@@ -76,6 +93,12 @@ func ValidateFixtureSelection(ctx context.Context, workspace *resources.Workspac
 	if len(declared) == 0 {
 		return nil
 	}
-	_, err = corecomposition.ResolveFixture(name, manifests...)
-	return err
+	if _, err := corecomposition.ResolveFixture(name, manifests...); err != nil {
+		if len(problems) > 0 {
+			cli.Warning("cannot verify fixture %q against every composed package: %v", name, errors.Join(problems...))
+			return nil
+		}
+		return err
+	}
+	return nil
 }

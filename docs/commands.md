@@ -191,12 +191,28 @@ overlay, so the identical command runs in CI (everything pinned, no sibling
 checkouts) and against your local worktrees. It errors clearly when no module —
 or more than one — declares a `service-entry`.
 
-`--fixture` is resolved against the composed packages' manifests before anything
-boots, so a typo fails at load naming the fixtures that do exist rather than
-starting the whole stack and failing somewhere inside it. Run
+The fixture this run uses is resolved against the composed packages' manifests
+before anything boots, so a typo fails at load naming the fixtures that do exist
+rather than starting the whole stack and failing somewhere inside it. What is
+checked is the *resolved* selection, not the flag: an environment declaring
+`fixture:` in `workspace.codefly.yaml` is verified the same way when `--fixture`
+is absent. The same check runs on `codefly test service`/`test solution` and on
+the control-plane and MCP `test_service` path. Run
 [`codefly show fixtures`](#codefly-show-fixtures) to see what a workspace
-declares. A workspace whose composed packages declare no fixture is unaffected:
-the name is passed through to the runtime as `CODEFLY__FIXTURE` as before.
+declares.
+
+Two cases deliberately pass through unchecked. A workspace whose composed
+packages declare no fixture at all is unaffected — the name travels to the
+runtime as `CODEFLY__FIXTURE` as before. And a selection is never called a typo
+while a composed package could not be read, since that package may be the one
+declaring it; the run proceeds with a warning instead.
+
+**Behavior change:** once every composed package is readable and at least one
+declares a fixture, that set is authoritative, so a name none of them declare is
+refused — including one a service implements itself. Select such a fixture for
+the service that implements it with
+`--set <module>/<service>:CODEFLY__FIXTURE=<name>`, which is layered last and is
+authoritative by construction.
 
 Each run mints two independent secrets per consumed facade prefix — one the
 consuming backend registers the route with, one the consumed module proves its
@@ -919,10 +935,16 @@ accepts. Each principal is reported by id, email and role — `role` is the look
 key a solution test resolves an identity by, instead of hardcoding a seeded
 login. Seed tokens are declared in the manifest but are not printed.
 
-Fixtures are collected across every composed package and sorted by name; two
-packages declaring the same name is reported as a collision, because a selection
-would no longer name one seed. A module that composes no package declares none
-and is skipped.
+Fixtures are collected across every composed package and sorted by name. A module
+that composes no package declares none and is skipped.
+
+A package that cannot be read, and a name two packages both declare, are reported
+as problems *after* the listing, and the command exits non-zero. The listing is
+not suppressed: a collision is what you run this command to diagnose, so it names
+what each package declares rather than withholding the data needed to act on it.
+Unlike the run path, this command reads the workspace without materializing
+pinned modules into the overlay, so it never writes `codefly.local.yaml` or
+`.gitignore`.
 
 ---
 
