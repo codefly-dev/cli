@@ -310,8 +310,154 @@ func TestStopJoinsTheRunGoroutine(t *testing.T) {
 	if _, err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if live := impl.activeRunCount(); live != 0 {
+	if live := activeRunCount(impl); live != 0 {
 		t.Errorf("Stop returned with %d run goroutine(s) still live", live)
+	}
+}
+
+// activeRunCount reports how many run goroutines have not returned yet. Test
+// scaffolding rather than a method on the plane: nothing in production asks,
+// and the tests are in-package, so they can read the tracking directly.
+func activeRunCount(p *planeImpl) int {
+	p.runsMu.Lock()
+	defer p.runsMu.Unlock()
+	live := 0
+	for _, runs := range p.runs {
+		live += len(runs)
+	}
+	return live
+}
+
+// trackFakeRun tracks a run whose goroutine returns once its context is
+// cancelled — the same and only release condition Run's real goroutine has.
+// Standing in for the flow lets these tests pin the tracking itself, including
+// states a real flow reaches only by crashing partway through a teardown.
+func trackFakeRun(p *planeImpl, flowID string) *activeRun {
+	runCtx, runCancel := context.WithCancel(context.Background())
+	run := p.trackRun(flowID, runCancel)
+	go func() {
+		<-runCtx.Done()
+		p.finishRun(flowID, run)
+	}()
+	return run
+}
+
+// joined reports whether a run's goroutine has returned.
+func joined(run *activeRun) bool {
+	select {
+	case <-run.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Stop with no FlowID must still join. A flow that exits on its own releases
+// the registry entry from inside Run's goroutine, so Active() reports nothing
+// while that goroutine is still tearing down and still narrating. Returning
+// "nothing running" there told the caller the stream was quiet while the run
+// was writing to it — on the MCP path, straight onto the JSON-RPC stream, which
+// is the shape stop_flow takes whenever the caller omits flow_id.
+func TestStopWithoutAFlowIDJoinsRunsTheRegistryHasForgotten(t *testing.T) {
+	plane, err := NewAt(writeSolutionInputsWorkspace(t))
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	t.Cleanup(func() { _ = plane.Close() })
+	impl, ok := plane.(*planeImpl)
+	if !ok {
+		t.Fatalf("NewAt returned %T, not *planeImpl", plane)
+	}
+
+	// Nothing is registered — exactly what Stop sees once a flow has exited by
+	// itself — while the run it started is still unwinding.
+	run := trackFakeRun(impl, "wiki/backend")
+	if id, _ := impl.host.Flows().Active(); id != "" {
+		t.Fatalf("no flow should be registered, got active id %q", id)
+	}
+
+	stopped, err := plane.Stop(context.Background(), StopRequest{})
+	if err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if stopped {
+		t.Error("Stop reported it stopped a flow, but none was registered")
+	}
+	if !joined(run) {
+		t.Error("Stop returned without joining the unwinding run; it is still free to write to stdout")
+	}
+	if live := activeRunCount(impl); live != 0 {
+		t.Errorf("Stop returned with %d run goroutine(s) still live", live)
+	}
+}
+
+// A flow id can hold two runs at once: the registry frees the id when the flow
+// exits, so a fresh Run claims it while the previous goroutine is still
+// unwinding. Keying one run per id dropped the older handle, and Close then had
+// nothing left to join it with — the very leak the tracking exists to close.
+func TestCloseJoinsEveryRunSharingAFlowID(t *testing.T) {
+	impl := &planeImpl{}
+
+	first := trackFakeRun(impl, "wiki/backend")
+	second := trackFakeRun(impl, "wiki/backend")
+	if live := activeRunCount(impl); live != 2 {
+		t.Fatalf("both runs under one flow id must stay tracked, got %d", live)
+	}
+
+	impl.stopAllRuns()
+
+	if !joined(first) {
+		t.Error("the superseded run was never joined; a second Run under its flow id dropped the handle")
+	}
+	if !joined(second) {
+		t.Error("the newer run was not joined")
+	}
+	if live := activeRunCount(impl); live != 0 {
+		t.Errorf("stopAllRuns returned with %d run goroutine(s) still live", live)
+	}
+}
+
+// Every run must be cancelled before any of them is waited on. Cancelling
+// inside the waiting loop left each run running until the one before it had
+// finished unwinding, so closing a plane with several live flows cost the sum
+// of their teardowns. Both runs here return only once the other has been
+// cancelled, so a one-at-a-time loop cannot finish either of them.
+func TestStopAllRunsCancelsEveryRunBeforeWaiting(t *testing.T) {
+	impl := &planeImpl{}
+
+	cancelled := map[string]chan struct{}{
+		"first":  make(chan struct{}),
+		"second": make(chan struct{}),
+	}
+	for _, name := range []string{"first", "second"} {
+		runCtx, runCancel := context.WithCancel(context.Background())
+		run := impl.trackRun(name, runCancel)
+		go func() {
+			<-runCtx.Done()
+			close(cancelled[name])
+			// Returns only once the other run has been cancelled too.
+			for other, signal := range cancelled {
+				if other != name {
+					<-signal
+				}
+			}
+			impl.finishRun(name, run)
+		}()
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		impl.stopAllRuns()
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(30 * time.Second):
+		t.Fatal("stopAllRuns cancelled runs one at a time: a run that returns only after every run is cancelled was left waiting")
+	}
+	if live := activeRunCount(impl); live != 0 {
+		t.Errorf("stopAllRuns returned with %d run goroutine(s) still live", live)
 	}
 }
 

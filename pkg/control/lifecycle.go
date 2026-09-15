@@ -329,7 +329,15 @@ func (p *planeImpl) Stop(_ context.Context, req StopRequest) (bool, error) {
 	if id == "" {
 		id, _ = p.host.Flows().Active()
 		if id == "" {
-			return false, nil // nothing running
+			// No flow is registered, but that is not the same as nothing
+			// running: a flow that exited on its own released the registry
+			// entry from inside Run's goroutine, which then goes on tearing
+			// down and narrating. Active() is empty exactly then, so returning
+			// here without joining is how a caller gets told "nothing running"
+			// while the run is still writing to stdout. Nothing else is left to
+			// name, so join every run this plane started.
+			p.stopAllRuns()
+			return false, nil // nothing registered; anything dying is now joined
 		}
 	}
 	stopped, err := p.host.Flows().Stop(id, req.Destroy)
