@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,7 +137,7 @@ func startExcludedRootRun(t *testing.T, root string) string {
 	t.Helper()
 	// Installed before anything that tears the run down is registered, so LIFO
 	// cleanup order stops the flow first and restores os.Stdout last.
-	requireNoStdoutNarration(t)
+	capture := captureStdout(t)
 	outputEnvironment := filepath.Join(t.TempDir(), "runtime.env")
 
 	plane, err := NewAt(root)
@@ -156,6 +157,13 @@ func startExcludedRootRun(t *testing.T, root string) string {
 		OutputEnv:      outputEnvironment,
 	}); runErr != nil {
 		t.Fatalf("Run: %v", runErr)
+	}
+	// The plane has no terminal, so starting the run must put nothing on the
+	// descriptor an MCP server serves JSON-RPC over. Asserted for the window the
+	// plane drives; what orchestration logs while unwinding is a separate,
+	// pre-existing problem and not what this test pins.
+	if written := capture.written(); written != "" {
+		t.Errorf("the run wrote %q to stdout; the plane must not narrate", written)
 	}
 	t.Cleanup(func() {
 		if _, err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
@@ -191,22 +199,40 @@ func waitForExportedEnvironment(t *testing.T, path string) string {
 	}
 }
 
-// requireNoStdoutNarration redirects os.Stdout for the remainder of the test and
-// fails it if the run writes anything there. The plane may be driven by a
-// process serving JSON-RPC on stdout — the MCP server does exactly that with
-// this call — so anything written there during a run corrupts the protocol.
+// stdoutCapture collects everything written to os.Stdout while the redirect is
+// installed. The plane may be driven by a process serving JSON-RPC on stdout —
+// the MCP server does exactly that with this call — so anything a run writes
+// there corrupts the protocol.
+type stdoutCapture struct {
+	mu        sync.Mutex
+	collected bytes.Buffer
+}
+
+// Write collects a chunk read off the pipe. The reader goroutine and the test
+// goroutine both touch the buffer, so it is guarded.
+func (c *stdoutCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.collected.Write(p)
+}
+
+// written is everything that has reached the pipe so far.
+func (c *stdoutCapture) written() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.collected.String()
+}
+
+// captureStdout redirects os.Stdout for the remainder of the test.
 //
 // The redirect is undone in a cleanup rather than inline, because the run
 // outlives the call that starts it: plane.Run returns at readiness, not at
-// termination, and the flow keeps logging from Playbook.Work until Stop. A
-// caller registers that teardown after this, so LIFO ordering runs it first and
-// os.Stdout is written back only once nothing is left to log. Restoring inline
-// was an unsynchronized write racing those fmt.Print reads.
-//
-// Draining at cleanup also makes the assertion complete: the writer is closed
-// first, so every byte the run produced has arrived rather than whatever had
-// reached the pipe by the time the caller looked.
-func requireNoStdoutNarration(t *testing.T) {
+// termination, and the flow goes on logging until its goroutine is joined. A
+// caller registers the run's teardown after this, so LIFO ordering runs that
+// first and os.Stdout is written back only once the run is gone. Restoring it
+// inline was an unsynchronized write racing those fmt.Print reads — the data
+// race that reddened the race job.
+func captureStdout(t *testing.T) *stdoutCapture {
 	t.Helper()
 	original := os.Stdout
 	reader, writer, err := os.Pipe()
@@ -214,21 +240,19 @@ func requireNoStdoutNarration(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = writer
-	collected := make(chan string, 1)
+	capture := &stdoutCapture{}
+	drained := make(chan struct{})
 	go func() {
-		var buffer bytes.Buffer
-		_, _ = io.Copy(&buffer, reader)
-		collected <- buffer.String()
+		defer close(drained)
+		_, _ = io.Copy(capture, reader)
 	}()
 	t.Cleanup(func() {
 		os.Stdout = original
 		_ = writer.Close()
-		written := <-collected
+		<-drained
 		_ = reader.Close()
-		if written != "" {
-			t.Errorf("the run wrote %q to stdout; the plane must not narrate", written)
-		}
 	})
+	return capture
 }
 
 // The redirect must outlive every cleanup registered after it. Restoring it
@@ -238,7 +262,7 @@ func requireNoStdoutNarration(t *testing.T) {
 func TestStdoutRedirectOutlivesLaterCleanups(t *testing.T) {
 	t.Run("still redirected while a later cleanup runs", func(t *testing.T) {
 		beforeRedirect := os.Stdout
-		requireNoStdoutNarration(t)
+		captureStdout(t)
 		redirected := os.Stdout
 		if redirected == beforeRedirect {
 			t.Fatal("os.Stdout was not redirected")
@@ -251,6 +275,44 @@ func TestStdoutRedirectOutlivesLaterCleanups(t *testing.T) {
 			}
 		})
 	})
+}
+
+// Stop must leave nothing from the run still running. Run's goroutine returns
+// only once its context is done, which tearing the flow down does not do, so
+// before it was joined it kept narrating after the caller had been told the
+// flow had stopped — onto the JSON-RPC stream, for a plane serving one — and
+// raced anything that touched os.Stdout afterwards.
+func TestStopJoinsTheRunGoroutine(t *testing.T) {
+	captureStdout(t)
+	plane, err := NewAt(writeSolutionInputsWorkspace(t))
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	t.Cleanup(func() { _ = plane.Close() })
+	impl, ok := plane.(*planeImpl)
+	if !ok {
+		t.Fatalf("NewAt returned %T, not *planeImpl", plane)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	t.Cleanup(cancel)
+
+	if _, runErr := plane.Run(ctx, RunRequest{
+		Service:        "wiki/backend",
+		RuntimeContext: resources.RuntimeContextNative,
+		ExcludeRoot:    true,
+		Wait:           true,
+		OutputEnv:      filepath.Join(t.TempDir(), "runtime.env"),
+	}); runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+
+	if _, err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if live := impl.activeRunCount(); live != 0 {
+		t.Errorf("Stop returned with %d run goroutine(s) still live", live)
+	}
 }
 
 // A test process standing in for a solution backend runs the composition with

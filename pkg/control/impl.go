@@ -35,6 +35,10 @@ type planeImpl struct {
 	// FlowFailed/FlowStopped once the flow is gone). See lifecycle.go's Run.
 	runMu   sync.Mutex
 	lastRun *runOutcome
+	// runsMu guards runs: the flows Run started whose goroutines have not
+	// returned yet. See activeRun and lifecycle.go's Run.
+	runsMu sync.Mutex
+	runs   map[string]*activeRun
 }
 
 // runOutcome is how a flow, once no longer the registry's active flow, ended.
@@ -66,6 +70,78 @@ func (p *planeImpl) runOutcome() *runOutcome {
 	p.runMu.Lock()
 	defer p.runMu.Unlock()
 	return p.lastRun
+}
+
+// activeRun is a flow Run started in the background: the cancel that releases
+// its goroutine, and a channel closed once that goroutine has returned.
+//
+// That goroutine narrates as it unwinds — Playbook.Work logs on its way out —
+// and it returns only when its context is done, which neither tearing the flow
+// down nor closing the host does. Left untracked it outlives both Stop and
+// Close and keeps writing to the caller's stdout, which for a plane serving
+// JSON-RPC there is the protocol stream.
+type activeRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// trackRun records a started run so Stop and Close can join its goroutine.
+func (p *planeImpl) trackRun(flowID string, cancel context.CancelFunc) *activeRun {
+	run := &activeRun{cancel: cancel, done: make(chan struct{})}
+	p.runsMu.Lock()
+	defer p.runsMu.Unlock()
+	if p.runs == nil {
+		p.runs = make(map[string]*activeRun)
+	}
+	p.runs[flowID] = run
+	return run
+}
+
+// finishRun marks a run's goroutine as returned. It forgets the entry only when
+// it is still the one it started: a second Run under the same flow id owns the
+// slot from then on.
+func (p *planeImpl) finishRun(flowID string, run *activeRun) {
+	p.runsMu.Lock()
+	if p.runs[flowID] == run {
+		delete(p.runs, flowID)
+	}
+	p.runsMu.Unlock()
+	close(run.done)
+}
+
+// stopRun cancels one run and waits for its goroutine to return. The wait is
+// deliberately outside the lock: that goroutine takes runMu to record its
+// outcome, and holding a lock across the join invites a deadlock against it.
+func (p *planeImpl) stopRun(flowID string) {
+	p.runsMu.Lock()
+	run := p.runs[flowID]
+	p.runsMu.Unlock()
+	if run == nil {
+		return
+	}
+	run.cancel()
+	<-run.done
+}
+
+// stopAllRuns cancels every tracked run and waits for all of them.
+func (p *planeImpl) stopAllRuns() {
+	p.runsMu.Lock()
+	pending := make([]*activeRun, 0, len(p.runs))
+	for _, run := range p.runs {
+		pending = append(pending, run)
+	}
+	p.runsMu.Unlock()
+	for _, run := range pending {
+		run.cancel()
+		<-run.done
+	}
+}
+
+// activeRunCount reports how many run goroutines have not returned yet.
+func (p *planeImpl) activeRunCount() int {
+	p.runsMu.Lock()
+	defer p.runsMu.Unlock()
+	return len(p.runs)
 }
 
 // New returns a control plane rooted at the current directory as observed once,
@@ -104,6 +180,11 @@ func (p *planeImpl) Close() error {
 		return nil
 	}
 	p.closeOnce.Do(func() {
+		// Release the background runs first: their goroutines narrate as they
+		// unwind, and a closed plane must not still be writing to the caller's
+		// stdout. Cancelling before waiting keeps this from depending on the
+		// caller having cancelled the context it passed to Run.
+		p.stopAllRuns()
 		if p.terminals != nil {
 			p.terminals.close()
 		}

@@ -244,8 +244,16 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 	// Buffered so the final Start result never blocks the goroutine, even when
 	// nobody is waiting (req.Wait == false).
 	started := make(chan error, 1)
+	// The run gets its own cancel so Stop and Close can end this goroutine
+	// without depending on the caller cancelling ctx: nothing else releases it,
+	// because Playbook.Work returns only once its context is done. Derived from
+	// ctx, so a caller cancelling still ends the run exactly as before.
+	runCtx, runCancel := context.WithCancel(ctx)
+	run := p.trackRun(flowID, runCancel)
 	go func() {
-		err := flow.Start(ctx)
+		defer p.finishRun(flowID, run)
+		defer runCancel()
+		err := flow.Start(runCtx)
 		started <- err
 		if flows.Release(flowID, flow) {
 			stopFlow(flow)
@@ -266,6 +274,9 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 	if req.Wait {
 		if err := waitReady(ctx, flow, started); err != nil {
 			_, _ = flows.Stop(flowID, false)
+			// Tearing the flow down does not release the goroutine above, which
+			// would go on narrating after Run has already failed.
+			p.stopRun(flowID)
 			return RunHandle{}, err
 		}
 	}
@@ -322,6 +333,10 @@ func (p *planeImpl) Stop(_ context.Context, req StopRequest) (bool, error) {
 		}
 	}
 	stopped, err := p.host.Flows().Stop(id, req.Destroy)
+	// The flow is torn down, but Run's goroutine is still unwinding and still
+	// narrating. Joining it here is what makes a returned Stop mean that
+	// nothing from this run is left running.
+	p.stopRun(id)
 	if err != nil {
 		return stopped, fmt.Errorf("stop flow: %w", err)
 	}
