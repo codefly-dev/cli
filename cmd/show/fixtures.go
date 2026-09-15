@@ -2,6 +2,7 @@ package show
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -26,6 +27,10 @@ these are exactly the names "codefly run solution --fixture" accepts. Each
 principal is reported by id, email and role; role is the lookup key a test
 resolves an identity by. Seed tokens are not printed.
 
+A package that cannot be read, and a name two packages both declare, are
+reported as problems — after the listing, so the fixtures that did resolve are
+still named. The command exits non-zero when it reports one.
+
 Examples:
   codefly show fixtures
   codefly show fixtures --json`,
@@ -34,17 +39,18 @@ Examples:
 		ctx, done := common.NewContext()
 		defer done()
 
-		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
+		// Deliberately the plain loader: materializing pinned modules writes the
+		// workspace overlay and .gitignore, which an inspection command must not
+		// do. Resolving a composed module below still materializes into the
+		// content-addressed cache, which leaves the workspace untouched.
+		workspace, err := common.LoadWorkspace(ctx)
 		if err != nil {
 			return fmt.Errorf("cannot load workspace: %w", err)
 		}
 
-		fixtures, err := clicomposition.WorkspaceFixtures(ctx, workspace)
-		if err != nil {
-			return err
-		}
+		fixtures, problems := clicomposition.WorkspaceFixtures(ctx, workspace)
 
-		report := fixturesReport{Workspace: workspace.Name, Fixtures: []fixtureReport{}}
+		report := fixturesReport{Workspace: workspace.Name, Fixtures: []fixtureReport{}, Problems: []string{}}
 		for _, fixture := range fixtures {
 			entry := fixtureReport{
 				Name:        fixture.Name,
@@ -60,34 +66,40 @@ Examples:
 			}
 			report.Fixtures = append(report.Fixtures, entry)
 		}
+		for _, problem := range problems {
+			report.Problems = append(report.Problems, problem.Error())
+		}
 
 		out := cmd.OutOrStdout()
 		if showFixturesJSON {
 			encoder := json.NewEncoder(out)
 			encoder.SetIndent("", "  ")
-			return encoder.Encode(report)
+			if err := encoder.Encode(report); err != nil {
+				return err
+			}
+			return errors.Join(problems...)
 		}
 
 		if len(report.Fixtures) == 0 {
 			fmt.Fprintf(out, "Workspace %q composes no package declaring a fixture.\n", report.Workspace)
-			return nil
+		} else {
+			fmt.Fprintf(out, "Fixtures declared by the packages workspace %q composes:\n\n", report.Workspace)
+			for _, fixture := range report.Fixtures {
+				fmt.Fprintf(out, "• %s", fixture.Name)
+				if fixture.Description != "" {
+					fmt.Fprintf(out, " — %s", fixture.Description)
+				}
+				fmt.Fprintln(out)
+				if len(fixture.Principals) == 0 {
+					fmt.Fprintln(out, "    (seeds no principal)")
+					continue
+				}
+				for _, principal := range fixture.Principals {
+					fmt.Fprintf(out, "    %-16s %-32s [%s]\n", principal.ID, principal.Email, principal.Role)
+				}
+			}
 		}
-		fmt.Fprintf(out, "Fixtures declared by the packages workspace %q composes:\n\n", report.Workspace)
-		for _, fixture := range report.Fixtures {
-			fmt.Fprintf(out, "• %s", fixture.Name)
-			if fixture.Description != "" {
-				fmt.Fprintf(out, " — %s", fixture.Description)
-			}
-			fmt.Fprintln(out)
-			if len(fixture.Principals) == 0 {
-				fmt.Fprintln(out, "    (seeds no principal)")
-				continue
-			}
-			for _, principal := range fixture.Principals {
-				fmt.Fprintf(out, "    %-16s %-32s [%s]\n", principal.ID, principal.Email, principal.Role)
-			}
-		}
-		return nil
+		return errors.Join(problems...)
 	},
 }
 
@@ -110,6 +122,7 @@ type fixtureReport struct {
 type fixturesReport struct {
 	Workspace string          `json:"workspace"`
 	Fixtures  []fixtureReport `json:"fixtures"`
+	Problems  []string        `json:"problems"`
 }
 
 func init() {
