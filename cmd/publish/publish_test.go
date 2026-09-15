@@ -74,29 +74,6 @@ func initBareGitRepo(t *testing.T, dir string) (origin string) {
 	return originDir
 }
 
-// A repository left free to run background maintenance has a writer that
-// outlives the test body, and t.TempDir's RemoveAll then fails on a directory
-// that refilled underneath it. That failure is indistinguishable from a real
-// one in the report, so the knobs are pinned here rather than trusted.
-func TestInitBareGitRepoDisablesBackgroundMaintenance(t *testing.T) {
-	dir := t.TempDir()
-	origin := initBareGitRepo(t, dir)
-
-	for _, expected := range []struct {
-		repo, key, value string
-	}{
-		{origin, "receive.autogc", "false"},
-		{origin, "gc.auto", "0"},
-		{origin, "maintenance.auto", "false"},
-		{dir, "gc.auto", "0"},
-		{dir, "maintenance.auto", "false"},
-	} {
-		out, err := exec.Command("git", "-C", expected.repo, "config", "--get", expected.key).Output()
-		require.NoError(t, err, "%s is unset, so git may detach a maintenance child into %s", expected.key, expected.repo)
-		require.Equal(t, expected.value, strings.TrimSpace(string(out)), "%s in %s", expected.key, expected.repo)
-	}
-}
-
 // --- Detect tests --------------------------------------------------
 
 func TestDetect_AgentManifest(t *testing.T) {

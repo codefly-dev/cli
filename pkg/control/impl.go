@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/wool"
 )
 
 // planeImpl is the single implementation of Plane. Its root and runtime
@@ -43,6 +44,9 @@ type planeImpl struct {
 	// rather than only the newest. See activeRun and lifecycle.go's Run.
 	runsMu sync.Mutex
 	runs   map[string][]*activeRun
+	// narration is where the flows this plane drives log. Nil discards. See
+	// WithNarration.
+	narration wool.LogProcessor
 }
 
 // runOutcome is how a flow, once no longer the registry's active flow, ended.
@@ -191,6 +195,51 @@ func joinRuns(pending []*activeRun) {
 	}
 }
 
+// discardNarration drops every log handed to it.
+type discardNarration struct{}
+
+func (discardNarration) Process(*wool.Log) {}
+
+// Option configures a plane at construction.
+type Option func(*planeImpl)
+
+// WithNarration routes the narration of every flow this plane drives to
+// processor instead of dropping it.
+//
+// The plane has no terminal of its own, so unset it discards — but discarding
+// is a destination of last resort, not a safe default: it also swallows the
+// playbook's "service X failing" warnings and every error wrapped on the way
+// out of Flow.Start, which is exactly what an operator needs when a run driven
+// over MCP fails. A caller that owns stdout for a protocol has a perfectly good
+// destination for these lines (stderr) and should name it here.
+func WithNarration(processor wool.LogProcessor) Option {
+	return func(p *planeImpl) {
+		if processor != nil {
+			p.narration = processor
+		}
+	}
+}
+
+// narrationLogger is where this plane's flows log, defaulting to discard.
+func (p *planeImpl) narrationLogger() wool.LogProcessor {
+	if p.narration != nil {
+		return p.narration
+	}
+	return discardNarration{}
+}
+
+// narrationContext returns ctx carrying a wool provider bound to this plane's
+// narration processor.
+//
+// The plane renders nothing itself — its one production caller serves JSON-RPC
+// on stdout — but without a provider on the context wool.Get falls back to a
+// Console that prints exactly there, so the narration the plane deliberately
+// does not render reached the protocol stream anyway. Where it goes instead is
+// the embedder's call: see WithNarration.
+func (p *planeImpl) narrationContext(ctx context.Context) context.Context {
+	return wool.New(ctx, resources.CLI.AsResource()).WithLogger(p.narrationLogger()).Inject(ctx)
+}
+
 // New returns a control plane rooted at the current directory as observed once,
 // at construction. Prefer NewAt or NewWithHost in long-lived adapters.
 func New() Plane {
@@ -243,11 +292,15 @@ func (p *planeImpl) Close() error {
 }
 
 // NewWithHost binds a control plane to an existing runtime owner.
-func NewWithHost(host *engine.WorkspaceHost) Plane {
+func NewWithHost(host *engine.WorkspaceHost, opts ...Option) Plane {
 	if host == nil {
 		return &planeImpl{initErr: fmt.Errorf("workspace host is required"), gate: newMutationGate(), terminals: newTerminalManager()}
 	}
-	return &planeImpl{root: host.Root(), host: host, gate: newMutationGate(), terminals: newTerminalManager()}
+	plane := &planeImpl{root: host.Root(), host: host, gate: newMutationGate(), terminals: newTerminalManager()}
+	for _, opt := range opts {
+		opt(plane)
+	}
+	return plane
 }
 
 func newPlaneRooted(root string) *planeImpl {

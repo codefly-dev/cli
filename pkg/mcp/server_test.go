@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/core/wool"
 )
 
 // testSyncBuffer is a bytes.Buffer safe for one writer goroutine and one
@@ -36,6 +39,52 @@ func writeLine(t *testing.T, w io.Writer, line string) {
 	t.Helper()
 	if _, err := io.WriteString(w, line+"\n"); err != nil {
 		t.Fatalf("write %q: %v", line, err)
+	}
+}
+
+// logToStdout emits one log from a context carrying no wool provider — the
+// shape host construction produces when it reaps stale process groups with
+// context.Background() — and returns whatever reached os.Stdout.
+func logToStdout(t *testing.T) string {
+	t.Helper()
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	wool.Get(context.Background()).In("orphan").Error("must not reach the protocol stream")
+	os.Stdout = original
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var collected bytes.Buffer
+	if _, err := io.Copy(&collected, reader); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return collected.String()
+}
+
+// In stdio mode stdout is the JSON-RPC stream, so any log line written there
+// corrupts the protocol. The lines that land there come from contexts this
+// server never hands out, so the guard has to be process-global — which is why
+// Serve sets wool's fallback logger before binding stdout.
+func TestProtocolSafeLoggerKeepsOrphanLogsOffStdout(t *testing.T) {
+	t.Cleanup(func() { wool.SetFallbackLogger(nil) })
+
+	// Without the guard the log goes straight to the stream Serve would be
+	// serving JSON-RPC on. This is the defect, reproduced.
+	wool.SetFallbackLogger(nil)
+	if unguarded := logToStdout(t); unguarded == "" {
+		t.Fatal("an orphan-context log reached nothing; the test no longer reproduces the corruption it guards")
+	}
+
+	wool.SetFallbackLogger(protocolSafeLogger{})
+	if guarded := logToStdout(t); guarded != "" {
+		t.Errorf("an orphan-context log wrote %q to stdout, corrupting the JSON-RPC stream", guarded)
 	}
 }
 
