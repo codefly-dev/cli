@@ -25,6 +25,13 @@ import (
 // entry tests are the subject of the command, and announcing the absence of
 // contributed suites on every run would bury them.
 func runContributedCompositionTests(ctx context.Context, workspace *resources.Workspace) error {
+	// --load-only and --init-only ask for the stack to be brought up without
+	// running tests. A contributed suite is a test, and an arbitrary command at
+	// that, so it must not execute either — the same gate the entry's own tests
+	// pass through.
+	if loadOnly || initOnly {
+		return nil
+	}
 	suites, err := contributedSuites(ctx, workspace)
 	if err != nil {
 		return err
@@ -72,7 +79,14 @@ func contributedSuites(ctx context.Context, workspace *resources.Workspace) ([]c
 	for _, ref := range workspace.Modules {
 		dir, err := clicomposition.ResolveComposedModuleDir(ctx, workspace, ref)
 		if err != nil {
-			return nil, fmt.Errorf("cannot resolve module %q: %w", ref.Name, err)
+			// A module with no local checkout contributes nothing this run, and is
+			// not one whose suites could execute either. Materializing composed
+			// pinned modules is best effort — it warns and carries on when a pull
+			// fails, leaving the module to be resolved if the run actually needs it
+			// — so failing here would stop a solution from testing its own entry
+			// over a module that run never had to load.
+			cli.Warning("cannot resolve composed module <%s>: %v; skipping the composition tests it contributes", ref.Name, err)
+			continue
 		}
 		composed, err := composesPackage(dir)
 		if err != nil {
