@@ -256,7 +256,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	if err := flow.WithRunProfile(resolvedProfile); err != nil {
+	if err = flow.WithRunProfile(resolvedProfile); err != nil {
 		return nil, w.Wrap(err)
 	}
 
