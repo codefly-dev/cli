@@ -16,6 +16,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/processgroup"
@@ -702,6 +703,19 @@ func runEnvironment(workspace *resources.Workspace) (*resources.Environment, err
 	return env, nil
 }
 
+// runFixture resolves the fixture this run uses and verifies it against the
+// composed packages. The verified value is the RESOLVED one, not the --fixture
+// flag: an environment declares the fixture its runtime uses, so a workspace
+// naming one in workspace.codefly.yaml runs with the flag unset, and a typo
+// there reaches the stack exactly as an unverified flag would.
+func runFixture(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) (string, error) {
+	selected := orchestration.SelectedFixture(env, fixture)
+	if err := composition.ValidateFixtureSelection(ctx, workspace, selected); err != nil {
+		return "", err
+	}
+	return selected, nil
+}
+
 // newRunFlow selects the environment and wires the run flow up to — but
 // excluding — agent creation, so this call site stays testable without
 // spawning agent processes.
@@ -761,7 +775,11 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 		flow.WithStartDocker(startDocker)
 		flow.WithDockerStatus(probeDocker(ctx))
 	}
-	flow.WithFixture(orchestration.SelectedFixture(env, fixture))
+	selectedFixture, err := runFixture(ctx, workspace, env)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	flow.WithFixture(selectedFixture)
 	overrides, err := parseSetOverrides(setOverrides)
 	if err != nil {
 		return nil, w.Wrap(err)

@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/cmd/run"
 	"github.com/codefly-dev/cli/pkg/cli"
+	clicomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -275,6 +276,9 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTestRequest(request)
 	selectedFixture := orchestration.SelectedFixture(env, testFixture)
+	if err = clicomposition.ValidateFixtureSelection(ctx, workspace, selectedFixture); err != nil {
+		return nil, w.Wrap(err)
+	}
 	flow.WithFixture(selectedFixture)
 	flow.WithOutputEnv(outputEnv)
 	flow.WithOverrides(derived.Overrides)
