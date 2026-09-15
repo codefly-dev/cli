@@ -174,7 +174,12 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			w.Info("context cancelled")
+			// Bookkeeping for this loop's own exit, carrying no fact the
+			// caller that cancelled does not already have. It must not be
+			// INFO: with no wool provider on the context these land on the
+			// fallback console, which writes to the process's stdout — and an
+			// embedder may be serving JSON-RPC there.
+			w.Trace("context cancelled")
 			// send() delivers action groups from detached goroutines that block
 			// on the actions channel until they either succeed or hit their own
 			// 30s timeout. As the last reader leaving, drain them so those

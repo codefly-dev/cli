@@ -1305,6 +1305,11 @@ func createBareRepository(t *testing.T) string {
 	root := t.TempDir()
 	remote := filepath.Join(root, "manifests.git")
 	gitRun(t, "", "init", "--bare", "--initial-branch=main", remote)
+	// The push below makes the receiving repo fork `git maintenance run --auto
+	// --detach`, which outlives the test and keeps writing under objects/ while
+	// t.TempDir's cleanup unlinks it — failing the test with "directory not
+	// empty" for reasons unrelated to anything it asserts.
+	gitRun(t, remote, "config", "receive.autogc", "false")
 	work := filepath.Join(root, "seed")
 	gitRun(t, "", "clone", remote, work)
 	gitRun(t, work, "config", "user.name", "Codefly Test")
