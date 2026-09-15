@@ -17,7 +17,7 @@ import (
 type Engine struct {
 	Manifest            *Manifest
 	AdditionalManifests []*Manifest
-	BumpType            string // "patch" | "minor" | "major"
+	BumpType            string // "patch" | "minor" | "major" | "beta"
 	DryRun              bool
 	WorkDir             string // git operations run from here; defaults to manifest's dir parent
 	SignTag             bool
@@ -111,10 +111,10 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		return "", commitErr
 	}
 	if err := e.gitTag(ctx, newTag); err != nil {
-		return "", fmt.Errorf("tag: %w", err)
+		return "", e.rollbackRelease(ctx, newTag, fmt.Errorf("tag: %w", err))
 	}
 	if err := e.gitPush(ctx, newTag); err != nil {
-		return "", fmt.Errorf("push: %w", err)
+		return "", e.rollbackRelease(ctx, newTag, fmt.Errorf("push: %w", err))
 	}
 
 	if e.AfterPush != nil {
@@ -123,6 +123,26 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		}
 	}
 	return newTag, nil
+}
+
+// rollbackRelease removes the local commit and tag created by this invocation.
+// It is safe because preflight required a clean tree and the release commit is
+// necessarily HEAD. Remote publication is atomic, so a failed push has not
+// published either ref.
+func (e *Engine) rollbackRelease(ctx context.Context, tag string, cause error) error {
+	var rollbackErrs []error
+	if e.tagExistsLocally(ctx, tag) {
+		if _, err := e.git(ctx, "tag", "-d", tag); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("delete local tag: %w", err))
+		}
+	}
+	if _, err := e.git(ctx, "reset", "--hard", "HEAD^"); err != nil {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("reset local release commit: %w", err))
+	}
+	if len(rollbackErrs) == 0 {
+		return cause
+	}
+	return errors.Join(append([]error{cause}, rollbackErrs...)...)
 }
 
 // restoreManifest reverts every publisher-owned manifest after an aborted
@@ -188,11 +208,9 @@ func (e *Engine) assertSyncedWithOrigin(ctx context.Context) error {
 	if _, err := e.git(ctx, "fetch", "origin", "main", "--quiet"); err != nil {
 		return fmt.Errorf("fetch origin/main: %w", err)
 	}
-	// Refuse only when local is BEHIND origin (a release commit couldn't
-	// fast-forward) or the histories diverged. Being purely AHEAD is fine:
-	// the release commit + tag push fast-forwards origin. This lets you
-	// commit local changes (e.g. a toolchain bump) and publish in one step
-	// without a separate manual push first.
+	// A release must be built from the exact main commit already accepted by
+	// origin. Permitting local commits ahead of origin can ship unreviewed,
+	// untested source with an otherwise valid release tag.
 	counts, err := e.git(ctx, "rev-list", "--left-right", "--count", "origin/main...HEAD")
 	if err != nil {
 		return fmt.Errorf("compare with origin/main: %w", err)
@@ -201,9 +219,9 @@ func (e *Engine) assertSyncedWithOrigin(ctx context.Context) error {
 	if len(fields) != 2 {
 		return fmt.Errorf("unexpected rev-list output %q", strings.TrimSpace(counts))
 	}
-	behind := fields[0]
-	if behind != "0" {
-		return fmt.Errorf("local main is behind origin/main by %s commit(s); pull first — refusing to overwrite", behind)
+	behind, ahead := fields[0], fields[1]
+	if behind != "0" || ahead != "0" {
+		return fmt.Errorf("local main is not in sync with origin/main (behind %s, ahead %s); pull or push and wait for CI before releasing", behind, ahead)
 	}
 	return nil
 }
@@ -291,18 +309,12 @@ func (e *Engine) gitTag(ctx context.Context, tag string) error {
 	return err
 }
 
-// gitPush pushes BOTH the commit and the tag, in two separate
-// invocations. Two pushes (not `git push --follow-tags`) so a tag
-// failure surfaces independently of a commit failure.
-//
-// Crucially: NO --force on either. The pre-flight gates ensure the
-// state is clean enough that a non-force push always succeeds.
+// gitPush atomically pushes both the release commit and tag. A rejected tag
+// must not leave main advanced to a version for which the tag was not created.
+// NO --force is used for either ref.
 func (e *Engine) gitPush(ctx context.Context, tag string) error {
-	if _, err := e.git(ctx, "push", "origin", "main"); err != nil {
-		return fmt.Errorf("push main: %w", err)
-	}
-	if _, err := e.git(ctx, "push", "origin", tag); err != nil {
-		return fmt.Errorf("push tag: %w", err)
+	if _, err := e.git(ctx, "push", "--atomic", "origin", "main", tag); err != nil {
+		return fmt.Errorf("push main and tag atomically: %w", err)
 	}
 	return nil
 }

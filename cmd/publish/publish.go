@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/Masterminds/semver"
 	"gopkg.in/yaml.v3"
@@ -148,7 +150,8 @@ func readVersion(path string) (*semver.Version, error) {
 // We don't mutate the receiver's Version pointer — Bump is a pure
 // computation; the caller decides when to write the new value back.
 //
-// bumpType: "patch", "minor", "major". Default (empty) is "patch".
+// bumpType: "patch", "minor", "major", or "beta". Default (empty) is
+// "patch". Beta starts the next patch line at beta.1, then advances beta.N.
 func (m *Manifest) Bump(bumpType string) (*semver.Version, error) {
 	if bumpType == "" {
 		bumpType = "patch"
@@ -163,8 +166,33 @@ func (m *Manifest) Bump(bumpType string) (*semver.Version, error) {
 	case "major":
 		next := m.Version.IncMajor()
 		return &next, nil
+	case "beta":
+		pre := m.Version.Prerelease()
+		if pre == "" {
+			next := m.Version.IncPatch()
+			next, err := next.SetPrerelease("beta.1")
+			if err != nil {
+				return nil, fmt.Errorf("set beta prerelease: %w", err)
+			}
+			return &next, nil
+		}
+
+		parts := strings.Split(pre, ".")
+		if len(parts) != 2 || parts[0] != "beta" {
+			return nil, fmt.Errorf("cannot advance prerelease %q as beta (expected beta.<number>)", pre)
+		}
+		number, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("cannot advance prerelease %q as beta (expected beta.<number>): %w", pre, err)
+		}
+		next := *m.Version
+		next, err = next.SetPrerelease(fmt.Sprintf("beta.%d", number+1))
+		if err != nil {
+			return nil, fmt.Errorf("set beta prerelease: %w", err)
+		}
+		return &next, nil
 	default:
-		return nil, fmt.Errorf("invalid bump type %q (use patch | minor | major)", bumpType)
+		return nil, fmt.Errorf("invalid bump type %q (use patch | minor | major | beta)", bumpType)
 	}
 }
 

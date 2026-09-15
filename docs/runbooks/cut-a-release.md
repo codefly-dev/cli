@@ -12,7 +12,7 @@ You want to ship a new CLI version to users (stable or beta).
 
 ## Prerequisites
 
-- `main` (or the release branch) is green and holds exactly the commit you want to ship.
+- `main` is green and holds exactly the commit you want to ship.
 - A `codefly` binary new enough to have `publish` (it bumps the manifest for you).
 - You can push tags to `codefly-dev/cli`.
 - Release secrets are configured in the repo: `CODEFLY_RELEASE_SIGNING_KEY` (its public half must
@@ -43,12 +43,15 @@ right order, behind pre-flight gates — so there is no step to forget:
 ```bash
 codefly publish --dry-run   # show the version it would cut; changes nothing
 codefly publish             # patch bump; or: codefly publish minor|major
+codefly publish beta        # next beta: 1.4.0 → 1.4.1-beta.1, then beta.2
 ```
 
 It auto-detects this repo from `pkg/cli/info.yaml` and refuses to do anything unless the
-working tree is clean, you are on `main`, you are in sync with `origin/main`, and the target
-tag does not already exist. On any failure it restores the manifest and leaves no side
-effects. Neither `main` nor the tag is ever force-pushed.
+working tree is clean, you are on `main`, it exactly matches `origin/main`, and the target tag
+does not already exist. It atomically pushes the release commit and tag: a failure before that
+push restores the manifest and removes the local release commit/tag; after a successful push,
+the immutable release commit and tag remain even if the release workflow later fails. Neither
+`main` nor the tag is ever force-pushed.
 
 It also reconciles the manifest against the tags actually on origin: if the manifest has
 drifted behind (as it had at `0.1.145` while tags ran to `v0.1.150`), it bumps from the
