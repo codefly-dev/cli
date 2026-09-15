@@ -166,6 +166,10 @@ type World struct {
 	Env  *resources.Environment
 	Mode Mode
 
+	// containerRecoveryIdentity is the ownership acknowledgement every agent
+	// spawned for this flow must return before it can create Docker resources.
+	containerRecoveryIdentity string
+
 	// Push drives whether a docker build pushes its image to the registry.
 	// Scoped to the flow (not process-global) so a snapshot render that
 	// requires push cannot silently make a later in-process BuildMode build
