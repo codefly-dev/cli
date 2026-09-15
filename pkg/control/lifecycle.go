@@ -138,6 +138,9 @@ func (p *planeImpl) Build(ctx context.Context, req BuildRequest) (BuildResult, e
 		// That plumbing is not lifted yet, so refuse rather than push nowhere.
 		return BuildResult{}, fmt.Errorf("push is not yet supported via the control plane")
 	}
+	// buildFlow installs the contract on its own parameter, which leaves the
+	// Build below on the caller's context.
+	ctx = p.narrationContext(ctx)
 	flow, err := p.buildFlow(ctx, orchestration.BuildMode, req.Service, req.Env, nil)
 	if err != nil {
 		return BuildResult{}, err
@@ -157,6 +160,10 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 	if req.Filter != "" {
 		testRequest.Filters = []string{req.Filter}
 	}
+	// buildFlow installs the contract on its own parameter, which leaves the
+	// Start below on the caller's context — the drive phase, which is where a
+	// test run does most of its narrating.
+	ctx = p.narrationContext(ctx)
 	flow, err := p.buildFlow(ctx, orchestration.TestMode, req.Service, req.Env, func(target flowTarget, f *orchestration.Flow) error {
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)

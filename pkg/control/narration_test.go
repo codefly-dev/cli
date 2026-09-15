@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -22,6 +23,12 @@ func (r *recordingNarration) Process(log *wool.Log) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lines = append(r.lines, log.String())
+}
+
+func (r *recordingNarration) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = nil
 }
 
 func (r *recordingNarration) joined() string {
@@ -56,5 +63,40 @@ func TestNarrationWithoutAProcessorStaysOffStdout(t *testing.T) {
 
 	if written := capture.written(); written != "" {
 		t.Errorf("a plane with no narration processor wrote %q to stdout", written)
+	}
+}
+
+// Deploy builds its flow directly rather than through buildFlow, so it was the
+// one lifecycle driver the contract was never installed for: with a processor
+// named, everything it logged still resolved to wool's process-global fallback
+// — the Console printing to the stream an MCP server serves JSON-RPC on.
+func TestDeployNarrationReachesTheEmbedder(t *testing.T) {
+	escaped := &recordingNarration{}
+	wool.SetFallbackLogger(escaped)
+	t.Cleanup(func() { wool.SetFallbackLogger(nil) })
+
+	recorder := &recordingNarration{}
+	host, err := engine.NewWorkspaceHost(engine.Config{Root: writeSolutionInputsWorkspace(t)})
+	if err != nil {
+		t.Fatalf("workspace host: %v", err)
+	}
+	plane := NewWithHost(host, WithNarration(recorder))
+	t.Cleanup(func() { _ = plane.Close() })
+
+	// The fixture's agent cannot load, so this fails partway through — after
+	// the resolution it narrates, which is the part under test.
+	escaped.reset()
+	if _, deployErr := plane.Deploy(context.Background(), DeployRequest{
+		Service: "wiki/backend",
+		DryRun:  true,
+	}); deployErr == nil {
+		t.Fatal("the fixture's deploy is expected to fail; it narrates on the way there")
+	}
+
+	if recorder.joined() == "" {
+		t.Errorf("a deploy driven by the plane narrated nothing to the processor the embedder named")
+	}
+	if leaked := escaped.joined(); leaked != "" {
+		t.Errorf("a deploy driven by the plane reached the process-global fallback, which prints to stdout: %q", leaked)
 	}
 }
