@@ -323,6 +323,19 @@ codefly test solution --fixture dev-admin      # Against a named fixture
 codefly test solution --suite e2e --headless   # A named suite, headless (CI)
 ```
 
+It also runs the **composition tests the composed modules contribute**. A module
+that composes a package declares them under `contributions.tests` in its
+`module.codefly.yaml`, and each runs in that module's own checkout at the
+declared path — the same directory the composition renderer runs it in. This is
+how a module ships a test that every solution composing it runs ("a solution
+registered with me is reachable through my gateway") rather than one only its
+own repository executes.
+
+Every contributed suite runs even after one fails, and a failure names the
+module that contributed it. A contributed failure does not suppress the entry's
+own tests: both results are reported, and the command exits non-zero if either
+failed. A workspace whose modules contribute no suites is unaffected.
+
 ### `codefly deploy service [name]`
 
 Deploy a service to a target environment.
