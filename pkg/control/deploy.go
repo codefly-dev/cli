@@ -21,6 +21,11 @@ func (p *planeImpl) Deploy(ctx context.Context, req DeployRequest) (DeployResult
 }
 
 func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployResult, error) {
+	// Deploy builds its flow directly instead of going through buildFlow, so it
+	// is the one lifecycle driver the contract is not installed for there. The
+	// render, the workspace load and the apply manager all narrate, and all of
+	// them run before the flow exists.
+	ctx = p.narrationContext(ctx)
 	// A dry run contacts no cluster, so it can only ever establish rendered.
 	// Accepting a stronger Completion here would hand the caller a green result
 	// for a stage nothing verified.

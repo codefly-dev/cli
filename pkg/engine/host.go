@@ -16,6 +16,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/toolbox"
+	"github.com/codefly-dev/core/wool"
 )
 
 // reapStaleProcessGroups self-heals process groups leaked by dead owners. It is
@@ -62,7 +63,7 @@ func NewWorkspaceHost(cfg Config) (*WorkspaceHost, error) {
 	// Reaping is best-effort: a failure (signal permission, an unusual runs
 	// directory, a race with a concurrent host) must not stop every front door
 	// from starting. Surface it and continue rather than failing construction.
-	if err := reapStaleProcessGroups(context.Background()); err != nil {
+	if err := reapStaleProcessGroups(reapContext(cfg.LogWriter)); err != nil {
 		logHostWarning(cfg.LogWriter, fmt.Sprintf("could not reap stale workspace processes: %v", err))
 	}
 	absolute, err := filepath.Abs(root)
@@ -97,6 +98,39 @@ func logHostWarning(w io.Writer, message string) {
 		w = os.Stderr
 	}
 	fmt.Fprintf(w, "codefly workspace host: %s\n", message)
+}
+
+// reapNarration sends what the reaper logs to the host's log sink, which is
+// where the rest of this host's output already goes. It writes the line as
+// logged rather than reusing logHostWarning: most of what the reaper emits is
+// INFO, and the warning helper would label it as a host warning it is not.
+type reapNarration struct {
+	writer io.Writer
+}
+
+func (n reapNarration) Process(msg *wool.Log) {
+	if msg.Level < wool.GlobalLogLevel() {
+		return
+	}
+	writer := n.writer
+	if writer == nil {
+		writer = os.Stderr
+	}
+	fmt.Fprintln(writer, msg.String())
+}
+
+// reapContext carries that sink into the reaper, which otherwise runs on a
+// bare context: with no provider on it, wool resolves to its process-global
+// fallback — a console printing to stdout. mcp.ProtectStdout redirects that
+// fallback, but only for `codefly mcp serve`; every other embedder of a
+// WorkspaceHost still gets these lines on stdout, and one serving a protocol
+// there has no way to reach them. Binding them to the host's own sink fixes it
+// for all of them.
+func reapContext(w io.Writer) context.Context {
+	ctx := context.Background()
+	provider := wool.New(ctx, &wool.Resource{Kind: "engine", Unique: "workspace-host"})
+	provider.WithLogger(reapNarration{writer: w})
+	return provider.Inject(ctx)
 }
 
 // Root returns the immutable absolute root owned by this host.
