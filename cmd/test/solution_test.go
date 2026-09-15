@@ -6,9 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/run"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solution/manifest"
 	"github.com/spf13/cobra"
 )
 
@@ -181,44 +179,30 @@ func TestTestEnvironmentSelectsAndScopes(t *testing.T) {
 	}
 }
 
-// Codefly delivers a service's process overrides and its exported runtime
-// environment through StartRequest, and only START_STACK actually starts the
-// origin. Booting anyway ran the suite with CODEFLY__API_CONSUMES unset and
-// reported it green — a false pass for a composition that was never wired.
-func TestVerifyOriginReceivesStartInputsRefusesUndeliverableInputs(t *testing.T) {
-	priorOutputEnv, priorFixture := outputEnv, testFixture
-	t.Cleanup(func() { outputEnv, testFixture = priorOutputEnv, priorFixture })
-	outputEnv, testFixture = "", ""
+// The fixture and the process overrides reach a service under test through
+// InitRequest, but the exported runtime environment is composed inside Start,
+// which a suite that never starts the origin does not reach. Writing it anyway
+// produced a file missing the origin's own endpoints and dependency
+// connections, with nothing saying so.
+func TestVerifyOutputEnvReachesOriginRefusesAFileItCannotCompose(t *testing.T) {
+	priorOutputEnv := outputEnv
+	t.Cleanup(func() { outputEnv = priorOutputEnv })
 
 	// A flow that has not resolved START_STACK is what every other dependency
 	// mode looks like to the guard.
 	flow := &orchestration.Flow{}
 
-	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", solutionrun.RunInputs{}); err != nil {
-		t.Fatalf("a test with nothing Start-delivered was refused: %v", err)
-	}
-
-	originOverrides := solutionrun.RunInputs{Overrides: map[string]map[string]string{
-		"wiki/backend": {manifest.APIConsumesEnvironmentVariable: "documents:wiki/documents/api"},
-	}}
-	err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", originOverrides)
-	if err == nil {
-		t.Fatal("a solution whose CODEFLY__API_CONSUMES cannot reach the origin was allowed to report a green suite")
-	}
-	if !strings.Contains(err.Error(), manifest.APIConsumesEnvironmentVariable) {
-		t.Errorf("the refusal does not name the undeliverable variable: %v", err)
-	}
-
-	// Overrides aimed at a DEPENDENCY are deliverable: dependencies do start.
-	dependencyOverrides := solutionrun.RunInputs{Overrides: map[string]map[string]string{
-		"documents/api": {"CODEFLY__MODULE_REGISTRATION_SECRET": "deadbeef"},
-	}}
-	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", dependencyOverrides); err != nil {
-		t.Fatalf("refused for an override that reaches its dependency normally: %v", err)
+	outputEnv = ""
+	if err := verifyOutputEnvReachesOrigin(flow, "wiki/backend"); err != nil {
+		t.Fatalf("a test that asked for no exported environment was refused: %v", err)
 	}
 
 	outputEnv = "/tmp/codefly-test-env"
-	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", solutionrun.RunInputs{}); err == nil {
-		t.Fatal("--output-env accepted although the origin's runtime environment is only written at Start")
+	err := verifyOutputEnvReachesOrigin(flow, "wiki/backend")
+	if err == nil {
+		t.Fatal("--output-env accepted although the origin's runtime environment is only composed at Start")
+	}
+	if !strings.Contains(err.Error(), "--output-env") {
+		t.Errorf("the refusal does not name the input it is about: %v", err)
 	}
 }

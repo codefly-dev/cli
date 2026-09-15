@@ -47,6 +47,7 @@ const (
 	realAgentForeign   = "foreign"   // claims another service's endpoint
 	realAgentUnknown   = "unknown"   // invents an endpoint that was never proposed
 	realAgentDuplicate = "duplicate" // returns two native views for one endpoint
+	realAgentInputs    = "inputs"    // echoes back the invocation inputs Init carried
 )
 
 // exposedConfigurationName marks the runtime configuration the agent exports on
@@ -133,7 +134,7 @@ func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*ru
 		// A pre-contract agent answers READY without naming any mapping.
 		return &runtimev0.InitResponse{Status: &runtimev0.InitStatus{State: runtimev0.InitStatus_READY}}, nil
 	}
-	if agent.mode != realAgentEcho {
+	if agent.mode != realAgentEcho && agent.mode != realAgentInputs {
 		var err error
 		if mappings, err = boundMappings(mappings); err != nil {
 			return nil, err
@@ -155,18 +156,30 @@ func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*ru
 			network.Native(mappings[0].GetEndpoint(), 65000))
 	}
 	return &runtimev0.InitResponse{
-		Status:          &runtimev0.InitStatus{State: runtimev0.InitStatus_READY},
-		NetworkMappings: mappings,
-		RuntimeConfigurations: []*basev0.Configuration{{
-			Origin: "web/gateway",
-			Infos: []*basev0.ConfigurationInformation{{
-				Name: exposedConfigurationName,
-				ConfigurationValues: []*basev0.ConfigurationValue{
-					{Key: "session", Value: "exposed"},
-				},
-			}},
-		}},
+		Status:                &runtimev0.InitStatus{State: runtimev0.InitStatus_READY},
+		NetworkMappings:       mappings,
+		RuntimeConfigurations: exportedConfigurations(agent.mode, req),
 	}, nil
+}
+
+// exportedConfigurations is what the agent exports from its Init. The inputs
+// mode echoes the invocation inputs the request carried, so the parent asserts
+// on what actually crossed the process boundary rather than on its own intent.
+func exportedConfigurations(mode string, req *runtimev0.InitRequest) []*basev0.Configuration {
+	values := []*basev0.ConfigurationValue{{Key: "session", Value: "exposed"}}
+	if mode == realAgentInputs {
+		values = []*basev0.ConfigurationValue{{Key: "fixture", Value: req.GetFixture()}}
+		for key, value := range req.GetOverrides() {
+			values = append(values, &basev0.ConfigurationValue{Key: key, Value: value})
+		}
+	}
+	return []*basev0.Configuration{{
+		Origin: "web/gateway",
+		Infos: []*basev0.ConfigurationInformation{{
+			Name:                exposedConfigurationName,
+			ConfigurationValues: values,
+		}},
+	}}
 }
 
 func (agent *realAgent) Stop(context.Context, *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {

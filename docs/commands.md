@@ -302,11 +302,14 @@ behaves differently from `run`:
 | `--temporary-ports` | **On by default here**, where `run` defaults it off. Each invocation takes ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state — overriding any scope the environment declares — so two concurrent `codefly test` runs in one workspace cannot collide. Pass `--temporary-ports=false` to keep the declared scope and deterministic names, or `--naming-scope` to name the scope yourself |
 
 A suite whose agent advertises `START_DEPENDENCIES` or `NONE` never starts the
-service under test, so anything Codefly delivers at Start cannot reach it:
-process overrides (`CODEFLY__API_CONSUMES`, the federation registration secrets)
-and `--output-env`. Codefly refuses such an invocation rather than reporting a
-green suite for a composition that was never wired, and warns when `--fixture`
-reaches the dependencies but not the origin.
+service under test. The fixture and the process overrides
+(`CODEFLY__API_CONSUMES`, the federation registration secrets) still reach it:
+Codefly delivers both on Init, which every service receives, and an agent takes
+the first non-empty of the Init and Start values. `--output-env` is the one
+input that cannot follow, because the exported environment is composed inside
+Start — only there are the origin's endpoints and its dependencies' connections
+final — so Codefly refuses that combination rather than writing a file that
+silently omits them.
 
 ### `codefly test solution`
 

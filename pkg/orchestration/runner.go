@@ -332,6 +332,11 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		wool.Field("project configurations", resources.MakeManyConfigurationSummary(workspaceConfigurations)),
 		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
 
+	// Init is the only lifecycle call guaranteed to reach a service under test:
+	// a test policy replaces the origin's Start with a barrier or skips it
+	// altogether, so a fixture or an override delivered only at Start reaches
+	// every dependency and never the service the suite is about. Start still
+	// carries both, and the agent takes the first non-empty.
 	req := &runtimev0.InitRequest{
 		RuntimeContext:             runtimeContext,
 		ProposedNetworkMappings:    networkMappings,
@@ -339,6 +344,8 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		Configuration:              conf,
 		WorkspaceConfigurations:    workspaceConfigurations,
 		DependenciesConfigurations: dependenciesConfigurations,
+		Fixture:                    runner.fixture,
+		Overrides:                  runner.runtimeOverrides(),
 	}
 	err = resources.Validate(req)
 	if err != nil {

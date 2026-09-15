@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/builder"
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
 	coreservices "github.com/codefly-dev/core/agents/services"
+	coresbom "github.com/codefly-dev/core/agents/services/sbom"
 	"github.com/codefly-dev/core/services"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -49,7 +50,8 @@ type Builder struct {
 	push        bool
 	imageDigest string
 
-	imageEvidence []*builderv0.ImageSBOM
+	imageEvidence  []*builderv0.ImageSBOM
+	resolvedImages []coresbom.ResolvedImage
 
 	syncResponse     *builderv0.SyncResponse
 	syncSkipped      bool
