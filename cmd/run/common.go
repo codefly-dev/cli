@@ -58,8 +58,8 @@ var namingScope string
 // Help text for the port-isolation flags. Shared so `run service` and `run
 // solution` describe the same mechanism identically and cannot drift.
 const (
-	namingScopeUsage    = "Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)"
-	temporaryPortsUsage = "Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via `show network`). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all"
+	NamingScopeUsage    = "Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)"
+	TemporaryPortsUsage = "Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via `show network`). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all"
 )
 
 // namingScopeExplicit records whether --naming-scope was passed at all, so an

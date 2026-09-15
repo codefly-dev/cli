@@ -136,6 +136,13 @@ type TestRequest struct {
 	RuntimeContext string
 	Suite          string
 	Filter         string
+	// Env selects the workspace environment, whose declaration carries the
+	// fixture a test runs against. Empty means local.
+	Env string
+	// Fixture overrides the environment-declared fixture, exactly as
+	// `codefly test service --fixture` does, so the same workspace resolves the
+	// same fixture whichever entry point drives it.
+	Fixture string
 }
 
 // CheckResult is the outcome of a test/lint/compile/checks invocation.

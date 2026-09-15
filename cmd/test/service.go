@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/cmd/run"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -40,124 +44,217 @@ Examples:
   codefly test service --target ./pkg/business   # scope to a package/dir
   codefly test service -- --shard 1/2            # pass --shard 1/2 to runner`,
 	Args: serviceArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, done := common.NewContext()
-		defer done()
+	RunE: testServiceCommand,
+}
 
-		ctx, stop := common.SignalContext(ctx)
-		defer stop()
+// testServiceCommand is the shared test path: `test service` is this command,
+// and `test solution` delegates to it with the resolved solution entry — the
+// same construction `run solution` uses, so a solution is tested exactly the
+// way its entry service is.
+func testServiceCommand(cmd *cobra.Command, args []string) error {
+	ctx, done := common.NewContext()
+	defer done()
 
-		cli.Init()
-		defer services.ClearAgents()
+	ctx, stop := common.SignalContext(ctx)
+	defer stop()
 
-		// Anything after `--` becomes extra_args. cobra puts it in args
-		// past ArgsLenAtDash().
-		request := buildTestRequest(nil)
-		dashAt := cmd.ArgsLenAtDash()
-		if dashAt >= 0 && dashAt < len(args) {
-			request.ExtraArgs = append(request.ExtraArgs, args[dashAt:]...)
-			args = args[:dashAt]
-		}
+	cli.Init()
+	defer services.ClearAgents()
 
-		isHeadless := headless || !term.IsTerminal(int(os.Stdout.Fd()))
-		loadRequired := common.LoadRequiredE
-		if isHeadless {
-			loadRequired = common.LoadRequiredNonInteractiveE
-		}
-		// Tests resolve composed pinned modules the same way a run does: a
-		// workspace that composes a module by identity cannot load it as a local
-		// checkout until the CLI has pulled it, so without this the load below
-		// fails on every machine that has not run `run solution` first.
-		if err := common.ResolvePinnedModulesForRun(ctx); err != nil {
-			return err
-		}
+	namingScopeExplicit = cmd.Flags().Changed("naming-scope")
 
-		workspace, module, service, err := loadRequired(ctx, args)
-		if err != nil {
-			return fmt.Errorf("cannot load required service: %w", err)
-		}
-		serviceName := resources.WithUnique(service).Unique()
+	// Anything after `--` becomes extra_args. cobra puts it in args
+	// past ArgsLenAtDash().
+	request := buildTestRequest(nil)
+	dashAt := cmd.ArgsLenAtDash()
+	if dashAt >= 0 && dashAt < len(args) {
+		request.ExtraArgs = append(request.ExtraArgs, args[dashAt:]...)
+		args = args[:dashAt]
+	}
 
-		var flow *orchestration.Flow
-		// testErr is the run/RPC error (init failure, crash, non-success exit).
-		// It is the authoritative signal for the exit code.
-		var testErr error
+	isHeadless := headless || !term.IsTerminal(int(os.Stdout.Fd()))
+	loadRequired := common.LoadRequiredE
+	if isHeadless {
+		loadRequired = common.LoadRequiredNonInteractiveE
+	}
+	// Tests resolve composed pinned modules the same way a run does: a
+	// workspace that composes a module by identity cannot load it as a local
+	// checkout until the CLI has pulled it, so without this the load below
+	// fails on every machine that has not run `run solution` first.
+	if err := resolveTestPins(ctx); err != nil {
+		return err
+	}
 
-		if isHeadless {
-			fmt.Printf("[codefly] Testing service %s (headless mode)\n", serviceName)
-			flow, testErr = initRunService(ctx, workspace, module, service, request)
-			if testErr == nil {
-				testErr = common.WithHeartbeat(ctx, "running tests for "+serviceName, func() error {
-					return testService(ctx, flow)
-				})
-			}
-		} else {
-			logCh := tui.NewLogChannel()
-			cli.SuppressOutput()
-			defer cli.RestoreOutput()
+	workspace, module, service, err := loadRequired(ctx, args)
+	if err != nil {
+		return fmt.Errorf("cannot load required service: %w", err)
+	}
+	serviceName := resources.WithUnique(service).Unique()
 
-			tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
-				t.SendState(serviceName, tui.StateLoading)
+	// The same federation injections the run path derives: a solution tested
+	// here must boot with CODEFLY__API_CONSUMES and its registration secrets
+	// set, or its consumed routes stay unrouted under test but not under run.
+	derived, derivedErr := run.SolutionDerivedRunInputs(ctx, workspace, module, service, serviceName)
+	if derivedErr != nil {
+		return derivedErr
+	}
 
-				flow, testErr = initRunService(ctx, workspace, module, service, request)
-				if testErr != nil {
-					t.SendError(testErr)
-					t.SendDone(testErr)
-					return
-				}
+	var flow *orchestration.Flow
+	// testErr is the run/RPC error (init failure, crash, non-success exit).
+	// It is the authoritative signal for the exit code.
+	var testErr error
 
-				t.SendState(serviceName, tui.StateTesting)
-
-				testErr = testService(ctx, flow)
-				if testErr != nil {
-					t.SendError(testErr)
-					t.SendDone(testErr)
-					return
-				}
-
-				t.SendDone(nil)
+	if isHeadless {
+		fmt.Printf("[codefly] Testing service %s (headless mode)\n", serviceName)
+		flow, testErr = initRunService(ctx, workspace, module, service, request, derived)
+		if testErr == nil {
+			testErr = common.WithHeartbeat(ctx, "running tests for "+serviceName, func() error {
+				return testService(ctx, flow)
 			})
-			if tuiErr != nil && testErr == nil {
-				testErr = tuiErr
-			}
-			cli.RestoreOutput()
 		}
+	} else {
+		logCh := tui.NewLogChannel()
+		cli.SuppressOutput()
+		defer cli.RestoreOutput()
 
-		// Render the structured test report (counts + failed cases with
-		// captured output) whenever the agent returned one — on success and
-		// failure alike. This is the agent's Test RPC structured response.
-		var resp *runtimev0.TestResponse
-		if flow != nil {
-			resp = flow.OriginTestResponse()
-		}
-		if resp != nil {
-			fmt.Println(orchestration.RenderTestReport(resp))
-		}
+		tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
+			t.SendState(serviceName, tui.StateLoading)
 
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		stopErr := stopService(shutdownCtx, flow)
-		shutdownCancel()
-
-		// Exit non-zero if the run errored OR the structured result is not a
-		// pass. Previously this always called cli.Exit() (os.Exit(0)), so a
-		// failing test suite reported success to CI.
-		failed := testErr != nil || (resp != nil && !orchestration.TestSucceeded(resp))
-		if failed {
+			flow, testErr = initRunService(ctx, workspace, module, service, request, derived)
 			if testErr != nil {
-				return errors.Join(fmt.Errorf("tests failed for %s: %w", serviceName, testErr), stopErr)
+				t.SendError(testErr)
+				t.SendDone(testErr)
+				return
 			}
-			return errors.Join(fmt.Errorf("tests failed for %s", serviceName), stopErr)
+
+			t.SendState(serviceName, tui.StateTesting)
+
+			testErr = testService(ctx, flow)
+			if testErr != nil {
+				t.SendError(testErr)
+				t.SendDone(testErr)
+				return
+			}
+
+			t.SendDone(nil)
+		})
+		if tuiErr != nil && testErr == nil {
+			testErr = tuiErr
 		}
-		if stopErr != nil {
-			return fmt.Errorf("tests passed but service cleanup failed: %w", stopErr)
+		cli.RestoreOutput()
+	}
+
+	// Render the structured test report (counts + failed cases with
+	// captured output) whenever the agent returned one — on success and
+	// failure alike. This is the agent's Test RPC structured response.
+	var resp *runtimev0.TestResponse
+	if flow != nil {
+		resp = flow.OriginTestResponse()
+	}
+	if resp != nil {
+		fmt.Println(orchestration.RenderTestReport(resp))
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	stopErr := stopService(shutdownCtx, flow)
+	shutdownCancel()
+
+	// Exit non-zero if the run errored OR the structured result is not a
+	// pass. Previously this always called cli.Exit() (os.Exit(0)), so a
+	// failing test suite reported success to CI.
+	failed := testErr != nil || (resp != nil && !orchestration.TestSucceeded(resp))
+	if failed {
+		if testErr != nil {
+			return errors.Join(fmt.Errorf("tests failed for %s: %w", serviceName, testErr), stopErr)
 		}
-		if flow != nil && flow.OriginTestSkipped() {
-			fmt.Printf("[codefly] No tests for %s: agent advertises no test suites\n", serviceName)
-			return nil
-		}
-		fmt.Printf("[codefly] Tests passed for %s\n", serviceName)
+		return errors.Join(fmt.Errorf("tests failed for %s", serviceName), stopErr)
+	}
+	if stopErr != nil {
+		return fmt.Errorf("tests passed but service cleanup failed: %w", stopErr)
+	}
+	if flow != nil && flow.OriginTestSkipped() {
+		fmt.Printf("[codefly] No tests for %s: agent advertises no test suites\n", serviceName)
 		return nil
-	},
+	}
+	fmt.Printf("[codefly] Tests passed for %s\n", serviceName)
+	return nil
+}
+
+// resolveTestPins materializes the workspace's composed pinned modules unless
+// the caller already did, which pinsAlreadyResolved records.
+func resolveTestPins(ctx context.Context) error {
+	if pinsAlreadyResolved {
+		return nil
+	}
+	return common.ResolvePinnedModulesForRun(ctx)
+}
+
+// testEnvironment resolves the environment this test flow runs in. It mirrors
+// the run path: the workspace declaration wins, and --naming-scope applies to
+// this invocation's copy only — never to the shared declaration. An explicitly
+// empty scope clears a declared one; an absent flag keeps it.
+func testEnvironment(workspace *resources.Workspace) (*resources.Environment, error) {
+	env, err := orchestration.SelectEnvironment(workspace, environmentName)
+	if err != nil {
+		return nil, err
+	}
+	if namingScope != "" || namingScopeExplicit {
+		env.NamingScope = namingScope
+	}
+	// An isolated invocation must not inherit the environment's declared scope.
+	// Flow.WithIsolatedInvocation declines to generate an identity when a scope
+	// is already set, so a workspace that declares one would leave two concurrent
+	// tests sharing container names and runtime state directories while only
+	// their ports differed — the collision isolation exists to prevent. env is a
+	// deep copy, so clearing it never touches the shared declaration.
+	if shouldIsolateInvocation(temporaryPorts, namingScopeExplicit) {
+		env.NamingScope = ""
+	}
+	return env, nil
+}
+
+// verifyOriginReceivesStartInputs refuses a test whose inputs cannot reach the
+// service under test. Codefly delivers a service's process overrides and its
+// exported runtime environment through StartRequest, and only START_STACK
+// actually starts the origin. Running anyway would report a green suite for a
+// composition whose CODEFLY__API_CONSUMES and registration secrets were never
+// delivered — a false pass, which is worse than a failure.
+func verifyOriginReceivesStartInputs(flow *orchestration.Flow, serviceName, fixture string, derived run.DerivedRunInputs) error {
+	if flow.OriginStartsForTest() || flow.OriginTestSkipped() {
+		return nil
+	}
+	// The fixture reaches every dependency that starts, which is the point of a
+	// fixture for a dependency-backed suite, so it does not invalidate the run —
+	// but the origin not seeing it is silent, and silence is what hid this. The
+	// caller passes the RESOLVED fixture: an environment-declared one is just as
+	// undeliverable as an explicit --fixture.
+	if fixture != "" {
+		cli.Warning(
+			"fixture %q reaches the dependencies but not %s: dependency mode %s never starts the service under test",
+			fixture, serviceName, flow.TestDependencyModeName())
+	}
+	var undeliverable []string
+	if keys := slices.Sorted(maps.Keys(derived.Overrides[serviceName])); len(keys) > 0 {
+		undeliverable = append(undeliverable, "the solution-derived variables "+strings.Join(keys, ", "))
+	}
+	if outputEnv != "" {
+		undeliverable = append(undeliverable,
+			"--output-env (the origin's endpoints, fixture and dependency connections are written at Start)")
+	}
+	if len(undeliverable) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s runs its tests in dependency mode %s, which never starts the service under test, so %s cannot reach it: select a suite whose agent advertises START_STACK, or drop the inputs that depend on it",
+		serviceName, flow.TestDependencyModeName(), strings.Join(undeliverable, " and "))
+}
+
+// shouldIsolateInvocation decides whether this test takes a generated identity
+// for the resources it owns. An explicit --naming-scope, including an
+// explicitly empty one, is the caller stating what it wants the run named —
+// honored either way.
+func shouldIsolateInvocation(temporaryPorts, namingScopeExplicit bool) bool {
+	return temporaryPorts && !namingScopeExplicit
 }
 
 func serviceArgs(cmd *cobra.Command, args []string) error {
@@ -168,7 +265,7 @@ func serviceArgs(cmd *cobra.Command, args []string) error {
 	return cobra.MaximumNArgs(1)(cmd, positional)
 }
 
-func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *runtimev0.TestRequest) (*orchestration.Flow, error) {
+func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *runtimev0.TestRequest, derived run.DerivedRunInputs) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("testService", wool.ThisField(resources.WithUnique(service)))
 	defer w.Catch()
 
@@ -176,7 +273,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	env, err := testEnvironment(workspace)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -190,7 +287,27 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTestRequest(request)
-	flow.WithFixture(orchestration.SelectedFixture(env, testFixture))
+	selectedFixture := orchestration.SelectedFixture(env, testFixture)
+	flow.WithFixture(selectedFixture)
+	flow.WithOutputEnv(outputEnv)
+	flow.WithOverrides(derived.Overrides)
+	flow.WithWorkspaceConfigurationValues(derived.WorkspaceConfigurations)
+	flow.WithTemporaryPorts(temporaryPorts)
+	if shouldIsolateInvocation(temporaryPorts, namingScopeExplicit) {
+		if invocation := flow.WithIsolatedInvocation(); invocation != "" {
+			cli.Info(
+				"isolated invocation %s: ephemeral ports, and every agent, container and runtime state directory this test owns is named under that scope",
+				invocation,
+			)
+		}
+	}
+	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	if err = flow.WithRunProfile(resolvedProfile); err != nil {
+		return nil, w.Wrap(err)
+	}
 
 	// Return the flow even when init fails: InitManagers spawns agents
 	// incrementally (and Load can fail after they're live), so a partial failure
@@ -204,6 +321,14 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	err = flow.Load(ctx)
 	if err != nil {
 		return flow, w.Wrap(err)
+	}
+	// Load resolved the origin's dependency mode, so this is the earliest point
+	// the flow can tell whether what the caller asked for can be delivered at
+	// all. Skipped when nothing is going to run anyway.
+	if !loadOnly && !initOnly {
+		if err = verifyOriginReceivesStartInputs(flow, resources.WithUnique(service).Unique(), selectedFixture, derived); err != nil {
+			return flow, err
+		}
 	}
 	return flow, nil
 }
@@ -249,19 +374,33 @@ func buildTestRequest(extraArgs []string) *runtimev0.TestRequest {
 }
 
 func init() {
-	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
-	ServiceCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")
-	ServiceCmd.Flags().StringVar(&testFixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
-	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
-	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
-	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY)")
+	bindSharedTestFlags(ServiceCmd)
+}
+
+// bindSharedTestFlags registers every flag the test verbs take, bound to the
+// package vars testServiceCommand reads. Both `test service` and `test solution`
+// run that one path, so they register through this one function: hand-listing
+// them per command is what left `test solution` without --race, --coverage,
+// --init-only and --load-only.
+func bindSharedTestFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
+	cmd.Flags().StringVar(&testFixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
+	cmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
+	cmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
+	cmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY)")
+	cmd.Flags().StringVar(&environmentName, "env", orchestration.LocalEnvironmentName, "Workspace environment to test in")
+	cmd.Flags().StringVar(&profile, "profile", "", "Named workspace run profile")
+	cmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the test (repeatable, e.g. infra/temporal)")
+	cmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
+	cmd.Flags().StringVar(&namingScope, "naming-scope", "", run.NamingScopeUsage)
+	cmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", true, run.TemporaryPortsUsage)
 
 	// Test filter flags — forwarded to the agent's Test RPC.
-	ServiceCmd.Flags().StringVar(&testTarget, "target", "", "Package/directory scope (Go: ./pkg/foo, Python: tests/unit)")
-	ServiceCmd.Flags().StringSliceVarP(&testFilters, "filter", "k", nil, "Name regex pattern (repeatable; OR-combined). -k mirrors pytest")
-	ServiceCmd.Flags().StringVar(&testSuite, "suite", "", "Named suite: unit (default), integration, e2e, smoke")
-	ServiceCmd.Flags().StringVar(&testTimeout, "timeout", "", "Per-test timeout, e.g. 30s")
-	ServiceCmd.Flags().BoolVarP(&testVerbose, "verbose", "v", false, "Verbose runner output")
-	ServiceCmd.Flags().BoolVar(&testRace, "race", false, "Run with race detector (Go)")
-	ServiceCmd.Flags().BoolVar(&testCoverage, "coverage", false, "Run with coverage instrumentation")
+	cmd.Flags().StringVar(&testTarget, "target", "", "Package/directory scope (Go: ./pkg/foo, Python: tests/unit)")
+	cmd.Flags().StringSliceVarP(&testFilters, "filter", "k", nil, "Name regex pattern (repeatable; OR-combined). -k mirrors pytest")
+	cmd.Flags().StringVar(&testSuite, "suite", "", "Named suite: unit (default), integration, e2e, smoke")
+	cmd.Flags().StringVar(&testTimeout, "timeout", "", "Per-test timeout, e.g. 30s")
+	cmd.Flags().BoolVarP(&testVerbose, "verbose", "v", false, "Verbose runner output")
+	cmd.Flags().BoolVar(&testRace, "race", false, "Run with race detector (Go)")
+	cmd.Flags().BoolVar(&testCoverage, "coverage", false, "Run with coverage instrumentation")
 }

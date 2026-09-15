@@ -160,12 +160,12 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 
 	serviceName := resources.WithUnique(service).Unique()
 
-	derived, derivedErr := solutionDerivedRunInputs(ctx, workspace, module, service, serviceName)
+	derived, derivedErr := SolutionDerivedRunInputs(ctx, workspace, module, service, serviceName)
 	if derivedErr != nil {
 		return derivedErr
 	}
-	derivedOverrides = derived.overrides
-	derivedWorkspaceConfigurations = derived.workspaceConfigurations
+	derivedOverrides = derived.Overrides
+	derivedWorkspaceConfigurations = derived.WorkspaceConfigurations
 
 	var flow *orchestration.Flow
 
@@ -850,7 +850,7 @@ func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
 	return out, nil
 }
 
-// solutionDerivedRunInputs resolves the solution-federation injections for the
+// SolutionDerivedRunInputs resolves the solution-federation injections for the
 // service being run: the CODEFLY__API_CONSUMES projection, and the registration
 // secrets that let the consuming backend prove which module it is. It lives on
 // the shared run path so `run service <entry>` and `run solution` inject
@@ -858,13 +858,13 @@ func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
 // which each service agent chooses to honor, so an operator debugging dead
 // federation must be able to see that the CLI supplied them before suspecting
 // the manifest.
-func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (derivedRunInputs, error) {
+func SolutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (DerivedRunInputs, error) {
 	consumed, value, err := solutionEntryConsumes(workspace, module, service)
 	if err != nil {
-		return derivedRunInputs{}, err
+		return DerivedRunInputs{}, err
 	}
 	if len(consumed) == 0 {
-		return derivedRunInputs{}, nil
+		return DerivedRunInputs{}, nil
 	}
 	ids := make([]string, 0, len(consumed))
 	for i := range consumed {
@@ -877,7 +877,7 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 
 	provisioned := provisionModuleRegistrationSecrets(consumed)
 	if provisioned == nil {
-		return derivedRunInputs{overrides: overrides}, nil
+		return DerivedRunInputs{Overrides: overrides}, nil
 	}
 
 	registrars := federationRegistrars(ctx, workspace)
@@ -890,7 +890,7 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 		// say so and boot: the solution still serves its own routes.
 		cli.Warning("no service declares the %q workspace configuration: consumed modules (%s) cannot federate",
 			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))
-		return derivedRunInputs{overrides: overrides}, nil
+		return DerivedRunInputs{Overrides: overrides}, nil
 	}
 	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.registrationSecrets()
 	cli.Info("provisioned registration secrets for %s into %s, registration and identity digests into %s",
@@ -915,9 +915,9 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 		cli.Warning("no %s provisioned for %s: those modules cannot obtain a work context, so their module-facing workers will idle",
 			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.unresolved, "; "))
 	}
-	return derivedRunInputs{
-		overrides: mergeOverrides(overrides, injection.overrides),
-		workspaceConfigurations: map[string]map[string]string{
+	return DerivedRunInputs{
+		Overrides: mergeOverrides(overrides, injection.overrides),
+		WorkspaceConfigurations: map[string]map[string]string{
 			federationConfigurationGroup: {
 				moduleRegistrationSecretsKey: provisioned.registrationDigests(),
 				moduleIdentitySecretsKey:     provisioned.identityDigests(),
@@ -926,14 +926,18 @@ func solutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspac
 	}, nil
 }
 
-// derivedRunInputs are the two carriers the run path derives for a solution:
+// DerivedRunInputs are the two carriers the run path derives for a solution:
 // per-service process overrides, and values for the workspace configuration
 // groups a service declares. Returned together (never assigned to a global from
 // inside) so a run that derives nothing clears both, and a second in-process
 // invocation cannot inherit the previous run's values.
-type derivedRunInputs struct {
-	overrides               map[string]map[string]string
-	workspaceConfigurations map[string]map[string]string
+//
+// Exported alongside SolutionDerivedRunInputs so the test path injects the same
+// federation inputs the run path does: a solution booted under `codefly test`
+// otherwise comes up with CODEFLY__API_CONSUMES unset.
+type DerivedRunInputs struct {
+	Overrides               map[string]map[string]string
+	WorkspaceConfigurations map[string]map[string]string
 }
 
 // mergeOverrides layers per-service override maps, later layers winning key by
@@ -1004,8 +1008,8 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().BoolVar(&openDashboard, "open", false, "Open the dashboard in the default browser (requires --cli-server)")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free picks the first advertised backend)")
-	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", namingScopeUsage)
-	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, temporaryPortsUsage)
+	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", NamingScopeUsage)
+	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, TemporaryPortsUsage)
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")
 	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
 	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
