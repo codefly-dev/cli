@@ -275,8 +275,8 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTestRequest(request)
-	selectedFixture := orchestration.SelectedFixture(env, testFixture)
-	if err = clicomposition.ValidateFixtureSelection(ctx, workspace, selectedFixture); err != nil {
+	selectedFixture, err := clicomposition.ResolveFixtureSelection(ctx, workspace, env, testFixture)
+	if err != nil {
 		return nil, w.Wrap(err)
 	}
 	flow.WithFixture(selectedFixture)

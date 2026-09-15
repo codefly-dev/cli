@@ -709,11 +709,7 @@ func runEnvironment(workspace *resources.Workspace) (*resources.Environment, err
 // naming one in workspace.codefly.yaml runs with the flag unset, and a typo
 // there reaches the stack exactly as an unverified flag would.
 func runFixture(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) (string, error) {
-	selected := orchestration.SelectedFixture(env, fixture)
-	if err := composition.ValidateFixtureSelection(ctx, workspace, selected); err != nil {
-		return "", err
-	}
-	return selected, nil
+	return composition.ResolveFixtureSelection(ctx, workspace, env, fixture)
 }
 
 // newRunFlow selects the environment and wires the run flow up to — but

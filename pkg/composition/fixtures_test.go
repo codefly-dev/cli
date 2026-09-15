@@ -3,6 +3,7 @@ package composition
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,28 @@ fixtures:
         email: rival@example.com
         role: admin
         token: rival-token
+`
+
+// unrelatedFixturePackageManifest declares a name nothing else declares, so a
+// collision elsewhere in the workspace must not affect resolving it.
+const unrelatedFixturePackageManifest = `kind: module-package
+schema: codefly/module-package/v2
+id: staging-starter
+version: 1.0.0
+minimum-codefly-version: ">=0.3.32"
+artifact-roots:
+  - contracts
+contracts:
+  composition: ">=0.1.0"
+  fixtures: ">=0.1.0"
+fixtures:
+  - name: staging-seed
+    description: Staging seed
+    principals:
+      - id: staging-admin
+        email: staging@example.com
+        role: admin
+        token: staging-token
 `
 
 const fixturelessPackageManifest = `kind: module-package
@@ -259,5 +282,205 @@ func TestValidateFixtureSelectionIgnoresAnEmptySelection(t *testing.T) {
 
 	if err := ValidateFixtureSelection(context.Background(), workspace, ""); err != nil {
 		t.Fatalf("an unset --fixture was refused: %v", err)
+	}
+}
+
+// captureStderr collects what cli.Warning emits, which is the only signal that
+// a run proceeded without verifying its fixture.
+func captureStderr(t *testing.T, call func()) string {
+	t.Helper()
+	previous := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	call()
+	os.Stderr = previous
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	emitted, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(emitted)
+}
+
+// A collision makes the colliding name unresolvable, not the whole workspace.
+// Refusing every run over a name this one never selected blocked runs that had
+// nothing to do with the clash.
+func TestValidateFixtureSelectionIgnoresACollisionOnAnotherName(t *testing.T) {
+	workspace := composedWorkspace(t,
+		composedModule{name: "saas", manifest: fixturePackageManifest},
+		composedModule{name: "rival", manifest: rivalFixturePackageManifest},
+		composedModule{name: "staging", manifest: unrelatedFixturePackageManifest},
+	)
+
+	if err := ValidateFixtureSelection(context.Background(), workspace, "staging-seed"); err != nil {
+		t.Fatalf("a collision on another name blocked an unambiguous selection: %v", err)
+	}
+}
+
+func TestValidateFixtureSelectionRefusesAnAmbiguousSelection(t *testing.T) {
+	workspace := composedWorkspace(t,
+		composedModule{name: "saas", manifest: fixturePackageManifest},
+		composedModule{name: "rival", manifest: rivalFixturePackageManifest},
+	)
+
+	err := ValidateFixtureSelection(context.Background(), workspace, "dev-admin")
+	if err == nil {
+		t.Fatal("a name two packages declare differently was accepted")
+	}
+	if !errors.Is(err, corecomposition.ErrCollision) {
+		t.Errorf("error = %v, want ErrCollision", err)
+	}
+	for _, owner := range []string{"saas-starter", "rival-starter"} {
+		if !strings.Contains(err.Error(), owner) {
+			t.Errorf("error %q does not name the declaring package %q", err, owner)
+		}
+	}
+}
+
+// One package composed under two module references declares its fixtures twice,
+// identically. That still names one seed, so treating it as a collision refused
+// a selection that was never ambiguous — and said so as "declared by both
+// saas-starter and saas-starter".
+func TestValidateFixtureSelectionAcceptsOnePackageComposedTwice(t *testing.T) {
+	workspace := composedWorkspace(t,
+		composedModule{name: "saas-a", manifest: fixturePackageManifest},
+		composedModule{name: "saas-b", manifest: fixturePackageManifest},
+	)
+
+	if err := ValidateFixtureSelection(context.Background(), workspace, "dev-admin"); err != nil {
+		t.Fatalf("one package composed twice was reported as a collision: %v", err)
+	}
+}
+
+func TestWorkspaceFixturesListsOnePackageComposedTwiceOnce(t *testing.T) {
+	workspace := composedWorkspace(t,
+		composedModule{name: "saas-a", manifest: fixturePackageManifest},
+		composedModule{name: "saas-b", manifest: fixturePackageManifest},
+	)
+
+	fixtures, problems := WorkspaceFixtures(context.Background(), workspace)
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+	if len(fixtures) != 1 {
+		t.Fatalf("fixtures = %d, want the identical declarations listed once: %+v", len(fixtures), fixtures)
+	}
+}
+
+// Every composed package unreadable: the selection cannot be called a typo, but
+// passing in silence hid both the typo and the broken manifest, leaving the run
+// to fail deep inside the stack with no signal that nothing had been verified.
+func TestValidateFixtureSelectionWarnsWhenNoPackageCouldBeRead(t *testing.T) {
+	workspace := composedWorkspace(t, composedModule{name: "legacy", manifest: unloadablePackageManifest})
+
+	var err error
+	emitted := captureStderr(t, func() {
+		err = ValidateFixtureSelection(context.Background(), workspace, "dev-admn")
+	})
+	if err != nil {
+		t.Fatalf("an unverifiable selection was refused: %v", err)
+	}
+	if !strings.Contains(emitted, "dev-admn") {
+		t.Errorf("stderr %q does not warn that the selection went unverified", emitted)
+	}
+}
+
+// The readable package declares no fixture and another could not be read. The
+// readable one proves nothing about the selection, so this must warn too.
+func TestValidateFixtureSelectionWarnsWhenReadablePackagesDeclareNoFixtures(t *testing.T) {
+	workspace := composedWorkspace(t,
+		composedModule{name: "docs", manifest: fixturelessPackageManifest},
+		composedModule{name: "legacy", manifest: unloadablePackageManifest},
+	)
+
+	var err error
+	emitted := captureStderr(t, func() {
+		err = ValidateFixtureSelection(context.Background(), workspace, "dev-admn")
+	})
+	if err != nil {
+		t.Fatalf("an unverifiable selection was refused: %v", err)
+	}
+	if !strings.Contains(emitted, "dev-admn") {
+		t.Errorf("stderr %q does not warn that the selection went unverified", emitted)
+	}
+}
+
+// A fixture-less workspace with nothing unreadable has verified the selection
+// as far as it can and must stay quiet.
+func TestValidateFixtureSelectionStaysQuietWhenNothingIsWrong(t *testing.T) {
+	workspace := composedWorkspace(t, composedModule{name: "docs", manifest: fixturelessPackageManifest})
+
+	emitted := captureStderr(t, func() {
+		if err := ValidateFixtureSelection(context.Background(), workspace, "my-seed"); err != nil {
+			t.Errorf("a fixture-less workspace refused a selection: %v", err)
+		}
+	})
+	if emitted != "" {
+		t.Errorf("stderr = %q, want nothing", emitted)
+	}
+}
+
+// Resolved principals must not alias the manifest they came from: the struct
+// copy shares the principals array, so without a clone a caller editing a
+// resolved principal rewrites the composed package's own declaration.
+func TestDeclarationsByNameDoesNotAliasManifestPrincipals(t *testing.T) {
+	manifest := &corecomposition.PackageManifest{
+		ID: "saas-starter",
+		Fixtures: []corecomposition.ProvidedFixture{{
+			Name:       "dev-admin",
+			Principals: []corecomposition.FixturePrincipal{{ID: "user-admin", Email: "admin@example.com", Role: "admin"}},
+		}},
+	}
+
+	declarations := declarationsByName([]*corecomposition.PackageManifest{manifest})
+	declarations["dev-admin"][0].fixture.Principals[0].Email = "rewritten@example.com"
+
+	if manifest.Fixtures[0].Principals[0].Email != "admin@example.com" {
+		t.Errorf("manifest principal = %q, want it untouched by an edit to the resolved copy",
+			manifest.Fixtures[0].Principals[0].Email)
+	}
+}
+
+// ResolveFixtureSelection is the one path `run`, `test` and the control plane
+// share, so the precedence it implements is verified once, here.
+func TestResolveFixtureSelectionPrefersTheOverride(t *testing.T) {
+	workspace := composedWorkspace(t, composedModule{name: "saas", manifest: fixturePackageManifest})
+
+	selected, err := ResolveFixtureSelection(context.Background(), workspace,
+		&resources.Environment{Fixture: "staging-seed"}, "dev-admin")
+	if err != nil {
+		t.Fatalf("the override was refused: %v", err)
+	}
+	if selected != "dev-admin" {
+		t.Errorf("selected = %q, want the override dev-admin", selected)
+	}
+}
+
+func TestResolveFixtureSelectionFallsBackToTheEnvironment(t *testing.T) {
+	workspace := composedWorkspace(t, composedModule{name: "saas", manifest: fixturePackageManifest})
+
+	selected, err := ResolveFixtureSelection(context.Background(), workspace,
+		&resources.Environment{Fixture: "dev-admin"}, "")
+	if err != nil {
+		t.Fatalf("the environment's declaration was refused: %v", err)
+	}
+	if selected != "dev-admin" {
+		t.Errorf("selected = %q, want dev-admin", selected)
+	}
+}
+
+// The resolved value is what gets verified, so a typo declared by the
+// environment is refused even though no override was passed.
+func TestResolveFixtureSelectionVerifiesTheResolvedValue(t *testing.T) {
+	workspace := composedWorkspace(t, composedModule{name: "saas", manifest: fixturePackageManifest})
+
+	if _, err := ResolveFixtureSelection(context.Background(), workspace,
+		&resources.Environment{Fixture: "dev-admn"}, ""); err == nil {
+		t.Fatal("an environment-declared typo reached the run unverified")
 	}
 }

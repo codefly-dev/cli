@@ -201,11 +201,17 @@ the control-plane and MCP `test_service` path. Run
 [`codefly show fixtures`](#codefly-show-fixtures) to see what a workspace
 declares.
 
-Two cases deliberately pass through unchecked. A workspace whose composed
-packages declare no fixture at all is unaffected — the name travels to the
-runtime as `CODEFLY__FIXTURE` as before. And a selection is never called a typo
-while a composed package could not be read, since that package may be the one
-declaring it; the run proceeds with a warning instead.
+Only the selected name is judged. A name two composed packages declare
+*differently* is refused, because that selection would no longer name one seed;
+a clash on some other name is not this run's problem and does not block it. One
+package composed under two module references declares its fixtures twice,
+identically, which still names one seed and is not a clash.
+
+Two cases pass without verifying anything, and both say so rather than passing
+silently. A composed package that could not be read may be the one declaring the
+selection, so the run proceeds with a warning naming what went unverified. And a
+workspace whose readable packages declare no fixture at all is unaffected — the
+name travels to the runtime as `CODEFLY__FIXTURE` as before.
 
 **Behavior change:** once every composed package is readable and at least one
 declares a fixture, that set is authoritative, so a name none of them declare is
@@ -944,7 +950,15 @@ not suppressed: a collision is what you run this command to diagnose, so it name
 what each package declares rather than withholding the data needed to act on it.
 Unlike the run path, this command reads the workspace without materializing
 pinned modules into the overlay, so it never writes `codefly.local.yaml` or
-`.gitignore`.
+`.gitignore`. It does resolve each composed module in order to read its manifest,
+which materializes a pinned module into the content-addressed cache and fetches
+it when absent — so this is not a purely offline command the first time a pinned
+package is seen. A module that cannot be resolved is reported as a problem, not
+silently dropped from the listing.
+
+A name two packages declare *differently* is a collision. Identical declarations
+of one name — what a package composed under two module references produces — name
+one seed and are listed once.
 
 ---
 

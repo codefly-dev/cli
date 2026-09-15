@@ -160,8 +160,8 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 		// override wins, otherwise the selected environment's declared fixture.
 		// Without this a workspace resolved one fixture from the command line
 		// and none at all through the control plane / MCP `test` tool.
-		selectedFixture := orchestration.SelectedFixture(target.env, req.Fixture)
-		if err := composition.ValidateFixtureSelection(ctx, target.workspace, selectedFixture); err != nil {
+		selectedFixture, err := composition.ResolveFixtureSelection(ctx, target.workspace, target.env, req.Fixture)
+		if err != nil {
 			return err
 		}
 		f.WithFixture(selectedFixture)
