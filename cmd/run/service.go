@@ -16,6 +16,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/processgroup"
@@ -155,6 +156,10 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 
 	if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+		return err
+	}
+
+	if err := composition.ValidateFixtureSelection(ctx, workspace, fixture); err != nil {
 		return err
 	}
 

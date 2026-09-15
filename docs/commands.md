@@ -191,6 +191,13 @@ overlay, so the identical command runs in CI (everything pinned, no sibling
 checkouts) and against your local worktrees. It errors clearly when no module —
 or more than one — declares a `service-entry`.
 
+`--fixture` is resolved against the composed packages' manifests before anything
+boots, so a typo fails at load naming the fixtures that do exist rather than
+starting the whole stack and failing somewhere inside it. Run
+[`codefly show fixtures`](#codefly-show-fixtures) to see what a workspace
+declares. A workspace whose composed packages declare no fixture is unaffected:
+the name is passed through to the runtime as `CODEFLY__FIXTURE` as before.
+
 Each run mints two independent secrets per consumed facade prefix — one the
 consuming backend registers the route with, one the consumed module proves its
 own identity with — and provisions every end of the federation exchange.
@@ -895,6 +902,27 @@ what the workspace declares, using core's own binding rules for runnables
 launches a binding, not to this command. An unresolved
 dependency is reported, not fatal: the command exits 0, and unattended callers
 gate on `--json` and each dependency's `resolved` field.
+
+### `codefly show fixtures`
+
+List the fixtures the workspace's composed packages declare, with the principals
+each one seeds.
+
+```bash
+codefly show fixtures
+codefly show fixtures --json
+```
+
+A fixture names the state a composed host boots with under `CODEFLY__FIXTURE`,
+so these are exactly the names [`codefly run solution --fixture`](#codefly-run-solution)
+accepts. Each principal is reported by id, email and role — `role` is the lookup
+key a solution test resolves an identity by, instead of hardcoding a seeded
+login. Seed tokens are declared in the manifest but are not printed.
+
+Fixtures are collected across every composed package and sorted by name; two
+packages declaring the same name is reported as a collision, because a selection
+would no longer name one seed. A module that composes no package declares none
+and is skipped.
 
 ---
 
