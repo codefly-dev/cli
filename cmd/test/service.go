@@ -99,6 +99,15 @@ func testServiceCommand(cmd *cobra.Command, args []string) error {
 	if derivedErr != nil {
 		return derivedErr
 	}
+	// The derivation reports rather than prints, so its narration reaches a
+	// terminal only from a caller that owns one. This is that caller.
+	for _, note := range derived.Notes {
+		if note.Warning {
+			cli.Warning("%s", note.Message)
+			continue
+		}
+		cli.Info("%s", note.Message)
+	}
 
 	var flow *orchestration.Flow
 	// testErr is the run/RPC error (init failure, crash, non-success exit).

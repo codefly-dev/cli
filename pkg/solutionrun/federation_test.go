@@ -1,9 +1,11 @@
 package solutionrun
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -778,49 +780,82 @@ func TestDerivedRunInputsWithholdsSecretsWithoutARegistrar(t *testing.T) {
 	if derived.Overrides["wiki/backend"][manifest.APIConsumesEnvironmentVariable] == "" {
 		t.Error("withholding the secret also dropped the api.consumes projection")
 	}
-}
-
-// The solution-derived injection and an operator's --set can name the same key
-// on the same service. --set must win because it is layered last, not because
-// the parse happens to let the final duplicate entry overwrite the earlier one —
-// reorder that loop and the operator would silently lose.
-func TestMergeOverridesLetsSetWinOverDerived(t *testing.T) {
-	derived := map[string]map[string]string{
-		"wiki/backend": {"CODEFLY__API_CONSUMES": "derived", "CODEFLY__KEPT": "yes"},
+	// Withholding silently is the failure this reporting exists to prevent: the
+	// composition looks wired and federates nothing.
+	var warned bool
+	for _, note := range derived.Notes {
+		if note.Warning && strings.Contains(note.Message, federationConfigurationGroup) {
+			warned = true
+		}
 	}
-	set := map[string]map[string]string{
-		"wiki/backend": {"CODEFLY__API_CONSUMES": "pinned-by-hand"},
-		"warden":       {"CODEFLY__FIXTURE": "dogfood"},
-	}
-
-	got := MergeOverrides(derived, set)
-	want := map[string]map[string]string{
-		"wiki/backend": {"CODEFLY__API_CONSUMES": "pinned-by-hand", "CODEFLY__KEPT": "yes"},
-		"warden":       {"CODEFLY__FIXTURE": "dogfood"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("MergeOverrides() = %v, want %v", got, want)
+	if !warned {
+		t.Errorf("withholding the secrets was not reported as a warning: %+v", derived.Notes)
 	}
 }
 
-// A flow with no overrides must be indistinguishable from one that never had
-// any: the --set parse returns nil for no entries, so merging nothing must too
-// rather than handing the flow an empty non-nil map.
-func TestMergeOverridesEmptyIsNil(t *testing.T) {
-	if got := MergeOverrides(nil, nil); got != nil {
-		t.Fatalf("MergeOverrides(nil, nil) = %v, want nil", got)
+// The derivation reports what it supplied instead of printing it. pkg/control
+// calls it from a process whose stdout carries JSON-RPC — the MCP server serves
+// on it — so a narration line written from here corrupts that stream. The notes
+// must come back with the inputs, and nothing may reach stdout.
+func TestDerivedRunInputsReportsNotesWithoutPrinting(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+
+	var derived RunInputs
+	var derivedErr error
+	stdout := captureStdout(t, func() {
+		derived, derivedErr = DerivedRunInputs(ctx, workspace,
+			&resources.Module{Name: "wiki", ServiceEntry: "backend"}, wikiService("backend"), "wiki/backend")
+	})
+	if derivedErr != nil {
+		t.Fatalf("DerivedRunInputs: %v", derivedErr)
+	}
+	if stdout != "" {
+		t.Errorf("the derivation wrote %q to stdout; narration must be returned, not printed", stdout)
+	}
+	if len(derived.Notes) == 0 {
+		t.Fatal("the derivation returned no notes: an operator cannot see that the CLI supplied the values")
+	}
+	if !strings.Contains(derived.Notes[0].Message, manifest.APIConsumesEnvironmentVariable) {
+		t.Errorf("first note %q does not report the projection it injected", derived.Notes[0].Message)
+	}
+	var reportedSecrets bool
+	for _, note := range derived.Notes {
+		if strings.Contains(note.Message, "registration secrets") {
+			reportedSecrets = true
+		}
+		if note.Warning {
+			t.Errorf("a fully wired federation reported a warning: %q", note.Message)
+		}
+	}
+	if !reportedSecrets {
+		t.Error("the notes never mention the provisioned registration secrets")
 	}
 }
 
-// MergeOverrides must not write through into its inputs: the derived overrides
-// are held across a run, and a merge that aliased them would let one run's --set
-// leak into the next.
-func TestMergeOverridesDoesNotMutateInputs(t *testing.T) {
-	derived := map[string]map[string]string{"wiki/backend": {"K": "derived"}}
-	MergeOverrides(derived, map[string]map[string]string{"wiki/backend": {"K": "set"}})
-	if derived["wiki/backend"]["K"] != "derived" {
-		t.Fatalf("MergeOverrides mutated its input: %v", derived)
+// captureStdout swaps os.Stdout for the duration of fn. cli.Info resolves
+// os.Stdout at call time, so this observes exactly what a print from inside the
+// derivation would put on the protocol stream.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
 	}
+	os.Stdout = writer
+	collected := make(chan string, 1)
+	go func() {
+		var buffer bytes.Buffer
+		_, _ = io.Copy(&buffer, reader)
+		collected <- buffer.String()
+	}()
+	fn()
+	os.Stdout = original
+	_ = writer.Close()
+	written := <-collected
+	_ = reader.Close()
+	return written
 }
 
 func loadTestWorkspace(t *testing.T, dir string) *resources.Workspace {

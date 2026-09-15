@@ -21,7 +21,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution/manifest"
 	"gopkg.in/yaml.v3"
@@ -471,16 +470,30 @@ func moduleServiceUniques(ctx context.Context, workspace *resources.Workspace, m
 type RunInputs struct {
 	Overrides               map[string]map[string]string
 	WorkspaceConfigurations map[string]map[string]string
+	// Notes is what the derivation wants an operator told, in order.
+	Notes []Note
+}
+
+// Note is one line of narration, returned rather than printed. This package is
+// called both by the run command, which owns a terminal, and by the control
+// plane, which runs inside a process whose stdout is a JSON-RPC stream — the
+// MCP server serves on it — where a narration line corrupts the protocol. Only
+// a caller that knows it owns a terminal can decide to render these.
+type Note struct {
+	// Warning marks a line an operator has to act on — a federation that cannot
+	// work — rather than a statement of what was supplied.
+	Warning bool
+	Message string
 }
 
 // DerivedRunInputs resolves the solution-federation injections for the
 // service being run: the CODEFLY__API_CONSUMES projection, and the registration
 // secrets that let the consuming backend prove which module it is. Every run
 // path derives them here so `run service <entry>`, `run solution` and the
-// control plane inject identically, and it announces what it sent: the values
-// ride Start overrides, which each service agent chooses to honor, so an
-// operator debugging dead federation must be able to see that the CLI supplied
-// them before suspecting the manifest.
+// control plane inject identically, and it reports what it sent through Notes:
+// the values ride Start overrides, which each service agent chooses to honor,
+// so an operator debugging dead federation must be able to see that the CLI
+// supplied them before suspecting the manifest.
 func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (RunInputs, error) {
 	consumed, value, err := entryConsumes(workspace, module, service)
 	if err != nil {
@@ -493,14 +506,15 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 	for i := range consumed {
 		ids = append(ids, consumed[i].ID)
 	}
-	cli.Info("injecting %s into %s: %s", manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))
+	notes := []Note{{Message: fmt.Sprintf("injecting %s into %s: %s",
+		manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))}}
 	overrides := map[string]map[string]string{
 		serviceName: {manifest.APIConsumesEnvironmentVariable: value},
 	}
 
 	provisioned := provisionModuleRegistrationSecrets(consumed)
 	if provisioned == nil {
-		return RunInputs{Overrides: overrides}, nil
+		return RunInputs{Overrides: overrides, Notes: notes}, nil
 	}
 
 	registrars := federationRegistrars(ctx, workspace)
@@ -511,13 +525,15 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 		// module with the accurate "no registration secret provisioned" line
 		// instead. That is a composition gap, not a reason to refuse to run, so
 		// say so and boot: the solution still serves its own routes.
-		cli.Warning("no service declares the %q workspace configuration: consumed modules (%s) cannot federate",
-			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))
-		return RunInputs{Overrides: overrides}, nil
+		notes = append(notes, Note{Warning: true, Message: fmt.Sprintf(
+			"no service declares the %q workspace configuration: consumed modules (%s) cannot federate",
+			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))})
+		return RunInputs{Overrides: overrides, Notes: notes}, nil
 	}
 	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.registrationSecrets()
-	cli.Info("provisioned registration secrets for %s into %s, registration and identity digests into %s",
-		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))
+	notes = append(notes, Note{Message: fmt.Sprintf(
+		"provisioned registration secrets for %s into %s, registration and identity digests into %s",
+		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))})
 
 	// The consuming backend is only one end of the exchange: a consumed module
 	// presents its own identity secret to mint the service-principal work context,
@@ -527,19 +543,22 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 	// missing, which is the diagnosis this provisioning exists to end.
 	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, registrars)
 	if len(injection.provisioned) > 0 {
-		cli.Info("provisioned %s into the services of %s",
-			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.provisioned, ", "))
+		notes = append(notes, Note{Message: fmt.Sprintf("provisioned %s into the services of %s",
+			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.provisioned, ", "))})
 	}
 	if len(injection.registrars) > 0 {
-		cli.Info("consumed modules %s declare the %q group and hold the digests: they mint work contexts rather than present a secret for one",
-			strings.Join(injection.registrars, ", "), federationConfigurationGroup)
+		notes = append(notes, Note{Message: fmt.Sprintf(
+			"consumed modules %s declare the %q group and hold the digests: they mint work contexts rather than present a secret for one",
+			strings.Join(injection.registrars, ", "), federationConfigurationGroup)})
 	}
 	if len(injection.unresolved) > 0 {
-		cli.Warning("no %s provisioned for %s: those modules cannot obtain a work context, so their module-facing workers will idle",
-			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.unresolved, "; "))
+		notes = append(notes, Note{Warning: true, Message: fmt.Sprintf(
+			"no %s provisioned for %s: those modules cannot obtain a work context, so their module-facing workers will idle",
+			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.unresolved, "; "))})
 	}
 	return RunInputs{
-		Overrides: MergeOverrides(overrides, injection.overrides),
+		Overrides: mergeOverrides(overrides, injection.overrides),
+		Notes:     notes,
 		WorkspaceConfigurations: map[string]map[string]string{
 			federationConfigurationGroup: {
 				moduleRegistrationSecretsKey: provisioned.registrationDigests(),
@@ -549,10 +568,10 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 	}, nil
 }
 
-// MergeOverrides layers per-service override maps, later layers winning key by
+// mergeOverrides layers per-service override maps, later layers winning key by
 // key. Returns nil when nothing is set, so a flow with no overrides is
 // indistinguishable from one that never had any.
-func MergeOverrides(layers ...map[string]map[string]string) map[string]map[string]string {
+func mergeOverrides(layers ...map[string]map[string]string) map[string]map[string]string {
 	merged := make(map[string]map[string]string)
 	for _, layer := range layers {
 		for service, values := range layer {

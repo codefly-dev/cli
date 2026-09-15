@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -162,6 +163,15 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	derived, derivedErr := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
 	if derivedErr != nil {
 		return derivedErr
+	}
+	// The derivation reports rather than prints, so the narration only reaches a
+	// terminal from a caller that owns one. This is that caller.
+	for _, note := range derived.Notes {
+		if note.Warning {
+			cli.Warning("%s", note.Message)
+			continue
+		}
+		cli.Info("%s", note.Message)
 	}
 	derivedOverrides = derived.Overrides
 	derivedWorkspaceConfigurations = derived.WorkspaceConfigurations
@@ -759,7 +769,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// --set is layered last so an operator pinning a key by hand is
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
-	flow.WithOverrides(solutionrun.MergeOverrides(derivedOverrides, overrides))
+	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
 	flow.WithWorkspaceConfigurationValues(derivedWorkspaceConfigurations)
 	flow.WithRemotes(remoteServices)
 	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
@@ -847,6 +857,26 @@ func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
 		out[service][key] = value
 	}
 	return out, nil
+}
+
+// mergeOverrides layers per-service override maps, later layers winning key by
+// key. It is what lets --set be applied over the run path's derived injections
+// without either silently dropping the other. Returns nil when nothing is set,
+// so a flow with no overrides is indistinguishable from one that never had any.
+func mergeOverrides(layers ...map[string]map[string]string) map[string]map[string]string {
+	merged := make(map[string]map[string]string)
+	for _, layer := range layers {
+		for service, values := range layer {
+			if merged[service] == nil {
+				merged[service] = make(map[string]string, len(values))
+			}
+			maps.Copy(merged[service], values)
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }
 
 func parseRemote(workspace *resources.Workspace, remotes []string) ([]*orchestration.Remote, error) {
