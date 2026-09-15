@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/run"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -94,9 +95,18 @@ func testServiceCommand(cmd *cobra.Command, args []string) error {
 	// The same federation injections the run path derives: a solution tested
 	// here must boot with CODEFLY__API_CONSUMES and its registration secrets
 	// set, or its consumed routes stay unrouted under test but not under run.
-	derived, derivedErr := run.SolutionDerivedRunInputs(ctx, workspace, module, service, serviceName)
+	derived, derivedErr := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
 	if derivedErr != nil {
 		return derivedErr
+	}
+	// The derivation reports rather than prints, so its narration reaches a
+	// terminal only from a caller that owns one. This is that caller.
+	for _, note := range derived.Notes {
+		if note.Warning {
+			cli.Warning("%s", note.Message)
+			continue
+		}
+		cli.Info("%s", note.Message)
 	}
 
 	var flow *orchestration.Flow
@@ -219,7 +229,7 @@ func testEnvironment(workspace *resources.Workspace) (*resources.Environment, er
 // actually starts the origin. Running anyway would report a green suite for a
 // composition whose CODEFLY__API_CONSUMES and registration secrets were never
 // delivered — a false pass, which is worse than a failure.
-func verifyOriginReceivesStartInputs(flow *orchestration.Flow, serviceName, fixture string, derived run.DerivedRunInputs) error {
+func verifyOriginReceivesStartInputs(flow *orchestration.Flow, serviceName, fixture string, derived solutionrun.RunInputs) error {
 	if flow.OriginStartsForTest() || flow.OriginTestSkipped() {
 		return nil
 	}
@@ -265,7 +275,7 @@ func serviceArgs(cmd *cobra.Command, args []string) error {
 	return cobra.MaximumNArgs(1)(cmd, positional)
 }
 
-func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *runtimev0.TestRequest, derived run.DerivedRunInputs) (*orchestration.Flow, error) {
+func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *runtimev0.TestRequest, derived solutionrun.RunInputs) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("testService", wool.ThisField(resources.WithUnique(service)))
 	defer w.Catch()
 

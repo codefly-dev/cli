@@ -10,7 +10,6 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	"github.com/codefly-dev/core/resources"
 )
 
 // This file finishes the remaining Introspector/Lifecycle checks:
@@ -29,7 +28,7 @@ import (
 // Passed:false with the error text in Output — indistinguishable from a genuine
 // lint/compile failure. Callers that need to tell them apart cannot today.
 func (p *planeImpl) runCheckFlow(ctx context.Context, mode orchestration.Mode, req CheckRequest) (CheckResult, error) {
-	flow, err := p.buildFlow(ctx, mode, req.Service, orchestration.LocalEnvironmentName, func(_ *resources.Workspace, _ *resources.Environment, f *orchestration.Flow) error {
+	flow, err := p.buildFlow(ctx, mode, req.Service, orchestration.LocalEnvironmentName, func(_ flowTarget, f *orchestration.Flow) error {
 		// Static validation wants source + toolchain, not live dependencies.
 		f.WithStandAlone(true)
 		if req.RuntimeContext != "" {

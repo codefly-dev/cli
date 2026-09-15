@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -17,6 +18,19 @@ import (
 // NewFlow(mode) → configure → InitManagers → Load → drive → Stop — so behavior
 // matches `codefly run/build/test` exactly. Deploy and Lint/Compile/RunChecks
 // are not lifted here yet (Deploy is gated behind MutationAuthority in Phase 2).
+
+// flowTarget is what buildFlow resolved for a lifecycle driver: the workspace
+// the flow belongs to, the selected environment, and the module and service it
+// targets. Passed as one value because each driver needs a different subset —
+// the run driver the module and service, the test driver the environment whose
+// declaration carries the fixture — and widening the callback for all of them
+// made every driver discard parameters it had no use for.
+type flowTarget struct {
+	workspace *resources.Workspace
+	env       *resources.Environment
+	module    *resources.Module
+	service   *resources.Service
+}
 
 // loadTarget resolves a "module/service" (or bare service) name to its
 // workspace, module, and service. It mirrors cmd/common.LoadRequiredE but talks
@@ -54,7 +68,7 @@ func (p *planeImpl) resolvePinnedModules(ctx context.Context) error {
 // the target, select the environment, create the flow in the given mode, apply
 // caller configuration, spawn agents (InitManagers), and Load (which builds the
 // mode's policy + playbook). The returned flow is ready to drive.
-func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name, envName string, configure func(*resources.Workspace, *resources.Environment, *orchestration.Flow) error) (*orchestration.Flow, error) {
+func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name, envName string, configure func(flowTarget, *orchestration.Flow) error) (*orchestration.Flow, error) {
 	// Resolve composed pinned modules before loadTarget: it finds the service by
 	// loading the workspace's modules, and a module composed by identity is not
 	// loadable as a checkout until the CLI has pulled it. Without this, driving a
@@ -80,7 +94,7 @@ func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name
 		return nil, fmt.Errorf("create flow: %w", err)
 	}
 	if configure != nil {
-		if err := configure(ws, env, flow); err != nil {
+		if err := configure(flowTarget{workspace: ws, env: env, module: module, service: service}, flow); err != nil {
 			return nil, fmt.Errorf("configure flow: %w", err)
 		}
 	}
@@ -138,7 +152,7 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 	if req.Filter != "" {
 		testRequest.Filters = []string{req.Filter}
 	}
-	flow, err := p.buildFlow(ctx, orchestration.TestMode, req.Service, req.Env, func(_ *resources.Workspace, env *resources.Environment, f *orchestration.Flow) error {
+	flow, err := p.buildFlow(ctx, orchestration.TestMode, req.Service, req.Env, func(target flowTarget, f *orchestration.Flow) error {
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}
@@ -146,7 +160,7 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 		// override wins, otherwise the selected environment's declared fixture.
 		// Without this a workspace resolved one fixture from the command line
 		// and none at all through the control plane / MCP `test` tool.
-		f.WithFixture(orchestration.SelectedFixture(env, req.Fixture))
+		f.WithFixture(orchestration.SelectedFixture(target.env, req.Fixture))
 		f.WithTestRequest(testRequest)
 		return nil
 	})
@@ -181,14 +195,24 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		return RunHandle{}, fmt.Errorf("control plane has no workspace host")
 	}
 	flows := p.host.Flows()
-	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(workspace *resources.Workspace, _ *resources.Environment, f *orchestration.Flow) error {
-		profile, err := workspace.ResolveRunProfile(ctx, req.Profile, resources.RunProfile{ExcludeDependencies: req.Exclude})
+	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(target flowTarget, f *orchestration.Flow) error {
+		profile, err := target.workspace.ResolveRunProfile(ctx, req.Profile, resources.RunProfile{ExcludeDependencies: req.Exclude})
 		if err != nil {
 			return err
 		}
 		if err := f.WithRunProfile(profile); err != nil {
 			return err
 		}
+		derived, err := solutionrun.DerivedRunInputs(ctx, target.workspace, target.module, target.service,
+			resources.WithUnique(target.service).Unique())
+		if err != nil {
+			return err
+		}
+		// derived.Notes stay unrendered here. This process may be serving
+		// JSON-RPC on stdout, where narration corrupts the stream; the plane has
+		// no terminal to write to, and the run command renders them instead.
+		f.WithOverrides(derived.Overrides)
+		f.WithWorkspaceConfigurationValues(derived.WorkspaceConfigurations)
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}
