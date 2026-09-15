@@ -45,6 +45,17 @@ func TestBuildTestRequestCopiesSlices(t *testing.T) {
 	}
 }
 
+// `test solution` delegates to this exact function, so it must stay the shared
+// entry point rather than logic trapped inside ServiceCmd's closure.
+func TestServiceCommandIsTheSharedTestPath(t *testing.T) {
+	if ServiceCmd.RunE == nil {
+		t.Fatal("test service has no RunE")
+	}
+	if err := testServiceCommand(ServiceCmd, []string{"a", "b"}); err == nil {
+		t.Fatal("the shared test path accepted two service selectors")
+	}
+}
+
 func TestStopNilFlowIsSafe(t *testing.T) {
 	if err := stopService(context.Background(), nil); err != nil {
 		t.Fatal(err)

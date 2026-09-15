@@ -292,6 +292,31 @@ codefly test service api --filter TestAuth --coverage
 codefly test service frontend --suite e2e
 ```
 
+The test path takes the same composition flags as `run service` — `--env`,
+`--profile`, `--exclude-dependency`, `--output-env`, `--naming-scope` — so a
+test boots the graph the way a run does. Two differences from `run`:
+
+| Flag | Description |
+|------|-------------|
+| `--env` | Workspace environment to test in. Its declaration carries the fixture, so an environment-declared fixture is reachable without `--fixture` |
+| `--fixture` | Fixture override; wins over the environment's declared fixture |
+| `--temporary-ports` | **On by default here.** Each invocation takes ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state, so two concurrent `codefly test` runs in one workspace cannot collide. Pass `--temporary-ports=false` to reuse the workspace's deterministic names, or `--naming-scope` to name the scope yourself |
+
+### `codefly test solution`
+
+Test a solution as a unit from its root. It resolves the same `service-entry`
+[`run solution`](#codefly-run-solution) boots, materializes composed pinned
+modules, and delegates to the `test service` path with that entry — so a
+solution is tested through exactly the orchestration that runs it, with the
+solution-derived inputs (`CODEFLY__API_CONSUMES`, the federation registration
+secrets) injected on the origin either way.
+
+```bash
+codefly test solution                          # The entry's default suite
+codefly test solution --fixture dev-admin      # Against a named fixture
+codefly test solution --suite e2e --headless   # A named suite, headless (CI)
+```
+
 ### `codefly deploy service [name]`
 
 Deploy a service to a target environment.

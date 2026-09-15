@@ -53,7 +53,7 @@ var SolutionCmd = &cobra.Command{
 			done()
 			return fmt.Errorf("cannot reload workspace: %w", err)
 		}
-		entry, err := resolveSolutionEntry(ctx, workspace)
+		entry, err := ResolveSolutionEntry(ctx, workspace)
 		done()
 		if err != nil {
 			return err
@@ -72,7 +72,7 @@ var SolutionCmd = &cobra.Command{
 	},
 }
 
-// resolveSolutionEntry finds the solution root and returns its
+// ResolveSolutionEntry finds the solution root and returns its
 // "<module>/<service-entry>" unique. The root is the workspace's own module —
 // the one referenced by `path: .` (equivalently, whose name matches the
 // workspace). Composed dependency modules (e.g. the saas host) may declare their
@@ -83,7 +83,7 @@ var SolutionCmd = &cobra.Command{
 // module that declares a service-entry. Composed modules that fail to resolve
 // (e.g. a pinned coordinate with no local checkout yet) are not the local root,
 // so their load errors are collected and only surfaced if no entry is found.
-func resolveSolutionEntry(ctx context.Context, workspace *resources.Workspace) (string, error) {
+func ResolveSolutionEntry(ctx context.Context, workspace *resources.Workspace) (string, error) {
 	if root := solutionRootRef(workspace); root != nil {
 		mod, err := workspace.LoadModuleFromReference(ctx, root)
 		if err != nil {
@@ -145,7 +145,7 @@ func solutionRootRef(workspace *resources.Workspace) *resources.ModuleReference 
 //
 // The manifest at the workspace root describes the workspace's own module, so
 // the injection is gated on service belonging to that module: when no self-root
-// module exists, resolveSolutionEntry falls back to scanning composed modules,
+// module exists, ResolveSolutionEntry falls back to scanning composed modules,
 // and pairing this manifest with a composed module's service would bind one
 // solution's consumes to another's backend.
 func solutionEntryConsumes(workspace *resources.Workspace, module *resources.Module, service *resources.Service) ([]manifest.ConsumedAPI, string, error) {
@@ -264,8 +264,8 @@ func init() {
 	// stack. runServiceCommand reads cmd.Flags().Changed("naming-scope"), so an
 	// explicit empty scope still clears a workspace-declared one here too. Same
 	// usage text as ServiceCmd — one mechanism, one description.
-	SolutionCmd.Flags().StringVar(&namingScope, "naming-scope", "", namingScopeUsage)
-	SolutionCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, temporaryPortsUsage)
+	SolutionCmd.Flags().StringVar(&namingScope, "naming-scope", "", NamingScopeUsage)
+	SolutionCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, TemporaryPortsUsage)
 }
 
 // --- Module registration secret provisioning ---

@@ -231,7 +231,11 @@ func (s *serviceScope) Build(ctx context.Context, req BuildRequest) (BuildResult
 }
 
 func (s *serviceScope) Test(ctx context.Context, req TestRequest) (CheckResult, error) {
-	if s.behavior != nil && req.RuntimeContext == "" {
+	// A fixture (explicit, or declared by a selected environment) is resolved
+	// while building the flow, which the in-process behavior path skips
+	// entirely — so a fixture request must go the long way round rather than be
+	// silently dropped here.
+	if s.behavior != nil && req.RuntimeContext == "" && req.Fixture == "" && req.Env == "" {
 		request := &runtimev0.TestRequest{Suite: req.Suite}
 		if req.Filter != "" {
 			request.Filters = []string{req.Filter}

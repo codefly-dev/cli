@@ -141,6 +141,8 @@ func (s *Server) registerMutationTools() {
 				"suite":           {Type: schemaTypeString, Description: "Test suite to run (optional)"},
 				"filter":          {Type: schemaTypeString, Description: "Test filter (optional)"},
 				"runtime_context": {Type: schemaTypeString, Description: "Runtime context: native, nix, container, or free"},
+				"env":             {Type: schemaTypeString, Description: "Workspace environment to test in, whose declaration carries the fixture (optional; defaults to local)"},
+				"fixture":         {Type: schemaTypeString, Description: "Fixture override, as 'codefly test service --fixture' (optional; defaults to the selected environment's fixture)"},
 			},
 			Required: []string{fieldModule, serviceSegment},
 		},
@@ -497,6 +499,8 @@ func (s *Server) testService(ctx context.Context, args map[string]string) ([]Con
 		Suite:          args["suite"],
 		Filter:         args["filter"],
 		RuntimeContext: args["runtime_context"],
+		Env:            args["env"],
+		Fixture:        args["fixture"],
 	})
 	if err != nil {
 		return []Content{TextContent(fmt.Sprintf("test failed to run: %v", err))}, nil
