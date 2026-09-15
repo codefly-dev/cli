@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/wool"
 )
 
 // planeImpl is the single implementation of Plane. Its root and runtime
@@ -189,6 +190,23 @@ func joinRuns(pending []*activeRun) {
 			return
 		}
 	}
+}
+
+// discardNarration drops every log handed to it.
+type discardNarration struct{}
+
+func (discardNarration) Process(*wool.Log) {}
+
+// narrationContext returns ctx carrying a wool provider that discards output.
+//
+// The plane renders nothing itself — its one production caller serves JSON-RPC
+// on stdout — but without a provider on the context wool.Get falls back to a
+// Console that prints exactly there, so the narration the plane deliberately
+// does not render reached the protocol stream anyway. Discarding matches the
+// contract the plane already documents: Flow.WithOutputSink is the seam for an
+// embedder that wants this output, and unset it is silently discarded.
+func (p *planeImpl) narrationContext(ctx context.Context) context.Context {
+	return wool.New(ctx, resources.CLI.AsResource()).WithLogger(discardNarration{}).Inject(ctx)
 }
 
 // New returns a control plane rooted at the current directory as observed once,

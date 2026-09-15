@@ -97,9 +97,31 @@ func (s *Server) RegisterResource(res Resource, handler ResourceHandler) {
 	s.resDefs = append(s.resDefs, res)
 }
 
+// protocolSafeLogger writes wool output to stderr.
+//
+// wool resolves a logger per call: a context carrying a provider uses that
+// provider's, and everything without one falls back to a Console that prints to
+// stdout. In stdio mode stdout is the JSON-RPC stream, so such a line corrupts
+// the protocol. These logs are not hypothetical and not all ours to route —
+// host construction reaps stale process groups with context.Background()
+// (pkg/engine/host.go), which no context this server passes around can reach.
+// stderr keeps them visible to the operator instead of discarding them.
+type protocolSafeLogger struct{}
+
+func (protocolSafeLogger) Process(msg *wool.Log) {
+	if msg == nil || msg.Level < wool.GlobalLogLevel() {
+		return
+	}
+	fmt.Fprintln(os.Stderr, msg.String())
+}
+
 // Serve runs the MCP server in stdio mode
 func (s *Server) Serve(ctx context.Context) error {
 	defer s.Close()
+	// From here stdout belongs to the protocol, so nothing may log to it. This
+	// is process-global on purpose: the orphan-context logs that would land
+	// there come from code this server never hands a context to.
+	wool.SetFallbackLogger(protocolSafeLogger{})
 	return s.ServeIO(ctx, os.Stdin, os.Stdout)
 }
 

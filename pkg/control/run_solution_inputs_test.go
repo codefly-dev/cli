@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution/manifest"
+	"github.com/codefly-dev/core/wool"
 )
 
 // A solution root: the workspace's own `path: .` module declares the
@@ -137,7 +138,7 @@ func startExcludedRootRun(t *testing.T, root string) string {
 	t.Helper()
 	// Installed before anything that tears the run down is registered, so LIFO
 	// cleanup order stops the flow first and restores os.Stdout last.
-	capture := captureStdout(t)
+	captureStdout(t)
 	outputEnvironment := filepath.Join(t.TempDir(), "runtime.env")
 
 	plane, err := NewAt(root)
@@ -157,13 +158,6 @@ func startExcludedRootRun(t *testing.T, root string) string {
 		OutputEnv:      outputEnvironment,
 	}); runErr != nil {
 		t.Fatalf("Run: %v", runErr)
-	}
-	// The plane has no terminal, so starting the run must put nothing on the
-	// descriptor an MCP server serves JSON-RPC over. Asserted for the window the
-	// plane drives; what orchestration logs while unwinding is a separate,
-	// pre-existing problem and not what this test pins.
-	if written := capture.written(); written != "" {
-		t.Errorf("the run wrote %q to stdout; the plane must not narrate", written)
 	}
 	t.Cleanup(func() {
 		if _, err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
@@ -240,6 +234,13 @@ func captureStdout(t *testing.T) *stdoutCapture {
 		t.Fatal(err)
 	}
 	os.Stdout = writer
+	// Host construction reaps stale process groups with context.Background()
+	// (pkg/engine/host.go), so those logs carry no provider and resolve to
+	// wool's fallback, which prints to stdout. They are not the plane's
+	// narration and the plane cannot reach them; a process that owns stdout
+	// redirects the fallback itself, which is what pkg/mcp's Serve does. The
+	// same guard is installed here so this asserts about the plane.
+	wool.SetFallbackLogger(discardNarration{})
 	capture := &stdoutCapture{}
 	drained := make(chan struct{})
 	go func() {
@@ -247,10 +248,14 @@ func captureStdout(t *testing.T) *stdoutCapture {
 		_, _ = io.Copy(capture, reader)
 	}()
 	t.Cleanup(func() {
+		wool.SetFallbackLogger(nil)
 		os.Stdout = original
 		_ = writer.Close()
 		<-drained
 		_ = reader.Close()
+		if written := capture.written(); written != "" {
+			t.Errorf("the run wrote %q to stdout; the plane must not narrate", written)
+		}
 	})
 	return capture
 }
