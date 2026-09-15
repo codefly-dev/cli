@@ -1,6 +1,7 @@
 package test
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -14,9 +15,12 @@ import (
 // a solution is tested through exactly the orchestration that runs it — no
 // second sequencing engine, and the solution-derived inputs
 // (CODEFLY__API_CONSUMES, registration secrets) reach the origin either way.
+//
+// It also runs the composition tests the composed modules contribute, so a
+// module can ship a test that every solution composing it runs.
 var SolutionCmd = &cobra.Command{
 	Use:   "solution",
-	Short: "Test a solution: run its service-entry's tests against the full dependency graph",
+	Short: "Test a solution: its service-entry's tests, plus the composition tests its composed modules contribute",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
@@ -40,10 +44,16 @@ var SolutionCmd = &cobra.Command{
 			done()
 			return fmt.Errorf("cannot reload workspace: %w", err)
 		}
+		// Run the contributed composition tests here, before done() closes the
+		// context the delegation no longer shares. Their failure does not stop the
+		// entry's own tests: a solution whose composed module ships a broken suite
+		// still needs to report whether the solution itself works, so both results
+		// are collected and joined below.
+		contributedErr := runContributedCompositionTests(ctx, workspace)
 		entry, err := run.ResolveSolutionEntry(ctx, workspace)
 		done()
 		if err != nil {
-			return err
+			return errors.Join(contributedErr, err)
 		}
 		// The pins are declared resolved: materialization above already ran
 		// unconditionally, so letting the delegate run it again would re-attempt
@@ -51,7 +61,7 @@ var SolutionCmd = &cobra.Command{
 		// warning, for a request nothing has changed since.
 		pinsAlreadyResolved = true
 		defer func() { pinsAlreadyResolved = false }()
-		return testServiceCommand(cmd, []string{entry})
+		return errors.Join(contributedErr, testServiceCommand(cmd, []string{entry}))
 	},
 }
 
