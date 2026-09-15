@@ -27,7 +27,7 @@ runbook whenever you do a multi-step operational task a second time.
 - **Go standards** (formatting, linting) → [docs/go.md](docs/go.md)
 
 ### Shipping
-- **Cut a release** (tag → GoReleaser → Homebrew cask) → [docs/runbooks/cut-a-release.md](docs/runbooks/cut-a-release.md)
+- **Cut a release** (`codefly publish` → GoReleaser → Homebrew cask) → [docs/runbooks/cut-a-release.md](docs/runbooks/cut-a-release.md)
 - **Release the whole agent fleet** (re-pin every agent on a new core, publish in dependency order) → [docs/runbooks/release-the-fleet.md](docs/runbooks/release-the-fleet.md)
 - **How releases & self-update work** → [docs/cli-updates.md](docs/cli-updates.md)
 
