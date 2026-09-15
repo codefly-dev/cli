@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -54,7 +55,7 @@ func (p *planeImpl) resolvePinnedModules(ctx context.Context) error {
 // the target, select the environment, create the flow in the given mode, apply
 // caller configuration, spawn agents (InitManagers), and Load (which builds the
 // mode's policy + playbook). The returned flow is ready to drive.
-func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name, envName string, configure func(*resources.Workspace, *resources.Environment, *orchestration.Flow) error) (*orchestration.Flow, error) {
+func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name, envName string, configure func(*resources.Workspace, *resources.Environment, *resources.Module, *resources.Service, *orchestration.Flow) error) (*orchestration.Flow, error) {
 	// Resolve composed pinned modules before loadTarget: it finds the service by
 	// loading the workspace's modules, and a module composed by identity is not
 	// loadable as a checkout until the CLI has pulled it. Without this, driving a
@@ -80,7 +81,7 @@ func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name
 		return nil, fmt.Errorf("create flow: %w", err)
 	}
 	if configure != nil {
-		if err := configure(ws, env, flow); err != nil {
+		if err := configure(ws, env, module, service, flow); err != nil {
 			return nil, fmt.Errorf("configure flow: %w", err)
 		}
 	}
@@ -138,7 +139,7 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 	if req.Filter != "" {
 		testRequest.Filters = []string{req.Filter}
 	}
-	flow, err := p.buildFlow(ctx, orchestration.TestMode, req.Service, req.Env, func(_ *resources.Workspace, env *resources.Environment, f *orchestration.Flow) error {
+	flow, err := p.buildFlow(ctx, orchestration.TestMode, req.Service, req.Env, func(_ *resources.Workspace, env *resources.Environment, _ *resources.Module, _ *resources.Service, f *orchestration.Flow) error {
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}
@@ -181,7 +182,7 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		return RunHandle{}, fmt.Errorf("control plane has no workspace host")
 	}
 	flows := p.host.Flows()
-	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(workspace *resources.Workspace, _ *resources.Environment, f *orchestration.Flow) error {
+	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(workspace *resources.Workspace, _ *resources.Environment, module *resources.Module, service *resources.Service, f *orchestration.Flow) error {
 		profile, err := workspace.ResolveRunProfile(ctx, req.Profile, resources.RunProfile{ExcludeDependencies: req.Exclude})
 		if err != nil {
 			return err
@@ -189,6 +190,12 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		if err := f.WithRunProfile(profile); err != nil {
 			return err
 		}
+		derived, err := solutionrun.DerivedRunInputs(ctx, workspace, module, service, resources.WithUnique(service).Unique())
+		if err != nil {
+			return err
+		}
+		f.WithOverrides(derived.Overrides)
+		f.WithWorkspaceConfigurationValues(derived.WorkspaceConfigurations)
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}

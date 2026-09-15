@@ -6,6 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/run"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution/manifest"
 	"github.com/spf13/cobra"
@@ -193,11 +194,11 @@ func TestVerifyOriginReceivesStartInputsRefusesUndeliverableInputs(t *testing.T)
 	// mode looks like to the guard.
 	flow := &orchestration.Flow{}
 
-	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", run.DerivedRunInputs{}); err != nil {
+	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", solutionrun.RunInputs{}); err != nil {
 		t.Fatalf("a test with nothing Start-delivered was refused: %v", err)
 	}
 
-	originOverrides := run.DerivedRunInputs{Overrides: map[string]map[string]string{
+	originOverrides := solutionrun.RunInputs{Overrides: map[string]map[string]string{
 		"wiki/backend": {manifest.APIConsumesEnvironmentVariable: "documents:wiki/documents/api"},
 	}}
 	err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", originOverrides)
@@ -209,7 +210,7 @@ func TestVerifyOriginReceivesStartInputsRefusesUndeliverableInputs(t *testing.T)
 	}
 
 	// Overrides aimed at a DEPENDENCY are deliverable: dependencies do start.
-	dependencyOverrides := run.DerivedRunInputs{Overrides: map[string]map[string]string{
+	dependencyOverrides := solutionrun.RunInputs{Overrides: map[string]map[string]string{
 		"documents/api": {"CODEFLY__MODULE_REGISTRATION_SECRET": "deadbeef"},
 	}}
 	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", dependencyOverrides); err != nil {
@@ -217,7 +218,7 @@ func TestVerifyOriginReceivesStartInputsRefusesUndeliverableInputs(t *testing.T)
 	}
 
 	outputEnv = "/tmp/codefly-test-env"
-	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", run.DerivedRunInputs{}); err == nil {
+	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", solutionrun.RunInputs{}); err == nil {
 		t.Fatal("--output-env accepted although the origin's runtime environment is only written at Start")
 	}
 }

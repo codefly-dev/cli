@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,12 +18,12 @@ import (
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/processgroup"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/cli/pkg/web"
 	"github.com/codefly-dev/core/resources"
 	postgresipc "github.com/codefly-dev/core/runners/base"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/solution/manifest"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
@@ -160,7 +159,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 
 	serviceName := resources.WithUnique(service).Unique()
 
-	derived, derivedErr := SolutionDerivedRunInputs(ctx, workspace, module, service, serviceName)
+	derived, derivedErr := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
 	if derivedErr != nil {
 		return derivedErr
 	}
@@ -760,7 +759,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// --set is layered last so an operator pinning a key by hand is
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
-	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
+	flow.WithOverrides(solutionrun.MergeOverrides(derivedOverrides, overrides))
 	flow.WithWorkspaceConfigurationValues(derivedWorkspaceConfigurations)
 	flow.WithRemotes(remoteServices)
 	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
@@ -848,115 +847,6 @@ func parseSetOverrides(entries []string) (map[string]map[string]string, error) {
 		out[service][key] = value
 	}
 	return out, nil
-}
-
-// SolutionDerivedRunInputs resolves the solution-federation injections for the
-// service being run: the CODEFLY__API_CONSUMES projection, and the registration
-// secrets that let the consuming backend prove which module it is. It lives on
-// the shared run path so `run service <entry>` and `run solution` inject
-// identically, and it announces what it sent: the values ride Start overrides,
-// which each service agent chooses to honor, so an operator debugging dead
-// federation must be able to see that the CLI supplied them before suspecting
-// the manifest.
-func SolutionDerivedRunInputs(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (DerivedRunInputs, error) {
-	consumed, value, err := solutionEntryConsumes(workspace, module, service)
-	if err != nil {
-		return DerivedRunInputs{}, err
-	}
-	if len(consumed) == 0 {
-		return DerivedRunInputs{}, nil
-	}
-	ids := make([]string, 0, len(consumed))
-	for i := range consumed {
-		ids = append(ids, consumed[i].ID)
-	}
-	cli.Info("injecting %s into %s: %s", manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))
-	overrides := map[string]map[string]string{
-		serviceName: {manifest.APIConsumesEnvironmentVariable: value},
-	}
-
-	provisioned := provisionModuleRegistrationSecrets(consumed)
-	if provisioned == nil {
-		return DerivedRunInputs{Overrides: overrides}, nil
-	}
-
-	registrars := federationRegistrars(ctx, workspace)
-	if len(registrars) == 0 {
-		// Without a registrar holding the digests, nothing can authorize a mint.
-		// Hand the backend a secret anyway and it spends every heartbeat on an
-		// exchange that cannot succeed; withholding it lets the runtime skip the
-		// module with the accurate "no registration secret provisioned" line
-		// instead. That is a composition gap, not a reason to refuse to run, so
-		// say so and boot: the solution still serves its own routes.
-		cli.Warning("no service declares the %q workspace configuration: consumed modules (%s) cannot federate",
-			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))
-		return DerivedRunInputs{Overrides: overrides}, nil
-	}
-	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.registrationSecrets()
-	cli.Info("provisioned registration secrets for %s into %s, registration and identity digests into %s",
-		strings.Join(provisioned.prefixes, ", "), serviceName, strings.Join(registrars, ", "))
-
-	// The consuming backend is only one end of the exchange: a consumed module
-	// presents its own identity secret to mint the service-principal work context,
-	// without which every module-facing RPC it makes is unauthenticated and its
-	// background workers idle. Every module is accounted for out loud — the line
-	// above otherwise reads as a fully wired federation while half of it is
-	// missing, which is the diagnosis this provisioning exists to end.
-	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, registrars)
-	if len(injection.provisioned) > 0 {
-		cli.Info("provisioned %s into the services of %s",
-			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.provisioned, ", "))
-	}
-	if len(injection.registrars) > 0 {
-		cli.Info("consumed modules %s declare the %q group and hold the digests: they mint work contexts rather than present a secret for one",
-			strings.Join(injection.registrars, ", "), federationConfigurationGroup)
-	}
-	if len(injection.unresolved) > 0 {
-		cli.Warning("no %s provisioned for %s: those modules cannot obtain a work context, so their module-facing workers will idle",
-			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.unresolved, "; "))
-	}
-	return DerivedRunInputs{
-		Overrides: mergeOverrides(overrides, injection.overrides),
-		WorkspaceConfigurations: map[string]map[string]string{
-			federationConfigurationGroup: {
-				moduleRegistrationSecretsKey: provisioned.registrationDigests(),
-				moduleIdentitySecretsKey:     provisioned.identityDigests(),
-			},
-		},
-	}, nil
-}
-
-// DerivedRunInputs are the two carriers the run path derives for a solution:
-// per-service process overrides, and values for the workspace configuration
-// groups a service declares. Returned together (never assigned to a global from
-// inside) so a run that derives nothing clears both, and a second in-process
-// invocation cannot inherit the previous run's values.
-//
-// Exported alongside SolutionDerivedRunInputs so the test path injects the same
-// federation inputs the run path does: a solution booted under `codefly test`
-// otherwise comes up with CODEFLY__API_CONSUMES unset.
-type DerivedRunInputs struct {
-	Overrides               map[string]map[string]string
-	WorkspaceConfigurations map[string]map[string]string
-}
-
-// mergeOverrides layers per-service override maps, later layers winning key by
-// key. Returns nil when nothing is set, so a flow with no overrides is
-// indistinguishable from one that never had any.
-func mergeOverrides(layers ...map[string]map[string]string) map[string]map[string]string {
-	merged := make(map[string]map[string]string)
-	for _, layer := range layers {
-		for service, values := range layer {
-			if merged[service] == nil {
-				merged[service] = make(map[string]string, len(values))
-			}
-			maps.Copy(merged[service], values)
-		}
-	}
-	if len(merged) == 0 {
-		return nil
-	}
-	return merged
 }
 
 func parseRemote(workspace *resources.Workspace, remotes []string) ([]*orchestration.Remote, error) {
