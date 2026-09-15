@@ -605,6 +605,11 @@ func initAgentRepoKind(t *testing.T, dir, version, kind string) (origin string) 
 	t.Helper()
 	originDir := t.TempDir()
 	gitInRepo(t, originDir, "init", "--bare", "-b", "main")
+	// The push below makes the receiving repo fork `git maintenance run --auto
+	// --detach`, which outlives the test and keeps writing under objects/ while
+	// t.TempDir's cleanup unlinks it — failing the test with "directory not
+	// empty" for reasons unrelated to anything it asserts.
+	gitInRepo(t, originDir, "config", "receive.autogc", "false")
 	gitInRepo(t, dir, "init", "-b", "main")
 	gitInRepo(t, dir, "remote", "add", "origin", originDir)
 	gitInRepo(t, dir, "config", "commit.gpgsign", "false")
