@@ -127,13 +127,16 @@ func writeSolutionInputsWorkspace(t *testing.T) string {
 }
 
 // startExcludedRootRun starts the fixture with the root excluded, returning the
-// output-environment path and whatever the run wrote to stdout while starting.
+// output-environment path.
 //
 // Nothing here starts a process, but composing the excluded root's environment
 // still resolves a runtime context, and the plane leaves it unset unless the
 // request names one.
-func startExcludedRootRun(t *testing.T, root string) (string, string) {
+func startExcludedRootRun(t *testing.T, root string) string {
 	t.Helper()
+	// Installed before anything that tears the run down is registered, so LIFO
+	// cleanup order stops the flow first and restores os.Stdout last.
+	requireNoStdoutNarration(t)
 	outputEnvironment := filepath.Join(t.TempDir(), "runtime.env")
 
 	plane, err := NewAt(root)
@@ -145,17 +148,13 @@ func startExcludedRootRun(t *testing.T, root string) (string, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 
-	var runErr error
-	stdout := captureStdout(t, func() {
-		_, runErr = plane.Run(ctx, RunRequest{
-			Service:        "wiki/backend",
-			RuntimeContext: resources.RuntimeContextNative,
-			ExcludeRoot:    true,
-			Wait:           true,
-			OutputEnv:      outputEnvironment,
-		})
-	})
-	if runErr != nil {
+	if _, runErr := plane.Run(ctx, RunRequest{
+		Service:        "wiki/backend",
+		RuntimeContext: resources.RuntimeContextNative,
+		ExcludeRoot:    true,
+		Wait:           true,
+		OutputEnv:      outputEnvironment,
+	}); runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
 	t.Cleanup(func() {
@@ -163,7 +162,7 @@ func startExcludedRootRun(t *testing.T, root string) (string, string) {
 			t.Errorf("Stop: %v", err)
 		}
 	})
-	return outputEnvironment, stdout
+	return outputEnvironment
 }
 
 // waitForExportedEnvironment waits for the export to actually land.
@@ -192,10 +191,22 @@ func waitForExportedEnvironment(t *testing.T, path string) string {
 	}
 }
 
-// captureStdout swaps os.Stdout for the duration of fn. The plane may be driven
-// by a process serving JSON-RPC on stdout — the MCP server does exactly that
-// with this call — so anything written there during a run corrupts the protocol.
-func captureStdout(t *testing.T, fn func()) string {
+// requireNoStdoutNarration redirects os.Stdout for the remainder of the test and
+// fails it if the run writes anything there. The plane may be driven by a
+// process serving JSON-RPC on stdout — the MCP server does exactly that with
+// this call — so anything written there during a run corrupts the protocol.
+//
+// The redirect is undone in a cleanup rather than inline, because the run
+// outlives the call that starts it: plane.Run returns at readiness, not at
+// termination, and the flow keeps logging from Playbook.Work until Stop. A
+// caller registers that teardown after this, so LIFO ordering runs it first and
+// os.Stdout is written back only once nothing is left to log. Restoring inline
+// was an unsynchronized write racing those fmt.Print reads.
+//
+// Draining at cleanup also makes the assertion complete: the writer is closed
+// first, so every byte the run produced has arrived rather than whatever had
+// reached the pipe by the time the caller looked.
+func requireNoStdoutNarration(t *testing.T) {
 	t.Helper()
 	original := os.Stdout
 	reader, writer, err := os.Pipe()
@@ -209,12 +220,37 @@ func captureStdout(t *testing.T, fn func()) string {
 		_, _ = io.Copy(&buffer, reader)
 		collected <- buffer.String()
 	}()
-	fn()
-	os.Stdout = original
-	_ = writer.Close()
-	written := <-collected
-	_ = reader.Close()
-	return written
+	t.Cleanup(func() {
+		os.Stdout = original
+		_ = writer.Close()
+		written := <-collected
+		_ = reader.Close()
+		if written != "" {
+			t.Errorf("the run wrote %q to stdout; the plane must not narrate", written)
+		}
+	})
+}
+
+// The redirect must outlive every cleanup registered after it. Restoring it
+// inside the capturing call landed in the middle of a live run — plane.Run
+// returns at readiness while the flow logs on until Stop — so the write to
+// os.Stdout raced those reads and the detector failed the whole package.
+func TestStdoutRedirectOutlivesLaterCleanups(t *testing.T) {
+	t.Run("still redirected while a later cleanup runs", func(t *testing.T) {
+		beforeRedirect := os.Stdout
+		requireNoStdoutNarration(t)
+		redirected := os.Stdout
+		if redirected == beforeRedirect {
+			t.Fatal("os.Stdout was not redirected")
+		}
+		// Registered after the redirect, so LIFO runs this first — the slot
+		// where a run's Stop executes, with its goroutines still logging.
+		t.Cleanup(func() {
+			if os.Stdout != redirected {
+				t.Error("os.Stdout was restored before a later cleanup ran; a flow still logging there would race the restore")
+			}
+		})
+	})
 }
 
 // A test process standing in for a solution backend runs the composition with
@@ -227,13 +263,10 @@ func captureStdout(t *testing.T, fn func()) string {
 // the same lifecycle behind the MCP run tool, and an environment that depended
 // on which entry point composed it would be two contracts, not one.
 func TestRunExportsSolutionDerivedInputsForAnExcludedRoot(t *testing.T) {
-	outputEnvironment, stdout := startExcludedRootRun(t, writeSolutionInputsWorkspace(t))
-
-	// The plane has no terminal. Narrating the derivation here would put these
-	// lines on the MCP server's JSON-RPC stream.
-	if stdout != "" {
-		t.Errorf("the run wrote %q to stdout; the plane must not narrate", stdout)
-	}
+	// The plane has no terminal. Narrating the derivation would put those lines
+	// on the MCP server's JSON-RPC stream, which startExcludedRootRun fails the
+	// test for — across the whole run, teardown included.
+	outputEnvironment := startExcludedRootRun(t, writeSolutionInputsWorkspace(t))
 
 	environment := waitForExportedEnvironment(t, outputEnvironment)
 
@@ -267,7 +300,7 @@ func TestRunExportsNoSolutionInputsWithoutAManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	outputEnvironment, _ := startExcludedRootRun(t, root)
+	outputEnvironment := startExcludedRootRun(t, root)
 	environment := waitForExportedEnvironment(t, outputEnvironment)
 
 	for _, key := range []string{manifest.APIConsumesEnvironmentVariable, "CODEFLY__MODULE_REGISTRATION_SECRETS"} {

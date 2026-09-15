@@ -44,8 +44,21 @@ func initBareGitRepo(t *testing.T, dir string) (origin string) {
 
 	// Bare origin
 	run(originDir, "init", "--bare", "-b", "main")
+	// Nothing in the release engine spawns a goroutine and every git call it
+	// makes is synchronous, so the only thing that can still be writing in here
+	// once a foreground git command returns is a process git detaches itself:
+	// receive-pack runs `git gc --auto` after a push, and gc detaches by
+	// default. Such a child creating an entry under objects/ while t.TempDir's
+	// RemoveAll walks it fails the test with "directory not empty", for reasons
+	// unrelated to anything it asserts. Removing the writer is the fix; retrying
+	// the removal would only hide it.
+	run(originDir, "config", "receive.autogc", "false")
+	run(originDir, "config", "gc.auto", "0")
+	run(originDir, "config", "maintenance.auto", "false")
 	// Working repo
 	run(dir, "init", "-b", "main")
+	run(dir, "config", "gc.auto", "0")
+	run(dir, "config", "maintenance.auto", "false")
 	run(dir, "remote", "add", "origin", originDir)
 	// gpgsign off — tests run on machines without keys configured.
 	run(dir, "config", "commit.gpgsign", "false")
@@ -59,6 +72,29 @@ func initBareGitRepo(t *testing.T, dir string) (origin string) {
 	run(dir, "commit", "-m", "seed")
 	run(dir, "push", "-u", "origin", "main")
 	return originDir
+}
+
+// A repository left free to run background maintenance has a writer that
+// outlives the test body, and t.TempDir's RemoveAll then fails on a directory
+// that refilled underneath it. That failure is indistinguishable from a real
+// one in the report, so the knobs are pinned here rather than trusted.
+func TestInitBareGitRepoDisablesBackgroundMaintenance(t *testing.T) {
+	dir := t.TempDir()
+	origin := initBareGitRepo(t, dir)
+
+	for _, expected := range []struct {
+		repo, key, value string
+	}{
+		{origin, "receive.autogc", "false"},
+		{origin, "gc.auto", "0"},
+		{origin, "maintenance.auto", "false"},
+		{dir, "gc.auto", "0"},
+		{dir, "maintenance.auto", "false"},
+	} {
+		out, err := exec.Command("git", "-C", expected.repo, "config", "--get", expected.key).Output()
+		require.NoError(t, err, "%s is unset, so git may detach a maintenance child into %s", expected.key, expected.repo)
+		require.Equal(t, expected.value, strings.TrimSpace(string(out)), "%s in %s", expected.key, expected.repo)
+	}
 }
 
 // --- Detect tests --------------------------------------------------
