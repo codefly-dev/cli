@@ -1716,6 +1716,11 @@ func producerExposesReference(producer *resources.Service, reference *resources.
 }
 
 func (flow *Flow) configureRunner(runner *Runner, service *resources.Service) {
+	// A build-mode manager carries a Builder and no Runner (Manager.Load);
+	// every setter below tolerates the nil, the field write must too.
+	if runner == nil {
+		return
+	}
 	runner.containerRecoveryIdentity = flow.containerRecoveryIdentity
 	runner.WithRuntimeContext(flow.runtimeContextFor(service))
 	runner.WithFixture(flow.fixture)

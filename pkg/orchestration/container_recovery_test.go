@@ -327,3 +327,17 @@ func TestFlowProjectsOverAnInheritedForeignMarker(t *testing.T) {
 		})
 	}
 }
+
+// A build-mode Manager has a Builder and no Runner, and InitManagers still
+// configures it. Projecting the recovery identity onto that nil runner is
+// what took `codefly ci run --phase build` down with a nil dereference in
+// 0.1.151; the setters it sits beside already tolerate the nil.
+func TestConfigureRunnerToleratesTheBuildModeNilRunner(t *testing.T) {
+	flow := &Flow{world: &World{Mode: BuildMode}, containerRecoveryIdentity: "scope"}
+	service := &resources.Service{Name: "accounts"}
+	require.NotPanics(t, func() { flow.configureRunner(nil, service) })
+
+	runner := &Runner{}
+	flow.configureRunner(runner, service)
+	require.Equal(t, "scope", runner.containerRecoveryIdentity)
+}
