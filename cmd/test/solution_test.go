@@ -1,11 +1,13 @@
 package test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/cmd/run"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solution/manifest"
 	"github.com/spf13/cobra"
 )
 
@@ -70,6 +72,22 @@ func TestTestPathIsolatesByDefault(t *testing.T) {
 	}
 }
 
+// Both verbs run the same path, so they must expose the same flags. Hand-listing
+// them per command is what left `test solution` without --race, --coverage,
+// --init-only and --load-only while `test service` had them.
+func TestTestVerbsExposeIdenticalFlagSets(t *testing.T) {
+	service, solution := ServiceCmd.Flags().FlagUsages(), SolutionCmd.Flags().FlagUsages()
+	if service != solution {
+		t.Errorf("test service and test solution expose different flags\n--- service ---\n%s\n--- solution ---\n%s", service, solution)
+	}
+	// The ones the hand-listed registration actually dropped.
+	for _, name := range []string{"race", "coverage", "init-only", "load-only"} {
+		if SolutionCmd.Flags().Lookup(name) == nil {
+			t.Errorf("test solution has no --%s flag", name)
+		}
+	}
+}
+
 // The dead `--scope` flag is gone. It was declared and never read, so it
 // silently accepted an isolation request it did not honor.
 func TestDeadScopeFlagIsGone(t *testing.T) {
@@ -98,11 +116,19 @@ func TestShouldIsolateInvocation(t *testing.T) {
 // --env selects the environment whose declaration carries the fixture, and
 // --naming-scope applies to this invocation's copy only. Previously the test
 // path hardcoded local, so an environment-declared fixture was unreachable.
+//
+// The isolation case is the one that matters most: Flow.WithIsolatedInvocation
+// refuses to generate an identity over a scope that is already set, so an
+// environment declaring one used to leave two concurrent tests sharing every
+// container name and state directory while only their ports differed.
 func TestTestEnvironmentSelectsAndScopes(t *testing.T) {
-	restore := func(env, scope string, explicit bool) {
-		environmentName, namingScope, namingScopeExplicit = env, scope, explicit
+	set := func(env, scope string, explicit, temporary bool) {
+		environmentName, namingScope, namingScopeExplicit, temporaryPorts = env, scope, explicit, temporary
 	}
-	t.Cleanup(func() { restore(environmentName, namingScope, namingScopeExplicit) })
+	// Captured BEFORE any mutation: reading the globals inside the cleanup
+	// closure would restore the mutated values and leak them to the next test.
+	priorEnv, priorScope, priorExplicit, priorTemporary := environmentName, namingScope, namingScopeExplicit, temporaryPorts
+	t.Cleanup(func() { set(priorEnv, priorScope, priorExplicit, priorTemporary) })
 
 	workspace := &resources.Workspace{
 		Name: "solution",
@@ -111,7 +137,9 @@ func TestTestEnvironmentSelectsAndScopes(t *testing.T) {
 		},
 	}
 
-	restore(orchestration.LocalEnvironmentName, "", false)
+	// Isolating (the default): the declared scope is cleared so an invocation
+	// identity can be generated over it.
+	set(orchestration.LocalEnvironmentName, "", false, true)
 	env, err := testEnvironment(workspace)
 	if err != nil {
 		t.Fatalf("testEnvironment: %v", err)
@@ -119,16 +147,23 @@ func TestTestEnvironmentSelectsAndScopes(t *testing.T) {
 	if env.Fixture != "dev-admin" {
 		t.Errorf("fixture = %q, want the environment-declared dev-admin", env.Fixture)
 	}
-	if env.NamingScope != "declared" {
-		t.Errorf("naming scope = %q, want the declared scope kept when the flag is absent", env.NamingScope)
+	if env.NamingScope != "" {
+		t.Errorf("naming scope = %q, want the declared scope cleared so isolation can generate one", env.NamingScope)
 	}
 
-	restore(orchestration.LocalEnvironmentName, "alpha", false)
+	// --temporary-ports=false keeps the workspace's declared scope.
+	set(orchestration.LocalEnvironmentName, "", false, false)
+	if env, err = testEnvironment(workspace); err != nil || env.NamingScope != "declared" {
+		t.Errorf("naming scope = %q (err %v), want the declared scope kept when not isolating", env.NamingScope, err)
+	}
+
+	// An explicit scope names the run and suppresses the generated identity.
+	set(orchestration.LocalEnvironmentName, "alpha", true, true)
 	if env, err = testEnvironment(workspace); err != nil || env.NamingScope != "alpha" {
 		t.Errorf("naming scope = %q (err %v), want the --naming-scope override", env.NamingScope, err)
 	}
 
-	restore(orchestration.LocalEnvironmentName, "", true)
+	set(orchestration.LocalEnvironmentName, "", true, true)
 	if env, err = testEnvironment(workspace); err != nil || env.NamingScope != "" {
 		t.Errorf("naming scope = %q (err %v), want an explicitly empty scope to clear the declared one", env.NamingScope, err)
 	}
@@ -139,8 +174,50 @@ func TestTestEnvironmentSelectsAndScopes(t *testing.T) {
 		t.Errorf("workspace declaration mutated to %q", workspace.Environments[0].NamingScope)
 	}
 
-	restore("staging", "", false)
+	set("staging", "", false, true)
 	if _, err = testEnvironment(workspace); err == nil {
 		t.Error("selecting an undeclared environment unexpectedly succeeded")
+	}
+}
+
+// Codefly delivers a service's process overrides and its exported runtime
+// environment through StartRequest, and only START_STACK actually starts the
+// origin. Booting anyway ran the suite with CODEFLY__API_CONSUMES unset and
+// reported it green — a false pass for a composition that was never wired.
+func TestVerifyOriginReceivesStartInputsRefusesUndeliverableInputs(t *testing.T) {
+	priorOutputEnv, priorFixture := outputEnv, testFixture
+	t.Cleanup(func() { outputEnv, testFixture = priorOutputEnv, priorFixture })
+	outputEnv, testFixture = "", ""
+
+	// A flow that has not resolved START_STACK is what every other dependency
+	// mode looks like to the guard.
+	flow := &orchestration.Flow{}
+
+	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", run.DerivedRunInputs{}); err != nil {
+		t.Fatalf("a test with nothing Start-delivered was refused: %v", err)
+	}
+
+	originOverrides := run.DerivedRunInputs{Overrides: map[string]map[string]string{
+		"wiki/backend": {manifest.APIConsumesEnvironmentVariable: "documents:wiki/documents/api"},
+	}}
+	err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", originOverrides)
+	if err == nil {
+		t.Fatal("a solution whose CODEFLY__API_CONSUMES cannot reach the origin was allowed to report a green suite")
+	}
+	if !strings.Contains(err.Error(), manifest.APIConsumesEnvironmentVariable) {
+		t.Errorf("the refusal does not name the undeliverable variable: %v", err)
+	}
+
+	// Overrides aimed at a DEPENDENCY are deliverable: dependencies do start.
+	dependencyOverrides := run.DerivedRunInputs{Overrides: map[string]map[string]string{
+		"documents/api": {"CODEFLY__MODULE_REGISTRATION_SECRET": "deadbeef"},
+	}}
+	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", dependencyOverrides); err != nil {
+		t.Fatalf("refused for an override that reaches its dependency normally: %v", err)
+	}
+
+	outputEnv = "/tmp/codefly-test-env"
+	if err := verifyOriginReceivesStartInputs(flow, "wiki/backend", "", run.DerivedRunInputs{}); err == nil {
+		t.Fatal("--output-env accepted although the origin's runtime environment is only written at Start")
 	}
 }

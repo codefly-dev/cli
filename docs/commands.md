@@ -293,14 +293,20 @@ codefly test service frontend --suite e2e
 ```
 
 The test path takes the same composition flags as `run service` — `--env`,
-`--profile`, `--exclude-dependency`, `--output-env`, `--naming-scope` — so a
-test boots the graph the way a run does. Two differences from `run`:
+`--fixture`, `--profile`, `--exclude-dependency`, `--output-env`,
+`--naming-scope` — so a test boots the graph the way a run does. One flag
+behaves differently from `run`:
 
 | Flag | Description |
 |------|-------------|
-| `--env` | Workspace environment to test in. Its declaration carries the fixture, so an environment-declared fixture is reachable without `--fixture` |
-| `--fixture` | Fixture override; wins over the environment's declared fixture |
-| `--temporary-ports` | **On by default here.** Each invocation takes ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state, so two concurrent `codefly test` runs in one workspace cannot collide. Pass `--temporary-ports=false` to reuse the workspace's deterministic names, or `--naming-scope` to name the scope yourself |
+| `--temporary-ports` | **On by default here**, where `run` defaults it off. Each invocation takes ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state — overriding any scope the environment declares — so two concurrent `codefly test` runs in one workspace cannot collide. Pass `--temporary-ports=false` to keep the declared scope and deterministic names, or `--naming-scope` to name the scope yourself |
+
+A suite whose agent advertises `START_DEPENDENCIES` or `NONE` never starts the
+service under test, so anything Codefly delivers at Start cannot reach it:
+process overrides (`CODEFLY__API_CONSUMES`, the federation registration secrets)
+and `--output-env`. Codefly refuses such an invocation rather than reporting a
+green suite for a composition that was never wired, and warns when `--fixture`
+reaches the dependencies but not the origin.
 
 ### `codefly test solution`
 

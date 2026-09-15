@@ -836,6 +836,26 @@ func (flow *Flow) OriginTestSkipped() bool {
 	return false
 }
 
+// OriginStartsForTest reports whether this test flow actually starts the origin.
+// Only TEST_DEPENDENCY_MODE_START_STACK does: START_DEPENDENCIES replaces the
+// origin's RuntimeStart with a sequencing barrier, and NONE skips Start
+// altogether. Everything Codefly hands a service through StartRequest — its
+// process overrides, the fixture, the exported runtime environment — therefore
+// never reaches the service under test in those two modes. Resolved during
+// InitManagers, so it is meaningful from Load onwards.
+func (flow *Flow) OriginStartsForTest() bool {
+	return flow != nil && flow.testDependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK
+}
+
+// TestDependencyModeName names the resolved dependency mode, for diagnostics
+// that have to explain why a Start-delivered input could not be delivered.
+func (flow *Flow) TestDependencyModeName() string {
+	if flow == nil {
+		return ""
+	}
+	return flow.testDependencyMode.String()
+}
+
 // OriginSyncResponse returns the structured SyncResponse from the origin
 // service's Builder.Sync RPC, or nil if it was never synchronized.
 func (flow *Flow) OriginSyncResponse() *builderv0.SyncResponse {

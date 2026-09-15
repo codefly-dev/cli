@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -198,7 +201,52 @@ func testEnvironment(workspace *resources.Workspace) (*resources.Environment, er
 	if namingScope != "" || namingScopeExplicit {
 		env.NamingScope = namingScope
 	}
+	// An isolated invocation must not inherit the environment's declared scope.
+	// Flow.WithIsolatedInvocation declines to generate an identity when a scope
+	// is already set, so a workspace that declares one would leave two concurrent
+	// tests sharing container names and runtime state directories while only
+	// their ports differed — the collision isolation exists to prevent. env is a
+	// deep copy, so clearing it never touches the shared declaration.
+	if shouldIsolateInvocation(temporaryPorts, namingScopeExplicit) {
+		env.NamingScope = ""
+	}
 	return env, nil
+}
+
+// verifyOriginReceivesStartInputs refuses a test whose inputs cannot reach the
+// service under test. Codefly delivers a service's process overrides and its
+// exported runtime environment through StartRequest, and only START_STACK
+// actually starts the origin. Running anyway would report a green suite for a
+// composition whose CODEFLY__API_CONSUMES and registration secrets were never
+// delivered — a false pass, which is worse than a failure.
+func verifyOriginReceivesStartInputs(flow *orchestration.Flow, serviceName, fixture string, derived run.DerivedRunInputs) error {
+	if flow.OriginStartsForTest() || flow.OriginTestSkipped() {
+		return nil
+	}
+	// The fixture reaches every dependency that starts, which is the point of a
+	// fixture for a dependency-backed suite, so it does not invalidate the run —
+	// but the origin not seeing it is silent, and silence is what hid this. The
+	// caller passes the RESOLVED fixture: an environment-declared one is just as
+	// undeliverable as an explicit --fixture.
+	if fixture != "" {
+		cli.Warning(
+			"fixture %q reaches the dependencies but not %s: dependency mode %s never starts the service under test",
+			fixture, serviceName, flow.TestDependencyModeName())
+	}
+	var undeliverable []string
+	if keys := slices.Sorted(maps.Keys(derived.Overrides[serviceName])); len(keys) > 0 {
+		undeliverable = append(undeliverable, "the solution-derived variables "+strings.Join(keys, ", "))
+	}
+	if outputEnv != "" {
+		undeliverable = append(undeliverable,
+			"--output-env (the origin's endpoints, fixture and dependency connections are written at Start)")
+	}
+	if len(undeliverable) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s runs its tests in dependency mode %s, which never starts the service under test, so %s cannot reach it: select a suite whose agent advertises START_STACK, or drop the inputs that depend on it",
+		serviceName, flow.TestDependencyModeName(), strings.Join(undeliverable, " and "))
 }
 
 // shouldIsolateInvocation decides whether this test takes a generated identity
@@ -239,7 +287,8 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTestRequest(request)
-	flow.WithFixture(orchestration.SelectedFixture(env, testFixture))
+	selectedFixture := orchestration.SelectedFixture(env, testFixture)
+	flow.WithFixture(selectedFixture)
 	flow.WithOutputEnv(outputEnv)
 	flow.WithOverrides(derived.Overrides)
 	flow.WithWorkspaceConfigurationValues(derived.WorkspaceConfigurations)
@@ -272,6 +321,14 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	err = flow.Load(ctx)
 	if err != nil {
 		return flow, w.Wrap(err)
+	}
+	// Load resolved the origin's dependency mode, so this is the earliest point
+	// the flow can tell whether what the caller asked for can be delivered at
+	// all. Skipped when nothing is going to run anyway.
+	if !loadOnly && !initOnly {
+		if err = verifyOriginReceivesStartInputs(flow, resources.WithUnique(service).Unique(), selectedFixture, derived); err != nil {
+			return flow, err
+		}
 	}
 	return flow, nil
 }
@@ -317,32 +374,33 @@ func buildTestRequest(extraArgs []string) *runtimev0.TestRequest {
 }
 
 func init() {
-	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
-	ServiceCmd.Flags().StringVar(&testFixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
-	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
-	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
-	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY)")
 	bindSharedTestFlags(ServiceCmd)
-
-	// Test filter flags — forwarded to the agent's Test RPC.
-	ServiceCmd.Flags().StringVar(&testTarget, "target", "", "Package/directory scope (Go: ./pkg/foo, Python: tests/unit)")
-	ServiceCmd.Flags().StringSliceVarP(&testFilters, "filter", "k", nil, "Name regex pattern (repeatable; OR-combined). -k mirrors pytest")
-	ServiceCmd.Flags().StringVar(&testSuite, "suite", "", "Named suite: unit (default), integration, e2e, smoke")
-	ServiceCmd.Flags().StringVar(&testTimeout, "timeout", "", "Per-test timeout, e.g. 30s")
-	ServiceCmd.Flags().BoolVarP(&testVerbose, "verbose", "v", false, "Verbose runner output")
-	ServiceCmd.Flags().BoolVar(&testRace, "race", false, "Run with race detector (Go)")
-	ServiceCmd.Flags().BoolVar(&testCoverage, "coverage", false, "Run with coverage instrumentation")
 }
 
-// bindSharedTestFlags registers the run-parity flags both test verbs take,
-// bound to the same package vars testServiceCommand reads. One registration so
-// `test service` and `test solution` cannot document the same mechanism two
-// different ways.
+// bindSharedTestFlags registers every flag the test verbs take, bound to the
+// package vars testServiceCommand reads. Both `test service` and `test solution`
+// run that one path, so they register through this one function: hand-listing
+// them per command is what left `test solution` without --race, --coverage,
+// --init-only and --load-only.
 func bindSharedTestFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
+	cmd.Flags().StringVar(&testFixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
+	cmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
+	cmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
+	cmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY)")
 	cmd.Flags().StringVar(&environmentName, "env", orchestration.LocalEnvironmentName, "Workspace environment to test in")
 	cmd.Flags().StringVar(&profile, "profile", "", "Named workspace run profile")
 	cmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the test (repeatable, e.g. infra/temporal)")
 	cmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
 	cmd.Flags().StringVar(&namingScope, "naming-scope", "", run.NamingScopeUsage)
 	cmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", true, run.TemporaryPortsUsage)
+
+	// Test filter flags — forwarded to the agent's Test RPC.
+	cmd.Flags().StringVar(&testTarget, "target", "", "Package/directory scope (Go: ./pkg/foo, Python: tests/unit)")
+	cmd.Flags().StringSliceVarP(&testFilters, "filter", "k", nil, "Name regex pattern (repeatable; OR-combined). -k mirrors pytest")
+	cmd.Flags().StringVar(&testSuite, "suite", "", "Named suite: unit (default), integration, e2e, smoke")
+	cmd.Flags().StringVar(&testTimeout, "timeout", "", "Per-test timeout, e.g. 30s")
+	cmd.Flags().BoolVarP(&testVerbose, "verbose", "v", false, "Verbose runner output")
+	cmd.Flags().BoolVar(&testRace, "race", false, "Run with race detector (Go)")
+	cmd.Flags().BoolVar(&testCoverage, "coverage", false, "Run with coverage instrumentation")
 }

@@ -56,18 +56,7 @@ var SolutionCmd = &cobra.Command{
 }
 
 func init() {
-	// Solution-facing subset of the test flags, bound to the same package vars
-	// testServiceCommand reads.
-	SolutionCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
-	SolutionCmd.Flags().StringVar(&testFixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
-	SolutionCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY)")
-
-	// Test filter flags — forwarded to the agent's Test RPC, same as `test service`.
-	SolutionCmd.Flags().StringVar(&testTarget, "target", "", "Package/directory scope (Go: ./pkg/foo, Python: tests/unit)")
-	SolutionCmd.Flags().StringSliceVarP(&testFilters, "filter", "k", nil, "Name regex pattern (repeatable; OR-combined). -k mirrors pytest")
-	SolutionCmd.Flags().StringVar(&testSuite, "suite", "", "Named suite: unit (default), integration, e2e, smoke")
-	SolutionCmd.Flags().StringVar(&testTimeout, "timeout", "", "Per-test timeout, e.g. 30s")
-	SolutionCmd.Flags().BoolVarP(&testVerbose, "verbose", "v", false, "Verbose runner output")
-
+	// A solution's entry is a service and this command runs the same path, so it
+	// takes the same flags — registered once, never hand-listed per verb.
 	bindSharedTestFlags(SolutionCmd)
 }

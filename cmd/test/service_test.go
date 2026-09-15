@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -46,13 +47,17 @@ func TestBuildTestRequestCopiesSlices(t *testing.T) {
 }
 
 // `test solution` delegates to this exact function, so it must stay the shared
-// entry point rather than logic trapped inside ServiceCmd's closure.
+// entry point rather than logic trapped inside ServiceCmd's closure. Asserted by
+// identity rather than by invoking it: testServiceCommand does no argument
+// validation of its own (serviceArgs is cobra's Args hook), so calling it here
+// proved nothing about arguments and, without a workspace-free working
+// directory, could reach agent spawning from a unit test.
 func TestServiceCommandIsTheSharedTestPath(t *testing.T) {
 	if ServiceCmd.RunE == nil {
 		t.Fatal("test service has no RunE")
 	}
-	if err := testServiceCommand(ServiceCmd, []string{"a", "b"}); err == nil {
-		t.Fatal("the shared test path accepted two service selectors")
+	if reflect.ValueOf(ServiceCmd.RunE).Pointer() != reflect.ValueOf(testServiceCommand).Pointer() {
+		t.Fatal("test service no longer runs the shared path test solution delegates to")
 	}
 }
 
