@@ -7,7 +7,7 @@ import (
 )
 
 func TestShowCommandsReturnErrorsThroughCobra(t *testing.T) {
-	for _, command := range []*cobra.Command{DependenciesCmd, NetworkCmd, RunnableCmd} {
+	for _, command := range []*cobra.Command{DependenciesCmd, FixturesCmd, NetworkCmd, RunnableCmd} {
 		if command.RunE == nil || command.Run != nil {
 			t.Errorf("%s is not exclusively RunE", command.Name())
 		}
@@ -17,6 +17,9 @@ func TestShowCommandsReturnErrorsThroughCobra(t *testing.T) {
 	}
 	if err := NetworkCmd.Args(NetworkCmd, []string{"extra"}); err == nil {
 		t.Fatal("network accepted a positional argument")
+	}
+	if err := FixturesCmd.Args(FixturesCmd, []string{"extra"}); err == nil {
+		t.Fatal("fixtures accepted a positional argument")
 	}
 }
 
