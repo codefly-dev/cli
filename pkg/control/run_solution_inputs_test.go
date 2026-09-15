@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,13 +128,16 @@ func writeSolutionInputsWorkspace(t *testing.T) string {
 }
 
 // startExcludedRootRun starts the fixture with the root excluded, returning the
-// output-environment path and whatever the run wrote to stdout while starting.
+// output-environment path.
 //
 // Nothing here starts a process, but composing the excluded root's environment
 // still resolves a runtime context, and the plane leaves it unset unless the
 // request names one.
-func startExcludedRootRun(t *testing.T, root string) (string, string) {
+func startExcludedRootRun(t *testing.T, root string) string {
 	t.Helper()
+	// Installed before anything that tears the run down is registered, so LIFO
+	// cleanup order stops the flow first and restores os.Stdout last.
+	capture := captureStdout(t)
 	outputEnvironment := filepath.Join(t.TempDir(), "runtime.env")
 
 	plane, err := NewAt(root)
@@ -145,25 +149,28 @@ func startExcludedRootRun(t *testing.T, root string) (string, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 
-	var runErr error
-	stdout := captureStdout(t, func() {
-		_, runErr = plane.Run(ctx, RunRequest{
-			Service:        "wiki/backend",
-			RuntimeContext: resources.RuntimeContextNative,
-			ExcludeRoot:    true,
-			Wait:           true,
-			OutputEnv:      outputEnvironment,
-		})
-	})
-	if runErr != nil {
+	if _, runErr := plane.Run(ctx, RunRequest{
+		Service:        "wiki/backend",
+		RuntimeContext: resources.RuntimeContextNative,
+		ExcludeRoot:    true,
+		Wait:           true,
+		OutputEnv:      outputEnvironment,
+	}); runErr != nil {
 		t.Fatalf("Run: %v", runErr)
+	}
+	// The plane has no terminal, so starting the run must put nothing on the
+	// descriptor an MCP server serves JSON-RPC over. Asserted for the window the
+	// plane drives; what orchestration logs while unwinding is a separate,
+	// pre-existing problem and not what this test pins.
+	if written := capture.written(); written != "" {
+		t.Errorf("the run wrote %q to stdout; the plane must not narrate", written)
 	}
 	t.Cleanup(func() {
 		if _, err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
 			t.Errorf("Stop: %v", err)
 		}
 	})
-	return outputEnvironment, stdout
+	return outputEnvironment
 }
 
 // waitForExportedEnvironment waits for the export to actually land.
@@ -192,10 +199,40 @@ func waitForExportedEnvironment(t *testing.T, path string) string {
 	}
 }
 
-// captureStdout swaps os.Stdout for the duration of fn. The plane may be driven
-// by a process serving JSON-RPC on stdout — the MCP server does exactly that
-// with this call — so anything written there during a run corrupts the protocol.
-func captureStdout(t *testing.T, fn func()) string {
+// stdoutCapture collects everything written to os.Stdout while the redirect is
+// installed. The plane may be driven by a process serving JSON-RPC on stdout —
+// the MCP server does exactly that with this call — so anything a run writes
+// there corrupts the protocol.
+type stdoutCapture struct {
+	mu        sync.Mutex
+	collected bytes.Buffer
+}
+
+// Write collects a chunk read off the pipe. The reader goroutine and the test
+// goroutine both touch the buffer, so it is guarded.
+func (c *stdoutCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.collected.Write(p)
+}
+
+// written is everything that has reached the pipe so far.
+func (c *stdoutCapture) written() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.collected.String()
+}
+
+// captureStdout redirects os.Stdout for the remainder of the test.
+//
+// The redirect is undone in a cleanup rather than inline, because the run
+// outlives the call that starts it: plane.Run returns at readiness, not at
+// termination, and the flow goes on logging until its goroutine is joined. A
+// caller registers the run's teardown after this, so LIFO ordering runs that
+// first and os.Stdout is written back only once the run is gone. Restoring it
+// inline was an unsynchronized write racing those fmt.Print reads — the data
+// race that reddened the race job.
+func captureStdout(t *testing.T) *stdoutCapture {
 	t.Helper()
 	original := os.Stdout
 	reader, writer, err := os.Pipe()
@@ -203,18 +240,225 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	os.Stdout = writer
-	collected := make(chan string, 1)
+	capture := &stdoutCapture{}
+	drained := make(chan struct{})
 	go func() {
-		var buffer bytes.Buffer
-		_, _ = io.Copy(&buffer, reader)
-		collected <- buffer.String()
+		defer close(drained)
+		_, _ = io.Copy(capture, reader)
 	}()
-	fn()
-	os.Stdout = original
-	_ = writer.Close()
-	written := <-collected
-	_ = reader.Close()
-	return written
+	t.Cleanup(func() {
+		os.Stdout = original
+		_ = writer.Close()
+		<-drained
+		_ = reader.Close()
+	})
+	return capture
+}
+
+// The redirect must outlive every cleanup registered after it. Restoring it
+// inside the capturing call landed in the middle of a live run — plane.Run
+// returns at readiness while the flow logs on until Stop — so the write to
+// os.Stdout raced those reads and the detector failed the whole package.
+func TestStdoutRedirectOutlivesLaterCleanups(t *testing.T) {
+	t.Run("still redirected while a later cleanup runs", func(t *testing.T) {
+		beforeRedirect := os.Stdout
+		captureStdout(t)
+		redirected := os.Stdout
+		if redirected == beforeRedirect {
+			t.Fatal("os.Stdout was not redirected")
+		}
+		// Registered after the redirect, so LIFO runs this first — the slot
+		// where a run's Stop executes, with its goroutines still logging.
+		t.Cleanup(func() {
+			if os.Stdout != redirected {
+				t.Error("os.Stdout was restored before a later cleanup ran; a flow still logging there would race the restore")
+			}
+		})
+	})
+}
+
+// Stop must leave nothing from the run still running. Run's goroutine returns
+// only once its context is done, which tearing the flow down does not do, so
+// before it was joined it kept narrating after the caller had been told the
+// flow had stopped — onto the JSON-RPC stream, for a plane serving one — and
+// raced anything that touched os.Stdout afterwards.
+func TestStopJoinsTheRunGoroutine(t *testing.T) {
+	captureStdout(t)
+	plane, err := NewAt(writeSolutionInputsWorkspace(t))
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	t.Cleanup(func() { _ = plane.Close() })
+	impl, ok := plane.(*planeImpl)
+	if !ok {
+		t.Fatalf("NewAt returned %T, not *planeImpl", plane)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	t.Cleanup(cancel)
+
+	if _, runErr := plane.Run(ctx, RunRequest{
+		Service:        "wiki/backend",
+		RuntimeContext: resources.RuntimeContextNative,
+		ExcludeRoot:    true,
+		Wait:           true,
+		OutputEnv:      filepath.Join(t.TempDir(), "runtime.env"),
+	}); runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+
+	if _, err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if live := activeRunCount(impl); live != 0 {
+		t.Errorf("Stop returned with %d run goroutine(s) still live", live)
+	}
+}
+
+// activeRunCount reports how many run goroutines have not returned yet. Test
+// scaffolding rather than a method on the plane: nothing in production asks,
+// and the tests are in-package, so they can read the tracking directly.
+func activeRunCount(p *planeImpl) int {
+	p.runsMu.Lock()
+	defer p.runsMu.Unlock()
+	live := 0
+	for _, runs := range p.runs {
+		live += len(runs)
+	}
+	return live
+}
+
+// trackFakeRun tracks a run whose goroutine returns once its context is
+// cancelled — the same and only release condition Run's real goroutine has.
+// Standing in for the flow lets these tests pin the tracking itself, including
+// states a real flow reaches only by crashing partway through a teardown.
+func trackFakeRun(p *planeImpl, flowID string) *activeRun {
+	runCtx, runCancel := context.WithCancel(context.Background())
+	run := p.trackRun(flowID, runCancel)
+	go func() {
+		<-runCtx.Done()
+		p.finishRun(flowID, run)
+	}()
+	return run
+}
+
+// joined reports whether a run's goroutine has returned.
+func joined(run *activeRun) bool {
+	select {
+	case <-run.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Stop with no FlowID must still join. A flow that exits on its own releases
+// the registry entry from inside Run's goroutine, so Active() reports nothing
+// while that goroutine is still tearing down and still narrating. Returning
+// "nothing running" there told the caller the stream was quiet while the run
+// was writing to it — on the MCP path, straight onto the JSON-RPC stream, which
+// is the shape stop_flow takes whenever the caller omits flow_id.
+func TestStopWithoutAFlowIDJoinsRunsTheRegistryHasForgotten(t *testing.T) {
+	plane, err := NewAt(writeSolutionInputsWorkspace(t))
+	if err != nil {
+		t.Fatalf("NewAt: %v", err)
+	}
+	t.Cleanup(func() { _ = plane.Close() })
+	impl, ok := plane.(*planeImpl)
+	if !ok {
+		t.Fatalf("NewAt returned %T, not *planeImpl", plane)
+	}
+
+	// Nothing is registered — exactly what Stop sees once a flow has exited by
+	// itself — while the run it started is still unwinding.
+	run := trackFakeRun(impl, "wiki/backend")
+	if id, _ := impl.host.Flows().Active(); id != "" {
+		t.Fatalf("no flow should be registered, got active id %q", id)
+	}
+
+	stopped, err := plane.Stop(context.Background(), StopRequest{})
+	if err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if stopped {
+		t.Error("Stop reported it stopped a flow, but none was registered")
+	}
+	if !joined(run) {
+		t.Error("Stop returned without joining the unwinding run; it is still free to write to stdout")
+	}
+	if live := activeRunCount(impl); live != 0 {
+		t.Errorf("Stop returned with %d run goroutine(s) still live", live)
+	}
+}
+
+// A flow id can hold two runs at once: the registry frees the id when the flow
+// exits, so a fresh Run claims it while the previous goroutine is still
+// unwinding. Keying one run per id dropped the older handle, and Close then had
+// nothing left to join it with — the very leak the tracking exists to close.
+func TestCloseJoinsEveryRunSharingAFlowID(t *testing.T) {
+	impl := &planeImpl{}
+
+	first := trackFakeRun(impl, "wiki/backend")
+	second := trackFakeRun(impl, "wiki/backend")
+	if live := activeRunCount(impl); live != 2 {
+		t.Fatalf("both runs under one flow id must stay tracked, got %d", live)
+	}
+
+	impl.stopAllRuns()
+
+	if !joined(first) {
+		t.Error("the superseded run was never joined; a second Run under its flow id dropped the handle")
+	}
+	if !joined(second) {
+		t.Error("the newer run was not joined")
+	}
+	if live := activeRunCount(impl); live != 0 {
+		t.Errorf("stopAllRuns returned with %d run goroutine(s) still live", live)
+	}
+}
+
+// Every run must be cancelled before any of them is waited on. Cancelling
+// inside the waiting loop left each run running until the one before it had
+// finished unwinding, so closing a plane with several live flows cost the sum
+// of their teardowns. Both runs here return only once the other has been
+// cancelled, so a one-at-a-time loop cannot finish either of them.
+func TestStopAllRunsCancelsEveryRunBeforeWaiting(t *testing.T) {
+	impl := &planeImpl{}
+
+	cancelled := map[string]chan struct{}{
+		"first":  make(chan struct{}),
+		"second": make(chan struct{}),
+	}
+	for _, name := range []string{"first", "second"} {
+		runCtx, runCancel := context.WithCancel(context.Background())
+		run := impl.trackRun(name, runCancel)
+		go func() {
+			<-runCtx.Done()
+			close(cancelled[name])
+			// Returns only once the other run has been cancelled too.
+			for other, signal := range cancelled {
+				if other != name {
+					<-signal
+				}
+			}
+			impl.finishRun(name, run)
+		}()
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		impl.stopAllRuns()
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(30 * time.Second):
+		t.Fatal("stopAllRuns cancelled runs one at a time: a run that returns only after every run is cancelled was left waiting")
+	}
+	if live := activeRunCount(impl); live != 0 {
+		t.Errorf("stopAllRuns returned with %d run goroutine(s) still live", live)
+	}
 }
 
 // A test process standing in for a solution backend runs the composition with
@@ -227,13 +471,10 @@ func captureStdout(t *testing.T, fn func()) string {
 // the same lifecycle behind the MCP run tool, and an environment that depended
 // on which entry point composed it would be two contracts, not one.
 func TestRunExportsSolutionDerivedInputsForAnExcludedRoot(t *testing.T) {
-	outputEnvironment, stdout := startExcludedRootRun(t, writeSolutionInputsWorkspace(t))
-
-	// The plane has no terminal. Narrating the derivation here would put these
-	// lines on the MCP server's JSON-RPC stream.
-	if stdout != "" {
-		t.Errorf("the run wrote %q to stdout; the plane must not narrate", stdout)
-	}
+	// The plane has no terminal. Narrating the derivation would put those lines
+	// on the MCP server's JSON-RPC stream, which startExcludedRootRun fails the
+	// test for — across the whole run, teardown included.
+	outputEnvironment := startExcludedRootRun(t, writeSolutionInputsWorkspace(t))
 
 	environment := waitForExportedEnvironment(t, outputEnvironment)
 
@@ -267,7 +508,7 @@ func TestRunExportsNoSolutionInputsWithoutAManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	outputEnvironment, _ := startExcludedRootRun(t, root)
+	outputEnvironment := startExcludedRootRun(t, root)
 	environment := waitForExportedEnvironment(t, outputEnvironment)
 
 	for _, key := range []string{manifest.APIConsumesEnvironmentVariable, "CODEFLY__MODULE_REGISTRATION_SECRETS"} {

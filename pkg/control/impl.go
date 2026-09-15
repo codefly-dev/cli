@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -35,6 +36,13 @@ type planeImpl struct {
 	// FlowFailed/FlowStopped once the flow is gone). See lifecycle.go's Run.
 	runMu   sync.Mutex
 	lastRun *runOutcome
+	// runsMu guards runs: the flows Run started whose goroutines have not
+	// returned yet, keyed by flow id. A flow id can hold more than one at a
+	// time — the registry frees the id at Release, while the goroutine that
+	// held it is still unwinding — so this maps to every run under that id
+	// rather than only the newest. See activeRun and lifecycle.go's Run.
+	runsMu sync.Mutex
+	runs   map[string][]*activeRun
 }
 
 // runOutcome is how a flow, once no longer the registry's active flow, ended.
@@ -66,6 +74,121 @@ func (p *planeImpl) runOutcome() *runOutcome {
 	p.runMu.Lock()
 	defer p.runMu.Unlock()
 	return p.lastRun
+}
+
+// activeRun is a flow Run started in the background: the cancel that releases
+// its goroutine, and a channel closed once that goroutine has returned.
+//
+// That goroutine narrates as it unwinds — Playbook.Work logs on its way out —
+// and it returns only when its context is done, which neither tearing the flow
+// down nor closing the host does. Left untracked it outlives both Stop and
+// Close and keeps writing to the caller's stdout, which for a plane serving
+// JSON-RPC there is the protocol stream.
+type activeRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// runJoinBudget bounds how long joinRuns waits for cancelled goroutines to
+// return. A run unwinds through orchestration's own teardown, which is budgeted
+// per layer (15s to Stop, 30s to Shutdown) and so is bounded by that budget
+// times the graph's depth — but only while it keeps making progress. Playbook's
+// work loop observes cancellation between action groups, never during one, so a
+// policy action that ignores its context would block the join indefinitely and
+// turn a leaked goroutine into a hung stop_flow tool and a host that never
+// closes. The budget clears a healthy teardown by a wide margin; exceeding it
+// means something is genuinely wedged, which is reported rather than waited on.
+const runJoinBudget = 90 * time.Second
+
+// trackRun records a started run so Stop and Close can join its goroutine.
+// Runs accumulate under their flow id rather than replacing each other: the
+// registry releases the id as soon as the flow exits, so a fresh Run can claim
+// it while the previous goroutine is still unwinding, and overwriting here
+// would drop the only handle that could ever join that goroutine.
+func (p *planeImpl) trackRun(flowID string, cancel context.CancelFunc) *activeRun {
+	run := &activeRun{cancel: cancel, done: make(chan struct{})}
+	p.runsMu.Lock()
+	defer p.runsMu.Unlock()
+	if p.runs == nil {
+		p.runs = make(map[string][]*activeRun)
+	}
+	p.runs[flowID] = append(p.runs[flowID], run)
+	return run
+}
+
+// finishRun marks a run's goroutine as returned, forgetting that run and
+// leaving any sibling still running under the same flow id tracked.
+func (p *planeImpl) finishRun(flowID string, run *activeRun) {
+	p.runsMu.Lock()
+	tracked := p.runs[flowID]
+	kept := make([]*activeRun, 0, len(tracked))
+	for _, candidate := range tracked {
+		if candidate != run {
+			kept = append(kept, candidate)
+		}
+	}
+	if len(kept) == 0 {
+		delete(p.runs, flowID)
+	} else {
+		p.runs[flowID] = kept
+	}
+	p.runsMu.Unlock()
+	close(run.done)
+}
+
+// stopRun cancels every run under one flow id and waits for them. The wait is
+// deliberately outside the lock: those goroutines take runMu to record their
+// outcome, and holding a lock across the join invites a deadlock against them.
+func (p *planeImpl) stopRun(flowID string) {
+	p.runsMu.Lock()
+	pending := append([]*activeRun(nil), p.runs[flowID]...)
+	p.runsMu.Unlock()
+	joinRuns(pending)
+}
+
+// stopAllRuns cancels every tracked run and waits for all of them.
+func (p *planeImpl) stopAllRuns() {
+	p.runsMu.Lock()
+	pending := make([]*activeRun, 0, len(p.runs))
+	for _, runs := range p.runs {
+		pending = append(pending, runs...)
+	}
+	p.runsMu.Unlock()
+	joinRuns(pending)
+}
+
+// joinRuns cancels every run before waiting on any of them. The two passes are
+// the point: cancelling inside the waiting loop leaves run N+1 running until
+// run N has finished unwinding, so closing a plane with several live flows
+// costs the sum of their teardowns instead of the longest one.
+//
+// A run that outlives the budget is reported on stderr and abandoned. stderr,
+// not stdout: the descriptor this is protecting may be carrying JSON-RPC, and
+// a diagnostic about protocol corruption must not be the thing that causes it.
+func joinRuns(pending []*activeRun) {
+	for _, run := range pending {
+		run.cancel()
+	}
+	budget := time.NewTimer(runJoinBudget)
+	defer budget.Stop()
+	for _, run := range pending {
+		select {
+		case <-run.done:
+		case <-budget.C:
+			wedged := 0
+			for _, candidate := range pending {
+				select {
+				case <-candidate.done:
+				default:
+					wedged++
+				}
+			}
+			fmt.Fprintf(os.Stderr,
+				"codefly: %d run goroutine(s) did not return within %s and may still be writing output\n",
+				wedged, runJoinBudget)
+			return
+		}
+	}
 }
 
 // New returns a control plane rooted at the current directory as observed once,
@@ -104,6 +227,11 @@ func (p *planeImpl) Close() error {
 		return nil
 	}
 	p.closeOnce.Do(func() {
+		// Release the background runs first: their goroutines narrate as they
+		// unwind, and a closed plane must not still be writing to the caller's
+		// stdout. Cancelling before waiting keeps this from depending on the
+		// caller having cancelled the context it passed to Run.
+		p.stopAllRuns()
 		if p.terminals != nil {
 			p.terminals.close()
 		}
