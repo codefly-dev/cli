@@ -14,12 +14,12 @@ import (
 
 // Cmd is the cobra surface for `codefly publish`. The parent command
 // `codefly publish` accepts an optional bump-type positional argument
-// (patch | minor | major; default patch) and a few flags. Mode-
+// (patch | minor | major | beta; default patch) and a few flags. Mode-
 // detection is automatic from cwd.
 //
 // Subcommand `codefly publish re-tag` runs the re-tag flow.
 var Cmd = &cobra.Command{
-	Use:   "publish [patch|minor|major]",
+	Use:   "publish [patch|minor|major|beta]",
 	Short: "Version, tag, and push a release for the current Codefly repository",
 	Long: `publish bumps the manifest version, commits, tags, and pushes
 the new tag to origin. One command for every codefly-dev repo —
@@ -57,7 +57,8 @@ consumed by codefly sync module; they do not publish service-loader assets.
 Examples:
   codefly publish              # patch bump
   codefly publish minor
-  codefly publish major
+	  codefly publish major
+	  codefly publish beta         # next beta, or advance beta.N
   codefly publish --dry-run    # show what would happen, change nothing`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: run,
