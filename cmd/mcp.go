@@ -44,6 +44,15 @@ The server communicates via JSON-RPC 2.0 over stdin/stdout, following the
 Model Context Protocol specification.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// First statement in the command: from the moment this process is
+		// `mcp serve`, stdout carries JSON-RPC and nothing else. Everything
+		// below this line logs — common.NewContext installs pkg/cli's stdout
+		// logger as the wool logger, and mcp.NewServer builds a WorkspaceHost,
+		// whose stale-process reaper logs from a context.Background() that no
+		// provider can reach. Installing the guard inside Serve was too late
+		// for all of it: by then the host was built and the lines were sent.
+		defer mcp.ProtectStdout()()
+
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

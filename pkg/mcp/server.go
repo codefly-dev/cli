@@ -9,10 +9,13 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/toolbox"
+	"github.com/codefly-dev/core/agents"
 	corecode "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -67,7 +70,11 @@ func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Ser
 	s := &Server{
 		workspace: ws,
 		host:      host,
-		plane:     control.NewWithHost(host),
+		// The plane has no terminal of its own; unset, it drops every line a
+		// flow logs — including the playbook's "service X failing" and the
+		// errors wrapped out of Flow.Start, which is what an operator needs
+		// when a run driven from here fails. stderr is safe and visible.
+		plane:     control.NewWithHost(host, control.WithNarration(protocolSafeLogger{})),
 		toolbox:   host.Toolbox(),
 		resources: make(map[string]ResourceHandler),
 		resDefs:   []Resource{},
@@ -106,22 +113,120 @@ func (s *Server) RegisterResource(res Resource, handler ResourceHandler) {
 // host construction reaps stale process groups with context.Background()
 // (pkg/engine/host.go), which no context this server passes around can reach.
 // stderr keeps them visible to the operator instead of discarding them.
+//
+// It does not re-check the level: wool.process already filtered this line
+// against the effective level, which honours the per-scope overrides of
+// CODEFLY_LOG (wool.Wool.LogLevel). Comparing against the global level a second
+// time here drops exactly the lines a scope override was set to surface.
 type protocolSafeLogger struct{}
 
 func (protocolSafeLogger) Process(msg *wool.Log) {
-	if msg == nil || msg.Level < wool.GlobalLogLevel() {
+	writeProtocolSafe(nil, msg)
+}
+
+func (protocolSafeLogger) ProcessWithSource(source *wool.Identifier, msg *wool.Log) {
+	writeProtocolSafe(source, msg)
+}
+
+func writeProtocolSafe(source *wool.Identifier, msg *wool.Log) {
+	if msg == nil {
 		return
 	}
-	fmt.Fprintln(os.Stderr, msg.String())
+	line := msg.String()
+	if source != nil && source.Unique != "" {
+		line = source.Unique + " | " + line
+	}
+	fmt.Fprintln(os.Stderr, line)
+}
+
+// agentLogRelay carries the logs of spawned agents to stderr while the protocol
+// guard is installed.
+//
+// agents.AddProcessor has no removal, so the relay is registered once per
+// process and gated on the guard rather than added and removed with it.
+type agentLogRelay struct{}
+
+func (agentLogRelay) Process(msg *wool.Log) {
+	if protocolGuardActive.Load() {
+		writeProtocolSafe(nil, msg)
+	}
+}
+
+func (agentLogRelay) ProcessWithSource(source *wool.Identifier, msg *wool.Log) {
+	if protocolGuardActive.Load() {
+		writeProtocolSafe(source, msg)
+	}
+}
+
+var (
+	protocolGuardMu       sync.Mutex
+	protocolGuardDepth    int
+	protocolGuardActive   atomic.Bool
+	protocolAgentRelaying sync.Once
+)
+
+// ProtectStdout claims stdout for the JSON-RPC protocol and returns the undo.
+//
+// Three separate process-global writers put log lines on stdout, and a stdio
+// server has to silence all of them — routing one leaves the stream corrupt:
+//
+//   - wool's fallback sink, used by every context with no provider. The reaper
+//     run by engine.NewWorkspaceHost logs through it with context.Background().
+//   - pkg/cli's logger, which is the wool logger cmd/common.NewContext installs
+//     and therefore where the serve command's own narration goes.
+//   - that same pkg/cli logger registered process-wide with agents.AddProcessor
+//     (pkg/cli/logger.go's init), which is where every spawned agent's log lines
+//     are fanned out — by far the highest-volume writer once a run starts.
+//
+// Each is pointed at stderr rather than dropped: these lines are what an
+// operator reads when a run driven over MCP fails.
+//
+// Call this BEFORE constructing anything, not just before serving: the reaper
+// above runs inside engine.NewWorkspaceHost, so a guard installed later misses
+// the very lines it names. Calls nest; the guard lifts on the last undo.
+func ProtectStdout() func() {
+	protocolGuardMu.Lock()
+	protocolGuardDepth++
+	if protocolGuardDepth == 1 {
+		wool.SetFallbackLogger(protocolSafeLogger{})
+		cli.SetOutputSink(func(_ wool.Loglevel, message string) {
+			fmt.Fprintln(os.Stderr, message)
+		})
+		cli.SuppressOutput()
+		protocolGuardActive.Store(true)
+		protocolAgentRelaying.Do(func() { agents.AddProcessor(agentLogRelay{}) })
+	}
+	protocolGuardMu.Unlock()
+
+	var undo sync.Once
+	return func() {
+		undo.Do(func() {
+			protocolGuardMu.Lock()
+			defer protocolGuardMu.Unlock()
+			protocolGuardDepth--
+			if protocolGuardDepth > 0 {
+				return
+			}
+			protocolGuardActive.Store(false)
+			cli.RestoreOutput()
+			cli.SetOutputSink(nil)
+			wool.SetFallbackLogger(nil)
+		})
+	}
 }
 
 // Serve runs the MCP server in stdio mode
 func (s *Server) Serve(ctx context.Context) error {
+	// From here stdout belongs to the protocol, so nothing may log to it. The
+	// serve command installs the same guard before NewServer — construction
+	// logs too — so this is the nested claim that covers a caller who reached
+	// Serve some other way, and it is lifted on return rather than left pinned
+	// on a process that goes on to do something else.
+	//
+	// Registered before the Close below so it is undone AFTER it: Close joins
+	// the run goroutines and tears the host down, and that teardown logs.
+	defer ProtectStdout()()
 	defer s.Close()
-	// From here stdout belongs to the protocol, so nothing may log to it. This
-	// is process-global on purpose: the orphan-context logs that would land
-	// there come from code this server never hands a context to.
-	wool.SetFallbackLogger(protocolSafeLogger{})
 	return s.ServeIO(ctx, os.Stdin, os.Stdout)
 }
 
