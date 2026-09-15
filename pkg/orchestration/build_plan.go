@@ -112,8 +112,11 @@ func (b *Builder) buildRecipe(
 	// targeted single-service build returns to its caller. A non-pushed build
 	// never lands in a registry, so there is no digest to capture.
 	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest)
+	// Image evidence is owed by every recipe, not only the one a snapshot pins,
+	// so asking for it needs the digest of each pushed image too.
+	resolveEvidence := b.world.CollectImageSBOM
 	var metadataFile string
-	if captureDigest {
+	if captureDigest || (shouldPush && resolveEvidence) {
 		file, err := os.CreateTemp("", "codefly-build-metadata-*.json")
 		if err != nil {
 			return w.Wrapf(err, "cannot stage build metadata for %s", b.instance.Unique())
@@ -139,7 +142,7 @@ func (b *Builder) buildRecipe(
 
 	w.Info("image build completed", wool.Field("image", recipe.GetImage()), wool.Field("duration", time.Since(started)))
 
-	if captureDigest {
+	if metadataFile != "" {
 		digest, err := readPushedImageDigest(metadataFile)
 		switch {
 		case err != nil && b.world.Mode == SnapshotMode:
@@ -148,11 +151,23 @@ func (b *Builder) buildRecipe(
 			return w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
 		case err != nil:
 			// The image is already pushed; the digest is only reported. Failing
-			// the build here would wrongly signal that the push failed.
+			// the build here would wrongly signal that the push failed. Evidence
+			// derivation refuses the unpinned subject on its own.
 			w.Warn("built and pushed but could not resolve image digest", wool.ErrField(err))
 		default:
-			b.imageDigest = digest
+			if captureDigest {
+				b.imageDigest = digest
+			}
+			b.recordPushedImage(recipe, digest)
 		}
+	}
+
+	if resolveEvidence && !shouldPush {
+		imageID, err := inspectLocalImageID(ctx, recipe.GetImage())
+		if err != nil {
+			return w.Wrapf(err, "cannot resolve the loaded image of recipe %s for %s", recipe.GetName(), b.instance.Unique())
+		}
+		b.recordLoadedImage(recipe, imageID)
 	}
 	return nil
 }

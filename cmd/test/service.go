@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -223,40 +220,20 @@ func testEnvironment(workspace *resources.Workspace) (*resources.Environment, er
 	return env, nil
 }
 
-// verifyOriginReceivesStartInputs refuses a test whose inputs cannot reach the
-// service under test. Codefly delivers a service's process overrides and its
-// exported runtime environment through StartRequest, and only START_STACK
-// actually starts the origin. Running anyway would report a green suite for a
-// composition whose CODEFLY__API_CONSUMES and registration secrets were never
-// delivered — a false pass, which is worse than a failure.
-func verifyOriginReceivesStartInputs(flow *orchestration.Flow, serviceName, fixture string, derived solutionrun.RunInputs) error {
-	if flow.OriginStartsForTest() || flow.OriginTestSkipped() {
-		return nil
-	}
-	// The fixture reaches every dependency that starts, which is the point of a
-	// fixture for a dependency-backed suite, so it does not invalidate the run —
-	// but the origin not seeing it is silent, and silence is what hid this. The
-	// caller passes the RESOLVED fixture: an environment-declared one is just as
-	// undeliverable as an explicit --fixture.
-	if fixture != "" {
-		cli.Warning(
-			"fixture %q reaches the dependencies but not %s: dependency mode %s never starts the service under test",
-			fixture, serviceName, flow.TestDependencyModeName())
-	}
-	var undeliverable []string
-	if keys := slices.Sorted(maps.Keys(derived.Overrides[serviceName])); len(keys) > 0 {
-		undeliverable = append(undeliverable, "the solution-derived variables "+strings.Join(keys, ", "))
-	}
-	if outputEnv != "" {
-		undeliverable = append(undeliverable,
-			"--output-env (the origin's endpoints, fixture and dependency connections are written at Start)")
-	}
-	if len(undeliverable) == 0 {
+// verifyOutputEnvReachesOrigin refuses a test that asks for an exported runtime
+// environment its origin will never produce. The fixture and the process
+// overrides ride InitRequest, which reaches every service, but the exported
+// environment is composed inside Start: only there, after the dependency
+// barrier, are the origin's own endpoints and its dependencies' connections
+// final. A suite that never starts the origin would get a file silently missing
+// exactly those, which is worse than being told it cannot be written.
+func verifyOutputEnvReachesOrigin(flow *orchestration.Flow, serviceName string) error {
+	if outputEnv == "" || flow.OriginStartsForTest() || flow.OriginTestSkipped() {
 		return nil
 	}
 	return fmt.Errorf(
-		"%s runs its tests in dependency mode %s, which never starts the service under test, so %s cannot reach it: select a suite whose agent advertises START_STACK, or drop the inputs that depend on it",
-		serviceName, flow.TestDependencyModeName(), strings.Join(undeliverable, " and "))
+		"%s runs its tests in dependency mode %s, which never starts the service under test, so --output-env cannot be written for it: its endpoints and dependency connections are composed at Start. Select a suite whose agent advertises START_STACK, or drop --output-env",
+		serviceName, flow.TestDependencyModeName())
 }
 
 // shouldIsolateInvocation decides whether this test takes a generated identity
@@ -333,10 +310,10 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return flow, w.Wrap(err)
 	}
 	// Load resolved the origin's dependency mode, so this is the earliest point
-	// the flow can tell whether what the caller asked for can be delivered at
+	// the flow can tell whether the exported environment can be composed at
 	// all. Skipped when nothing is going to run anyway.
 	if !loadOnly && !initOnly {
-		if err = verifyOriginReceivesStartInputs(flow, resources.WithUnique(service).Unique(), selectedFixture, derived); err != nil {
+		if err = verifyOutputEnvReachesOrigin(flow, resources.WithUnique(service).Unique()); err != nil {
 			return flow, err
 		}
 	}
