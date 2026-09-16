@@ -743,7 +743,12 @@ func assertFixtureTargetsAgent(fixtureDir, fixture string, manifest agentYAML) e
 }
 
 func runWorkspaceGate(ctx context.Context, executable, workspaceDir string, environment []string) ([]byte, string, error) {
-	command := exec.CommandContext(ctx, executable, agentConformanceGateArguments()...)
+	baseline, err := prepareConformanceBaseline(ctx, workspaceDir)
+	if err != nil {
+		return nil, "", err
+	}
+	arguments := append(agentConformanceGateArguments(), "--base", baseline, "--head", "HEAD")
+	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Dir = workspaceDir
 	command.Env = environment
 	output, err := command.CombinedOutput()
@@ -758,6 +763,48 @@ func runWorkspaceGate(ctx context.Context, executable, workspaceDir string, envi
 		return report, conformanceDir, fmt.Errorf("run workspace gate: %w\n%s", err, boundedAgentCIOutput(output))
 	}
 	return report, conformanceDir, nil
+}
+
+// A fresh conformance workspace has no upstream history. Record its entire
+// initial source as additions to an empty commit so the ordinary integrity gate
+// can prove newly introduced ownership, including a fixture's base manifest.
+// This runs only inside the disposable generated/copied workspace.
+func prepareConformanceBaseline(ctx context.Context, workspaceDir string) (string, error) {
+	if _, err := os.Lstat(filepath.Join(workspaceDir, ".git")); !os.IsNotExist(err) {
+		return "", fmt.Errorf("conformance workspace must have no existing Git metadata")
+	}
+	environment := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "GIT_") {
+			environment = append(environment, entry)
+		}
+	}
+	environment = append(environment, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+	run := func(arguments ...string) ([]byte, error) {
+		args := append([]string{"-c", "user.name=Codefly conformance", "-c", "user.email=conformance@codefly.dev", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=" + os.DevNull}, arguments...)
+		command := exec.CommandContext(ctx, "git", args...)
+		command.Dir, command.Env = workspaceDir, environment
+		output, err := command.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("prepare conformance integrity baseline: %w\n%s", err, boundedAgentCIOutput(output))
+		}
+		return output, nil
+	}
+	for _, args := range [][]string{{"init", "--template="}, {"commit", "--allow-empty", "-m", "Empty conformance baseline"}} {
+		if _, err := run(args...); err != nil {
+			return "", err
+		}
+	}
+	baseline, err := run("rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, args := range [][]string{{"add", "--all"}, {"commit", "-m", "Conformance source under test"}} {
+		if _, err := run(args...); err != nil {
+			return "", err
+		}
+	}
+	return strings.TrimSpace(string(baseline)), nil
 }
 
 func agentConformanceGateArguments() []string {
