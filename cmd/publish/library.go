@@ -32,8 +32,8 @@ var libraryCmd = &cobra.Command{
 	Long: `Publish a workspace library (codefly add library) to the durable stores
 configured under the workspace's libraries.publish block — a GitHub repository
 tagged at the version for go/python, an npm-compatible registry for
-typescript. Published versions are immutable: publishing the same version
-twice fails.
+typescript. Published versions are immutable: an identical retry adopts the
+existing version, while different bytes require a version bump.
 
 Configure workspace.codefly.yaml:
 

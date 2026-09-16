@@ -282,13 +282,20 @@ func TestGitHubStorePublishedVersionsAreImmutableButIdenticalContentReleases(t *
 	modulePath := goModulePath(remote)
 	coords := Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"}
 
-	_, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"), coords)
+	first, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"), coords)
 	require.NoError(t, err)
 
-	// Republishing an existing version is refused regardless of content.
+	// An interrupted caller can safely adopt an immutable version it already
+	// published when the bytes agree.
+	retried, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"), coords)
+	require.NoError(t, err)
+	require.Equal(t, first.Ref, retried.Ref)
+	require.Equal(t, first.Digest, retried.Digest)
+
+	// The same version can never be replaced with different content.
 	_, err = store.Publish(ctx, goModule(t, modulePath, "package authkit // changed\n"), coords)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "already published")
+	require.Contains(t, err.Error(), "different bytes")
 
 	// A new version whose content is byte-identical to the previous release is a
 	// valid release, not an empty-commit failure.

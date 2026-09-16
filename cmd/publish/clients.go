@@ -2,20 +2,23 @@ package publish
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/cmd/generate"
 	"github.com/codefly-dev/cli/pkg/cli"
+	clicomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/generators"
 	"github.com/codefly-dev/cli/pkg/librarystore"
 	"github.com/codefly-dev/core/composition"
@@ -40,21 +43,20 @@ that exports an API contract (codefly generate contracts), in every language
 the contract kind supports — go, typescript and python for protobuf, go and
 typescript for OpenAPI.
 
-Each endpoint becomes one codefly library named <module>-<service>-client,
+Each endpoint becomes one codefly library named <module>-<service>-<endpoint>-client,
 generated exactly as ` + "`codefly generate client`" + ` would (bindings plus facade) and
 published at the module package version through the stores configured under
 the workspace's libraries.publish block. Versions are immutable.
 
-An endpoint restricts or opts out of client publishing in module.codefly.yaml:
+An endpoint restricts or opts out of client publishing in clients.codefly.yaml:
 
-  interface:
-    endpoints:
-      - service: accounts
-        endpoint: connect
-        clients:
-          languages: [go, typescript]                # default: every supported language
-          services: [AuditService, WebhookService]   # facade subset; protobuf only
-          publish: false                             # opt out
+  schema: codefly/module-clients-config/v1
+  endpoints:
+    - service: accounts
+      endpoint: connect
+      languages: [go, typescript]                # default: every supported language
+      services: [AuditService, WebhookService]   # facade subset; protobuf only
+      publish: false                             # opt out
 
 contracts/clients.codefly.json records what was published (library, language,
 import path, digest) for the current package version. A contract whose digest
@@ -147,13 +149,56 @@ func LoadClientsManifest(moduleDir string) (*ClientsManifest, error) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	var manifest ClientsManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse %s: trailing JSON content", path)
 	}
 	if manifest.Schema != ClientsManifestSchema {
 		return nil, fmt.Errorf("%s: unsupported schema %q (want %s)", path, manifest.Schema, ClientsManifestSchema)
 	}
+	if err := manifest.validateStructure(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &manifest, nil
+}
+
+func (m *ClientsManifest) validateStructure() error {
+	if strings.TrimSpace(m.Package) == "" || strings.TrimSpace(m.Version) == "" {
+		return fmt.Errorf("package and version are required")
+	}
+	version, err := semver.NewVersion(m.Version)
+	if err != nil {
+		return fmt.Errorf("version %q is not strict semantic version: %w", m.Version, err)
+	}
+	if version.String() != m.Version {
+		return fmt.Errorf("version %q is not canonical strict semantic version", m.Version)
+	}
+	clients := map[string]bool{}
+	for _, client := range m.Clients {
+		if client.Library == "" || client.Service == "" || client.Endpoint == "" || client.ContractDigest == "" {
+			return fmt.Errorf("every client requires library, service, endpoint and contractDigest")
+		}
+		if clients[client.Library] {
+			return fmt.Errorf("client %s is recorded twice", client.Library)
+		}
+		clients[client.Library] = true
+		exports := map[string]bool{}
+		for _, export := range client.Exports {
+			language := languages.FromString(export.Language)
+			if language == languages.NotSupported || strings.TrimSpace(export.ImportPath) == "" || strings.TrimSpace(export.Ref) == "" || strings.TrimSpace(export.Digest) == "" || strings.TrimSpace(export.InstallHint) == "" {
+				return fmt.Errorf("client %s has incomplete publication evidence for language %q", client.Library, export.Language)
+			}
+			if exports[export.Language] {
+				return fmt.Errorf("client %s export %s is recorded twice", client.Library, export.Language)
+			}
+			exports[export.Language] = true
+		}
+	}
+	return nil
 }
 
 // forVersion returns the manifest's entries when it describes pkg@version,
@@ -189,23 +234,30 @@ func (c *PublishedClient) export(language string) *PublishedClientExport {
 // digest → skip (the store version is immutable anyway); recorded at another
 // digest → errContractMoved, the package version must be bumped; not
 // recorded → publish.
-func reconcileClientExport(manifest *ClientsManifest, plan *generate.ModuleClientPlan, language languages.Language) (clientAction, error) {
+func reconcileClientExport(manifest *ClientsManifest, plan *generators.ModuleClientPlan, language languages.Language, expectedImportPath, expectedInstallHint string) (clientAction, error) {
 	client := manifest.client(plan.Name)
 	if client == nil {
 		return actionPublish, nil
+	}
+	if client.Service != plan.Endpoint.Service || client.Endpoint != plan.Endpoint.Endpoint || !slices.Equal(client.Services, plan.Services) {
+		return actionPublish, fmt.Errorf("%w: %s was published from %s/%s with facade services %v, but the current plan is %s/%s with facade services %v; bump the version in %s",
+			errContractMoved, plan.Name, client.Service, client.Endpoint, client.Services, plan.Endpoint.Service, plan.Endpoint.Endpoint, plan.Services, composition.PackageManifestFileName)
 	}
 	if client.ContractDigest != plan.Endpoint.Digest {
 		return actionPublish, fmt.Errorf("%w: %s (%s/%s) was published at %s for contract %s, the exported contract is now %s; bump the version in %s",
 			errContractMoved, plan.Name, plan.Endpoint.Service, plan.Endpoint.Endpoint, manifest.Version, client.ContractDigest, plan.Endpoint.Digest, composition.PackageManifestFileName)
 	}
-	if client.export(string(language)) != nil {
+	if export := client.export(string(language)); export != nil {
+		if export.ImportPath != expectedImportPath || export.InstallHint != expectedInstallHint || strings.TrimSpace(export.Ref) == "" || strings.TrimSpace(export.Digest) == "" {
+			return actionPublish, fmt.Errorf("recorded %s %s export is incomplete or does not match the configured store; restore the publication evidence before retrying", plan.Name, language)
+		}
 		return actionSkip, nil
 	}
 	return actionPublish, nil
 }
 
 // record adds or replaces the export of plan in the manifest.
-func (m *ClientsManifest) record(plan *generate.ModuleClientPlan, export *PublishedClientExport) {
+func (m *ClientsManifest) record(plan *generators.ModuleClientPlan, export *PublishedClientExport) {
 	client := m.client(plan.Name)
 	if client == nil {
 		m.Clients = append(m.Clients, PublishedClient{
@@ -222,6 +274,10 @@ func (m *ClientsManifest) record(plan *generate.ModuleClientPlan, export *Publis
 	} else {
 		client.Exports = append(client.Exports, *export)
 	}
+	client.Service = plan.Endpoint.Service
+	client.Endpoint = plan.Endpoint.Endpoint
+	client.ContractDigest = plan.Endpoint.Digest
+	client.Services = append(client.Services[:0], plan.Services...)
 	sort.Slice(client.Exports, func(i, j int) bool { return client.Exports[i].Language < client.Exports[j].Language })
 	sort.Slice(m.Clients, func(i, j int) bool { return m.Clients[i].Library < m.Clients[j].Library })
 }
@@ -248,14 +304,14 @@ type clientsRun struct {
 	module    *resources.Module
 	catalog   *composition.APIContractCatalog
 	version   *semver.Version
-	plans     []generate.ModuleClientPlan
+	plans     []generators.ModuleClientPlan
 	manifest  *ClientsManifest
 }
 
 // clientWork is one library still owed at least one language export, with
 // the store identity previewed for every language of its plan.
 type clientWork struct {
-	plan       *generate.ModuleClientPlan
+	plan       *generators.ModuleClientPlan
 	languages  []languages.Language
 	importPath map[languages.Language]string
 }
@@ -294,11 +350,14 @@ func loadClientsRun(ctx context.Context, moduleName string, requested []language
 	if err != nil {
 		return nil, fmt.Errorf("package version %q in the contract catalog is not a strict semantic version: %w", catalog.Version, err)
 	}
-	config, err := generate.LoadModuleClientsConfig(module.Dir())
+	if err = validateClientPackage(module.Dir(), module.Name, catalog); err != nil {
+		return nil, err
+	}
+	config, err := generators.LoadModuleClientsConfig(module.Dir())
 	if err != nil {
 		return nil, err
 	}
-	plans, err := generate.PlanModuleClients(module, catalog, config, requested)
+	plans, err := generators.PlanModuleClients(module.Name, catalog, config, requested)
 	if err != nil {
 		return nil, err
 	}
@@ -319,6 +378,21 @@ func loadClientsRun(ctx context.Context, moduleName string, requested []language
 	}, nil
 }
 
+func validateClientPackage(moduleDir, moduleName string, catalog *composition.APIContractCatalog) error {
+	manifest, err := composition.LoadPackageManifest(moduleDir)
+	if err != nil {
+		return fmt.Errorf("cannot load %s: %w", composition.PackageManifestFileName, err)
+	}
+	if manifest.ID != catalog.Package || manifest.Version != catalog.Version {
+		return fmt.Errorf("%s identifies %s@%s but the API contract catalog identifies %s@%s; run `codefly generate contracts %s`",
+			composition.PackageManifestFileName, manifest.ID, manifest.Version, catalog.Package, catalog.Version, moduleName)
+	}
+	if err := composition.ValidatePackageAPIContracts(moduleDir, manifest, catalog); err != nil {
+		return fmt.Errorf("API contract package is inconsistent: %w", err)
+	}
+	return nil
+}
+
 // planClientWork reconciles every plan against the manifest and previews
 // every store identity before anything is generated or published: a
 // language with no configured store fails the whole run up front instead of
@@ -329,11 +403,11 @@ func planClientWork(run *clientsRun, cfg librarystore.StoreConfig) ([]clientWork
 		plan := &run.plans[i]
 		item := clientWork{plan: plan, importPath: map[languages.Language]string{}}
 		for _, lang := range plan.Languages {
-			action, err := reconcileClientExport(run.manifest, plan, lang)
+			importPath, installHint, err := librarystore.PreviewIdentity(librarystore.Language(lang), cfg, plan.Name, run.version.String())
 			if err != nil {
 				return nil, err
 			}
-			importPath, _, err := librarystore.PreviewIdentity(librarystore.Language(lang), cfg, plan.Name, run.version.String())
+			action, err := reconcileClientExport(run.manifest, plan, lang, importPath, installHint)
 			if err != nil {
 				return nil, err
 			}
@@ -387,7 +461,7 @@ func resolveClientsOutputRoot(flag string) (root string, cleanup func(), err err
 // Whatever shipped is immutable, so a partial failure is recorded before it
 // is returned and a re-run publishes only the languages still missing.
 func publishClientWork(ctx context.Context, run *clientsRun, item *clientWork, cfg librarystore.StoreConfig, outputRoot string, w io.Writer) error {
-	entry, err := generate.BuildModuleClientEntry(ctx, run.workspace, run.module, run.catalog, item.plan)
+	entry, err := generators.BuildModuleClientEntry(ctx, run.module.Dir(), run.module.Name, run.catalog, item.plan)
 	if err != nil {
 		return err
 	}
@@ -415,23 +489,39 @@ func publishClientWork(ctx context.Context, run *clientsRun, item *clientWork, c
 	if err != nil {
 		return err
 	}
-	published, publishErr := publishLibraryExports(ctx, lib, run.version, exports, cfg)
-	for i := range published {
-		p := &published[i]
+	return publishAndCheckpointClientExports(exports, func(export *resources.LanguageExport) (publishedExport, error) {
+		published, publishErr := publishLibraryExports(ctx, lib, run.version, []*resources.LanguageExport{export}, cfg)
+		if publishErr != nil {
+			return publishedExport{}, publishErr
+		}
+		if len(published) != 1 {
+			return publishedExport{}, fmt.Errorf("publish %s returned %d results, want one", export.Name, len(published))
+		}
+		return published[0], nil
+	}, func(p publishedExport) error {
 		run.manifest.record(item.plan, &PublishedClientExport{
 			Language: string(p.Language), ImportPath: p.ImportPath, Ref: p.Ref, Digest: p.Digest, InstallHint: p.InstallHint,
 		})
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", item.plan.Name, p.Language, p.Version, p.ImportPath, p.Digest, p.InstallHint)
-	}
-	if len(published) > 0 {
 		if saveErr := run.manifest.Save(ctx, run.module.Dir()); saveErr != nil {
-			if publishErr != nil {
-				return fmt.Errorf("%w; additionally cannot record it in contracts/%s: %v", publishErr, ClientsManifestFileName, saveErr)
-			}
-			return fmt.Errorf("cannot record published clients in contracts/%s: %w", ClientsManifestFileName, saveErr)
+			return fmt.Errorf("%s %s@%s is published but cannot be recorded in contracts/%s: %w",
+				item.plan.Name, p.Language, p.Version, ClientsManifestFileName, saveErr)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", item.plan.Name, p.Language, p.Version, p.ImportPath, p.Digest, p.InstallHint)
+		return nil
+	})
+}
+
+func publishAndCheckpointClientExports(exports []*resources.LanguageExport, publishOne func(*resources.LanguageExport) (publishedExport, error), checkpoint func(publishedExport) error) error {
+	for _, export := range exports {
+		published, err := publishOne(export)
+		if err != nil {
+			return err
+		}
+		if err := checkpoint(published); err != nil {
+			return err
 		}
 	}
-	return publishErr
+	return nil
 }
 
 func publishClients(cmd *cobra.Command, moduleName string) error {
@@ -451,19 +541,43 @@ func publishClients(cmd *cobra.Command, moduleName string) error {
 	if err != nil {
 		return err
 	}
-	if publishClientsCheck {
-		return checkClients(cmd.OutOrStdout(), run.manifest, run.plans)
-	}
 	cfg, err := librarystore.LoadStoreConfig(run.workspace.Dir())
 	if err != nil {
 		return err
+	}
+	if publishClientsCheck {
+		return checkClients(cmd.OutOrStdout(), run.manifest, run.plans, run.version, cfg)
+	}
+	if !publishClientsDryRun {
+		return withClientsPublishLock(run.module.Dir(), func() error {
+			lockedRun, loadErr := loadClientsRun(ctx, moduleName, requested)
+			if loadErr != nil {
+				return loadErr
+			}
+			lockedCfg, loadErr := librarystore.LoadStoreConfig(lockedRun.workspace.Dir())
+			if loadErr != nil {
+				return loadErr
+			}
+			return executeClientPublish(ctx, cmd, lockedRun, lockedCfg)
+		})
 	}
 	work, err := planClientWork(run, cfg)
 	if err != nil {
 		return err
 	}
-	if publishClientsDryRun {
-		return printClientsDryRun(cmd.OutOrStdout(), work)
+	return printClientsDryRun(cmd.OutOrStdout(), work)
+}
+
+func withClientsPublishLock(moduleDir string, fn func() error) error {
+	key := sha256.Sum256([]byte(filepath.Clean(moduleDir)))
+	lockPath := filepath.Join(resources.CodeflyHomeDir(), "locks", fmt.Sprintf("%x.publish-clients.lock", key))
+	return clicomposition.WithFileLock(lockPath, 5*time.Minute, fn)
+}
+
+func executeClientPublish(ctx context.Context, cmd *cobra.Command, run *clientsRun, cfg librarystore.StoreConfig) error {
+	work, err := planClientWork(run, cfg)
+	if err != nil {
+		return err
 	}
 	if len(work) == 0 {
 		cli.Header(1, "Every client of %s@%s is already published", run.catalog.Package, run.version)
@@ -493,12 +607,17 @@ func publishClients(cmd *cobra.Command, moduleName string) error {
 // checkClients is the offline CI gate: every planned (library, language)
 // pair must be recorded in the manifest at this package version, for the
 // contract digest the catalog currently exports.
-func checkClients(out io.Writer, manifest *ClientsManifest, plans []generate.ModuleClientPlan) error {
+func checkClients(out io.Writer, manifest *ClientsManifest, plans []generators.ModuleClientPlan, version *semver.Version, cfg librarystore.StoreConfig) error {
 	var problems []string
 	for i := range plans {
 		plan := &plans[i]
 		for _, lang := range plan.Languages {
-			action, err := reconcileClientExport(manifest, plan, lang)
+			importPath, installHint, err := librarystore.PreviewIdentity(librarystore.Language(lang), cfg, plan.Name, version.String())
+			if err != nil {
+				problems = append(problems, err.Error())
+				continue
+			}
+			action, err := reconcileClientExport(manifest, plan, lang, importPath, installHint)
 			if err != nil {
 				problems = append(problems, err.Error())
 				break
