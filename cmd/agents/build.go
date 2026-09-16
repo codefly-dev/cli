@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -26,7 +25,6 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -587,14 +585,9 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		goWorkFile = "off"
 	}
 	command.Env = agentBuildChildEnvironment(pluginHome, goWorkFile, "CI=1", "CODEFLY_COLOR=never")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		res.err = fmt.Errorf("plugin-owned agent packaging: %w\n%s", err, boundedAgentCIOutput(output))
-		return res
-	}
 	response := &builderv0.PackageResponse{}
-	if err := protojson.Unmarshal(bytes.TrimSpace(output), response); err != nil {
-		res.err = fmt.Errorf("decode Builder.Package response: %w\n%s", err, boundedAgentCIOutput(output))
+	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {
+		res.err = err
 		return res
 	}
 	if response.GetState().GetState() != builderv0.PackageStatus_SUCCESS {
@@ -1035,13 +1028,9 @@ func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (
 	)
 	command.Dir = prepared.Dir
 	command.Env = agentCIChildEnvironment(resolveSourcePluginHome(), "CI=1", "CODEFLY_COLOR=never")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("plugin-owned Builder.Audit: %w\n%s", err, boundedAgentCIOutput(output))
-	}
 	response := &builderv0.AuditResponse{}
-	if err := protojson.Unmarshal(bytes.TrimSpace(output), response); err != nil {
-		return nil, fmt.Errorf("decode Builder.Audit response: %w\n%s", err, boundedAgentCIOutput(output))
+	if err := runAgentSourceJSON(command, "Builder.Audit", response); err != nil {
+		return nil, err
 	}
 	if response.GetState() == nil {
 		return nil, fmt.Errorf("Builder.Audit returned no status")
