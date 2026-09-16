@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/blang/semver"
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/monorepo"
@@ -30,10 +31,11 @@ import (
 )
 
 type agentYAML struct {
-	Publisher string `yaml:"publisher"`
-	Kind      string `yaml:"kind"`
-	Name      string `yaml:"name"`
-	Version   string `yaml:"version"`
+	Publisher string       `yaml:"publisher"`
+	Kind      string       `yaml:"kind"`
+	Name      string       `yaml:"name"`
+	Version   string       `yaml:"version"`
+	Source    *agentSource `yaml:"source,omitempty"`
 
 	// Quarantine marks an agent as NOT ready for the new-style architecture.
 	// `agent build --all` (and `self build --with-agents`) SKIP quarantined
@@ -50,6 +52,13 @@ type agentYAML struct {
 	// generic agents whose Builder.Create declines to invent a project template
 	// declare attach-existing-source and point at a fixture workspace instead.
 	Conformance *agentConformance `yaml:"conformance,omitempty"`
+}
+
+// agentSource selects the exact source root and plugin used to qualify an
+// agent release when the repository root is not itself one language project.
+type agentSource struct {
+	Directory string `yaml:"directory"`
+	Agent     string `yaml:"agent"`
 }
 
 type agentConformance struct {
@@ -334,7 +343,7 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 			continue
 		}
 		if !opts.skipAudit {
-			if err := runAudit(ctx, res.dir, res.ag, opts.failOnVuln); err != nil {
+			if err := runAudit(ctx, res.dir, &res.ag, opts.failOnVuln); err != nil {
 				res.err = err
 			}
 		}
@@ -463,7 +472,7 @@ func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
 		return res.err
 	}
 	if !opts.skipAudit {
-		return runAudit(ctx, dir, res.ag, opts.failOnVuln)
+		return runAudit(ctx, dir, &res.ag, opts.failOnVuln)
 	}
 	return nil
 }
@@ -536,7 +545,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		return res
 	}
 	defer os.RemoveAll(temporary)
-	prepared, err := sourceworkspace.Prepare(ctx, dir)
+	prepared, err := prepareAgentSource(ctx, dir, &ag)
 	if err != nil {
 		res.err = err
 		return res
@@ -600,6 +609,69 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 	log.Header(1, "Agent %s:%s packaged successfully through codefly.dev/go", ag.Name, ag.Version)
 	return res
+}
+
+func prepareAgentSource(ctx context.Context, root string, manifest *agentYAML) (*sourceworkspace.Prepared, error) {
+	dir, agent, err := resolveAgentSource(ctx, root, manifest)
+	if err != nil {
+		return nil, err
+	}
+	if agent == nil {
+		return sourceworkspace.Prepare(ctx, dir)
+	}
+	return sourceworkspace.PrepareWithAgent(ctx, dir, agent)
+}
+
+func resolveAgentSource(ctx context.Context, root string, manifest *agentYAML) (string, *resources.Agent, error) {
+	if manifest.Source == nil {
+		return root, nil, nil
+	}
+	directory := strings.TrimSpace(manifest.Source.Directory)
+	agentSpec := strings.TrimSpace(manifest.Source.Agent)
+	if directory == "" || agentSpec == "" {
+		return "", nil, fmt.Errorf("agent source requires directory and exact agent")
+	}
+	if filepath.IsAbs(directory) || filepath.Clean(directory) != filepath.FromSlash(directory) || strings.HasPrefix(filepath.ToSlash(directory), "../") {
+		return "", nil, fmt.Errorf("agent source directory %q must stay inside the repository", directory)
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve agent repository: %w", err)
+	}
+	dir := filepath.Join(root, filepath.FromSlash(directory))
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("inspect agent source directory %q: %w", directory, err)
+	}
+	if !info.IsDir() {
+		return "", nil, fmt.Errorf("agent source directory %q is not a directory", directory)
+	}
+	physicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve agent repository: %w", err)
+	}
+	physicalDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve agent source directory %q: %w", directory, err)
+	}
+	relative, err := filepath.Rel(physicalRoot, physicalDir)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", nil, fmt.Errorf("agent source directory %q resolves outside the repository", directory)
+	}
+	if !strings.Contains(agentSpec, ":") {
+		return "", nil, fmt.Errorf("agent source agent must include an exact version")
+	}
+	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, agentSpec)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid agent source agent: %w", err)
+	}
+	if agent.Version == latestAgentVersion {
+		return "", nil, fmt.Errorf("agent source agent must use an exact version, not latest")
+	}
+	if _, err := semver.Parse(strings.TrimPrefix(agent.Version, "v")); err != nil || strings.HasPrefix(agent.Version, "v") {
+		return "", nil, fmt.Errorf("agent source agent version %q is not canonical semantic version", agent.Version)
+	}
+	return dir, agent, nil
 }
 
 const genericGoPluginPublisher = "codefly.dev"
@@ -812,16 +884,16 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 //
 // Findings matching IDs in a workspace-root .govulncheck.yaml are filtered
 // out and reported separately as "suppressed (reviewed)".
-func runAudit(ctx context.Context, dir string, ag agentYAML, failOnVuln bool) error {
+func runAudit(ctx context.Context, dir string, ag *agentYAML, failOnVuln bool) error {
 	cli.Header(1, "Auditing %s:%s for vulnerabilities", ag.Name, ag.Version)
-	res, err := runAgentSourceAudit(ctx, dir)
+	res, err := runAgentSourceAudit(ctx, dir, ag)
 	if err != nil {
 		return fmt.Errorf("audit could not complete (use --skip-audit for an explicit waiver): %w", err)
 	}
 	return applyAgentAuditPolicy(dir, ag, res, failOnVuln)
 }
 
-func applyAgentAuditPolicy(dir string, ag agentYAML, res *builderv0.AuditResponse, failOnVuln bool) error {
+func applyAgentAuditPolicy(dir string, ag *agentYAML, res *builderv0.AuditResponse, failOnVuln bool) error {
 	if res == nil {
 		return fmt.Errorf("Builder.Audit returned no response")
 	}
@@ -899,8 +971,8 @@ func applyAgentAuditPolicy(dir string, ag agentYAML, res *builderv0.AuditRespons
 // runAgentSourceAudit adapts an agent repository into a normal Codefly source
 // resource and asks its selected plugin to perform Builder.Audit. No language
 // command or scanner is selected by the CLI.
-func runAgentSourceAudit(ctx context.Context, dir string) (*builderv0.AuditResponse, error) {
-	prepared, err := sourceworkspace.Prepare(ctx, dir)
+func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (*builderv0.AuditResponse, error) {
+	prepared, err := prepareAgentSource(ctx, dir, manifest)
 	if err != nil {
 		return nil, err
 	}
