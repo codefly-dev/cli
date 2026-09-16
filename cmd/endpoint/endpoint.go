@@ -11,7 +11,7 @@
 // A running scoped flow is authoritative for the concrete address. When no
 // flow CLI server is available, the address falls back to deterministic static
 // resolution so pre-start scripts still work. Pass --require-up to additionally
-// fail when nothing is listening.
+// evaluate the endpoint's declared readiness predicate.
 package endpoint
 
 import (
@@ -37,7 +37,8 @@ A running flow is authoritative for the concrete address; otherwise the
 address is computed deterministically so it still resolves before the service
 starts. Use --type to pick the API when a service has several endpoints, or
 --endpoint to pick by name; if exactly one endpoint matches, neither is
-required. Pass --require-up to fail unless the endpoint is actually reachable.
+required. Pass --require-up to fail unless the endpoint's declared readiness
+predicate passes.
 
 Examples:
   codefly endpoint mind --type grpc           # -> localhost:6690
@@ -107,7 +108,7 @@ func init() {
 	Cmd.Flags().String("type", "", fmt.Sprintf("API type to resolve (%s)", strings.Join(standards.APIS(), ", ")))
 	Cmd.Flags().String("endpoint", "", "Endpoint name to resolve (when a service has several of the same API)")
 	Cmd.Flags().String("naming-scope", "", "Naming scope the service runs under (advanced; empty for the normal case)")
-	Cmd.Flags().Bool("require-up", false, "Fail unless the endpoint is actually reachable")
+	Cmd.Flags().Bool("require-up", false, "Fail unless the endpoint's declared readiness predicate passes")
 }
 
 func mustString(cmd *cobra.Command, name string) string {
