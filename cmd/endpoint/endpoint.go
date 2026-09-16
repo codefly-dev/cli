@@ -21,6 +21,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/standards"
 	"github.com/spf13/cobra"
 )
@@ -86,8 +87,14 @@ Examples:
 		if resolved.Unsupported {
 			return fmt.Errorf("codefly endpoint: endpoint %q has an unsupported api (%q); codefly binds no port for it", ep.Name, ep.API)
 		}
-		if requireUp && !common.Reachable(resolved.HostPort) {
-			return fmt.Errorf("codefly endpoint: endpoint %q is not reachable at %s — is `codefly run service %s` up?", ep.Name, resolved.HostPort, service.Name)
+		if requireUp {
+			result, err := common.CheckEndpointReadiness(ctx, module.Name, service.Name, ep, resolved.HostPort)
+			if err != nil {
+				return fmt.Errorf("codefly endpoint: cannot evaluate endpoint %q readiness: %w", ep.Name, err)
+			}
+			if result.Outcome != basev0.ProbeOutcome_PROBE_OUTCOME_PASSED {
+				return fmt.Errorf("codefly endpoint: endpoint %q is not ready at %s: %s: %s", ep.Name, resolved.HostPort, result.Predicate, result.Message)
+			}
 		}
 
 		// The ONLY thing on stdout: the address. Everything else is stderr.
