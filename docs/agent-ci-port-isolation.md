@@ -77,6 +77,12 @@ running development container; disposable tests explicitly authorize Destroy
 for their own fresh scope. Neither a prior run nor a retained fixture scope is
 a cleanup target. Both teardown errors remain part of the gate result.
 
+Audit and SBOM phases also close their own service-scoped builder connection
+after use, including load failures. A later build or runtime flow must start an
+agent under its own recovery scope, not reuse a static builder that inherited
+the preceding flow's marker. Agents belonging to other scheduled services stay
+connected.
+
 ## Control-channel ownership
 
 `codefly run service --cli-server` serves the CLI control API (and the

@@ -81,6 +81,14 @@ func imageEvidenceAssociations(image *builderv0.ImageSBOM) []ImageAssociation {
 
 func runAuditService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
 	w := wool.Get(ctx).In("ciAudit", wool.ThisField(resources.WithUnique(service)))
+	identity, err := service.Identity()
+	if err != nil {
+		return w.Wrap(err)
+	}
+	// A static builder inherits the current process recovery marker. Do not
+	// let a later runtime flow reuse that agent under a different scope.
+	// Evict only this scheduled service, including partial load failures.
+	defer services.ClearAgent(identity.Unique())
 	instance, err := loadCIBuilder(ctx, workspace, module, service, orchestration.ValidationAudit, "dependency audit")
 	if err != nil {
 		return w.Wrap(err)
@@ -105,6 +113,11 @@ func runAuditService(ctx context.Context, workspace *resources.Workspace, module
 
 func runSBOMService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
 	w := wool.Get(ctx).In("ciSBOM", wool.ThisField(resources.WithUnique(service)))
+	identity, err := service.Identity()
+	if err != nil {
+		return w.Wrapf(err, "identify SBOM subject")
+	}
+	defer services.ClearAgent(identity.Unique())
 	instance, err := loadCIBuilder(ctx, workspace, module, service, orchestration.ValidationSBOM, "SBOM generation")
 	if err != nil {
 		return w.Wrap(err)
@@ -121,10 +134,6 @@ func runSBOMService(ctx context.Context, workspace *resources.Workspace, module 
 		return w.Wrapf(err, "encode CycloneDX")
 	}
 	payload = append(payload, '\n')
-	identity, err := service.Identity()
-	if err != nil {
-		return w.Wrapf(err, "identify SBOM subject")
-	}
 	filename := safeCIArtifactName(identity.Module) + "--" + safeCIArtifactName(identity.Name) + ".cdx.json"
 	relative, err := writeCIArtifact(workspace, filepath.Join("sbom", filename), payload)
 	if err != nil {
