@@ -545,12 +545,10 @@ func publishClients(cmd *cobra.Command, moduleName string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := librarystore.LoadStoreConfig(run.workspace.Dir())
+	cfg, err := loadClientsStoreConfig(run.workspace.Dir())
 	if err != nil {
 		return err
 	}
-	cfg.CreateMissingRepositories = publishClientsCreate
-	cfg.PublicRepositories = publishClientsPublic
 	if publishClientsCheck {
 		return checkClients(cmd.OutOrStdout(), run.manifest, run.plans, run.version, cfg)
 	}
@@ -560,7 +558,7 @@ func publishClients(cmd *cobra.Command, moduleName string) error {
 			if loadErr != nil {
 				return loadErr
 			}
-			lockedCfg, loadErr := librarystore.LoadStoreConfig(lockedRun.workspace.Dir())
+			lockedCfg, loadErr := loadClientsStoreConfig(lockedRun.workspace.Dir())
 			if loadErr != nil {
 				return loadErr
 			}
@@ -572,6 +570,25 @@ func publishClients(cmd *cobra.Command, moduleName string) error {
 		return err
 	}
 	return printClientsDryRun(cmd.OutOrStdout(), work)
+}
+
+// loadClientsStoreConfig reads the workspace's `libraries.publish` block and
+// layers this run's repository-creation flags on top. Every load goes through
+// here — the publish path re-reads the configuration inside the lock, and a
+// reload that returned the bare file would silently drop the flags and leave
+// `--create-missing-repository` a no-op on the only path that publishes.
+//
+// The layering direction matters: the policy comes from the command line, never
+// from the file, so a workspace configuration cannot authorize creating a
+// repository on its own.
+func loadClientsStoreConfig(workspaceDir string) (librarystore.StoreConfig, error) {
+	cfg, err := librarystore.LoadStoreConfig(workspaceDir)
+	if err != nil {
+		return librarystore.StoreConfig{}, err
+	}
+	cfg.CreateMissingRepositories = publishClientsCreate
+	cfg.PublicRepositories = publishClientsPublic
+	return cfg, nil
 }
 
 func withClientsPublishLock(moduleDir string, fn func() error) error {

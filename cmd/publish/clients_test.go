@@ -285,3 +285,34 @@ func TestPublishCheckpointsEachExportBeforeStartingTheNext(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, checkpointed["typescript"])
 }
+
+// The publish path re-reads the workspace configuration inside the lock, and an
+// earlier version applied the flags only to the copy loaded outside it — which
+// left --create-missing-repository a no-op on the one path that actually
+// publishes. Both loads go through loadClientsStoreConfig for that reason.
+func TestClientsStoreConfigCarriesTheFlagsThroughEveryLoad(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"),
+		[]byte("name: platform\nlayout: flat\nlibraries:\n  publish:\n    go:\n      owner: codefly-dev\n"), 0o644))
+
+	set := func(create, public bool) { publishClientsCreate, publishClientsPublic = create, public }
+	origCreate, origPublic := publishClientsCreate, publishClientsPublic
+	t.Cleanup(func() { set(origCreate, origPublic) })
+
+	cfg, err := loadClientsStoreConfig(dir)
+	require.NoError(t, err)
+	require.False(t, cfg.CreateMissingRepositories, "no flag, no creation")
+	require.False(t, cfg.PublicRepositories)
+
+	set(true, false)
+	cfg, err = loadClientsStoreConfig(dir)
+	require.NoError(t, err)
+	require.True(t, cfg.CreateMissingRepositories, "--create-missing-repository must survive the reload")
+	require.False(t, cfg.PublicRepositories, "creation alone stays private")
+
+	set(true, true)
+	cfg, err = loadClientsStoreConfig(dir)
+	require.NoError(t, err)
+	require.True(t, cfg.PublicRepositories, "--public-repository must survive the reload")
+	require.Equal(t, "codefly-dev", cfg.GoOwner, "the file's own fields still load")
+}

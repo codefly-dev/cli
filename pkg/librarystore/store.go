@@ -79,9 +79,8 @@ type StoreConfig struct {
 	PublicRepositories bool
 }
 
-// NewStoreFor returns the Store backend for language, configured from cfg.
 // newConfiguredGitHubStore applies the caller's repository-creation policy. A
-// store built without it never creates anything.
+// store built from a cfg that does not carry the opt-in never creates anything.
 func newConfiguredGitHubStore(owner string, cfg StoreConfig) *GitHubStore {
 	store := NewGitHubStore(owner)
 	if cfg.CreateMissingRepositories {
@@ -90,6 +89,7 @@ func newConfiguredGitHubStore(owner string, cfg StoreConfig) *GitHubStore {
 	return store
 }
 
+// NewStoreFor returns the Store backend for language, configured from cfg.
 func NewStoreFor(language Language, cfg StoreConfig) (Store, error) {
 	switch language {
 	case LanguageGo:
