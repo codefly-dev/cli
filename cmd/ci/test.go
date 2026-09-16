@@ -18,11 +18,11 @@ import (
 // TestCmd represents the run command
 var testSelection SelectionFlags
 
-// disposableTests authorizes destruction only for freshly scoped test flows.
+// disposableRuntime authorizes destruction only for freshly scoped runtime flows.
 // Ordinary CI keeps the normal Stop semantics of stateful service agents.
-var disposableTests bool
+var disposableRuntime bool
 
-const disposableTestsUsage = "Give each test flow a fresh resource scope and destroy its owned runtime resources after testing (for disposable fixtures only)"
+const disposableRuntimeUsage = "Give each validation/test flow a fresh resource scope and destroy its owned runtime resources afterward (for disposable fixtures only)"
 
 type disposableTestFlow struct{ *orchestration.Flow }
 
@@ -31,7 +31,7 @@ func (flow disposableTestFlow) Stop() error {
 }
 
 func testFlowOwner(flow *orchestration.Flow) flowStopper {
-	if disposableTests {
+	if disposableRuntime {
 		return disposableTestFlow{flow}
 	}
 	return flow
@@ -112,7 +112,7 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	env, err := testEnvironment(workspace, disposableTests)
+	env, err := testEnvironment(workspace, disposableRuntime)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -125,7 +125,7 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
-	flow.WithTemporaryPorts(temporaryPorts || disposableTests)
+	flow.WithTemporaryPorts(temporaryPorts || disposableRuntime)
 	overrides, err := parsePortOverrides(portOverrideFlags)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -159,7 +159,7 @@ func testService(ctx context.Context, flow *orchestration.Flow) error {
 
 func init() {
 	testSelection.Bind(TestCmd)
-	TestCmd.Flags().BoolVar(&disposableTests, "disposable", false, disposableTestsUsage)
+	TestCmd.Flags().BoolVar(&disposableRuntime, "disposable", false, disposableRuntimeUsage)
 	TestCmd.Flags().StringSliceVar(&silent, "silent", []string{}, "Silent services")
 	TestCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
 	TestCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")

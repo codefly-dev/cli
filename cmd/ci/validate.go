@@ -66,11 +66,11 @@ func runValidationCommand(selection *SelectionFlags, action Action, phase string
 }
 
 func runLintService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
-	return validation.RunService(ctx, workspace, module, service, orchestration.LintMode, "lint", runtimeContext)
+	return validation.RunServiceWithOptions(ctx, workspace, module, service, orchestration.LintMode, "lint", runtimeContext, validation.Options{Disposable: disposableRuntime})
 }
 
 func runCompileService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
-	return validation.RunService(ctx, workspace, module, service, orchestration.CompileMode, "compile", runtimeContext)
+	return validation.RunServiceWithOptions(ctx, workspace, module, service, orchestration.CompileMode, "compile", runtimeContext, validation.Options{Disposable: disposableRuntime})
 }
 
 func init() {

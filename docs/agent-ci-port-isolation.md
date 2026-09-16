@@ -69,10 +69,10 @@ This is applied by the run command, not by `Flow.WithTemporaryPorts`.
 `codefly ci run --temporary-ports` alone remains a port strategy.
 
 Agent conformance additionally passes **`--disposable`**, also available on
-`codefly ci test`. Each test flow receives a fresh naming scope and ephemeral
+`codefly ci test`. Each lint, compile or test flow receives a fresh naming scope and ephemeral
 ports, even if the copied fixture declares a stable scope. Teardown calls both
 Stop and Destroy before closing agent connections, including when initialization
-or testing fails. The ordinary Stop behavior of a stateful agent may retain a
+or validation/testing fails. The ordinary Stop behavior of a stateful agent may retain a
 running development container; disposable tests explicitly authorize Destroy
 for their own fresh scope. Neither a prior run nor a retained fixture scope is
 a cleanup target. Both teardown errors remain part of the gate result.
