@@ -3,9 +3,13 @@ package common
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -123,6 +127,13 @@ func TestResolveNative(t *testing.T) {
 		t.Errorf("grpc resolved unexpectedly: %+v", r)
 	}
 
+	r, err = ResolveNative(ctx, "ws", "mod", "svc", "", &resources.Endpoint{
+		Name: "api", API: "rest", Secured: true,
+	})
+	if err != nil || !strings.HasPrefix(r.Address, "https://") {
+		t.Errorf("secured REST endpoint resolved unexpectedly: %+v (err %v)", r, err)
+	}
+
 	// Name folds to api when the name is itself a supported API and API is empty.
 	r, err = ResolveNative(ctx, "ws", "mod", "svc", "", &resources.Endpoint{Name: "rest"})
 	if err != nil || r.Unsupported || r.Address == "" {
@@ -145,6 +156,33 @@ func TestResolveNative(t *testing.T) {
 	}
 	if !r.External || r.Address != "" {
 		t.Errorf("external endpoint should be External with no address, got %+v", r)
+	}
+}
+
+func TestCheckEndpointReadinessUsesDeclaredHTTPPredicateAndTLS(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/readyz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	address := strings.TrimPrefix(server.URL, "http://")
+	health := &resources.Health{Readiness: &resources.Probe{Kind: "http", Path: "/readyz", Statuses: []string{"200"}}}
+
+	result, err := CheckEndpointReadiness(context.Background(), "mod", "svc", &resources.Endpoint{
+		Name: "api", API: "rest", Health: health,
+	}, address)
+	if err != nil || result.Outcome != basev0.ProbeOutcome_PROBE_OUTCOME_PASSED {
+		t.Fatalf("plain readiness = %+v, %v", result, err)
+	}
+
+	result, err = CheckEndpointReadiness(context.Background(), "mod", "svc", &resources.Endpoint{
+		Name: "api", API: "rest", Secured: true, Health: health,
+	}, address)
+	if err != nil || result.Outcome != basev0.ProbeOutcome_PROBE_OUTCOME_FAILED {
+		t.Fatalf("secured readiness against plaintext = %+v, %v", result, err)
 	}
 }
 

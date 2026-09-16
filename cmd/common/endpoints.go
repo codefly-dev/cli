@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/network"
+	corereadiness "github.com/codefly-dev/core/readiness"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 )
@@ -71,12 +72,6 @@ func ResolveNative(ctx context.Context, workspace, module, service, namingScope 
 	if ep.Visibility == resources.VisibilityExternal {
 		return ResolvedEndpoint{External: true}, nil
 	}
-	// NativeFor only needs the endpoint name and API (for port hashing and
-	// http/rest address formatting); module/service are passed explicitly.
-	// Build a minimal proto endpoint rather than ep.Proto(), whose full
-	// validation requires Module/Service fields that aren't populated on the
-	// statically-loaded service.Endpoints.
-	//
 	// Mirror Proto()'s api inference EXACTLY: fold Name→api only when Name is
 	// itself a supported API. If the resulting api is still unsupported, the
 	// runtime would drop this endpoint entirely (no port, nothing bound), so
@@ -88,7 +83,10 @@ func ResolveNative(ctx context.Context, workspace, module, service, namingScope 
 	if standards.IsSupportedAPI(api) != nil {
 		return ResolvedEndpoint{Unsupported: true}, nil
 	}
-	pe := &basev0.Endpoint{Name: ep.Name, Api: api, Visibility: ep.Visibility}
+	pe, err := endpointProto(module, service, ep, api)
+	if err != nil {
+		return ResolvedEndpoint{}, fmt.Errorf("resolve endpoint declaration: %w", err)
+	}
 	inst := network.NativeFor(ctx, workspace, module, service, namingScope, pe)
 	return ResolvedEndpoint{
 		Address: inst.Address,
@@ -96,6 +94,39 @@ func ResolveNative(ctx context.Context, workspace, module, service, namingScope 
 		// "host:port", so the probe target must be built from Hostname+Port.
 		HostPort: fmt.Sprintf("%s:%d", inst.Hostname, inst.Port),
 	}, nil
+}
+
+// CheckEndpointReadiness evaluates the producer's declared readiness predicate against its resolved address.
+func CheckEndpointReadiness(ctx context.Context, module, service string, ep *resources.Endpoint, address string) (*basev0.ProbeResult, error) {
+	endpoint, err := endpointProto(module, service, ep, ep.API)
+	if err != nil {
+		return nil, err
+	}
+	probe, declared := resources.EndpointReadinessProbe(endpoint)
+	requirement := &resources.ReadinessRequirement{
+		Dependency: module + "/" + service,
+		Endpoint:   ep.Name,
+		API:        endpoint.Api,
+		Probe:      probe,
+		Secured:    resources.EndpointSecured(endpoint),
+		Declared:   declared,
+	}
+	return corereadiness.Check(ctx, requirement, corereadiness.Target{Address: address}), nil
+}
+
+func endpointProto(module, service string, ep *resources.Endpoint, api string) (*basev0.Endpoint, error) {
+	declaration := *ep
+	declaration.API = api
+	declaration.Module = module
+	declaration.Service = service
+	if declaration.Visibility == "" {
+		declaration.Visibility = resources.VisibilityPrivate
+	}
+	endpoint, err := declaration.Proto()
+	if err != nil {
+		return nil, fmt.Errorf("resolve endpoint declaration: %w", err)
+	}
+	return endpoint, nil
 }
 
 // ResolvePreferredNative returns the concrete endpoint recorded by a live,
