@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/services"
 )
 
 // containerRecoveryProjection serializes projecting the marker with the agent
@@ -36,6 +37,9 @@ func (flow *Flow) ContainerRecoveryScope() (dockerrun.ContainerRecoveryScope, er
 // after that point would inherit the other flow's ownership.
 func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, error) {
 	if flow.containerRecoveryIdentity != "" {
+		if flow.world != nil {
+			flow.world.containerRecoveryIdentity = flow.containerRecoveryIdentity
+		}
 		return flow.containerRecoveryScope, dockerrun.SetContainerRecoveryScope(flow.containerRecoveryScope)
 	}
 	scope, err := ContainerRecoveryScopeFor(flow.workspace, flow.Environment())
@@ -52,6 +56,9 @@ func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, 
 		return scope, fmt.Errorf("projected container recovery identity is unreadable")
 	}
 	flow.containerRecoveryScope, flow.containerRecoveryIdentity = scope, identity
+	if flow.world != nil {
+		flow.world.containerRecoveryIdentity = identity
+	}
 	return scope, nil
 }
 
@@ -98,11 +105,15 @@ func (runner *Runner) validateContainerRecovery() error {
 	// acknowledgement was captured when it was spawned (and a cached agent's
 	// when some earlier flow spawned it). Reading the variable here reports a
 	// correctly rebuilt agent as stale.
-	if runner.containerRecoveryIdentity == "" {
+	return validateContainerRecovery(runner.instance, runner.containerRecoveryIdentity)
+}
+
+func validateContainerRecovery(instance *services.Instance, expected string) error {
+	if expected == "" {
 		return nil
 	}
-	if runner.instance.ContainerRecoveryScope != runner.containerRecoveryIdentity {
-		return fmt.Errorf("agent for %s did not acknowledge this run's container recovery scope; rebuild the agent against the CLI's pinned Core before running with Docker (upgrading the CLI alone does not update agent binaries); existing unlabeled containers require explicit recovery by container ID", runner.instance.Unique())
+	if instance.ContainerRecoveryScope != expected {
+		return fmt.Errorf("agent for %s did not acknowledge this run's container recovery scope; rebuild the agent against the CLI's pinned Core before running with Docker (upgrading the CLI alone does not update agent binaries); existing unlabeled containers require explicit recovery by container ID", instance.Unique())
 	}
 	return nil
 }

@@ -166,6 +166,10 @@ type World struct {
 	Env  *resources.Environment
 	Mode Mode
 
+	// containerRecoveryIdentity is the ownership acknowledgement every agent
+	// spawned for this flow must return before it can create Docker resources.
+	containerRecoveryIdentity string
+
 	// Push drives whether a docker build pushes its image to the registry.
 	// Scoped to the flow (not process-global) so a snapshot render that
 	// requires push cannot silently make a later in-process BuildMode build
@@ -1716,6 +1720,11 @@ func producerExposesReference(producer *resources.Service, reference *resources.
 }
 
 func (flow *Flow) configureRunner(runner *Runner, service *resources.Service) {
+	// A build-mode manager carries a Builder and no Runner (Manager.Load);
+	// every setter below tolerates the nil, the field write must too.
+	if runner == nil {
+		return
+	}
 	runner.containerRecoveryIdentity = flow.containerRecoveryIdentity
 	runner.WithRuntimeContext(flow.runtimeContextFor(service))
 	runner.WithFixture(flow.fixture)
