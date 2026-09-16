@@ -984,6 +984,9 @@ codefly login
 ### `codefly publish library <name>`
 
 Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: an identical retry adopts the existing version, while different bytes require a version bump.
+A publish never creates a repository on its own. Pass `--create-missing-repository` to let it, and the repository is **private** unless you also pass `--public-repository` (which requires `--create-missing-repository`: an existing repository's visibility is never changed by a publish). Both are deliberate: a generated client's bindings carry every message in its contract, not only the services its facade exposes, so a public repository discloses a module's whole surface. Where a library may be published, and whether that destination is public, is an infrastructure fact — prefer taking it from the platform's cell contract over hardcoding it.
+
+`--create-missing-repository` needs a GitHub credential with repository-creation scope (`GITHUB_TOKEN`, or `gh auth login`); without one the publish fails naming what is missing rather than silently skipping the creation. When the repository it publishes into is private, the reported install hint carries `GOPRIVATE` for the owner's namespace, because a bare `go get` resolves through the public module proxy and cannot see a private repository. If the repository already exists and is public while a private one was requested, the publish proceeds and warns: its visibility is not a publish's to rewrite.
 
 ```bash
 codefly publish library authkit --dry-run           # show what would be published, touch nothing
@@ -1016,6 +1019,8 @@ codefly publish clients saas-starter                    # generate (Docker) and 
 codefly publish clients saas-starter --language go      # one language only
 codefly publish clients saas-starter --output ./libraries   # keep the generated libraries instead of a temp dir
 ```
+
+Like `publish library`, this creates no repository unless `--create-missing-repository` is passed, and creates a private one unless `--public-repository` is passed as well. Publishing is not required to consume a module's clients: a Codefly workspace carries the proto companion the CLI pin resolves, so `generate client` reproduces them from the module package's contract, and a per-language SDK repository that carries the generated tree distributes them under its own tag.
 
 An endpoint shapes its clients in the optional, publish-owned `clients.codefly.yaml`. Keeping this policy outside `module.codefly.yaml` prevents synchronization of the generated `interface:` block from replacing it. The schema and endpoint identity are required; every policy field is optional, and unknown fields are rejected:
 

@@ -48,3 +48,38 @@ func TestLoadStoreConfigMissingWorkspaceFile(t *testing.T) {
 	_, err := LoadStoreConfig(t.TempDir())
 	require.Error(t, err)
 }
+
+// The repository-creation policy is a command-line decision, never a file one.
+// A workspace configuration travels with the module it describes, so a file
+// able to carry this policy would be a module authorizing its own repository —
+// and, with the public option, its own disclosure.
+//
+// StoreConfig no longer has anywhere to put it: the policy is a separate
+// RepositoryPolicy argument, so this asserts the whole loaded value, which
+// fails if a future schema change ever grows the struct a policy could land in.
+func TestLoadStoreConfigNeverCarriesTheRepositoryCreationPolicy(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `
+name: platform
+layout: flat
+libraries:
+  publish:
+    createMissingRepositories: true
+    publicRepositories: true
+    go:
+      owner: codefly-dev
+      createMissingRepositories: true
+      publicRepositories: true
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"), []byte(yaml), 0o644))
+
+	cfg, err := LoadStoreConfig(dir)
+	require.NoError(t, err)
+	require.Equal(t, StoreConfig{GoOwner: "codefly-dev"}, cfg,
+		"the owner is a file-level fact; nothing else in the file may reach the store config")
+
+	// And the store the loaded config builds creates nothing.
+	store, err := NewStoreFor(LanguageGo, cfg, RepositoryPolicy{})
+	require.NoError(t, err)
+	require.Nil(t, store.(*GitHubStore).ensureRepository)
+}

@@ -62,7 +62,9 @@ func installLibrary(cmd *cobra.Command, spec string) error {
 	if err != nil {
 		return err
 	}
-	store, err := librarystore.NewStoreFor(language, cfg)
+	// The zero policy: installing resolves an existing published version and
+	// must never bring a repository into existence.
+	store, err := librarystore.NewStoreFor(language, cfg, librarystore.RepositoryPolicy{})
 	if err != nil {
 		return err
 	}

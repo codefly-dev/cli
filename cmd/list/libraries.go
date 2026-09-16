@@ -94,7 +94,8 @@ func listLibraries(cmd *cobra.Command) error {
 				language := librarystore.Language(lang.Name)
 				lookup, cached := storesByLanguage[language]
 				if !cached {
-					store, err := librarystore.NewStoreFor(language, cfg)
+					// The zero policy: listing is a read and never creates.
+					store, err := librarystore.NewStoreFor(language, cfg, librarystore.RepositoryPolicy{})
 					if err != nil {
 						// A library that has never been published yet, or a
 						// language the workspace hasn't configured for
