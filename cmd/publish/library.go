@@ -20,6 +20,8 @@ var (
 	publishLibraryVersion   string
 	publishLibraryLanguages []string
 	publishLibraryDryRun    bool
+	publishLibraryCreate    bool
+	publishLibraryPublic    bool
 )
 
 // libraryCmd is `codefly publish library <name>`, a sibling of the
@@ -57,6 +59,8 @@ func init() {
 	libraryCmd.Flags().StringVar(&publishLibraryVersion, "version", "", "Version to publish (defaults to the library's version)")
 	libraryCmd.Flags().StringSliceVar(&publishLibraryLanguages, "language", nil, "Languages to publish (defaults to all of the library's declared languages)")
 	libraryCmd.Flags().BoolVar(&publishLibraryDryRun, "dry-run", false, "Show what would be published without publishing anything")
+	libraryCmd.Flags().BoolVar(&publishLibraryCreate, "create-missing-repository", false, "Create a go/python export's GitHub repository when it does not exist yet (private unless --public-repository)")
+	libraryCmd.Flags().BoolVar(&publishLibraryPublic, "public-repository", false, "Create repositories public instead of private; a client's bindings carry every message in the contract, so this discloses the whole surface")
 	Cmd.AddCommand(libraryCmd)
 }
 
@@ -105,6 +109,8 @@ func publishLibrary(cmd *cobra.Command, name string) error {
 	if err != nil {
 		return err
 	}
+	cfg.CreateMissingRepositories = publishLibraryCreate
+	cfg.PublicRepositories = publishLibraryPublic
 	exports, err := preflightLibraryExports(lib, version, languageNames, cfg)
 	if err != nil {
 		return err

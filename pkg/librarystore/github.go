@@ -39,9 +39,14 @@ type GitHubStore struct {
 	commitEmail string
 	// ensureRepository creates the export's GitHub repository when it is absent,
 	// and is a no-op when it already exists. It runs before the clone in Publish:
-	// repository creation is a platform (API) operation git cannot perform. Tests
-	// point remoteFor at a local bare repository that already exists and disable
-	// this so publish never contacts the GitHub API.
+	// repository creation is a platform (API) operation git cannot perform.
+	//
+	// It is nil unless EnableRepositoryCreation was called. Creating a repository
+	// is an infrastructure act with a disclosure consequence — a client's bindings
+	// carry every message in the contract, not only the services its facade
+	// exposes — so a publish never does it as a side effect of being run. With it
+	// nil, an absent repository fails the clone with a message naming what to
+	// create.
 	ensureRepository func(ctx context.Context, language Language, name string) error
 	// tokenSource resolves the GitHub credential used both to create the repository
 	// (via the API) and to authenticate git's HTTPS clone/push to github.com, so
@@ -59,8 +64,18 @@ func NewGitHubStore(owner string) *GitHubStore {
 		return fmt.Sprintf("https://github.com/%s/%s.git", s.Owner, repositoryName(language, name))
 	}
 	s.tokenSource = githubToken
-	s.ensureRepository = s.createLibraryRepository
 	return s
+}
+
+// EnableRepositoryCreation opts this store into creating an export's repository
+// when it is absent, at the visibility the caller chose. Callers pass that
+// choice explicitly: a repository's visibility is an infrastructure decision,
+// and defaulting it to public would disclose a module's full message graph as a
+// side effect of running a publish.
+func (s *GitHubStore) EnableRepositoryCreation(private bool) {
+	s.ensureRepository = func(ctx context.Context, language Language, name string) error {
+		return s.createLibraryRepository(ctx, language, name, private)
+	}
 }
 
 // authToken resolves the GitHub credential once and caches it: publish runs the
@@ -158,8 +173,10 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		return Published{}, err
 	}
 
-	if err = s.ensureRepository(ctx, c.Language, c.Name); err != nil {
-		return Published{}, err
+	if s.ensureRepository != nil {
+		if err = s.ensureRepository(ctx, c.Language, c.Name); err != nil {
+			return Published{}, err
+		}
 	}
 
 	work, err := os.MkdirTemp("", "codefly-library-publish-*")
@@ -267,7 +284,7 @@ func validatePythonArtifact(artifactDir string) error {
 // exists. Without a token it does nothing: the subsequent clone fails with the
 // "create the library repository first" message, preserving today's behavior for
 // operators who provision repositories out of band.
-func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Language, name string) error {
+func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Language, name string, private bool) error {
 	token := s.authToken()
 	if token == "" {
 		return nil
@@ -276,7 +293,7 @@ func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Lang
 	if err != nil {
 		return err
 	}
-	return ensureRepositoryExists(ctx, client, s.Owner, repositoryName(language, name))
+	return ensureRepositoryExists(ctx, client, s.Owner, repositoryName(language, name), private)
 }
 
 // ensureRepositoryExists creates owner/repo when GitHub reports it absent, and
@@ -284,18 +301,19 @@ func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Lang
 // failure — permission, rate limit, network — is surfaced rather than mistaken
 // for a missing repository.
 //
-// The repository is created public: the store's contract is that a consumer
-// resolves the export with its native tool (`go get github.com/owner/name-go`)
-// without codefly or credentials, and the install hint Publish returns says
-// exactly that — a private repository would make that command fail for anyone
-// outside the organization. It is created org-owned when the owner is an
+// The caller chooses visibility. A public repository lets a consumer resolve the
+// export with its native tool (`go get github.com/owner/name-go`) with neither
+// codefly nor a credential, which is what the install hint Publish returns
+// describes; a private one requires the consumer to be inside the organization
+// with a credential configured (GOPRIVATE plus netrc for Go, a token for pip).
+// Nothing here picks for the caller. It is created org-owned when the owner is an
 // organization and under the authenticated user otherwise, so the same code path
 // serves the "organization or user" owner the store documents.
 //
 // A create that fails with 422 means the repository was created concurrently (or
 // out of band) between the lookup and the create; that is the idempotent success
 // this function promises, not an error.
-func ensureRepositoryExists(ctx context.Context, client *github.Client, owner, repo string) error {
+func ensureRepositoryExists(ctx context.Context, client *github.Client, owner, repo string, private bool) error {
 	if _, resp, err := client.Repositories.Get(ctx, owner, repo); err == nil {
 		return nil
 	} else if resp == nil || resp.StatusCode != http.StatusNotFound {
@@ -307,7 +325,7 @@ func ensureRepositoryExists(ctx context.Context, client *github.Client, owner, r
 	}
 	if _, resp, err := client.Repositories.Create(ctx, org, &github.Repository{
 		Name:     github.Ptr(repo),
-		Private:  github.Ptr(false),
+		Private:  github.Ptr(private),
 		AutoInit: github.Ptr(true),
 	}); err != nil {
 		if resp != nil && resp.StatusCode == http.StatusUnprocessableEntity {

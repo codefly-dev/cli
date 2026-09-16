@@ -147,11 +147,11 @@ func TestEnsureRepositoryExists(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
 		})
-		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go"))
+		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", true))
 		require.False(t, created, "an existing repository must not be re-created")
 	})
 
-	t.Run("an absent org repository is created public, org-owned, initialized", func(t *testing.T) {
+	t.Run("an absent org repository is created org-owned, initialized, at the requested visibility", func(t *testing.T) {
 		var createPath string
 		var body struct {
 			Private  *bool `json:"private"`
@@ -170,10 +170,16 @@ func TestEnsureRepositoryExists(t *testing.T) {
 				_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
 			}
 		})
-		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go"))
+		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", true))
 		require.Equal(t, "/api/v3/orgs/codefly-dev/repos", createPath, "an organization owner uses the org endpoint")
 		require.NotNil(t, body.Private)
-		require.False(t, *body.Private, "the published repository must be public so `go get` resolves it")
+		require.True(t, *body.Private, "a private request must not be silently widened")
+
+		// Public is available, but only because the caller asked: a client's
+		// bindings carry every message in the contract, so this is a disclosure.
+		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", false))
+		require.NotNil(t, body.Private)
+		require.False(t, *body.Private, "an explicit public request must be honoured")
 		require.NotNil(t, body.AutoInit)
 		require.True(t, *body.AutoInit, "auto-init gives a deterministic default branch instead of the host's git config")
 	})
@@ -192,7 +198,7 @@ func TestEnsureRepositoryExists(t *testing.T) {
 				_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
 			}
 		})
-		require.NoError(t, ensureRepositoryExists(ctx, client, "alice", "authkit-go"))
+		require.NoError(t, ensureRepositoryExists(ctx, client, "alice", "authkit-go", true))
 		require.Equal(t, "/api/v3/user/repos", createPath, "a user owner uses the authenticated-user endpoint")
 	})
 
@@ -208,7 +214,7 @@ func TestEnsureRepositoryExists(t *testing.T) {
 				_, _ = w.Write([]byte(`{"message":"Repository creation failed.","errors":[{"resource":"Repository","code":"custom","message":"name already exists on this account"}]}`))
 			}
 		})
-		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go"),
+		require.NoError(t, ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", true),
 			"a repository that appeared between the lookup and the create is not an error")
 	})
 
@@ -220,7 +226,7 @@ func TestEnsureRepositoryExists(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusInternalServerError)
 		})
-		err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go")
+		err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", true)
 		require.ErrorContains(t, err, "check repository")
 		require.False(t, created, "a lookup failure must not trigger a blind create")
 	})
@@ -236,7 +242,7 @@ func TestEnsureRepositoryExists(t *testing.T) {
 				w.WriteHeader(http.StatusForbidden)
 			}
 		})
-		err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go")
+		err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", true)
 		require.ErrorContains(t, err, "repository-creation scope")
 	})
 }
@@ -611,4 +617,34 @@ func TestTreeDigestCoversTrackedContentOnlyModeSensitive(t *testing.T) {
 	daExec, err := store.treeDigest(ctx, a)
 	require.NoError(t, err)
 	require.NotEqual(t, da, daExec)
+}
+
+// A publish must never bring a repository into existence on its own. The
+// disclosure is the reason: a generated client's bindings carry every message in
+// the contract, not only the services its facade exposes, so an implicitly
+// created public repository publishes a module's whole surface as a side effect
+// of someone running a publish command.
+func TestGitHubStoreDoesNotCreateRepositoriesUnlessAskedTo(t *testing.T) {
+	store := NewGitHubStore("codefly-dev")
+	require.Nil(t, store.ensureRepository, "a store must not create repositories by default")
+
+	store.EnableRepositoryCreation(true)
+	require.NotNil(t, store.ensureRepository, "EnableRepositoryCreation is the opt-in")
+}
+
+// NewStoreFor is the only constructor the commands use, so the default has to
+// hold through it as well — and the visibility it applies must be whatever the
+// caller set, never a default of public.
+func TestNewStoreForCreatesNothingWithoutAnExplicitOptIn(t *testing.T) {
+	for _, language := range []Language{LanguageGo, LanguagePython} {
+		plain, err := NewStoreFor(language, StoreConfig{GoOwner: "codefly-dev", PythonOwner: "codefly-dev"})
+		require.NoError(t, err)
+		require.Nil(t, plain.(*GitHubStore).ensureRepository, "%s store creates repositories without an opt-in", language)
+
+		opted, err := NewStoreFor(language, StoreConfig{
+			GoOwner: "codefly-dev", PythonOwner: "codefly-dev", CreateMissingRepositories: true,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, opted.(*GitHubStore).ensureRepository, "%s store ignored the opt-in", language)
+	}
 }

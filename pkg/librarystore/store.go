@@ -67,21 +67,41 @@ type StoreConfig struct {
 	// PythonOwner is the GitHub owner Python exports publish under:
 	// github.com/<PythonOwner>/<name>-python.
 	PythonOwner string
+	// CreateMissingRepositories opts the GitHub-backed stores into creating an
+	// export's repository when it is absent. It is set by the command from an
+	// explicit flag and is deliberately NOT read from workspace configuration:
+	// creating a repository is an infrastructure act, and a file that travels
+	// with the module should not be able to authorize one.
+	CreateMissingRepositories bool
+	// PublicRepositories makes a repository created under
+	// CreateMissingRepositories public. The zero value keeps it private, so the
+	// disclosing option is always the one someone typed.
+	PublicRepositories bool
 }
 
 // NewStoreFor returns the Store backend for language, configured from cfg.
+// newConfiguredGitHubStore applies the caller's repository-creation policy. A
+// store built without it never creates anything.
+func newConfiguredGitHubStore(owner string, cfg StoreConfig) *GitHubStore {
+	store := NewGitHubStore(owner)
+	if cfg.CreateMissingRepositories {
+		store.EnableRepositoryCreation(!cfg.PublicRepositories)
+	}
+	return store
+}
+
 func NewStoreFor(language Language, cfg StoreConfig) (Store, error) {
 	switch language {
 	case LanguageGo:
 		if cfg.GoOwner == "" {
 			return nil, fmt.Errorf("librarystore: no GitHub owner configured for go libraries (workspace libraries.publish.go.owner)")
 		}
-		return NewGitHubStore(cfg.GoOwner), nil
+		return newConfiguredGitHubStore(cfg.GoOwner, cfg), nil
 	case LanguagePython:
 		if cfg.PythonOwner == "" {
 			return nil, fmt.Errorf("librarystore: no GitHub owner configured for python libraries (workspace libraries.publish.python.owner)")
 		}
-		return NewGitHubStore(cfg.PythonOwner), nil
+		return newConfiguredGitHubStore(cfg.PythonOwner, cfg), nil
 	case LanguageTypeScript:
 		if cfg.NpmRegistry == "" || cfg.NpmScope == "" {
 			return nil, fmt.Errorf("librarystore: no npm registry/scope configured for typescript libraries (workspace libraries.publish.typescript)")

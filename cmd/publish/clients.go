@@ -33,6 +33,8 @@ var (
 	publishClientsDryRun    bool
 	publishClientsCheck     bool
 	publishClientsOutput    string
+	publishClientsCreate    bool
+	publishClientsPublic    bool
 )
 
 var clientsCmd = &cobra.Command{
@@ -82,6 +84,8 @@ func init() {
 	clientsCmd.Flags().StringSliceVar(&publishClientsLanguages, "language", nil, "Restrict publishing to these languages (default: every language each endpoint declares or supports)")
 	clientsCmd.Flags().BoolVar(&publishClientsDryRun, "dry-run", false, "Show what would be generated and published without touching a toolchain or a store")
 	clientsCmd.Flags().BoolVar(&publishClientsCheck, "check", false, "Exit 1 unless contracts/clients.codefly.json records every client of the current package version; publishes nothing")
+	clientsCmd.Flags().BoolVar(&publishClientsCreate, "create-missing-repository", false, "Create a go/python client's GitHub repository when it does not exist yet (private unless --public-repository)")
+	clientsCmd.Flags().BoolVar(&publishClientsPublic, "public-repository", false, "Create repositories public instead of private; a client's bindings carry every message in the contract, so this discloses the whole surface")
 	clientsCmd.Flags().StringVar(&publishClientsOutput, "output", "", "Directory to generate the libraries into (default: a temporary directory removed afterwards)")
 	Cmd.AddCommand(clientsCmd)
 }
@@ -545,6 +549,8 @@ func publishClients(cmd *cobra.Command, moduleName string) error {
 	if err != nil {
 		return err
 	}
+	cfg.CreateMissingRepositories = publishClientsCreate
+	cfg.PublicRepositories = publishClientsPublic
 	if publishClientsCheck {
 		return checkClients(cmd.OutOrStdout(), run.manifest, run.plans, run.version, cfg)
 	}
