@@ -250,7 +250,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return finalizeAgentCI(state, err), err
 	}
 	if err := runStage("source", func() error {
-		return validateAgentSource(ctx, options.dir, state.sourceHome)
+		return validateAgentSource(ctx, options.dir, state.sourceHome, &state.manifest)
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
@@ -286,7 +286,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	if options.skipAudit {
 		state.skipStage("audit")
 	} else if err := runStage("audit", func() error {
-		return runAudit(ctx, options.dir, state.build.ag, options.failOnVuln)
+		return runAudit(ctx, options.dir, &state.build.ag, options.failOnVuln)
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
@@ -471,6 +471,9 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 	if manifest.Publisher == "" || manifest.Kind == "" || manifest.Name == "" || manifest.Version == "" {
 		return agentYAML{}, fmt.Errorf("agent.codefly.yaml must have publisher, kind, name, and version")
 	}
+	if _, _, err := resolveAgentSource(context.Background(), dir, &manifest); err != nil {
+		return agentYAML{}, err
+	}
 	if manifest.Kind != serviceAgentKind {
 		// Non-service kinds build and audit through the same pipeline as
 		// services, but agent CI has no conformance suite wired in for them
@@ -507,9 +510,15 @@ func conformanceMode(manifest agentYAML) string {
 	return strings.TrimSpace(manifest.Conformance.Mode)
 }
 
-func validateAgentSource(ctx context.Context, dir, sourceHome string) error {
-	if _, err := sourceworkspace.SelectPlugin(dir); err != nil {
+func validateAgentSource(ctx context.Context, dir, sourceHome string, manifest *agentYAML) error {
+	sourceDir, agent, err := resolveAgentSource(ctx, dir, manifest)
+	if err != nil {
 		return err
+	}
+	if agent == nil {
+		if _, selectionErr := sourceworkspace.SelectPlugin(sourceDir); selectionErr != nil {
+			return selectionErr
+		}
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -518,10 +527,13 @@ func validateAgentSource(ctx context.Context, dir, sourceHome string) error {
 	command := exec.CommandContext(ctx, executable,
 		"--timestamps=false",
 		"test", "source",
-		"--dir", dir,
+		"--dir", sourceDir,
 		"--runtime-context", "free",
 	)
-	command.Dir = dir
+	if agent != nil {
+		command.Args = append(command.Args, "--agent", fmt.Sprintf("%s/%s:%s", agent.Publisher, agent.Name, agent.Version))
+	}
+	command.Dir = sourceDir
 	command.Env = agentCIChildEnvironment(sourceHome,
 		"CI=1",
 		"CODEFLY_COLOR=never",

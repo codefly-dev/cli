@@ -161,6 +161,83 @@ version: 1.2.3
 	}
 }
 
+func TestAgentSourceSelectsExactNestedProject(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "modules", "documents", "services", "documents", "code")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(source, "go.mod"), "module documents\n")
+	manifest := agentYAML{Source: &agentSource{
+		Directory: "modules/documents/services/documents/code",
+		Agent:     "codefly.dev/go:0.0.49",
+	}}
+
+	dir, agent, err := resolveAgentSource(context.Background(), root, &manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != source || agent.Publisher != "codefly.dev" || agent.Name != "go" || agent.Version != "0.0.49" {
+		t.Fatalf("resolved source = %q %+v", dir, agent)
+	}
+	prepared, err := prepareAgentSource(context.Background(), root, &manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Close()
+	if got := prepared.Service.Agent; got.Publisher != agent.Publisher || got.Name != agent.Name || got.Version != agent.Version {
+		t.Fatalf("prepared source agent = %+v, want %+v", got, agent)
+	}
+	linked, err := filepath.EvalSymlinks(filepath.Join(prepared.Service.Dir(), "code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	physicalSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linked != physicalSource {
+		t.Fatalf("prepared source = %q, want %q", linked, physicalSource)
+	}
+}
+
+func TestAgentSourceRejectsIncompleteFloatingAndEscapingSelections(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "source"), "not a directory")
+	tests := []struct {
+		name   string
+		source agentSource
+		want   string
+	}{
+		{name: "missing directory", source: agentSource{Agent: "codefly.dev/go:0.0.49"}, want: "requires directory and exact agent"},
+		{name: "missing agent", source: agentSource{Directory: "."}, want: "requires directory and exact agent"},
+		{name: "parent escape", source: agentSource{Directory: "../source", Agent: "codefly.dev/go:0.0.49"}, want: "must stay inside"},
+		{name: "absolute escape", source: agentSource{Directory: root, Agent: "codefly.dev/go:0.0.49"}, want: "must stay inside"},
+		{name: "floating agent", source: agentSource{Directory: ".", Agent: "codefly.dev/go:latest"}, want: "exact version"},
+		{name: "noncanonical version", source: agentSource{Directory: ".", Agent: "codefly.dev/go:v0.0.49"}, want: "not canonical"},
+		{name: "file", source: agentSource{Directory: "source", Agent: "codefly.dev/go:0.0.49"}, want: "not a directory"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := agentYAML{Source: &test.source}
+			_, _, err := resolveAgentSource(context.Background(), root, &manifest)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("resolveAgentSource error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	manifest := agentYAML{Source: &agentSource{Directory: "linked", Agent: "codefly.dev/go:0.0.49"}}
+	_, _, err := resolveAgentSource(context.Background(), root, &manifest)
+	if err == nil || !strings.Contains(err.Error(), "resolves outside") {
+		t.Fatalf("symlink escape error = %v", err)
+	}
+}
+
 func TestBuildCommandReturnsErrors(t *testing.T) {
 	if BuildCmd.RunE == nil || BuildCmd.Run != nil {
 		t.Fatal("agent build must return errors through RunE")
@@ -294,14 +371,14 @@ func TestApplyAgentAuditPolicyGatesOnlyActionableFindings(t *testing.T) {
 			{Id: "UNPATCHED", Severity: builderv0.AuditFinding_CRITICAL},
 		},
 	}
-	if err := applyAgentAuditPolicy(t.TempDir(), agent, response, false); err != nil {
+	if err := applyAgentAuditPolicy(t.TempDir(), &agent, response, false); err != nil {
 		t.Fatalf("informational audit unexpectedly failed: %v", err)
 	}
-	if err := applyAgentAuditPolicy(t.TempDir(), agent, response, true); err == nil || !strings.Contains(err.Error(), "1 high/critical") {
+	if err := applyAgentAuditPolicy(t.TempDir(), &agent, response, true); err == nil || !strings.Contains(err.Error(), "1 high/critical") {
 		t.Fatalf("actionable audit gate error = %v", err)
 	}
 	response.Findings = response.Findings[1:]
-	if err := applyAgentAuditPolicy(t.TempDir(), agent, response, true); err != nil {
+	if err := applyAgentAuditPolicy(t.TempDir(), &agent, response, true); err != nil {
 		t.Fatalf("unpatched finding should not fail release policy: %v", err)
 	}
 }

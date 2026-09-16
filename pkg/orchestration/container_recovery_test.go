@@ -167,6 +167,7 @@ func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 	require.NoError(t, flow.InitManagers(context.Background()))
 	projected := flow.containerRecoveryIdentity
 	require.NotEmpty(t, projected)
+	require.Equal(t, projected, flow.world.containerRecoveryIdentity)
 
 	// Every runner this flow builds carries that identity.
 	wired := &Runner{}
@@ -324,6 +325,49 @@ func TestFlowProjectsOverAnInheritedForeignMarker(t *testing.T) {
 			projected := dockerrun.InheritedContainerRecoveryScope()
 			require.NotEmpty(t, projected)
 			require.NotEqual(t, foreign, projected, "the flow must project its own ownership, not adopt what it inherited")
+		})
+	}
+}
+
+// A build-mode Manager has a Builder and no Runner, and InitManagers still
+// configures it. Projecting the recovery identity onto that nil runner is
+// what took `codefly ci run --phase build` down with a nil dereference in
+// 0.1.151; the setters it sits beside already tolerate the nil.
+func TestConfigureRunnerToleratesTheBuildModeNilRunner(t *testing.T) {
+	flow := &Flow{world: &World{Mode: BuildMode}, containerRecoveryIdentity: "scope"}
+	service := &resources.Service{Name: "accounts"}
+	require.NotPanics(t, func() { flow.configureRunner(nil, service) })
+
+	runner := &Runner{}
+	flow.configureRunner(runner, service)
+	require.Equal(t, "scope", runner.containerRecoveryIdentity)
+}
+
+func TestBuilderModesRequireAgentContainerRecoveryAcknowledgement(t *testing.T) {
+	for _, mode := range []Mode{BuildMode, SyncMode, DeployMode, SnapshotMode} {
+		t.Run(string(mode), func(t *testing.T) {
+			manager := &Manager{world: &World{Mode: mode, containerRecoveryIdentity: "scope"}}
+			for _, tc := range []struct {
+				name, acknowledgement string
+				reject                bool
+			}{
+				{name: "matching", acknowledgement: "scope"},
+				{name: "missing", reject: true},
+				{name: "foreign", acknowledgement: "other", reject: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					instance := &services.Instance{
+						Identity:               &resources.ServiceIdentity{Name: "accounts", Module: "billing"},
+						ContainerRecoveryScope: tc.acknowledgement,
+					}
+					err := manager.validateContainerRecovery(instance)
+					if tc.reject {
+						require.ErrorContains(t, err, "did not acknowledge this run's container recovery scope")
+						return
+					}
+					require.NoError(t, err)
+				})
+			}
 		})
 	}
 }

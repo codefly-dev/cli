@@ -212,6 +212,9 @@ func (manager *Manager) Load(ctx context.Context) error {
 	}
 
 	w.Debug("load agent", wool.Field("agent-pid", instance.ProcessInfo.AgentPID))
+	if err = manager.validateContainerRecovery(instance); err != nil {
+		return w.Wrap(err)
+	}
 
 	switch manager.world.Mode {
 	case RunMode, TestMode, LintMode, CompileMode:
@@ -241,6 +244,19 @@ func (manager *Manager) Load(ctx context.Context) error {
 		return nil
 	}
 	return w.NewError("unknown mode %s", manager.world.Mode)
+}
+
+func (manager *Manager) validateContainerRecovery(instance *services.Instance) error {
+	// Builder agents can create containers too, but builder modes carry no
+	// Runner and therefore never reach Runner.Init's acknowledgement gate.
+	// Validate the shared agent instance before its first builder lifecycle RPC
+	// so a missing or foreign marker cannot create unrecoverable resources.
+	switch manager.world.Mode {
+	case BuildMode, SyncMode, DeployMode, SnapshotMode:
+		return validateContainerRecovery(instance, manager.world.containerRecoveryIdentity)
+	default:
+		return nil
+	}
 }
 
 func (manager *Manager) SetCallback(f Callback) {

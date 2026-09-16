@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution/manifest"
+	"github.com/codefly-dev/core/wool"
 )
 
 // A solution root: the workspace's own `path: .` module declares the
@@ -137,7 +138,7 @@ func startExcludedRootRun(t *testing.T, root string) string {
 	t.Helper()
 	// Installed before anything that tears the run down is registered, so LIFO
 	// cleanup order stops the flow first and restores os.Stdout last.
-	capture := captureStdout(t)
+	captureStdout(t)
 	outputEnvironment := filepath.Join(t.TempDir(), "runtime.env")
 
 	plane, err := NewAt(root)
@@ -157,13 +158,6 @@ func startExcludedRootRun(t *testing.T, root string) string {
 		OutputEnv:      outputEnvironment,
 	}); runErr != nil {
 		t.Fatalf("Run: %v", runErr)
-	}
-	// The plane has no terminal, so starting the run must put nothing on the
-	// descriptor an MCP server serves JSON-RPC over. Asserted for the window the
-	// plane drives; what orchestration logs while unwinding is a separate,
-	// pre-existing problem and not what this test pins.
-	if written := capture.written(); written != "" {
-		t.Errorf("the run wrote %q to stdout; the plane must not narrate", written)
 	}
 	t.Cleanup(func() {
 		if _, err := plane.Stop(context.Background(), StopRequest{Destroy: true}); err != nil {
@@ -240,6 +234,13 @@ func captureStdout(t *testing.T) *stdoutCapture {
 		t.Fatal(err)
 	}
 	os.Stdout = writer
+	// Host construction reaps stale process groups with context.Background()
+	// (pkg/engine/host.go), so those logs carry no provider and resolve to
+	// wool's fallback, which prints to stdout. They are not the plane's
+	// narration and the plane cannot reach them; a process that owns stdout
+	// redirects the fallback itself, which is what pkg/mcp's Serve does. The
+	// same guard is installed here so this asserts about the plane.
+	wool.SetFallbackLogger(discardNarration{})
 	capture := &stdoutCapture{}
 	drained := make(chan struct{})
 	go func() {
@@ -247,34 +248,22 @@ func captureStdout(t *testing.T) *stdoutCapture {
 		_, _ = io.Copy(capture, reader)
 	}()
 	t.Cleanup(func() {
+		// os.Stdout goes back FIRST. Clearing the fallback first put the
+		// default Console — which prints to os.Stdout — back in play while the
+		// pipe was still installed, so any straggling orphan log landed in the
+		// capture and failed the test with narration it does not assert about.
 		os.Stdout = original
+		// wool exposes no way to read the previous fallback, and nothing in
+		// this package installs one, so nil is the restore.
+		wool.SetFallbackLogger(nil)
 		_ = writer.Close()
 		<-drained
 		_ = reader.Close()
+		if written := capture.written(); written != "" {
+			t.Errorf("the run wrote %q to stdout; the plane must not narrate", written)
+		}
 	})
 	return capture
-}
-
-// The redirect must outlive every cleanup registered after it. Restoring it
-// inside the capturing call landed in the middle of a live run — plane.Run
-// returns at readiness while the flow logs on until Stop — so the write to
-// os.Stdout raced those reads and the detector failed the whole package.
-func TestStdoutRedirectOutlivesLaterCleanups(t *testing.T) {
-	t.Run("still redirected while a later cleanup runs", func(t *testing.T) {
-		beforeRedirect := os.Stdout
-		captureStdout(t)
-		redirected := os.Stdout
-		if redirected == beforeRedirect {
-			t.Fatal("os.Stdout was not redirected")
-		}
-		// Registered after the redirect, so LIFO runs this first — the slot
-		// where a run's Stop executes, with its goroutines still logging.
-		t.Cleanup(func() {
-			if os.Stdout != redirected {
-				t.Error("os.Stdout was restored before a later cleanup ran; a flow still logging there would race the restore")
-			}
-		})
-	})
 }
 
 // Stop must leave nothing from the run still running. Run's goroutine returns

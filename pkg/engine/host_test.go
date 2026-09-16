@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	"github.com/codefly-dev/core/resources"
 	runnersbase "github.com/codefly-dev/core/runners/base"
+	"github.com/codefly-dev/core/wool"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -114,6 +116,55 @@ func TestWorkspaceHostConstructionSurvivesReaperFailure(t *testing.T) {
 	if !strings.Contains(logs.String(), "reap stale workspace processes") {
 		t.Fatalf("expected a best-effort reaper warning on the log sink, got %q", logs.String())
 	}
+}
+
+// The reaper runs on a bare context, so with no provider on it wool resolves to
+// its process-global fallback — a console printing to stdout. mcp.ProtectStdout
+// redirects that fallback, but only for `codefly mcp serve`; every other
+// embedder of a WorkspaceHost still gets these lines on stdout, and one serving
+// a protocol there cannot reach them at all.
+func TestWorkspaceHostReaperNarratesToTheLogSink(t *testing.T) {
+	original := reapStaleProcessGroups
+	t.Cleanup(func() { reapStaleProcessGroups = original })
+	reapStaleProcessGroups = func(ctx context.Context) error {
+		wool.Get(ctx).In("processgroup.reconcile").Info("reaped managed process group")
+		return nil
+	}
+
+	escaped := &recordingProcessor{}
+	wool.SetFallbackLogger(escaped)
+	t.Cleanup(func() { wool.SetFallbackLogger(nil) })
+
+	var logs bytes.Buffer
+	host, err := NewWorkspaceHost(Config{Root: t.TempDir(), LogWriter: &logs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+
+	if !strings.Contains(logs.String(), "reaped managed process group") {
+		t.Fatalf("the reaper's narration did not reach the host log sink, got %q", logs.String())
+	}
+	if escaped.joined() != "" {
+		t.Errorf("the reaper reached the process-global fallback, which prints to stdout: %q", escaped.joined())
+	}
+}
+
+type recordingProcessor struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *recordingProcessor) Process(log *wool.Log) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, log.String())
+}
+
+func (r *recordingProcessor) joined() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.lines, "\n")
 }
 
 func TestWorkspaceHostRequiresExplicitRoot(t *testing.T) {

@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,8 +32,8 @@ var libraryCmd = &cobra.Command{
 	Long: `Publish a workspace library (codefly add library) to the durable stores
 configured under the workspace's libraries.publish block — a GitHub repository
 tagged at the version for go/python, an npm-compatible registry for
-typescript. Published versions are immutable: publishing the same version
-twice fails.
+typescript. Published versions are immutable: an identical retry adopts the
+existing version, while different bytes require a version bump.
 
 Configure workspace.codefly.yaml:
 
@@ -104,30 +105,9 @@ func publishLibrary(cmd *cobra.Command, name string) error {
 	if err != nil {
 		return err
 	}
-
-	exports := make([]*resources.LanguageExport, 0, len(languageNames))
-	for _, languageName := range languageNames {
-		lang := lib.GetLanguage(languageName)
-		if lang == nil {
-			return fmt.Errorf("library %s has no %s export", name, languageName)
-		}
-		exports = append(exports, lang)
-	}
-
-	// Pre-flight every language before any language is published: a Go export
-	// that publishes fine must not leave a Python export's stale version file
-	// discovered only after the Go tag is already immutable.
-	identities := make(map[librarystore.Language]string, len(exports))
-	for _, lang := range exports {
-		language := librarystore.Language(lang.Name)
-		importPath, _, err := librarystore.PreviewIdentity(language, cfg, lib.Name, version.String())
-		if err != nil {
-			return err
-		}
-		identities[language] = importPath
-		if err := preflightLanguageExport(lib, lang, importPath, version.String()); err != nil {
-			return err
-		}
+	exports, err := preflightLibraryExports(lib, version, languageNames, cfg)
+	if err != nil {
+		return err
 	}
 
 	if publishLibraryDryRun {
@@ -135,34 +115,18 @@ func publishLibrary(cmd *cobra.Command, name string) error {
 		fmt.Fprintln(w, "LANGUAGE\tIMPORT PATH\tINSTALL HINT")
 		for _, lang := range exports {
 			language := librarystore.Language(lang.Name)
-			_, hint, err := librarystore.PreviewIdentity(language, cfg, lib.Name, version.String())
-			if err != nil {
-				return err
+			importPath, hint, previewErr := librarystore.PreviewIdentity(language, cfg, lib.Name, version.String())
+			if previewErr != nil {
+				return previewErr
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", language, identities[language], hint)
+			fmt.Fprintf(w, "%s\t%s\t%s\n", language, importPath, hint)
 		}
 		return w.Flush()
 	}
 
-	published := make([]publishedExport, 0, len(exports))
-	for _, lang := range exports {
-		language := librarystore.Language(lang.Name)
-		store, err := librarystore.NewStoreFor(language, cfg)
-		if err != nil {
-			return reportPartialPublish(published, err)
-		}
-		result, err := store.Publish(ctx, lib.LanguagePath(lang), librarystore.Coordinates{
-			Language: language,
-			Name:     lib.Name,
-			Version:  version.String(),
-		})
-		if err != nil {
-			return reportPartialPublish(published, fmt.Errorf("publish %s export: %w", language, err))
-		}
-		published = append(published, publishedExport{
-			Language: language, Version: result.Version, ImportPath: result.ImportPath,
-			Ref: result.Ref, Digest: result.Digest, InstallHint: result.InstallHint,
-		})
+	published, err := publishLibraryExports(ctx, lib, version, exports, cfg)
+	if err != nil {
+		return err
 	}
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
@@ -173,9 +137,60 @@ func publishLibrary(cmd *cobra.Command, name string) error {
 	return w.Flush()
 }
 
-// reportPartialPublish surfaces which languages already published — those
-// versions are immutable and this command never rolls them back — alongside
-// the error that stopped the remaining languages.
+// preflightLibraryExports resolves the requested language exports of lib and
+// runs every no-network gate (export directory present, declared import path
+// matching the configured store, version file in step with version) before a
+// single store is constructed.
+func preflightLibraryExports(lib *resources.Library, version *semver.Version, languageNames []string, cfg librarystore.StoreConfig) ([]*resources.LanguageExport, error) {
+	exports := make([]*resources.LanguageExport, 0, len(languageNames))
+	for _, languageName := range languageNames {
+		lang := lib.GetLanguage(languageName)
+		if lang == nil {
+			return nil, fmt.Errorf("library %s has no %s export", lib.Name, languageName)
+		}
+		exports = append(exports, lang)
+	}
+	for _, lang := range exports {
+		language := librarystore.Language(lang.Name)
+		importPath, _, err := librarystore.PreviewIdentity(language, cfg, lib.Name, version.String())
+		if err != nil {
+			return nil, err
+		}
+		if err := preflightLanguageExport(lib, lang, importPath, version.String()); err != nil {
+			return nil, err
+		}
+	}
+	return exports, nil
+}
+
+// publishLibraryExports publishes the given exports of lib at version, in
+// order, to the stores cfg configures. It stops at the first failure and
+// reports which languages already published — those versions are immutable
+// and are never rolled back.
+func publishLibraryExports(ctx context.Context, lib *resources.Library, version *semver.Version, exports []*resources.LanguageExport, cfg librarystore.StoreConfig) ([]publishedExport, error) {
+	published := make([]publishedExport, 0, len(exports))
+	for _, lang := range exports {
+		language := librarystore.Language(lang.Name)
+		store, err := librarystore.NewStoreFor(language, cfg)
+		if err != nil {
+			return published, reportPartialPublish(published, err)
+		}
+		result, err := store.Publish(ctx, lib.LanguagePath(lang), librarystore.Coordinates{
+			Language: language,
+			Name:     lib.Name,
+			Version:  version.String(),
+		})
+		if err != nil {
+			return published, reportPartialPublish(published, fmt.Errorf("publish %s export: %w", language, err))
+		}
+		published = append(published, publishedExport{
+			Language: language, Version: result.Version, ImportPath: result.ImportPath,
+			Ref: result.Ref, Digest: result.Digest, InstallHint: result.InstallHint,
+		})
+	}
+	return published, nil
+}
+
 func reportPartialPublish(published []publishedExport, cause error) error {
 	if len(published) == 0 {
 		return cause

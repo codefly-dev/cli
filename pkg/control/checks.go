@@ -28,6 +28,10 @@ import (
 // Passed:false with the error text in Output — indistinguishable from a genuine
 // lint/compile failure. Callers that need to tell them apart cannot today.
 func (p *planeImpl) runCheckFlow(ctx context.Context, mode orchestration.Mode, req CheckRequest) (CheckResult, error) {
+	// buildFlow installs the contract on its own parameter, which leaves the
+	// Start below on the caller's context — the drive phase, where a failing
+	// service does most of its narrating.
+	ctx = p.narrationContext(ctx)
 	flow, err := p.buildFlow(ctx, mode, req.Service, orchestration.LocalEnvironmentName, func(_ flowTarget, f *orchestration.Flow) error {
 		// Static validation wants source + toolchain, not live dependencies.
 		f.WithStandAlone(true)

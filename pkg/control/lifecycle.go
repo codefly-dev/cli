@@ -69,6 +69,11 @@ func (p *planeImpl) resolvePinnedModules(ctx context.Context) error {
 // caller configuration, spawn agents (InitManagers), and Load (which builds the
 // mode's policy + playbook). The returned flow is ready to drive.
 func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name, envName string, configure func(flowTarget, *orchestration.Flow) error) (*orchestration.Flow, error) {
+	// Every lifecycle entry point builds its flow here, so this is where the
+	// plane's no-narration contract is installed for all of them: without a
+	// provider on the context, everything the flow logs falls back to a Console
+	// printing to stdout.
+	ctx = p.narrationContext(ctx)
 	// Resolve composed pinned modules before loadTarget: it finds the service by
 	// loading the workspace's modules, and a module composed by identity is not
 	// loadable as a checkout until the CLI has pulled it. Without this, driving a
@@ -133,6 +138,9 @@ func (p *planeImpl) Build(ctx context.Context, req BuildRequest) (BuildResult, e
 		// That plumbing is not lifted yet, so refuse rather than push nowhere.
 		return BuildResult{}, fmt.Errorf("push is not yet supported via the control plane")
 	}
+	// buildFlow installs the contract on its own parameter, which leaves the
+	// Build below on the caller's context.
+	ctx = p.narrationContext(ctx)
 	flow, err := p.buildFlow(ctx, orchestration.BuildMode, req.Service, req.Env, nil)
 	if err != nil {
 		return BuildResult{}, err
@@ -152,6 +160,10 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 	if req.Filter != "" {
 		testRequest.Filters = []string{req.Filter}
 	}
+	// buildFlow installs the contract on its own parameter, which leaves the
+	// Start below on the caller's context — the drive phase, which is where a
+	// test run does most of its narrating.
+	ctx = p.narrationContext(ctx)
 	flow, err := p.buildFlow(ctx, orchestration.TestMode, req.Service, req.Env, func(target flowTarget, f *orchestration.Flow) error {
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
@@ -160,7 +172,11 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 		// override wins, otherwise the selected environment's declared fixture.
 		// Without this a workspace resolved one fixture from the command line
 		// and none at all through the control plane / MCP `test` tool.
-		f.WithFixture(orchestration.SelectedFixture(target.env, req.Fixture))
+		selectedFixture, err := composition.ResolveFixtureSelection(ctx, target.workspace, target.env, req.Fixture)
+		if err != nil {
+			return err
+		}
+		f.WithFixture(selectedFixture)
 		f.WithTestRequest(testRequest)
 		return nil
 	})
@@ -194,6 +210,9 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 	if p.host == nil || p.host.Flows() == nil {
 		return RunHandle{}, fmt.Errorf("control plane has no workspace host")
 	}
+	// Injected here as well as in buildFlow because the background goroutine
+	// below derives its context from this one, not from buildFlow's.
+	ctx = p.narrationContext(ctx)
 	flows := p.host.Flows()
 	flow, err := p.buildFlow(ctx, orchestration.RunMode, req.Service, orchestration.LocalEnvironmentName, func(target flowTarget, f *orchestration.Flow) error {
 		profile, err := target.workspace.ResolveRunProfile(ctx, req.Profile, resources.RunProfile{ExcludeDependencies: req.Exclude})

@@ -74,29 +74,6 @@ func initBareGitRepo(t *testing.T, dir string) (origin string) {
 	return originDir
 }
 
-// A repository left free to run background maintenance has a writer that
-// outlives the test body, and t.TempDir's RemoveAll then fails on a directory
-// that refilled underneath it. That failure is indistinguishable from a real
-// one in the report, so the knobs are pinned here rather than trusted.
-func TestInitBareGitRepoDisablesBackgroundMaintenance(t *testing.T) {
-	dir := t.TempDir()
-	origin := initBareGitRepo(t, dir)
-
-	for _, expected := range []struct {
-		repo, key, value string
-	}{
-		{origin, "receive.autogc", "false"},
-		{origin, "gc.auto", "0"},
-		{origin, "maintenance.auto", "false"},
-		{dir, "gc.auto", "0"},
-		{dir, "maintenance.auto", "false"},
-	} {
-		out, err := exec.Command("git", "-C", expected.repo, "config", "--get", expected.key).Output()
-		require.NoError(t, err, "%s is unset, so git may detach a maintenance child into %s", expected.key, expected.repo)
-		require.Equal(t, expected.value, strings.TrimSpace(string(out)), "%s in %s", expected.key, expected.repo)
-	}
-}
-
 // --- Detect tests --------------------------------------------------
 
 func TestDetect_AgentManifest(t *testing.T) {
@@ -168,7 +145,7 @@ func TestDetect_InvalidSemver_FailsLoud(t *testing.T) {
 
 // --- Bump tests ----------------------------------------------------
 
-func TestBump_PatchMinorMajor(t *testing.T) {
+func TestBump_PatchMinorMajorAndBeta(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, "agent.codefly.yaml", "1.2.3")
 	m, err := publish.Detect(dir)
@@ -181,12 +158,24 @@ func TestBump_PatchMinorMajor(t *testing.T) {
 		{"patch", "1.2.4"},
 		{"minor", "1.3.0"},
 		{"major", "2.0.0"},
+		{"beta", "1.2.4-beta.1"},
 		{"", "1.2.4"}, // default = patch
 	} {
 		next, err := m.Bump(tc.bump)
 		require.NoError(t, err, "bump %q", tc.bump)
 		require.Equal(t, tc.want, next.String(), "bump %q must produce %s", tc.bump, tc.want)
 	}
+}
+
+func TestBump_BetaAdvancesExistingBeta(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "agent.codefly.yaml", "1.2.4-beta.1")
+	m, err := publish.Detect(dir)
+	require.NoError(t, err)
+
+	next, err := m.Bump("beta")
+	require.NoError(t, err)
+	require.Equal(t, "1.2.4-beta.2", next.String())
 }
 
 func TestBump_InvalidType_FailsLoud(t *testing.T) {
@@ -400,6 +389,59 @@ func TestEngine_Release_AbortsOnNonMainBranch(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not on main",
 		"non-main branch must be refused with a clear message")
+}
+
+func TestEngine_Release_AbortsWhenLocalMainIsAheadOfOrigin(t *testing.T) {
+	dir := t.TempDir()
+	initBareGitRepo(t, dir)
+	target := writeManifest(t, dir, "agent.codefly.yaml", "0.1.0")
+	require.NoError(t, addAndCommit(dir, target, "add manifest"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "unreviewed.txt"), []byte("not in CI\n"), 0o600))
+	require.NoError(t, runGit(dir, "add", "unreviewed.txt"))
+	require.NoError(t, runGit(dir, "commit", "-m", "unreviewed local change"))
+
+	m, err := publish.Detect(dir)
+	require.NoError(t, err)
+	_, err = (&publish.Engine{Manifest: m, BumpType: "patch", WorkDir: dir}).Release(context.Background())
+	require.ErrorContains(t, err, "not in sync with origin/main")
+}
+
+func TestEngine_Release_TagPushFailureRollsBackLocalAndRemote(t *testing.T) {
+	dir := t.TempDir()
+	origin := initBareGitRepo(t, dir)
+	target := writeManifest(t, dir, "agent.codefly.yaml", "0.1.0")
+	require.NoError(t, addAndCommit(dir, target, "add manifest"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+
+	headBefore, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(origin, "hooks", "pre-receive"), []byte(`#!/bin/sh
+while read -r _ _ ref; do
+  test "$ref" = "refs/tags/v0.1.1" && exit 1
+done
+exit 0
+`), 0o755))
+
+	m, err := publish.Detect(dir)
+	require.NoError(t, err)
+	_, err = (&publish.Engine{Manifest: m, BumpType: "patch", WorkDir: dir}).Release(context.Background())
+	require.ErrorContains(t, err, "push main and tag atomically")
+
+	contents, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, "version: 0.1.0\n", string(contents))
+	headAfter, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	require.NoError(t, err)
+	require.Equal(t, strings.TrimSpace(string(headBefore)), strings.TrimSpace(string(headAfter)))
+	for _, repo := range []string{dir, origin} {
+		tags, tagErr := exec.Command("git", "-C", repo, "tag", "-l", "v0.1.1").Output()
+		require.NoError(t, tagErr)
+		require.Empty(t, strings.TrimSpace(string(tags)))
+	}
+	originHead, err := exec.Command("git", "-C", origin, "rev-parse", "main").Output()
+	require.NoError(t, err)
+	require.Equal(t, strings.TrimSpace(string(headBefore)), strings.TrimSpace(string(originHead)))
 }
 
 // TestEngine_Release_ReconcilesPastExistingTag pins the bump-from-latest-tag

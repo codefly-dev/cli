@@ -191,6 +191,35 @@ overlay, so the identical command runs in CI (everything pinned, no sibling
 checkouts) and against your local worktrees. It errors clearly when no module —
 or more than one — declares a `service-entry`.
 
+The fixture this run uses is resolved against the composed packages' manifests
+before anything boots, so a typo fails at load naming the fixtures that do exist
+rather than starting the whole stack and failing somewhere inside it. What is
+checked is the *resolved* selection, not the flag: an environment declaring
+`fixture:` in `workspace.codefly.yaml` is verified the same way when `--fixture`
+is absent. The same check runs on `codefly test service`/`test solution` and on
+the control-plane and MCP `test_service` path. Run
+[`codefly show fixtures`](#codefly-show-fixtures) to see what a workspace
+declares.
+
+Only the selected name is judged. A name two composed packages declare
+*differently* is refused, because that selection would no longer name one seed;
+a clash on some other name is not this run's problem and does not block it. One
+package composed under two module references declares its fixtures twice,
+identically, which still names one seed and is not a clash.
+
+Two cases pass without verifying anything, and both say so rather than passing
+silently. A composed package that could not be read may be the one declaring the
+selection, so the run proceeds with a warning naming what went unverified. And a
+workspace whose readable packages declare no fixture at all is unaffected — the
+name travels to the runtime as `CODEFLY__FIXTURE` as before.
+
+**Behavior change:** once every composed package is readable and at least one
+declares a fixture, that set is authoritative, so a name none of them declare is
+refused — including one a service implements itself. Select such a fixture for
+the service that implements it with
+`--set <module>/<service>:CODEFLY__FIXTURE=<name>`, which is layered last and is
+authoritative by construction.
+
 Each run mints two independent secrets per consumed facade prefix — one the
 consuming backend registers the route with, one the consumed module proves its
 own identity with — and provisions every end of the federation exchange.
@@ -896,6 +925,41 @@ launches a binding, not to this command. An unresolved
 dependency is reported, not fatal: the command exits 0, and unattended callers
 gate on `--json` and each dependency's `resolved` field.
 
+### `codefly show fixtures`
+
+List the fixtures the workspace's composed packages declare, with the principals
+each one seeds.
+
+```bash
+codefly show fixtures
+codefly show fixtures --json
+```
+
+A fixture names the state a composed host boots with under `CODEFLY__FIXTURE`,
+so these are exactly the names [`codefly run solution --fixture`](#codefly-run-solution)
+accepts. Each principal is reported by id, email and role — `role` is the lookup
+key a solution test resolves an identity by, instead of hardcoding a seeded
+login. Seed tokens are declared in the manifest but are not printed.
+
+Fixtures are collected across every composed package and sorted by name. A module
+that composes no package declares none and is skipped.
+
+A package that cannot be read, and a name two packages both declare, are reported
+as problems *after* the listing, and the command exits non-zero. The listing is
+not suppressed: a collision is what you run this command to diagnose, so it names
+what each package declares rather than withholding the data needed to act on it.
+Unlike the run path, this command reads the workspace without materializing
+pinned modules into the overlay, so it never writes `codefly.local.yaml` or
+`.gitignore`. It does resolve each composed module in order to read its manifest,
+which materializes a pinned module into the content-addressed cache and fetches
+it when absent — so this is not a purely offline command the first time a pinned
+package is seen. A module that cannot be resolved is reported as a problem, not
+silently dropped from the listing.
+
+A name two packages declare *differently* is a collision. Identical declarations
+of one name — what a package composed under two module references produces — name
+one seed and are listed once.
+
 ---
 
 ## Setup
@@ -919,7 +983,7 @@ codefly login
 
 ### `codefly publish library <name>`
 
-Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: publishing the same version twice fails.
+Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: an identical retry adopts the existing version, while different bytes require a version bump.
 
 ```bash
 codefly publish library authkit --dry-run           # show what would be published, touch nothing
@@ -940,6 +1004,40 @@ libraries:
 Publish credentials (`GITHUB_TOKEN`/`GH_TOKEN` or `gh auth token`; `NPM_TOKEN`/`NODE_AUTH_TOKEN` or, for `npm.pkg.github.com`, `gh auth token`) belong in release CI, never in a runtime.
 
 If a language export publishes and a later one in the same run fails, the command stops and reports which languages already published — those versions are immutable and are never rolled back.
+
+### `codefly publish clients [module]`
+
+Generate and publish a client library for every API contract the module's `interface:` block exports (`codefly generate contracts`), in every language the contract kind supports — `go`, `typescript` and `python` for protobuf, `go` and `typescript` for OpenAPI. Each endpoint becomes one codefly library named `<module>-<service>-<endpoint>-client`, so two contract endpoints on one service never contend for the same immutable package version. Libraries are generated from the committed package contract and proto sources and published at the **module package version** through the workspace's `libraries.publish` stores. This is how a module's consumers — other modules, solutions — get its client: an immutable published handle, never a vendored copy of generated code.
+
+```bash
+codefly publish clients saas-starter --dry-run          # plan + identities; no toolchain, no network
+codefly publish clients saas-starter --check            # CI gate: every client of this version is recorded as published
+codefly publish clients saas-starter                    # generate (Docker) and publish what is still missing
+codefly publish clients saas-starter --language go      # one language only
+codefly publish clients saas-starter --output ./libraries   # keep the generated libraries instead of a temp dir
+```
+
+An endpoint shapes its clients in the optional, publish-owned `clients.codefly.yaml`. Keeping this policy outside `module.codefly.yaml` prevents synchronization of the generated `interface:` block from replacing it. The schema and endpoint identity are required; every policy field is optional, and unknown fields are rejected:
+
+```yaml
+schema: codefly/module-clients-config/v1
+endpoints:
+  - service: accounts
+    endpoint: connect
+    languages: [go, typescript]                 # default: every language the contract kind supports
+    services: [AuditService, WebhookService]    # facade subset (protobuf only); default: the whole contract
+    publish: false                              # opt this endpoint out
+```
+
+`services:` decides what a consumer can reach through the facade; the bindings still carry the full contract, and a TypeScript `_pb` module is one proto file, so keep a service that must not ship in its own `.proto`.
+
+`contracts/clients.codefly.json` records, for the current package version, every published export (library, language, import path, ref/digest, install hint). It is written immediately after each language publishes — published versions are immutable, so a partial failure is checkpointed before the next language starts — and it must be committed. Concurrent publishing commands for one module are serialized. If a process exits after a GitHub tag lands but before the checkpoint, the retry adopts the tag only when its content digest is identical. Its rules:
+
+- Same package version, same endpoint, contract digest, facade selection, store identity and complete publication evidence → skipped.
+- Same package version with a different endpoint, contract digest, or facade selection → refused: generation inputs moved without a release; bump `version:` in `module.package.codefly.yaml` first (a bump starts the manifest over; the stores keep the history).
+- `--check` validates the complete recorded identities and evidence offline and is the gate release CI should run after publishing.
+
+The exported package is the published unit: before generating, the command requires `module.package.codefly.yaml`, the catalog, and every committed contract artifact to agree on package identity, version, path, and digest. Run `codefly generate contracts` and commit first when that validation fails. Go and Python publish into `github.com/<owner>/<name>-go|-python`; TypeScript publishes `<scope>/<name>` to the configured npm registry.
 
 ### `codefly install library <name>@<constraint>`
 
@@ -983,6 +1081,20 @@ isolated Codefly home, builds the local agent, records binary and CycloneDX
 hashes, runs the complete workspace CI gate against a conformance workspace, and
 verifies that validation did not change the agent repository. The default
 report/artifact directory is `.codefly/agent-ci`.
+
+A polyglot source-tag repository whose root is not itself a language project
+declares the exact in-repository source root and source agent instead of relying
+on recursive extension detection:
+
+```yaml
+source:
+  directory: modules/example/services/api/code
+  agent: codefly.dev/go:0.0.49
+```
+
+The directory must remain inside the repository after symlink resolution, and
+the agent version must be exact. Source tests, packaging, and audit all use that
+same selection.
 
 Conformance defaults to scaffolding a fresh service through `Builder.Create`.
 Attach-only generic agents whose `Builder.Create` intentionally declines to

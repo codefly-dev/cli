@@ -171,9 +171,6 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	if err = s.git(ctx, "", "clone", "--quiet", remote, work); err != nil {
 		return Published{}, fmt.Errorf("clone %s (create the library repository first if it does not exist yet): %w", remote, err)
 	}
-	if s.tagExists(ctx, work, tag) {
-		return Published{}, fmt.Errorf("librarystore: %s %s is already published (versions are immutable)", c.Name, tag)
-	}
 	branch, err := s.defaultBranch(ctx, work)
 	if err != nil {
 		return Published{}, err
@@ -183,6 +180,24 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	}
 	if err = s.git(ctx, work, "add", "-A"); err != nil {
 		return Published{}, err
+	}
+	digest, err := s.treeDigest(ctx, work)
+	if err != nil {
+		return Published{}, err
+	}
+	if s.tagExists(ctx, work, tag) {
+		publishedDigest, digestErr := s.digestAtTag(ctx, remote, tag)
+		if digestErr != nil {
+			return Published{}, digestErr
+		}
+		if publishedDigest != digest {
+			return Published{}, fmt.Errorf("librarystore: %s %s is already published with different bytes; bump the version", c.Name, tag)
+		}
+		commit, commitErr := s.output(ctx, work, "rev-parse", tag+"^{commit}")
+		if commitErr != nil {
+			return Published{}, commitErr
+		}
+		return s.published(c, remote, strings.TrimSpace(commit), digest), nil
 	}
 	message := fmt.Sprintf("release %s %s", c.Name, tag)
 	// --allow-empty: a release whose content is identical to the previous one
@@ -205,10 +220,6 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	// leaves the remote untouched and the publish cleanly retryable. A failure
 	// after the push would report an error for a release that is already live.
 	commit, err := s.output(ctx, work, "rev-parse", tag+"^{commit}")
-	if err != nil {
-		return Published{}, err
-	}
-	digest, err := s.treeDigest(ctx, work)
 	if err != nil {
 		return Published{}, err
 	}

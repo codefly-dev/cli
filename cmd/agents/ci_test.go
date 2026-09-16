@@ -233,6 +233,30 @@ version: 0.0.20
 	}
 }
 
+func TestLoadAgentCIManifestAcceptsPinnedPolyglotModuleSource(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "modules", "documents", "services", "documents", "code")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), `publisher: codefly.dev
+kind: codefly:module
+name: document-store
+version: 0.0.10
+source:
+  directory: modules/documents/services/documents/code
+  agent: codefly.dev/go:0.0.49
+`)
+
+	manifest, err := loadAgentCIManifest(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Source == nil || manifest.Source.Directory != "modules/documents/services/documents/code" || manifest.Source.Agent != "codefly.dev/go:0.0.49" {
+		t.Fatalf("unexpected source selection: %+v", manifest.Source)
+	}
+}
+
 func TestLoadAgentCIManifestAllowsToolboxAndProviderWithSkipConformance(t *testing.T) {
 	for _, kind := range []string{"codefly:toolbox", "codefly:provider"} {
 		t.Run(kind, func(t *testing.T) {
