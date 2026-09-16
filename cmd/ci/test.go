@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -16,6 +17,38 @@ import (
 
 // TestCmd represents the run command
 var testSelection SelectionFlags
+
+// disposableTests authorizes destruction only for freshly scoped test flows.
+// Ordinary CI keeps the normal Stop semantics of stateful service agents.
+var disposableTests bool
+
+const disposableTestsUsage = "Give each test flow a fresh resource scope and destroy its owned runtime resources after testing (for disposable fixtures only)"
+
+type disposableTestFlow struct{ *orchestration.Flow }
+
+func (flow disposableTestFlow) Stop() error {
+	return errors.Join(flow.Flow.Stop(), flow.Shutdown())
+}
+
+func testFlowOwner(flow *orchestration.Flow) flowStopper {
+	if disposableTests {
+		return disposableTestFlow{flow}
+	}
+	return flow
+}
+
+func testEnvironment(workspace *resources.Workspace, disposable bool) (*resources.Environment, error) {
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return nil, err
+	}
+	if disposable {
+		// The fixture's declared scope may name retained data. Never destroy
+		// it: disposal requires a new scope even when the fixture names one.
+		env.NamingScope = orchestration.NewInvocationID()
+	}
+	return env, nil
+}
 
 var TestCmd = &cobra.Command{
 	Use:   "test",
@@ -61,7 +94,7 @@ func runTestServiceForSuite(suite string, failFast bool) Action {
 		if err != nil {
 			return w.Wrapf(err, "Cannot init flow")
 		}
-		return runAndStopFlow(flow, func() error {
+		return runAndStopFlow(testFlowOwner(flow), func() error {
 			if err := testService(ctx, flow); err != nil {
 				return w.Wrapf(err, "Cannot test service")
 			}
@@ -79,7 +112,7 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
-	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	env, err := testEnvironment(workspace, disposableTests)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -92,7 +125,7 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)
 	flow.WithRuntimeContext(runtimeContext)
-	flow.WithTemporaryPorts(temporaryPorts)
+	flow.WithTemporaryPorts(temporaryPorts || disposableTests)
 	overrides, err := parsePortOverrides(portOverrideFlags)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -102,11 +135,11 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 
 	err = flow.InitManagers(ctx)
 	if err != nil {
-		return nil, stopFlowAfterError(flow, w.Wrap(err))
+		return nil, runAndStopFlow(testFlowOwner(flow), func() error { return w.Wrap(err) })
 	}
 	err = flow.Load(ctx)
 	if err != nil {
-		return nil, stopFlowAfterError(flow, w.Wrap(err))
+		return nil, runAndStopFlow(testFlowOwner(flow), func() error { return w.Wrap(err) })
 	}
 	return flow, nil
 }
@@ -126,6 +159,7 @@ func testService(ctx context.Context, flow *orchestration.Flow) error {
 
 func init() {
 	testSelection.Bind(TestCmd)
+	TestCmd.Flags().BoolVar(&disposableTests, "disposable", false, disposableTestsUsage)
 	TestCmd.Flags().StringSliceVar(&silent, "silent", []string{}, "Silent services")
 	TestCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for the flow")
 	TestCmd.Flags().StringVar(&scope, "scope", "", "Runtime scope (for testing encapsulation)")
