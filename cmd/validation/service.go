@@ -78,6 +78,28 @@ func RunService(
 	mode orchestration.Mode,
 	operation string,
 	runtimeContext string,
+) error {
+	return RunServiceWithOptions(ctx, workspace, module, service, mode, operation, runtimeContext, Options{})
+}
+
+// Options controls ownership of the runtime resources a validation may create.
+type Options struct {
+	// Disposable uses a fresh scope and destroys it after validation. This is
+	// for disposable CI fixtures, never an existing development scope.
+	Disposable bool
+}
+
+// RunServiceWithOptions also supports disposable callers such as agent CI.
+// Even a lint/compile operation may acquire resources through Runtime.Init.
+func RunServiceWithOptions(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	module *resources.Module,
+	service *resources.Service,
+	mode orchestration.Mode,
+	operation string,
+	runtimeContext string,
+	options Options,
 ) (result error) {
 	w := wool.Get(ctx).In("validateService", wool.ThisField(resources.WithUnique(service)))
 	if err := resources.ValidateRuntimeContext(runtimeContext); err != nil {
@@ -89,6 +111,10 @@ func RunService(
 		return w.Wrap(err)
 	}
 
+	if options.Disposable {
+		env.NamingScope = orchestration.NewInvocationID()
+	}
+
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, mode)
 	if err != nil {
 		return w.Wrap(err)
@@ -97,6 +123,11 @@ func RunService(
 	defer func() {
 		if stopErr := flow.Stop(); stopErr != nil {
 			result = errors.Join(result, fmt.Errorf("cannot stop validation flow: %w", stopErr))
+		}
+		if options.Disposable {
+			if destroyErr := flow.Shutdown(); destroyErr != nil {
+				result = errors.Join(result, fmt.Errorf("cannot destroy disposable validation flow: %w", destroyErr))
+			}
 		}
 		for _, cacheKey := range flow.AgentCacheKeys() {
 			services.ClearAgent(cacheKey)
@@ -107,6 +138,7 @@ func RunService(
 	// databases, caches, or application dependencies.
 	flow.WithStandAlone(true)
 	flow.WithRuntimeContext(runtimeContext)
+	flow.WithTemporaryPorts(options.Disposable)
 	if err := flow.InitManagers(ctx); err != nil {
 		return w.Wrap(err)
 	}

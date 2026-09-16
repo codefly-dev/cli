@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -26,7 +25,6 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -257,7 +255,7 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 			continue
 		}
 		agents = append(agents, dir)
-		if !isCanonicalSourcePackager(&ag) {
+		if ag.Source == nil && !isCanonicalSourcePackager(&ag) {
 			predecessorConsumers = append(predecessorConsumers, dir)
 		}
 	}
@@ -280,12 +278,10 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 		}
 		return errors.Join(append(discoveryFailures, fmt.Errorf("no agent directories found under %s", root))...)
 	}
-	// Builder.Package is intentionally owned by the Go source plugin, including
-	// when that plugin packages its own release. A clean machine cannot enter
-	// that cycle until it has one native Go packager, so seed the exact version
-	// from the discovered source before starting parallel plugin builds. Every
-	// release artifact (including the Go plugin itself) is still produced by the
-	// ordinary Builder.Package path below.
+	// Seed the compatibility-roster packager only for implicit consumers.
+	// Explicit source agents resolve through the normal plugin loader, and the
+	// canonical Go candidate bootstraps itself under its own private identity.
+	// Every release artifact still comes from the ordinary Builder.Package RPC.
 	if len(predecessorConsumers) > 0 {
 		if err := ensureSourcePackager(ctx, agents); err != nil {
 			return errors.Join(append(discoveryFailures, err)...)
@@ -513,7 +509,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		return res
 	}
 	res.ag = ag
-	if !isCanonicalSourcePackager(&ag) {
+	if ag.Source == nil && !isCanonicalSourcePackager(&ag) {
 		if err = ensureSourcePackager(ctx, sourcePackagerCandidates(dir)); err != nil {
 			res.err = err
 			return res
@@ -587,14 +583,9 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		goWorkFile = "off"
 	}
 	command.Env = agentBuildChildEnvironment(pluginHome, goWorkFile, "CI=1", "CODEFLY_COLOR=never")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		res.err = fmt.Errorf("plugin-owned agent packaging: %w\n%s", err, boundedAgentCIOutput(output))
-		return res
-	}
 	response := &builderv0.PackageResponse{}
-	if err := protojson.Unmarshal(bytes.TrimSpace(output), response); err != nil {
-		res.err = fmt.Errorf("decode Builder.Package response: %w\n%s", err, boundedAgentCIOutput(output))
+	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {
+		res.err = err
 		return res
 	}
 	if response.GetState().GetState() != builderv0.PackageStatus_SUCCESS {
@@ -1035,13 +1026,9 @@ func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (
 	)
 	command.Dir = prepared.Dir
 	command.Env = agentCIChildEnvironment(resolveSourcePluginHome(), "CI=1", "CODEFLY_COLOR=never")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("plugin-owned Builder.Audit: %w\n%s", err, boundedAgentCIOutput(output))
-	}
 	response := &builderv0.AuditResponse{}
-	if err := protojson.Unmarshal(bytes.TrimSpace(output), response); err != nil {
-		return nil, fmt.Errorf("decode Builder.Audit response: %w\n%s", err, boundedAgentCIOutput(output))
+	if err := runAgentSourceJSON(command, "Builder.Audit", response); err != nil {
+		return nil, err
 	}
 	if response.GetState() == nil {
 		return nil, fmt.Errorf("Builder.Audit returned no status")

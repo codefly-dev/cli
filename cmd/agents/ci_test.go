@@ -114,7 +114,7 @@ func TestAgentConformanceGateRecordsAuditWithoutDuplicatingReleasePolicy(t *test
 
 func TestAgentConformanceGateIsolatesPortSpacePerRun(t *testing.T) {
 	arguments := agentConformanceGateArguments()
-	if !slices.Contains(arguments, "--temporary-ports") {
+	if !slices.Contains(arguments, "--temporary-ports") || !slices.Contains(arguments, "--disposable") {
 		t.Fatalf("conformance arguments = %v, want --temporary-ports so every agent's identical app/subject identity cannot collide on one host port", arguments)
 	}
 }

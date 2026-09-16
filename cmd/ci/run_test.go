@@ -14,7 +14,7 @@ import (
 )
 
 func TestRunCmdRegistersPortIsolationFlags(t *testing.T) {
-	for _, name := range []string{"temporary-ports", "override-port"} {
+	for _, name := range []string{"temporary-ports", "override-port", "disposable"} {
 		if RunCmd.Flags().Lookup(name) == nil {
 			t.Fatalf("ci run must register --%s so agent conformance can isolate its port space", name)
 		}

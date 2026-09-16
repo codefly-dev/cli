@@ -821,6 +821,10 @@ func agentConformanceGateArguments() []string {
 		// from a prior run would then block every agent that follows. Ephemeral
 		// ports isolate each run's port space so a leak cannot cross runs.
 		"--temporary-ports",
+		// The workspace and all of its runtime state belong to this gate.
+		// Fresh names isolate concurrent runs; Destroy releases containers
+		// whose ordinary Stop deliberately retains development state.
+		"--disposable",
 		// The preceding agent audit is the release's vulnerability policy gate
 		// and fails on actionable HIGH/CRITICAL findings. Conformance still
 		// records audit evidence, but must not reinterpret unpatched upstream
