@@ -1082,6 +1082,20 @@ hashes, runs the complete workspace CI gate against a conformance workspace, and
 verifies that validation did not change the agent repository. The default
 report/artifact directory is `.codefly/agent-ci`.
 
+A polyglot source-tag repository whose root is not itself a language project
+declares the exact in-repository source root and source agent instead of relying
+on recursive extension detection:
+
+```yaml
+source:
+  directory: modules/example/services/api/code
+  agent: codefly.dev/go:0.0.49
+```
+
+The directory must remain inside the repository after symlink resolution, and
+the agent version must be exact. Source tests, packaging, and audit all use that
+same selection.
+
 Conformance defaults to scaffolding a fresh service through `Builder.Create`.
 Attach-only generic agents whose `Builder.Create` intentionally declines to
 generate a project template (for example `codefly.dev/python`) declare an
