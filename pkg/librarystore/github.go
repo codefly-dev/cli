@@ -47,7 +47,11 @@ type GitHubStore struct {
 	// exposes — so a publish never does it as a side effect of being run. With it
 	// nil, an absent repository fails the clone with a message naming what to
 	// create.
-	ensureRepository func(ctx context.Context, language Language, name string) error
+	//
+	// It reports what it learned about the repository: the visibility decides
+	// the install hint Publish returns, and any drift between the visibility
+	// asked for and the one already in place is surfaced to the operator.
+	ensureRepository func(ctx context.Context, language Language, name string) (repositoryState, error)
 	// tokenSource resolves the GitHub credential used both to create the repository
 	// (via the API) and to authenticate git's HTTPS clone/push to github.com, so
 	// the two never diverge. It is injectable so tests can exercise the no-token
@@ -68,14 +72,31 @@ func NewGitHubStore(owner string) *GitHubStore {
 }
 
 // EnableRepositoryCreation opts this store into creating an export's repository
-// when it is absent, at the visibility the caller chose. Callers pass that
-// choice explicitly: a repository's visibility is an infrastructure decision,
-// and defaulting it to public would disclose a module's full message graph as a
+// when it is absent, at the visibility policy chose. Callers pass that choice
+// explicitly: a repository's visibility is an infrastructure decision, and
+// defaulting it to public would disclose a module's full message graph as a
 // side effect of running a publish.
-func (s *GitHubStore) EnableRepositoryCreation(private bool) {
-	s.ensureRepository = func(ctx context.Context, language Language, name string) error {
-		return s.createLibraryRepository(ctx, language, name, private)
+//
+// It takes the policy rather than a bare bool so the call site reads as the
+// decision it carries: an `EnableRepositoryCreation(private bool)` invoked with
+// a caller's `Public` field is one missing negation away from publishing a
+// module's whole surface, and that is not a mistake this API should make
+// available.
+func (s *GitHubStore) EnableRepositoryCreation(policy RepositoryPolicy) {
+	visibility := policy.visibility()
+	s.ensureRepository = func(ctx context.Context, language Language, name string) (repositoryState, error) {
+		return s.createLibraryRepository(ctx, language, name, visibility)
 	}
+}
+
+// repositoryState is what a creation attempt learned about the repository it
+// was asked to ensure.
+type repositoryState struct {
+	// visibility is the repository's actual visibility on GitHub after the
+	// call — the one created, or the one an existing repository already has.
+	visibility repositoryVisibility
+	// warnings are operator-facing notes that do not fail the publish.
+	warnings []string
 }
 
 // authToken resolves the GitHub credential once and caches it: publish runs the
@@ -173,8 +194,13 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		return Published{}, err
 	}
 
+	// state carries what the creation step learned. Without the opt-in nothing
+	// is looked up, so the visibility stays unknown and the install hint keeps
+	// its public form: only GitHub knows how a repository provisioned out of
+	// band is configured.
+	var state repositoryState
 	if s.ensureRepository != nil {
-		if err = s.ensureRepository(ctx, c.Language, c.Name); err != nil {
+		if state, err = s.ensureRepository(ctx, c.Language, c.Name); err != nil {
 			return Published{}, err
 		}
 	}
@@ -214,7 +240,7 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 		if commitErr != nil {
 			return Published{}, commitErr
 		}
-		return s.published(c, remote, strings.TrimSpace(commit), digest), nil
+		return s.published(c, remote, strings.TrimSpace(commit), digest, state), nil
 	}
 	message := fmt.Sprintf("release %s %s", c.Name, tag)
 	// --allow-empty: a release whose content is identical to the previous one
@@ -246,7 +272,7 @@ func (s *GitHubStore) Publish(ctx context.Context, artifactDir string, c Coordin
 	if err = s.git(ctx, work, "push", "--quiet", "origin", tag); err != nil {
 		return Published{}, fmt.Errorf("push tag: %w", err)
 	}
-	return s.published(c, remote, strings.TrimSpace(commit), digest), nil
+	return s.published(c, remote, strings.TrimSpace(commit), digest, state), nil
 }
 
 // validateGoModulePath requires the artifact's go.mod to declare importPath as
@@ -279,21 +305,28 @@ func validatePythonArtifact(artifactDir string) error {
 	return nil
 }
 
-// createLibraryRepository creates the export's repository under the store owner
-// when a credential is available, and is a no-op when the repository already
-// exists. Without a token it does nothing: the subsequent clone fails with the
-// "create the library repository first" message, preserving today's behavior for
-// operators who provision repositories out of band.
-func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Language, name string, private bool) error {
+// createLibraryRepository creates the export's repository under the store owner,
+// and is a no-op when the repository already exists.
+//
+// A missing credential is an error, not a skip. This function is reachable only
+// when the operator passed --create-missing-repository, so there is no
+// best-effort reading of the request left to fall back on: silently doing
+// nothing would fail the clone moments later with "create the library
+// repository first", telling the operator to do the very thing they just asked
+// the tool to do. An explicit instruction that cannot be carried out has to say
+// so, naming what is missing.
+func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Language, name string, visibility repositoryVisibility) (repositoryState, error) {
 	token := s.authToken()
 	if token == "" {
-		return nil
+		return repositoryState{}, fmt.Errorf(
+			"librarystore: creating %s/%s requires a GitHub credential with repository-creation scope, but none was found (set GITHUB_TOKEN or run `gh auth login`); to publish into a repository provisioned out of band, drop --create-missing-repository",
+			s.Owner, repositoryName(language, name))
 	}
 	client, err := github.NewClient(github.WithAuthToken(token))
 	if err != nil {
-		return err
+		return repositoryState{}, err
 	}
-	return ensureRepositoryExists(ctx, client, s.Owner, repositoryName(language, name), private)
+	return ensureRepositoryExists(ctx, client, s.Owner, repositoryName(language, name), visibility)
 }
 
 // ensureRepositoryExists creates owner/repo when GitHub reports it absent, and
@@ -313,27 +346,47 @@ func (s *GitHubStore) createLibraryRepository(ctx context.Context, language Lang
 // A create that fails with 422 means the repository was created concurrently (or
 // out of band) between the lookup and the create; that is the idempotent success
 // this function promises, not an error.
-func ensureRepositoryExists(ctx context.Context, client *github.Client, owner, repo string, private bool) error {
-	if _, resp, err := client.Repositories.Get(ctx, owner, repo); err == nil {
-		return nil
+//
+// It reports the repository's actual visibility. An existing repository keeps
+// whatever it was configured with — this function never rewrites it, because
+// widening or narrowing an established repository is not something a publish
+// should do behind an operator's back. But a repository that is already public
+// when the caller asked for private is the exact exposure this store exists to
+// prevent, and one the implicit-creation era left behind in real orgs, so it is
+// reported rather than silently accepted.
+func ensureRepositoryExists(ctx context.Context, client *github.Client, owner, repo string, visibility repositoryVisibility) (repositoryState, error) {
+	if existing, resp, err := client.Repositories.Get(ctx, owner, repo); err == nil {
+		actual := visibilityPublic
+		if existing.GetPrivate() {
+			actual = visibilityPrivate
+		}
+		state := repositoryState{visibility: actual}
+		if visibility == visibilityPrivate && actual == visibilityPublic {
+			state.warnings = append(state.warnings, fmt.Sprintf(
+				"%s/%s already exists and is public; this publish asked for a private repository but does not change an existing repository's visibility. Its bindings carry every message in the contract — change the visibility on GitHub if that disclosure is not intended.",
+				owner, repo))
+		}
+		return state, nil
 	} else if resp == nil || resp.StatusCode != http.StatusNotFound {
-		return fmt.Errorf("librarystore: check repository %s/%s: %w", owner, repo, err)
+		return repositoryState{}, fmt.Errorf("librarystore: check repository %s/%s: %w", owner, repo, err)
 	}
 	org, err := createOwner(ctx, client, owner)
 	if err != nil {
-		return err
+		return repositoryState{}, err
 	}
 	if _, resp, err := client.Repositories.Create(ctx, org, &github.Repository{
 		Name:     github.Ptr(repo),
-		Private:  github.Ptr(private),
+		Private:  github.Ptr(visibility == visibilityPrivate),
 		AutoInit: github.Ptr(true),
 	}); err != nil {
+		// The repository appeared between the lookup and the create, so this
+		// call did not choose its visibility and cannot claim to know it.
 		if resp != nil && resp.StatusCode == http.StatusUnprocessableEntity {
-			return nil
+			return repositoryState{}, nil
 		}
-		return fmt.Errorf("librarystore: create repository %s/%s (a token with repository-creation scope is required): %w", owner, repo, err)
+		return repositoryState{}, fmt.Errorf("librarystore: create repository %s/%s (a token with repository-creation scope is required): %w", owner, repo, err)
 	}
-	return nil
+	return repositoryState{visibility: visibility}, nil
 }
 
 // createOwner maps the store owner to the org argument Repositories.Create wants:
@@ -419,7 +472,7 @@ func (s *GitHubStore) Resolve(ctx context.Context, language Language, name, cons
 		return Published{}, err
 	}
 	coordinates := Coordinates{Language: language, Name: name, Version: best.version.String()}
-	return s.published(coordinates, remote, best.ref, digest), nil
+	return s.published(coordinates, remote, best.ref, digest, repositoryState{}), nil
 }
 
 func (s *GitHubStore) List(ctx context.Context, language Language, name string) ([]string, error) {
@@ -527,11 +580,14 @@ func (s *GitHubStore) digestAtTag(ctx context.Context, remote, tag string) (stri
 	return s.treeDigest(ctx, work)
 }
 
-func (s *GitHubStore) published(c Coordinates, remote, ref, digest string) Published {
+// published assembles the result. state is what the repository-creation step
+// learned; its zero value means nothing was looked up, and the install hint
+// keeps the public form the store documents.
+func (s *GitHubStore) published(c Coordinates, remote, ref, digest string, state repositoryState) Published {
 	importPath := goModulePath(remote)
-	installHint := goInstallHint(importPath, c.Version)
+	installHint := goInstallHint(importPath, c.Version, state.visibility)
 	if c.Language == LanguagePython {
-		installHint = pythonInstallHint(importPath, c.Version)
+		installHint = pythonInstallHint(importPath, c.Version, state.visibility)
 	}
 	return Published{
 		Coordinates: c,
@@ -540,6 +596,7 @@ func (s *GitHubStore) published(c Coordinates, remote, ref, digest string) Publi
 		Location:    remote,
 		Digest:      digest,
 		InstallHint: installHint,
+		Warnings:    state.warnings,
 	}
 }
 

@@ -71,6 +71,10 @@ type publishedExport struct {
 	Ref         string
 	Digest      string
 	InstallHint string
+	// Warnings are the store's operator-facing notes about this export — for
+	// example that the repository it published into is public although a
+	// private one was requested.
+	Warnings []string
 }
 
 func publishLibrary(cmd *cobra.Command, name string) error {
@@ -109,9 +113,11 @@ func publishLibrary(cmd *cobra.Command, name string) error {
 	if err != nil {
 		return err
 	}
-	cfg.CreateMissingRepositories = publishLibraryCreate
-	cfg.PublicRepositories = publishLibraryPublic
-	exports, err := preflightLibraryExports(lib, version, languageNames, cfg)
+	policy := repositoryPolicyFrom(publishLibraryCreate, publishLibraryPublic)
+	if err = policy.Validate(); err != nil {
+		return err
+	}
+	exports, err := preflightLibraryExports(lib, version, languageNames, cfg, policy)
 	if err != nil {
 		return err
 	}
@@ -121,7 +127,7 @@ func publishLibrary(cmd *cobra.Command, name string) error {
 		fmt.Fprintln(w, "LANGUAGE\tIMPORT PATH\tINSTALL HINT")
 		for _, lang := range exports {
 			language := librarystore.Language(lang.Name)
-			importPath, hint, previewErr := librarystore.PreviewIdentity(language, cfg, lib.Name, version.String())
+			importPath, hint, previewErr := librarystore.PreviewIdentity(language, cfg, policy, lib.Name, version.String())
 			if previewErr != nil {
 				return previewErr
 			}
@@ -130,7 +136,7 @@ func publishLibrary(cmd *cobra.Command, name string) error {
 		return w.Flush()
 	}
 
-	published, err := publishLibraryExports(ctx, lib, version, exports, cfg)
+	published, err := publishLibraryExports(ctx, lib, version, exports, cfg, policy)
 	if err != nil {
 		return err
 	}
@@ -140,14 +146,18 @@ func publishLibrary(cmd *cobra.Command, name string) error {
 	for _, p := range published {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.Language, p.Version, p.ImportPath, p.Digest, p.InstallHint)
 	}
-	return w.Flush()
+	if err = w.Flush(); err != nil {
+		return err
+	}
+	reportPublishWarnings(published)
+	return nil
 }
 
 // preflightLibraryExports resolves the requested language exports of lib and
 // runs every no-network gate (export directory present, declared import path
 // matching the configured store, version file in step with version) before a
 // single store is constructed.
-func preflightLibraryExports(lib *resources.Library, version *semver.Version, languageNames []string, cfg librarystore.StoreConfig) ([]*resources.LanguageExport, error) {
+func preflightLibraryExports(lib *resources.Library, version *semver.Version, languageNames []string, cfg librarystore.StoreConfig, policy librarystore.RepositoryPolicy) ([]*resources.LanguageExport, error) {
 	exports := make([]*resources.LanguageExport, 0, len(languageNames))
 	for _, languageName := range languageNames {
 		lang := lib.GetLanguage(languageName)
@@ -158,7 +168,7 @@ func preflightLibraryExports(lib *resources.Library, version *semver.Version, la
 	}
 	for _, lang := range exports {
 		language := librarystore.Language(lang.Name)
-		importPath, _, err := librarystore.PreviewIdentity(language, cfg, lib.Name, version.String())
+		importPath, _, err := librarystore.PreviewIdentity(language, cfg, policy, lib.Name, version.String())
 		if err != nil {
 			return nil, err
 		}
@@ -173,11 +183,11 @@ func preflightLibraryExports(lib *resources.Library, version *semver.Version, la
 // order, to the stores cfg configures. It stops at the first failure and
 // reports which languages already published — those versions are immutable
 // and are never rolled back.
-func publishLibraryExports(ctx context.Context, lib *resources.Library, version *semver.Version, exports []*resources.LanguageExport, cfg librarystore.StoreConfig) ([]publishedExport, error) {
+func publishLibraryExports(ctx context.Context, lib *resources.Library, version *semver.Version, exports []*resources.LanguageExport, cfg librarystore.StoreConfig, policy librarystore.RepositoryPolicy) ([]publishedExport, error) {
 	published := make([]publishedExport, 0, len(exports))
 	for _, lang := range exports {
 		language := librarystore.Language(lang.Name)
-		store, err := librarystore.NewStoreFor(language, cfg)
+		store, err := librarystore.NewStoreFor(language, cfg, policy)
 		if err != nil {
 			return published, reportPartialPublish(published, err)
 		}
@@ -192,6 +202,7 @@ func publishLibraryExports(ctx context.Context, lib *resources.Library, version 
 		published = append(published, publishedExport{
 			Language: language, Version: result.Version, ImportPath: result.ImportPath,
 			Ref: result.Ref, Digest: result.Digest, InstallHint: result.InstallHint,
+			Warnings: result.Warnings,
 		})
 	}
 	return published, nil

@@ -401,13 +401,13 @@ func validateClientPackage(moduleDir, moduleName string, catalog *composition.AP
 // every store identity before anything is generated or published: a
 // language with no configured store fails the whole run up front instead of
 // after a sibling export has already shipped.
-func planClientWork(run *clientsRun, cfg librarystore.StoreConfig) ([]clientWork, error) {
+func planClientWork(run *clientsRun, cfg librarystore.StoreConfig, policy librarystore.RepositoryPolicy) ([]clientWork, error) {
 	var work []clientWork
 	for i := range run.plans {
 		plan := &run.plans[i]
 		item := clientWork{plan: plan, importPath: map[languages.Language]string{}}
 		for _, lang := range plan.Languages {
-			importPath, installHint, err := librarystore.PreviewIdentity(librarystore.Language(lang), cfg, plan.Name, run.version.String())
+			importPath, installHint, err := librarystore.PreviewIdentity(librarystore.Language(lang), cfg, policy, plan.Name, run.version.String())
 			if err != nil {
 				return nil, err
 			}
@@ -464,7 +464,7 @@ func resolveClientsOutputRoot(flag string) (root string, cleanup func(), err err
 // owed language exports, recording each one in the manifest as it ships.
 // Whatever shipped is immutable, so a partial failure is recorded before it
 // is returned and a re-run publishes only the languages still missing.
-func publishClientWork(ctx context.Context, run *clientsRun, item *clientWork, cfg librarystore.StoreConfig, outputRoot string, w io.Writer) error {
+func publishClientWork(ctx context.Context, run *clientsRun, item *clientWork, cfg librarystore.StoreConfig, policy librarystore.RepositoryPolicy, outputRoot string, w io.Writer) error {
 	entry, err := generators.BuildModuleClientEntry(ctx, run.module.Dir(), run.module.Name, run.catalog, item.plan)
 	if err != nil {
 		return err
@@ -489,12 +489,12 @@ func publishClientWork(ctx context.Context, run *clientsRun, item *clientWork, c
 	for _, lang := range item.languages {
 		names = append(names, string(lang))
 	}
-	exports, err := preflightLibraryExports(lib, run.version, names, cfg)
+	exports, err := preflightLibraryExports(lib, run.version, names, cfg, policy)
 	if err != nil {
 		return err
 	}
 	return publishAndCheckpointClientExports(exports, func(export *resources.LanguageExport) (publishedExport, error) {
-		published, publishErr := publishLibraryExports(ctx, lib, run.version, []*resources.LanguageExport{export}, cfg)
+		published, publishErr := publishLibraryExports(ctx, lib, run.version, []*resources.LanguageExport{export}, cfg, policy)
 		if publishErr != nil {
 			return publishedExport{}, publishErr
 		}
@@ -545,12 +545,16 @@ func publishClients(cmd *cobra.Command, moduleName string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadClientsStoreConfig(run.workspace.Dir())
+	cfg, err := librarystore.LoadStoreConfig(run.workspace.Dir())
 	if err != nil {
 		return err
 	}
+	policy := repositoryPolicyFrom(publishClientsCreate, publishClientsPublic)
+	if err = policy.Validate(); err != nil {
+		return err
+	}
 	if publishClientsCheck {
-		return checkClients(cmd.OutOrStdout(), run.manifest, run.plans, run.version, cfg)
+		return checkClients(cmd.OutOrStdout(), run.manifest, run.plans, run.version, cfg, policy)
 	}
 	if !publishClientsDryRun {
 		return withClientsPublishLock(run.module.Dir(), func() error {
@@ -558,37 +562,18 @@ func publishClients(cmd *cobra.Command, moduleName string) error {
 			if loadErr != nil {
 				return loadErr
 			}
-			lockedCfg, loadErr := loadClientsStoreConfig(lockedRun.workspace.Dir())
+			lockedCfg, loadErr := librarystore.LoadStoreConfig(lockedRun.workspace.Dir())
 			if loadErr != nil {
 				return loadErr
 			}
-			return executeClientPublish(ctx, cmd, lockedRun, lockedCfg)
+			return executeClientPublish(ctx, cmd, lockedRun, lockedCfg, policy)
 		})
 	}
-	work, err := planClientWork(run, cfg)
+	work, err := planClientWork(run, cfg, policy)
 	if err != nil {
 		return err
 	}
 	return printClientsDryRun(cmd.OutOrStdout(), work)
-}
-
-// loadClientsStoreConfig reads the workspace's `libraries.publish` block and
-// layers this run's repository-creation flags on top. Every load goes through
-// here — the publish path re-reads the configuration inside the lock, and a
-// reload that returned the bare file would silently drop the flags and leave
-// `--create-missing-repository` a no-op on the only path that publishes.
-//
-// The layering direction matters: the policy comes from the command line, never
-// from the file, so a workspace configuration cannot authorize creating a
-// repository on its own.
-func loadClientsStoreConfig(workspaceDir string) (librarystore.StoreConfig, error) {
-	cfg, err := librarystore.LoadStoreConfig(workspaceDir)
-	if err != nil {
-		return librarystore.StoreConfig{}, err
-	}
-	cfg.CreateMissingRepositories = publishClientsCreate
-	cfg.PublicRepositories = publishClientsPublic
-	return cfg, nil
 }
 
 func withClientsPublishLock(moduleDir string, fn func() error) error {
@@ -597,8 +582,8 @@ func withClientsPublishLock(moduleDir string, fn func() error) error {
 	return clicomposition.WithFileLock(lockPath, 5*time.Minute, fn)
 }
 
-func executeClientPublish(ctx context.Context, cmd *cobra.Command, run *clientsRun, cfg librarystore.StoreConfig) error {
-	work, err := planClientWork(run, cfg)
+func executeClientPublish(ctx context.Context, cmd *cobra.Command, run *clientsRun, cfg librarystore.StoreConfig, policy librarystore.RepositoryPolicy) error {
+	work, err := planClientWork(run, cfg, policy)
 	if err != nil {
 		return err
 	}
@@ -615,7 +600,7 @@ func executeClientPublish(ctx context.Context, cmd *cobra.Command, run *clientsR
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "LIBRARY\tLANGUAGE\tVERSION\tIMPORT PATH\tREF/DIGEST\tINSTALL HINT")
 	for i := range work {
-		if err = publishClientWork(ctx, run, &work[i], cfg, outputRoot, w); err != nil {
+		if err = publishClientWork(ctx, run, &work[i], cfg, policy, outputRoot, w); err != nil {
 			_ = w.Flush()
 			return err
 		}
@@ -630,12 +615,12 @@ func executeClientPublish(ctx context.Context, cmd *cobra.Command, run *clientsR
 // checkClients is the offline CI gate: every planned (library, language)
 // pair must be recorded in the manifest at this package version, for the
 // contract digest the catalog currently exports.
-func checkClients(out io.Writer, manifest *ClientsManifest, plans []generators.ModuleClientPlan, version *semver.Version, cfg librarystore.StoreConfig) error {
+func checkClients(out io.Writer, manifest *ClientsManifest, plans []generators.ModuleClientPlan, version *semver.Version, cfg librarystore.StoreConfig, policy librarystore.RepositoryPolicy) error {
 	var problems []string
 	for i := range plans {
 		plan := &plans[i]
 		for _, lang := range plan.Languages {
-			importPath, installHint, err := librarystore.PreviewIdentity(librarystore.Language(lang), cfg, plan.Name, version.String())
+			importPath, installHint, err := librarystore.PreviewIdentity(librarystore.Language(lang), cfg, policy, plan.Name, version.String())
 			if err != nil {
 				problems = append(problems, err.Error())
 				continue

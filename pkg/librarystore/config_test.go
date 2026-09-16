@@ -50,9 +50,13 @@ func TestLoadStoreConfigMissingWorkspaceFile(t *testing.T) {
 }
 
 // The repository-creation policy is a command-line decision, never a file one.
-// A workspace configuration travels with the module it describes, so letting it
-// carry these fields would let a checked-in file authorize creating — and, with
-// the public flag, disclosing — a repository on whoever ran the publish.
+// A workspace configuration travels with the module it describes, so a file
+// able to carry this policy would be a module authorizing its own repository —
+// and, with the public option, its own disclosure.
+//
+// StoreConfig no longer has anywhere to put it: the policy is a separate
+// RepositoryPolicy argument, so this asserts the whole loaded value, which
+// fails if a future schema change ever grows the struct a policy could land in.
 func TestLoadStoreConfigNeverCarriesTheRepositoryCreationPolicy(t *testing.T) {
 	dir := t.TempDir()
 	yaml := `
@@ -71,12 +75,11 @@ libraries:
 
 	cfg, err := LoadStoreConfig(dir)
 	require.NoError(t, err)
-	require.Equal(t, "codefly-dev", cfg.GoOwner, "the owner is a file-level fact and still loads")
-	require.False(t, cfg.CreateMissingRepositories, "a workspace file must not be able to authorize repository creation")
-	require.False(t, cfg.PublicRepositories, "a workspace file must not be able to make a repository public")
+	require.Equal(t, StoreConfig{GoOwner: "codefly-dev"}, cfg,
+		"the owner is a file-level fact; nothing else in the file may reach the store config")
 
-	// And the store built from it creates nothing.
-	store, err := NewStoreFor(LanguageGo, cfg)
+	// And the store the loaded config builds creates nothing.
+	store, err := NewStoreFor(LanguageGo, cfg, RepositoryPolicy{})
 	require.NoError(t, err)
 	require.Nil(t, store.(*GitHubStore).ensureRepository)
 }

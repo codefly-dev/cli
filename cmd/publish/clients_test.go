@@ -36,7 +36,7 @@ var clientsTestStoreConfig = librarystore.StoreConfig{
 
 func recordedExport(t *testing.T, plan *generators.ModuleClientPlan, language languages.Language) *PublishedClientExport {
 	t.Helper()
-	path, hint, err := librarystore.PreviewIdentity(librarystore.Language(language), clientsTestStoreConfig, plan.Name, "0.1.0")
+	path, hint, err := librarystore.PreviewIdentity(librarystore.Language(language), clientsTestStoreConfig, librarystore.RepositoryPolicy{}, plan.Name, "0.1.0")
 	require.NoError(t, err)
 	return &PublishedClientExport{Language: string(language), ImportPath: path, Ref: "immutable-ref", Digest: "sha256:abcd", InstallHint: hint}
 }
@@ -213,17 +213,17 @@ func TestCheckClientsNamesEveryMissingOrStaleExport(t *testing.T) {
 
 	var out bytes.Buffer
 	version := semver.MustParse("0.1.0")
-	err := checkClients(&out, manifest, []generators.ModuleClientPlan{*plan}, version, clientsTestStoreConfig)
+	err := checkClients(&out, manifest, []generators.ModuleClientPlan{*plan}, version, clientsTestStoreConfig, librarystore.RepositoryPolicy{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "saas-starter-accounts-connect-client typescript is not published at 0.1.0")
 	require.NotContains(t, err.Error(), "saas-starter-accounts-connect-client go is not")
 
 	manifest.record(plan, recordedExport(t, plan, languages.TYPESCRIPT))
 	out.Reset()
-	require.NoError(t, checkClients(&out, manifest, []generators.ModuleClientPlan{*plan}, version, clientsTestStoreConfig))
+	require.NoError(t, checkClients(&out, manifest, []generators.ModuleClientPlan{*plan}, version, clientsTestStoreConfig, librarystore.RepositoryPolicy{}))
 	require.Contains(t, out.String(), "codefly/saas-starter@0.1.0")
 
-	err = checkClients(&out, manifest, []generators.ModuleClientPlan{*accountsPlan("sha256:bbbb")}, version, clientsTestStoreConfig)
+	err = checkClients(&out, manifest, []generators.ModuleClientPlan{*accountsPlan("sha256:bbbb")}, version, clientsTestStoreConfig, librarystore.RepositoryPolicy{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), errContractMoved.Error())
 	require.Contains(t, err.Error(), "bump the version")
@@ -286,33 +286,47 @@ func TestPublishCheckpointsEachExportBeforeStartingTheNext(t *testing.T) {
 	require.True(t, checkpointed["typescript"])
 }
 
-// The publish path re-reads the workspace configuration inside the lock, and an
-// earlier version applied the flags only to the copy loaded outside it — which
-// left --create-missing-repository a no-op on the one path that actually
-// publishes. Both loads go through loadClientsStoreConfig for that reason.
-func TestClientsStoreConfigCarriesTheFlagsThroughEveryLoad(t *testing.T) {
+// The publish path re-reads the workspace configuration inside the lock. When
+// the repository-creation policy lived in StoreConfig, that second load
+// returned a config without the flags and silently left
+// --create-missing-repository a no-op on the one path that actually publishes.
+//
+// The policy is now a separate value, built once from the flags and passed
+// down, so a reload has nothing to drop. This pins both halves: the loaded
+// config never carries the policy, and the policy the run holds is unaffected
+// by however many times the config is re-read.
+func TestRepositoryPolicySurvivesAConfigReload(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"),
 		[]byte("name: platform\nlayout: flat\nlibraries:\n  publish:\n    go:\n      owner: codefly-dev\n"), 0o644))
 
-	set := func(create, public bool) { publishClientsCreate, publishClientsPublic = create, public }
-	origCreate, origPublic := publishClientsCreate, publishClientsPublic
-	t.Cleanup(func() { set(origCreate, origPublic) })
+	policy := repositoryPolicyFrom(true, false)
+	require.True(t, policy.CreateMissing)
 
-	cfg, err := loadClientsStoreConfig(dir)
-	require.NoError(t, err)
-	require.False(t, cfg.CreateMissingRepositories, "no flag, no creation")
-	require.False(t, cfg.PublicRepositories)
+	// Two independent loads, exactly as publishClients does either side of its
+	// lock. Both must build a store without complaint, and neither may alter
+	// the policy the run is carrying.
+	for _, load := range []string{"outside the lock", "inside the lock"} {
+		cfg, err := librarystore.LoadStoreConfig(dir)
+		require.NoError(t, err, load)
+		require.Equal(t, librarystore.StoreConfig{GoOwner: "codefly-dev"}, cfg,
+			"a reload must return the file's fields and nothing else (%s)", load)
 
-	set(true, false)
-	cfg, err = loadClientsStoreConfig(dir)
-	require.NoError(t, err)
-	require.True(t, cfg.CreateMissingRepositories, "--create-missing-repository must survive the reload")
-	require.False(t, cfg.PublicRepositories, "creation alone stays private")
+		_, err = librarystore.NewStoreFor(librarystore.LanguageGo, cfg, policy)
+		require.NoError(t, err, load)
+		require.Equal(t, repositoryPolicyFrom(true, false), policy,
+			"the policy is the run's, not the file's (%s)", load)
+	}
+}
 
-	set(true, true)
-	cfg, err = loadClientsStoreConfig(dir)
-	require.NoError(t, err)
-	require.True(t, cfg.PublicRepositories, "--public-repository must survive the reload")
-	require.Equal(t, "codefly-dev", cfg.GoOwner, "the file's own fields still load")
+// TestPublicRepositoryRequiresCreation pins that the disclosing flag cannot be
+// passed alone. It used to be accepted and then silently discarded: nothing
+// creates a repository, so nothing reads the visibility, and the operator was
+// left believing they had set one.
+func TestPublicRepositoryRequiresCreation(t *testing.T) {
+	require.ErrorContains(t, repositoryPolicyFrom(false, true).Validate(),
+		"--public-repository requires --create-missing-repository")
+	require.NoError(t, repositoryPolicyFrom(true, true).Validate())
+	require.NoError(t, repositoryPolicyFrom(true, false).Validate())
+	require.NoError(t, repositoryPolicyFrom(false, false).Validate())
 }
