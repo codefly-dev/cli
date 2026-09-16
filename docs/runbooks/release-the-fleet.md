@@ -254,3 +254,23 @@ This is the only container-recovery dimension the CLI can qualify on its own.
 It does not lift the release gate: the remaining rebuild, qualification,
 publishing and matrix items are carried in
 [cli#662](https://github.com/codefly-dev/cli/issues/662).
+
+## Upgrading the generic Go packager
+
+The canonical `codefly.dev/go` service agent can qualify its own successor even
+when the published predecessor has an older cross compiler. Agent qualification
+builds one native seed from the candidate's standalone source into a private,
+temporary plugin home, using the candidate's exact version. That seed serves
+`Builder.Package` for the ordinary native and Linux artifacts and their SBOMs.
+Source tests, audits, conformance, drift checks and required release platforms
+remain mandatory. No candidate binary is stored under a released predecessor's
+identity, and the temporary seed is never a published artifact.
+
+Other agents continue to use their explicit source agent or the CLI compatibility
+roster. After publishing a packager, qualify its adoption through the normal
+source-agent promotion flow before releasing the dependent fleet.
+
+Fresh generated and copied conformance workspaces record an empty Git baseline
+and their initial source snapshot before invoking the workspace gate. This gives
+the same integrity checks explicit change bounds and proof of newly introduced
+manifest ownership; it does not exempt conformance from integrity verification.

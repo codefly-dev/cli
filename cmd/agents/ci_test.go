@@ -119,6 +119,40 @@ func TestAgentConformanceGateIsolatesPortSpacePerRun(t *testing.T) {
 	}
 }
 
+func TestConformanceBaselineRecordsAllInitialOwnership(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{"modules/app/services/subject/main.go", "modules/app/tools/base-manifest.json", "workspace.codefly.yaml"}
+	for _, path := range paths {
+		target := filepath.Join(dir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, target, "initial source\n")
+	}
+	baseline, err := prepareConformanceBaseline(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("git", "diff", "--name-only", baseline, "HEAD")
+	command.Dir = dir
+	changed, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read conformance changes: %v: %s", err, changed)
+	}
+	if got := strings.Fields(string(changed)); !reflect.DeepEqual(got, paths) {
+		t.Fatalf("changed inputs = %v, want every initial file %v", got, paths)
+	}
+	command = exec.Command("git", "ls-tree", "-r", "--name-only", baseline)
+	command.Dir = dir
+	previous, err := command.CombinedOutput()
+	if err != nil || len(previous) != 0 {
+		t.Fatalf("baseline must prove no prior ownership: %v: %s", err, previous)
+	}
+	if _, err := prepareConformanceBaseline(context.Background(), dir); err == nil {
+		t.Fatal("existing workspace history was silently replaced")
+	}
+}
+
 func TestAgentAdvertisesCapabilityUsesInstalledAgentContract(t *testing.T) {
 	info := &agentv0.AgentInformation{Capabilities: []*agentv0.Capability{
 		{Type: agentv0.Capability_RUNTIME},
