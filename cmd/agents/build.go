@@ -514,7 +514,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 	res.ag = ag
 	if !isCanonicalSourcePackager(&ag) {
-		if err := ensureSourcePackager(ctx, sourcePackagerCandidates(dir)); err != nil {
+		if err = ensureSourcePackager(ctx, sourcePackagerCandidates(dir)); err != nil {
 			res.err = err
 			return res
 		}
@@ -642,7 +642,7 @@ func prepareAgentPackager(ctx context.Context, root string, manifest *agentYAML,
 	}
 	privateHome := filepath.Join(temporary, "source-packager")
 	seed := filepath.Join(privateHome, "agents", "services", manifest.Publisher, "go__"+agent.Version)
-	if err := buildSourcePackager(ctx, source, seed); err != nil {
+	if err = buildSourcePackager(ctx, source, seed); err != nil {
 		return nil, "", fmt.Errorf("bootstrap candidate source packager %s: %w", candidate.Source.Agent, err)
 	}
 	prepared, err := sourceworkspace.PrepareWithAgent(ctx, source, agent)
