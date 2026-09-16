@@ -983,7 +983,7 @@ codefly login
 
 ### `codefly publish library <name>`
 
-Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: publishing the same version twice fails.
+Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: an identical retry adopts the existing version, while different bytes require a version bump.
 
 ```bash
 codefly publish library authkit --dry-run           # show what would be published, touch nothing
@@ -1004,6 +1004,40 @@ libraries:
 Publish credentials (`GITHUB_TOKEN`/`GH_TOKEN` or `gh auth token`; `NPM_TOKEN`/`NODE_AUTH_TOKEN` or, for `npm.pkg.github.com`, `gh auth token`) belong in release CI, never in a runtime.
 
 If a language export publishes and a later one in the same run fails, the command stops and reports which languages already published — those versions are immutable and are never rolled back.
+
+### `codefly publish clients [module]`
+
+Generate and publish a client library for every API contract the module's `interface:` block exports (`codefly generate contracts`), in every language the contract kind supports — `go`, `typescript` and `python` for protobuf, `go` and `typescript` for OpenAPI. Each endpoint becomes one codefly library named `<module>-<service>-<endpoint>-client`, so two contract endpoints on one service never contend for the same immutable package version. Libraries are generated from the committed package contract and proto sources and published at the **module package version** through the workspace's `libraries.publish` stores. This is how a module's consumers — other modules, solutions — get its client: an immutable published handle, never a vendored copy of generated code.
+
+```bash
+codefly publish clients saas-starter --dry-run          # plan + identities; no toolchain, no network
+codefly publish clients saas-starter --check            # CI gate: every client of this version is recorded as published
+codefly publish clients saas-starter                    # generate (Docker) and publish what is still missing
+codefly publish clients saas-starter --language go      # one language only
+codefly publish clients saas-starter --output ./libraries   # keep the generated libraries instead of a temp dir
+```
+
+An endpoint shapes its clients in the optional, publish-owned `clients.codefly.yaml`. Keeping this policy outside `module.codefly.yaml` prevents synchronization of the generated `interface:` block from replacing it. The schema and endpoint identity are required; every policy field is optional, and unknown fields are rejected:
+
+```yaml
+schema: codefly/module-clients-config/v1
+endpoints:
+  - service: accounts
+    endpoint: connect
+    languages: [go, typescript]                 # default: every language the contract kind supports
+    services: [AuditService, WebhookService]    # facade subset (protobuf only); default: the whole contract
+    publish: false                              # opt this endpoint out
+```
+
+`services:` decides what a consumer can reach through the facade; the bindings still carry the full contract, and a TypeScript `_pb` module is one proto file, so keep a service that must not ship in its own `.proto`.
+
+`contracts/clients.codefly.json` records, for the current package version, every published export (library, language, import path, ref/digest, install hint). It is written immediately after each language publishes — published versions are immutable, so a partial failure is checkpointed before the next language starts — and it must be committed. Concurrent publishing commands for one module are serialized. If a process exits after a GitHub tag lands but before the checkpoint, the retry adopts the tag only when its content digest is identical. Its rules:
+
+- Same package version, same endpoint, contract digest, facade selection, store identity and complete publication evidence → skipped.
+- Same package version with a different endpoint, contract digest, or facade selection → refused: generation inputs moved without a release; bump `version:` in `module.package.codefly.yaml` first (a bump starts the manifest over; the stores keep the history).
+- `--check` validates the complete recorded identities and evidence offline and is the gate release CI should run after publishing.
+
+The exported package is the published unit: before generating, the command requires `module.package.codefly.yaml`, the catalog, and every committed contract artifact to agree on package identity, version, path, and digest. Run `codefly generate contracts` and commit first when that validation fails. Go and Python publish into `github.com/<owner>/<name>-go|-python`; TypeScript publishes `<scope>/<name>` to the configured npm registry.
 
 ### `codefly install library <name>@<constraint>`
 
