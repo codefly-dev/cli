@@ -586,9 +586,15 @@ A composition that **vendors** its sources — a git submodule per module, which
 is how it gets a reviewable, reproducible pin — states both on one entry:
 `source` + `version` records which module this is, and `path` points it at the
 checkout already in the tree. No overlay is involved, so the same committed
-config resolves for everyone. Beware that the checkout is then what runs: the
-`version` beside it is identity, not a constraint the resolver enforces against
-what the submodule is parked on.
+config resolves for everyone.
+
+**This route is unverified.** A committed `path` wins over `source`, so the
+module resolves as a local checkout: nothing pulls the signed artifact, nothing
+checks a signature or digest against `module-trust`, and the `version` beside it
+is dropped rather than enforced against what the submodule is parked on. It
+resolves even in a workspace with no `module-trust` block, where a bare
+`source` + `version` reference would be refused. Use it when the submodule
+pointer is what your review actually gates on; see #731.
 
 ```yaml
 modules:
