@@ -77,8 +77,9 @@ Thumbs.db
 *.swo
 *.swn
 
-# Claude Code
-.claude/
+# Claude Code local state — skills are checked in, everything else here is per-machine
+.claude/*
+!.claude/skills/
 
 # Compiled binary
 /codefly
