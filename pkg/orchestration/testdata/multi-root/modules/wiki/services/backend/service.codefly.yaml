@@ -20,6 +20,9 @@ service-dependencies:
       module: documents
       endpoints:
         - name: grpc
+    - name: schemas
+      module: contracts
+      kind: build
 endpoints:
     - name: http
       api: http

@@ -1289,13 +1289,21 @@ func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
 		return "", nil
 	}
 	if flow.originService != nil {
-		origin = flow.originService.Name
+		origin = resources.WithUnique(flow.originService).Unique()
 	}
+	// Identify by module-qualified unique, not bare name: composed modules
+	// routinely name their entry service the same thing, so a bare name both
+	// dropped a service that shares the origin's name and rendered two managed
+	// services identically. This is the same identity SendPlan already shows.
 	for _, s := range flow.services {
-		if s == nil || s.Name == origin {
+		if s == nil {
 			continue
 		}
-		dependencies = append(dependencies, s.Name)
+		unique := resources.WithUnique(s).Unique()
+		if unique == origin {
+			continue
+		}
+		dependencies = append(dependencies, unique)
 	}
 	return origin, dependencies
 }
@@ -1548,7 +1556,13 @@ func (flow *Flow) scopeDependenciesToRun(ctx context.Context, required []string,
 	if flow.SharedState != nil {
 		flow.SharedState.SetDependencies(dependencies)
 	}
-	return nil
+	// The rebuild reloads the workspace, so it carries every edge kind again —
+	// including the build-only ones selectDependencyStage already dropped. Re-run
+	// that selection rather than repeat its rule here: without it a `build` or
+	// `schema` edge between two services of the run set comes back as a runtime
+	// ordering constraint, and paired with a runtime edge the other way it makes
+	// the run graph cyclic.
+	return flow.selectDependencyStage()
 }
 
 // managerDependencies chooses membership independently of snapshot stage order.

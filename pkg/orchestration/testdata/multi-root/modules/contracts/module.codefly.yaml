@@ -1,0 +1,6 @@
+kind: module
+name: contracts
+project: multi-root
+domain: github.com/codefly-dev/multi-root/contracts
+services:
+    - name: schemas

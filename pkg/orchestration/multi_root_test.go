@@ -11,8 +11,14 @@ import (
 
 // multiRootFlow builds a flow over the multi-root fixture: two solution
 // backends (lastlogin-go, wiki) that both require the saas host services, wiki
-// additionally requiring documents, and one service (analytics/reports) the
-// workspace declares but no root selects.
+// additionally requiring documents, one service (analytics/reports) the
+// workspace declares but no root selects, and two build-only edges
+// (wiki/backend → contracts/schemas, documents/documents → saas/auth-gateway)
+// that must never constrain a run.
+//
+// It applies selectDependencyStage, as InitManagers does before it computes the
+// run set: without that the graph still carries build-stage edges, and a test
+// reading it would not be looking at the graph the run actually uses.
 func multiRootFlow(t *testing.T, origin string, coRoots ...string) (*Flow, context.Context) {
 	t.Helper()
 	ctx := context.Background()
@@ -30,8 +36,9 @@ func multiRootFlow(t *testing.T, origin string, coRoots ...string) (*Flow, conte
 		workspace:     workspace,
 		originService: service,
 		originModule:  module,
-		world:         &World{Dependencies: dependencies},
+		world:         &World{Dependencies: dependencies, Mode: RunMode},
 	}
+	require.NoError(t, flow.selectDependencyStage())
 	return flow.WithCoRoots(coRoots...), ctx
 }
 
@@ -103,6 +110,38 @@ func TestScopeDependenciesToRunDropsServicesNoRootSelected(t *testing.T) {
 	require.Error(t, err, "a service outside the run is not resolvable through the run's graph")
 }
 
+// Scoping the graph to the run set rebuilds it from the workspace, which reloads
+// every edge kind — including the build-stage ones selectDependencyStage drops.
+// A `build` or `schema` edge between two services that are BOTH in the run set
+// (here documents/documents → saas/auth-gateway) is the case that survives the
+// exclusion of out-of-run services, so it is the one that comes back as a
+// runtime ordering constraint if the stage selection is not re-applied. Paired
+// with a runtime edge the other way it makes the run graph cyclic and the run
+// fails outright.
+func TestScopeDependenciesToRunKeepsBuildOnlyEdgesOutOfTheRunGraph(t *testing.T) {
+	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+
+	required, err := flow.runClosure(ctx)
+	require.NoError(t, err)
+	require.NoError(t, flow.scopeDependenciesToRun(ctx, uniques(required), nil))
+
+	requires, err := flow.world.Dependencies.DirectRequires(ctx, "documents/documents")
+	require.NoError(t, err)
+	require.NotContains(t, uniques(requires), "saas/auth-gateway",
+		"a build-only edge between two run-set services must not order the run")
+}
+
+// A build-only dependency on a service nothing else needs at runtime must not
+// drag that service into the run at all.
+func TestRunClosureExcludesBuildOnlyDependencies(t *testing.T) {
+	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+
+	required, err := flow.runClosure(ctx)
+	require.NoError(t, err)
+	require.NotContains(t, uniques(required), "contracts/schemas",
+		"wiki/backend declares contracts/schemas as a build dependency only")
+}
+
 func TestRootBeginActionsSeedEveryRoot(t *testing.T) {
 	flow, _ := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
 
@@ -163,6 +202,32 @@ func TestDependencyEndpointDeclarationsValidateCoRoots(t *testing.T) {
 	required, err := flow.runClosure(ctx)
 	require.NoError(t, err)
 	require.NoError(t, flow.validateDependencyEndpointDeclarations(uniques(required)))
+}
+
+// The shutdown view names exactly what gets torn down. Solutions conventionally
+// name their entry service the same thing — the composition in #717 has three
+// `backend`s — so identifying a managed service by its bare name dropped every
+// co-root that shared the origin's name, and rendered the survivors
+// ambiguously.
+func TestManagedServicesNamesEveryRootItTearsDown(t *testing.T) {
+	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+
+	required, err := flow.runClosure(ctx)
+	require.NoError(t, err)
+	for _, service := range required {
+		resolved, err := flow.world.Dependencies.ServiceFromUnique(service.Unique)
+		require.NoError(t, err)
+		flow.services = append(flow.services, resolved)
+	}
+	flow.services = append(flow.services, flow.originService)
+
+	origin, dependencies := flow.ManagedServices()
+	require.Equal(t, "lastlogin-go/backend", origin)
+	require.Contains(t, dependencies, "wiki/backend",
+		"a co-root sharing the origin's bare service name is still torn down, so it must be named")
+	require.ElementsMatch(t,
+		[]string{"saas/frontend", "saas/auth-gateway", "documents/documents", "wiki/backend"},
+		dependencies)
 }
 
 func indexOf(t *testing.T, values []string, want string) int {
