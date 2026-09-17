@@ -232,12 +232,12 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 	}{
 		{
 			profile:            "local",
-			wantDependencies:   []string{"redis"},
+			wantDependencies:   []string{"app/redis"},
 			wantConfigurations: []string{"local-auth"},
 		},
 		{
 			profile:            "saas",
-			wantDependencies:   []string{"managed", "redis"},
+			wantDependencies:   []string{"app/managed", "app/redis"},
 			wantConfigurations: []string{"local-auth", "managed-auth"},
 		},
 	}
@@ -283,9 +283,13 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 			if fmt.Sprint(dependencies) != fmt.Sprint(tt.wantDependencies) {
 				t.Fatalf("started dependencies = %v, want %v", dependencies, tt.wantDependencies)
 			}
+			// ManagedServices reports module-qualified uniques, which is the
+			// identity ServiceReachable takes: a bare service name cannot name a
+			// service, since two composed modules may each declare one by that
+			// name.
 			for _, dependency := range dependencies {
-				if !flow.ServiceReachable(ctx, "app/"+dependency) {
-					t.Fatalf("dependency app/%s is not reachable", dependency)
+				if !flow.ServiceReachable(ctx, dependency) {
+					t.Fatalf("dependency %s is not reachable", dependency)
 				}
 			}
 

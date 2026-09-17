@@ -1,0 +1,16 @@
+kind: service
+name: documents
+version: 0.0.0
+module: documents
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+    - name: auth-gateway
+      module: saas
+      kind: build
+endpoints:
+    - name: grpc
+      api: grpc

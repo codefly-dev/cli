@@ -1,0 +1,21 @@
+kind: service
+name: backend
+version: 0.0.0
+module: lastlogin-go
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+    - name: frontend
+      module: saas
+      endpoints:
+        - name: http
+    - name: auth-gateway
+      module: saas
+      endpoints:
+        - name: http
+endpoints:
+    - name: http
+      api: http

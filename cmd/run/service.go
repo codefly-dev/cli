@@ -33,10 +33,21 @@ import (
 
 // ServiceCmd represents the run command
 var ServiceCmd = &cobra.Command{
-	Use:   "service",
-	Short: "Start a service locally with its dependency graph",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runServiceCommand,
+	Use:   "service [service...]",
+	Short: "Start one or more services locally with their dependency graph",
+	Long: `Start services locally with their dependency graph.
+
+Naming several services runs them as roots of a single graph: the services they
+share are resolved once and started once, and each root is wired to them as it
+would be on its own. This is what a product composition needs — several
+solutions against one host — since a graph per solution collides on ports and
+on container-recovery scope.
+
+Examples:
+  codefly run service app/backend
+  codefly run service lastlogin-go/backend lastlogin-python/backend wiki/backend`,
+	Args: cobra.ArbitraryArgs,
+	RunE: runServiceCommand,
 }
 
 // resolveRunPins materializes the workspace's composed pinned modules unless the
@@ -55,6 +66,9 @@ func resolveRunPins(ctx context.Context) error {
 
 func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	if err := validateOpenDashboardFlag(openDashboard, withCLIServer); err != nil {
+		return err
+	}
+	if err := validateSingleRootFlags(args, servicePath, standAlone, excludeRoot); err != nil {
 		return err
 	}
 
@@ -161,7 +175,13 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 
 	serviceName := resources.WithUnique(service).Unique()
 
-	derived, derivedErr := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
+	coRoots, coRootServices, err := loadCoRoots(ctx, workspace, args, serviceName)
+	if err != nil {
+		return err
+	}
+	runCoRoots = coRoots
+
+	derived, derivedErr := derivedInputsForRoots(ctx, workspace, module, service, serviceName, coRootServices)
 	if derivedErr != nil {
 		return derivedErr
 	}
@@ -618,6 +638,83 @@ func validateOpenDashboardFlag(open, cliServer bool) error {
 	return nil
 }
 
+// validateSingleRootFlags rejects the flags that only mean something for a run
+// with one root. --service-path IS the service selection, and --stand-alone and
+// --exclude-root each carve the origin out of its own graph — neither has a
+// reading that extends to a second root.
+func validateSingleRootFlags(args []string, servicePath string, standAlone, excludeRoot bool) error {
+	if len(args) < 2 {
+		return nil
+	}
+	for _, flag := range []struct {
+		name string
+		set  bool
+	}{
+		{"--service-path", servicePath != ""},
+		{"--stand-alone", standAlone},
+		{"--exclude-root", excludeRoot},
+	} {
+		if flag.set {
+			return fmt.Errorf("%s runs a single service, but %d were named", flag.name, len(args))
+		}
+	}
+	return nil
+}
+
+// rootService is a co-root resolved from the command line: a service this run
+// starts beside the origin, with the module it belongs to.
+type rootService struct {
+	module  *resources.Module
+	service *resources.Service
+	unique  string
+}
+
+// loadCoRoots resolves every service named after the first into the co-roots
+// the flow starts alongside the origin.
+func loadCoRoots(ctx context.Context, workspace *resources.Workspace, args []string, origin string) ([]string, []*rootService, error) {
+	if len(args) < 2 {
+		return nil, nil, nil
+	}
+	named := map[string]bool{origin: true}
+	var uniques []string
+	var roots []*rootService
+	for _, arg := range args[1:] {
+		service, module, err := workspace.FindUniqueModuleServiceByName(ctx, arg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("cannot find service %s: %w", arg, err)
+		}
+		unique := resources.WithUnique(service).Unique()
+		if named[unique] {
+			return nil, nil, fmt.Errorf("service %s is named twice: a service is one root of the run", unique)
+		}
+		named[unique] = true
+		uniques = append(uniques, unique)
+		roots = append(roots, &rootService{module: module, service: service, unique: unique})
+	}
+	return uniques, roots, nil
+}
+
+// derivedInputsForRoots resolves the solution-federation injections for every
+// root of the run and merges them. Only the workspace's own service-entry
+// derives anything, so deriving per root is what keeps the result independent
+// of the order the roots were named in.
+func derivedInputsForRoots(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string, coRoots []*rootService) (solutionrun.RunInputs, error) {
+	merged, err := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
+	if err != nil {
+		return solutionrun.RunInputs{}, err
+	}
+	for _, root := range coRoots {
+		derived, err := solutionrun.DerivedRunInputs(ctx, workspace, root.module, root.service, root.unique)
+		if err != nil {
+			return solutionrun.RunInputs{}, err
+		}
+		merged.Overrides = mergeOverrides(merged.Overrides, derived.Overrides)
+		merged.WorkspaceConfigurations = mergeOverrides(merged.WorkspaceConfigurations, derived.WorkspaceConfigurations)
+		merged.Notes = append(merged.Notes, derived.Notes...)
+	}
+	return merged, nil
+}
+
 // orFirst returns a when it is non-nil, otherwise b. Used to keep the first
 // (more meaningful) error when draining a secondary error source.
 func orFirst(a, b error) error {
@@ -752,6 +849,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 		}
 		flow.WithOutputEnvService(outputEnvService)
 	}
+	flow.WithCoRoots(runCoRoots...)
 	flow.WithStandAlone(standAlone)
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)

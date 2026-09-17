@@ -1,0 +1,6 @@
+kind: module
+name: lastlogin-go
+project: multi-root
+domain: github.com/codefly-dev/multi-root/lastlogin-go
+services:
+    - name: backend

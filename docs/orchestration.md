@@ -66,6 +66,7 @@ flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, mode)
 ```go
 flow.WithStandAlone(true)           // Don't start dependencies
 flow.WithExcludeRoot(true)          // Start dependencies only, skip target
+flow.WithCoRoots("wiki/backend")    // Start more roots against this same graph
 flow.WithRuntimeContext("nix")      // Set runtime context
 flow.WithFixture("seed")            // Use named test fixture
 flow.WithRemotes([]*Remote{...})    // Use remote services for some deps
@@ -74,6 +75,31 @@ flow.WithOutputEnvService("api/web") // Or select one dependency explicitly
 flow.WithLoadOnly(true)             // Stop after Load phase
 flow.WithInitOnly(true)             // Stop after Init phase
 ```
+
+### Roots
+
+A flow starts from its **origin** — the service it is named, reported and
+attributed failures by. `WithCoRoots` adds further roots to that same flow, which
+is what lets a composition run several solutions against one host graph instead
+of one `codefly run` per solution.
+
+The run's service set is the union of every root's dependency closure plus the
+co-roots themselves, so a service two roots share is started once. Three
+consequences are worth knowing when changing this code:
+
+- The playbook is seeded once per root, in one action group. Shared dependencies
+  are de-duplicated by the action manager, not by the seeding.
+- `Playbook.Begin` narrows the policy's graph to the root's closure only when
+  there is exactly one root. With several, narrowing to any one of them would
+  make the others unresolvable, so `InitManagers` scopes `world.Dependencies` to
+  the run's own service set up front instead. That scoping is what keeps
+  propagation to a service's dependents from naming a service the flow has no
+  manager for.
+- Barriers that stop the playbook (`--load-only`, `--init-only`) wait for *every*
+  root to reach them; stopping at the first would leave the others unstarted.
+
+`--stand-alone` and `--exclude-root` carve the origin out of its own graph, so
+the run command rejects them alongside more than one root.
 
 ## World
 

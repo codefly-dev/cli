@@ -614,3 +614,22 @@ signalled:
 	require.Equal(t, expected, executed)
 
 }
+
+// Begin became variadic so a multi-root run can seed one action per root. That
+// also made "no actions" expressible, where it used to be a compile error — and
+// an empty seed is silent: send() drops an empty group, so Work would sit on an
+// action queue nothing will ever fill until the whole run is cancelled, which
+// reads exactly like services that never come up. It must fail fast instead.
+func TestPlaybookBeginRejectsAnEmptySeed(t *testing.T) {
+	ctx := context.Background()
+	data := setup(t, orchestration.RuntimeStart, execOnInit())
+
+	playbook, err := orchestration.NewPlaybook(ctx, data.world)
+	require.NoError(t, err)
+	playbook.WithPolicy(data.policy)
+
+	err = playbook.Begin(ctx)
+	require.Error(t, err, "an empty seed must not hang the run")
+	require.Contains(t, err.Error(), "no actions")
+	require.Empty(t, playbook.Executed())
+}

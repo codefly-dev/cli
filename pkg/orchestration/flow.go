@@ -36,6 +36,14 @@ type Flow struct {
 	originService *resources.Service
 	originModule  *resources.Module
 
+	// coRoots are the module-qualified uniques of services started as roots
+	// alongside the origin, sharing its graph. A product composition selects
+	// several solutions, each a root that requires the same host services;
+	// running one flow per solution would give each its own graph, and those
+	// collide on ports and on container-recovery scope. The origin stays the
+	// service the run is named and reported by.
+	coRoots []string
+
 	// The world
 	world *World
 
@@ -603,15 +611,11 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithPolicy(policy)
 		if flow.loadOnly {
 			w.Debug("load only")
-			playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
-				return action.Type == RuntimeLoad && action.Service == resources.WithUnique(flow.originService).Unique()
-			})
+			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeLoad))
 		}
 		if flow.initOnly {
 			w.Debug("init only")
-			playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
-				return action.Type == RuntimeInit && action.Service == resources.WithUnique(flow.originService).Unique()
-			})
+			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeInit))
 		}
 	case TestMode:
 		policy, err := NewRuntimeTestPolicy(
@@ -632,15 +636,11 @@ func (flow *Flow) Load(ctx context.Context) error {
 		playbook.WithPolicy(policy)
 		if flow.loadOnly {
 			w.Debug("load only")
-			playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
-				return action.Type == RuntimeLoad && action.Service == resources.WithUnique(flow.originService).Unique()
-			})
+			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeLoad))
 		}
 		if flow.initOnly {
 			w.Debug("init only")
-			playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
-				return action.Type == RuntimeInit && action.Service == resources.WithUnique(flow.originService).Unique()
-			})
+			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeInit))
 		}
 		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
 			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == RuntimeTest
@@ -765,7 +765,7 @@ func (flow *Flow) Start(ctx context.Context) error {
 	flow.beginStart(cancel)
 	defer flow.clearStart()
 
-	err := flow.playbook.Begin(runCtx, Action{Type: RuntimeBegin, Service: resources.WithUnique(flow.originService).Unique()})
+	err := flow.playbook.Begin(runCtx, flow.rootBeginActions()...)
 	failure, failed := flow.endStart()
 	if failed {
 		failureErr := w.Wrapf(failure, "service failed after start")
@@ -1289,13 +1289,21 @@ func (flow *Flow) ManagedServices() (origin string, dependencies []string) {
 		return "", nil
 	}
 	if flow.originService != nil {
-		origin = flow.originService.Name
+		origin = resources.WithUnique(flow.originService).Unique()
 	}
+	// Identify by module-qualified unique, not bare name: composed modules
+	// routinely name their entry service the same thing, so a bare name both
+	// dropped a service that shares the origin's name and rendered two managed
+	// services identically. This is the same identity SendPlan already shows.
 	for _, s := range flow.services {
-		if s == nil || s.Name == origin {
+		if s == nil {
 			continue
 		}
-		dependencies = append(dependencies, s.Name)
+		unique := resources.WithUnique(s).Unique()
+		if unique == origin {
+			continue
+		}
+		dependencies = append(dependencies, unique)
 	}
 	return origin, dependencies
 }
@@ -1464,11 +1472,104 @@ func (flow *Flow) selectDependencyStage() error {
 	return nil
 }
 
+// WithCoRoots adds services this run starts as roots beside the origin, given
+// as module-qualified uniques.
+func (flow *Flow) WithCoRoots(uniques ...string) *Flow {
+	flow.coRoots = append(flow.coRoots, uniques...)
+	return flow
+}
+
+// rootBeginActions is the opening action for every root, seeded together so
+// each root drives its own closure through the same playbook.
+func (flow *Flow) rootBeginActions() []Action {
+	roots := flow.rootUniques()
+	actions := make([]Action, 0, len(roots))
+	for _, root := range roots {
+		actions = append(actions, Action{Type: RuntimeBegin, Service: root})
+	}
+	return actions
+}
+
+// rootUniques returns every service this run starts as a root, origin first.
+func (flow *Flow) rootUniques() []string {
+	roots := make([]string, 0, len(flow.coRoots)+1)
+	roots = append(roots, resources.WithUnique(flow.originService).Unique())
+	return append(roots, flow.coRoots...)
+}
+
+// runClosure returns every service this run manages except the origin: the
+// union of each root's dependency closure, plus the co-roots themselves.
+//
+// Each OrderTo lists a root's whole closure dependencies-first, so appending a
+// root after its own closure and keeping the first occurrence of every service
+// carries that ordering across the union — anything a service depends on was
+// either already emitted for an earlier root or precedes it in this root's own
+// order. With a single root it reduces to exactly OrderTo(origin).
+func (flow *Flow) runClosure(ctx context.Context) ([]architecture.Service, error) {
+	seen := map[string]bool{resources.WithUnique(flow.originService).Unique(): true}
+	var required []architecture.Service
+	add := func(unique string) {
+		if seen[unique] {
+			return
+		}
+		seen[unique] = true
+		required = append(required, architecture.Service{Unique: unique})
+	}
+	for _, root := range flow.rootUniques() {
+		order, err := flow.world.Dependencies.OrderTo(ctx, root)
+		if err != nil {
+			return nil, err
+		}
+		for _, service := range order {
+			add(service.Unique)
+		}
+		add(root)
+	}
+	return required, nil
+}
+
+// scopeDependenciesToRun rebuilds the dependency graph with every service
+// outside this run excluded, so what the policy reads is exactly what the flow
+// manages. A run seeded from several roots cannot narrow its graph to any one
+// of them, so this is what keeps propagation to a service's dependents from
+// reaching a service the flow has no manager for.
+func (flow *Flow) scopeDependenciesToRun(ctx context.Context, required []string, options []architecture.DependencyOption) error {
+	inRun := map[string]bool{resources.WithUnique(flow.originService).Unique(): true}
+	for _, unique := range required {
+		inRun[unique] = true
+	}
+	var outside []string
+	for _, service := range flow.world.Dependencies.Services() {
+		if !inRun[service.Unique] {
+			outside = append(outside, service.Unique)
+		}
+	}
+	if len(outside) == 0 {
+		return nil
+	}
+	scoped := append(slices.Clone(options), architecture.ExcludeServices(outside...))
+	dependencies, err := architecture.NewServiceDependencies(ctx, flow.workspace, scoped...)
+	if err != nil {
+		return err
+	}
+	flow.world.Dependencies = dependencies
+	if flow.SharedState != nil {
+		flow.SharedState.SetDependencies(dependencies)
+	}
+	// The rebuild reloads the workspace, so it carries every edge kind again —
+	// including the build-only ones selectDependencyStage already dropped. Re-run
+	// that selection rather than repeat its rule here: without it a `build` or
+	// `schema` edge between two services of the run set comes back as a runtime
+	// ordering constraint, and paired with a runtime edge the other way it makes
+	// the run graph cyclic.
+	return flow.selectDependencyStage()
+}
+
 // managerDependencies chooses membership independently of snapshot stage order.
 func (flow *Flow) managerDependencies(ctx context.Context) ([]architecture.Service, error) {
 	origin := resources.WithUnique(flow.originService).Unique()
 	if flow.world.Mode != SnapshotMode {
-		return flow.world.Dependencies.OrderTo(ctx, origin)
+		return flow.runClosure(ctx)
 	}
 	closure, err := flow.world.Dependencies.Restrict(ctx, origin)
 	if err != nil {
@@ -1572,6 +1673,11 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	}
 	// We run in the proper order
 	slices.Reverse(required)
+	if len(flow.coRoots) > 0 {
+		if err := flow.scopeDependenciesToRun(ctx, required, dependencyOptions); err != nil {
+			return w.Wrap(err)
+		}
+	}
 	if err := flow.validateDependencyEndpointDeclarations(required); err != nil {
 		return w.Wrap(err)
 	}
