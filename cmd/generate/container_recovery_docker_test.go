@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 )
 
 // qualificationImage stands in for the proto companion image. What is under
@@ -119,7 +120,7 @@ func TestAnInterruptedGenerateLeavesARecoverableContainer(t *testing.T) {
 		interruptedGenerateEnv+"=1",
 		generateContainerNameEnv+"="+name,
 		resources.CodeflyHomeEnv+"="+home,
-		runners.ContainerRecoveryScopeEnvironment+"=",
+		recoveryscope.EnvironmentVariable+"=",
 	)
 	output, err := child.CombinedOutput()
 	if err != nil {
