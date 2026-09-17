@@ -42,6 +42,11 @@ func WithRunModuleClosure(seeds ...string) FlowOption {
 // graph that validates — a violation outside the closure belongs to the runs
 // that do reach it, and to the workspace-wide pass, not to this one.
 //
+// Scoping is by closure and not by the run set on purpose. The run set is what
+// answers "can this run satisfy the reference" — validateDependencyEndpointDeclarations
+// asks that, and honours exclusions accordingly. Visibility answers "is this
+// declaration legal at all", which no exclusion changes.
+//
 // The narrowed workspace serves the dependency graph alone. Workspace
 // configurations and run profiles are declared by the composition and stay
 // resolved against all of it.
@@ -55,7 +60,15 @@ func runModuleClosure(ctx context.Context, workspace *resources.Workspace, seeds
 		return nil, w.Wrap(err)
 	}
 	if err = closure.ValidateServiceDependencies(ctx); err != nil {
-		return nil, w.Wrap(err)
+		// Whether a producer grants a consumer an endpoint is a property of the
+		// composition, not of which services this run happens to start. Saying
+		// so is what stops an operator reaching for --exclude-dependency: the
+		// exclusion is applied long after this point and would not help if it
+		// were, and a run that could be talked out of the verdict would put
+		// `run` and the composition's own check back into disagreement.
+		return nil, w.Wrapf(err, "a module this run composes declares a dependency its producer does not permit; "+
+			"excluding the dependency from this run does not resolve it — declare the endpoint's visibility, "+
+			"or add it to the producing module's interface")
 	}
 	scoped := workspace.Clone()
 	scoped.Modules = nil

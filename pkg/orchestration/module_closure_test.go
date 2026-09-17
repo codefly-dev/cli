@@ -286,3 +286,25 @@ endpoints:
 	require.ElementsMatch(t, []string{"saas/auth-gateway", "documents/api"}, got,
 		"both modules the solution spans are started for it, from a run that named only the solution")
 }
+
+// A Flow assembled field-by-field rather than through NewFlow carries no
+// closure. Reading the closure field directly made that a nil dereference the
+// moment such a flow rebuilt its graph — which every multi-root run does.
+func TestDependencyWorkspaceFallsBackToTheComposition(t *testing.T) {
+	workspace := multiRootWorkspace(t)
+	flow := &Flow{workspace: workspace}
+
+	require.Same(t, workspace, flow.dependencyWorkspace())
+}
+
+// The refusal has to say that an exclusion cannot talk it out of the verdict.
+// An operator who reads only the endpoint name reaches for
+// --exclude-dependency, which is applied long after this point and would
+// re-open the run-vs-validation disagreement if it were honoured here.
+func TestRunModuleClosureRefusalSaysExclusionWillNotHelp(t *testing.T) {
+	_, err := runModuleClosure(t.Context(), multiRootWorkspace(t), []string{"analytics"})
+
+	require.ErrorContains(t, err, "excluding the dependency from this run does not resolve it")
+	require.ErrorContains(t, err, "declare the endpoint's visibility")
+	require.ErrorContains(t, err, `endpoint auth-gateway/admin is private to module "saas"`)
+}

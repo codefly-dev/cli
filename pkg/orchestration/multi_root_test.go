@@ -36,11 +36,10 @@ func multiRootFlow(t testing.TB, origin string, coRoots ...string) (*Flow, conte
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
 	flow := &Flow{
-		workspace:      workspace,
-		graphWorkspace: workspace,
-		originService:  service,
-		originModule:   module,
-		world:          &World{Dependencies: dependencies, Mode: RunMode},
+		workspace:     workspace,
+		originService: service,
+		originModule:  module,
+		world:         &World{Dependencies: dependencies, Mode: RunMode},
 	}
 	require.NoError(t, flow.selectDependencyStage())
 	return flow.WithCoRoots(coRoots...), ctx

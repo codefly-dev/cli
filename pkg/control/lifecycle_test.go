@@ -66,10 +66,10 @@ func TestWaitReadyNamesThePendingRequirement(t *testing.T) {
 // The plane exists so the MCP tools behave exactly as the commands do. A run
 // driven through it must therefore derive its modules the way `codefly run`
 // does, while build, test and the check modes keep the whole pin set.
-func TestRunModuleSeedsOnlySeedARun(t *testing.T) {
+func TestModuleClosureSeedsOnlySeedARun(t *testing.T) {
 	module := &resources.Module{Name: "wiki"}
 
-	if got := runModuleSeeds(orchestration.RunMode, module); len(got) != 1 || got[0] != "wiki" {
+	if got := moduleClosureSeeds(orchestration.RunMode, module); len(got) != 1 || got[0] != "wiki" {
 		t.Fatalf("a run seeds its closure with the target's module, got %v", got)
 	}
 	for _, mode := range []orchestration.Mode{
@@ -80,7 +80,7 @@ func TestRunModuleSeedsOnlySeedARun(t *testing.T) {
 		orchestration.LintMode,
 		orchestration.CompileMode,
 	} {
-		if got := runModuleSeeds(mode, module); got != nil {
+		if got := moduleClosureSeeds(mode, module); got != nil {
 			t.Fatalf("%v must keep the whole pin set, got seeds %v", mode, got)
 		}
 	}

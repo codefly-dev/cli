@@ -34,8 +34,7 @@ type Flow struct {
 
 	// graphWorkspace is the workspace the dependency graph is built from: the
 	// run's module closure when the caller supplied seeds, otherwise the whole
-	// pin set. Every rebuild reads it, so a rebuild cannot silently widen the
-	// graph back to modules the run never reaches.
+	// pin set. Read it through dependencyWorkspace(), never directly.
 	graphWorkspace *resources.Workspace
 
 	// Where we start
@@ -1564,7 +1563,7 @@ func (flow *Flow) scopeDependenciesToRun(ctx context.Context, required []string,
 		return nil
 	}
 	scoped := append(slices.Clone(options), architecture.ExcludeServices(outside...))
-	dependencies, err := architecture.NewServiceDependencies(ctx, flow.graphWorkspace, scoped...)
+	dependencies, err := architecture.NewServiceDependencies(ctx, flow.dependencyWorkspace(), scoped...)
 	if err != nil {
 		return err
 	}
@@ -1638,7 +1637,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		dependencyOptions = append(dependencyOptions, architecture.ExcludeServices(flow.excludedDependencyServices...))
 	}
 	if len(dependencyOptions) > 0 {
-		dep, err := architecture.NewServiceDependencies(ctx, flow.graphWorkspace, dependencyOptions...)
+		dep, err := architecture.NewServiceDependencies(ctx, flow.dependencyWorkspace(), dependencyOptions...)
 		if err != nil {
 			return w.Wrap(err)
 		}
@@ -2144,6 +2143,17 @@ func (flow *Flow) WithSyncRequest(req *builderv0.SyncRequest) {
 }
 
 func (flow *Flow) ActiveWorkspace() *resources.Workspace {
+	return flow.workspace
+}
+
+// dependencyWorkspace is the workspace every (re)build of the dependency graph
+// reads, so a rebuild cannot silently widen the run back to modules no root
+// reaches. A Flow assembled field-by-field rather than through NewFlow carries
+// no closure, and falls back to the composition it does carry.
+func (flow *Flow) dependencyWorkspace() *resources.Workspace {
+	if flow.graphWorkspace != nil {
+		return flow.graphWorkspace
+	}
 	return flow.workspace
 }
 
