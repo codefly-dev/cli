@@ -21,10 +21,17 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "publish [patch|minor|major|beta]",
 	Short: "Version, tag, and push a release for the current Codefly repository",
-	Long: `publish bumps the manifest version, commits, tags, and pushes
-the new tag to origin. One command for every codefly-dev repo —
-modules (core, cli, sdk-go) and agents (every services/* and
-modules/*) all use the same flow.
+	Long: `publish bumps the manifest version and lands it on main through a
+release pull request, then tags the commit main ends up carrying and
+pushes that tag. One command for every codefly-dev repo — modules
+(core, cli, sdk-go) and agents (every services/* and modules/*) all
+use the same flow.
+
+Routing the bump through a pull request is what lets main require its
+checks of every account, admins included: a release commit pushed
+straight to main carries no check results and a protected main would
+have to exempt someone to accept it. Tags are outside branch
+protection, so the tag push stays direct.
 
 The mode is auto-detected from cwd:
   agent.codefly.yaml         → agent
@@ -41,6 +48,10 @@ Pre-flight gates (any failure aborts cleanly with no side effects):
 Push is NEVER --force for main or the tag. If pre-flight fails the
 operator must resolve the divergence by hand — refusing to overwrite
 in-flight work is the whole point.
+
+If the release pull request merges but the tag push then fails, the
+bump is on main without a release. Re-run publish: it recognizes the
+untagged release commit and finishes it rather than bumping again.
 
 For service-agent repos (agent.codefly.yaml) publish also, in order:
   - runs release-grade agent CI against the bumped version and aborts
@@ -63,6 +74,11 @@ Examples:
 	Args: cobra.MaximumNArgs(1),
 	RunE: run,
 }
+
+// releaseWaitBudget bounds how long publish waits for the release pull request
+// to go green and merge. Sized to main's required checks, which is the slowest
+// thing between the bump and the tag.
+const releaseWaitBudget = 45 * time.Minute
 
 func init() {
 	Cmd.Flags().Bool("dry-run", false, "show what would happen without modifying anything")
@@ -92,11 +108,19 @@ func run(c *cobra.Command, args []string) error {
 		DryRun:   dryRun,
 		WorkDir:  workDir,
 	}
+	if !dryRun {
+		landing, lerr := newPullRequestLanding(context.Background(), workDir)
+		if lerr != nil {
+			return lerr
+		}
+		engine.Landing = landing
+	}
 
-	// Agent releases additionally run release-grade CI and upload
-	// loader-compatible GitHub release assets. Both are far slower than a
-	// bare tag push, so they get a generous timeout.
-	timeout := 60 * time.Second
+	// The bump waits on main's required checks before it merges, and agent
+	// releases additionally run release-grade CI and upload loader-compatible
+	// GitHub release assets. All are far slower than a bare tag push, so they
+	// get a generous timeout.
+	timeout := releaseWaitBudget
 	if manifest.Mode == ModeAgent && !dryRun {
 		var releaser releaseGate
 		releaser, err = newAgentReleaseGate(filepath.Dir(manifest.Path))
@@ -105,7 +129,7 @@ func run(c *cobra.Command, args []string) error {
 		}
 		defer releaser.cleanup()
 		releaser.attach(engine)
-		timeout = 30 * time.Minute
+		timeout = releaseWaitBudget + 30*time.Minute
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
