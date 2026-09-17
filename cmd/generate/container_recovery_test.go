@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 )
 
 // newRecoveryWorkspace writes a workspace declaring `local` with the given
@@ -31,7 +32,7 @@ environments:
 	}
 	writeTestFile(t, filepath.Join(root, "workspace.codefly.yaml"), declaration)
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	t.Chdir(root)
 	resetContainerRecoveryOnce(t)
 	return root
@@ -51,7 +52,7 @@ func resetContainerRecoveryOnce(t *testing.T) {
 // cares which one can match has to look at them separately.
 func markerFields(t *testing.T) (scopeID, namespace string) {
 	t.Helper()
-	identity := dockerrun.InheritedContainerRecoveryScope()
+	identity := recoveryscope.Acknowledgement()
 	if identity == "" {
 		return "", ""
 	}
@@ -148,7 +149,7 @@ func TestGenerateProjectsTheMarkerIntoTheProcess(t *testing.T) {
 	root := newRecoveryWorkspace(t, "from-yaml")
 
 	projectContainerRecovery(context.Background())
-	projected := dockerrun.InheritedContainerRecoveryScope()
+	projected := recoveryscope.Acknowledgement()
 	if projected == "" {
 		t.Fatal("generate projected no container recovery marker")
 	}
@@ -160,7 +161,7 @@ func TestGenerateProjectsTheMarkerIntoTheProcess(t *testing.T) {
 	if err = dockerrun.SetContainerRecoveryScope(want); err != nil {
 		t.Fatalf("SetContainerRecoveryScope: %v", err)
 	}
-	if identity := dockerrun.InheritedContainerRecoveryScope(); projected != identity {
+	if identity := recoveryscope.Acknowledgement(); projected != identity {
 		t.Fatalf("projected identity = %q, want %q", projected, identity)
 	}
 
@@ -174,7 +175,7 @@ func TestGenerateProjectsTheMarkerIntoTheProcess(t *testing.T) {
 	if err = dockerrun.SetContainerRecoveryScope(other); err != nil {
 		t.Fatalf("SetContainerRecoveryScope: %v", err)
 	}
-	if identity := dockerrun.InheritedContainerRecoveryScope(); identity == projected {
+	if identity := recoveryscope.Acknowledgement(); identity == projected {
 		t.Fatal("a different scope produced the same marker; the marker does not encode the resolved scope")
 	}
 }
@@ -188,7 +189,7 @@ func TestGenerateResolvesOwnershipOncePerCommand(t *testing.T) {
 	newRecoveryWorkspace(t, "from-yaml")
 
 	projectContainerRecovery(context.Background())
-	first := dockerrun.InheritedContainerRecoveryScope()
+	first := recoveryscope.Acknowledgement()
 	if first == "" {
 		t.Fatal("generate projected no container recovery marker")
 	}
@@ -198,7 +199,7 @@ func TestGenerateResolvesOwnershipOncePerCommand(t *testing.T) {
 	// it already labeled.
 	t.Chdir(t.TempDir())
 	projectContainerRecovery(context.Background())
-	if identity := dockerrun.InheritedContainerRecoveryScope(); identity != first {
+	if identity := recoveryscope.Acknowledgement(); identity != first {
 		t.Fatalf("ownership re-resolved mid-command: %q then %q", first, identity)
 	}
 }
@@ -367,7 +368,7 @@ func TestEveryGenerateContainerIsOwnedAndDisposable(t *testing.T) {
 // no label. Generating outside a workspace must still work.
 func TestGenerateOutsideAWorkspaceProjectsNothing(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	t.Chdir(t.TempDir())
 	resetContainerRecoveryOnce(t)
 
@@ -375,7 +376,7 @@ func TestGenerateOutsideAWorkspaceProjectsNothing(t *testing.T) {
 		t.Fatal("containerRecoveryScope resolved an ownership outside any workspace")
 	}
 	projectContainerRecovery(context.Background())
-	if identity := dockerrun.InheritedContainerRecoveryScope(); identity != "" {
+	if identity := recoveryscope.Acknowledgement(); identity != "" {
 		t.Fatalf("projected %q outside a workspace, want no marker", identity)
 	}
 }

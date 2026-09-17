@@ -10,12 +10,13 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
 )
 
 func TestContainerRecoveryRequiresAgentAcknowledgementBeforeDockerInit(t *testing.T) {
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	scope, err := dockerrun.NewContainerRecoveryScope(t.TempDir(), t.TempDir(), "test")
 	require.NoError(t, err)
 	require.NoError(t, dockerrun.SetContainerRecoveryScope(scope))
@@ -26,12 +27,12 @@ func TestContainerRecoveryRequiresAgentAcknowledgementBeforeDockerInit(t *testin
 		{"legacy Docker agent", resources.RuntimeContextContainer, "", true},
 		{"legacy free agent", resources.RuntimeContextFree, "", true},
 		{"wrong scope", resources.RuntimeContextContainer, "foreign", true},
-		{"acknowledged", resources.RuntimeContextContainer, dockerrun.InheritedContainerRecoveryScope(), false},
+		{"acknowledged", resources.RuntimeContextContainer, recoveryscope.Acknowledgement(), false},
 		{"native", resources.RuntimeContextNative, "", false},
 		{"nix", resources.RuntimeContextNix, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			runner := &Runner{runtimeContext: tc.runtime, containerRecoveryIdentity: dockerrun.InheritedContainerRecoveryScope(), instance: &services.Instance{Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: tc.ack}}
+			runner := &Runner{runtimeContext: tc.runtime, containerRecoveryIdentity: recoveryscope.Acknowledgement(), instance: &services.Instance{Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: tc.ack}}
 			if tc.reject {
 				// No Runtime client or World is installed: the real Init must
 				// return before configuration, port allocation or any agent RPC.
@@ -104,7 +105,7 @@ func TestEveryFlowProjectsContainerRecoveryBeforeSpawningAgents(t *testing.T) {
 	for _, mode := range []Mode{RunMode, BuildMode, TestMode, SyncMode, DeployMode, SnapshotMode} {
 		t.Run(string(mode), func(t *testing.T) {
 			t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
-			t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+			t.Setenv(recoveryscope.EnvironmentVariable, "")
 			flow, workspace := newProjectionWorkspaceFlow(t, mode, false)
 
 			require.NoError(t, flow.InitManagers(context.Background()))
@@ -112,7 +113,7 @@ func TestEveryFlowProjectsContainerRecoveryBeforeSpawningAgents(t *testing.T) {
 			// Read the environment before asking the flow for its scope:
 			// ContainerRecoveryScope projects on demand, so consulting it first
 			// would pass whether or not InitManagers ever projected.
-			require.NotEmpty(t, dockerrun.InheritedContainerRecoveryScope())
+			require.NotEmpty(t, recoveryscope.Acknowledgement())
 
 			expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), "from-yaml")
 			require.NoError(t, err)
@@ -127,12 +128,12 @@ func TestEveryFlowProjectsContainerRecoveryBeforeSpawningAgents(t *testing.T) {
 // holding the inherited marker must keep acknowledging the same identity.
 func TestContainerRecoveryScopeIsResolvedOnce(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	flow, _ := newProjectionWorkspaceFlow(t, RunMode, false)
 
 	first, err := flow.ContainerRecoveryScope()
 	require.NoError(t, err)
-	marker := os.Getenv(dockerrun.ContainerRecoveryScopeEnvironment)
+	marker := os.Getenv(recoveryscope.EnvironmentVariable)
 	require.NotEmpty(t, marker)
 
 	require.NoError(t, flow.InitManagers(context.Background()))
@@ -140,7 +141,7 @@ func TestContainerRecoveryScopeIsResolvedOnce(t *testing.T) {
 	second, err := flow.ContainerRecoveryScope()
 	require.NoError(t, err)
 	require.Equal(t, first, second)
-	require.Equal(t, marker, os.Getenv(dockerrun.ContainerRecoveryScopeEnvironment))
+	require.Equal(t, marker, os.Getenv(recoveryscope.EnvironmentVariable))
 }
 
 // The ordering is the whole guarantee: New() spawns the agent process, which
@@ -149,11 +150,11 @@ func TestContainerRecoveryScopeIsResolvedOnce(t *testing.T) {
 // projected — moving the projection after the spawn loop fails this.
 func TestContainerRecoveryIsProjectedBeforeTheSpawnLoop(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	flow, _ := newProjectionWorkspaceFlow(t, RunMode, true)
 
 	require.Error(t, flow.InitManagers(context.Background()), "fixture agent must not resolve, so the spawn is attempted and fails")
-	require.NotEmpty(t, dockerrun.InheritedContainerRecoveryScope(), "ownership must be projected before the spawn loop runs")
+	require.NotEmpty(t, recoveryscope.Acknowledgement(), "ownership must be projected before the spawn loop runs")
 }
 
 // A second flow in this process projects its own identity over the variable.
@@ -162,7 +163,7 @@ func TestContainerRecoveryIsProjectedBeforeTheSpawnLoop(t *testing.T) {
 // against the live variable reports a correctly rebuilt agent as stale.
 func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	flow, _ := newProjectionWorkspaceFlow(t, RunMode, false)
 	require.NoError(t, flow.InitManagers(context.Background()))
 	projected := flow.containerRecoveryIdentity
@@ -185,7 +186,7 @@ func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 	other, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), t.TempDir(), "concurrent-flow")
 	require.NoError(t, err)
 	require.NoError(t, dockerrun.SetContainerRecoveryScope(other))
-	require.NotEqual(t, projected, dockerrun.InheritedContainerRecoveryScope())
+	require.NotEqual(t, projected, recoveryscope.Acknowledgement())
 
 	require.NoError(t, agent.validateContainerRecovery(), "the clobbered variable must not fail a correctly acknowledged agent")
 
@@ -193,7 +194,7 @@ func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 	foreign := &Runner{
 		runtimeContext:            resources.RuntimeContextContainer,
 		containerRecoveryIdentity: projected,
-		instance:                  &services.Instance{Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: dockerrun.InheritedContainerRecoveryScope()},
+		instance:                  &services.Instance{Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: recoveryscope.Acknowledgement()},
 	}
 	require.ErrorContains(t, foreign.validateContainerRecovery(), "did not acknowledge this run's container recovery scope")
 }
@@ -205,12 +206,12 @@ func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 func TestInitManagersRunsWhenOwnershipCannotBeResolved(t *testing.T) {
 	blocked := filepath.Join(t.TempDir(), "home-is-a-file")
 	require.NoError(t, os.WriteFile(blocked, []byte("not a directory"), 0o600))
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	flow, _ := newProjectionWorkspaceFlow(t, BuildMode, false)
 
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(blocked, "nested"))
 	require.NoError(t, flow.InitManagers(context.Background()))
-	require.Empty(t, dockerrun.InheritedContainerRecoveryScope())
+	require.Empty(t, recoveryscope.Acknowledgement())
 	require.Empty(t, flow.containerRecoveryIdentity)
 }
 
@@ -223,7 +224,7 @@ func containerRecoveryDigests(t *testing.T) (string, string) {
 	scope, err := dockerrun.NewContainerRecoveryScope(t.TempDir(), t.TempDir(), "mixed-generation")
 	require.NoError(t, err)
 	require.NoError(t, dockerrun.SetContainerRecoveryScope(scope))
-	identity := dockerrun.InheritedContainerRecoveryScope()
+	identity := recoveryscope.Acknowledgement()
 	require.NotEmpty(t, identity)
 	id, namespace, ok := strings.Cut(identity, ":")
 	require.True(t, ok)
@@ -252,7 +253,7 @@ const unownedPID = 999999999
 // a refused marker and a missing one both resolve to nothing — so the guard
 // catches neither direction.
 func TestPinnedCoreMarkerResolutionsMatchTheRollout(t *testing.T) {
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	id, namespace := containerRecoveryDigests(t)
 	// A host that cannot prove a durable identity projects the exact scope
 	// alone, so the namespace may be empty here. An untagged marker needs some
@@ -270,8 +271,8 @@ func TestPinnedCoreMarkerResolutionsMatchTheRollout(t *testing.T) {
 		{"this generation", fmt.Sprintf("%d:v2:%s:%s", os.Getpid(), id, namespace), id + ":" + namespace},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, tc.marker)
-			require.Equal(t, tc.identity, dockerrun.InheritedContainerRecoveryScope())
+			t.Setenv(recoveryscope.EnvironmentVariable, tc.marker)
+			require.Equal(t, tc.identity, recoveryscope.Acknowledgement())
 		})
 	}
 }
@@ -300,7 +301,7 @@ func TestFlowProjectsOverAnInheritedForeignMarker(t *testing.T) {
 			home := filepath.Join(t.TempDir(), "home")
 			require.NoError(t, os.MkdirAll(home, 0o700))
 			t.Setenv(resources.CodeflyHomeEnv, home)
-			t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+			t.Setenv(recoveryscope.EnvironmentVariable, "")
 			id, namespace := containerRecoveryDigests(t)
 			trailing := namespace
 			if trailing == "" {
@@ -310,8 +311,8 @@ func TestFlowProjectsOverAnInheritedForeignMarker(t *testing.T) {
 			if tc.tagged {
 				inherited = fmt.Sprintf("%d:v2:%s:%s", os.Getpid(), id, namespace)
 			}
-			t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, inherited)
-			foreign := dockerrun.InheritedContainerRecoveryScope()
+			t.Setenv(recoveryscope.EnvironmentVariable, inherited)
+			foreign := recoveryscope.Acknowledgement()
 			require.Equal(t, tc.tagged, foreign != "", "the fixture must be a marker this generation reads as expected")
 
 			flow, workspace := newProjectionWorkspaceFlow(t, RunMode, false)
@@ -322,7 +323,7 @@ func TestFlowProjectsOverAnInheritedForeignMarker(t *testing.T) {
 			scope, err := flow.ContainerRecoveryScope()
 			require.NoError(t, err)
 			require.Equal(t, expected, scope)
-			projected := dockerrun.InheritedContainerRecoveryScope()
+			projected := recoveryscope.Acknowledgement()
 			require.NotEmpty(t, projected)
 			require.NotEqual(t, foreign, projected, "the flow must project its own ownership, not adopt what it inherited")
 		})

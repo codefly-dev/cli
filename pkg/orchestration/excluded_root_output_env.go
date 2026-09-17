@@ -51,6 +51,21 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load excluded root dependency endpoints: %w", err)
 	}
+	// --exclude-root never loads the root agent, so services.RuntimeInstance.Start
+	// — the call that narrows what a running service receives — never runs for it.
+	// This file is then the ONLY carrier of its dependencies' addresses, and
+	// narrowing it here is the only enforcement there is. identity.Module is the
+	// consumer module the runner passes as instance.Module.Name: core builds the
+	// identity from that same field, so the two carriers agree by construction.
+	endpointMappings, err := outputEnvNetworkMappings(
+		identity.Module,
+		flow.originService.ServiceDependencies,
+		nil,
+		dependencyMappings,
+	)
+	if err != nil {
+		return fmt.Errorf("resolve excluded root dependency endpoints: %w", err)
+	}
 
 	if err := AppendServiceProcessConfigurationsToFile(
 		ctx,
@@ -87,7 +102,7 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 		runtimeContext,
 		flow.fixture,
 		overrides,
-		dependencyMappings,
+		endpointMappings,
 	); err != nil {
 		return fmt.Errorf("write excluded root runtime environment: %w", err)
 	}

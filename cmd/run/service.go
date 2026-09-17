@@ -25,6 +25,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	postgresipc "github.com/codefly-dev/core/runners/base"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
@@ -145,7 +146,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		defer dockerrun.SetEphemeralContainers(false)
 	}
 
-	defer func() { _ = os.Unsetenv(dockerrun.ContainerRecoveryScopeEnvironment) }()
+	defer func() { _ = os.Unsetenv(recoveryscope.EnvironmentVariable) }()
 
 	var workspace *resources.Workspace
 	var module *resources.Module

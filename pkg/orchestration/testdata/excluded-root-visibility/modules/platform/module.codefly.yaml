@@ -1,0 +1,6 @@
+kind: module
+name: platform
+project: excluded-root-visibility
+domain: github.com/codefly-ai/excluded-root-visibility/platform
+services:
+    - name: warden

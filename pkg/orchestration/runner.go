@@ -632,6 +632,15 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			WorkspacePath:       runner.instance.Identity.WorkspacePath,
 			RelativeToWorkspace: runner.instance.Identity.RelativeToWorkspace,
 		}
+		// Core guards this same dereference before making the identical call
+		// (services.RuntimeInstance.Start) and simply forwards the request
+		// unnarrowed when the module is absent. This carrier cannot do that:
+		// unnarrowed here means writing dependency addresses whose visibility
+		// nothing can check. Without a consumer module there is no permitted
+		// set to compute, so refuse to write rather than write unchecked.
+		if runner.instance.Module == nil {
+			return nil, w.NewError("cannot resolve dependency network mappings for output environment: %s has no module", runner.instance.Unique())
+		}
 		endpointMappings, mappingErr := outputEnvNetworkMappings(
 			runner.instance.Module.Name,
 			runner.instance.Service.ServiceDependencies,
