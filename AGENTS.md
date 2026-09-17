@@ -1,9 +1,8 @@
 # AGENTS.md — codefly/cli
 
-> **This file is the canonical instructions for AI coding agents and human contributors.**
-> `CLAUDE.md` (and any other tool-specific file) is a thin forwarder that points here.
-> The same layout is used in every codefly repo (`core`, `cli`, agents, …): one canonical
-> `AGENTS.md` at the root, task procedures under `docs/runbooks/`, deep references under `docs/`.
+> **Canonical instructions for AI coding agents and human contributors.** `CLAUDE.md` and any
+> other tool-specific file is a thin forwarder pointing here. Every codefly repo uses this
+> layout — see [Maintaining this doc set](#maintaining-this-doc-set).
 
 ## Module & Repository
 
@@ -17,10 +16,44 @@ integration.
 
 ---
 
-## How-To Index (start here)
+## How to work here
 
-Task-oriented procedures. Each links to a full runbook under `docs/runbooks/`. Add a new
-runbook whenever you do a multi-step operational task a second time.
+These rules are fleet-wide (obin-ai/handbook#68) and outrank anything below them.
+
+**A gap in the tooling is a bug in the tooling** — never a reason to reach around it. If
+`codefly` cannot express what you need, the deliverable is the missing capability, not a
+script that does it behind the CLI's back. Not as a "workaround", not "just this once", not
+"until the verb lands".
+
+**Never hack. Always provide the best fix, even when it spans repos.** The right fix living in
+`core`, `wool`, or an agent repo is not a reason to work around it here — open the PR there.
+When it genuinely cannot be fixed now, ship a precise issue against the owning repo *plus* an
+explicitly labelled stopgap. Never an unlabelled one.
+
+**Classify every change that makes something work**, in the PR body: a **fix** at the place
+that owns the behaviour, or a **hack**. A hack does not become a fix by working, by being
+small, by being local, or by the real fix belonging elsewhere.
+
+**Never hardcode what the system resolves.** The CLI's whole job is resolving these — network
+mappings into `CODEFLY__…` env vars, endpoint addresses, ports, agent binaries, credentials.
+Hand-writing any of them makes the failure silent: a service that boots, serves, and never
+registers looks identical to one that works. If you are typing a value the orchestration layer
+is supposed to inject, you are encoding something true only on your machine for ten minutes.
+
+**Diagnose, do not pattern-match.** "It started working when I set X" is not a diagnosis — set
+X back and confirm it breaks. Do not trust an error message before checking it: a reported
+digest mismatch has meant a missing token, with the digest verified correct by hand.
+
+**Say what you did not verify.** Unverified is not the same as working. If you could not
+exercise a path — no cluster, no credentials, agents not rebuilt — the PR says so.
+
+---
+
+## How-To Index
+
+Task-oriented procedures. Each links to a full runbook under `docs/runbooks/` and is also
+packaged as a skill in `.claude/skills/`, so it triggers without this file being read. Add a
+new runbook (and its skill) whenever you do a multi-step operational task a second time.
 
 ### Toolchain & dependencies
 - **Bump the Go version** (core + cli + agents + CI images) → [docs/runbooks/bump-go-version.md](docs/runbooks/bump-go-version.md)
@@ -79,21 +112,9 @@ Each command with subcommands has a `cmd/<name>/` package. See
 [docs/commands.md](docs/commands.md) for the full user-facing reference and
 [docs/runbooks/add-a-command.md](docs/runbooks/add-a-command.md) to add one.
 
-| Command | Description |
-|---------|-------------|
-| `run service` / `run job` | Run a service (with deps) or a one-shot job |
-| `build` / `deploy` / `test` | Build images/binaries, deploy, run tests |
-| `add` / `delete` / `initialize` | Create/remove workspace, module, service, endpoint |
-| `generate` | Generate code (proto, grpc, swagger, templates) |
-| `install` / `update` / `upgrade` / `agents` | Agent management (`codefly agent …`); library commands are partially implemented, see docs/commands.md |
-| `list` / `show` / `status` / `explain` | Inspect resources and get help |
-| `import` / `sync` / `expose` / `open` | Import projects, sync config, expose/open endpoints |
-| `login` | Authenticate with the codefly platform |
-| `daemon` | Background daemon (start/stop/logs/monitor/gateway) |
-| `mcp` / `server` | MCP server / web companion server |
-| `self` | Build/pull/update the CLI itself (and agents) from source |
-| `ci` / `audit` / `sbom` / `verify` / `package` | CI/CD and supply-chain operations |
-| `replay` / `version` / `clear` | Replay sessions, print version, clear state |
+`codefly explain` and `codefly <verb> --help` are authoritative for the surface at any commit;
+[docs/commands.md](docs/commands.md) groups it by category and flags what is only partially
+implemented. Don't rely on a list kept here — it drifts the moment a command lands.
 
 ### Package hierarchy (`pkg/`)
 
@@ -160,8 +181,15 @@ relative paths.
 
 ## Maintaining this doc set
 
-- **`AGENTS.md`** is the entry point — keep it short. It carries identity, the how-to index, and
-  a skimmable architecture summary. Details belong in reference files.
+- **`AGENTS.md`** is the entry point — it carries the behavioural rules, the how-to index, and a
+  skimmable architecture summary. **Hard cap ~200 lines**: past that it costs context on every
+  request and adherence drops. When it grows, add a nested `AGENTS.md` in the subdirectory (the
+  closest file to the edited file wins, like `.gitignore`) — never append here.
+- **`.claude/skills/<name>/SKILL.md`** makes a runbook self-triggering: the frontmatter
+  `description` is all an agent sees before loading it, so it must say *what it does* **and**
+  *when to use it*. Keep the body to the decision — when this applies, what must not be
+  skipped — and let it point at the runbook for the steps, so there is one copy to drift.
+  Every runbook has one.
 - **`docs/runbooks/*.md`** answer "how do I do X" as ordered, copy-pasteable steps.
 - **`docs/*.md`** are reference deep-dives (concepts, not procedures).
 - When a fact here (a version, a path, a flag) changes in code, update the doc in the same PR.

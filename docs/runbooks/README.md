@@ -15,6 +15,10 @@ each runbook below.
 ### Shipping
 - [Cut a release](cut-a-release.md) — tag → GoReleaser → signed archives, SBOMs, attestations,
   Homebrew cask.
+- [Release the whole agent fleet](release-the-fleet.md) — re-pin every agent on a new core and
+  publish in dependency order.
+- [Publish an image to the registry](publish-an-image.md) — `ghcr.io/codefly-dev` visibility,
+  repo linking, digest pinning, anonymous-pull guards.
 
 ### Extending the CLI
 - [Add a new command](add-a-command.md) — Cobra wiring, help/`explain`, docs, MCP exposure.
@@ -27,4 +31,9 @@ each runbook below.
 2. Write **ordered, exact** steps — real paths, real flags, real commands. Show the verification
    step at the end.
 3. Add it to the index above **and** to the How-To Index in [`AGENTS.md`](../../AGENTS.md).
-4. Note every place a value is pinned (grep for it) so the next person doesn't miss one.
+4. Add `.claude/skills/<name>/SKILL.md` so the runbook triggers on its own, without `AGENTS.md`
+   being read. Every runbook has one. Keep the body to *when this applies* and *what must not be
+   skipped*, and point at the runbook for the steps — one copy of the steps, one thing to drift.
+   The frontmatter `description` is all an agent sees before loading the skill, so write what it
+   does **and** when to reach for it.
+5. Note every place a value is pinned (grep for it) so the next person doesn't miss one.
