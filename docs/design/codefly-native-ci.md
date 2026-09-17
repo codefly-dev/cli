@@ -671,9 +671,13 @@ its remainder.
 
 Transitive service dependencies are hashed even for standalone lint/compile
 execution: runtime scheduling and content invalidation are distinct concerns.
-An agent binary that cannot be resolved or hashed is surfaced in `limitations`
-rather than silently treated as equivalent, and any limitation makes the task
-ineligible for reuse.
+The pinned agent release is fully determined before any task runs, so a machine
+that does not have the binary yet installs it while the identity is computed
+instead of binding an empty digest — otherwise a fresh CI runner, which carries
+only the CLI, could never publish or reuse a record. An agent that still cannot
+be resolved, installed or hashed is surfaced in `limitations` rather than
+silently treated as equivalent, and any limitation makes the task ineligible for
+reuse.
 
 ### Verified result reuse
 

@@ -2,6 +2,7 @@ package ci
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -181,6 +182,79 @@ func TestCacheContentDigestUsesPathsAndExcludesGitIgnoredFiles(t *testing.T) {
 	if renamed == first {
 		t.Fatal("file rename did not invalidate content digest")
 	}
+}
+
+func TestCICacheIdentityInstallsAPinnedAgentMissingFromTheMachine(t *testing.T) {
+	_, workspace := loadReuseFixtureWithoutAgents(t)
+
+	var installed []string
+	stubCacheAgentInstall(t, func(ctx context.Context, agent *resources.Agent) error {
+		installed = append(installed, agent.Identifier())
+		return writeCacheTestAgentBinary(ctx, agent)
+	})
+
+	ctx := context.Background()
+	options := ScheduleOptions{Phase: "compile", RuntimeContext: "native"}
+	builder := newCICacheIdentityBuilder(ctx, workspace, "1.2.3", "runner-image@sha256:test")
+	identity := builder.identity(ctx, options, PlannedService{Service: "management/consumer"})
+
+	if len(installed) != 1 || installed[0] != "codefly.ai/go-grpc:0.0.16" {
+		t.Fatalf("installed agents = %v", installed)
+	}
+	if identity.Inputs.Agent.Digest == "" {
+		t.Fatalf("agent digest is unbound: %#v", identity.Inputs.Agent)
+	}
+	if eligible, reason := identity.reuseEligibility(); !eligible {
+		t.Fatalf("identity is ineligible: %s (limitations %v)", reason, identity.Limitations)
+	}
+
+	sharing := builder.identity(ctx, options, PlannedService{Service: "management/worker"})
+	if len(installed) != 1 {
+		t.Fatalf("shared agent pin installed %d times", len(installed))
+	}
+	if sharing.Inputs.Agent.Digest != identity.Inputs.Agent.Digest {
+		t.Fatalf("shared agent pin bound different digests: %s != %s", sharing.Inputs.Agent.Digest, identity.Inputs.Agent.Digest)
+	}
+}
+
+func TestCICacheIdentityStaysIneligibleWhenThePinnedAgentCannotBeInstalled(t *testing.T) {
+	_, workspace := loadReuseFixtureWithoutAgents(t)
+	stubCacheAgentInstall(t, func(context.Context, *resources.Agent) error {
+		return errors.New("release asset is not published")
+	})
+
+	ctx := context.Background()
+	builder := newCICacheIdentityBuilder(ctx, workspace, "1.2.3", "runner-image@sha256:test")
+	identity := builder.identity(ctx, ScheduleOptions{Phase: "compile", RuntimeContext: "native"}, PlannedService{Service: "management/consumer"})
+
+	if identity.Inputs.Agent.Digest != "" {
+		t.Fatalf("agent digest was bound without an installed binary: %q", identity.Inputs.Agent.Digest)
+	}
+	eligible, reason := identity.reuseEligibility()
+	if eligible {
+		t.Fatal("identity with an uninstallable agent is eligible for reuse")
+	}
+	if !strings.Contains(reason, "release asset is not published") {
+		t.Fatalf("eligibility reason = %q", reason)
+	}
+}
+
+func stubCacheAgentInstall(t *testing.T, install func(context.Context, *resources.Agent) error) {
+	t.Helper()
+	previous := installCacheAgent
+	installCacheAgent = install
+	t.Cleanup(func() { installCacheAgent = previous })
+}
+
+func writeCacheTestAgentBinary(ctx context.Context, agent *resources.Agent) error {
+	path, err := agent.Path(ctx)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("agent "+agent.Identifier()), 0o755)
 }
 
 func cacheTestPlan(workspace *resources.Workspace, service string) *Plan {

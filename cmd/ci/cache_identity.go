@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/resources"
 )
@@ -103,6 +104,14 @@ type ciCacheIdentityBuilder struct {
 	useGitFiles    bool
 	resourceRoots  []string
 	digestCache    map[string]string
+	agentInputs    map[string]ciCacheAgentResolution
+}
+
+// ciCacheAgentResolution memoizes one pinned agent's binding, so a workspace
+// whose services share a pin resolves and installs it once per run.
+type ciCacheAgentResolution struct {
+	input       CICacheAgentInput
+	limitations []string
 }
 
 func newCICacheIdentityBuilder(ctx context.Context, workspace *resources.Workspace, codeflyVersion, environment string) *ciCacheIdentityBuilder {
@@ -111,6 +120,7 @@ func newCICacheIdentityBuilder(ctx context.Context, workspace *resources.Workspa
 		codeflyVersion: strings.TrimSpace(codeflyVersion),
 		environment:    strings.TrimSpace(environment),
 		digestCache:    map[string]string{},
+		agentInputs:    map[string]ciCacheAgentResolution{},
 	}
 	if workspace == nil {
 		return builder
@@ -291,33 +301,15 @@ func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs CICach
 	if service.Agent == nil {
 		return inputs, nil, fmt.Errorf("service %s has no agent", serviceUnique)
 	}
-	inputs.Agent = CICacheAgentInput{
-		Kind:      string(service.Agent.Kind),
-		Publisher: service.Agent.Publisher,
-		Name:      service.Agent.Name,
-		Version:   service.Agent.Version,
-	}
+	agentInput, agentLimitations := builder.agentInput(ctx, service.Agent)
+	inputs.Agent = agentInput
 	cliDigest, repositoryRest, limitations, err := builder.ambientInputs()
+	limitations = append(limitations, agentLimitations...)
 	if err != nil {
 		return inputs, limitations, err
 	}
 	inputs.CLIDigest = cliDigest
 	inputs.RepositoryRest = repositoryRest
-	agentPath, err := service.Agent.Path(ctx)
-	if err != nil {
-		limitations = append(limitations, "resolved agent binary path is unavailable")
-	} else if _, statErr := os.Lstat(agentPath); statErr != nil {
-		if errors.Is(statErr, os.ErrNotExist) {
-			limitations = append(limitations, "resolved agent binary is not installed")
-		} else {
-			limitations = append(limitations, "resolved agent binary cannot be inspected")
-		}
-	} else {
-		inputs.Agent.Digest, err = builder.digestPath(agentPath)
-		if err != nil {
-			limitations = append(limitations, "resolved agent binary cannot be hashed")
-		}
-	}
 
 	inputs.WorkspaceDigest, err = builder.workspaceDigest()
 	if err != nil {
@@ -367,6 +359,59 @@ func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs CICach
 		return inputs, limitations, err
 	}
 	return inputs, limitations, nil
+}
+
+// installCacheAgent installs a pinned agent release into the local cache. It is
+// a seam so identity tests never reach a registry.
+var installCacheAgent = manager.Download
+
+// agentInput binds the pinned agent release the task executes against,
+// installing it when this machine does not have it yet. The release is fully
+// determined before any task runs, so a digest that only exists once the agent
+// has been spawned here would leave a fresh machine permanently ineligible for
+// reuse. Installing it is not extra work: an executed task downloads the same
+// binary moments later.
+func (builder *ciCacheIdentityBuilder) agentInput(ctx context.Context, pinned *resources.Agent) (CICacheAgentInput, []string) {
+	if resolution, ok := builder.agentInputs[pinned.Unique()]; ok {
+		return resolution.input, resolution.limitations
+	}
+	agent := *pinned
+	input, limitations := builder.resolveAgentInput(ctx, &agent)
+	builder.agentInputs[pinned.Unique()] = ciCacheAgentResolution{input: input, limitations: limitations}
+	return input, limitations
+}
+
+func (builder *ciCacheIdentityBuilder) resolveAgentInput(ctx context.Context, agent *resources.Agent) (CICacheAgentInput, []string) {
+	if _, err := resolveAgentLatest(ctx, agent); err != nil {
+		return cacheAgentInput(agent), []string{"pinned agent version cannot be resolved"}
+	}
+	input := cacheAgentInput(agent)
+	path, err := agent.Path(ctx)
+	if err != nil {
+		return input, []string{"resolved agent binary path is unavailable"}
+	}
+	if _, err := os.Lstat(path); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return input, []string{"resolved agent binary cannot be inspected"}
+		}
+		if err := installCacheAgent(ctx, agent); err != nil {
+			return input, []string{fmt.Sprintf("pinned agent %s cannot be installed: %v", agent.Identifier(), err)}
+		}
+	}
+	input.Digest, err = builder.digestPath(path)
+	if err != nil {
+		return input, []string{"resolved agent binary cannot be hashed"}
+	}
+	return input, nil
+}
+
+func cacheAgentInput(agent *resources.Agent) CICacheAgentInput {
+	return CICacheAgentInput{
+		Kind:      string(agent.Kind),
+		Publisher: agent.Publisher,
+		Name:      agent.Name,
+		Version:   agent.Version,
+	}
 }
 
 func loadCacheService(ctx context.Context, workspace *resources.Workspace, unique string) (*resources.Module, *resources.Service, error) {
