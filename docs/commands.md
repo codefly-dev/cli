@@ -582,6 +582,30 @@ committed config resolves on every worktree and in CI. `codefly doctor
 workspace` flags an unresolved reference with the `module_reference_unresolved`
 diagnostic.
 
+A composition that vendors its sources — a submodule per producer repository —
+can state the pin and the checkout satisfying it on the same committed entry,
+with no `codefly.local.yaml` in play:
+
+```yaml
+modules:
+    - name: saas
+      source: obin-ai/lodestar
+      version: "0.0.62"
+      path: platform/lodestar/modules/saas
+```
+
+The resolver prefers the `path` and drops the `version` with it, so a submodule
+parked past the tag the entry names runs as if it were that tag. `codefly
+doctor workspace` compares the two and reports the divergence with the
+`module_checkout_version_drift` diagnostic: it names the pin and what `git
+describe --tags` says the checkout actually is. It is a warning, not a failure
+— vendoring a checkout deliberately ahead of its tag is normal while developing
+the module, and only a problem unnoticed. Only a checkout that is its own
+repository is compared (a `path:` inside the workspace's own working tree is
+described by the workspace's tags), and a checkout with no reachable tag — a
+shallow CI submodule clone — is left alone rather than reported as a version
+nothing established.
+
 A `pinned` (committed `source` + `version`) reference resolves through the
 producer's verified module package rather than a git clone: `run` fetches the
 signed release from GitHub, verifies its signature and artifact digest against

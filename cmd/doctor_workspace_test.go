@@ -9,8 +9,10 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -855,4 +857,174 @@ func TestDoctorWorkspaceDoesNotFlagAMatchingMaterialization(t *testing.T) {
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	requireNoCode(t, report, codeModuleResolutionStale)
+}
+
+// vendoredCheckout builds a git repository holding a module at modules/saas,
+// tagged `tag` with `ahead` commits on top of it — the shape of a submodule a
+// composition vendors to satisfy a pin. It returns the module directory.
+func vendoredCheckout(t *testing.T, tag string, ahead int) string {
+	t.Helper()
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	commit := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("add", ".")
+		git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", name)
+	}
+	git("init", "--quiet", "--initial-branch=main", ".")
+	git("config", "user.email", "vendored@test")
+	git("config", "user.name", "Vendored Test")
+	// Background maintenance leaves and reaps lock files under .git on its own
+	// schedule, which a read-only assertion over this tree would read as a write.
+	git("config", "maintenance.auto", "false")
+	git("config", "gc.auto", "0")
+	module := filepath.Join(root, "modules", "saas")
+	if err := os.MkdirAll(module, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(module, "module.codefly.yaml"), []byte("kind: module\nname: saas\nservices: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit("released")
+	git("-c", "tag.gpgSign=false", "tag", tag)
+	for i := range ahead {
+		commit("past-" + string(rune('a'+i)))
+	}
+	return module
+}
+
+func vendoredPinWorkspace(t *testing.T, module, version string) string {
+	t.Helper()
+	return writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n" +
+			"      source: owner/saas\n      version: \"" + version + "\"\n      path: " + module + "\n",
+	})
+}
+
+// A pin and the checkout satisfying it on one committed entry resolves to the
+// checkout and drops the version, so a submodule parked past the tag runs as if
+// it were that tag. Doctor is the only place the two are compared.
+func TestDoctorWorkspaceFlagsVendoredPinAheadOfItsTag(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.62", 7)
+	report := runReadiness(t, workspaceReadinessOptions{dir: vendoredPinWorkspace(t, module, "0.0.62")})
+	diag := requireCode(t, report, codeModuleCheckoutVersionDrift, "warn")
+	for _, want := range []string{"saas", "0.0.62", "v0.0.62-7-g"} {
+		if !strings.Contains(diag.Message, want) {
+			t.Fatalf("diagnostic should name the module, the pin and the checkout: %+v", diag)
+		}
+	}
+	// Vendoring a checkout ahead of its tag is normal while developing it: the
+	// divergence has to be visible without making the workspace unusable.
+	if report.Status != readinessStatusReady {
+		t.Fatalf("status = %q, want ready", report.Status)
+	}
+}
+
+// A checkout sitting on a different released tag than the entry names is the
+// same drift, without any commits on top.
+func TestDoctorWorkspaceFlagsVendoredPinOnAnotherTag(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.70", 0)
+	report := runReadiness(t, workspaceReadinessOptions{dir: vendoredPinWorkspace(t, module, "0.0.62")})
+	diag := requireCode(t, report, codeModuleCheckoutVersionDrift, "warn")
+	if !strings.Contains(diag.Message, "v0.0.70") {
+		t.Fatalf("diagnostic should name the checkout's version: %+v", diag)
+	}
+}
+
+func TestDoctorWorkspaceDoesNotFlagAVendoredPinAtItsTag(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.62", 0)
+	report := runReadiness(t, workspaceReadinessOptions{dir: vendoredPinWorkspace(t, module, "0.0.62")})
+	requireNoCode(t, report, codeModuleCheckoutVersionDrift)
+}
+
+// Without a `source` and `version` beside the path there is no declared version
+// to check the checkout against, so an ordinary out-of-repo reference is never
+// flagged however far past a tag it sits.
+func TestDoctorWorkspaceDoesNotFlagAnUnpinnedReference(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.62", 7)
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      path: " + module + "\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleCheckoutVersionDrift)
+}
+
+// A `path:` inside the workspace's own working tree is described by the
+// workspace's tags, which say nothing about the module's version.
+func TestDoctorWorkspaceDoesNotFlagAPathInsideItsOwnRepository(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n" +
+			"      source: owner/saas\n      version: \"0.0.62\"\n      path: vendor/saas\n",
+		"vendor/saas/module.codefly.yaml": "kind: module\nname: saas\nservices: []\n",
+	})
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "--quiet", "--initial-branch=main", ".")
+	git("config", "user.email", "solution@test")
+	git("config", "user.name", "Solution Test")
+	git("add", ".")
+	git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "solution")
+	git("-c", "tag.gpgSign=false", "tag", "v9.9.9")
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleCheckoutVersionDrift)
+}
+
+// A checkout with no reachable tag — a shallow CI submodule clone — is not
+// evidence of drift, so doctor stays silent rather than reporting a version it
+// did not establish.
+func TestDoctorWorkspaceDoesNotFlagAnUndescribableCheckout(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.62", 0)
+	cmd := exec.Command("git", "tag", "-d", "v0.0.62")
+	cmd.Dir = module
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git tag -d: %v: %s", err, out)
+	}
+	report := runReadiness(t, workspaceReadinessOptions{dir: vendoredPinWorkspace(t, module, "0.0.62")})
+	requireNoCode(t, report, codeModuleCheckoutVersionDrift)
+}
+
+// Describing a vendored checkout runs git inside a repository the user owns.
+// Doctor's read-only guarantee covers that repository too, not just the
+// workspace tree.
+func TestDoctorWorkspaceDoesNotWriteToTheCheckoutItDescribes(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.62", 7)
+	root := filepath.Dir(filepath.Dir(module))
+	before := snapshotTree(t, root)
+	report := runReadiness(t, workspaceReadinessOptions{dir: vendoredPinWorkspace(t, module, "0.0.62")})
+	requireCode(t, report, codeModuleCheckoutVersionDrift, "warn")
+	if after := snapshotTree(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatalf("checkout changed while being described: %v", treeDiff(before, after))
+	}
+}
+
+func treeDiff(before, after map[string]string) []string {
+	var out []string
+	for k, v := range after {
+		if before[k] != v {
+			out = append(out, fmt.Sprintf("%s: %q -> %q", k, before[k], v))
+		}
+	}
+	for k, v := range before {
+		if _, ok := after[k]; !ok {
+			out = append(out, fmt.Sprintf("%s: %q -> gone", k, v))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
