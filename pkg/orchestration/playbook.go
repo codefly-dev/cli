@@ -70,6 +70,24 @@ func (playbook *Playbook) FailedService() (string, ActionType, bool) {
 
 type StopAfterFunc func(ctx context.Context, action Action) bool
 
+// stopAfterRoots stops the playbook once every root has completed actionType.
+// With one root that is the action itself; with several, stopping at the first
+// would return before the other roots had been carried that far. Called only
+// from the Work loop, which is the single goroutine driving a playbook.
+func stopAfterRoots(roots []string, actionType ActionType) StopAfterFunc {
+	remaining := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		remaining[root] = true
+	}
+	return func(_ context.Context, action Action) bool {
+		if action.Type != actionType || !remaining[action.Service] {
+			return false
+		}
+		delete(remaining, action.Service)
+		return len(remaining) == 0
+	}
+}
+
 func (playbook *Playbook) WithStoppingAfter(policy StopAfterFunc) *Playbook {
 	playbook.stopLock.Lock()
 	defer playbook.stopLock.Unlock()
@@ -107,22 +125,36 @@ func (playbook *Playbook) Restrict(ctx context.Context, service string) error {
 }
 
 func (playbook *Playbook) Seed(ctx context.Context, action Action) error {
+	return playbook.seedGroup(ctx, action)
+}
+
+// seedGroup sends the opening actions as one group, so a run rooted in several
+// services fans out from all of them in the same round.
+func (playbook *Playbook) seedGroup(ctx context.Context, actions ...Action) error {
 	w := wool.Get(ctx).In("Playbook.Seed")
-	w.Debug("sending action", wool.Field("action", action.ShortString()))
+	for _, action := range actions {
+		w.Debug("sending action", wool.Field("action", action.ShortString()))
+	}
 	playbook.actions.bumpRound()
 	w.Debug("round", wool.Field("round", playbook.actions.round))
-	playbook.actions.send(ctx, action)
+	playbook.actions.send(ctx, actions...)
 	return nil
 }
 
-func (playbook *Playbook) Begin(ctx context.Context, action Action) error {
+// Begin restricts the policy to the run's root and seeds it.
+//
+// Restriction narrows the dependency graph to one root's closure, so it applies
+// only when there is a single root: with several, the flow has already scoped
+// the graph to the run's own service set, and narrowing it to any one root
+// would make the others unresolvable.
+func (playbook *Playbook) Begin(ctx context.Context, actions ...Action) error {
 	w := wool.Get(ctx).In("Playbook.Begin")
-	err := playbook.Restrict(ctx, action.Service)
-	if err != nil {
-		return w.Wrapf(err, "cannot restrict policy")
+	if len(actions) == 1 {
+		if err := playbook.Restrict(ctx, actions[0].Service); err != nil {
+			return w.Wrapf(err, "cannot restrict policy")
+		}
 	}
-	err = playbook.Seed(ctx, action)
-	if err != nil {
+	if err := playbook.seedGroup(ctx, actions...); err != nil {
 		return w.Wrapf(err, "cannot seed")
 	}
 	return playbook.Work(ctx)

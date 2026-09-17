@@ -101,12 +101,24 @@ list at 50 entries, and never sends source files or unrelated configuration.
 
 ## Execution
 
-### `codefly run service [name]`
+### `codefly run service [name...]`
 
-Run a service locally with its dependency graph.
+Run one or more services locally with their dependency graph.
+
+Naming several services runs them as roots of a single graph: the services they
+share are resolved once and started once, and each root is wired to them exactly
+as it would be on its own. This is what a product composition needs — several
+solutions against one host — because a graph per solution collides on ports and
+on container-recovery scope, and `--stand-alone` cannot stand in for it (it skips
+the dependency *wiring* too, so a second solution has no host endpoints to
+resolve).
+
+`--service-path`, `--stand-alone` and `--exclude-root` each select or carve out a
+single service, so naming more than one root with any of them is rejected.
 
 ```bash
 codefly run service api
+codefly run service lastlogin-go/backend wiki/backend   # One graph, shared host started once
 codefly run service api --standalone              # Run without dependencies
 codefly run service api --runtime-context nix     # Use nix runtime context
 codefly run service api --service-path ./my-svc   # Override service path

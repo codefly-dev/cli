@@ -1,0 +1,7 @@
+kind: module
+name: saas
+project: multi-root
+domain: github.com/codefly-dev/multi-root/saas
+services:
+    - name: frontend
+    - name: auth-gateway

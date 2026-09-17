@@ -1,0 +1,6 @@
+kind: module
+name: analytics
+project: multi-root
+domain: github.com/codefly-dev/multi-root/analytics
+services:
+    - name: reports

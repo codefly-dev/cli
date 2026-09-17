@@ -173,7 +173,7 @@ func (flow *Flow) readinessRequirements(ctx context.Context) ([]readinessRequire
 	origin := resources.WithUnique(flow.originService).Unique()
 	var requirements []readinessRequirement
 	if !flow.standAlone && flow.world != nil && flow.world.Dependencies != nil {
-		order, err := flow.world.Dependencies.OrderTo(ctx, origin)
+		order, err := flow.runClosure(ctx)
 		if err != nil {
 			return nil, err
 		}

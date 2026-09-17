@@ -1,0 +1,8 @@
+name: multi-root
+layout: modules
+modules:
+    - name: analytics
+    - name: documents
+    - name: lastlogin-go
+    - name: saas
+    - name: wiki
