@@ -1,0 +1,92 @@
+name: PR base guard
+
+# The one check that runs on EVERY pull request.
+#
+# Every other workflow here filters `pull_request: branches: [main]`, so a PR
+# based on an issue branch runs no CI at all — `gh pr checks` on #673 and #675
+# reported "no checks". Those PRs merged into `issue-651-…`, a branch that had
+# already merged into `main`, so ~3000 lines (all of `pkg/imageevidence`) were
+# reported MERGED while never reaching `main`. See #669.
+#
+# Two refusals:
+#   1. an undeclared stacked base — label `stacked` to accept the stack
+#   2. a declared stack whose base is already contained in `main` — the exact
+#      shape that stranded the payload, and the one no label should excuse
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-base-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  base-is-live:
+    name: pr-base-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse a dead or undeclared base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+
+          if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
+            echo "Base is $DEFAULT_BRANCH."
+            exit 0
+          fi
+
+          case ",$LABELS," in
+            *,stacked,*) declared=yes ;;
+            *)           declared=no  ;;
+          esac
+
+          if [ "$declared" = "no" ]; then
+            echo "::error title=Stacked base not declared::This PR targets '$BASE', not '$DEFAULT_BRANCH'. A stacked PR merges into a branch that may already have merged, in which case GitHub reports MERGED while the commits never reach '$DEFAULT_BRANCH' (see #669). If the stack is intentional, add the 'stacked' label; otherwise retarget to '$DEFAULT_BRANCH'."
+            exit 1
+          fi
+
+          # A declared stack is only safe while its base is still unmerged.
+          #
+          # Two signals, because either alone has a blind spot. `compare` goes
+          # back to "diverged" as soon as anything merges into the dead base —
+          # which is why it would have caught #673 but not #675 or #674. The
+          # merged-PR signal catches all three: verified against the real
+          # branches, `issue-651-…` is the head of merged #663 and
+          # `issue-669-…` is the head of merged #673, while `compare` reported
+          # "diverged" for both.
+          owner="${REPO%%/*}"
+          merged=$(gh api "repos/$REPO/pulls?state=closed&head=$owner:$BASE&per_page=100" \
+            --jq '[.[] | select(.merged_at != null) | "#\(.number) -> \(.base.ref)"] | join(", ")')
+
+          if [ -n "$merged" ]; then
+            echo "::error title=Stacked base already merged::Base '$BASE' has already been merged ($merged). Merging this PR into it would strand every commit off '$DEFAULT_BRANCH' while GitHub still reports MERGED — exactly how #673/#674/#675 lost ~3000 lines (see #669). Rebase onto '$DEFAULT_BRANCH' and retarget."
+            exit 1
+          fi
+
+          status=$(gh api "repos/$REPO/compare/$DEFAULT_BRANCH...$BASE" --jq '.status')
+          echo "compare $DEFAULT_BRANCH...$BASE => $status"
+
+          case "$status" in
+            identical|behind)
+              echo "::error title=Stacked base carries nothing new::'$BASE' contains nothing that '$DEFAULT_BRANCH' does not, so it is already contained in '$DEFAULT_BRANCH'. Merging here would strand this PR's commits. Rebase onto '$DEFAULT_BRANCH' and retarget."
+              exit 1
+              ;;
+            ahead|diverged)
+              echo "::notice title=Declared stack::Base '$BASE' is unmerged and still live ($status). It must merge into '$DEFAULT_BRANCH' before this PR, or these commits never land."
+              ;;
+            *)
+              echo "::error title=Unknown compare status::Could not classify '$BASE' against '$DEFAULT_BRANCH' (status '$status')."
+              exit 1
+              ;;
+          esac
