@@ -149,6 +149,14 @@ func (playbook *Playbook) seedGroup(ctx context.Context, actions ...Action) erro
 // would make the others unresolvable.
 func (playbook *Playbook) Begin(ctx context.Context, actions ...Action) error {
 	w := wool.Get(ctx).In("Playbook.Begin")
+	// Widening this to a variadic made "no actions" expressible where it used to
+	// be a compile error, and an empty seed is indistinguishable at runtime from
+	// a run whose services never finish: send() drops an empty group, so Work
+	// would block on an action queue nothing will ever fill, until the whole run
+	// is cancelled. Refuse it here rather than hang.
+	if len(actions) == 0 {
+		return w.NewError("cannot begin a playbook with no actions")
+	}
 	if len(actions) == 1 {
 		if err := playbook.Restrict(ctx, actions[0].Service); err != nil {
 			return w.Wrapf(err, "cannot restrict policy")

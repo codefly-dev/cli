@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"sort"
 	"testing"
 
 	"github.com/codefly-dev/core/architecture"
@@ -19,7 +20,7 @@ import (
 // It applies selectDependencyStage, as InitManagers does before it computes the
 // run set: without that the graph still carries build-stage edges, and a test
 // reading it would not be looking at the graph the run actually uses.
-func multiRootFlow(t *testing.T, origin string, coRoots ...string) (*Flow, context.Context) {
+func multiRootFlow(t testing.TB, origin string, coRoots ...string) (*Flow, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/multi-root")
@@ -129,6 +130,67 @@ func TestScopeDependenciesToRunKeepsBuildOnlyEdgesOutOfTheRunGraph(t *testing.T)
 	require.NoError(t, err)
 	require.NotContains(t, uniques(requires), "saas/auth-gateway",
 		"a build-only edge between two run-set services must not order the run")
+}
+
+// runSetEdges projects the graph down to the edges between the services of the
+// run set, as "consumer -> dependency" pairs. Edges touching anything outside
+// the set are dropped, because removing those nodes is exactly what scoping is
+// for — what must not change is how the services it keeps relate to each other.
+func runSetEdges(t testing.TB, flow *Flow, ctx context.Context, runSet []string) map[string][]string {
+	t.Helper()
+	member := make(map[string]bool, len(runSet))
+	for _, unique := range runSet {
+		member[unique] = true
+	}
+	edges := make(map[string][]string, len(runSet))
+	for _, unique := range runSet {
+		requires, err := flow.world.Dependencies.DirectRequires(ctx, unique)
+		require.NoError(t, err)
+		var kept []string
+		for _, dependency := range uniques(requires) {
+			if member[dependency] {
+				kept = append(kept, dependency)
+			}
+		}
+		sort.Strings(kept)
+		edges[unique] = kept
+	}
+	return edges
+}
+
+// The multi-root path scopes the graph by REBUILDING it from the workspace,
+// which reloads a raw graph carrying none of the refinements the flow had
+// already applied. Re-applying them is therefore a step that has to be
+// remembered, and forgetting it is silent: the run still starts, just ordered by
+// edges it should never have seen. That is precisely how the build-stage bug got
+// in.
+//
+// So rather than assert the one refinement known to have been dropped, compare
+// the whole relation. A flow reaching a run set through the ordinary
+// single-root path and a flow reaching the SAME run set through scoping must
+// agree on every edge among those services. Any refinement a future rebuild
+// drops changes this relation and fails here, named or not.
+func TestScopedGraphKeepsTheSameRelationAsTheUnscopedPath(t *testing.T) {
+	// documents/documents already sits in wiki/backend's runtime closure, so
+	// naming it a co-root leaves the run set identical while forcing the run
+	// through scopeDependenciesToRun.
+	unscoped, ctx := multiRootFlow(t, "wiki/backend")
+	scoped, _ := multiRootFlow(t, "wiki/backend", "documents/documents")
+
+	unscopedRequired, err := unscoped.runClosure(ctx)
+	require.NoError(t, err)
+	scopedRequired, err := scoped.runClosure(ctx)
+	require.NoError(t, err)
+	require.ElementsMatch(t, uniques(unscopedRequired), uniques(scopedRequired),
+		"the two flows must cover the same services for the comparison to mean anything")
+
+	runSet := append(uniques(scopedRequired), "wiki/backend")
+	require.NoError(t, scoped.scopeDependenciesToRun(ctx, uniques(scopedRequired), nil))
+
+	require.Equal(t,
+		runSetEdges(t, unscoped, ctx, runSet),
+		runSetEdges(t, scoped, ctx, runSet),
+		"scoping may drop services outside the run, but must not change how the services it keeps depend on each other")
 }
 
 // A build-only dependency on a service nothing else needs at runtime must not
