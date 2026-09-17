@@ -10,3 +10,4 @@ agent:
 endpoints:
     - name: http
       api: http
+      visibility: public

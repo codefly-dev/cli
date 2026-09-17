@@ -66,3 +66,14 @@ func TestLoadCoRootsReportsAnUnknownService(t *testing.T) {
 		[]string{"wiki/backend", "nope/missing"}, "wiki/backend")
 	require.ErrorContains(t, err, "nope/missing")
 }
+
+// The run's module closure starts from the modules it was asked to run. A
+// co-root named after the first one seeds it too, or running two solutions
+// against one graph would derive the graph of only the first.
+func TestRunModuleSeedsCoverEveryRoot(t *testing.T) {
+	origin := &resources.Module{Name: "lastlogin-go"}
+
+	require.Equal(t, []string{"lastlogin-go"}, runModuleSeeds(origin, nil))
+	require.Equal(t, []string{"lastlogin-go", "wiki", "documents"},
+		runModuleSeeds(origin, []string{"wiki/backend", "documents/documents"}))
+}

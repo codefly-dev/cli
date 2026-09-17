@@ -32,6 +32,11 @@ import (
 type Flow struct {
 	workspace *resources.Workspace
 
+	// graphWorkspace is the workspace the dependency graph is built from: the
+	// run's module closure when the caller supplied seeds, otherwise the whole
+	// pin set. Read it through dependencyWorkspace(), never directly.
+	graphWorkspace *resources.Workspace
+
 	// Where we start
 	originService *resources.Service
 	originModule  *resources.Module
@@ -257,11 +262,20 @@ func (f FlowFailure) Error() string {
 	return fmt.Sprintf("%s: %s", f.Service, f.Message)
 }
 
-func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, mode Mode) (*Flow, error) {
+func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, mode Mode, opts ...FlowOption) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
 
+	options := &flowOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
 	// Get dependency graph
-	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
+	dependencies, err := architecture.NewServiceDependencies(ctx, graphWorkspace)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -321,9 +335,10 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 
 	flow := &Flow{
-		workspace:     workspace,
-		originService: service,
-		originModule:  module,
+		workspace:      workspace,
+		graphWorkspace: graphWorkspace,
+		originService:  service,
+		originModule:   module,
 
 		world: world,
 
@@ -1548,7 +1563,7 @@ func (flow *Flow) scopeDependenciesToRun(ctx context.Context, required []string,
 		return nil
 	}
 	scoped := append(slices.Clone(options), architecture.ExcludeServices(outside...))
-	dependencies, err := architecture.NewServiceDependencies(ctx, flow.workspace, scoped...)
+	dependencies, err := architecture.NewServiceDependencies(ctx, flow.dependencyWorkspace(), scoped...)
 	if err != nil {
 		return err
 	}
@@ -1622,7 +1637,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		dependencyOptions = append(dependencyOptions, architecture.ExcludeServices(flow.excludedDependencyServices...))
 	}
 	if len(dependencyOptions) > 0 {
-		dep, err := architecture.NewServiceDependencies(ctx, flow.workspace, dependencyOptions...)
+		dep, err := architecture.NewServiceDependencies(ctx, flow.dependencyWorkspace(), dependencyOptions...)
 		if err != nil {
 			return w.Wrap(err)
 		}
@@ -1773,13 +1788,11 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 }
 
 // validateDependencyEndpointDeclarations rejects a run whose services declare a
-// dependency endpoint the producer does not expose. Nothing validated these
-// before: Workspace.ValidateServiceDependencies exists but is called nowhere,
-// so such a declaration was only discovered by readiness looking for a mapping
-// that can never appear — turning a manifest typo into a run that waits forever
-// instead of an error. It rejects exactly that: a reference nothing can
-// satisfy. A declaration that resolves is left alone even where core's stricter
-// validator would object, because a run that works today must keep working.
+// dependency endpoint the producer does not expose — a reference nothing can
+// satisfy, which readiness would otherwise discover by looking for a mapping
+// that can never appear, turning a manifest typo into a run that waits forever
+// instead of an error. Whether the producer grants the consumer that endpoint is
+// a separate verdict, reached before the flow exists by runModuleClosure.
 // Only declarations inside this run's service set are checked; one pointing
 // outside it (excluded or remote-cut) is not this run's requirement.
 func (flow *Flow) validateDependencyEndpointDeclarations(uniques []string) error {
@@ -2130,6 +2143,17 @@ func (flow *Flow) WithSyncRequest(req *builderv0.SyncRequest) {
 }
 
 func (flow *Flow) ActiveWorkspace() *resources.Workspace {
+	return flow.workspace
+}
+
+// dependencyWorkspace is the workspace every (re)build of the dependency graph
+// reads, so a rebuild cannot silently widen the run back to modules no root
+// reaches. A Flow assembled field-by-field rather than through NewFlow carries
+// no closure, and falls back to the composition it does carry.
+func (flow *Flow) dependencyWorkspace() *resources.Workspace {
+	if flow.graphWorkspace != nil {
+		return flow.graphWorkspace
+	}
 	return flow.workspace
 }
 
