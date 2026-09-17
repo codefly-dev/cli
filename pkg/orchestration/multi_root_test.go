@@ -13,9 +13,11 @@ import (
 // multiRootFlow builds a flow over the multi-root fixture: two solution
 // backends (lastlogin-go, wiki) that both require the saas host services, wiki
 // additionally requiring documents, one service (analytics/reports) the
-// workspace declares but no root selects, and two build-only edges
-// (wiki/backend → contracts/schemas, documents/documents → saas/auth-gateway)
-// that must never constrain a run.
+// workspace declares but no root selects — and whose edge onto a private
+// endpoint is the violation the workspace-wide validator refuses and no
+// solution-seeded run reaches — and two build-only edges (wiki/backend →
+// contracts/schemas, documents/documents → saas/auth-gateway) that must never
+// constrain a run.
 //
 // It applies selectDependencyStage, as InitManagers does before it computes the
 // run set: without that the graph still carries build-stage edges, and a test
@@ -34,10 +36,11 @@ func multiRootFlow(t testing.TB, origin string, coRoots ...string) (*Flow, conte
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
 	flow := &Flow{
-		workspace:     workspace,
-		originService: service,
-		originModule:  module,
-		world:         &World{Dependencies: dependencies, Mode: RunMode},
+		workspace:      workspace,
+		graphWorkspace: workspace,
+		originService:  service,
+		originModule:   module,
+		world:          &World{Dependencies: dependencies, Mode: RunMode},
 	}
 	require.NoError(t, flow.selectDependencyStage())
 	return flow.WithCoRoots(coRoots...), ctx

@@ -810,6 +810,19 @@ func runFixture(ctx context.Context, workspace *resources.Workspace, env *resour
 	return composition.ResolveFixtureSelection(ctx, workspace, env, fixture)
 }
 
+// runModuleSeeds names the modules this run starts from: the origin's, plus one
+// per co-root. Everything else in the graph is reached from these, so nothing
+// has to restate which modules take part in the run.
+func runModuleSeeds(module *resources.Module) []string {
+	seeds := make([]string, 0, 1+len(runCoRoots))
+	seeds = append(seeds, module.Name)
+	for _, unique := range runCoRoots {
+		name, _ := resources.SplitUnique(unique)
+		seeds = append(seeds, name)
+	}
+	return seeds
+}
+
 // newRunFlow selects the environment and wires the run flow up to — but
 // excluding — agent creation, so this call site stays testable without
 // spawning agent processes.
@@ -832,7 +845,8 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	}
 	w.Info("Running with remotes", wool.Field("remotes", remoteServices))
 
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode,
+		orchestration.WithRunModuleClosure(runModuleSeeds(module)...))
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

@@ -64,6 +64,17 @@ func (p *planeImpl) resolvePinnedModules(ctx context.Context) error {
 	return composition.EnsurePinnedModules(ctx, ws)
 }
 
+// runModuleSeeds names the modules a flow derives its dependency graph from.
+// A run derives it from what it runs, exactly as `codefly run` does, and the
+// plane drives one service, so the target's module is the only seed. Every
+// other mode keeps the whole pin set, as its command does.
+func runModuleSeeds(mode orchestration.Mode, module *resources.Module) []string {
+	if mode != orchestration.RunMode {
+		return nil
+	}
+	return []string{module.Name}
+}
+
 // buildFlow performs the construction shared by every lifecycle driver: resolve
 // the target, select the environment, create the flow in the given mode, apply
 // caller configuration, spawn agents (InitManagers), and Load (which builds the
@@ -94,7 +105,8 @@ func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name
 	if err != nil {
 		return nil, fmt.Errorf("select environment %q: %w", envName, err)
 	}
-	flow, err := orchestration.NewFlow(ctx, ws, module, service, env, mode)
+	flow, err := orchestration.NewFlow(ctx, ws, module, service, env, mode,
+		orchestration.WithRunModuleClosure(runModuleSeeds(mode, module)...))
 	if err != nil {
 		return nil, fmt.Errorf("create flow: %w", err)
 	}

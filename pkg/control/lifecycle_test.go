@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/core/resources"
 )
 
 // These cover the lifecycle guards that resolve before any flow is built, so
@@ -59,5 +60,28 @@ func TestWaitReadyNamesThePendingRequirement(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error %q loses the deadline it wraps", err)
+	}
+}
+
+// The plane exists so the MCP tools behave exactly as the commands do. A run
+// driven through it must therefore derive its modules the way `codefly run`
+// does, while build, test and the check modes keep the whole pin set.
+func TestRunModuleSeedsOnlySeedARun(t *testing.T) {
+	module := &resources.Module{Name: "wiki"}
+
+	if got := runModuleSeeds(orchestration.RunMode, module); len(got) != 1 || got[0] != "wiki" {
+		t.Fatalf("a run seeds its closure with the target's module, got %v", got)
+	}
+	for _, mode := range []orchestration.Mode{
+		orchestration.BuildMode,
+		orchestration.TestMode,
+		orchestration.SyncMode,
+		orchestration.DeployMode,
+		orchestration.LintMode,
+		orchestration.CompileMode,
+	} {
+		if got := runModuleSeeds(mode, module); got != nil {
+			t.Fatalf("%v must keep the whole pin set, got seeds %v", mode, got)
+		}
 	}
 }

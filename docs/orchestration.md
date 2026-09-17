@@ -40,7 +40,7 @@ The `Flow` is the top-level coordinator. It holds the workspace context, the ser
 **Creation:**
 
 ```go
-flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, mode)
+flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, mode, opts...)
 ```
 
 **Modes:**
@@ -100,6 +100,27 @@ consequences are worth knowing when changing this code:
 
 `--stand-alone` and `--exclude-root` carve the origin out of its own graph, so
 the run command rejects them alongside more than one root.
+
+### Module closure
+
+`codefly run` passes `WithRunModuleClosure(<module per root>)`, which derives the
+modules of the run from its roots and the dependencies each service declares,
+resolved against the workspace's module list as a **pin set** — where a module
+named X comes from, not which modules take part. A module nothing reaches is
+absent from the graph, and a declaration reaching a module the workspace does not
+pin is refused up front, naming the service that asked, instead of coming up with
+no endpoints.
+
+The closure is also where a run's endpoint visibility is judged, through the same
+core implementation `Workspace.ValidateServiceDependencies` uses, so a graph that
+runs is a graph that validates. The verdict is scoped to the closure: a violation
+no root reaches belongs to the runs that do reach it, and to the workspace-wide
+pass.
+
+Only the graph is narrowed. Workspace configurations and run profiles are
+declared by the composition, so they stay resolved against all of it. Every other
+entry point (build, test, deploy, sync) names no seeds and keeps the whole pin
+set.
 
 ## World
 
