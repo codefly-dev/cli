@@ -1,0 +1,5 @@
+name: excluded-root-visibility
+layout: modules
+modules:
+    - name: saas
+    - name: platform

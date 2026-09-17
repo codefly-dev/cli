@@ -221,3 +221,137 @@ func environmentKeys(body string) []string {
 	}
 	return keys
 }
+
+// dependencyMappingOf is a producer endpoint as the dependency graph surfaces
+// it to the runner: the "saas/accounts" module publishing one named endpoint.
+func dependencyMappingOf(name, visibility string, allow ...string) *basev0.NetworkMapping {
+	return &basev0.NetworkMapping{
+		Endpoint: &basev0.Endpoint{
+			Module:       "saas",
+			Service:      "accounts",
+			Name:         name,
+			Api:          "connect",
+			Visibility:   visibility,
+			AllowModules: allow,
+		},
+		Instances: []*basev0.NetworkInstance{{
+			Address: "http://localhost:10650",
+			Access:  resources.NewNativeNetworkAccess(),
+		}},
+	}
+}
+
+func accountsDependency(endpoints ...string) []*resources.ServiceDependency {
+	dependency := &resources.ServiceDependency{Module: "saas", Name: "accounts"}
+	for _, name := range endpoints {
+		dependency.Endpoints = append(dependency.Endpoints, &resources.EndpointReference{Name: name})
+	}
+	return []*resources.ServiceDependency{dependency}
+}
+
+func outputEnvEndpointNames(t *testing.T, mappings []*basev0.NetworkMapping) []string {
+	t.Helper()
+	names := make([]string, 0, len(mappings))
+	for _, mapping := range mappings {
+		names = append(names, mapping.GetEndpoint().GetName())
+	}
+	return names
+}
+
+// The service's own mappings always reach the file; a producer endpoint the
+// service never declared does not, even when the dependency graph surfaces it.
+func TestOutputEnvNetworkMappingsDropsUndeclaredDependencyEndpoint(t *testing.T) {
+	own := []*basev0.NetworkMapping{{
+		Endpoint: &basev0.Endpoint{Module: "platform", Service: "warden", Name: "rest", Api: "rest"},
+	}}
+	mappings, err := outputEnvNetworkMappings(
+		"platform",
+		accountsDependency("connect"),
+		own,
+		[]*basev0.NetworkMapping{
+			dependencyMappingOf("connect", string(resources.VisibilityPublic)),
+			dependencyMappingOf("admin", string(resources.VisibilityPublic)),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := outputEnvEndpointNames(t, mappings)
+	if len(got) != 2 || got[0] != "rest" || got[1] != "connect" {
+		t.Fatalf("output environment mappings = %v, want [rest connect]", got)
+	}
+}
+
+// Consuming "all" of a producer means all the consumer is permitted: an
+// endpoint private to the producer's module is filtered out rather than written.
+func TestOutputEnvNetworkMappingsFiltersForbiddenEndpointWhenConsumingAll(t *testing.T) {
+	mappings, err := outputEnvNetworkMappings(
+		"platform",
+		accountsDependency(),
+		nil,
+		[]*basev0.NetworkMapping{
+			dependencyMappingOf("connect", string(resources.VisibilityPublic)),
+			dependencyMappingOf("internal", string(resources.VisibilityPrivate)),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := outputEnvEndpointNames(t, mappings); len(got) != 1 || got[0] != "connect" {
+		t.Fatalf("output environment mappings = %v, want [connect]", got)
+	}
+}
+
+// Naming an endpoint the producer keeps private fails the write, so the file is
+// never created with an address the service may not reach.
+func TestOutputEnvNetworkMappingsRejectsDeclaredForbiddenEndpoint(t *testing.T) {
+	_, err := outputEnvNetworkMappings(
+		"platform",
+		accountsDependency("internal"),
+		nil,
+		[]*basev0.NetworkMapping{dependencyMappingOf("internal", string(resources.VisibilityInternal), "billing")},
+	)
+	if err == nil {
+		t.Fatal("declaring an endpoint that does not permit the module must fail")
+	}
+}
+
+// The narrowed set is what reaches the env file: a forbidden endpoint must not
+// appear as a CODEFLY__ENDPOINT__ variable any tooling would then read.
+func TestAppendRuntimeEnvironmentToFileOmitsForbiddenDependencyEndpoint(t *testing.T) {
+	mappings, err := outputEnvNetworkMappings(
+		"platform",
+		accountsDependency(),
+		nil,
+		[]*basev0.NetworkMapping{
+			dependencyMappingOf("connect", string(resources.VisibilityPublic)),
+			dependencyMappingOf("internal", string(resources.VisibilityPrivate)),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "runtime.env")
+	if err := AppendRuntimeEnvironmentToFile(
+		context.Background(),
+		path,
+		&basev0.ServiceIdentity{Workspace: "warden-platform", Module: "platform", Name: "warden", Version: "0.0.0"},
+		resources.NewRuntimeContextNative(),
+		"codefly",
+		nil,
+		mappings,
+	); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "CODEFLY__ENDPOINT__SAAS__ACCOUNTS__CONNECT__CONNECT=") {
+		t.Fatalf("permitted endpoint is missing:\n%s", text)
+	}
+	if strings.Contains(text, "CODEFLY__ENDPOINT__SAAS__ACCOUNTS__INTERNAL__CONNECT=") {
+		t.Fatalf("private endpoint reached the output environment:\n%s", text)
+	}
+}

@@ -1,0 +1,19 @@
+kind: service
+name: warden
+version: 0.0.0
+module: platform
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+  - name: accounts
+    module: saas
+  - name: codegen
+    module: saas
+    kind: build
+endpoints:
+    - name: rest
+      api: rest
+      visibility: public

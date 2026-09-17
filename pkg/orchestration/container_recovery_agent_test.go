@@ -11,6 +11,7 @@ import (
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -23,7 +24,7 @@ import (
 func TestContainerRecoveryRejectsAReleasedLegacyAgent(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	t.Setenv(manager.AgentSourceEnv, "github")
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	scope, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), t.TempDir(), "mixed-agent-test")
 	require.NoError(t, err)
 	require.NoError(t, dockerrun.SetContainerRecoveryScope(scope))
@@ -52,13 +53,13 @@ func TestContainerRecoveryRejectsAReleasedLegacyAgent(t *testing.T) {
 	var headers metadata.MD
 	_, err = client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
 	require.NoError(t, err)
-	acknowledgement := headers.Get(dockerrun.ContainerRecoveryScopeHeader)
+	acknowledgement := headers.Get(recoveryscope.Header)
 	require.Empty(t, acknowledgement)
 	for _, runtimeContext := range []string{resources.RuntimeContextContainer, resources.RuntimeContextFree} {
 		runner := &Runner{
 			runtimeContext: runtimeContext,
 			// What Flow.configureRunner hands every runner it builds.
-			containerRecoveryIdentity: dockerrun.InheritedContainerRecoveryScope(),
+			containerRecoveryIdentity: recoveryscope.Acknowledgement(),
 			instance: &services.Instance{
 				Identity:               &resources.ServiceIdentity{Name: "legacy", Module: "test"},
 				ContainerRecoveryScope: strings.Join(acknowledgement, ""),

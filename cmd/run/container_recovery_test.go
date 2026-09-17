@@ -11,6 +11,7 @@ import (
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,7 +85,7 @@ func TestRunProjectsContainerRecoveryForEverySelection(t *testing.T) {
 		t.Run(selection, func(t *testing.T) {
 			t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 			t.Setenv(manager.AgentSourceEnv, "local")
-			t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+			t.Setenv(recoveryscope.EnvironmentVariable, "")
 			runtimeContext = selection
 			workspace, module, service := loadRecoveryFixture(t, "")
 
@@ -96,14 +97,14 @@ func TestRunProjectsContainerRecoveryForEverySelection(t *testing.T) {
 
 			// An agent resolves the marker with its own Core, so what must match
 			// is the identity it will acknowledge, not the raw variable.
-			projected := dockerrun.InheritedContainerRecoveryScope()
+			projected := recoveryscope.Acknowledgement()
 			require.NotEmpty(t, projected)
 
 			expected, err := dockerrun.NewContainerRecoveryScope(
 				resources.CodeflyHomeDir(), workspace.Dir(), flow.Environment().NamingScope)
 			require.NoError(t, err)
 			require.NoError(t, dockerrun.SetContainerRecoveryScope(expected))
-			require.Equal(t, dockerrun.InheritedContainerRecoveryScope(), projected)
+			require.Equal(t, recoveryscope.Acknowledgement(), projected)
 		})
 	}
 }
@@ -120,7 +121,7 @@ func TestNativeRunWithAContainerPinnedServiceProjectsRecovery(t *testing.T) {
 
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	t.Setenv(manager.AgentSourceEnv, "local")
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	runtimeContext = resources.RuntimeContextNative
 	workspace, module, service := loadRecoveryFixture(t,
 		"runtime:\n    by-service:\n        api: container\n")
@@ -131,5 +132,5 @@ func TestNativeRunWithAContainerPinnedServiceProjectsRecovery(t *testing.T) {
 	require.Error(t, err, "the fixture must not reach a running agent")
 	require.NotNil(t, flow)
 	require.Contains(t, flow.SelectableRuntimeContexts(), resources.RuntimeContextContainer)
-	require.NotEmpty(t, dockerrun.InheritedContainerRecoveryScope())
+	require.NotEmpty(t, recoveryscope.Acknowledgement())
 }

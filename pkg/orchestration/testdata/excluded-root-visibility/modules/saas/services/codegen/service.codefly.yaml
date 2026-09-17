@@ -1,0 +1,13 @@
+kind: service
+name: codegen
+version: 0.0.0
+module: saas
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+endpoints:
+    - name: grpc
+      api: grpc
+      visibility: public

@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/codefly-dev/core/services"
 )
 
@@ -51,7 +52,7 @@ func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, 
 	}
 	// The identity agents echo back, captured from our own projection so that
 	// validation never has to re-read a variable another flow can overwrite.
-	identity := dockerrun.InheritedContainerRecoveryScope()
+	identity := recoveryscope.Acknowledgement()
 	if identity == "" {
 		return scope, fmt.Errorf("projected container recovery identity is unreadable")
 	}

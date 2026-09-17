@@ -632,13 +632,24 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			WorkspacePath:       runner.instance.Identity.WorkspacePath,
 			RelativeToWorkspace: runner.instance.Identity.RelativeToWorkspace,
 		}
-		endpointMappings := make(
-			[]*basev0.NetworkMapping,
-			0,
-			len(runner.networkMappings)+len(dependenciesNetworkMappings),
+		// Core guards this same dereference before making the identical call
+		// (services.RuntimeInstance.Start) and simply forwards the request
+		// unnarrowed when the module is absent. This carrier cannot do that:
+		// unnarrowed here means writing dependency addresses whose visibility
+		// nothing can check. Without a consumer module there is no permitted
+		// set to compute, so refuse to write rather than write unchecked.
+		if runner.instance.Module == nil {
+			return nil, w.NewError("cannot resolve dependency network mappings for output environment: %s has no module", runner.instance.Unique())
+		}
+		endpointMappings, mappingErr := outputEnvNetworkMappings(
+			runner.instance.Module.Name,
+			runner.instance.Service.ServiceDependencies,
+			runner.networkMappings,
+			dependenciesNetworkMappings,
 		)
-		endpointMappings = append(endpointMappings, runner.networkMappings...)
-		endpointMappings = append(endpointMappings, dependenciesNetworkMappings...)
+		if mappingErr != nil {
+			return nil, w.Wrapf(mappingErr, "cannot resolve dependency network mappings for output environment")
+		}
 		// Dependency agents publish connection configurations during their Init.
 		// Start is the single point that writes them to the output environment,
 		// after the dependency barrier: the target's own Init may have observed
@@ -1374,6 +1385,28 @@ func AppendServiceProcessConfigurationsToFile(
 		return w.Wrapf(err, "cannot get service process environment variables")
 	}
 	return appendEnvironmentVariablesToFile(ctx, filePath, environments)
+}
+
+// outputEnvNetworkMappings is the endpoint set the output environment carries:
+// the service's own mappings, plus its dependencies' narrowed by
+// resources.ResolveDependencyNetworkMappings to what the service declared and
+// its producers permit. The file is a second carrier of the addresses the agent
+// itself receives, so it resolves through the same call that
+// services.RuntimeInstance.Start makes on the request — otherwise the narrower
+// of the two carriers decides what enforcement is worth.
+func outputEnvNetworkMappings(
+	consumerModule string,
+	dependencies []*resources.ServiceDependency,
+	own []*basev0.NetworkMapping,
+	dependencyMappings []*basev0.NetworkMapping,
+) ([]*basev0.NetworkMapping, error) {
+	resolved, err := resources.ResolveDependencyNetworkMappings(consumerModule, dependencies, dependencyMappings)
+	if err != nil {
+		return nil, err
+	}
+	mappings := make([]*basev0.NetworkMapping, 0, len(own)+len(resolved))
+	mappings = append(mappings, own...)
+	return append(mappings, resolved...), nil
 }
 
 // AppendRuntimeEnvironmentToFile exports the identity and endpoint

@@ -71,12 +71,28 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get direct requires")
 	}
+	// A configuration is a runtime value in exactly the sense a network mapping
+	// is: it is the producer's live connection, exposed by its agent while it
+	// runs. A dependency that does not constrain the run stage therefore has
+	// none to consume, and injecting it anyway is what core's dependency
+	// resolver refuses for the matching endpoint — "credentials for a service it
+	// only builds against", handed over only when some other service happens to
+	// be running it. Filtering here rather than at either writer keeps the
+	// agent's Init request and the --output-env file carrying the same set: a
+	// narrower file would just move the disagreement, not remove it.
+	consumesAtRun, err := s.runStageDependencies(service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot resolve run-stage dependencies")
+	}
 	var serviceConfigurations []*basev0.Configuration
 	var shared []*basev0.Configuration
 	for _, req := range requires {
 		_, err = resources.ParseServiceWithOptionalModule(req.Unique)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot parse service unique")
+		}
+		if !consumesAtRun[req.Unique] {
+			continue
 		}
 		shared, err = s.configurationManager.GetSharedServiceConfiguration(ctx, req.Unique)
 		if err != nil {
@@ -89,6 +105,25 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 	w.Debug("configurations",
 		wool.Field("uniqueToService", resources.MakeManyConfigurationSummary(serviceConfigurations)))
 	return confs, nil
+}
+
+// runStageDependencies is the set of a consumer's declared dependencies that
+// constrain the run stage, keyed by unique. A legacy (untyped) dependency
+// participates in every stage, so an existing workspace keeps every
+// configuration it had; only an explicitly build-only, schema-only or external
+// edge is excluded.
+func (s *StateManager) runStageDependencies(service *resources.ServiceIdentity) (map[string]bool, error) {
+	consumer, err := s.deps().ServiceFromUnique(service.Unique())
+	if err != nil {
+		return nil, err
+	}
+	consumesAtRun := make(map[string]bool, len(consumer.ServiceDependencies))
+	for _, dependency := range consumer.ServiceDependencies {
+		if dependency.Participates(resources.StageRun) {
+			consumesAtRun[dependency.Unique()] = true
+		}
+	}
+	return consumesAtRun, nil
 }
 
 // GetDependentConfigurationsForUnique returns the configurations for the given service

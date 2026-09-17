@@ -16,6 +16,7 @@ import (
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/semver"
@@ -80,7 +81,7 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	t.Setenv(manager.AgentSourceEnv, "local")
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -128,8 +129,8 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 	var headers metadata.MD
 	_, err = client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
 	require.NoError(t, err)
-	acknowledgement := strings.Join(headers.Get(dockerrun.ContainerRecoveryScopeHeader), "")
-	require.Equal(t, dockerrun.InheritedContainerRecoveryScope(), acknowledgement,
+	acknowledgement := strings.Join(headers.Get(recoveryscope.Header), "")
+	require.Equal(t, recoveryscope.Acknowledgement(), acknowledgement,
 		"the agent must echo the exact identity it will stamp on the containers it creates")
 
 	// The same binary is therefore usable on every selection, not only the two
@@ -145,7 +146,7 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 			// What Flow.configureRunner hands every runner it builds. Without
 			// it validateContainerRecovery has no identity to hold the agent
 			// to and accepts anything, qualifying nothing.
-			containerRecoveryIdentity: dockerrun.InheritedContainerRecoveryScope(),
+			containerRecoveryIdentity: recoveryscope.Acknowledgement(),
 			instance: &services.Instance{
 				Identity:               &resources.ServiceIdentity{Name: "api", Module: "app"},
 				ContainerRecoveryScope: acknowledgement,

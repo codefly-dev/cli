@@ -9,6 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/stretchr/testify/require"
 )
 
@@ -151,7 +152,7 @@ endpoints:
 	require.Equal(t, "acme-dev", env.Secrets[0].Account)
 
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "new-home"))
-	t.Setenv(dockerrun.ContainerRecoveryScopeEnvironment, "")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
 	originalScope, originalExplicit := namingScope, namingScopeExplicit
 	t.Cleanup(func() { namingScope, namingScopeExplicit = originalScope, originalExplicit })
 	for _, tc := range []struct {
@@ -171,7 +172,7 @@ endpoints:
 			expected, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), workspace.Dir(), tc.want)
 			require.NoError(t, err)
 			require.Equal(t, expected, actual)
-			require.NotEmpty(t, os.Getenv(dockerrun.ContainerRecoveryScopeEnvironment))
+			require.NotEmpty(t, os.Getenv(recoveryscope.EnvironmentVariable))
 		})
 	}
 	workspace.FindEnvironment("local").NamingScope = ""
