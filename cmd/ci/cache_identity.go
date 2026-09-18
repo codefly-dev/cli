@@ -390,12 +390,12 @@ func (builder *ciCacheIdentityBuilder) resolveAgentInput(ctx context.Context, ag
 	if err != nil {
 		return input, []string{"resolved agent binary path is unavailable"}
 	}
-	if _, err := os.Lstat(path); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+	if _, statErr := os.Lstat(path); statErr != nil {
+		if !errors.Is(statErr, os.ErrNotExist) {
 			return input, []string{"resolved agent binary cannot be inspected"}
 		}
-		if err := installCacheAgent(ctx, agent); err != nil {
-			return input, []string{fmt.Sprintf("pinned agent %s cannot be installed: %v", agent.Identifier(), err)}
+		if installErr := installCacheAgent(ctx, agent); installErr != nil {
+			return input, []string{fmt.Sprintf("pinned agent %s cannot be installed: %v", agent.Identifier(), installErr)}
 		}
 	}
 	input.Digest, err = builder.digestPath(path)
