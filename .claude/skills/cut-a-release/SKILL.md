@@ -10,9 +10,14 @@ Consumer side (install, `self update`, channels): [docs/cli-updates.md](../../..
 
 ## What must not be skipped
 
-- **`codefly publish` is the release.** It bumps the manifest, commits, tags, and pushes in the
-  right order behind pre-flight gates. Do not hand-run the pieces — a gap in `publish` is a bug
-  in `publish`, not a reason to tag by hand.
+- **`codefly publish` is the release.** It bumps the manifest, lands the bump on `main` through
+  a release pull request that must pass `main`'s required checks, and tags the merged commit —
+  in the right order behind pre-flight gates. Do not hand-run the pieces — a gap in `publish` is
+  a bug in `publish`, not a reason to tag by hand. Nobody may push the bump straight to `main`;
+  `enforce_admins` is on.
+- **A merged bump with no tag is finished by re-running `publish`, not by bumping again.** It
+  recognizes the untagged `release:` commit on `main` and cuts that tag. Bumping past it burns a
+  version.
 - **Dry-run first.** `codefly publish --dry-run` shows the version it would cut and changes
   nothing.
 - **`main` must be green and hold exactly the commit you want to ship.** The tag is immutable

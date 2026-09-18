@@ -60,6 +60,11 @@ compose them.
   with `origin/main`, tag not already present. It never force-pushes. Resolve
   any divergence by hand — a repo on a feature branch or with a dirty tree is
   skipped/aborted, not forced.
+- **Every bump lands through a release pull request**, so each repo waits on
+  its own required checks before its tag is cut — budget for that, and have a
+  GitHub token (`GITHUB_TOKEN`/`GH_TOKEN`, or `gh auth login`) available. If a
+  bump merges but its tag push fails, re-run `codefly publish` in that repo: it
+  finishes the stranded release instead of burning the next version.
 - **A partial `--pin` used to pass silently** (cli#434). `--pin` now updates
   every lock the agent owns (root `go.mod`, `base/*`, factory templates); a
   stale template lock fails the pin instead of reporting success.

@@ -309,22 +309,5 @@ func agentRepository(agentPath string) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("resolve %s origin remote: %w", agentPath, err)
 	}
-	return parseGitHubRemote(strings.TrimSpace(string(out)))
-}
-
-func parseGitHubRemote(remote string) (string, string, error) {
-	trimmed := strings.TrimSuffix(remote, ".git")
-	switch {
-	case strings.HasPrefix(trimmed, "git@github.com:"):
-		trimmed = strings.TrimPrefix(trimmed, "git@github.com:")
-	case strings.HasPrefix(trimmed, "https://github.com/"):
-		trimmed = strings.TrimPrefix(trimmed, "https://github.com/")
-	default:
-		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
-	}
-	owner, repo, ok := strings.Cut(trimmed, "/")
-	if !ok || owner == "" || repo == "" {
-		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
-	}
-	return owner, repo, nil
+	return gh.ParseRemote(strings.TrimSpace(string(out)))
 }
