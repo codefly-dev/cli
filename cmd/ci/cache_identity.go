@@ -389,7 +389,7 @@ func resolveAgentBinary(ctx context.Context, agent *resources.Agent) (string, er
 	if err != nil {
 		return "", err
 	}
-	if _, err := exec.LookPath(path); err == nil {
+	if _, lookErr := exec.LookPath(path); lookErr == nil {
 		return path, nil
 	}
 	registration, err := resources.AgentKindRegistrationFor(agent.Kind)
