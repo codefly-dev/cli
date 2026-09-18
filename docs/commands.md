@@ -598,7 +598,17 @@ The resolver prefers the `path` and drops the `version` with it, so a submodule
 parked past the tag the entry names runs as if it were that tag. `codefly
 doctor workspace` compares the two and reports the divergence with the
 `module_checkout_version_drift` diagnostic: it names the pin and what `git
-describe --tags` says the checkout actually is. It is a warning, not a failure
+describe --tags` says the checkout actually is.
+
+The same comparison covers a pin satisfied by a machine-local checkout — a
+committed `source` + `version` with the location in a `resolve.<name>.path`
+overlay entry rather than a committed `path:`. Doctor asks the resolver where
+each pin lands rather than re-deriving the precedence, so both spellings of
+"this pin is satisfied by this checkout" are checked. Two resolutions are
+deliberately excluded: a path a [resolution receipt](#resolution-receipts)
+names is a materialization the CLI wrote, reported by `module_resolution_stale`
+instead; and a `worktree:` directive names its own git ref, which — not the
+pin's version — is what the user asked to run. It is a warning, not a failure
 — vendoring a checkout deliberately ahead of its tag is normal while developing
 the module, and only a problem unnoticed. Only a checkout that is its own
 repository is compared (a `path:` inside the workspace's own working tree is

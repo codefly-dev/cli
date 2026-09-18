@@ -1046,3 +1046,162 @@ func TestDoctorWorkspaceDoesNotFlagAPinnedCheckoutCarryingOtherTags(t *testing.T
 		})
 	}
 }
+
+// overlayPinWorkspace states the pin in committed config and the checkout
+// satisfying it in the machine-local overlay — the same claim as a committed
+// `path:`, split across the two files.
+func overlayPinWorkspace(t *testing.T, module, version string, extra map[string]string) string {
+	t.Helper()
+	files := map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n" +
+			"      source: owner/saas\n      version: \"" + version + "\"\n",
+		"codefly.local.yaml": "resolve:\n    saas:\n        path: " + module + "\n",
+	}
+	maps.Copy(files, extra)
+	return writeTestWorkspace(t, files)
+}
+
+// Resolution drops the version the moment it takes a directory, whether the
+// directory came from a committed `path:` or from the overlay. A checkout the
+// user manages through `resolve.<name>.path` drifts from its pin exactly as a
+// vendored submodule does, and nothing else compares the two: module_resolution_stale
+// deliberately says nothing about a path the CLI did not write.
+func TestDoctorWorkspaceFlagsAnOverlayPathAheadOfItsTag(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.62", 7)
+	report := runReadiness(t, workspaceReadinessOptions{dir: overlayPinWorkspace(t, module, "0.0.62", nil)})
+	diag := requireCode(t, report, codeModuleCheckoutVersionDrift, "warn")
+	for _, want := range []string{"saas", "0.0.62", "v0.0.62-7-g"} {
+		if !strings.Contains(diag.Message, want) {
+			t.Fatalf("diagnostic should name the module, the pin and the checkout: %+v", diag)
+		}
+	}
+}
+
+func TestDoctorWorkspaceDoesNotFlagAnOverlayPathAtItsTag(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.62", 0)
+	report := runReadiness(t, workspaceReadinessOptions{dir: overlayPinWorkspace(t, module, "0.0.62", nil)})
+	requireNoCode(t, report, codeModuleCheckoutVersionDrift)
+}
+
+// A path the receipt names is a materialization the CLI wrote, and
+// module_resolution_stale already reports it against the request the workspace
+// makes now. Reporting drift as well would double up on one condition — and a
+// git-mode materialization is a real checkout at a tag, so it would.
+func TestDoctorWorkspaceLeavesACLIWrittenMaterializationToTheStaleCheck(t *testing.T) {
+	module := vendoredCheckout(t, "v0.0.62", 7)
+	dir := overlayPinWorkspace(t, module, "9.9.9", map[string]string{
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n" +
+			"        requested: \"0.0.62\"\n        mode: git\n        version: v0.0.62\n        path: " + module + "\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireCode(t, report, codeModuleResolutionStale, "warn")
+	requireNoCode(t, report, codeModuleCheckoutVersionDrift)
+}
+
+// A worktree directive names the git ref the user asked to run. That ref, not
+// the pin's version, is the authority for a worktree-resolved module: comparing
+// `worktree: repo@<branch>` against a pinned version would warn on every run
+// with no way to clear it. The checkout here really does resolve — it sits 7
+// commits past the pinned tag — so the diagnostic is withheld by kind, not
+// because resolution failed.
+func TestDoctorWorkspaceDoesNotFlagAWorktreeDirective(t *testing.T) {
+	container := t.TempDir()
+	checkout := filepath.Join(container, "github-owner-saas", "main")
+	if err := os.MkdirAll(filepath.Join(checkout, "modules", "saas"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = checkout
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "--quiet", "--initial-branch=main", ".")
+	git("config", "user.email", "worktree@test")
+	git("config", "user.name", "Worktree Test")
+	git("remote", "add", "origin", "https://github.com/owner/saas.git")
+	if err := os.WriteFile(filepath.Join(checkout, "modules", "saas", "module.codefly.yaml"),
+		[]byte("kind: module\nname: saas\nservices: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "released")
+	git("-c", "tag.gpgSign=false", "tag", "v0.0.62")
+	for i := range 7 {
+		if err := os.WriteFile(filepath.Join(checkout, "past-"+string(rune('a'+i))), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("add", ".")
+		git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "past")
+	}
+
+	dir := filepath.Join(container, "github-acme-solution", "work")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n" +
+			"      source: owner/saas\n      version: \"0.0.62\"\n",
+		"codefly.local.yaml": "resolve:\n    saas:\n        worktree: owner/saas@main\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleCheckoutVersionDrift)
+}
+
+// A relative overlay path is the form a real codefly.local.yaml carries, and it
+// resolves against the overlay's own directory rather than the process working
+// directory. The workspace here is not itself a git repository, so the checkout
+// beside it is compared rather than skipped as same-repo.
+func TestDoctorWorkspaceFlagsARelativeOverlayPathAheadOfItsTag(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n" +
+			"      source: owner/saas\n      version: \"0.0.62\"\n",
+		"codefly.local.yaml": "resolve:\n    saas:\n        path: lodestar/modules/saas\n",
+	})
+	checkout := filepath.Join(dir, "lodestar")
+	if err := os.MkdirAll(filepath.Join(checkout, "modules", "saas"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = checkout
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "--quiet", "--initial-branch=main", ".")
+	git("config", "user.email", "relative@test")
+	git("config", "user.name", "Relative Test")
+	if err := os.WriteFile(filepath.Join(checkout, "modules", "saas", "module.codefly.yaml"),
+		[]byte("kind: module\nname: saas\nservices: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "released")
+	git("-c", "tag.gpgSign=false", "tag", "v0.0.62")
+	for i := range 7 {
+		if err := os.WriteFile(filepath.Join(checkout, "past-"+string(rune('a'+i))), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("add", ".")
+		git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "past")
+	}
+
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeModuleCheckoutVersionDrift, "warn")
+	if !strings.Contains(diag.Message, "v0.0.62-7-g") {
+		t.Fatalf("diagnostic should name what the checkout is: %+v", diag)
+	}
+
+	// Moving the checkout onto the tag clears it: the diagnostic tracks the
+	// checkout, not the mere presence of a relative directive.
+	git("checkout", "--quiet", "v0.0.62")
+	requireNoCode(t, runReadiness(t, workspaceReadinessOptions{dir: dir}), codeModuleCheckoutVersionDrift)
+}

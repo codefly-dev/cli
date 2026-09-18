@@ -120,6 +120,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	}
 
 	checkReferencedModules(ctx, ws, report)
+	checkVendoredPins(ctx, ws, report)
 	checkModuleTrust(ctx, ws, report)
 
 	env := checkEnvironment(ws, opts.env, report)
@@ -211,9 +212,6 @@ func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report 
 // module and its resolved path are named directly. Vendored modules (no path
 // override) and the implicit flat-layout module are skipped.
 func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
-	// Resolved at most once, and only if some module turns out to be a
-	// vendored pin: the workspace's own checkout root does not vary per module.
-	workspaceRoot := sync.OnceValues(func() (string, bool) { return composition.CheckoutRoot(ctx, ws.Dir()) })
 	for _, ref := range ws.Modules {
 		if ref.PathOverride == nil {
 			continue
@@ -226,26 +224,72 @@ func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report
 			continue
 		}
 		report.add("", "referenced module "+ref.Name, "ok", fmt.Sprintf("%s → %s", ref.Name, resolved), "")
-		checkVendoredPinVersion(ctx, workspaceRoot, ref, resolved, report)
 	}
 }
 
-// checkVendoredPinVersion reports a module that states a pin and the checkout
-// satisfying it on the same committed entry — `source`, `version` and `path`
-// together — whose checkout is not the version beside it. The resolver prefers
-// the path and drops the version with it, so a submodule parked past the tag
-// the entry names runs as if it were that tag; nothing else in the workspace
-// ever compares the two. It is a warning, not a failure: a checkout
-// deliberately ahead of its tag is normal while developing the module, and only
-// a problem when nobody notices.
+// checkVendoredPins reports every module that states a pin — `source` plus
+// `version` — and is satisfied by a local checkout rather than by the pinned
+// artifact, whose checkout is not the version the pin names. Resolution drops
+// Version the moment it takes a directory (`Kind: path`), so a checkout parked
+// past the tag the pin names runs as if it were that tag, and nothing else in
+// the workspace ever compares the two.
 //
-// Only a checkout that is its own repository is compared. A `path:` inside the
+// Where the checkout comes from is asked of the resolver itself rather than
+// re-derived here, so the committed `path:` of a vendored submodule and a
+// machine-local `resolve.<name>.path` overlay — the same claim, one committed
+// and one not — are both covered by the precedence the run path actually uses.
+//
+// Two resolutions are deliberately not compared:
+//
+//   - A path the receipt names is a materialization the CLI wrote, not a
+//     checkout the user manages; codeModuleResolutionStale owns it, and
+//     reporting both would double up on one condition.
+//   - A worktree directive names its own git ref, and that ref — not the pin's
+//     version — is what the user asked to run. Comparing `worktree: repo@main`
+//     against a pinned version would warn on every run with no way to clear it.
+func checkVendoredPins(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
+	// An unreadable overlay or receipt record is reported by checkModuleTrust,
+	// which owns those files; going quiet here loses no diagnostic.
+	overlay, err := resources.LoadLocalOverlay(ctx, ws.Dir())
+	if err != nil {
+		return
+	}
+	overlayDir := ws.Dir()
+	if dir := composition.NearestOverlayDir(ws.Dir()); dir != "" {
+		overlayDir = dir
+	}
+	receipts, err := composition.LoadResolutionReceipts(overlayDir)
+	if err != nil {
+		return
+	}
+	// Resolved at most once, and only if some module turns out to be a
+	// vendored pin: the workspace's own checkout root does not vary per module.
+	workspaceRoot := sync.OnceValues(func() (string, bool) { return composition.CheckoutRoot(ctx, ws.Dir()) })
+	for _, ref := range ws.Modules {
+		if ref.Source == "" || ref.Version == "" {
+			continue
+		}
+		directive := overlayDirective(overlay, ref.Name)
+		if directive != nil && directive.Path != "" && directive.Path == receipts[ref.Name].ResolvedPath() {
+			continue
+		}
+		resolution, err := ws.ResolveModule(ctx, ref)
+		if err != nil || resolution.Dir == "" || resolution.Kind == resources.ResolutionWorktree {
+			continue
+		}
+		checkVendoredPinVersion(ctx, workspaceRoot, ref, resolution.Dir, report)
+	}
+}
+
+// checkVendoredPinVersion compares one resolved checkout against the version
+// its pin names. It is a warning, not a failure: a checkout deliberately ahead
+// of its tag is normal while developing the module, and only a problem when
+// nobody notices.
+//
+// Only a checkout that is its own repository is compared. A path inside the
 // workspace's own working tree is described by the workspace's tags, which say
 // nothing about the module's version.
 func checkVendoredPinVersion(ctx context.Context, workspaceRoot func() (string, bool), ref *resources.ModuleReference, resolved string, report *workspaceReadinessReport) {
-	if ref.Source == "" || ref.Version == "" {
-		return
-	}
 	checkoutRoot, ok := composition.CheckoutRoot(ctx, resolved)
 	if !ok {
 		return
