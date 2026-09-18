@@ -357,8 +357,8 @@ service-dependencies:
 }
 
 // visibilityFixture composes a consumer whose only cross-module edge carries the
-// given kind and names no endpoint, onto a producer exposing one public and one
-// private endpoint. The kind is what decides which stages traverse the edge.
+// given kind and explicitly selects a private endpoint on a producer that also
+// exposes a public endpoint. The kind decides which stages traverse the edge.
 func visibilityFixture(t *testing.T, kind string) *resources.Workspace {
 	t.Helper()
 	t.Setenv("CI", "")
@@ -381,6 +381,8 @@ service-dependencies:
     - name: auth-gateway
       module: saas
       kind: `+kind+`
+      endpoints:
+        - name: admin
 endpoints:
     - name: grpc
       api: grpc

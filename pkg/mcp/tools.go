@@ -126,7 +126,7 @@ func (s *Server) registerTools() {
 
 	if err := s.RegisterTool(Tool{
 		Name:        "list_runnables",
-		Description: "List runnables (typed finite operations) in a module or all runnables in the workspace, with their immutable module/name@version identity, pinned agent and execution bounds",
+		Description: "List runnables (typed finite operations) in a module or all runnables in the workspace, with their immutable module/name@version identity, pinned agent and execution bounds. Includes the operations a module derives from the gRPC methods its contracts mark, which carry the service facility and name their source method",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]PropertySchema{
@@ -753,6 +753,13 @@ func (s *Server) listRunnables(ctx context.Context, args map[string]string) ([]C
 		}
 		for _, runnable := range runnables {
 			result = append(result, runnablespkg.NewIdentity(runnable))
+		}
+		derived, err := runnablespkg.LoadDerivedOperations(m.Dir())
+		if err != nil {
+			return nil, fmt.Errorf("cannot load the derived runnables of module %s: %w", m.Name, err)
+		}
+		for i := range derived {
+			result = append(result, derived[i].Identity())
 		}
 	}
 

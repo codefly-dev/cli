@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/agentkinds"
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
+	"github.com/codefly-dev/cli/pkg/runnables/runnablestest"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -172,5 +175,50 @@ func TestListRunnablesRefusesUnknownModule(t *testing.T) {
 	}
 	if len(content) != 1 || !strings.Contains(content[0].Text, "word-count") {
 		t.Fatalf("known module missing its Runnable: %+v", content)
+	}
+}
+
+// An agent asking what a module can be asked to do gets the same answer a
+// human does: the operations a module derives from its marked gRPC methods
+// are listed beside the runnables it declares, carrying the service facility
+// and naming the method they came from.
+func TestListRunnablesIncludesDerivedOperations(t *testing.T) {
+	root := writeMCPWorkspaceWithRunnable(t)
+	runnablestest.Write(t, filepath.Join(root, "modules", "backend"), "demo", "backend", "runtime-worker-grpc-apply-text")
+
+	t.Chdir(root)
+	ctx := context.Background()
+	server, err := NewServer(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := server.listRunnables(ctx, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var entries []runnablespkg.Identity
+	if err = json.Unmarshal([]byte(content[0].Text), &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("listing has %d rows, want the declared runnable and the derived operation: %s", len(entries), content[0].Text)
+	}
+	byName := map[string]runnablespkg.Identity{}
+	for _, entry := range entries {
+		byName[entry.Name] = entry
+	}
+	derived, found := byName["runtime-worker-grpc-apply-text"]
+	if !found {
+		t.Fatalf("the derived operation is missing: %s", content[0].Text)
+	}
+	if len(derived.Execution.Facilities) != 1 || derived.Execution.Facilities[0] != "service" {
+		t.Fatalf("facilities = %v, want [service]", derived.Execution.Facilities)
+	}
+	if derived.Source != "runtime-worker/grpc/ApplyText" {
+		t.Fatalf("source = %q", derived.Source)
+	}
+	if byName["word-count"].Source != "" {
+		t.Fatalf("a declared runnable reported a source: %q", byName["word-count"].Source)
 	}
 }

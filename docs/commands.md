@@ -1170,6 +1170,8 @@ codefly generate proto --proto ../proto --output ./generated                    
 codefly generate proto --proto ../proto --output ./generated --local                     # Same, with locally installed pinned plugins
 codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
 codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
+codefly generate runnables documents                                                     # Derive a Runnable package per method carrying the operation option
+codefly generate runnables documents --check                                             # CI drift gate: fail if the derived packages are stale
 ```
 
 **`generate proto` flags:**
@@ -1256,6 +1258,73 @@ is the CI drift gate.
 | `--output` | Output directory (default: `<module dir>/contracts/api`) |
 | `--check` | Do not write; exit 1 if the on-disk catalog differs from what would be generated |
 | `--format` | `text` (default) or `json`; `json` prints the catalog to stdout |
+
+#### generate runnables
+
+`codefly generate runnables [module]` derives a **SERVICE-facility Runnable
+package** for every gRPC method a module's published contracts mark with the
+`codefly.runnable.v0.operation` method option. A unary, idempotent method an
+owner service already publishes becomes a Runnable by derivation, not by
+authoring: the option says which methods are operations and under what
+execution policy, and the message descriptors say what the contract is.
+
+The input is what `generate contracts` already wrote — each gRPC/connect
+endpoint's `contract.binpb` — so run that first. No flag names a method; the
+option is the only selector.
+
+```
+contracts/runnables/
+  index.json                                           one row per operation
+  <service>/<endpoint>/<Method>/runnable-package.json  the canonical package
+  <service>/<endpoint>/<Method>/operation.json         its policy and authority
+```
+
+`runnable-package.json` is the canonical proto3 JSON core takes the package
+digest over, so what a composition reads and what was hashed are the same
+bytes. `operation.json` is kept beside it rather than inside it: policy and
+authority are installed with a binding, and two installations of one contract
+may differ in both. `index.json` is what a composition reads to prepare
+bindings — identity, digest, full method, input and output message names and
+endpoint coordinates per row.
+
+The tree is fully owned: a method that no longer carries the option loses its
+directory. Only the three file names a generation produces are removed, and
+only the directories that empties, so pointing `--output` at a directory this
+command shares — `--output=contracts`, one word short of `contracts/runnables`
+— never destroys what is beside it. A module with no marked method, and a
+module that declares no `interface:` and so exports no endpoint at all, both
+write an empty index rather than an error; a module that *does* declare an
+interface but has no catalog is told to run `generate contracts` first.
+
+A streaming method, a payload outside the bounded schema profile, or an option
+core refuses is named with its field path; the walk continues so an owner
+fixing a contract sees the whole list, and the command then exits non-zero
+**having written nothing**. A failing run leaves the tree exactly as it found
+it: writing the methods that did derive would delete the refused one's
+committed package, asserting the module no longer publishes an operation whose
+payload the owner merely broke, and that deletion outlives the non-zero exit.
+
+`--check` reports a refusal and any drift from the same run, rather than
+returning the refusal and discarding the diff it already computed.
+
+**Versioning is derived, never authored.** A module that declares a
+`module.package.codefly.yaml` carries its release version; one that does not is
+not packageable, so the contract's own digest stands in as
+`0.0.0-contract-<digest12>`. The `contract-` prefix is load-bearing: a
+prerelease identifier made only of digits may not carry a leading zero, so a
+bare digest would spell an invalid semantic version for roughly one contract in
+1400.
+Either way the version's only job is to be a valid identity — a binding pins
+the package **digest**, which is what a consumer actually agreed to.
+
+Derived operations appear in `codefly list runnables`, `codefly show runnable`
+and the MCP `list_runnables` tool, with facility `service` and a `source` of
+`<service>/<endpoint>/<Method>`.
+
+| Flag | Description |
+|------|-------------|
+| `--output` | Output directory (default: `<module dir>/contracts/runnables`) |
+| `--check` | Do not write; exit 1 with a unified diff if the on-disk tree differs from what would be generated |
 
 ---
 

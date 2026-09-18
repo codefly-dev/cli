@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
+	"github.com/codefly-dev/cli/pkg/runnables/runnablestest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -142,4 +143,55 @@ func TestListRunnablesMissingWorkspaceReturnsError(t *testing.T) {
 
 	cmd, _ := newListTestCmd()
 	require.Error(t, listRunnables(cmd))
+}
+
+// writeWorkspaceWithADerivedOperation lays out a module workspace holding one
+// authored runnable and one operation derived from a marked gRPC method.
+func writeWorkspaceWithADerivedOperation(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"),
+		[]byte("name: test-workspace\nlayout: modules\nmodules:\n  - name: documents\n"), 0o644))
+
+	moduleDir := filepath.Join(dir, "modules", "documents")
+	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "module.codefly.yaml"),
+		[]byte("kind: module\nname: documents\nrunnables:\n  - name: word-count\n"), 0o644))
+	writeRunnable(t, moduleDir, "word-count", "0.1.0", "native")
+	runnablestest.Write(t, moduleDir, "test-workspace", "documents", "runtime-worker-grpc-apply-text")
+	return dir
+}
+
+// A derived operation is a runnable the module can be asked to perform, so it
+// is listed beside the ones the module declares — marked as derived, and
+// naming the method it came from, so an operator can see what the module
+// exposes without reading the generated JSON.
+func TestListRunnablesIncludesDerivedOperations(t *testing.T) {
+	t.Chdir(writeWorkspaceWithADerivedOperation(t))
+	t.Cleanup(func() { listRunnablesJSON, listRunnablesModule = false, "" })
+
+	cmd, buf := newListTestCmd()
+	require.NoError(t, listRunnables(cmd))
+
+	require.Contains(t, buf.String(), "SOURCE")
+	require.Contains(t, buf.String(), "word-count")
+	require.Contains(t, buf.String(), "declared")
+	require.Contains(t, buf.String(), "runtime-worker-grpc-apply-text")
+	require.Contains(t, buf.String(), "runtime-worker/grpc/ApplyText")
+
+	listRunnablesJSON = true
+	cmd, buf = newListTestCmd()
+	require.NoError(t, listRunnables(cmd))
+
+	var entries []runnablespkg.Identity
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
+	require.Len(t, entries, 2)
+	byName := map[string]runnablespkg.Identity{}
+	for _, entry := range entries {
+		byName[entry.Name] = entry
+	}
+	derived := byName["runtime-worker-grpc-apply-text"]
+	require.Equal(t, []string{"service"}, derived.Execution.Facilities)
+	require.Equal(t, "runtime-worker/grpc/ApplyText", derived.Source)
+	require.Empty(t, byName["word-count"].Source)
 }

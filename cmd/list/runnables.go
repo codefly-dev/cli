@@ -45,24 +45,37 @@ func listRunnables(cmd *cobra.Command) error {
 		return fmt.Errorf("cannot load workspace: %w", err)
 	}
 
-	var runnables []*resources.Runnable
+	var modules []*resources.Module
 	if listRunnablesModule != "" {
 		var mod *resources.Module
 		mod, err = workspace.LoadModuleFromName(ctx, listRunnablesModule)
 		if err != nil {
 			return fmt.Errorf("module not found: %w", err)
 		}
-		runnables, err = mod.LoadRunnables(ctx)
-	} else {
-		runnables, err = workspace.LoadAllRunnables(ctx)
-	}
-	if err != nil {
-		return fmt.Errorf("cannot load runnables: %w", err)
+		modules = []*resources.Module{mod}
+	} else if modules, err = workspace.LoadModules(ctx); err != nil {
+		return fmt.Errorf("cannot load modules: %w", err)
 	}
 
-	entries := make([]runnablespkg.Identity, 0, len(runnables))
-	for _, r := range runnables {
-		entries = append(entries, runnablespkg.NewIdentity(r))
+	entries := make([]runnablespkg.Identity, 0)
+	for _, mod := range modules {
+		runnables, loadErr := mod.LoadRunnables(ctx)
+		if loadErr != nil {
+			return fmt.Errorf("cannot load runnables: %w", loadErr)
+		}
+		for _, r := range runnables {
+			entries = append(entries, runnablespkg.NewIdentity(r))
+		}
+		// A module's derived operations are runnables it can be asked to
+		// perform just as much as the ones it declares, so one listing
+		// answers the question without the caller knowing which is which.
+		derived, derivedErr := runnablespkg.LoadDerivedOperations(mod.Dir())
+		if derivedErr != nil {
+			return fmt.Errorf("cannot load the derived runnables of module %s: %w", mod.Name, derivedErr)
+		}
+		for i := range derived {
+			entries = append(entries, derived[i].Identity())
+		}
 	}
 
 	if listRunnablesJSON {
@@ -75,10 +88,14 @@ func listRunnables(cmd *cobra.Command) error {
 	}
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "MODULE\tNAME\tVERSION\tAGENT\tFACILITIES\tTIMEOUT")
+	fmt.Fprintln(w, "MODULE\tNAME\tVERSION\tAGENT\tFACILITIES\tTIMEOUT\tSOURCE")
 	for _, e := range entries {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			e.Module, e.Name, e.Version, e.Agent, strings.Join(e.Execution.Facilities, ","), e.Execution.Timeout)
+		source := e.Source
+		if source == "" {
+			source = "declared"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			e.Module, e.Name, e.Version, e.Agent, strings.Join(e.Execution.Facilities, ","), e.Execution.Timeout, source)
 	}
 	return w.Flush()
 }

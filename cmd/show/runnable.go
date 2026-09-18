@@ -30,6 +30,10 @@ dependency resolves in this workspace.
 The name is module/name, or a bare name when it is unambiguous across modules.
 A name declared at several versions is ambiguous too; --version selects one.
 
+An operation a module derives from a marked gRPC method — what "codefly
+generate runnables" writes — is shown here too, with the method it adapts and
+the execution policy and authority installed beside its package.
+
 An unresolved dependency is reported, not fatal: the command exits 0 so it can
 describe every dependency in one pass. Unattended callers gate on --json and
 check each dependency's "resolved" field.
@@ -87,9 +91,32 @@ func showRunnable(cmd *cobra.Command, name string) error {
 		return fmt.Errorf("cannot load workspace: %w", err)
 	}
 
-	runnable, err := findRunnable(ctx, workspace, name, showRunnableVersion)
+	derived, err := findDerivedOperations(ctx, workspace, name, showRunnableVersion)
 	if err != nil {
 		return fmt.Errorf("cannot load runnable %s: %w", name, err)
+	}
+	runnable, declaredErr := findRunnable(ctx, workspace, name, showRunnableVersion)
+
+	// A derived name and a declared name can collide, and answering with one
+	// of the two would describe a runnable the caller did not ask for. Both
+	// are reported so whoever owns the collision can rename.
+	if declaredErr == nil && len(derived) > 0 {
+		return fmt.Errorf("%s is both a runnable module %s declares and an operation module %s derives from %s; rename one of them",
+			name, runnable.Module(), derived[0].Package.GetIdentity().GetModule(), derived[0].Entry.Source())
+	}
+	if len(derived) > 1 {
+		return fmt.Errorf("derived operation %s is ambiguous: %s; select one with --version", name, strings.Join(derivedIdentifiers(derived), ", "))
+	}
+	if len(derived) == 1 {
+		report := buildDerivedReport(workspace, &derived[0])
+		if showRunnableJSON {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(report)
+		}
+		printDerivedReport(cmd, &report)
+		return nil
+	}
+	if declaredErr != nil {
+		return fmt.Errorf("cannot load runnable %s: %w", name, declaredErr)
 	}
 
 	report := buildRunnableReport(ctx, workspace, runnable)
@@ -99,6 +126,15 @@ func showRunnable(cmd *cobra.Command, name string) error {
 	}
 	printRunnableReport(cmd, &report)
 	return nil
+}
+
+func derivedIdentifiers(derived []runnablespkg.Derived) []string {
+	identifiers := make([]string, 0, len(derived))
+	for i := range derived {
+		identity := derived[i].Package.GetIdentity()
+		identifiers = append(identifiers, fmt.Sprintf("%s/%s@%s", identity.GetModule(), identity.GetName(), identity.GetVersion()))
+	}
+	return identifiers
 }
 
 // findRunnable resolves a name to exactly one runnable.
