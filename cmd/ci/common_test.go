@@ -267,6 +267,18 @@ func TestCIWithPlanOptionsDrainsRunningTasksOnCancellation(t *testing.T) {
 	}
 }
 
+// TestMain refuses every GitHub-backed agent install in this package. Computing
+// a cache identity resolves a pinned agent the way execution does, so a test
+// that forgets to stub the installer would otherwise download a real agent
+// release; failing loudly keeps that from surfacing as a slow, network-bound
+// suite. Tests that need an install to succeed stub it themselves.
+func TestMain(m *testing.M) {
+	installCacheAgent = func(_ context.Context, agent *resources.Agent) error {
+		return fmt.Errorf("test attempted to install %s from GitHub: stub installCacheAgent", agent.Identifier())
+	}
+	os.Exit(m.Run())
+}
+
 func loadSchedulerFixture(t testing.TB) (string, *resources.Workspace) {
 	t.Helper()
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")

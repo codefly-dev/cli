@@ -2,6 +2,11 @@ package ci
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -181,6 +186,198 @@ func TestCacheContentDigestUsesPathsAndExcludesGitIgnoredFiles(t *testing.T) {
 	if renamed == first {
 		t.Fatal("file rename did not invalidate content digest")
 	}
+}
+
+func TestCICacheIdentityInstallsAPinnedAgentMissingFromTheMachine(t *testing.T) {
+	_, workspace := loadReuseFixtureWithoutAgents(t)
+
+	var installed []string
+	stubCacheAgentInstall(t, func(ctx context.Context, agent *resources.Agent) error {
+		installed = append(installed, agent.Identifier())
+		return writeCacheTestAgentBinary(ctx, agent)
+	})
+
+	ctx := context.Background()
+	options := ScheduleOptions{Phase: "compile", RuntimeContext: "native"}
+	builder := newCICacheIdentityBuilder(ctx, workspace, "1.2.3", "runner-image@sha256:test")
+	identity := builder.identity(ctx, options, PlannedService{Service: "management/consumer"})
+
+	if len(installed) != 1 || installed[0] != "codefly.ai/go-grpc:0.0.16" {
+		t.Fatalf("installed agents = %v", installed)
+	}
+	if identity.Inputs.Agent.Digest == "" {
+		t.Fatalf("agent digest is unbound: %#v", identity.Inputs.Agent)
+	}
+	if eligible, reason := identity.reuseEligibility(); !eligible {
+		t.Fatalf("identity is ineligible: %s (limitations %v)", reason, identity.Limitations)
+	}
+
+	sharing := builder.identity(ctx, options, PlannedService{Service: "management/worker"})
+	if len(installed) != 1 {
+		t.Fatalf("shared agent pin installed %d times", len(installed))
+	}
+	if sharing.Inputs.Agent.Digest != identity.Inputs.Agent.Digest {
+		t.Fatalf("shared agent pin bound different digests: %s != %s", sharing.Inputs.Agent.Digest, identity.Inputs.Agent.Digest)
+	}
+}
+
+func TestCICacheIdentityStaysIneligibleWhenThePinnedAgentCannotBeInstalled(t *testing.T) {
+	_, workspace := loadReuseFixtureWithoutAgents(t)
+	stubCacheAgentInstall(t, func(context.Context, *resources.Agent) error {
+		return errors.New("release asset is not published")
+	})
+
+	ctx := context.Background()
+	builder := newCICacheIdentityBuilder(ctx, workspace, "1.2.3", "runner-image@sha256:test")
+	identity := builder.identity(ctx, ScheduleOptions{Phase: "compile", RuntimeContext: "native"}, PlannedService{Service: "management/consumer"})
+
+	if identity.Inputs.Agent.Digest != "" {
+		t.Fatalf("agent digest was bound without an installed binary: %q", identity.Inputs.Agent.Digest)
+	}
+	eligible, reason := identity.reuseEligibility()
+	if eligible {
+		t.Fatal("identity with an uninstallable agent is eligible for reuse")
+	}
+	if !strings.Contains(reason, "release asset is not published") {
+		t.Fatalf("eligibility reason = %q", reason)
+	}
+}
+
+// TestCacheAgentResolutionPrefersAConfiguredRegistryOverAGitHubRelease pins the
+// order manager.Load resolves in. Installing the GitHub release into the local
+// cache instead would make Load skip the registry on every later run, because
+// Load takes the local path whenever it holds an executable.
+func TestCacheAgentResolutionPrefersAConfiguredRegistryOverAGitHubRelease(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	binary := []byte("registry agent binary")
+	digest := "sha256:" + hex.EncodeToString(sha256Sum(binary))
+	registry := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case strings.Contains(request.URL.Path, "/manifests/"):
+			writer.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			fmt.Fprintf(writer, `{"schemaVersion":2,"layers":[{"digest":%q}]}`, digest)
+		case strings.Contains(request.URL.Path, "/blobs/"):
+			_, _ = writer.Write(binary)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(registry.Close)
+	t.Setenv("AGENT_REGISTRY", strings.TrimPrefix(registry.URL, "http://"))
+
+	downloaded := 0
+	stubCacheAgentDownload(t, func(context.Context, *resources.Agent) error {
+		downloaded++
+		return nil
+	})
+
+	ctx := context.Background()
+	agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.ai", Name: "go-grpc", Version: "0.0.16"}
+	path, err := resolveAgentBinary(ctx, agent)
+	if err != nil {
+		t.Fatalf("resolve agent binary: %v", err)
+	}
+	if downloaded != 0 {
+		t.Fatal("a configured registry was bypassed for the GitHub release")
+	}
+	expected, err := agent.Path(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != expected {
+		t.Fatalf("resolved path = %q, want %q", path, expected)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != string(binary) {
+		t.Fatalf("resolved binary = %q, want the registry blob", content)
+	}
+}
+
+// TestCacheAgentInstallRefusesAnUnreachableReleaseAssetBeforeDownloading covers
+// the one stall manager.Download cannot be interrupted through: it ignores both
+// the deadline and the cancellation of the context it is handed.
+func TestCacheAgentInstallRefusesAnUnreachableReleaseAssetBeforeDownloading(t *testing.T) {
+	assets := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(assets.Close)
+	previousURL := githubAssetURL
+	githubAssetURL = func(*resources.Agent) (string, error) { return assets.URL + "/service-go-grpc.tar.gz", nil }
+	t.Cleanup(func() { githubAssetURL = previousURL })
+
+	downloaded := 0
+	stubCacheAgentDownload(t, func(context.Context, *resources.Agent) error {
+		downloaded++
+		return nil
+	})
+
+	agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.ai", Name: "go-grpc", Version: "0.0.16"}
+	err := installAgentRelease(context.Background(), agent)
+	if err == nil {
+		t.Fatal("an unreachable release asset was accepted")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Fatalf("install error = %v", err)
+	}
+	if downloaded != 0 {
+		t.Fatal("the download ran against an asset that is not there")
+	}
+}
+
+func stubCacheAgentDownload(t *testing.T, download func(context.Context, *resources.Agent) error) {
+	t.Helper()
+	previous := downloadCacheAgent
+	downloadCacheAgent = download
+	t.Cleanup(func() { downloadCacheAgent = previous })
+}
+
+// TestCacheAgentResolutionReinstallsANonExecutableCacheEntry matches what
+// execution does with such an entry: manager.Load resolves through
+// exec.LookPath, so it ignores the file and fetches the agent again. Binding
+// the bytes of a file the task will not run would publish a record under a
+// digest no execution ever produced.
+func TestCacheAgentResolutionReinstallsANonExecutableCacheEntry(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	ctx := context.Background()
+	agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.ai", Name: "go-grpc", Version: "0.0.16"}
+	path, err := agent.Path(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCacheTestFile(t, path, "not executable")
+
+	installed := 0
+	stubCacheAgentInstall(t, func(installContext context.Context, target *resources.Agent) error {
+		installed++
+		return writeCacheTestAgentBinary(installContext, target)
+	})
+	if _, err := resolveAgentBinary(ctx, agent); err != nil {
+		t.Fatalf("resolve agent binary: %v", err)
+	}
+	if installed != 1 {
+		t.Fatalf("non-executable cache entry was bound instead of reinstalled (installs = %d)", installed)
+	}
+}
+
+func stubCacheAgentInstall(t *testing.T, install func(context.Context, *resources.Agent) error) {
+	t.Helper()
+	previous := installCacheAgent
+	installCacheAgent = install
+	t.Cleanup(func() { installCacheAgent = previous })
+}
+
+func writeCacheTestAgentBinary(ctx context.Context, agent *resources.Agent) error {
+	path, err := agent.Path(ctx)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("agent "+agent.Identifier()), 0o755)
 }
 
 func cacheTestPlan(workspace *resources.Workspace, service string) *Plan {

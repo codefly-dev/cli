@@ -4,6 +4,7 @@
 package gh
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -54,4 +55,31 @@ func Token() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// ParseRemote resolves a git remote URL to its GitHub owner and repository.
+// Accepts the three forms git itself writes for github.com — scp-style
+// (git@github.com:owner/repo), https, and ssh:// — with or without the .git
+// suffix. Anything else is an error rather than a guess: the callers use the
+// result to address the API, and a mis-parsed remote would address the wrong
+// repository.
+func ParseRemote(remote string) (string, string, error) {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(remote), ".git")
+	switch {
+	case strings.HasPrefix(trimmed, "git@github.com:"):
+		trimmed = strings.TrimPrefix(trimmed, "git@github.com:")
+	case strings.HasPrefix(trimmed, "https://github.com/"):
+		trimmed = strings.TrimPrefix(trimmed, "https://github.com/")
+	case strings.HasPrefix(trimmed, "ssh://git@github.com/"):
+		trimmed = strings.TrimPrefix(trimmed, "ssh://git@github.com/")
+	case strings.HasPrefix(trimmed, "ssh://github.com/"):
+		trimmed = strings.TrimPrefix(trimmed, "ssh://github.com/")
+	default:
+		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
+	}
+	owner, repo, ok := strings.Cut(trimmed, "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
+	}
+	return owner, repo, nil
 }
