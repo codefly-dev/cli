@@ -433,11 +433,11 @@ func installAgentRelease(ctx context.Context, agent *resources.Agent) error {
 }
 
 // agentInput binds the pinned agent release the task executes against,
-// installing it when this machine does not have it yet. The release is fully
+// resolving it when this machine does not have it yet. The release is fully
 // determined before any task runs, so a digest that only exists once the agent
 // has been spawned here would leave a fresh machine permanently ineligible for
-// reuse. Installing it is not extra work: an executed task downloads the same
-// binary moments later.
+// reuse. Resolving it is not extra work: an executed task resolves the same
+// binary moments later, by the same route.
 func (builder *ciCacheIdentityBuilder) agentInput(ctx context.Context, pinned *resources.Agent) (CICacheAgentInput, []string) {
 	if resolution, ok := builder.agentInputs[pinned.Unique()]; ok {
 		return resolution.input, resolution.limitations
