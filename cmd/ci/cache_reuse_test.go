@@ -665,11 +665,9 @@ func installReuseFixtureAgents(t *testing.T, workspace *resources.Workspace) {
 		if record.service.Agent == nil {
 			continue
 		}
-		path, err := record.service.Agent.Path(ctx)
-		if err != nil {
+		if err := writeCacheTestAgentBinary(ctx, record.service.Agent); err != nil {
 			t.Fatal(err)
 		}
-		writeCacheTestFile(t, path, "fixture agent "+record.unique)
 	}
 }
 
@@ -851,7 +849,7 @@ func TestReuseEligibilityRejectsAnyUnboundInput(t *testing.T) {
 		},
 		"unavailable key": func(identity *CICacheIdentity) { identity.Key = "" },
 		"unresolved input": func(identity *CICacheIdentity) {
-			identity.Limitations = []string{"resolved agent binary cannot be hashed"}
+			identity.Limitations = []string{"resolved agent binary is not installed"}
 		},
 		"unnamed environment": func(identity *CICacheIdentity) { identity.Inputs.Environment = "" },
 		"unbound repository remainder": func(identity *CICacheIdentity) {

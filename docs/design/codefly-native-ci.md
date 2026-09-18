@@ -672,10 +672,15 @@ its remainder.
 Transitive service dependencies are hashed even for standalone lint/compile
 execution: runtime scheduling and content invalidation are distinct concerns.
 The pinned agent release is fully determined before any task runs, so a machine
-that does not have the binary yet installs it while the identity is computed
+that does not have the binary yet resolves it while the identity is computed
 instead of binding an empty digest — otherwise a fresh CI runner, which carries
-only the CLI, could never publish or reuse a record. An agent that still cannot
-be resolved, installed or hashed is surfaced in `limitations` rather than
+only the CLI, could never publish or reuse a record. Resolution follows the same
+order execution does: the local agent cache, then a configured Nix flake
+(`AGENT_NIX_FLAKE`), then a configured OCI registry (`AGENT_REGISTRY`), then the
+GitHub release. That order is load-bearing in both directions — a key must bind
+the artifact the task actually runs, and populating the local cache from GitHub
+would make execution itself skip a flake or registry an operator configured. An
+agent that cannot be resolved or hashed is surfaced in `limitations` rather than
 silently treated as equivalent, and any limitation makes the task ineligible for
 reuse.
 
@@ -694,6 +699,13 @@ running it. Reuse is opt-in and requires an explicit scope:
 | `--reuse-run` | Identity of this run, recorded as provenance (`$CODEFLY_CI_RUN`). |
 | `--reuse-max-age` | Maximum age of a reusable result. |
 | `--reuse-audit-max-age` | Maximum age of a reusable dependency audit; zero (the default) always re-runs audits. |
+
+A reusing workflow should persist the agent cache (`~/.codefly/agents`, or
+`$CODEFLY_HOME/agents`) across runs alongside the result store. Every identity
+binds the digest of the agent binary its task executes, so a runner with a cold
+agent cache resolves each pinned agent once before it can publish or match a
+record; persisting the cache makes that a first-run cost rather than a per-run
+one.
 
 The environment identity is required and never inferred. Language toolchains,
 runtime images and plugins are resolved by agents on the host, so Codefly cannot
