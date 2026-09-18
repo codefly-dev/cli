@@ -577,10 +577,32 @@ Composition splits **identity** (what to compose, portable) from **location**
   checkout.
 
 At boot the [resolver](#codefly-run-solution) walks the precedence overlay
-`path` → overlay `worktree` → overlay `pinned` → committed identity, so the same
-committed config resolves on every worktree and in CI. `codefly doctor
-workspace` flags an unresolved reference with the `module_reference_unresolved`
-diagnostic.
+`path` → overlay `worktree` → overlay `pinned` → committed `path` → committed
+identity, so the same committed config resolves on every worktree and in CI.
+`codefly doctor workspace` flags an unresolved reference with the
+`module_reference_unresolved` diagnostic.
+
+A composition that **vendors** its sources — a git submodule per module, which
+is how it gets a reviewable, reproducible pin — states both on one entry:
+`source` + `version` records which module this is, and `path` points it at the
+checkout already in the tree. No overlay is involved, so the same committed
+config resolves for everyone.
+
+**This route is unverified.** A committed `path` wins over `source`, so the
+module resolves as a local checkout: nothing pulls the signed artifact, nothing
+checks a signature or digest against `module-trust`, and the `version` beside it
+is dropped rather than enforced against what the submodule is parked on. It
+resolves even in a workspace with no `module-trust` block, where a bare
+`source` + `version` reference would be refused. Use it when the submodule
+pointer is what your review actually gates on; see #731.
+
+```yaml
+modules:
+    - name: saas
+      source: obin-ai/lodestar
+      version: "0.0.62"
+      path: platform/lodestar/modules/saas
+```
 
 A `pinned` (committed `source` + `version`) reference resolves through the
 producer's verified module package rather than a git clone: `run` fetches the
