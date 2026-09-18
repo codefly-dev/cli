@@ -205,7 +205,7 @@ func TestReplayRejectsEndpointVisibilityViolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{}); err == nil || !strings.Contains(err.Error(), "visibility") {
+	if _, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{}); err == nil || !strings.Contains(err.Error(), "validateModuleDependencyVisibility") || !strings.Contains(err.Error(), "organization/grpc") {
 		t.Fatalf("visibility validation: %v", err)
 	}
 }
@@ -353,5 +353,114 @@ service-dependencies:
 	}
 	if _, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{}); err == nil || !strings.Contains(err.Error(), "no executor for schema job management/prepare") {
 		t.Fatalf("schema jobs: %v", err)
+	}
+}
+
+// visibilityFixture composes a consumer whose only cross-module edge carries the
+// given kind and names no endpoint, onto a producer exposing one public and one
+// private endpoint. The kind is what decides which stages traverse the edge.
+func visibilityFixture(t *testing.T, kind string) *resources.Workspace {
+	t.Helper()
+	t.Setenv("CI", "")
+	root := t.TempDir()
+	writeCacheTestFile(t, filepath.Join(root, "workspace.codefly.yaml"),
+		"name: visibility\nlayout: modules\nmodules:\n    - name: documents\n    - name: saas\n")
+	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "module.codefly.yaml"),
+		"kind: module\nname: documents\nservices:\n    - name: documents\n")
+	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "services", "documents", "service.codefly.yaml"),
+		`kind: service
+name: documents
+module: documents
+version: 0.0.0
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+    - name: auth-gateway
+      module: saas
+      kind: `+kind+`
+endpoints:
+    - name: grpc
+      api: grpc
+      visibility: public
+`)
+	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "services", "documents", "code", "main.go"), "package main\n")
+	writeCacheTestFile(t, filepath.Join(root, "modules", "saas", "module.codefly.yaml"),
+		"kind: module\nname: saas\nservices:\n    - name: auth-gateway\n")
+	writeCacheTestFile(t, filepath.Join(root, "modules", "saas", "services", "auth-gateway", "service.codefly.yaml"),
+		`kind: service
+name: auth-gateway
+module: saas
+version: 0.0.0
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+endpoints:
+    - name: http
+      api: http
+      visibility: public
+    - name: admin
+      api: grpc
+      visibility: private
+`)
+	runCacheTestGit(t, root, "init")
+	runCacheTestGit(t, root, "add", ".")
+	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	return workspace
+}
+
+// A build-kind edge is traversed by every CI phase, because every CI phase
+// builds what it touches — Core decomposes `test` into build then run. A
+// run-kind edge is traversed only by the phases that start the service. Verify
+// starts and builds nothing, so it has no stage to scope to and judges both.
+func TestReplayVisibilityFollowsTheStagesItReplays(t *testing.T) {
+	for _, scenario := range []struct {
+		kind     string
+		phase    string
+		violates bool
+	}{
+		{kind: "build", phase: "build", violates: true},
+		{kind: "build", phase: "lint", violates: true},
+		{kind: "build", phase: "test", violates: true},
+		{kind: "build", phase: "sync-drift", violates: true},
+		{kind: "build", phase: "verify", violates: true},
+		{kind: "runtime", phase: "test", violates: true},
+		{kind: "runtime", phase: "sync-drift", violates: true},
+		{kind: "runtime", phase: "verify", violates: true},
+		{kind: "runtime", phase: "lint", violates: false},
+		{kind: "runtime", phase: "build", violates: false},
+	} {
+		t.Run(scenario.kind+"/"+scenario.phase, func(t *testing.T) {
+			workspace := visibilityFixture(t, scenario.kind)
+			ctx := context.Background()
+			plan, err := BuildPlan(ctx, workspace, PlanOptions{ChangedFiles: []string{"modules/documents/services/documents/code/main.go"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if summary := servicePlanSummary(plan); len(summary) != 1 || !strings.HasPrefix(summary[0], "documents/documents:") {
+				t.Fatalf("selection = %v", summary)
+			}
+			_, err = buildReplayPlan(ctx, workspace, plan, ReplayInvocation{Phases: []string{scenario.phase}})
+			if scenario.violates {
+				if err == nil {
+					t.Fatalf("replay accepted a %s-kind dependency onto a private endpoint that the %s phase must judge", scenario.kind, scenario.phase)
+				}
+				if !strings.Contains(err.Error(), "validateModuleDependencyVisibility") {
+					t.Fatalf("replay refused through a check the other commands do not share: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("replay refused a %s-kind edge the %s phase never traverses: %v", scenario.kind, scenario.phase, err)
+			}
+		})
 	}
 }
