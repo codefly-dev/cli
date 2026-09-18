@@ -11,6 +11,7 @@ import (
 
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/core/architecture"
@@ -78,19 +79,10 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 	if err != nil {
 		return nil, err
 	}
-	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
-	if err != nil {
+	if err := verifyReplayVisibility(ctx, workspace, result.Tasks); err != nil {
 		return nil, err
 	}
 	for _, selected := range plan.Services {
-		selectedDependencies, restrictionErr := dependencies.Restrict(ctx, selected.Service)
-		if restrictionErr != nil {
-			return nil, restrictionErr
-		}
-		if visibilityErr := selectedDependencies.VerifyVisibility(ctx); visibilityErr != nil {
-			return nil, visibilityErr
-		}
-
 		closure, err := architecture.SelectClosure(ctx, workspace, selected.Service)
 		if err != nil {
 			return nil, err
@@ -118,6 +110,37 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 	digest := sha256.Sum256(payload)
 	result.Fingerprint = "sha256:" + hex.EncodeToString(digest[:])
 	return result, nil
+}
+
+// verifyReplayVisibility judges the replay's declared dependencies with the
+// stage-scoped pass run, deploy and validate already share, so replaying a
+// recorded selection cannot refuse a composition every other command accepts.
+// The stages come from the tasks the replay resolved: an edge is judged by a
+// stage that actually traverses it, never by one this replay does not run.
+func verifyReplayVisibility(ctx context.Context, workspace *resources.Workspace, tasks []ReplayTask) error {
+	seeds := map[resources.Stage][]string{}
+	for _, task := range tasks {
+		ref, err := resources.ParseServiceWithOptionalModule(task.Service.Service)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(seeds[task.Stage], ref.Module) {
+			seeds[task.Stage] = append(seeds[task.Stage], ref.Module)
+		}
+	}
+	for _, stage := range []resources.Stage{resources.StageBuild, resources.StageRun} {
+		if len(seeds[stage]) == 0 {
+			continue
+		}
+		closure, err := workspace.ResolveModuleClosure(ctx, stage, seeds[stage])
+		if err != nil {
+			return err
+		}
+		if err := closure.ValidateServiceDependencies(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func resolveReplayTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, invocation ReplayInvocation) ([]ReplayTask, error) {

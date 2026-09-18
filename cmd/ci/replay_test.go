@@ -205,7 +205,7 @@ func TestReplayRejectsEndpointVisibilityViolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{}); err == nil || !strings.Contains(err.Error(), "visibility") {
+	if _, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{}); err == nil || !strings.Contains(err.Error(), "endpoint organization/grpc does not permit module \"billing\"") {
 		t.Fatalf("visibility validation: %v", err)
 	}
 }
@@ -353,5 +353,88 @@ service-dependencies:
 	}
 	if _, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{}); err == nil || !strings.Contains(err.Error(), "no executor for schema job management/prepare") {
 		t.Fatalf("schema jobs: %v", err)
+	}
+}
+
+// buildKindVisibilityFixture composes a consumer whose only cross-module edge is
+// a build-kind dependency that names no endpoint, onto a producer that exposes
+// one public and one private endpoint.
+func buildKindVisibilityFixture(t *testing.T) (string, *resources.Workspace) {
+	t.Helper()
+	t.Setenv("CI", "")
+	root := t.TempDir()
+	writeCacheTestFile(t, filepath.Join(root, "workspace.codefly.yaml"),
+		"name: build-kind\nlayout: modules\nmodules:\n    - name: documents\n    - name: saas\n")
+	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "module.codefly.yaml"),
+		"kind: module\nname: documents\nservices:\n    - name: documents\n")
+	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "services", "documents", "service.codefly.yaml"),
+		`kind: service
+name: documents
+module: documents
+version: 0.0.0
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+service-dependencies:
+    - name: auth-gateway
+      module: saas
+      kind: build
+endpoints:
+    - name: grpc
+      api: grpc
+      visibility: public
+`)
+	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "services", "documents", "code", "main.go"), "package main\n")
+	writeCacheTestFile(t, filepath.Join(root, "modules", "saas", "module.codefly.yaml"),
+		"kind: module\nname: saas\nservices:\n    - name: auth-gateway\n")
+	writeCacheTestFile(t, filepath.Join(root, "modules", "saas", "services", "auth-gateway", "service.codefly.yaml"),
+		`kind: service
+name: auth-gateway
+module: saas
+version: 0.0.0
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+endpoints:
+    - name: http
+      api: http
+      visibility: public
+    - name: admin
+      api: grpc
+      visibility: private
+`)
+	runCacheTestGit(t, root, "init")
+	runCacheTestGit(t, root, "add", ".")
+	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	return root, workspace
+}
+
+func TestReplayVisibilityFollowsTheStagesItReplays(t *testing.T) {
+	_, workspace := buildKindVisibilityFixture(t)
+	ctx := context.Background()
+	plan, err := BuildPlan(ctx, workspace, PlanOptions{ChangedFiles: []string{"modules/documents/services/documents/code/main.go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary := servicePlanSummary(plan); len(summary) != 1 || !strings.HasPrefix(summary[0], "documents/documents:") {
+		t.Fatalf("selection = %v", summary)
+	}
+	if _, err := buildReplayPlan(ctx, workspace, plan, ReplayInvocation{Phases: []string{"test"}}); err != nil {
+		t.Fatalf("run-stage replay refused a build-kind edge it never traverses: %v", err)
+	}
+	_, err = buildReplayPlan(ctx, workspace, plan, ReplayInvocation{Phases: []string{"build"}})
+	if err == nil {
+		t.Fatal("build-stage replay accepted a dependency onto a private endpoint")
+	}
+	if !strings.Contains(err.Error(), "validateModuleDependencyVisibility") {
+		t.Fatalf("build-stage replay refused through a check the other commands do not share: %v", err)
 	}
 }
