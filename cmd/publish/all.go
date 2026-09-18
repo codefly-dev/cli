@@ -43,7 +43,9 @@ Release-grade agent CI is the publish gate itself, so it runs per-agent
 during step 2 — a CI failure there aborts the run with earlier repos
 already shipped, exactly like any other execute-phase failure.
 
-As with plain publish, the tag/main push is NEVER --force.
+As with plain publish, each bump lands on its repo's main through a
+release pull request and the tag is cut from the merged commit; no
+push is ever --force.
 
 Examples:
   codefly publish all              # patch-bump every repo
@@ -65,6 +67,7 @@ type repoTarget struct {
 	Dir        string
 	Manifest   *Manifest
 	PlannedTag string
+	Landing    Landing
 }
 
 // engine builds a fresh Engine for one phase. We clone the manifest's
@@ -78,6 +81,7 @@ func (t *repoTarget) engine(bump string, dry bool) *Engine {
 		BumpType: bump,
 		DryRun:   dry,
 		WorkDir:  t.Dir,
+		Landing:  t.Landing,
 	}
 }
 
@@ -125,6 +129,17 @@ func runAll(c *cobra.Command, args []string) error {
 				continue
 			}
 		}
+		// Resolving each repo's release landing here keeps an unreachable
+		// GitHub or a missing token a pre-flight failure, so it aborts the run
+		// instead of stopping it halfway with earlier repos already shipped.
+		// Done for --dry-run too, so the plan it prints is the one the real run
+		// would follow, including any release already on main awaiting its tag.
+		landing, lerr := newPullRequestLanding(context.Background(), t.Dir)
+		if lerr != nil {
+			failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), lerr))
+			continue
+		}
+		t.Landing = landing
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		tag, verr := t.engine(bumpType, true).Release(ctx)
 		cancel()
@@ -154,10 +169,11 @@ func runAll(c *cobra.Command, args []string) error {
 	for _, t := range targets {
 		engine := t.engine(bumpType, false)
 
-		// Agent repos additionally run release-grade CI and upload
-		// loader-compatible release assets — both far slower than a bare
-		// tag push, so they get a generous timeout.
-		timeout := 120 * time.Second
+		// Every bump waits on its repo's required checks before it merges, and
+		// agent repos additionally run release-grade CI and upload
+		// loader-compatible release assets — all far slower than a bare tag
+		// push, so they get a generous timeout.
+		timeout := releaseWaitBudget
 		var releaser releaseGate
 		if t.Manifest.Mode == ModeAgent {
 			releaser, err = newAgentReleaseGate(filepath.Dir(t.Manifest.Path))
@@ -165,7 +181,7 @@ func runAll(c *cobra.Command, args []string) error {
 				return fmt.Errorf("prepare agent release for %s: %w", relOrBase(root, t.Dir), err)
 			}
 			releaser.attach(engine)
-			timeout = 30 * time.Minute
+			timeout = releaseWaitBudget + 30*time.Minute
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)

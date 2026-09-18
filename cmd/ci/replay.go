@@ -11,6 +11,7 @@ import (
 
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/core/architecture"
@@ -78,19 +79,10 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 	if err != nil {
 		return nil, err
 	}
-	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
-	if err != nil {
+	if err = verifyReplayVisibility(ctx, workspace, plan, invocation.Phases); err != nil {
 		return nil, err
 	}
 	for _, selected := range plan.Services {
-		selectedDependencies, restrictionErr := dependencies.Restrict(ctx, selected.Service)
-		if restrictionErr != nil {
-			return nil, restrictionErr
-		}
-		if visibilityErr := selectedDependencies.VerifyVisibility(ctx); visibilityErr != nil {
-			return nil, visibilityErr
-		}
-
 		closure, err := architecture.SelectClosure(ctx, workspace, selected.Service)
 		if err != nil {
 			return nil, err
@@ -118,6 +110,58 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 	digest := sha256.Sum256(payload)
 	result.Fingerprint = "sha256:" + hex.EncodeToString(digest[:])
 	return result, nil
+}
+
+// verifyReplayVisibility judges the replay's declared dependencies with the
+// stage-scoped pass run, deploy and validate already share, so replaying a
+// recorded selection cannot refuse a composition every other command accepts.
+// The selection seeds it, not the resolved tasks: a phase that schedules no
+// service task still replays a composition, and one that judges nothing is a
+// gate that passes everything.
+func verifyReplayVisibility(ctx context.Context, workspace *resources.Workspace, plan *Plan, phases []string) error {
+	var seeds []string
+	for _, selected := range plan.Services {
+		ref, err := resources.ParseServiceWithOptionalModule(selected.Service)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(seeds, ref.Module) {
+			seeds = append(seeds, ref.Module)
+		}
+	}
+	if len(seeds) == 0 {
+		return nil
+	}
+	for _, stage := range replayStages(phases) {
+		closure, err := workspace.ResolveModuleClosure(ctx, stage, seeds)
+		if err != nil {
+			return err
+		}
+		if err := closure.ValidateServiceDependencies(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// replayStages returns the stages the requested phases exercise. Every CI phase
+// builds what it touches, so the build stage is always judged; a phase that
+// locks the dependency closure is one that also starts the service, which is
+// what brings the run stage in. Verify schedules no service task at all, so it
+// has no stage to scope to and judges every edge, exactly as Core's
+// workspace-wide pass does for the same reason.
+//
+// scheduleStage is deliberately not consulted: it names the single graph a
+// phase's tasks are ordered in, and Core sorts test's build and run graphs
+// separately, so reading it as the only stage a phase touches would leave a
+// test replay never judging the build edges it builds through.
+func replayStages(phases []string) []resources.Stage {
+	for _, phase := range phases {
+		if phase == ciPhaseVerify || phaseLocksDependencyClosure(phase) {
+			return resources.Stages()
+		}
+	}
+	return []resources.Stage{resources.StageBuild}
 }
 
 func resolveReplayTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, invocation ReplayInvocation) ([]ReplayTask, error) {

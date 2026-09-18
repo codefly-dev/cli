@@ -78,6 +78,23 @@ func TestVerifiedReuseExecutesColdThenReusesWarmAndInvalidatesOnInputChange(t *t
 	}
 }
 
+func TestVerifiedReusePublishesAndReusesWithoutAPreinstalledAgent(t *testing.T) {
+	_, workspace := loadReuseFixtureWithoutAgents(t)
+	stubCacheAgentInstall(t, writeCacheTestAgentBinary)
+	store := t.TempDir()
+	plan := cacheTestPlan(workspace, "management/consumer")
+
+	cold := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference))
+	if cold.executed != 1 || !cold.task(t).Cache.Stored {
+		t.Fatalf("cold run on a machine without the agent = %#v", cold.task(t).Cache)
+	}
+
+	warm := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference))
+	if warm.executed != 0 || warm.task(t).Status != reportStatusReused {
+		t.Fatalf("warm run did not reuse: %#v", warm.task(t).Cache)
+	}
+}
+
 func TestVerifiedReuseMatchesDefaultAndNamedTestSuites(t *testing.T) {
 	_, workspace := loadReuseFixture(t)
 	plan := cacheTestPlan(workspace, "management/consumer")
@@ -605,6 +622,15 @@ func newReuseTestEngine(t *testing.T, workspace *resources.Workspace, store, env
 
 func loadReuseFixture(t *testing.T) (string, *resources.Workspace) {
 	t.Helper()
+	root, workspace := loadReuseFixtureWithoutAgents(t)
+	installReuseFixtureAgents(t, workspace)
+	return root, workspace
+}
+
+// loadReuseFixtureWithoutAgents is the fixture as a machine that has only ever
+// installed the CLI sees it: the pinned agents are not in the local cache.
+func loadReuseFixtureWithoutAgents(t *testing.T) (string, *resources.Workspace) {
+	t.Helper()
 	root, workspace := loadSchedulerFixture(t)
 	t.Setenv("CODEFLY_HOME", t.TempDir())
 	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -625,7 +651,6 @@ func loadReuseFixture(t *testing.T) (string, *resources.Workspace) {
 	}
 	runCacheTestGit(t, root, "init")
 	runCacheTestGit(t, root, "add", "-A")
-	installReuseFixtureAgents(t, workspace)
 	return root, workspace
 }
 
@@ -640,11 +665,9 @@ func installReuseFixtureAgents(t *testing.T, workspace *resources.Workspace) {
 		if record.service.Agent == nil {
 			continue
 		}
-		path, err := record.service.Agent.Path(ctx)
-		if err != nil {
+		if err := writeCacheTestAgentBinary(ctx, record.service.Agent); err != nil {
 			t.Fatal(err)
 		}
-		writeCacheTestFile(t, path, "fixture agent "+record.unique)
 	}
 }
 

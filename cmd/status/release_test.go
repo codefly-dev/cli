@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/google/go-github/v89/github"
 )
 
@@ -24,9 +25,10 @@ func TestParseGitHubRemote(t *testing.T) {
 		{"https://github.com/codefly-dev/service-redis", "codefly-dev", "service-redis", true},
 		{"git@gitlab.com:codefly-dev/service-redis.git", "", "", false},
 		{"https://github.com/codefly-dev", "", "", false},
+		{"ssh://git@github.com/codefly-dev/service-redis.git", "codefly-dev", "service-redis", true},
 	}
 	for _, tc := range cases {
-		owner, repo, err := parseGitHubRemote(tc.remote)
+		owner, repo, err := gh.ParseRemote(tc.remote)
 		if tc.ok != (err == nil) {
 			t.Fatalf("%s: err = %v, want ok=%v", tc.remote, err, tc.ok)
 		}
