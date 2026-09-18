@@ -53,6 +53,12 @@ is minted for sit **beside** it in `operation.json`, because they are installed
 with the binding — two installations of one contract may run under different
 ones, and digesting them in would make those two installations two releases.
 
+An `index.json` is data on disk, and in a composed workspace it arrives inside
+a third-party module package, so every path read out of one is resolved inside
+the module directory through `os.Root` — a row naming `../../../.ssh/id_rsa`,
+or an ordinary-looking directory that is a symlink out of the tree, is refused
+rather than followed.
+
 See [`generate runnables`](commands.md#generate-runnables) for the output
 layout, the refusal rules and how the release version is derived. What this
 does *not* do is invoke anything: no CLI command invokes a Runnable, derived or

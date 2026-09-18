@@ -116,3 +116,34 @@ func TestShowRunnableRefusesANameThatIsBothDeclaredAndDerived(t *testing.T) {
 	require.ErrorContains(t, err, "both")
 	require.ErrorContains(t, err, "runtime-worker/grpc/ApplyText")
 }
+
+// findRunnable documents that "an unrelated broken declaration elsewhere in
+// the workspace still does not fail this command", and loading every module's
+// derived packages up front would break exactly that: a corrupt package
+// belonging to some other operation must not fail a question that was never
+// about it.
+func TestShowRunnableIgnoresABrokenDerivedPackageInAnotherModule(t *testing.T) {
+	dir := writeDerivedWorkspace(t, "runtime-worker-grpc-apply-text", false)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"),
+		[]byte("name: test-ws\nlayout: modules\nmodules:\n  - name: documents\n  - name: billing\n"), 0o644))
+
+	// billing derives an operation too, and its package is truncated.
+	billingDir := filepath.Join(dir, "modules", "billing")
+	require.NoError(t, os.MkdirAll(billingDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(billingDir, "module.codefly.yaml"), []byte("kind: module\nname: billing\n"), 0o644))
+	runnablestest.Write(t, billingDir, "test-ws", "billing", "billing-grpc-charge")
+	broken := filepath.Join(billingDir, "contracts", "runnables", "runtime-worker", "grpc", "ApplyText", "runnable-package.json")
+	require.NoError(t, os.WriteFile(broken, []byte("{ this is not a package"), 0o644))
+
+	t.Chdir(dir)
+	t.Cleanup(func() { showRunnableJSON, showRunnableVersion = false, "" })
+
+	cmd, buf := newShowTestCmd()
+	require.NoError(t, showRunnable(cmd, "runtime-worker-grpc-apply-text"),
+		"a broken package in billing failed a question about documents")
+	require.Contains(t, buf.String(), "runtime-worker/grpc/ApplyText")
+
+	// The broken one still fails when it is the one being asked about.
+	cmd, _ = newShowTestCmd()
+	require.Error(t, showRunnable(cmd, "billing-grpc-charge"))
+}

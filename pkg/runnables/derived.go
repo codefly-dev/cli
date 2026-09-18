@@ -3,7 +3,9 @@ package runnables
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -62,23 +64,67 @@ func (e *IndexEntry) Source() string {
 	return strings.Join([]string{e.Service, e.Endpoint, method}, "/")
 }
 
-// LoadIndex reads a module's derived-operation index. A module that has
-// generated none has no index, which is not an error: nothing derived is a
-// valid answer, and the caller lists the declared runnables either way.
+// ValidateRelativePath rejects a path that does not stay inside the tree it is
+// resolved against: absolute, backslash-separated, NUL-bearing, or carrying a
+// "." or ".." segment. It is applied to every path read out of an index and to
+// every path written into the tree, so neither side depends on the other
+// having checked.
+//
+// Lexical checking alone is not containment — a symlink inside the tree still
+// resolves outside it — so readers additionally resolve through os.Root. This
+// exists so a bad path is refused with a message naming it, rather than
+// surfacing as an opaque openat failure.
+func ValidateRelativePath(label, value string) error {
+	if value == "" || filepath.IsAbs(value) || strings.ContainsAny(value, "\\\x00") || strings.HasPrefix(value, "/") {
+		return fmt.Errorf("%s %q is not a path inside the module", label, value)
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("%s %q is not a path inside the module", label, value)
+		}
+	}
+	return nil
+}
+
+// LoadIndex reads a module's derived-operation index.
+//
+// A module that has generated nothing has no contracts/runnables directory at
+// all, which is not an error: nothing derived is a valid answer and the caller
+// still lists what the module declares. A directory that exists WITHOUT an
+// index is an error — the packages under it are operations the module
+// publishes, and answering "none" for them would hide a module's whole derived
+// surface behind one deleted file.
 func LoadIndex(moduleDir string) (*Index, error) {
-	data, err := os.ReadFile(filepath.Join(moduleDir, filepath.FromSlash(DerivedDir), IndexFileName))
+	derivedDir := filepath.Join(moduleDir, filepath.FromSlash(DerivedDir))
+	data, err := os.ReadFile(filepath.Join(derivedDir, IndexFileName))
 	if err != nil {
-		if os.IsNotExist(err) {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		entries, dirErr := os.ReadDir(derivedDir)
+		if dirErr != nil {
+			if os.IsNotExist(dirErr) {
+				return nil, nil
+			}
+			return nil, dirErr
+		}
+		if len(entries) == 0 {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("%s holds %d entrie(s) but no %s; run `codefly generate runnables` to rewrite it",
+			derivedDir, len(entries), IndexFileName)
 	}
 	var index Index
-	if err := json.Unmarshal(data, &index); err != nil {
+	if err = json.Unmarshal(data, &index); err != nil {
 		return nil, fmt.Errorf("cannot read derived runnable index: %w", err)
 	}
 	if index.Schema != IndexSchema {
 		return nil, fmt.Errorf("derived runnable index schema %q is not %s", index.Schema, IndexSchema)
+	}
+	for i := range index.Operations {
+		if err = ValidateRelativePath("derived runnable path", index.Operations[i].Path); err != nil {
+			return nil, err
+		}
 	}
 	return &index, nil
 }
@@ -109,11 +155,17 @@ type Scope struct {
 }
 
 // Derived is one operation a module derived: the index row that names it, the
-// package it points at, and the policy installed beside that package.
+// package it points at, the policy installed beside that package, and the
+// owner agent that package records.
 type Derived struct {
 	Entry     IndexEntry
 	Package   *basev0.RunnablePackage
 	Operation *Operation
+	// Agent is the owner agent's identifier, resolved when the package is
+	// read. A package whose agent cannot be read fails the load rather than
+	// listing blank: a listing that cannot say what builds an operation is
+	// reporting a broken package as a working one.
+	Agent string
 }
 
 // LoadDerivedOperations reads every operation a module derived. A module that
@@ -125,32 +177,65 @@ func LoadDerivedOperations(moduleDir string) ([]Derived, error) {
 	}
 	operations := make([]Derived, 0, len(index.Operations))
 	for i := range index.Operations {
-		entry := &index.Operations[i]
-		pkg := &basev0.RunnablePackage{}
-		if err = readDerivedFile(moduleDir, entry, PackageFileName, func(data []byte) error {
-			return protojson.Unmarshal(data, pkg)
-		}); err != nil {
-			return nil, err
+		operation, loadErr := LoadDerived(moduleDir, &index.Operations[i])
+		if loadErr != nil {
+			return nil, loadErr
 		}
-		operation := &Operation{}
-		if err = readDerivedFile(moduleDir, entry, OperationFileName, func(data []byte) error {
-			return json.Unmarshal(data, operation)
-		}); err != nil {
-			return nil, err
-		}
-		operations = append(operations, Derived{Entry: *entry, Package: pkg, Operation: operation})
+		operations = append(operations, operation)
 	}
 	return operations, nil
 }
 
-func readDerivedFile(moduleDir string, entry *IndexEntry, name string, decode func([]byte) error) error {
-	file := filepath.Join(moduleDir, filepath.FromSlash(entry.Path), name)
-	data, err := os.ReadFile(file) //nolint:gosec // the path comes from the module's own generated index
+// LoadDerived reads the files one index row points at. It is separate from
+// LoadDerivedOperations so a caller looking for one operation by name pays for
+// — and fails on — only the row it asked about: a broken package belonging to
+// some other operation must not fail a question that was never about it.
+func LoadDerived(moduleDir string, entry *IndexEntry) (Derived, error) {
+	root, err := os.OpenRoot(moduleDir)
+	if err != nil {
+		return Derived{}, err
+	}
+	defer func() { _ = root.Close() }()
+
+	pkg := &basev0.RunnablePackage{}
+	if err = readDerivedFile(root, entry, PackageFileName, func(data []byte) error {
+		return protojson.Unmarshal(data, pkg)
+	}); err != nil {
+		return Derived{}, err
+	}
+	operation := &Operation{}
+	if err = readDerivedFile(root, entry, OperationFileName, func(data []byte) error {
+		return json.Unmarshal(data, operation)
+	}); err != nil {
+		return Derived{}, err
+	}
+	agent, err := resources.AgentFromProto(pkg.GetAgent())
+	if err != nil {
+		return Derived{}, fmt.Errorf("derived runnable %s records an agent that cannot be read: %w", entry.Name, err)
+	}
+	return Derived{Entry: *entry, Package: pkg, Operation: operation, Agent: agent.Identifier()}, nil
+}
+
+// readDerivedFile reads one of a row's files THROUGH an os.Root anchored at
+// the module directory. Resolving inside the root is what makes the read safe:
+// an index is data on disk — in a composed workspace it arrives inside a
+// third-party module package — so a row naming "../../../.ssh/id_rsa", or a
+// symlink pointing there, must not be followed. A decode failure quotes the
+// bytes it choked on, which is why reaching outside the module at all is the
+// thing that has to be impossible rather than merely unlikely.
+func readDerivedFile(root *os.Root, entry *IndexEntry, name string, decode func([]byte) error) error {
+	relative := path.Join(entry.Path, name)
+	file, err := root.Open(relative)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return err
 	}
 	if err = decode(data); err != nil {
-		return fmt.Errorf("cannot read %s: %w", file, err)
+		return fmt.Errorf("cannot read %s: %w", filepath.Join(root.Name(), filepath.FromSlash(relative)), err)
 	}
 	return nil
 }
@@ -161,15 +246,11 @@ func readDerivedFile(moduleDir string, entry *IndexEntry, name string, decode fu
 // are core's own YAML ones, so a derived row and a declared row name the same
 // facility the same way.
 func (d *Derived) Identity() Identity {
-	agentName := ""
-	if agent, err := resources.AgentFromProto(d.Package.GetAgent()); err == nil {
-		agentName = agent.Identifier()
-	}
 	return Identity{
 		Module:    d.Package.GetIdentity().GetModule(),
 		Name:      d.Package.GetIdentity().GetName(),
 		Version:   d.Package.GetIdentity().GetVersion(),
-		Agent:     agentName,
+		Agent:     d.Agent,
 		Protocol:  d.Package.GetContract().GetProtocol(),
 		Execution: newPackageExecution(d.Package.GetExecution()),
 		Source:    d.Entry.Source(),

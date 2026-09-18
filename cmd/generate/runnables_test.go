@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
+	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
@@ -87,6 +89,20 @@ func TestGenerateRunnablesDerivesMarkedMethodsAndRefusesTheRest(t *testing.T) {
 		}
 	}
 
+	// A command that fails writes nothing at all: see
+	// TestGenerateRunnablesRefusalLeavesTheCommittedTreeAlone for why the
+	// conforming methods do not get written either.
+	derivedDir := filepath.Join(moduleDir, filepath.FromSlash(runnablespkg.DerivedDir))
+	if _, statErr := os.Stat(derivedDir); !os.IsNotExist(statErr) {
+		t.Fatalf("the refused run wrote %s (stat err %v)", derivedDir, statErr)
+	}
+
+	// Removing the two offending methods derives the rest, which is what the
+	// tree is expected to hold.
+	publishContract(t, moduleDir, descriptorSet(t, ingestionFile(conformingOperation())))
+	if err = RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
+		t.Fatal(err)
+	}
 	want := []string{
 		"index.json",
 		"runtime-worker/grpc/ApplyText/operation.json",
@@ -275,8 +291,164 @@ func TestGenerateRunnablesFallsBackToAContractDigestIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	version := readIndex(t, moduleDir).Operations[0].Version
-	if !strings.HasPrefix(version, "0.0.0-") || len(version) != len("0.0.0-")+12 {
-		t.Fatalf("version = %q, want 0.0.0-<digest12>", version)
+	if !strings.HasPrefix(version, "0.0.0-contract-") || len(version) != len("0.0.0-contract-")+12 {
+		t.Fatalf("version = %q, want 0.0.0-contract-<digest12>", version)
+	}
+	if _, err := semver.StrictNewVersion(version); err != nil {
+		t.Fatalf("derived version %q is not a strict semantic version: %v", version, err)
+	}
+}
+
+// A prerelease identifier made only of digits may not carry a leading zero, so
+// a bare digest prefix spells an invalid version for roughly one contract in
+// 1400 — and every method in that module would then be refused, with a message
+// naming the method rather than the version. The identifier has to stay
+// alphanumeric whatever the digest is.
+func TestDerivedVersionIsValidSemverForEveryDigest(t *testing.T) {
+	for _, digest := range []string{
+		"012345678901", // all digits, leading zero: invalid on its own
+		"000000000000",
+		"123456789012",
+		"4c26fb95a023",
+		"abcdefabcdef",
+	} {
+		version := derivedVersion("", &composition.APIContractEndpoint{Digest: "sha256:" + digest + strings.Repeat("0", 52)})
+		if _, err := semver.StrictNewVersion(version); err != nil {
+			t.Errorf("digest %s derives %q, which is not a strict semantic version: %v", digest, version, err)
+		}
+	}
+	if got := derivedVersion("1.4.2", &composition.APIContractEndpoint{Digest: "sha256:012345678901"}); got != "1.4.2" {
+		t.Fatalf("a module with a release version derived %q instead of it", got)
+	}
+}
+
+// A failing command must leave the tree exactly as it found it. Writing the
+// methods that did derive deletes the refused one's committed package, which
+// asserts the module no longer publishes an operation whose payload the owner
+// merely broke — and the deletion outlives the non-zero exit.
+func TestGenerateRunnablesRefusalLeavesTheCommittedTreeAlone(t *testing.T) {
+	ctx := context.Background()
+	root, moduleDir := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0")
+	t.Chdir(root)
+	resetRunnablesFlags(t)
+
+	if err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
+		t.Fatal(err)
+	}
+	committed := snapshotTree(t, moduleDir)
+	if len(committed) != 3 {
+		t.Fatalf("expected the generated tree to hold 3 files, got %d", len(committed))
+	}
+
+	// The owner breaks ApplyText's payload with a uint64, outside the bounded
+	// profile. The method still carries the option.
+	broken := ingestionFile(conformingOperation())
+	broken.MessageType[0].Field = append(broken.MessageType[0].Field, uint64Field("total", 99))
+	publishContract(t, moduleDir, descriptorSet(t, broken))
+
+	err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"})
+	if err == nil {
+		t.Fatal("expected the refusal to fail the command")
+	}
+	if after := snapshotTree(t, moduleDir); !equalTrees(committed, after) {
+		t.Fatalf("the failed command mutated the committed tree: %d files before, %d after", len(committed), len(after))
+	}
+}
+
+// --check computes the diff before it knows about a refusal; returning the
+// refusal alone would throw that diff away and send whoever fixes the contract
+// back for a second run to discover the drift underneath it.
+func TestGenerateRunnablesCheckReportsBothARefusalAndDrift(t *testing.T) {
+	ctx := context.Background()
+	root, moduleDir := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0")
+	t.Chdir(root)
+	resetRunnablesFlags(t)
+
+	if err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
+		t.Fatal(err)
+	}
+	operationFile := filepath.Join(moduleDir, filepath.FromSlash("contracts/runnables/runtime-worker/grpc/ApplyText/operation.json"))
+	writeFixtureFile(t, operationFile, []byte(strings.Replace(string(mustRead(t, operationFile)), `"max_attempts": 1`, `"max_attempts": 4`, 1)))
+
+	// A second method is marked and out of profile, so the run both refuses
+	// and drifts.
+	withRefusal := ingestionFile(conformingOperation(), outOfProfileMethod())
+	publishContract(t, moduleDir, descriptorSet(t, withRefusal))
+
+	runnablesCheck = true
+	output, err := captureStdout(t, func() error { return RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}) })
+	if err == nil {
+		t.Fatal("expected --check to fail")
+	}
+	if !strings.Contains(err.Error(), "CountText") {
+		t.Fatalf("error does not report the refusal: %v", err)
+	}
+	if !strings.Contains(err.Error(), "run `codefly generate runnables` to update") {
+		t.Fatalf("error does not report the drift: %v", err)
+	}
+	if !strings.Contains(output, `-  "max_attempts": 4`) {
+		t.Fatalf("the diff was discarded:\n%s", output)
+	}
+}
+
+// --output names a directory this command does not necessarily own alone.
+// "--output=contracts", one word short of "contracts/runnables", must not
+// delete the module's published api contracts.
+func TestGenerateRunnablesOutputRemovesOnlyWhatItWrote(t *testing.T) {
+	ctx := context.Background()
+	root, moduleDir := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0")
+	t.Chdir(root)
+	resetRunnablesFlags(t)
+
+	contracts := filepath.Join(moduleDir, "contracts")
+	runnablesOutput = contracts
+	if err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, kept := range []string{
+		"api/runtime-worker/grpc/contract.binpb",
+		"api/catalog.codefly.json",
+	} {
+		if _, err := os.Stat(filepath.Join(contracts, filepath.FromSlash(kept))); err != nil {
+			t.Errorf("generating into %s destroyed %s: %v", contracts, kept, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(contracts, "index.json")); err != nil {
+		t.Errorf("the index was not written into the chosen output: %v", err)
+	}
+}
+
+// A module that declares no interface exports no endpoint, so it has no method
+// to derive from: zero operations, which is an empty index rather than the
+// "run generate contracts first" error a module that DOES export endpoints
+// gets.
+func TestGenerateRunnablesWithoutAnInterfaceWritesAnEmptyIndex(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workspace := &resources.Workspace{
+		Name:    "test-workspace",
+		Layout:  resources.LayoutKindModules,
+		Modules: []*resources.ModuleReference{{Name: "documents"}},
+	}
+	if err := workspace.SaveToDirUnsafe(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	moduleDir := filepath.Join(root, "modules", "documents")
+	module := &resources.Module{Kind: resources.ModuleKind, Name: "documents"}
+	module.WithDir(moduleDir)
+	if err := module.Save(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(root)
+	resetRunnablesFlags(t)
+
+	if err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
+		t.Fatalf("a module exporting nothing should derive nothing, not fail: %v", err)
+	}
+	if operations := readIndex(t, moduleDir).Operations; len(operations) != 0 {
+		t.Fatalf("index has %d operations, want none", len(operations))
 	}
 }
 

@@ -3,8 +3,11 @@ package generate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 
@@ -54,29 +57,94 @@ func marshalIndented(document any) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// writeDerivedTree replaces the contents of output with files. The tree is
-// owned by this command, so a directory left by a method that no longer
-// carries the option is removed rather than merged with: a stale package is a
-// contract nobody publishes any more.
+// generatedFileNames are the only file names a generation produces. Clearing
+// is scoped to them because --output names a directory this command does not
+// necessarily own alone: "--output=contracts", one word short of
+// "contracts/runnables", would otherwise delete the module's whole published
+// api contracts tree. `generate contracts` removes only the per-endpoint
+// directories it writes and never the root's contents; this matches that.
+var generatedFileNames = map[string]bool{
+	runnablespkg.IndexFileName:     true,
+	runnablespkg.PackageFileName:   true,
+	runnablespkg.OperationFileName: true,
+}
+
+// writeDerivedTree makes output hold exactly files. A directory left by a
+// method that no longer carries the option is removed rather than merged with
+// — a stale package is a contract nobody publishes any more — but only the
+// files a generation produces are removed, and only the directories those
+// files emptied.
 func writeDerivedTree(ctx context.Context, files map[string][]byte, output string) error {
+	for _, name := range sortedKeys(files) {
+		if err := runnablespkg.ValidateRelativePath("derived runnable path", name); err != nil {
+			return err
+		}
+	}
 	if _, err := shared.CheckDirectoryOrCreate(ctx, output); err != nil {
 		return fmt.Errorf("cannot create output directory: %w", err)
 	}
-	entries, err := os.ReadDir(output)
-	if err != nil {
+	if err := clearGeneratedFiles(output); err != nil {
 		return err
-	}
-	for _, entry := range entries {
-		if err = os.RemoveAll(filepath.Join(output, entry.Name())); err != nil {
-			return err
-		}
 	}
 	for _, name := range sortedKeys(files) {
 		target := filepath.Join(output, filepath.FromSlash(name))
-		if err = os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		if err = shared.WriteFileAtomic(ctx, target, files[name], 0o644); err != nil {
+		if err := shared.WriteFileAtomic(ctx, target, files[name], 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// clearGeneratedFiles removes every file a previous generation wrote under
+// output, then prunes the directories that leaves empty, deepest first. A
+// directory still holding anything this command did not write is kept, along
+// with whatever is in it.
+//
+// Every removal resolves through an os.Root anchored at output. Walking a tree
+// and then deleting by the walked path is resolved twice, and a path component
+// swapped for a symlink in between would put a delete outside the directory
+// the operator named; the root makes the second resolution impossible to
+// redirect. Symlinks are never descended, so a link inside the tree is at most
+// removed as the link it is.
+func clearGeneratedFiles(output string) error {
+	root, err := os.OpenRoot(output)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	var directories []string
+	err = fs.WalkDir(root.FS(), ".", func(p string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if p != "." {
+				directories = append(directories, p)
+			}
+			return nil
+		}
+		if generatedFileNames[path.Base(p)] {
+			return root.Remove(p)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(directories)))
+	for _, directory := range directories {
+		entries, readErr := fs.ReadDir(root.FS(), directory)
+		if readErr != nil {
+			return readErr
+		}
+		if len(entries) > 0 {
+			continue
+		}
+		if err = root.Remove(directory); err != nil {
 			return err
 		}
 	}
@@ -121,10 +189,11 @@ func runRunnablesCheck(derived *derivation, output string) error {
 		diffs = append(diffs, diff)
 	}
 
-	if refusal := derived.refusal(); refusal != nil {
-		return refusal
-	}
+	refusal := derived.refusal()
 	if len(diffs) == 0 {
+		if refusal != nil {
+			return refusal
+		}
 		cli.Header(1, "Derived runnables are up to date")
 		return nil
 	}
@@ -132,7 +201,14 @@ func runRunnablesCheck(derived *derivation, output string) error {
 	for _, diff := range diffs {
 		fmt.Print(diff)
 	}
-	return fmt.Errorf("derived runnables differ from %s (%d file(s)); run `codefly generate runnables` to update", output, len(diffs))
+	// Both problems are reported from one run. A refusal returned on its own
+	// would discard the diff already computed here, and send whoever fixes the
+	// contract back for a second run to discover the drift underneath it.
+	drift := fmt.Errorf("derived runnables differ from %s (%d file(s)); run `codefly generate runnables` to update", output, len(diffs))
+	if refusal != nil {
+		return errors.Join(refusal, drift)
+	}
+	return drift
 }
 
 func sortedKeys[V any](m map[string]V) []string {

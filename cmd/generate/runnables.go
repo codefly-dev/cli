@@ -104,14 +104,20 @@ Examples:
 		if runnablesCheck {
 			return runRunnablesCheck(derived, output)
 		}
+		// A refused method fails the command, and a command that fails must
+		// leave the tree exactly as it found it. Writing the methods that did
+		// derive would delete the refused one's committed package — asserting
+		// the module no longer publishes an operation whose payload the owner
+		// merely broke — and the deletion survives the non-zero exit, ready to
+		// be committed by anyone who does not read it.
+		if refusal := derived.refusal(); refusal != nil {
+			return refusal
+		}
 		if err = writeDerivedTree(ctx, derived.files, output); err != nil {
 			return err
 		}
 		for _, entry := range derived.index.Operations {
 			cli.Info("runnables: %s  %s  %s", entry.Name, entry.Method, entry.Digest)
-		}
-		if refusal := derived.refusal(); refusal != nil {
-			return refusal
 		}
 		cli.Header(1, "Derived %d runnable operation(s)", len(derived.index.Operations))
 		return nil
@@ -152,9 +158,9 @@ func (d *derivation) refusal() error {
 // deriveRunnables walks every protobuf contract the module published and
 // derives the operations its methods declare.
 func deriveRunnables(ctx context.Context, workspace *resources.Workspace, module *resources.Module) (*derivation, error) {
-	catalog, err := composition.LoadAPIContractCatalog(module.Dir())
+	catalog, err := loadPublishedContracts(module)
 	if err != nil {
-		return nil, fmt.Errorf("%w; run `codefly generate contracts` first, so the methods to derive from are published", err)
+		return nil, err
 	}
 
 	release, err := moduleReleaseVersion(module)
@@ -174,7 +180,10 @@ func deriveRunnables(ctx context.Context, workspace *resources.Workspace, module
 		files: map[string][]byte{},
 	}
 
-	endpoints := append([]composition.APIContractEndpoint(nil), catalog.Endpoints...)
+	var endpoints []composition.APIContractEndpoint
+	if catalog != nil {
+		endpoints = append(endpoints, catalog.Endpoints...)
+	}
 	sort.Slice(endpoints, func(i, j int) bool {
 		if endpoints[i].Service != endpoints[j].Service {
 			return endpoints[i].Service < endpoints[j].Service
@@ -276,6 +285,10 @@ func deriveEndpoint(module *resources.Module, endpoint *composition.APIContractE
 // derivation refuses is recorded and the walk continues.
 func deriveMethod(module *resources.Module, endpoint *composition.APIContractEndpoint, owner corerunnable.ServiceOwner, files *protoregistry.Files, fullMethod string, derived *derivation) error {
 	name := methodName(fullMethod)
+	relativeDir, err := derivedRelativeDir(derived.workspaceDir, module, endpoint, name)
+	if err != nil {
+		return err
+	}
 	location := &resources.RunnableLocation{
 		Identity: &resources.RunnableIdentity{
 			Name:      derivedName(endpoint.Service, endpoint.Endpoint, name),
@@ -284,7 +297,7 @@ func deriveMethod(module *resources.Module, endpoint *composition.APIContractEnd
 			Version:   derivedVersion(derived.release, endpoint),
 		},
 		WorkspacePath:       derived.workspaceDir,
-		RelativeToWorkspace: derivedRelativeDir(derived.workspaceDir, module, endpoint, name),
+		RelativeToWorkspace: relativeDir,
 	}
 
 	pkg, spec, err := corerunnable.PackageFromMethod(files, location, owner, fullMethod)
@@ -325,16 +338,33 @@ func deriveMethod(module *resources.Module, endpoint *composition.APIContractEnd
 }
 
 // derivedRelativeDir locates one operation's directory relative to the
-// workspace root, which is what a runnable location records. A module outside
-// the workspace root has no relative form, so the absolute directory is
-// recorded instead of a path with no meaning from the root.
-func derivedRelativeDir(workspaceDir string, module *resources.Module, endpoint *composition.APIContractEndpoint, method string) string {
+// workspace root, which is what a runnable location records.
+func derivedRelativeDir(workspaceDir string, module *resources.Module, endpoint *composition.APIContractEndpoint, method string) (string, error) {
 	dir := filepath.Join(module.Dir(), filepath.FromSlash(runnablespkg.DerivedDir), endpoint.Service, endpoint.Endpoint, method)
-	relative, err := filepath.Rel(workspaceDir, dir)
-	if err != nil {
-		return dir
+	return filepath.Rel(workspaceDir, dir)
+}
+
+// loadPublishedContracts returns the contracts a module published, or nil when
+// it exports none.
+//
+// A module with no interface block exports no endpoint, so it has no method to
+// derive from and no catalog to read — zero operations, which is an empty
+// index rather than an error, exactly as a module whose methods carry no
+// option produces one. A module that DOES declare an interface but has no
+// catalog has simply not run the prerequisite, and saying so is more useful
+// than an empty index that hides it.
+func loadPublishedContracts(module *resources.Module) (*composition.APIContractCatalog, error) {
+	catalog, err := composition.LoadAPIContractCatalog(module.Dir())
+	if err == nil {
+		return catalog, nil
 	}
-	return relative
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if module.Interface == nil {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("%w; run `codefly generate contracts` first, so the methods to derive from are published", err)
 }
 
 // moduleReleaseVersion is the version a packageable module is released at. A
@@ -374,7 +404,13 @@ func derivedVersion(release string, endpoint *composition.APIContractEndpoint) s
 	if len(digest) > 12 {
 		digest = digest[:12]
 	}
-	return "0.0.0-" + digest
+	// The digest is prefixed rather than used bare because a prerelease
+	// identifier made only of digits may not carry a leading zero: a contract
+	// whose digest begins "0123456789ab" would spell an invalid version, and
+	// every method in that module would then be refused for a reason naming
+	// the method instead of the version. "contract-" makes the identifier
+	// alphanumeric, which exempts it from that rule whatever the digest is.
+	return "0.0.0-contract-" + digest
 }
 
 // derivedName names the release a method derives. The endpoint is part of it

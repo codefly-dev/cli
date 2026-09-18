@@ -1287,18 +1287,33 @@ may differ in both. `index.json` is what a composition reads to prepare
 bindings — identity, digest, full method, input and output message names and
 endpoint coordinates per row.
 
-The tree is fully owned, like `generate contracts`: a method that no longer
-carries the option loses its directory. A module with no marked method writes
-an empty index, not an error.
+The tree is fully owned: a method that no longer carries the option loses its
+directory. Only the three file names a generation produces are removed, and
+only the directories that empties, so pointing `--output` at a directory this
+command shares — `--output=contracts`, one word short of `contracts/runnables`
+— never destroys what is beside it. A module with no marked method, and a
+module that declares no `interface:` and so exports no endpoint at all, both
+write an empty index rather than an error; a module that *does* declare an
+interface but has no catalog is told to run `generate contracts` first.
 
 A streaming method, a payload outside the bounded schema profile, or an option
-core refuses is named with its field path and skipped; the walk continues and
-the command exits non-zero at the end, so an owner fixing a contract sees the
-whole list.
+core refuses is named with its field path; the walk continues so an owner
+fixing a contract sees the whole list, and the command then exits non-zero
+**having written nothing**. A failing run leaves the tree exactly as it found
+it: writing the methods that did derive would delete the refused one's
+committed package, asserting the module no longer publishes an operation whose
+payload the owner merely broke, and that deletion outlives the non-zero exit.
+
+`--check` reports a refusal and any drift from the same run, rather than
+returning the refusal and discarding the diff it already computed.
 
 **Versioning is derived, never authored.** A module that declares a
 `module.package.codefly.yaml` carries its release version; one that does not is
-not packageable, so the contract's own digest stands in as `0.0.0-<digest12>`.
+not packageable, so the contract's own digest stands in as
+`0.0.0-contract-<digest12>`. The `contract-` prefix is load-bearing: a
+prerelease identifier made only of digits may not carry a leading zero, so a
+bare digest would spell an invalid semantic version for roughly one contract in
+1400.
 Either way the version's only job is to be a valid identity — a binding pins
 the package **digest**, which is what a consumer actually agreed to.
 

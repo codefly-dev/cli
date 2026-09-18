@@ -53,21 +53,35 @@ func findDerivedOperations(ctx context.Context, workspace *resources.Workspace, 
 		}
 	}
 
+	// Only the rows whose name matches are loaded. The index is module-level
+	// metadata, so a module whose index cannot be read fails the command the
+	// way an unreadable module.codefly.yaml already does; the package and
+	// policy files belong to one operation each, and reading every module's
+	// would let a broken package elsewhere in the workspace fail a question
+	// that was never about it — the isolation findRunnable documents and
+	// relies on.
 	var matches []runnablespkg.Derived
 	for _, module := range modules {
-		derived, err := runnablespkg.LoadDerivedOperations(module.Dir())
+		index, err := runnablespkg.LoadIndex(module.Dir())
 		if err != nil {
 			return nil, fmt.Errorf("cannot load the derived runnables of module %s: %w", module.Name, err)
 		}
-		for i := range derived {
-			operation := &derived[i]
-			if operation.Entry.Name != operationName {
+		if index == nil {
+			continue
+		}
+		for i := range index.Operations {
+			entry := &index.Operations[i]
+			if entry.Name != operationName {
 				continue
 			}
-			if version != "" && operation.Entry.Version != version {
+			if version != "" && entry.Version != version {
 				continue
 			}
-			matches = append(matches, *operation)
+			operation, loadErr := runnablespkg.LoadDerived(module.Dir(), entry)
+			if loadErr != nil {
+				return nil, fmt.Errorf("cannot load the derived runnable %s of module %s: %w", entry.Name, module.Name, loadErr)
+			}
+			matches = append(matches, operation)
 		}
 	}
 	return matches, nil
