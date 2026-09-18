@@ -205,7 +205,7 @@ func TestReplayRejectsEndpointVisibilityViolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{}); err == nil || !strings.Contains(err.Error(), "endpoint organization/grpc does not permit module \"billing\"") {
+	if _, err := buildReplayPlan(context.Background(), workspace, plan, ReplayInvocation{}); err == nil || !strings.Contains(err.Error(), "validateModuleDependencyVisibility") || !strings.Contains(err.Error(), "organization/grpc") {
 		t.Fatalf("visibility validation: %v", err)
 	}
 }
@@ -356,15 +356,15 @@ service-dependencies:
 	}
 }
 
-// buildKindVisibilityFixture composes a consumer whose only cross-module edge is
-// a build-kind dependency that names no endpoint, onto a producer that exposes
-// one public and one private endpoint.
-func buildKindVisibilityFixture(t *testing.T) (string, *resources.Workspace) {
+// visibilityFixture composes a consumer whose only cross-module edge carries the
+// given kind and names no endpoint, onto a producer exposing one public and one
+// private endpoint. The kind is what decides which stages traverse the edge.
+func visibilityFixture(t *testing.T, kind string) *resources.Workspace {
 	t.Helper()
 	t.Setenv("CI", "")
 	root := t.TempDir()
 	writeCacheTestFile(t, filepath.Join(root, "workspace.codefly.yaml"),
-		"name: build-kind\nlayout: modules\nmodules:\n    - name: documents\n    - name: saas\n")
+		"name: visibility\nlayout: modules\nmodules:\n    - name: documents\n    - name: saas\n")
 	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "module.codefly.yaml"),
 		"kind: module\nname: documents\nservices:\n    - name: documents\n")
 	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "services", "documents", "service.codefly.yaml"),
@@ -380,7 +380,7 @@ agent:
 service-dependencies:
     - name: auth-gateway
       module: saas
-      kind: build
+      kind: `+kind+`
 endpoints:
     - name: grpc
       api: grpc
@@ -414,27 +414,53 @@ endpoints:
 	if err != nil {
 		t.Fatalf("load workspace: %v", err)
 	}
-	return root, workspace
+	return workspace
 }
 
+// A build-kind edge is traversed by every CI phase, because every CI phase
+// builds what it touches — Core decomposes `test` into build then run. A
+// run-kind edge is traversed only by the phases that start the service. Verify
+// starts and builds nothing, so it has no stage to scope to and judges both.
 func TestReplayVisibilityFollowsTheStagesItReplays(t *testing.T) {
-	_, workspace := buildKindVisibilityFixture(t)
-	ctx := context.Background()
-	plan, err := BuildPlan(ctx, workspace, PlanOptions{ChangedFiles: []string{"modules/documents/services/documents/code/main.go"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if summary := servicePlanSummary(plan); len(summary) != 1 || !strings.HasPrefix(summary[0], "documents/documents:") {
-		t.Fatalf("selection = %v", summary)
-	}
-	if _, err := buildReplayPlan(ctx, workspace, plan, ReplayInvocation{Phases: []string{"test"}}); err != nil {
-		t.Fatalf("run-stage replay refused a build-kind edge it never traverses: %v", err)
-	}
-	_, err = buildReplayPlan(ctx, workspace, plan, ReplayInvocation{Phases: []string{"build"}})
-	if err == nil {
-		t.Fatal("build-stage replay accepted a dependency onto a private endpoint")
-	}
-	if !strings.Contains(err.Error(), "validateModuleDependencyVisibility") {
-		t.Fatalf("build-stage replay refused through a check the other commands do not share: %v", err)
+	for _, scenario := range []struct {
+		kind     string
+		phase    string
+		violates bool
+	}{
+		{kind: "build", phase: "build", violates: true},
+		{kind: "build", phase: "lint", violates: true},
+		{kind: "build", phase: "test", violates: true},
+		{kind: "build", phase: "sync-drift", violates: true},
+		{kind: "build", phase: "verify", violates: true},
+		{kind: "runtime", phase: "test", violates: true},
+		{kind: "runtime", phase: "sync-drift", violates: true},
+		{kind: "runtime", phase: "verify", violates: true},
+		{kind: "runtime", phase: "lint", violates: false},
+		{kind: "runtime", phase: "build", violates: false},
+	} {
+		t.Run(scenario.kind+"/"+scenario.phase, func(t *testing.T) {
+			workspace := visibilityFixture(t, scenario.kind)
+			ctx := context.Background()
+			plan, err := BuildPlan(ctx, workspace, PlanOptions{ChangedFiles: []string{"modules/documents/services/documents/code/main.go"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if summary := servicePlanSummary(plan); len(summary) != 1 || !strings.HasPrefix(summary[0], "documents/documents:") {
+				t.Fatalf("selection = %v", summary)
+			}
+			_, err = buildReplayPlan(ctx, workspace, plan, ReplayInvocation{Phases: []string{scenario.phase}})
+			if scenario.violates {
+				if err == nil {
+					t.Fatalf("replay accepted a %s-kind dependency onto a private endpoint that the %s phase must judge", scenario.kind, scenario.phase)
+				}
+				if !strings.Contains(err.Error(), "validateModuleDependencyVisibility") {
+					t.Fatalf("replay refused through a check the other commands do not share: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("replay refused a %s-kind edge the %s phase never traverses: %v", scenario.kind, scenario.phase, err)
+			}
+		})
 	}
 }
