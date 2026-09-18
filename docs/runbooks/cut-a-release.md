@@ -16,6 +16,8 @@ You want to ship a new CLI version to users (stable or beta).
 - A `codefly` binary new enough to have `publish` (it bumps the manifest for you).
 - You can push tags to `codefly-dev/cli`, and a GitHub token with write access to it —
   `GITHUB_TOKEN`/`GH_TOKEN`, or `gh auth login`. `publish` opens the release pull request with it.
+  `--dry-run` requires it too, so the rehearsal fails on a missing credential rather than the
+  real run.
 - Release secrets are configured in the repo: `CODEFLY_RELEASE_SIGNING_KEY` (its public half must
   match `pkg/cliupdate/release-signing-cert.pem`).
 
@@ -73,7 +75,8 @@ Failure handling:
 - **After the merge, before the tag** — the one non-atomic window. The bump is on `main` with
   no release. `publish` says so; **re-run `codefly publish`** and it recognizes the untagged
   `release:` commit on `main` and finishes that release instead of bumping again. Do not bump
-  past it — that burns a version.
+  past it — that burns a version. The re-run rebuilds whatever the release uploads first, so an
+  agent resumed this way ships its loader archives rather than an empty release.
 - **After the tag** — the release commit and tag are immutable and remain even if the release
   workflow later fails.
 

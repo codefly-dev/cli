@@ -132,14 +132,14 @@ func runAll(c *cobra.Command, args []string) error {
 		// Resolving each repo's release landing here keeps an unreachable
 		// GitHub or a missing token a pre-flight failure, so it aborts the run
 		// instead of stopping it halfway with earlier repos already shipped.
-		if !dryRun {
-			landing, lerr := newPullRequestLanding(context.Background(), t.Dir)
-			if lerr != nil {
-				failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), lerr))
-				continue
-			}
-			t.Landing = landing
+		// Done for --dry-run too, so the plan it prints is the one the real run
+		// would follow, including any release already on main awaiting its tag.
+		landing, lerr := newPullRequestLanding(context.Background(), t.Dir)
+		if lerr != nil {
+			failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), lerr))
+			continue
 		}
+		t.Landing = landing
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		tag, verr := t.engine(bumpType, true).Release(ctx)
 		cancel()

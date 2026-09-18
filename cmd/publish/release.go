@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver"
 )
@@ -53,8 +54,10 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if tag, resumed, err := e.resumeStrandedRelease(ctx); resumed || err != nil {
-		return tag, err
+	if e.landing().stranding() {
+		if tag, resumed, err := e.resumeStrandedRelease(ctx); resumed || err != nil {
+			return tag, err
+		}
 	}
 
 	// Reconcile the bump base against what's ACTUALLY been released. The
@@ -135,11 +138,23 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	return newTag, nil
 }
 
+// cleanupContext detaches an unwind from the caller's deadline. The failure
+// being unwound is very often the budget running out — waiting on a release
+// pull request is minutes of it — and every unwind step is a git command that
+// exec refuses to even start on a context that has already expired. Unwinding
+// on the caller's context therefore does nothing precisely when it matters,
+// leaving the release commit on local main with no way back.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+}
+
 // rollbackRelease removes the local commit and tag created by this invocation.
 // It is safe because preflight required a clean tree and the release commit is
 // necessarily HEAD. Remote publication is atomic, so a failed push has not
 // published either ref.
 func (e *Engine) rollbackRelease(ctx context.Context, tag string, cause error) error {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
 	var rollbackErrs []error
 	if e.tagExistsLocally(ctx, tag) {
 		if _, err := e.git(ctx, "tag", "-d", tag); err != nil {
@@ -160,6 +175,8 @@ func (e *Engine) rollbackRelease(ctx context.Context, tag string, cause error) e
 // Both the index and worktree are reset because gitCommit stages manifests
 // before signing; a signing or commit-hook failure must not leave them staged.
 func (e *Engine) restoreManifest(ctx context.Context) error {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
 	manifests := e.manifests()
 	args := make([]string, 0, 5+len(manifests))
 	args = append(args, "restore", "--source=HEAD", "--staged", "--worktree", "--")
@@ -390,6 +407,19 @@ func (e *Engine) resumeStrandedRelease(ctx context.Context) (string, bool, error
 		return tag, true, nil
 	}
 	fmt.Printf("==> %s is already on main but untagged; finishing that release instead of bumping\n", tag)
+
+	// Rebuild whatever the release publishes before finishing it. AfterPush
+	// ships artifacts that BeforeCommit produces — for an agent, the loader
+	// archives — and the first attempt died before AfterPush ran, so those
+	// artifacts do not exist. Skipping this publishes an empty release that
+	// verifies clean because there is nothing in it to verify. Nothing is
+	// written to the manifest here, so a failure needs no revert; ReTag, the
+	// other recovery path, rebuilds the same way.
+	if e.BeforeCommit != nil {
+		if err := e.BeforeCommit(ctx, tag); err != nil {
+			return "", true, err
+		}
+	}
 	if !e.tagExistsLocally(ctx, tag) {
 		if err := e.gitTag(ctx, tag); err != nil {
 			return "", true, fmt.Errorf("tag: %w", err)

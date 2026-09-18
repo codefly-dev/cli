@@ -3,6 +3,7 @@ package publish
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,16 @@ type fakeGitHubPullRequests struct {
 	states []string
 	// checkRuns is the check-runs payload served for the head SHA.
 	checkRuns string
+	// checkRunsStatus, when non-zero, is served instead of checkRuns.
+	checkRunsStatus int
+	// mergeFailsAfterMerging reproduces a merge that commits server-side and
+	// still fails its caller.
+	mergeFailsAfterMerging bool
+	// afterChecks runs once the check-runs response has been served, which is
+	// a point reached only from inside the wait for the pull request. Tests
+	// that need the publish budget to expire *there* cancel from here rather
+	// than racing a wall clock.
+	afterChecks func()
 
 	mu          sync.Mutex
 	polls       int
@@ -75,18 +86,36 @@ func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 		f.mu.Lock()
 		f.commitTitle, f.mergeMethod, f.merged = body.CommitTitle, body.MergeMethod, true
 		f.mu.Unlock()
-		fmt.Fprintf(w, `{"merged":true,"sha":%q}`, f.squashOntoMain(body.CommitTitle))
-	})
-	mux.HandleFunc("/repos/codefly-dev/cli/commits/", func(w http.ResponseWriter, _ *http.Request) {
-		if f.checkRuns == "" {
-			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+		sha := f.squashOntoMain(body.CommitTitle)
+		if f.mergeFailsAfterMerging {
+			http.Error(w, "server error", http.StatusBadGateway)
 			return
 		}
-		fmt.Fprint(w, f.checkRuns)
+		fmt.Fprintf(w, `{"merged":true,"sha":%q}`, sha)
+	})
+	mux.HandleFunc("/repos/codefly-dev/cli/commits/", func(w http.ResponseWriter, _ *http.Request) {
+		if f.checkRunsStatus != 0 {
+			http.Error(w, "server error", f.checkRunsStatus)
+			return
+		}
+		if f.checkRuns == "" {
+			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+		} else {
+			fmt.Fprint(w, f.checkRuns)
+		}
+		if f.afterChecks != nil {
+			f.afterChecks()
+		}
 	})
 
 	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
+	// A request aborted by a cancelled context leaves its connection non-idle,
+	// and plain Close waits on it — tens of seconds of it. Drop the
+	// connections first so teardown does not dominate the test's runtime.
+	t.Cleanup(func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	})
 	base := ts.URL + "/"
 	client, err := github.NewClient(github.WithURLs(&base, &base))
 	require.NoError(t, err)
@@ -285,13 +314,13 @@ exit 0
 }
 
 func TestEngine_Release_DryRunReportsAStrandedRelease(t *testing.T) {
-	dir, _, _ := releaseRepo(t, "0.1.0")
+	dir, origin, _ := releaseRepo(t, "0.1.0")
 	gitIn(t, dir, "commit", "--allow-empty", "-m", "release: v0.1.0")
 	gitIn(t, dir, "push", "origin", "main")
 
-	m, err := Detect(dir)
-	require.NoError(t, err)
-	tag, err := (&Engine{Manifest: m, BumpType: "patch", DryRun: true, WorkDir: dir}).Release(context.Background())
+	engine := landingEngine(t, dir, &fakeGitHubPullRequests{t: t, origin: origin})
+	engine.DryRun = true
+	tag, err := engine.Release(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "v0.1.0", tag, "dry-run must report the release that needs finishing, not a new bump")
 }
@@ -304,6 +333,7 @@ func TestOriginRepository(t *testing.T) {
 	}{
 		{remote: "git@github.com:codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
 		{remote: "https://github.com/codefly-dev/cli", owner: "codefly-dev", repo: "cli"},
+		{remote: "ssh://git@github.com/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
 		{remote: "https://gitlab.com/codefly-dev/cli.git", wantErr: true},
 	} {
 		t.Run(tc.remote, func(t *testing.T) {
@@ -312,7 +342,7 @@ func TestOriginRepository(t *testing.T) {
 			gitIn(t, dir, "remote", "add", "origin", tc.remote)
 			owner, repo, err := originRepository(context.Background(), dir)
 			if tc.wantErr {
-				require.ErrorContains(t, err, "not a GitHub repository")
+				require.ErrorContains(t, err, "unrecognized GitHub remote")
 				return
 			}
 			require.NoError(t, err)
@@ -328,4 +358,143 @@ func TestIsReleaseCommitFor(t *testing.T) {
 	require.False(t, isReleaseCommitFor("release: v0.1.11", "v0.1.1"),
 		"a longer version must not read as the one being released")
 	require.False(t, isReleaseCommitFor("fix: release: v0.1.1", "v0.1.1"))
+}
+
+// TestEngine_Release_ExhaustedBudgetStillUnwinds covers the failure the wait
+// makes routine: CI outlasts the budget, so every unwind step runs after the
+// context is already done. On the caller's context exec refuses to start those
+// git commands at all, which left the release commit on local main, the bumped
+// manifest committed, and the release branch on origin — wedging the next
+// publish at its in-sync pre-flight gate.
+func TestEngine_Release_ExhaustedBudgetStillUnwinds(t *testing.T) {
+	dir, origin, manifest := releaseRepo(t, "0.1.0")
+	headBefore := gitIn(t, dir, "rev-parse", "HEAD")
+	fake := &fakeGitHubPullRequests{t: t, origin: origin, states: []string{"blocked"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Expire the budget from inside the wait rather than after a fixed
+	// duration: a wall-clock deadline races pre-flight and lands somewhere
+	// else entirely when the machine is loaded.
+	var once sync.Once
+	fake.afterChecks = func() { once.Do(cancel) }
+
+	_, err := landingEngine(t, dir, fake).Release(ctx)
+	require.ErrorContains(t, err, "publish budget ran out")
+
+	contents, readErr := os.ReadFile(manifest)
+	require.NoError(t, readErr)
+	require.Equal(t, "version: 0.1.0\n", string(contents),
+		"the bump must be restored even though the budget that aborted it is gone")
+	require.Equal(t, headBefore, gitIn(t, dir, "rev-parse", "HEAD"),
+		"the local release commit must be removed, or the next publish fails its in-sync gate")
+	require.Empty(t, gitIn(t, origin, "branch", "--list", "release-0.1.1"),
+		"the release branch must be deleted, or the next attempt at this version cannot push it")
+	require.Empty(t, gitIn(t, origin, "tag", "-l", "v0.1.1"))
+}
+
+// TestEngine_Release_ResumeRebuildsWhatAfterPushShips pins that finishing a
+// stranded release re-runs BeforeCommit. AfterPush ships what BeforeCommit
+// produces, so resuming without it published an empty release that verified
+// clean because there was nothing in it to verify.
+func TestEngine_Release_ResumeRebuildsWhatAfterPushShips(t *testing.T) {
+	dir, origin, _ := releaseRepo(t, "0.1.0")
+	fake := &fakeGitHubPullRequests{t: t, origin: origin, states: []string{"clean"}}
+
+	var order []string
+	engine := landingEngine(t, dir, fake)
+	engine.BeforeCommit = func(context.Context, string) error {
+		order = append(order, "before")
+		return nil
+	}
+	engine.AfterPush = func(context.Context, string) error {
+		order = append(order, "after")
+		return errors.New("tag pushed, upload refused")
+	}
+	_, err := engine.Release(context.Background())
+	require.ErrorContains(t, err, "upload refused")
+	require.Equal(t, []string{"before", "after"}, order)
+	// The tag landed, so the bump is no longer strandable — strip it to put the
+	// repo back in the state a failed tag push leaves behind.
+	gitIn(t, origin, "tag", "-d", "v0.1.1")
+	gitIn(t, dir, "tag", "-d", "v0.1.1")
+
+	order = nil
+	resumed := landingEngine(t, dir, &fakeGitHubPullRequests{t: t, origin: origin})
+	resumed.BeforeCommit = func(context.Context, string) error {
+		order = append(order, "before")
+		return nil
+	}
+	resumed.AfterPush = func(context.Context, string) error {
+		order = append(order, "after")
+		return nil
+	}
+	tag, err := resumed.Release(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "v0.1.1", tag)
+	require.Equal(t, []string{"before", "after"}, order,
+		"a resume must rebuild the artifacts AfterPush uploads, not publish an empty release")
+}
+
+// TestEngine_Release_ReclaimsALeftoverReleaseBranch covers the retry a failed
+// attempt used to wedge: the branch it left on origin rejected the next push as
+// a non-fast-forward, with a raw git error naming no remedy.
+func TestEngine_Release_ReclaimsALeftoverReleaseBranch(t *testing.T) {
+	dir, origin, _ := releaseRepo(t, "0.1.0")
+	gitIn(t, dir, "push", "origin", "HEAD:refs/heads/release-0.1.1")
+	gitIn(t, dir, "commit", "--allow-empty", "-m", "unrelated work")
+	gitIn(t, dir, "push", "origin", "main")
+
+	fake := &fakeGitHubPullRequests{t: t, origin: origin, states: []string{"clean"}}
+	tag, err := landingEngine(t, dir, fake).Release(context.Background())
+	require.NoError(t, err, "a leftover release branch must not wedge the retry")
+	require.Equal(t, "v0.1.1", tag)
+	require.Equal(t, gitIn(t, origin, "rev-parse", "refs/heads/main"), gitIn(t, origin, "rev-list", "-n1", tag))
+}
+
+// TestEngine_Release_MergeErrorAfterServerSideMerge pins that a merge which
+// commits on GitHub and still fails its caller is not rolled back locally: the
+// bump is on main, and reporting it unmerged left main and the checkout
+// disagreeing until someone pulled by hand.
+func TestEngine_Release_MergeErrorAfterServerSideMerge(t *testing.T) {
+	dir, origin, _ := releaseRepo(t, "0.1.0")
+	fake := &fakeGitHubPullRequests{
+		t: t, origin: origin, states: []string{"clean"}, mergeFailsAfterMerging: true,
+	}
+
+	tag, err := landingEngine(t, dir, fake).Release(context.Background())
+	require.NoError(t, err, "the merge committed server-side; publish must confirm that, not infer failure")
+	require.Equal(t, "v0.1.1", tag)
+	require.Equal(t, gitIn(t, origin, "rev-parse", "refs/heads/main"), gitIn(t, origin, "rev-list", "-n1", tag))
+}
+
+// TestEngine_Release_UnreadableChecksKeepWaiting pins that a check list the API
+// will not serve is not read as "no failures": publish keeps waiting and the
+// release still completes once the pull request goes clean.
+func TestEngine_Release_UnreadableChecksKeepWaiting(t *testing.T) {
+	dir, origin, _ := releaseRepo(t, "0.1.0")
+	fake := &fakeGitHubPullRequests{
+		t: t, origin: origin, states: []string{"blocked", "clean"}, checkRunsStatus: http.StatusInternalServerError,
+	}
+
+	tag, err := landingEngine(t, dir, fake).Release(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "v0.1.1", tag)
+}
+
+// TestEngine_Release_DirectPushNeverResumes pins that the resume heuristic is
+// scoped to landings that can actually strand. ReleaseCodeUnits publishes user
+// repos over a direct atomic push, where a `release: vX` subject is just a
+// commit message and must not convert a requested bump into re-tagging it.
+func TestEngine_Release_DirectPushNeverResumes(t *testing.T) {
+	dir, origin, _ := releaseRepo(t, "0.1.0")
+	gitIn(t, dir, "commit", "--allow-empty", "-m", "release: v0.1.0")
+	gitIn(t, dir, "push", "origin", "main")
+
+	m, err := Detect(dir)
+	require.NoError(t, err)
+	tag, err := (&Engine{Manifest: m, BumpType: "minor", WorkDir: dir}).Release(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "v0.2.0", tag, "a direct push cannot strand, so the requested bump stands")
+	require.Equal(t, gitIn(t, origin, "rev-parse", "refs/heads/main"), gitIn(t, origin, "rev-list", "-n1", tag))
 }

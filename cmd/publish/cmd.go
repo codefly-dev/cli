@@ -108,13 +108,16 @@ func run(c *cobra.Command, args []string) error {
 		DryRun:   dryRun,
 		WorkDir:  workDir,
 	}
-	if !dryRun {
-		landing, lerr := newPullRequestLanding(context.Background(), workDir)
-		if lerr != nil {
-			return lerr
-		}
-		engine.Landing = landing
+	// Resolved for --dry-run too. A dry run is the rehearsal the runbook tells
+	// operators to do first, so it has to fail on the credential the real run
+	// needs; and the landing is what tells Release that a bump here can strand,
+	// without which a dry run would plan a fresh bump over a release that is
+	// sitting on main waiting to be tagged.
+	landing, lerr := newPullRequestLanding(context.Background(), workDir)
+	if lerr != nil {
+		return lerr
 	}
+	engine.Landing = landing
 
 	// The bump waits on main's required checks before it merges, and agent
 	// releases additionally run release-grade CI and upload loader-compatible

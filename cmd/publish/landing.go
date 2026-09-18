@@ -24,6 +24,11 @@ type Landing interface {
 	// has, the local rollback no longer describes reality: the caller must
 	// report the partial release instead of unwinding it.
 	land(ctx context.Context, e *Engine, tag string) (landed bool, err error)
+
+	// stranding reports whether this landing can leave the bump on main with
+	// no tag naming it. Only a landing that can produce that state may have a
+	// re-run finish an untagged release commit instead of bumping past it.
+	stranding() bool
 }
 
 // directPushLanding pushes main and the tag to origin in one atomic push, so a
@@ -31,6 +36,10 @@ type Landing interface {
 // default, and the only landing that works against a repo we cannot reach
 // through the GitHub API.
 type directPushLanding struct{}
+
+// stranding is false: main and the tag go up in one atomic push, so the remote
+// never holds one without the other.
+func (directPushLanding) stranding() bool { return false }
 
 func (directPushLanding) land(ctx context.Context, e *Engine, tag string) (bool, error) {
 	if err := e.gitTag(ctx, tag); err != nil {
@@ -78,10 +87,17 @@ func newPullRequestLanding(ctx context.Context, workDir string) (*pullRequestLan
 	return &pullRequestLanding{client: client, owner: owner, repo: repo, poll: 15 * time.Second}, nil
 }
 
+// stranding is true: the merge and the tag push are separate operations, and a
+// failure between them leaves a bumped manifest on main with no release.
+func (*pullRequestLanding) stranding() bool { return true }
+
 func (l *pullRequestLanding) land(ctx context.Context, e *Engine, tag string) (bool, error) {
 	branch := "release-" + strings.TrimPrefix(tag, "v")
-	// No --force: an existing branch of this name means another release of the
-	// same version is in flight, and clobbering it would strand that one.
+	if err := l.reclaimBranch(ctx, e, branch); err != nil {
+		return false, err
+	}
+	// No --force: reclaimBranch has already cleared any leftover, so a
+	// rejection here is a branch this release has no claim on.
 	if _, err := e.git(ctx, "push", "origin", "HEAD:refs/heads/"+branch); err != nil {
 		return false, fmt.Errorf("push release branch %s: %w", branch, err)
 	}
@@ -149,6 +165,14 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 				SHA:         pr.GetHead().GetSHA(),
 			})
 			if err != nil {
+				// The merge can commit server-side and still fail the caller —
+				// a dropped response or a 502 after the fact. Reporting that as
+				// unmerged rolls the bump back locally while main keeps it, so
+				// ask GitHub what actually happened instead of inferring it
+				// from the transport.
+				if l.confirmMerged(ctx, number) {
+					return nil
+				}
 				return fmt.Errorf("merge release pull request #%d: %w", number, err)
 			}
 			if !result.GetMerged() {
@@ -165,7 +189,14 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 				return fmt.Errorf("update release pull request #%d onto main: %w", number, err)
 			}
 		case "blocked":
-			if failed := l.failedChecks(ctx, pr.GetHead().GetSHA()); len(failed) > 0 {
+			failed, checksErr := l.failedChecks(ctx, pr.GetHead().GetSHA())
+			switch {
+			case checksErr != nil:
+				// Keep waiting — an unreadable check list is not a red one —
+				// but say so, or a rate-limited API looks identical to CI that
+				// is merely slow and the whole budget burns unexplained.
+				fmt.Printf("==> warning: cannot read the checks on #%d, still waiting: %v\n", number, checksErr)
+			case len(failed) > 0:
 				return fmt.Errorf("release pull request #%d is red (%s); fix main's CI and publish again",
 					number, strings.Join(failed, ", "))
 			}
@@ -180,10 +211,10 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 
 // failedChecks names the check runs on sha that have concluded badly, so a red
 // release pull request fails at once instead of burning the whole wait budget.
-func (l *pullRequestLanding) failedChecks(ctx context.Context, sha string) []string {
+func (l *pullRequestLanding) failedChecks(ctx context.Context, sha string) ([]string, error) {
 	runs, _, err := l.client.Checks.ListCheckRunsForRef(ctx, l.owner, l.repo, sha, nil)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("list check runs for %s: %w", sha, err)
 	}
 	var failed []string
 	for _, run := range runs.CheckRuns {
@@ -192,10 +223,44 @@ func (l *pullRequestLanding) failedChecks(ctx context.Context, sha string) []str
 			failed = append(failed, run.GetName())
 		}
 	}
-	return failed
+	return failed, nil
+}
+
+// confirmMerged asks whether the pull request is merged, on a context detached
+// from the caller's budget so an expired deadline cannot turn a merge that
+// succeeded into one reported as failed.
+func (l *pullRequestLanding) confirmMerged(ctx context.Context, number int) bool {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	pr, _, err := l.client.PullRequests.Get(ctx, l.owner, l.repo, number)
+	return err == nil && pr.GetMerged()
+}
+
+// reclaimBranch clears a release branch left behind by an earlier attempt at
+// this same version, so a retry is not wedged forever behind a non-fast-forward
+// rejection whose git error names no remedy.
+//
+// Reclaiming is unambiguous rather than merely convenient: Release has already
+// established that this version is untagged both locally and on origin, and
+// that main carries no untagged release commit for it. An existing
+// release-x.y.z therefore belongs to an attempt that did not complete. Deleting
+// it also closes the stale pull request that attempt left open, which is what
+// keeps a re-run from stacking a second one.
+func (l *pullRequestLanding) reclaimBranch(ctx context.Context, e *Engine, branch string) error {
+	out, err := e.git(ctx, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	if err != nil {
+		return fmt.Errorf("check for a leftover release branch %s: %w", branch, err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil
+	}
+	fmt.Printf("==> reclaiming %s, left on origin by an earlier attempt at this version\n", branch)
+	return l.deleteBranch(ctx, e, branch)
 }
 
 func (l *pullRequestLanding) deleteBranch(ctx context.Context, e *Engine, branch string) error {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
 	if _, err := e.git(ctx, "push", "origin", "--delete", branch); err != nil {
 		return fmt.Errorf("delete release branch %s: %w", branch, err)
 	}
@@ -209,18 +274,9 @@ func originRepository(ctx context.Context, workDir string) (string, string, erro
 	if err != nil {
 		return "", "", fmt.Errorf("resolve origin remote of %s: %w", workDir, err)
 	}
-	remote := strings.TrimSuffix(strings.TrimSpace(string(out)), ".git")
-	switch {
-	case strings.HasPrefix(remote, "git@github.com:"):
-		remote = strings.TrimPrefix(remote, "git@github.com:")
-	case strings.HasPrefix(remote, "https://github.com/"):
-		remote = strings.TrimPrefix(remote, "https://github.com/")
-	default:
-		return "", "", fmt.Errorf("origin %q is not a GitHub repository; publish lands its version bump through a GitHub pull request", remote)
-	}
-	owner, repo, ok := strings.Cut(remote, "/")
-	if !ok || owner == "" || repo == "" {
-		return "", "", fmt.Errorf("origin %q is not a GitHub repository; publish lands its version bump through a GitHub pull request", remote)
+	owner, repo, err := gh.ParseRemote(string(out))
+	if err != nil {
+		return "", "", fmt.Errorf("%w; publish lands its version bump through a GitHub pull request", err)
 	}
 	return owner, repo, nil
 }
