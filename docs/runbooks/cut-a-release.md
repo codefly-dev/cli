@@ -14,7 +14,10 @@ You want to ship a new CLI version to users (stable or beta).
 
 - `main` is green and holds exactly the commit you want to ship.
 - A `codefly` binary new enough to have `publish` (it bumps the manifest for you).
-- You can push tags to `codefly-dev/cli`.
+- You can push tags to `codefly-dev/cli`, and a GitHub token with write access to it —
+  `GITHUB_TOKEN`/`GH_TOKEN`, or `gh auth login`. `publish` opens the release pull request with it.
+  `--dry-run` requires it too, so the rehearsal fails on a missing credential rather than the
+  real run.
 - Release secrets are configured in the repo: `CODEFLY_RELEASE_SIGNING_KEY` (its public half must
   match `pkg/cliupdate/release-signing-cert.pem`).
 
@@ -37,8 +40,9 @@ reported by `codefly version --json`. macOS binaries are Developer ID signed and
 
 ### 1. Publish
 
-`codefly publish` is the release. It bumps the manifest, commits, tags, and pushes — in the
-right order, behind pre-flight gates — so there is no step to forget:
+`codefly publish` is the release. It bumps the manifest, lands the bump on `main` through a
+release pull request, then tags the commit `main` ends up carrying — in the right order, behind
+pre-flight gates — so there is no step to forget:
 
 ```bash
 codefly publish --dry-run   # show the version it would cut; changes nothing
@@ -48,10 +52,33 @@ codefly publish beta        # next beta: 1.4.0 → 1.4.1-beta.1, then beta.2
 
 It auto-detects this repo from `pkg/cli/info.yaml` and refuses to do anything unless the
 working tree is clean, you are on `main`, it exactly matches `origin/main`, and the target tag
-does not already exist. It atomically pushes the release commit and tag: a failure before that
-push restores the manifest and removes the local release commit/tag; after a successful push,
-the immutable release commit and tag remain even if the release workflow later fails. Neither
-`main` nor the tag is ever force-pushed.
+does not already exist. Neither `main` nor the tag is ever force-pushed.
+
+**The bump lands like any other change.** `publish` pushes the release commit to a short-lived
+`release-x.y.z` branch, opens a `release: vx.y.z` pull request against `main`, waits for
+`main`'s required checks (`bootstrap-audit`, `control-integration`, `coverage`, `race`,
+`dashboard`), squash-merges it, and only then tags the commit `main` actually carries and
+pushes that tag. Tags are outside branch protection, so the tag push stays direct.
+
+That is what lets `main` enforce its checks on **every** account (`enforce_admins: true`).
+Pushing a freshly-created release commit straight to `main` can never satisfy a required check
+— the commit has no check results — so a direct-push release forces protection to exempt
+somebody, and in a fleet where every agent pushes as the same admin, exempting admins exempts
+everyone.
+
+Failure handling:
+
+- **Before the merge** — the manifest is restored, the local release commit removed, and the
+  release branch deleted from origin. Nothing shipped.
+- **Red pull request** — `publish` names the failing checks and aborts as above rather than
+  waiting out its budget (45 minutes).
+- **After the merge, before the tag** — the one non-atomic window. The bump is on `main` with
+  no release. `publish` says so; **re-run `codefly publish`** and it recognizes the untagged
+  `release:` commit on `main` and finishes that release instead of bumping again. Do not bump
+  past it — that burns a version. The re-run rebuilds whatever the release uploads first, so an
+  agent resumed this way ships its loader archives rather than an empty release.
+- **After the tag** — the release commit and tag are immutable and remain even if the release
+  workflow later fails.
 
 It also reconciles the manifest against the tags actually on origin: if the manifest has
 drifted behind (as it had at `0.1.145` while tags ran to `v0.1.150`), it bumps from the
@@ -104,7 +131,7 @@ codefly self check-update                                     # sees the new sta
 
 - [ ] `main` green, at the exact commit to ship
 - [ ] `codefly publish --dry-run` shows the version you expect
-- [ ] `codefly publish` ran clean (manifest bumped, `release:` commit and tag pushed)
+- [ ] `codefly publish` ran clean (release PR merged green, `release:` commit on `main`, tag pushed)
 - [ ] `release.yaml` green end to end
 - [ ] `codefly version --json` reports the tag
 - [ ] `brew` install/upgrade works; `self check-update` sees it

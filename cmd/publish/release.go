@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver"
 )
@@ -21,6 +22,11 @@ type Engine struct {
 	DryRun              bool
 	WorkDir             string // git operations run from here; defaults to manifest's dir parent
 	SignTag             bool
+
+	// Landing decides how the release commit and its tag reach origin. Nil
+	// means a direct atomic push of main and the tag — right for a repo whose
+	// main accepts one, and the only landing that needs no GitHub API access.
+	Landing Landing
 
 	// BeforeCommit, when set, runs after the bumped version is written to
 	// the manifest (the working tree now carries the new version) but
@@ -46,6 +52,12 @@ type Engine struct {
 func (e *Engine) Release(ctx context.Context) (string, error) {
 	if err := e.preflight(ctx); err != nil {
 		return "", err
+	}
+
+	if e.landing().stranding() {
+		if tag, resumed, err := e.resumeStrandedRelease(ctx); resumed || err != nil {
+			return tag, err
+		}
 	}
 
 	// Reconcile the bump base against what's ACTUALLY been released. The
@@ -110,11 +122,12 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		}
 		return "", commitErr
 	}
-	if err := e.gitTag(ctx, newTag); err != nil {
-		return "", e.rollbackRelease(ctx, newTag, fmt.Errorf("tag: %w", err))
-	}
-	if err := e.gitPush(ctx, newTag); err != nil {
-		return "", e.rollbackRelease(ctx, newTag, fmt.Errorf("push: %w", err))
+	landed, err := e.landing().land(ctx, e, newTag)
+	if err != nil {
+		if landed {
+			return "", fmt.Errorf("%s is on main but its tag was not pushed; re-run `codefly publish` to finish the release: %w", newTag, err)
+		}
+		return "", e.rollbackRelease(ctx, newTag, err)
 	}
 
 	if e.AfterPush != nil {
@@ -125,11 +138,23 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	return newTag, nil
 }
 
+// cleanupContext detaches an unwind from the caller's deadline. The failure
+// being unwound is very often the budget running out — waiting on a release
+// pull request is minutes of it — and every unwind step is a git command that
+// exec refuses to even start on a context that has already expired. Unwinding
+// on the caller's context therefore does nothing precisely when it matters,
+// leaving the release commit on local main with no way back.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+}
+
 // rollbackRelease removes the local commit and tag created by this invocation.
 // It is safe because preflight required a clean tree and the release commit is
 // necessarily HEAD. Remote publication is atomic, so a failed push has not
 // published either ref.
 func (e *Engine) rollbackRelease(ctx context.Context, tag string, cause error) error {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
 	var rollbackErrs []error
 	if e.tagExistsLocally(ctx, tag) {
 		if _, err := e.git(ctx, "tag", "-d", tag); err != nil {
@@ -150,6 +175,8 @@ func (e *Engine) rollbackRelease(ctx context.Context, tag string, cause error) e
 // Both the index and worktree are reset because gitCommit stages manifests
 // before signing; a signing or commit-hook failure must not leave them staged.
 func (e *Engine) restoreManifest(ctx context.Context) error {
+	ctx, cancel := cleanupContext(ctx)
+	defer cancel()
 	manifests := e.manifests()
 	args := make([]string, 0, 5+len(manifests))
 	args = append(args, "restore", "--source=HEAD", "--staged", "--worktree", "--")
@@ -280,6 +307,21 @@ func (e *Engine) latestTaggedVersion(ctx context.Context) *semver.Version {
 
 // --- Mutations -----------------------------------------------------
 
+// releaseCommitSubject is the subject main carries for a release, whether the
+// commit was pushed straight there or squashed in from a release pull request.
+// Keeping the two identical is what lets a re-run recognize a bump that landed
+// without its tag.
+func releaseCommitSubject(tag string) string { return "release: " + tag }
+
+// isReleaseCommitFor reports whether subject is the release commit for tag.
+// A prefix match would confuse v0.1.1 with v0.1.11, so the tag has to end the
+// subject — or be followed by the `(#N)` a squash merge may append.
+func isReleaseCommitFor(subject, tag string) bool {
+	subject = strings.TrimSpace(subject)
+	expected := releaseCommitSubject(tag)
+	return subject == expected || strings.HasPrefix(subject, expected+" (#")
+}
+
 // gitCommit stages the manifest and creates a release commit. The
 // commit message is `release: <tag>` — short, indexable.
 func (e *Engine) gitCommit(ctx context.Context, tag string) error {
@@ -290,7 +332,7 @@ func (e *Engine) gitCommit(ctx context.Context, tag string) error {
 	if _, err := e.git(ctx, args...); err != nil {
 		return err
 	}
-	if _, err := e.git(ctx, "commit", "-m", "release: "+tag); err != nil {
+	if _, err := e.git(ctx, "commit", "-m", releaseCommitSubject(tag)); err != nil {
 		return err
 	}
 	return nil
@@ -309,14 +351,96 @@ func (e *Engine) gitTag(ctx context.Context, tag string) error {
 	return err
 }
 
-// gitPush atomically pushes both the release commit and tag. A rejected tag
-// must not leave main advanced to a version for which the tag was not created.
-// NO --force is used for either ref.
-func (e *Engine) gitPush(ctx context.Context, tag string) error {
-	if _, err := e.git(ctx, "push", "--atomic", "origin", "main", tag); err != nil {
-		return fmt.Errorf("push main and tag atomically: %w", err)
+// pushTag publishes the tag on its own. Tags are not covered by branch
+// protection, so this is direct however the commit under it got to main. NO
+// --force.
+func (e *Engine) pushTag(ctx context.Context, tag string) error {
+	if _, err := e.git(ctx, "push", "origin", "refs/tags/"+tag); err != nil {
+		return fmt.Errorf("push tag %s: %w", tag, err)
 	}
 	return nil
+}
+
+// adoptMergedMain moves the local checkout onto the commit main now carries
+// and confirms it really holds the version being released, so the tag names
+// the commit that shipped rather than the local one it was squashed from.
+func (e *Engine) adoptMergedMain(ctx context.Context, tag string) error {
+	if _, err := e.git(ctx, "fetch", "origin", "main", "--quiet"); err != nil {
+		return fmt.Errorf("fetch origin/main after merge: %w", err)
+	}
+	if _, err := e.git(ctx, "reset", "--hard", "origin/main"); err != nil {
+		return fmt.Errorf("move local main onto the merged release commit: %w", err)
+	}
+	for _, manifest := range e.manifests() {
+		version, err := readVersion(manifest.Path)
+		if err != nil {
+			return fmt.Errorf("read %s from merged main: %w", manifest.Path, err)
+		}
+		if "v"+version.String() != tag {
+			return fmt.Errorf("merged main carries %s at %s, want %s", manifest.Path, version, strings.TrimPrefix(tag, "v"))
+		}
+	}
+	return nil
+}
+
+// resumeStrandedRelease finishes a release whose version bump reached main but
+// whose tag never did — the one window a pull-request landing leaves open,
+// where a re-run would otherwise bump again and burn the version.
+//
+// The signal is exact: HEAD is the release commit for the manifest's current
+// version, and that version is untagged on origin.
+func (e *Engine) resumeStrandedRelease(ctx context.Context) (string, bool, error) {
+	tag := e.Manifest.Tag()
+	subject, err := e.git(ctx, "log", "-1", "--format=%s")
+	if err != nil {
+		return "", false, fmt.Errorf("read HEAD subject: %w", err)
+	}
+	if !isReleaseCommitFor(subject, tag) {
+		return "", false, nil
+	}
+	published, err := e.tagExistsRemotely(ctx, tag)
+	if err != nil || published {
+		return "", false, err
+	}
+	if e.DryRun {
+		fmt.Printf("[dry-run] would finish %s, already on main but untagged\n", tag)
+		return tag, true, nil
+	}
+	fmt.Printf("==> %s is already on main but untagged; finishing that release instead of bumping\n", tag)
+
+	// Rebuild whatever the release publishes before finishing it. AfterPush
+	// ships artifacts that BeforeCommit produces — for an agent, the loader
+	// archives — and the first attempt died before AfterPush ran, so those
+	// artifacts do not exist. Skipping this publishes an empty release that
+	// verifies clean because there is nothing in it to verify. Nothing is
+	// written to the manifest here, so a failure needs no revert; ReTag, the
+	// other recovery path, rebuilds the same way.
+	if e.BeforeCommit != nil {
+		if err := e.BeforeCommit(ctx, tag); err != nil {
+			return "", true, err
+		}
+	}
+	if !e.tagExistsLocally(ctx, tag) {
+		if err := e.gitTag(ctx, tag); err != nil {
+			return "", true, fmt.Errorf("tag: %w", err)
+		}
+	}
+	if err := e.pushTag(ctx, tag); err != nil {
+		return "", true, err
+	}
+	if e.AfterPush != nil {
+		if err := e.AfterPush(ctx, tag); err != nil {
+			return tag, true, err
+		}
+	}
+	return tag, true, nil
+}
+
+func (e *Engine) landing() Landing {
+	if e.Landing == nil {
+		return directPushLanding{}
+	}
+	return e.Landing
 }
 
 // --- Re-tag mode ---------------------------------------------------

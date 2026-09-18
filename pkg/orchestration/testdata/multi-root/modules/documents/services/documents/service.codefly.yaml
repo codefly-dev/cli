@@ -14,3 +14,4 @@ service-dependencies:
 endpoints:
     - name: grpc
       api: grpc
+      visibility: public
