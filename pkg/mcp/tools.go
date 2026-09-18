@@ -758,8 +758,8 @@ func (s *Server) listRunnables(ctx context.Context, args map[string]string) ([]C
 		if err != nil {
 			return nil, fmt.Errorf("cannot load the derived runnables of module %s: %w", m.Name, err)
 		}
-		for _, operation := range derived {
-			result = append(result, operation.Identity())
+		for i := range derived {
+			result = append(result, derived[i].Identity())
 		}
 	}
 
