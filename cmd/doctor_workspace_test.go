@@ -860,9 +860,10 @@ func TestDoctorWorkspaceDoesNotFlagAMatchingMaterialization(t *testing.T) {
 }
 
 // vendoredCheckout builds a git repository holding a module at modules/saas,
-// tagged `tag` with `ahead` commits on top of it — the shape of a submodule a
-// composition vendors to satisfy a pin. It returns the module directory.
-func vendoredCheckout(t *testing.T, tag string, ahead int) string {
+// tagged `tag` with `ahead` commits on top of it and any `alongside` tags on
+// the tagged commit — the shape of a submodule a composition vendors to
+// satisfy a pin. It returns the module directory.
+func vendoredCheckout(t *testing.T, tag string, ahead int, alongside ...string) string {
 	t.Helper()
 	root := t.TempDir()
 	git := func(args ...string) {
@@ -897,6 +898,9 @@ func vendoredCheckout(t *testing.T, tag string, ahead int) string {
 	}
 	commit("released")
 	git("-c", "tag.gpgSign=false", "tag", tag)
+	for _, extra := range alongside {
+		git("-c", "tag.gpgSign=false", "tag", extra)
+	}
 	for i := range ahead {
 		commit("past-" + string(rune('a'+i)))
 	}
@@ -1027,4 +1031,18 @@ func treeDiff(before, after map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// A vendored monorepo carries tags that are not the module's version. Left to
+// pick freely, `git describe` answers with one of those instead of the version
+// tag on the same commit, and a checkout sitting exactly on its pin is reported
+// as drifted — the noise that trains people to ignore doctor entirely.
+func TestDoctorWorkspaceDoesNotFlagAPinnedCheckoutCarryingOtherTags(t *testing.T) {
+	for _, alongside := range []string{"nightly", "aaa-release", "backend-v3.0.0"} {
+		t.Run(alongside, func(t *testing.T) {
+			module := vendoredCheckout(t, "v0.0.62", 0, alongside)
+			report := runReadiness(t, workspaceReadinessOptions{dir: vendoredPinWorkspace(t, module, "0.0.62")})
+			requireNoCode(t, report, codeModuleCheckoutVersionDrift)
+		})
+	}
 }

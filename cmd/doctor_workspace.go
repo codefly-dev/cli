@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/composition"
@@ -210,6 +211,9 @@ func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report 
 // module and its resolved path are named directly. Vendored modules (no path
 // override) and the implicit flat-layout module are skipped.
 func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
+	// Resolved at most once, and only if some module turns out to be a
+	// vendored pin: the workspace's own checkout root does not vary per module.
+	workspaceRoot := sync.OnceValues(func() (string, bool) { return composition.CheckoutRoot(ctx, ws.Dir()) })
 	for _, ref := range ws.Modules {
 		if ref.PathOverride == nil {
 			continue
@@ -222,7 +226,7 @@ func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report
 			continue
 		}
 		report.add("", "referenced module "+ref.Name, "ok", fmt.Sprintf("%s → %s", ref.Name, resolved), "")
-		checkVendoredPinVersion(ctx, ws, ref, resolved, report)
+		checkVendoredPinVersion(ctx, workspaceRoot, ref, resolved, report)
 	}
 }
 
@@ -238,7 +242,7 @@ func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report
 // Only a checkout that is its own repository is compared. A `path:` inside the
 // workspace's own working tree is described by the workspace's tags, which say
 // nothing about the module's version.
-func checkVendoredPinVersion(ctx context.Context, ws *resources.Workspace, ref *resources.ModuleReference, resolved string, report *workspaceReadinessReport) {
+func checkVendoredPinVersion(ctx context.Context, workspaceRoot func() (string, bool), ref *resources.ModuleReference, resolved string, report *workspaceReadinessReport) {
 	if ref.Source == "" || ref.Version == "" {
 		return
 	}
@@ -246,7 +250,7 @@ func checkVendoredPinVersion(ctx context.Context, ws *resources.Workspace, ref *
 	if !ok {
 		return
 	}
-	if workspaceRoot, known := composition.CheckoutRoot(ctx, ws.Dir()); known && workspaceRoot == checkoutRoot {
+	if root, known := workspaceRoot(); known && root == checkoutRoot {
 		return
 	}
 	description, ok := composition.DescribeCheckout(ctx, resolved)

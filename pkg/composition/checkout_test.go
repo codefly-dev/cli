@@ -9,9 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// tagged checkout builds a git repository whose HEAD sits `ahead` commits past
-// tag, and returns its directory.
-func taggedCheckout(t *testing.T, tag string, ahead int) string {
+// taggedCheckout builds a git repository whose HEAD sits `ahead` commits past
+// tag, with any `alongside` tags placed on that same commit, and returns its
+// directory.
+func taggedCheckout(t *testing.T, tag string, ahead int, alongside ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	runGit(t, dir, "init", "--quiet", "--initial-branch=main", ".")
@@ -26,10 +27,55 @@ func taggedCheckout(t *testing.T, tag string, ahead int) string {
 	}
 	commit("released")
 	runGit(t, dir, "-c", "tag.gpgSign=false", "tag", tag)
+	for _, alongside := range alongside {
+		runGit(t, dir, "-c", "tag.gpgSign=false", "tag", alongside)
+	}
 	for i := range ahead {
 		commit("past-" + string(rune('a'+i)))
 	}
 	return dir
+}
+
+// A vendored repository routinely carries tags that are not the module's
+// version — a nightly, or a per-component tag in a monorepo. `git describe`
+// does not prefer a version tag among tags on one commit, so an unrestricted
+// description would report a checkout sitting exactly on its pin as drifted.
+func TestDescribeCheckoutIgnoresNonVersionTags(t *testing.T) {
+	for _, alongside := range []string{"nightly", "aaa-release", "backend-v3.0.0"} {
+		t.Run(alongside, func(t *testing.T) {
+			dir := taggedCheckout(t, "v0.0.62", 0, alongside)
+			description, ok := DescribeCheckout(context.Background(), dir)
+			require.True(t, ok)
+			require.Equal(t, "v0.0.62", description.Tag)
+			require.True(t, description.SatisfiesVersion("0.0.62"))
+		})
+	}
+}
+
+// A checkout carrying only tags outside both module-package namespaces cannot
+// be placed, and is left alone rather than reported as drifted against a tag
+// that never named a version.
+func TestDescribeCheckoutWithOnlyNonVersionTags(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet", "--initial-branch=main", ".")
+	runGit(t, dir, "config", "user.email", "checkout@test")
+	runGit(t, dir, "config", "user.name", "Checkout Test")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "file"), []byte("x"), 0o644))
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "tagged")
+	runGit(t, dir, "-c", "tag.gpgSign=false", "tag", "nightly-2026-09-17")
+	_, ok := DescribeCheckout(context.Background(), dir)
+	require.False(t, ok)
+}
+
+// The module-package tag convention is what a producer publishing under that
+// prefix actually puts in the repository; it must place the checkout, not be
+// skipped as an unmatched tag.
+func TestDescribeCheckoutUnderTheModulePackageTagConvention(t *testing.T) {
+	dir := taggedCheckout(t, modulePackageTagPrefix+"0.0.62", 0)
+	description, ok := DescribeCheckout(context.Background(), dir)
+	require.True(t, ok)
+	require.True(t, description.SatisfiesVersion("0.0.62"))
 }
 
 func TestDescribeCheckoutOnTheTag(t *testing.T) {
@@ -105,7 +151,6 @@ func TestCheckoutSatisfiesVersion(t *testing.T) {
 		// whatever constraint the pin states.
 		{"constraint but ahead", "v1.2.3", 4, "^1.2", false},
 		{"latest accepts any tag", "v1.2.3", 0, "latest", true},
-		{"non-semver tag matched literally", "release-2024", 0, "release-2024", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			description := &CheckoutDescription{Raw: tc.tag, Tag: tc.tag, Ahead: tc.ahead}

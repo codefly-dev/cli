@@ -27,6 +27,12 @@ var describeAhead = regexp.MustCompile(`^(.+)-([0-9]+)-g[0-9a-f]+$`)
 
 // gitRead runs a read-only git query in dir. Optional locks are disabled so
 // that inspecting a checkout cannot write to its repository.
+//
+// Only queries that do not refresh the index may be run here. A refresh
+// executes the inspected repository's own `core.fsmonitor` config — verified:
+// `describe --dirty` runs it, plain `describe` and `rev-parse` do not — which
+// would hand a vendored checkout arbitrary code execution during a command
+// documented as safe to run before anything else is.
 func gitRead(ctx context.Context, dir string, args ...string) (string, bool) {
 	//nolint:gosec // G204: every arg is a literal from this file; dir is the checkout being inspected.
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
@@ -47,12 +53,20 @@ func CheckoutRoot(ctx context.Context, dir string) (string, bool) {
 
 // DescribeCheckout reports which version dir's checkout holds. It answers
 // false whenever git cannot say — dir is not a checkout, git is missing, or no
-// tag is reachable from HEAD, which is the normal state of the shallow
+// version tag is reachable from HEAD, which is the normal state of the shallow
 // submodule clones CI produces. A checkout git cannot describe is not evidence
 // of drift, so callers stay silent on it rather than reporting a version they
 // did not establish.
+//
+// The search is restricted to the two tag namespaces a module package is
+// published under. Unrestricted, `git describe` answers with whatever tag is
+// nearest — and among tags on one commit it does not prefer a version tag, so
+// a repository that also carries a per-component or nightly tag (the shape of
+// the monorepos that get vendored) would report a checkout sitting exactly on
+// its pin as drifted.
 func DescribeCheckout(ctx context.Context, dir string) (*CheckoutDescription, bool) {
-	raw, ok := gitRead(ctx, dir, "describe", "--tags")
+	raw, ok := gitRead(ctx, dir, "describe", "--tags",
+		"--match", "v*", "--match", modulePackageTagPrefix+"*")
 	if !ok {
 		return nil, false
 	}

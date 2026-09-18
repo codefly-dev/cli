@@ -602,9 +602,16 @@ describe --tags` says the checkout actually is. It is a warning, not a failure
 — vendoring a checkout deliberately ahead of its tag is normal while developing
 the module, and only a problem unnoticed. Only a checkout that is its own
 repository is compared (a `path:` inside the workspace's own working tree is
-described by the workspace's tags), and a checkout with no reachable tag — a
-shallow CI submodule clone — is left alone rather than reported as a version
-nothing established.
+described by the workspace's tags), and a checkout with no reachable version
+tag — a shallow CI submodule clone — is left alone rather than reported as a
+version nothing established.
+
+Only the two tag namespaces a module package is published under are consulted:
+`v<version>` and `module-package/v<version>`. A vendored monorepo routinely
+carries per-component and nightly tags as well, and `git describe` does not
+prefer a version tag among tags on one commit — unrestricted, it would report a
+checkout sitting exactly on its pin as drifted. A producer tagging outside both
+conventions is therefore not checked rather than checked against the wrong tag.
 
 A `pinned` (committed `source` + `version`) reference resolves through the
 producer's verified module package rather than a git clone: `run` fetches the
