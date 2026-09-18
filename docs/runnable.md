@@ -19,6 +19,7 @@ not; nothing here is a promise about the unimplemented parts.
 | --- | --- |
 | `codefly add runnable <name> --agent=<name>:<version> --handler=<path>` | Create a declaration and scaffold through the real Builder agent |
 | `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
+| `codefly generate runnables [module] [--check]` | Derive a SERVICE-facility package for every gRPC method a module's contracts mark with the operation option |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
 | `codefly show runnable <name> [--version=<v>] [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
@@ -28,6 +29,35 @@ The language is the **agent's name**, never a branch in the CLI: a runnable
 agent resolves to the `runnable-<language>` repository and executable, and
 installs under `runnables/`, through the same agent-kind registry that
 resolves service agents.
+
+### Derived SERVICE-facility packages
+
+A unary, idempotent method an owner service already publishes becomes a
+Runnable by **derivation, not by authoring**. The method carries core's
+`codefly.runnable.v0.operation` option; `codefly generate runnables` reads it
+off the `contract.binpb` that `generate contracts` already published and writes
+a SERVICE-facility package per marked method under `contracts/runnables`. Core
+owns the option, the descriptor-to-bounded-schema projection and
+`runnable.PackageFromMethod`; the CLI owns running them over a module's
+published contracts, the layout on disk and the drift gate. Nothing about the
+contract is authored twice — it is the projection of the method's own messages.
+
+This is a separate path from `build runnable`, not a branch in it. A SERVICE
+package has no archive and no launch command: the implementation is the method
+itself, reached on the owner's endpoint, inside the process the owner already
+operates. `pkg/runnable.assemble` only ever emits NATIVE artifacts and is
+untouched.
+
+The package is the contract; the execution policy and the authority a binding
+is minted for sit **beside** it in `operation.json`, because they are installed
+with the binding — two installations of one contract may run under different
+ones, and digesting them in would make those two installations two releases.
+
+See [`generate runnables`](commands.md#generate-runnables) for the output
+layout, the refusal rules and how the release version is derived. What this
+does *not* do is invoke anything: no CLI command invokes a Runnable, derived or
+authored, and preparing a binding from `index.json` is the composition's
+tooling.
 
 ### Identity and coexistence
 
@@ -48,6 +78,16 @@ single release needs no flag.
 fields, from one shared projection (`pkg/runnables`). `show` adds the contract,
 entrypoint and dependency report on top; it does not restate the shared fields
 differently.
+
+Derived operations are listed through that same projection, so an operator sees
+what a module exposes without reading the generated JSON. They carry facility
+`service` and a `source` of `<service>/<endpoint>/<Method>`, which is empty for
+an authored runnable — the distinction a reader needs, since a derived row is
+regenerated from a contract rather than edited. `show` renders a derived
+operation's method, the published messages it reuses, and the policy and
+authority in its `operation.json`; it renders no handler and no dependency
+report, because a derived operation is reached on a service the workspace
+already runs.
 
 ### Listing is strict
 
@@ -78,7 +118,9 @@ because a stub would be indistinguishable from a capability:
 
 - **Image builds.** The current Runnable build command accepts native artifacts
   only. It rejects build/schema/completion prerequisites and internal libraries
-  whose preparation is not implemented.
+  whose preparation is not implemented. (SERVICE-facility packages are
+  implemented — see [above](#derived-service-facility-packages) — and need no
+  build, because the owner's own builder already built the method.)
 - **Register, activate, invoke, inspect.** These are Orchestration surfaces.
   The CLI calls them; it does not host a Task/effect scheduler. The local
   runner below is the process boundary they dispatch *through*, not a way to

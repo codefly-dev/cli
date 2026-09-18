@@ -13,6 +13,7 @@ func TestGenerateCommandsReturnErrorsThroughCobra(t *testing.T) {
 		"grpc":      {runE: GRPCCmd.RunE != nil, args: GRPCCmd.Args != nil},
 		"openapi":   {runE: OpenAPICmd.RunE != nil, args: OpenAPICmd.Args != nil},
 		"contracts": {runE: ContractsCmd.RunE != nil, args: ContractsCmd.Args != nil},
+		"runnables": {runE: RunnablesCmd.RunE != nil, args: RunnablesCmd.Args != nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !command.runE {

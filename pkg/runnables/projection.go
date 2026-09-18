@@ -34,6 +34,11 @@ type Identity struct {
 	Agent       string    `json:"agent"`
 	Protocol    string    `json:"protocol"`
 	Execution   Execution `json:"execution"`
+	// Source is the method a derived operation was projected from, as
+	// "<service>/<endpoint>/<Method>". It is empty for an authored runnable,
+	// which is the distinction a reader needs: a derived row is regenerated
+	// from a contract, not edited.
+	Source string `json:"source,omitempty"`
 }
 
 // NewIdentity projects a loaded runnable. The runnable must have come from
