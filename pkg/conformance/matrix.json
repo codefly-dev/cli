@@ -40,7 +40,7 @@
     },
     {
       "id": "linux-amd64-nix-run",
-      "status": "not-yet-qualified",
+      "status": "qualified",
       "summary": "codefly run drives a real pinned Redis agent through Load, Init and Start over gRPC, with the agent resolving a Nix runtime, against the in-process control plane.",
       "os": "linux",
       "arch": "amd64",
@@ -49,7 +49,6 @@
         "nix"
       ],
       "build_tag": "integration",
-      "gate_env": "CODEFLY_NIX_RUN_QUALIFY",
       "agents": [
         {
           "publisher": "codefly.dev",
@@ -57,8 +56,8 @@
           "version": "0.0.88"
         }
       ],
-      "blockers": [
-        "The published Redis agent does not declare the CLI-agent protocol required by Core v0.3.39, so the strict control-integration proof fails during discovery."
+      "ci": [
+        "go.yml#control-integration"
       ],
       "gates": [
         "pkg/control"

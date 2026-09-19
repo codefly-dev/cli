@@ -27,7 +27,7 @@ a row is about whether a real lifecycle was driven end to end.
 |---|---|---|---|---|---|
 | `linux-amd64-source` | qualified | linux/amd64 | none | — | `go.yml` — `coverage`, `race`, `lint` |
 | `linux-amd64-native-npm` | qualified | linux/amd64 | native | `npm` | `go.yml` — `coverage`, `race` |
-| `linux-amd64-nix-run` | not-yet-qualified | linux/amd64 | nix | `nix` | `CODEFLY_NIX_RUN_QUALIFY=1`; `control-integration` remains strict and red until an adopted Redis release is pinned |
+| `linux-amd64-nix-run` | qualified | linux/amd64 | nix | `nix` | `go.yml` — `control-integration` |
 | `linux-amd64-docker-generate` | not-yet-qualified | linux/amd64 | docker | `docker`, `buf` | `CODEFLY_GENERATE_QUALIFY=1`, developer machine only |
 | `linux-amd64-docker-mcp-run` | not-yet-qualified | linux/amd64 | docker | `docker` | `CODEFLY_MCP_RUN_QUALIFY=1`, developer machine only |
 | `linux-amd64-network-mcp-agent` | not-yet-qualified | linux/amd64 | native | — | `CODEFLY_MCP_AGENT_QUALIFY=1`, developer machine only |
@@ -37,12 +37,9 @@ a row is about whether a real lifecycle was driven end to end.
 
 ### Qualification gaps
 
-The matrix carries the blocker for every `not-yet-qualified` row. The three that
+The matrix carries the blocker for every `not-yet-qualified` row. The two that
 matter most for a support claim:
 
-- **No Nix lifecycle row is qualified.** The published Redis pin does not
-  declare the CLI-agent protocol required by Core v0.3.39; the existing
-  `control-integration` proof remains strict until an adopted release exists.
 - **No deployment row is qualified.** `linux-amd64-k3d-deploy` is the only row
   that reaches a cluster, and no CI job provisions k3d. It also creates its
   cluster at k3d's default k3s image; a qualified cluster row must pin an

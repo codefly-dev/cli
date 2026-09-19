@@ -32,6 +32,7 @@ jobs:
         include:
           - gate: bootstrap-audit
           - gate: control-integration
+            conformance_rows: linux-amd64-nix-run
           - gate: coverage
             conformance_rows: linux-amd64-source,linux-amd64-native-npm
           - gate: race
@@ -168,8 +169,6 @@ jobs:
 
       - name: Run the in-process run-profile proof
         if: matrix.gate == 'control-integration'
-        env:
-          CODEFLY_NIX_RUN_QUALIFY: "1"
         run: go test -tags=integration -run '^TestRunProfilesStartRealDependencyShapesInProcess$' ./pkg/control -v
 
       # Pull separately from the proof below so a cold-cache image fetch is

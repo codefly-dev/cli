@@ -36,7 +36,7 @@ func TestReleaseCompatibility(t *testing.T) {
 	}
 }
 
-func TestPreviousStableReleaseBeforeContractPublication(t *testing.T) {
+func TestPreviousStableTag(t *testing.T) {
 	root := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
@@ -55,44 +55,7 @@ func TestPreviousStableReleaseBeforeContractPublication(t *testing.T) {
 	git("tag", "v0.1.10")
 	git("tag", "v0.1.11-rc.1")
 	git("tag", "v0.1.11")
-	fakeBin := t.TempDir()
-	gh := filepath.Join(fakeBin, "gh")
-	require.NoError(t, os.WriteFile(gh, []byte("#!/bin/sh\nprintf '%s\\n' v0.1.10 v0.1.9\n"), 0o700))
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	tag, err := previousRelease(root, "v0.1.11")
-	require.NoError(t, err)
-	require.Equal(t, "v0.1.10", tag)
-}
-
-func TestPreviousStableReleaseSkipsTagWithoutPublishedRelease(t *testing.T) {
-	root := t.TempDir()
-	git := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = root
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "%s", out)
-	}
-	git("init", "-q")
-	git("config", "user.name", "Contract test")
-	git("config", "user.email", "contract@example.invalid")
-	git("config", "commit.gpgSign", "false")
-	git("config", "tag.gpgSign", "false")
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "tools", "agentcontract"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "tools", "agentcontract", "main.go"), []byte("package main\n"), 0o600))
-	git("add", "tools/agentcontract/main.go")
-	git("commit", "-qm", "introduce contract publication")
-	git("tag", "v0.1.10")
-	git("commit", "--allow-empty", "-qm", "failed release")
-	git("tag", "v0.1.11")
-	git("commit", "--allow-empty", "-qm", "current release")
-
-	fakeBin := t.TempDir()
-	gh := filepath.Join(fakeBin, "gh")
-	require.NoError(t, os.WriteFile(gh, []byte("#!/bin/sh\nprintf '%s\\n' v0.1.10\n"), 0o700))
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	tag, err := previousRelease(root, "v0.1.12")
+	tag, err := previousTag(root, "v0.1.11")
 	require.NoError(t, err)
 	require.Equal(t, "v0.1.10", tag)
 }

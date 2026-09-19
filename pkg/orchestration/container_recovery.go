@@ -5,7 +5,6 @@ import (
 	"os"
 	"sync"
 
-	"github.com/codefly-dev/cli/pkg/agentrequirements"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/recoveryscope"
@@ -111,5 +110,5 @@ func (runner *Runner) validateContainerRecovery() error {
 }
 
 func validateContainerRecovery(instance *services.Instance, expected string) error {
-	return agentrequirements.RequireContainerRecovery(instance, expected)
+	return instance.RequireContainerRecoveryScope(expected)
 }

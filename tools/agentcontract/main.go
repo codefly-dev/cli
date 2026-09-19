@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codefly-dev/cli/pkg/agentrequirements"
 	"github.com/codefly-dev/core/agents/contract"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -24,40 +23,18 @@ func command(directory, name string, args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func stableTags(directory, currentTag string) ([]string, error) {
+func previousTag(directory, currentTag string) (string, error) {
 	output, err := command(directory, "git", "tag", "--merged", "HEAD", "--sort=-version:refname")
 	if err != nil {
-		return nil, err
-	}
-	stable := regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
-	var tags []string
-	for _, tag := range strings.Fields(string(output)) {
-		if tag != currentTag && stable.MatchString(tag) {
-			tags = append(tags, tag)
-		}
-	}
-	return tags, nil
-}
-
-func previousRelease(directory, currentTag string) (string, error) {
-	tags, err := stableTags(directory, currentTag)
-	if err != nil || len(tags) == 0 {
 		return "", err
 	}
-	publishedOutput, err := command(directory, "gh", "api", "--paginate", "repos/codefly-dev/cli/releases?per_page=100", "--jq", ".[] | select(.draft == false and .prerelease == false) | .tag_name")
-	if err != nil {
-		return "", fmt.Errorf("list published CLI releases: %w", err)
-	}
-	published := make(map[string]bool)
-	for _, tag := range strings.Fields(string(publishedOutput)) {
-		published[tag] = true
-	}
-	for _, tag := range tags {
-		if published[tag] {
+	stable := regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+	for _, tag := range strings.Fields(string(output)) {
+		if tag != currentTag && stable.MatchString(tag) {
 			return tag, nil
 		}
 	}
-	return "", fmt.Errorf("no published stable CLI release precedes %s", currentTag)
+	return "", nil
 }
 
 func releaseNotes(current, previous *agentv0.AgentContract, previousTag string) string {
@@ -101,8 +78,9 @@ func generate(directory, tag, output string) error {
 	if !proto.Equal(&compiled, contract.Current()) {
 		return fmt.Errorf("core manifest differs from the compiled agent contract")
 	}
-	required := agentrequirements.ContainerRecovery()
-	previous, err := previousRelease(directory, tag)
+	required := contract.Current()
+	required.Capabilities = []string{contract.ContainerRecoveryScope}
+	previous, err := previousTag(directory, tag)
 	if err != nil {
 		return err
 	}

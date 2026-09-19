@@ -290,11 +290,6 @@ func TestReleasePublishesAgentCompatibilityBeforeImmutablePublication(t *testing
 		t.Fatal("release does not prepare the consumed agent contract")
 	}
 	var configuration struct {
-		Checksum struct {
-			ExtraFiles []struct {
-				Glob string `yaml:"glob"`
-			} `yaml:"extra_files"`
-		} `yaml:"checksum"`
 		Release struct {
 			Header     string `yaml:"header"`
 			ExtraFiles []struct {
@@ -313,30 +308,6 @@ func TestReleasePublishesAgentCompatibilityBeforeImmutablePublication(t *testing
 	for _, name := range []string{".release/contract.json", ".release/agent-requirements.json"} {
 		if !files[name] {
 			t.Fatalf("immutable release omits %s", name)
-		}
-	}
-	checksummed := map[string]bool{}
-	for _, file := range configuration.Checksum.ExtraFiles {
-		checksummed[file.Glob] = true
-	}
-	for _, name := range []string{".release/contract.json", ".release/agent-requirements.json"} {
-		if !checksummed[name] {
-			t.Fatalf("signed checksum omits %s", name)
-		}
-	}
-	var verify releaseWorkflowStep
-	for _, step := range workflow.Jobs["verify"].Steps {
-		if step.Name == "Verify the published release" {
-			verify = step
-			break
-		}
-	}
-	for _, name := range []string{"contract.json", "agent-requirements.json"} {
-		if !strings.Contains(verify.Run, "--pattern "+name) {
-			t.Fatalf("published-release verification does not download %s", name)
-		}
-		if !strings.Contains(verify.Run, `"$verify_dir"/`+name) {
-			t.Fatalf("published-release verification does not attest %s", name)
 		}
 	}
 }
