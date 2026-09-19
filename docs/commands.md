@@ -243,7 +243,9 @@ included:
 | End | Carrier | Value |
 |-----|---------|-------|
 | Solution entry service | `CODEFLY__MODULE_REGISTRATION_SECRETS` | `prefix:secret,…` — presented to register each consumed module's routes |
-| Consumed module's services | `CODEFLY__MODULE_REGISTRATION_SECRET` | that module's own identity secret, presented to mint its service-principal work context |
+| Consumed module's services | `CODEFLY__MODULE_IDENTITY_PREFIX` | the module's declared federation prefix, which can differ from its module name |
+| Consumed module's services | `CODEFLY__MODULE_IDENTITY_SECRET` | that module's own identity secret, presented to mint its service-principal work context |
+| Consumed module's services (deprecated alias) | `CODEFLY__MODULE_REGISTRATION_SECRET` | the same module identity secret, retained for existing runtimes; never the backend's registration secret |
 | Registrar | `MODULE_REGISTRATION_SECRETS` in the `federation` workspace configuration group | `prefix:sha256hex` — the digests the registering backend is checked against |
 | Registrar | `MODULE_IDENTITY_SECRETS` in the same group | `prefix:sha256hex` — the digests a module's own work-context exchange is checked against |
 
