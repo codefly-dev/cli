@@ -1168,8 +1168,7 @@ Generate client code from service APIs.
 codefly generate client --from billing/api/grpc --language go --output libraries/billing-api-client  # A codefly library from a live local service
 codefly generate client --from package:codefly/saas-starter@0.1.0 --language go,typescript --services AuditService  # From a composed module package's contract
 codefly generate client --from contracts:module-saas-starter/contracts/api --language python --no-facade  # From a `generate contracts` export, bindings only
-codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files (Docker)
-codefly generate proto --proto ../proto --output ./generated --local                     # Same, with locally installed pinned plugins
+codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files, in the proto companion
 codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
 codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
 codefly generate runnables documents                                                     # Derive a Runnable package per method carrying the operation option

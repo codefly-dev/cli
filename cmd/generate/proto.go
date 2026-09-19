@@ -4,11 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -18,26 +14,11 @@ import (
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var protoDir string
 var outputDir string
-var protoLocal bool
-var protoTemplate string
 var protoPaths []string
-
-// pinnedProtocPlugins are the locally-installed code generators the
-// --local path uses, pinned so regeneration is byte-reproducible. Bump
-// these in lockstep with go.mod. Mirrors the versions that
-// core/generated/generate.sh installed (which this command replaces).
-var pinnedProtocPlugins = []struct{ bin, mod string }{
-	{"protoc-gen-go", "google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11"},
-	{"protoc-gen-go-grpc", "google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1"},
-	{"protoc-gen-grpc-gateway", "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.29.0"},
-	{"protoc-gen-connect-go", "connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.20.0"},
-	{"goimports", "golang.org/x/tools/cmd/goimports@latest"},
-}
 
 // ProtoCmd generates code from local proto files.
 var ProtoCmd = &cobra.Command{
@@ -45,19 +26,15 @@ var ProtoCmd = &cobra.Command{
 	Short: "Generate Go and Python bindings from local protobuf files",
 	Long: `Generate code from local proto files without pushing to buf.build first.
 
-Two modes:
-  (default) Docker companion image — runs buf inside the proto companion
-            image, using the buf.gen.yaml in the --proto directory (Go+gRPC
-            via BSR remote plugins, plus gateway/connect/openapi/TS). Needs
-            Docker.
-  --local   Locally-installed, version-pinned plugins (protoc-gen-go,
-            -go-grpc, -grpc-gateway, -connect-go) + goimports. Offline and
-            byte-reproducible. Replaces core/generated/generate.sh.
+Runs buf inside the versioned proto companion image, using the buf.gen.yaml in
+the --proto directory: Go, gRPC, Connect, gateway, OpenAPI and TypeScript
+outputs, then goimports over every Go output the template declares. Nothing
+runs on the host but Docker, and the plugins and the formatter are the image's,
+pinned by its tag, so two machines regenerate the same bytes.
 
 Examples:
   codefly generate proto --proto ../proto --output ./generated
-  codefly generate proto --proto ../proto --output ./generated --local
-  codefly generate proto --proto ../proto --output . --local --template buf.gen.local.yaml
+  codefly generate proto --proto ../proto --output ../code --path saas/v1/service.proto
 `,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -66,13 +43,7 @@ Examples:
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		var err error
-		if protoLocal {
-			err = generateProtoLocal(ctx, protoDir, outputDir, protoTemplate)
-		} else {
-			err = generateProtoCode(ctx, protoDir, outputDir)
-		}
-		if err != nil {
+		if err := generateProtoCode(ctx, protoDir, outputDir); err != nil {
 			return fmt.Errorf("cannot generate proto code: %w", err)
 		}
 		if err := ctx.Err(); err != nil {
@@ -81,181 +52,6 @@ Examples:
 		cli.Header(1, "Proto code generated successfully!")
 		return nil
 	},
-}
-
-// generateProtoLocal regenerates Go bindings with locally-installed,
-// version-pinned plugins (no Docker, no BSR remote). It is a faithful Go
-// port of core/generated/generate.sh: ensure plugins are installed, run
-// `buf generate <proto> --template <template>` from the output dir, then
-// goimports the result. The output dir must contain the template
-// (default buf.gen.local.yaml).
-func generateProtoLocal(ctx context.Context, protoDir, outputDir, template string) error {
-	w := wool.Get(ctx).In("generateProtoLocal")
-
-	protoDir, err := shared.SolvePath(protoDir)
-	if err != nil {
-		return w.Wrapf(err, "cannot solve proto path")
-	}
-	outputDir, err = shared.SolvePath(outputDir)
-	if err != nil {
-		return w.Wrapf(err, "cannot solve output path")
-	}
-	if template == "" {
-		template = "buf.gen.local.yaml"
-	}
-	if ok, _ := shared.FileExists(ctx, filepath.Join(outputDir, template)); !ok {
-		return w.NewError("template %s not found in output directory: %s", template, outputDir)
-	}
-
-	// $(go env GOPATH)/bin must be on PATH so buf can exec the plugins we
-	// install below.
-	gopath, err := exec.CommandContext(ctx, "go", "env", "GOPATH").Output()
-	if err != nil {
-		return w.Wrapf(err, "cannot read GOPATH")
-	}
-	binDir := filepath.Join(string(trimNL(gopath)), "bin")
-	env := append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	cli.Info("Ensuring pinned codegen plugins are installed")
-	for _, p := range pinnedProtocPlugins {
-		if _, lookErr := exec.LookPath(p.bin); lookErr == nil {
-			continue
-		}
-		if _, statErr := os.Stat(filepath.Join(binDir, p.bin)); statErr == nil {
-			continue
-		}
-		cli.Info("  go install %s", p.mod)
-		if err := runDir(ctx, env, "", "go", "install", p.mod); err != nil {
-			return w.Wrapf(err, "install %s", p.mod)
-		}
-	}
-
-	cli.Info("buf generate (local plugins) from %s", protoDir)
-	args := []string{"generate", protoDir, "--template", template}
-	args = append(args, protoGenerationPathArgs(protoDir, true)...)
-	if err := runDir(ctx, env, outputDir, "buf", args...); err != nil {
-		return w.Wrapf(err, "buf generate")
-	}
-
-	goOutputDirs, err := generatedGoOutputDirs(outputDir, template)
-	if err != nil {
-		// Non-fatal: import grouping is cosmetic, the bindings are valid.
-		cli.Warning("cannot discover generated Go outputs (non-fatal): %v", err)
-		return nil
-	}
-	goimports := filepath.Join(binDir, "goimports")
-	if _, err := os.Stat(goimports); err != nil {
-		goimports, err = exec.LookPath("goimports")
-		if err != nil {
-			cli.Warning("cannot locate goimports after installation (non-fatal): %v", err)
-			return nil
-		}
-	}
-	for _, dir := range goOutputDirs {
-		cli.Info("goimports %s", dir)
-		// goimports resolves module-local import paths from its working directory,
-		// not from an absolute target passed by a caller in another repository.
-		// Run inside each generated root so nested service modules retain valid
-		// cross-package imports (for example accounts/pkg/gen/saas/jobs/v1).
-		workingDir, args := generatedGoImportsInvocation(dir)
-		if err := runDir(ctx, env, workingDir, goimports, args...); err != nil {
-			// Non-fatal: import grouping is cosmetic, the bindings are valid.
-			cli.Warning("goimports failed for %s (non-fatal): %v", dir, err)
-		}
-	}
-	return nil
-}
-
-// generatedGoImportsInvocation keeps import resolution inside the generated
-// service's module instead of inheriting whichever repository invoked Codefly.
-func generatedGoImportsInvocation(generatedRoot string) (string, []string) {
-	return generatedRoot, []string{"-w", "."}
-}
-
-// generatedGoOutputDirs returns the unique plugin output roots from the Buf
-// template that actually contain Go files after generation. Templates are the
-// authority for output topology: generated Go may live at "go", "code/pkg/gen",
-// or even outside outputDir (for example a sibling frontend target). Inspecting
-// only declared roots prevents goimports from rewriting handwritten service
-// code while keeping local generation independent of any starter layout.
-func generatedGoOutputDirs(outputDir, template string) ([]string, error) {
-	contents, err := os.ReadFile(filepath.Join(outputDir, template))
-	if err != nil {
-		return nil, fmt.Errorf("read generation template: %w", err)
-	}
-	var document struct {
-		Plugins []struct {
-			Out string `yaml:"out"`
-		} `yaml:"plugins"`
-	}
-	if err := yaml.Unmarshal(contents, &document); err != nil {
-		return nil, fmt.Errorf("parse generation template: %w", err)
-	}
-
-	seen := make(map[string]struct{}, len(document.Plugins))
-	for _, plugin := range document.Plugins {
-		out := strings.TrimSpace(plugin.Out)
-		if out == "" {
-			continue
-		}
-		root := filepath.Clean(out)
-		if !filepath.IsAbs(root) {
-			root = filepath.Join(outputDir, root)
-		}
-		containsGo, err := containsGoFile(root)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("inspect output %s: %w", root, err)
-		}
-		if containsGo {
-			seen[root] = struct{}{}
-		}
-	}
-
-	result := make([]string, 0, len(seen))
-	for root := range seen {
-		result = append(result, root)
-	}
-	sort.Strings(result)
-	return result, nil
-}
-
-func containsGoFile(root string) (bool, error) {
-	found := errors.New("generated Go file found")
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") {
-			return found
-		}
-		return nil
-	})
-	if errors.Is(err, found) {
-		return true, nil
-	}
-	return false, err
-}
-
-// runDir runs name+args in dir (cwd when empty) with env, streaming output.
-func runDir(ctx context.Context, env []string, dir, name string, args ...string) error {
-	c := exec.CommandContext(ctx, name, args...)
-	if dir != "" {
-		c.Dir = dir
-	}
-	c.Env = env
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return c.Run()
-}
-
-func trimNL(b []byte) []byte {
-	for len(b) > 0 && (b[len(b)-1] == '\n' || b[len(b)-1] == '\r') {
-		b = b[:len(b)-1]
-	}
-	return b
 }
 
 func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (result error) {
@@ -376,6 +172,15 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 		return w.Wrapf(err, "cannot generate proto code")
 	}
 
+	// buf's Go is not the Go a repository commits: every consumer runs
+	// goimports over it and gates its checked-in bindings on that shape. The
+	// companion owns that pass and runs it in the image, so the tree it hands
+	// back is the committed one. See core's proto.FormatGoOutputs.
+	w.Info("Formatting generated Go...")
+	if err = proto.FormatGoOutputs(ctx, runner, protoDir, "buf.gen.yaml", commonRoot, "/workspace"); err != nil {
+		return w.Wrapf(err, "cannot format generated Go")
+	}
+
 	return nil
 }
 
@@ -433,8 +238,6 @@ func init() {
 	ProtoCmd.Flags().StringVar(&protoDir, "proto", "", "path to proto source directory (required)")
 	ProtoCmd.Flags().StringVar(&outputDir, "output", "", "path to output directory with buf.gen.yaml (required)")
 	ProtoCmd.Flags().StringSliceVar(&protoPaths, "path", nil, "limit generation to a proto-relative path (repeatable)")
-	ProtoCmd.Flags().BoolVar(&protoLocal, "local", false, "Generate Go bindings with locally-installed, version-pinned plugins (offline, reproducible) instead of the Docker companion")
-	ProtoCmd.Flags().StringVar(&protoTemplate, "template", "", "buf template filename inside --output for --local mode (default: buf.gen.local.yaml)")
 	_ = ProtoCmd.MarkFlagRequired("proto")
 	_ = ProtoCmd.MarkFlagRequired("output")
 }
