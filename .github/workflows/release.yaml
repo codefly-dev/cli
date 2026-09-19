@@ -58,6 +58,12 @@ jobs:
           )"
           test "$key_fingerprint" = "$certificate_fingerprint"
 
+      - name: Prepare agent compatibility record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: go run ./tools/agentcontract --tag "$RELEASE_TAG" --output .release
+
       - name: Qualify the clean tag
         env:
           CODEFLY_RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/codefly-release-signing-key.pem
@@ -219,7 +225,7 @@ jobs:
             jq -e --arg name "$archive" '[.assets[].name] | index($name) != null' <<<"$release_json"
             jq -e --arg name "$sbom" '[.assets[].name] | index($name) != null' <<<"$release_json"
           done
-          for name in checksums.txt checksums.txt.sig; do
+          for name in checksums.txt checksums.txt.sig contract.json agent-requirements.json; do
             jq -e --arg name "$name" '[.assets[].name] | index($name) != null' <<<"$release_json"
           done
 

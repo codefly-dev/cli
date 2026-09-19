@@ -127,7 +127,7 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 	require.NoError(t, err)
 
 	var headers metadata.MD
-	_, err = client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
+	info, err := client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
 	require.NoError(t, err)
 	acknowledgement := strings.Join(headers.Get(recoveryscope.Header), "")
 	require.Equal(t, recoveryscope.Acknowledgement(), acknowledgement,
@@ -142,12 +142,10 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 		resources.RuntimeContextFree,
 	} {
 		runner := &Runner{
-			runtimeContext: runtimeContext,
-			// What Flow.configureRunner hands every runner it builds. Without
-			// it validateContainerRecovery has no identity to hold the agent
-			// to and accepts anything, qualifying nothing.
+			runtimeContext:            runtimeContext,
 			containerRecoveryIdentity: recoveryscope.Acknowledgement(),
 			instance: &services.Instance{
+				Info:                   info,
 				Identity:               &resources.ServiceIdentity{Name: "api", Module: "app"},
 				ContainerRecoveryScope: acknowledgement,
 			},

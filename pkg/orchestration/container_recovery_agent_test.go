@@ -51,7 +51,7 @@ func TestContainerRecoveryRejectsAReleasedLegacyAgent(t *testing.T) {
 	require.Equal(t, "v0.3.27", coreVersion, "the published fixture must retain its pre-v2 Core")
 
 	var headers metadata.MD
-	_, err = client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
+	info, err := client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
 	require.NoError(t, err)
 	acknowledgement := headers.Get(recoveryscope.Header)
 	require.Empty(t, acknowledgement)
@@ -61,11 +61,12 @@ func TestContainerRecoveryRejectsAReleasedLegacyAgent(t *testing.T) {
 			// What Flow.configureRunner hands every runner it builds.
 			containerRecoveryIdentity: recoveryscope.Acknowledgement(),
 			instance: &services.Instance{
+				Info:                   info,
 				Identity:               &resources.ServiceIdentity{Name: "legacy", Module: "test"},
 				ContainerRecoveryScope: strings.Join(acknowledgement, ""),
 			},
 		}
 		_, err := runner.Init(ctx)
-		require.ErrorContains(t, err, "did not acknowledge this run's container recovery scope")
+		require.ErrorContains(t, err, "does not declare a CLI-agent protocol version")
 	}
 }

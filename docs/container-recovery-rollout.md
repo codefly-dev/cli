@@ -31,6 +31,30 @@ about whether an agent understands what it was handed. Two consumers matter:
   `GetAgentInformation`. `Runner.validateContainerRecovery` compares it against
   what the CLI projected and refuses `Init` when they differ.
 
+## Versioned API adoption
+
+The CLI checks `AgentInformation.contract`, independently of the Core version
+linked into the agent. Discovery requires lifecycle protocol 1 and startup
+protocol 2, including for native agents. Container/free runtime initialization
+and builder operations additionally require `container-recovery-scope/v1`,
+then an exact acknowledgement of the flow's captured recovery identity.
+An absent flow identity is an error on those paths. Native/Nix runtime
+initialization does not require the recovery capability.
+
+The first enforcing CLI release requires coordinated agent publication and
+consumer pin updates: existing agents with no declaration are rejected during
+discovery. Keep the adoption PRs in draft until supported fleet combinations
+have passed qualification; neither a Core bump nor a matching recovery header
+proves that an undeclared agent implements the contract.
+
+CLI releases attach the consumed Core `contract.json` and an
+`agent-requirements.json` using the same protobuf schema. The latter lists
+capabilities needed by container/free and builder operations, not requirements
+for every runtime context. Release notes compare both protocol versions and
+these requirements with the previous stable CLI release. Unchanged requirements
+need no agent rebuild solely for a CLI/Core bump. Missing or malformed artifacts
+from a release that already publishes the contract fail preparation.
+
 ## Where the fleet sits
 
 | Core revision | Recovery | Marker written | Acknowledgement |
