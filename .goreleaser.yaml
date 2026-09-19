@@ -116,6 +116,9 @@ archives:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+  extra_files:
+    - glob: .release/contract.json
+    - glob: .release/agent-requirements.json
 
 sboms:
   - id: archives

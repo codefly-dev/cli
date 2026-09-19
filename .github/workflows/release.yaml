@@ -177,6 +177,8 @@ jobs:
             --dir "$RUNNER_TEMP/release-assets" \
             --pattern "codefly_*.tar.gz" \
             --pattern "codefly_*.sbom.json" \
+            --pattern contract.json \
+            --pattern agent-requirements.json \
             --pattern checksums.txt
 
       - name: Attest released archives
@@ -235,6 +237,8 @@ jobs:
             --dir "$verify_dir" \
             --pattern "codefly_${version}_*.tar.gz" \
             --pattern "codefly_${version}_*.sbom.json" \
+            --pattern contract.json \
+            --pattern agent-requirements.json \
             --pattern checksums.txt \
             --pattern checksums.txt.sig
           openssl dgst -sha256 \
@@ -244,7 +248,9 @@ jobs:
           (cd "$verify_dir" && sha256sum --check checksums.txt)
           for artifact in \
             "$verify_dir"/codefly_"${version}"_*.tar.gz \
-            "$verify_dir"/codefly_"${version}"_*.sbom.json; do
+            "$verify_dir"/codefly_"${version}"_*.sbom.json \
+            "$verify_dir"/contract.json \
+            "$verify_dir"/agent-requirements.json; do
             gh attestation verify "$artifact" --repo codefly-dev/cli
           done
 
