@@ -607,6 +607,12 @@ func TestDerivedRunInputsProvisionsTheConsumedModulesOwnSecret(t *testing.T) {
 	}
 	for _, unique := range []string{"documents/api", "documents/worker"} {
 		values := derived.Overrides[unique]
+		if values["CODEFLY__MODULE_IDENTITY_PREFIX"] != "documents" {
+			t.Errorf("%s received no canonical identity prefix", unique)
+		}
+		if values["CODEFLY__MODULE_IDENTITY_SECRET"] != identity {
+			t.Errorf("%s canonical identity differs from the provisioned identity", unique)
+		}
 		if got := values[moduleRegistrationSecretEnvironmentVariable]; got != identity {
 			t.Errorf("%s %s = %q, want the identity secret minted for documents",
 				unique, moduleRegistrationSecretEnvironmentVariable, got)
@@ -719,6 +725,9 @@ func TestConsumedModuleSecretOverridesExcludesTheRegistrarsOwnModule(t *testing.
 	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, federationRegistrars(ctx, workspace))
 
 	for _, unique := range []string{"host/accounts", "host/gateway"} {
+		if injection.overrides[unique]["CODEFLY__MODULE_IDENTITY_SECRET"] != "" || injection.overrides[unique]["CODEFLY__MODULE_IDENTITY_PREFIX"] != "" {
+			t.Errorf("%s received a module identity carrier", unique)
+		}
 		if got := injection.overrides[unique][moduleRegistrationSecretEnvironmentVariable]; got != "" {
 			t.Errorf("%s received the plaintext %q whose digest its own module holds", unique, got)
 		}
@@ -729,6 +738,38 @@ func TestConsumedModuleSecretOverridesExcludesTheRegistrarsOwnModule(t *testing.
 	// The module that does authenticate is unaffected.
 	if injection.overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable] != provisioned.byPrefix["documents"].identity {
 		t.Error("excluding the registrar's module also dropped the consumed module's own secret")
+	}
+}
+
+// Identity follows the declared federation alias, not a module's directory name.
+// Separate module services must never receive another prefix's identity.
+func TestConsumedModuleSecretOverridesBindsIdentityToDeclaredPrefix(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	consumed := []manifest.ConsumedAPI{
+		{ID: "documents", Module: "documents", Service: "api", Endpoint: "connect", As: "knowledge"},
+		{ID: "consumer", Module: "wiki", Service: "backend", Endpoint: "connect", As: "consumer"},
+	}
+	provisioned := provisionModuleRegistrationSecrets(consumed)
+	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, []string{"host/accounts"})
+	for unique, prefix := range map[string]string{
+		"documents/api": "knowledge", "documents/worker": "knowledge", "wiki/backend": "consumer",
+	} {
+		values := injection.overrides[unique]
+		if values["CODEFLY__MODULE_IDENTITY_PREFIX"] != prefix {
+			t.Errorf("%s did not receive its declared identity prefix %s", unique, prefix)
+		}
+		identity := provisioned.byPrefix[prefix].identity
+		if values["CODEFLY__MODULE_IDENTITY_SECRET"] != identity || values[moduleRegistrationSecretEnvironmentVariable] != identity {
+			t.Errorf("%s identity carriers do not match its own provisioned identity", unique)
+		}
+		for otherPrefix, other := range provisioned.byPrefix {
+			for key, value := range values {
+				if value == other.registration || (otherPrefix != prefix && value == other.identity) {
+					t.Errorf("%s received another principal's credential under %s", unique, key)
+				}
+			}
+		}
 	}
 }
 
@@ -771,6 +812,13 @@ func TestDerivedRunInputsWithholdsSecretsWithoutARegistrar(t *testing.T) {
 	// the module that would present it too.
 	if got := derived.Overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable]; got != "" {
 		t.Errorf("provisioned documents/api a secret %q with no registrar to authorize it", got)
+	}
+	for unique, values := range derived.Overrides {
+		for _, key := range []string{"CODEFLY__MODULE_IDENTITY_PREFIX", "CODEFLY__MODULE_IDENTITY_SECRET"} {
+			if _, exists := values[key]; exists {
+				t.Errorf("%s received %s with no registrar", unique, key)
+			}
+		}
 	}
 	if derived.WorkspaceConfigurations != nil {
 		t.Errorf("declared federation values with no registrar: %+v", derived.WorkspaceConfigurations)

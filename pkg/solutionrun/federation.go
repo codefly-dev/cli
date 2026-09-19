@@ -208,12 +208,16 @@ const (
 	// release carries it.
 	// #nosec G101 -- an environment variable name, not a credential
 	moduleRegistrationSecretsEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRETS"
-	// moduleRegistrationSecretEnvironmentVariable carries a consumed module's own
-	// identity secret to that module's services. Singular: a module holds one
-	// identity, so it needs only the entry minted for its own prefix — never the
-	// whole map, which would hand every consumed module the credentials of its
-	// siblings. The name is the one module runtimes already read; only the secret
-	// it carries is now the module's own rather than the backend's.
+	// moduleIdentityPrefixEnvironmentVariable identifies the consumed module by
+	// its declared federation prefix, which need not equal its module name.
+	moduleIdentityPrefixEnvironmentVariable = "CODEFLY__MODULE_IDENTITY_PREFIX"
+	// moduleIdentitySecretEnvironmentVariable carries only that module's identity
+	// secret, never the registration secret or its siblings' credentials.
+	// #nosec G101 -- an environment variable name, not a credential
+	moduleIdentitySecretEnvironmentVariable = "CODEFLY__MODULE_IDENTITY_SECRET"
+	// moduleRegistrationSecretEnvironmentVariable is a deprecated identity-secret
+	// alias for existing module runtimes. Despite its name it must carry the same
+	// identity secret as the canonical carrier, never the registration secret.
 	// #nosec G101 -- an environment variable name, not a credential
 	moduleRegistrationSecretEnvironmentVariable = "CODEFLY__MODULE_REGISTRATION_SECRET"
 	// moduleRegistrationSecretBytes is the entropy of one generated secret. It is
@@ -387,7 +391,11 @@ func consumedModuleSecretOverrides(ctx context.Context, workspace *resources.Wor
 		}
 		injection.provisioned = append(injection.provisioned, binding.module)
 		for _, unique := range services {
-			injection.overrides[unique] = map[string]string{moduleRegistrationSecretEnvironmentVariable: provisioned.byPrefix[binding.prefix].identity}
+			injection.overrides[unique] = map[string]string{
+				moduleIdentityPrefixEnvironmentVariable:     binding.prefix,
+				moduleIdentitySecretEnvironmentVariable:     provisioned.byPrefix[binding.prefix].identity,
+				moduleRegistrationSecretEnvironmentVariable: provisioned.byPrefix[binding.prefix].identity,
+			}
 		}
 	}
 	return injection
@@ -543,8 +551,8 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 	// missing, which is the diagnosis this provisioning exists to end.
 	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, registrars)
 	if len(injection.provisioned) > 0 {
-		notes = append(notes, Note{Message: fmt.Sprintf("provisioned %s into the services of %s",
-			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.provisioned, ", "))})
+		notes = append(notes, Note{Message: fmt.Sprintf("provisioned %s and %s into the services of %s",
+			moduleIdentityPrefixEnvironmentVariable, moduleIdentitySecretEnvironmentVariable, strings.Join(injection.provisioned, ", "))})
 	}
 	if len(injection.registrars) > 0 {
 		notes = append(notes, Note{Message: fmt.Sprintf(
@@ -554,7 +562,7 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 	if len(injection.unresolved) > 0 {
 		notes = append(notes, Note{Warning: true, Message: fmt.Sprintf(
 			"no %s provisioned for %s: those modules cannot obtain a work context, so their module-facing workers will idle",
-			moduleRegistrationSecretEnvironmentVariable, strings.Join(injection.unresolved, "; "))})
+			moduleIdentitySecretEnvironmentVariable, strings.Join(injection.unresolved, "; "))})
 	}
 	return RunInputs{
 		Overrides: mergeOverrides(overrides, injection.overrides),
