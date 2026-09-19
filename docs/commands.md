@@ -606,6 +606,47 @@ modules:
       path: platform/lodestar/modules/saas
 ```
 
+A composition that vendors its sources — a submodule per producer repository —
+can state the pin and the checkout satisfying it on the same committed entry,
+with no `codefly.local.yaml` in play:
+
+```yaml
+modules:
+    - name: saas
+      source: obin-ai/lodestar
+      version: "0.0.62"
+      path: platform/lodestar/modules/saas
+```
+
+The resolver prefers the `path` and drops the `version` with it, so a submodule
+parked past the tag the entry names runs as if it were that tag. `codefly
+doctor workspace` compares the two and reports the divergence with the
+`module_checkout_version_drift` diagnostic: it names the pin and what `git
+describe --tags` says the checkout actually is.
+
+The same comparison covers a pin satisfied by a machine-local checkout — a
+committed `source` + `version` with the location in a `resolve.<name>.path`
+overlay entry rather than a committed `path:`. Doctor asks the resolver where
+each pin lands rather than re-deriving the precedence, so both spellings of
+"this pin is satisfied by this checkout" are checked. Two resolutions are
+deliberately excluded: a path a [resolution receipt](#resolution-receipts)
+names is a materialization the CLI wrote, reported by `module_resolution_stale`
+instead; and a `worktree:` directive names its own git ref, which — not the
+pin's version — is what the user asked to run. It is a warning, not a failure
+— vendoring a checkout deliberately ahead of its tag is normal while developing
+the module, and only a problem unnoticed. Only a checkout that is its own
+repository is compared (a `path:` inside the workspace's own working tree is
+described by the workspace's tags), and a checkout with no reachable version
+tag — a shallow CI submodule clone — is left alone rather than reported as a
+version nothing established.
+
+Only the two tag namespaces a module package is published under are consulted:
+`v<version>` and `module-package/v<version>`. A vendored monorepo routinely
+carries per-component and nightly tags as well, and `git describe` does not
+prefer a version tag among tags on one commit — unrestricted, it would report a
+checkout sitting exactly on its pin as drifted. A producer tagging outside both
+conventions is therefore not checked rather than checked against the wrong tag.
+
 A `pinned` (committed `source` + `version`) reference resolves through the
 producer's verified module package rather than a git clone: `run` fetches the
 signed release from GitHub, verifies its signature and artifact digest against
