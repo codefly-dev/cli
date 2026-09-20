@@ -33,6 +33,12 @@ func TestSourceSelectionUsesRunningAgentsWithoutCompiledPins(t *testing.T) {
 	selected, err := selectPlugin(t.Context(), root)
 	require.NoError(t, err)
 	require.Equal(t, "example.test/unknown-source-agent:0.0.1", selected.Identifier())
+	t.Run("manager startup budget", func(t *testing.T) {
+		t.Setenv("TEST_SOURCE_STARTUP_DELAY", "16s")
+		slowSelection, err := selectPlugin(t.Context(), root)
+		require.NoError(t, err)
+		require.Equal(t, selected, slowSelection)
+	})
 	linkedRoot := filepath.Join(t.TempDir(), "linked-source")
 	require.NoError(t, os.Symlink(root, linkedRoot))
 	linkedSelection, err := selectPlugin(t.Context(), linkedRoot)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
@@ -35,7 +34,8 @@ func DiscoverPlugins(ctx context.Context) ([]Plugin, error) {
 	var plugins []Plugin
 	var failures []error
 	for _, selected := range installed {
-		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		// Preserve the manager's startup/dial budgets and bound the discovery RPC too.
+		probeCtx, cancel := context.WithTimeout(ctx, manager.DefaultStartupTimeout+2*manager.DefaultDialTimeout)
 		agent, info, err := services.InspectAgent(probeCtx, selected)
 		cancel()
 		if errors.Is(err, contract.ErrIncompatible) || errors.Is(err, manager.ErrAgentVersionMismatch) {

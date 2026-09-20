@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/contract"
@@ -31,5 +32,12 @@ func (*discoveryAgent) GetAgentInformation(context.Context, *agentv0.AgentInform
 }
 
 func main() {
+	if delay := os.Getenv("TEST_SOURCE_STARTUP_DELAY"); delay != "" {
+		duration, err := time.ParseDuration(delay)
+		if err != nil {
+			panic(err)
+		}
+		time.Sleep(duration)
+	}
 	agents.Serve(agents.PluginRegistration{Agent: &discoveryAgent{}})
 }
