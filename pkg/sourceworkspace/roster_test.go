@@ -33,6 +33,11 @@ func TestSourceSelectionUsesRunningAgentsWithoutCompiledPins(t *testing.T) {
 	selected, err := selectPlugin(t.Context(), root)
 	require.NoError(t, err)
 	require.Equal(t, "example.test/unknown-source-agent:0.0.1", selected.Identifier())
+	linkedRoot := filepath.Join(t.TempDir(), "linked-source")
+	require.NoError(t, os.Symlink(root, linkedRoot))
+	linkedSelection, err := selectPlugin(t.Context(), linkedRoot)
+	require.NoError(t, err)
+	require.Equal(t, selected, linkedSelection)
 
 	install("unknown-source-agent", "99.0.0")
 	selected, err = selectPlugin(t.Context(), root)

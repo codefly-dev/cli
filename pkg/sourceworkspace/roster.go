@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -55,7 +56,11 @@ func DiscoverPlugins(ctx context.Context) ([]Plugin, error) {
 }
 
 func selectPlugin(ctx context.Context, sourceDir string) (*resources.Agent, error) {
-	server := codecore.NewDefaultCodeServer(sourceDir)
+	physicalSource, err := filepath.EvalSymlinks(sourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve source root: %w", err)
+	}
+	server := codecore.NewDefaultCodeServer(physicalSource)
 	defer server.Close()
 	response, err := server.Execute(ctx, &codev0.CodeRequest{
 		Operation: &codev0.CodeRequest_DiscoverCodeUnits{DiscoverCodeUnits: &codev0.DiscoverCodeUnitsRequest{}},
