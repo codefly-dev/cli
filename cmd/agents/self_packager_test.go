@@ -74,3 +74,22 @@ func TestSourceBootstrapRejectsMissingOutputAndPreservesInstalledArtifact(t *tes
 	require.NoError(t, err)
 	require.Equal(t, "existing", string(payload))
 }
+
+func TestSelfPackagingRejectsIdentityPathTraversalBeforeBootstrap(t *testing.T) {
+	for _, value := range []string{"../outside", "nested/name", ".", "..", "/absolute", `nested\name`} {
+		for _, field := range []string{"publisher", "name"} {
+			t.Run(field+"="+value, func(t *testing.T) {
+				manifest := &agentYAML{Publisher: "example.test", Kind: serviceAgentKind, Name: "custom", Version: "1.0.0",
+					Source: &agentSource{Directory: ".", Agent: "self", Bootstrap: []string{"must-not-execute"}},
+				}
+				if field == "publisher" {
+					manifest.Publisher = value
+				} else {
+					manifest.Name = value
+				}
+				_, _, err := prepareAgentPackager(t.Context(), t.TempDir(), manifest, t.TempDir())
+				require.ErrorContains(t, err, "single path components")
+			})
+		}
+	}
+}

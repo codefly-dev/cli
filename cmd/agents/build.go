@@ -605,6 +605,11 @@ func prepareAgentPackager(ctx context.Context, root string, manifest *agentYAML,
 	if len(manifest.Source.Bootstrap) == 0 {
 		return nil, "", fmt.Errorf("self-hosted source agent must declare source.bootstrap")
 	}
+	for _, component := range []string{manifest.Publisher, manifest.Name} {
+		if !filepath.IsLocal(component) || strings.ContainsAny(component, "/\\") || component == "." {
+			return nil, "", fmt.Errorf("self-hosted source agent publisher and name must be single path components")
+		}
+	}
 	if _, err := semver.Parse(manifest.Version); err != nil {
 		return nil, "", fmt.Errorf("self-hosted source agent must declare its canonical artifact version: %w", err)
 	}
