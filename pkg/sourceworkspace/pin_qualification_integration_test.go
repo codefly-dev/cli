@@ -17,34 +17,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// sourcePinQualifyEnv gates the qualification on an explicit opt-in: it
-// downloads the pinned agent and runs a real toolchain, so an unqualified
-// machine must fail loudly rather than skip into a false pass.
-const sourcePinQualifyEnv = "CODEFLY_SOURCE_PIN_QUALIFY"
-
-// The source-workspace roster pin is promoted through `codefly agent
-// promote-source`, which qualifies a candidate only through `codefly test
-// source`. The pinned agent answers two further contracts the CLI depends on
-// and that gate never exercises: Builder.SBOM, which image evidence is built
-// on, and Builder.Package, which `codefly agent build` resolves through this
-// same pin. Real checkouts are also governed by a go.work that the ephemeral
-// workspace has to normalize, while a promotion fixture is typically a bare
-// module. A promotion could therefore move the pin onto a release that
-// regressed any of the three and every test here would still pass.
-//
-// This drives the version the CLI actually embeds, so each future promotion
-// re-proves them instead of resting on the promoter's choice of fixture.
-func TestPinnedGoAgentAnswersSourceContractsForAGoWorkCheckout(t *testing.T) {
-	require.NotEmpty(t, os.Getenv(sourcePinQualifyEnv),
-		"set "+sourcePinQualifyEnv+"=1 to qualify the embedded source-workspace pin against its released agent")
+// This exercises an explicitly selected published artifact, not a CLI-owned
+// compatibility pin. Admission still depends on its live protocol declaration.
+func TestSelectedAgentAnswersSourceContractsForAGoWorkCheckout(t *testing.T) {
+	selection := os.Getenv("CODEFLY_SOURCE_QUALIFY_AGENT")
+	require.NotEmpty(t, selection, "set CODEFLY_SOURCE_QUALIFY_AGENT to the artifact to qualify")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
 	defer cancel()
 
 	root := t.TempDir()
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(root, "home"))
-	// The pin is exact, but an inherited "local" source would resolve it from a
-	// developer's cache instead of the published artifact this asserts about.
+	// An inherited local source must not substitute a cached development build.
 	t.Setenv(manager.AgentSourceEnv, "")
 	defer services.ClearAgents()
 
@@ -59,12 +43,16 @@ func TestPinnedGoAgentAnswersSourceContractsForAGoWorkCheckout(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(module, "fixture.go"), []byte("package fixture\n\nfunc Sum(values []int) int {\n\ttotal := 0\n\tfor _, value := range values {\n\t\ttotal += value\n\t}\n\treturn total\n}\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(module, "fixture_test.go"), []byte("package fixture\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif got := Sum([]int{1, 2, 3}); got != 6 {\n\t\tt.Fatalf(\"Sum = %d, want 6\", got)\n\t}\n}\n"), 0o644))
 
-	prepared, err := sourceworkspace.Prepare(ctx, module)
+	selected, err := resources.ParseAgent(ctx, resources.ServiceAgent, selection)
+	require.NoError(t, err)
+	_, err = manager.ResolveLatest(ctx, selected)
+	require.NoError(t, err)
+	t.Logf("qualifying published artifact %s", selected.Identifier())
+	prepared, err := sourceworkspace.PrepareWithAgent(ctx, module, selected)
 	require.NoError(t, err)
 	defer prepared.Close()
 
-	require.Equal(t, sourceworkspace.GenericGoPluginVersion, prepared.Service.Agent.Version,
-		"qualification must run the embedded pin, not some other version")
+	require.Equal(t, selected.Version, prepared.Service.Agent.Version)
 	require.NotEmpty(t, prepared.GoWorkFile, "governing go.work was not normalized into the ephemeral workspace")
 	require.Equal(t, true, prepared.Service.Spec["with-workspace"], "normalized workspace was not advertised to the agent")
 
@@ -75,7 +63,7 @@ func TestPinnedGoAgentAnswersSourceContractsForAGoWorkCheckout(t *testing.T) {
 	require.NoError(t, err)
 
 	source, err := instance.Builder.SBOM(ctx, &builderv0.SBOMRequest{})
-	require.NoError(t, err, "pinned agent failed the source-scope Builder.SBOM contract")
+	require.NoError(t, err, "selected agent failed the source-scope Builder.SBOM contract")
 	require.Equal(t, builderv0.SBOMStatus_COMPLETE, source.GetState().GetState(), source.GetState().GetMessage())
 	require.NotNil(t, source.GetBom(), "source SBOM carried no inventory")
 	require.NotEmpty(t, source.GetSha256(), "source SBOM carried no deterministic digest")
@@ -94,7 +82,7 @@ func TestPinnedGoAgentAnswersSourceContractsForAGoWorkCheckout(t *testing.T) {
 	})
 	if err == nil {
 		require.NotEqual(t, builderv0.SBOMStatus_COMPLETE, image.GetState().GetState(),
-			"pinned agent accepted a tag-only image subject and reported complete evidence")
+			"selected agent accepted a tag-only image subject and reported complete evidence")
 		require.Empty(t, image.GetImages(), "refused image request still returned inventories")
 	}
 
@@ -103,13 +91,13 @@ func TestPinnedGoAgentAnswersSourceContractsForAGoWorkCheckout(t *testing.T) {
 	// already passed proves the agent rejected the subject and kept serving,
 	// rather than dying on it.
 	live, err := instance.Builder.SBOM(ctx, &builderv0.SBOMRequest{})
-	require.NoError(t, err, "pinned agent stopped serving after the tag-only image subject")
+	require.NoError(t, err, "selected agent stopped serving after the tag-only image subject")
 	require.Equal(t, builderv0.SBOMStatus_COMPLETE, live.GetState().GetState(), live.GetState().GetMessage())
 
 	packaged, err := instance.Builder.Package(ctx, &builderv0.PackageRequest{
 		OutputDirectory: filepath.Join(root, "package"),
 		ArtifactName:    "fixture",
 	})
-	require.NoError(t, err, "pinned agent failed the Builder.Package contract that codefly agent build resolves through this pin")
+	require.NoError(t, err, "selected agent failed the Builder.Package contract used by codefly agent build")
 	require.NotNil(t, packaged)
 }

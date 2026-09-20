@@ -11,7 +11,7 @@ needs before the new CLI/fleet combination is published.
 is the machine-readable inventory; the table below is its view, and
 `pkg/conformance` fails if the two disagree. The rules are enforced there, not
 here: an agent that creates containers cannot be marked as needing no rebuild,
-every agent the source-workspace roster or a conformance row pins must be
+every agent a conformance row selects must be
 classified, and a pin that cannot say which kind of agent it means is an error
 rather than a guess.
 
@@ -241,10 +241,10 @@ and inspect containers without creating any.
    real daemon — an interrupted generate's container carries
    `codefly.recovery-scope`, the exact-scope sweep of a run that renamed the
    naming scope walks past it, and the disposable sweep collects it.
-4. Publish the rebuilt agents before or together with the CLI, then move
-   `pkg/sourceworkspace/compatibility.json`, the agent pins in
-   `pkg/conformance/matrix.json`, and `module-saas-starter`'s composed pins onto
-   the published versions.
+4. Publish agents implementing the required protocol and capabilities, then
+   qualify explicit artifact selections in `pkg/conformance/matrix.json` and
+   update any user-owned selections that need those features. The CLI has no
+   source-agent compatibility roster; unchanged protocols require no repinning.
 5. Record the qualified combinations in [the supported matrix](supported-matrix.md).
 
 Mixed generations are unsupported in the other direction too, and they fail

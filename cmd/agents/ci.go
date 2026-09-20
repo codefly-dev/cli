@@ -19,6 +19,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/failures"
 	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
@@ -909,26 +910,22 @@ func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error 
 	return nil
 }
 
-// seedAgentCISourcePackager copies the exact installed Go packager into the
-// isolated CI home when one is available. Publishing the generic Go agent
-// temporarily bumps its own manifest before release CI; that bumped source
-// cannot bootstrap the older packager version selected by this CLI. Seeding
-// the already-installed exact version breaks that cycle while the isolated
-// runner still packages and validates the bumped source under test.
+// Preserve the installed candidate set in the isolated home. Selecting one
+// named predecessor here would reintroduce a static compatibility policy.
 func seedAgentCISourcePackager(sourceHome, agentHome string) error {
-	source := sourcePackagerPath(sourceHome)
-	info, err := os.Stat(source)
-	if os.IsNotExist(err) {
-		return nil
-	}
+	installed, err := manager.InstalledAt(context.Background(), sourceHome, resources.ServiceAgent)
 	if err != nil {
-		return fmt.Errorf("inspect installed source packager: %w", err)
+		return err
 	}
-	if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
-		return fmt.Errorf("installed source packager %s is not an executable file", source)
+	registration, err := resources.AgentKindRegistrationFor(resources.ServiceAgent)
+	if err != nil {
+		return err
 	}
-	if err := copyAgentCIFile(source, sourcePackagerPath(agentHome)); err != nil {
-		return fmt.Errorf("seed isolated source packager: %w", err)
+	for _, agent := range installed {
+		relative := filepath.Join("agents", registration.InstallSubdirectory, agent.Publisher, agent.Name+"__"+agent.Version)
+		if err := copyAgentCIFile(filepath.Join(sourceHome, relative), filepath.Join(agentHome, relative)); err != nil {
+			return fmt.Errorf("seed isolated source agent %s: %w", agent, err)
+		}
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 // source file crosses into the caller for local interpretation.
 func TestGatewayInspectsJVMAndDotNetCodeUnitsThroughGenericAgent(t *testing.T) {
 	root := t.TempDir()
+	writeCodeUnitFixture(t, root, "mind.yaml", "source_agents:\n  src/ads: codefly.dev/generic:latest\n  src/cart: codefly.dev/generic:latest\n")
 	writeCodeUnitFixture(t, root, "AGENTS.md", "# Rules\n\nUse the typed runtime capability.\n")
 	writeCodeUnitFixture(t, root, "src/ads/AGENTS.md", "# Conventions\n\nKeep ads guidance local.\n")
 	writeCodeUnitFixture(t, root, "src/cart/AGENTS.md", "# Conventions\n\nKeep cart guidance local.\n")

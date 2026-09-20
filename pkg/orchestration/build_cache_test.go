@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	"github.com/codefly-dev/core/agents/manager"
 	"testing"
 
@@ -165,9 +164,9 @@ func TestRecipeAgentsReceiveBuildContextAndOutputDirectory(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
-			plugin, ok := sourceworkspace.PinnedPlugin("codefly.dev", name)
-			require.True(t, ok)
-			agent := plugin.Agent()
+			// Immutable artifacts are test inputs, not production compatibility policy.
+			version := map[string]string{"go": "0.0.49", "nextjs": "0.0.153"}[name]
+			agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: name, Version: version}
 			connection, err := manager.Load(ctx, agent, manager.WithoutSandbox(), manager.WithoutPrincipal(), manager.WithEnv("DOCKER_HOST=unix:///nonexistent-recipe-test-docker.sock"))
 			require.NoError(t, err)
 			t.Cleanup(connection.Close)

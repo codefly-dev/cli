@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -112,18 +111,11 @@ func TestRolloutOnDiskMatchesEmbeddedRollout(t *testing.T) {
 // classified would be published into the fleet without anyone deciding whether
 // its Core understands the marker.
 //
-// A roster plugin is a service agent by construction, so it resolves by kind. A
-// matrix pin carries no kind at all, so an identity two kinds share cannot be
+// A matrix pin carries no kind, so an identity two kinds share cannot be
 // resolved from one — ByIdentity reports that rather than answering about
 // whichever binary it found first.
 func TestRolloutCoversEveryPinnedAgent(t *testing.T) {
 	rollout := Rollout()
-	for _, plugin := range sourceworkspace.Roster().Plugins {
-		agent := plugin.Agent()
-		if _, err := rollout.ByKindAndIdentity(string(agent.Kind), plugin.Publisher+"/"+plugin.Name); err != nil {
-			t.Errorf("source-workspace roster pins an agent the rollout cannot resolve: %v", err)
-		}
-	}
 	for _, row := range Default().Rows {
 		for _, agent := range row.Agents {
 			if _, err := rollout.ByIdentity(agent.Publisher + "/" + agent.Name); err != nil {

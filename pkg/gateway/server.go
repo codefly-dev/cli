@@ -194,17 +194,19 @@ type serviceConfigurator interface {
 
 // MindYAML mirrors the mind.yaml config structure.
 type MindYAML struct {
-	Service        string    `yaml:"service"`
-	Plugin         string    `yaml:"plugin"`
-	Config         SvcConfig `yaml:"config"`
-	Infrastructure []string  `yaml:"infrastructure,omitempty"`
+	Service        string            `yaml:"service"`
+	Plugin         string            `yaml:"plugin"`
+	SourceAgents   map[string]string `yaml:"source_agents,omitempty"`
+	Config         SvcConfig         `yaml:"config"`
+	Infrastructure []string          `yaml:"infrastructure,omitempty"`
 }
 
 // SvcConfig holds the project layout configuration from mind.yaml.
 type SvcConfig struct {
-	Path string `yaml:"path"`
-	Type string `yaml:"type"`
-	Port int    `yaml:"port,omitempty"`
+	Language string `yaml:"language,omitempty"`
+	Path     string `yaml:"path"`
+	Type     string `yaml:"type"`
+	Port     int    `yaml:"port,omitempty"`
 }
 
 // NewServer creates a Gateway server. It attempts to load mind.yaml from
@@ -273,6 +275,15 @@ func NewServer(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("parse mind.yaml: %w", parseErr)
 		}
 		s.mindYAML = &my
+		for unit, selected := range my.SourceAgents {
+			canonical, pathErr := canonicalCodeUnitPath(unit)
+			if pathErr != nil || canonical != unit || strings.TrimSpace(selected) == "" {
+				if ownsHost {
+					_ = host.Close()
+				}
+				return nil, fmt.Errorf("source_agents requires canonical unit paths and nonempty agent selections: %q", unit)
+			}
+		}
 	}
 	// No mind.yaml is fine — the gateway still serves basic RPCs (git, shell)
 	// and will report a clear error for plugin-dependent operations.
@@ -416,12 +427,13 @@ func (s *Server) executionServiceBehaviorWithAgent(agentOverride string) (servic
 	}
 	name := filepath.Base(s.cfg.WorkDir)
 	agentName := ""
-	if s.mindYAML != nil {
+	switch {
+	case s.mindYAML != nil && strings.TrimSpace(s.mindYAML.Plugin) != "":
 		name = s.mindYAML.Service
 		agentName = pluginToAgentName(s.mindYAML.Plugin)
-	} else if agentOverride != "" {
+	case agentOverride != "":
 		agentName = agentOverride
-	} else {
+	default:
 		var err error
 		agentName, err = engine.DetectSourceAgent(s.cfg.WorkDir)
 		if err != nil {
@@ -476,22 +488,13 @@ func codeFailureMessage(response *codev0.CodeResponse) string {
 	return response.GetFailure().GetMessage()
 }
 
-// pluginToAgentName maps mind.yaml plugin names to agent identifiers
-// understood by the agent manager.
-// Accepts both formats: "go-generic" (canonical) and "generic-go" (legacy).
+// pluginToAgentName preserves explicit identities without agent-family aliases.
 func pluginToAgentName(plugin string) string {
-	switch plugin {
-	case "go-generic", "generic-go":
-		return "go:latest"
-	case "rust-generic", "generic-rust":
-		return "rust:latest"
-	case "node-generic", "generic-node":
-		return "nextjs:latest"
-	case "python-generic", "generic-python":
-		return "python:latest"
-	default:
-		return plugin + ":latest"
+	plugin = strings.TrimSpace(plugin)
+	if plugin == "" || strings.Contains(plugin, ":") {
+		return plugin
 	}
+	return plugin + ":latest"
 }
 
 // serviceRoot returns the absolute path to the service source tree.
@@ -613,7 +616,10 @@ func shouldSkipGatewayDir(name string) bool {
 
 // language returns the language string for the current service.
 func (s *Server) language() string {
-	return pluginToLang(s.mindYAML.Plugin)
+	if s.mindYAML == nil {
+		return ""
+	}
+	return s.mindYAML.Config.Language
 }
 
 // ─── Topology ────────────────────────────────────────────────
@@ -630,7 +636,7 @@ func (s *Server) ListServices(_ context.Context, _ *gatewayv1.ListServicesReques
 	return &gatewayv1.ListServicesResponse{
 		Services: []*gatewayv1.ServiceInfo{{
 			Name:     my.Service,
-			Language: pluginToLang(my.Plugin),
+			Language: my.Config.Language,
 			Type:     my.Config.Type,
 			Port:     int32(my.Config.Port),
 		}},
@@ -1746,17 +1752,7 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	}
 	var service serviceExecution
 	if len(codeUnits) == 0 {
-		agentOverride := ""
-		if s.mindYAML == nil {
-			if formula := runtimeReq.GetFormula(); formula != nil {
-				agentOverride = engine.DetectFormulaAgent(formula.GetCommand())
-			}
-		}
-		if agentOverride != "" {
-			service, err = s.executionServiceBehaviorWithAgent(agentOverride)
-		} else {
-			service, err = s.executionServiceBehavior()
-		}
+		service, err = s.executionServiceBehavior()
 		if err != nil {
 			return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 		}
@@ -3118,21 +3114,6 @@ func parseInt(s string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
-}
-
-func pluginToLang(plugin string) string {
-	switch plugin {
-	case "go-generic", "generic-go":
-		return "go"
-	case "rust-generic", "generic-rust":
-		return "rust"
-	case "node-generic", "generic-node":
-		return "node"
-	case "python-generic", "generic-python":
-		return "python"
-	default:
-		return plugin
-	}
 }
 
 func gitStatusString(xy string) string {

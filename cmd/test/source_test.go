@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/agents/contract"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
@@ -23,7 +24,7 @@ type sourceHandshakeAgent struct {
 }
 
 func (s sourceHandshakeAgent) GetAgentInformation(context.Context, *agentv0.AgentInformationRequest) (*agentv0.AgentInformation, error) {
-	info := &agentv0.AgentInformation{}
+	info := &agentv0.AgentInformation{Contract: contract.Current()}
 	if s.runtime {
 		info.Capabilities = []*agentv0.Capability{{Type: agentv0.Capability_RUNTIME}}
 	}
@@ -61,8 +62,23 @@ func TestPrepareSourceWorkspaceUsesExactAgentOverride(t *testing.T) {
 	}
 }
 
-func TestPrepareSourceWorkspaceRejectsFloatingAgentOverride(t *testing.T) {
-	for _, spec := range []string{"codefly.dev/go", "codefly.dev/go:latest", "codefly.dev/go:v1.2.3"} {
+func TestPrepareSourceWorkspaceAcceptsFloatingAgentOverride(t *testing.T) {
+	for _, spec := range []string{"example.test/unknown", "example.test/unknown:latest"} {
+		t.Run(spec, func(t *testing.T) {
+			prepared, err := prepareSourceWorkspace(t.Context(), t.TempDir(), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer prepared.Close()
+			if prepared.Service.Agent.Version != "latest" {
+				t.Fatal("floating selection was statically pinned")
+			}
+		})
+	}
+}
+
+func TestPrepareSourceWorkspaceRejectsNoncanonicalAgentOverride(t *testing.T) {
+	for _, spec := range []string{"codefly.dev/go:v1.2.3"} {
 		t.Run(strings.ReplaceAll(spec, "/", "_"), func(t *testing.T) {
 			if _, err := prepareSourceWorkspace(context.Background(), t.TempDir(), spec); err == nil {
 				t.Fatalf("agent override %q was accepted", spec)

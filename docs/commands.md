@@ -1134,8 +1134,10 @@ source:
 ```
 
 The directory must remain inside the repository after symlink resolution, and
-the agent version must be exact. Source tests, packaging, and audit all use that
-same selection.
+an omitted agent version resolves `latest`. Source tests, packaging, and audit
+all use that selection, checking compatibility from the running agent rather
+than its release. Self-hosted packagers declare `source.agent: self` and their
+own bootstrap command; see [runtime agent compatibility](agent-compatibility.md).
 
 Conformance defaults to scaffolding a fresh service through `Builder.Create`.
 Attach-only generic agents whose `Builder.Create` intentionally declines to

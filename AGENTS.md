@@ -61,7 +61,7 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 
 ### Shipping
 - **Cut a release** (`codefly publish` → GoReleaser → Homebrew cask) → [docs/runbooks/cut-a-release.md](docs/runbooks/cut-a-release.md)
-- **Release the whole agent fleet** (re-pin every agent on a new core, publish in dependency order) → [docs/runbooks/release-the-fleet.md](docs/runbooks/release-the-fleet.md)
+- **Release affected agents** (only for required agent changes, never an unchanged Core protocol) → [docs/runbooks/release-the-fleet.md](docs/runbooks/release-the-fleet.md)
 - **How releases & self-update work** → [docs/cli-updates.md](docs/cli-updates.md)
 
 ### Extending the CLI
@@ -162,6 +162,10 @@ relative paths.
 - **CLI ↔ Agent communication is ALWAYS gRPC.** Never import agent code, never call agent
   functions. The agent runs as a separate process. Clients: `runtimev0.RuntimeClient`,
   `builderv0.BuilderClient`, `agentv0.AgentClient`, `codev0.CodeClient`.
+- **Compatibility is runtime-only.** No concrete-agent roster, name exceptions, release-pin
+  admission or linked-Core matching in CLI/Core. Unchanged protocols need no fleet repinning.
+  Require the running peer's protocol and operation capabilities; missing is an error.
+  See [docs/agent-compatibility.md](docs/agent-compatibility.md) for selection and bootstrap.
 - **NEVER mock.** Tests use real agent processes and real infrastructure where possible.
 - **The orchestration package is the most critical code.** Changes there affect every
   `codefly run`. Test thoroughly.

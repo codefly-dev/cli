@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -163,6 +164,14 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 	connection, err := manager.Load(loadCtx, agent, options...)
 	if err != nil {
 		return nil, fmt.Errorf("load agent %s: %w", agentName, err)
+	}
+	info, err := agentv0.NewAgentClient(connection.GRPCConn()).GetAgentInformation(loadCtx, &agentv0.AgentInformationRequest{})
+	if err == nil {
+		err = contract.Check(info.GetContract())
+	}
+	if err != nil {
+		connection.Close()
+		return nil, fmt.Errorf("inspect agent %s: %w", agentName, err)
 	}
 	session := &AgentSession{
 		key:        key,

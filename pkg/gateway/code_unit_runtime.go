@@ -105,16 +105,19 @@ func canonicalCodeUnitPath(value string) (string, error) {
 
 // serviceBehaviorForCodeUnit binds an exact source root. It never reuses the
 // root behavior: that cache is precisely what made a heterogeneous project
-// route every unit through the first detected plugin. agentOverride is typed
-// Codefly policy (for example a runtime formula), never a native command.
+// route every unit through the first detected plugin. Explicit source_agents
+// entries select artifacts; formula commands never select agent identities.
 func (s *Server) serviceBehaviorForCodeUnit(target normalizedCodeUnitTarget, agentOverride string) (serviceExecution, error) {
 	if s.host == nil {
 		return nil, fmt.Errorf("workspace host is unavailable")
 	}
-	agentName, err := engine.DetectSourceAgent(target.root)
-	if strings.TrimSpace(agentOverride) != "" {
-		agentName = strings.TrimSpace(agentOverride)
-		err = nil
+	agentName := strings.TrimSpace(agentOverride)
+	if agentName == "" && s.mindYAML != nil {
+		agentName = strings.TrimSpace(s.mindYAML.SourceAgents[target.path])
+	}
+	var err error
+	if agentName == "" {
+		agentName, err = engine.DetectSourceAgent(target.root)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("detect agent at code unit %q (%s): %w", target.id, target.path, err)
@@ -140,12 +143,8 @@ func (s *Server) serviceBehaviorForCodeUnit(target normalizedCodeUnitTarget, age
 	return service, nil
 }
 
-func (s *Server) executionServiceBehaviorForCodeUnit(target normalizedCodeUnitTarget, request *runtimev0.TestRequest) (serviceExecution, error) {
-	agentOverride := ""
-	if request != nil && request.GetFormula() != nil {
-		agentOverride = engine.DetectFormulaAgent(request.GetFormula().GetCommand())
-	}
-	return s.serviceBehaviorForCodeUnit(target, agentOverride)
+func (s *Server) executionServiceBehaviorForCodeUnit(target normalizedCodeUnitTarget, _ *runtimev0.TestRequest) (serviceExecution, error) {
+	return s.serviceBehaviorForCodeUnit(target, "")
 }
 
 func (s *Server) testCodeUnits(ctx context.Context, request *runtimev0.TestRequest, targets []normalizedCodeUnitTarget) (*runtimev0.TestResponse, error) {

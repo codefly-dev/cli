@@ -15,6 +15,7 @@ import (
 // neither runtime, filesystem, nor gateway behavior is mocked.
 func TestGatewayRunsEveryDeclaredCodeUnitThroughItsProductionPlugin(t *testing.T) {
 	root := t.TempDir()
+	writeCodeUnitFixture(t, root, "mind.yaml", "source_agents:\n  backend: codefly.dev/python:latest\n  frontend: codefly.dev/nextjs:latest\n")
 	writeCodeUnitFixture(t, root, "backend/pyproject.toml", `[project]
 name = "gateway-polyglot-backend"
 version = "0.0.0"

@@ -232,12 +232,15 @@ jobs:
         working-directory: cli
         run: GOWORK=off GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
 
-      - name: Verify a linux/arm64 companion can resolve every language agent
-        # Guards the arm64 companion footgun: publishing an arm64 companion is
-        # only safe while every language agent still ships a linux/arm64 asset.
+      - name: Verify linux/arm64 assets for the qualification fixtures
+        # Test inputs only: these identities never select production agents or
+        # establish protocol compatibility. Keep the artifact gate explicit.
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: ${{ github.workspace }}/bin/codefly agent verify-platform linux/arm64
+        run: >-
+          ${{ github.workspace }}/bin/codefly agent verify-platform linux/arm64
+          codefly.dev/go codefly.dev/python codefly.dev/nextjs
+          codefly.dev/rust codefly.dev/swift codefly.dev/generic
 
       - name: Verify every embedded tag is in the registry
         run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"

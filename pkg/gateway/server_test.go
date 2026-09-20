@@ -217,8 +217,9 @@ func newTestServerWithWorkDir(mock codev0.CodeClient, workDir string) *Server {
 			Service: "test-svc",
 			Plugin:  "generic-go",
 			Config: SvcConfig{
-				Path: ".",
-				Type: "go",
+				Path:     ".",
+				Type:     "go",
+				Language: "go",
 			},
 		},
 		serviceBehavior: &mockServiceExecution{code: mock},
@@ -1633,54 +1634,27 @@ func TestGitRPCInputBoundsAndOptionBoundary(t *testing.T) {
 }
 
 func TestPluginToAgentName(t *testing.T) {
-	tests := []struct {
-		plugin string
-		want   string
-	}{
-		// Canonical names (new).
-		{"go-generic", "go:latest"},
-		{"rust-generic", "rust:latest"},
-		{"node-generic", "nextjs:latest"},
-		{"python-generic", "python:latest"},
-		// Legacy names (backward compat).
-		{"generic-go", "go:latest"},
-		{"generic-rust", "rust:latest"},
-		{"generic-node", "nextjs:latest"},
-		{"generic-python", "python:latest"},
-		// Unknown.
-		{"custom-plugin", "custom-plugin:latest"},
-	}
-	for _, tt := range tests {
-		got := pluginToAgentName(tt.plugin)
-		if got != tt.want {
-			t.Errorf("pluginToAgentName(%q) = %q, want %q", tt.plugin, got, tt.want)
+	for input, want := range map[string]string{
+		"example.test/unknown":       "example.test/unknown:latest",
+		"example.test/unknown:1.2.3": "example.test/unknown:1.2.3",
+		"go-generic":                 "go-generic:latest",
+		"generic-node":               "generic-node:latest",
+		"":                           "",
+	} {
+		if got := pluginToAgentName(input); got != want {
+			t.Fatalf("selection %q became %q, want %q", input, got, want)
 		}
 	}
 }
 
-func TestPluginToLang(t *testing.T) {
-	tests := []struct {
-		plugin string
-		want   string
-	}{
-		// Canonical names (new).
-		{"go-generic", "go"},
-		{"rust-generic", "rust"},
-		{"node-generic", "node"},
-		{"python-generic", "python"},
-		// Legacy names (backward compat).
-		{"generic-go", "go"},
-		{"generic-rust", "rust"},
-		{"generic-node", "node"},
-		{"generic-python", "python"},
-		// Unknown.
-		{"unknown", "unknown"},
+func TestTopologyLanguageDoesNotComeFromAgentIdentity(t *testing.T) {
+	server := &Server{mindYAML: &MindYAML{Plugin: "go-generic"}}
+	if got := server.language(); got != "" {
+		t.Fatalf("inferred language from agent identity: %q", got)
 	}
-	for _, tt := range tests {
-		got := pluginToLang(tt.plugin)
-		if got != tt.want {
-			t.Errorf("pluginToLang(%q) = %q, want %q", tt.plugin, got, tt.want)
-		}
+	server.mindYAML.Config.Language = "python"
+	if got := server.language(); got != "python" {
+		t.Fatalf("declared language = %q", got)
 	}
 }
 

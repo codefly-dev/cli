@@ -14,6 +14,7 @@ import (
 func TestConfigureServicePersistsPythonEnvironmentForNextTestRun(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
+		"mind.yaml": "service: source\nplugin: codefly.dev/python:latest\n",
 		"pyproject.toml": `[project]
 name = "runtime-recovery"
 version = "0.0.0"

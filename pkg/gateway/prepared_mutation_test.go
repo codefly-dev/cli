@@ -279,6 +279,7 @@ func TestPreparedMutationRetentionRejectsOversizedResults(t *testing.T) {
 func newPreparedMutationGateway(t *testing.T) (*Server, ed25519.PrivateKey, string) {
 	t.Helper()
 	root := t.TempDir()
+	writeCodeUnitFixture(t, root, "mind.yaml", "service: app\nplugin: codefly.dev/generic:latest\n")
 	server, err := NewServer(Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)

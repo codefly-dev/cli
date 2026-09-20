@@ -20,10 +20,7 @@ func TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization(t *testing.T) {
 	writeSourceFile(t, root, "pyproject.toml", "[project]\nname = \"probe\"\nversion = \"0.0.0\"\n")
 	writeSourceFile(t, root, "broken.py", "def oops(:\n    return\n")
 
-	agent, err := DetectSourceAgent(root)
-	if err != nil {
-		t.Fatalf("detect source agent: %v", err)
-	}
+	agent := "codefly.dev/python:latest"
 
 	host, err := NewWorkspaceHost(Config{Root: root})
 	if err != nil {

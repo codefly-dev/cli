@@ -1,24 +1,23 @@
 # Runbook: Release the whole agent fleet on a new core version
 
-Bring every codefly agent onto a single uniform core version and publish it.
-Use this after a core change that the fleet must pick up (the endpoint of an
-epic like codefly-dev/cli#435).
+Use this only when agents need a particular implementation fix or a changed
+protocol/capability. It is not a compatibility requirement for a Core release:
+agents implementing unchanged contracts continue working independently of their
+linked Core version. See [runtime compatibility](../agent-compatibility.md).
 
 ## When to use
 
-- Core released a new version and the agents, composed modules, and downstream
-  workspaces must all move onto it together.
+- A verified agent-side fix or protocol change requires publishing affected
+  agents. Do not repin the fleet merely because Core or the CLI released.
 
 ## Order (release after dependencies, never before)
 
 Agents before the modules that pin them; modules before the workspaces that
 compose them.
 
-1. **Core** — merge the core change, then in the core checkout on a clean,
-   synced `main`:
-   ```bash
-   codefly publish patch        # bumps version/info.codefly.yaml, tags, pushes
-   ```
+1. **Core** — bump `version/info.codefly.yaml` in a PR, run
+   `make check-version-tag`, and merge after checks pass. Core's version-tag
+   workflow tags the exact green main commit. Never tag Core manually.
    If this change touched any `companions/*/info.codefly.yaml`, wait for
    `companions-publish.yml` to finish pushing the bumped tags, then run
    `codefly companion verify` before moving on — a companion version bump
@@ -34,7 +33,7 @@ compose them.
    The rebuilt binary matters: agent publish runs `codefly ci run`, and the
    [port-isolation](../agent-ci-port-isolation.md) fix is what keeps sequential
    agent releases from colliding on one host port.
-3. **Agents** — re-pin every agent and publish each:
+3. **Affected agents** — update only those needing the implementation change:
    ```bash
    codefly agent deps --pin vX.Y.Z --all   # pins go.mod + base/* + factory locks (cli#434)
    # commit each repo, then per agent repo (clean, on main, synced):
@@ -78,7 +77,7 @@ compose them.
 - [ ] If companion versions changed: `companions-publish.yml` finished and
       `codefly companion verify` passes
 - [ ] CLI pinned to the core tag, released, and reinstalled (`codefly version`)
-- [ ] Every agent re-pinned and published (service / module / toolbox / provider)
+- [ ] Every affected agent updated and published; unchanged contracts need no action
 - [ ] `module-saas-starter` refreshed and published after its agents
 - [ ] Downstream base-sync refs moved
 
@@ -92,7 +91,9 @@ The tag contains merged Core #458, including Buildx forwarding and pre-build
 capability negotiation, and resolves through Go modules. The conformance
 matrix already records the matching `v0.3.27` release line.
 
-The source-workspace pins are Go `0.0.47` and Next.js `0.0.152`.
+The historical source-workspace pins were Go `0.0.47` and Next.js `0.0.152`.
+The production roster has since been removed; these are qualification records,
+not current admission or selection rules.
 Both consume Core `v0.3.27` and explicitly implement `BuildCapabilities`.
 Go's legacy executor honors Buildx selection through Core; Next.js produces
 recipes and rejects requests without an output directory before preparing
@@ -262,7 +263,7 @@ publishing and matrix items are carried in
 
 ## Upgrading the generic Go packager
 
-The canonical `codefly.dev/go` service agent can qualify its own successor even
+An agent declaring `source.agent: self` and its bootstrap command can qualify its own successor even
 when the published predecessor has an older cross compiler. Agent qualification
 builds one native seed from the candidate's standalone source into a private,
 temporary plugin home, using the candidate's exact version. That seed serves
@@ -271,9 +272,9 @@ Source tests, audits, conformance, drift checks and required release platforms
 remain mandatory. No candidate binary is stored under a released predecessor's
 identity, and the temporary seed is never a published artifact.
 
-Other agents continue to use their explicit source agent or the CLI compatibility
-roster. After publishing a packager, qualify its adoption through the normal
-source-agent promotion flow before releasing the dependent fleet.
+Other agents use their explicit source selection or runtime discovery of
+installed candidates. Publishing a packager does not require a CLI roster
+promotion. Qualify its operations through the runtime contracts before adoption.
 
 Fresh generated and copied conformance workspaces record an empty Git baseline
 and their initial source snapshot before invoking the workspace gate. This gives
