@@ -34,6 +34,21 @@ selected release assets; it does not claim their protocols are compatible.
 CI fixture selections and historical qualification records are evidence, not
 production admission policy.
 
+`update agent` inspects the resolved candidate before changing the service's
+agent version. Failed discovery or an incompatible protocol leaves both the
+manifest and in-memory selection unchanged. This is protocol admission, not
+proof of operation support, functional readiness or deployment approval.
+The command edits that service's declaration; it is not the product-owned
+nested replacement workflow tracked in [CLI #753](https://github.com/codefly-dev/cli/issues/753).
+
+Runnable loading checks the live protocol before `Builder.Load`, then requires
+Builder support. Solution executors check the live declaration before exposing
+a Package/Render client. Artifact verification remains a separate prerequisite;
+the protocol check does not authorize an unverified executable.
+
+See [independent-upgrade coverage](independent-upgrade-coverage.md) for what
+agent admission delivers and what still needs Core/CLI integration and evidence.
+
 The gateway accepts literal `plugin: publisher/name[:version]` in `mind.yaml`.
 It no longer translates names such as `generic-node` to another agent identity.
 For polyglot checkouts, `source_agents` maps canonical repository-relative unit

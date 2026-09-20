@@ -8,6 +8,9 @@ import (
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/contract"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type discoveryAgent struct {
@@ -21,14 +24,34 @@ func (*discoveryAgent) GetAgentInformation(context.Context, *agentv0.AgentInform
 		advertised.ProtocolVersion++
 	case "undeclared":
 		advertised.ProtocolVersion = 0
+	case "unavailable":
+		return nil, status.Error(codes.Unavailable, "discovery unavailable")
+	}
+	var capabilities []*agentv0.Capability
+	if os.Getenv("TEST_SOURCE_NO_BUILDER") == "" {
+		capabilities = []*agentv0.Capability{{Type: agentv0.Capability_BUILDER}}
 	}
 	return &agentv0.AgentInformation{
-		Contract:  advertised,
-		Languages: []*agentv0.Language{{Type: agentv0.Language_GO}},
+		Capabilities: capabilities,
+		Contract:     advertised,
+		Languages:    []*agentv0.Language{{Type: agentv0.Language_GO}},
 		Validation: &agentv0.ValidationCapabilities{
 			SourcePackage: &agentv0.ValidationOperationCapability{Supported: true},
 		},
 	}, nil
+}
+
+type discoveryBuilder struct {
+	builderv0.UnimplementedBuilderServer
+}
+
+func (*discoveryBuilder) Load(context.Context, *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
+	if marker := os.Getenv("TEST_SOURCE_BUILDER_LOADED"); marker != "" {
+		if err := os.WriteFile(marker, []byte("loaded"), 0o600); err != nil {
+			return nil, err
+		}
+	}
+	return &builderv0.LoadResponse{State: &builderv0.LoadStatus{State: builderv0.LoadStatus_READY}}, nil
 }
 
 func main() {
@@ -39,5 +62,5 @@ func main() {
 		}
 		time.Sleep(duration)
 	}
-	agents.Serve(agents.PluginRegistration{Agent: &discoveryAgent{}})
+	agents.Serve(agents.PluginRegistration{Agent: &discoveryAgent{}, Builder: &discoveryBuilder{}})
 }

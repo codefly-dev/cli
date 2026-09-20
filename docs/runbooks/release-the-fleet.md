@@ -1,4 +1,4 @@
-# Runbook: Release the whole agent fleet on a new core version
+# Runbook: Release affected agents
 
 Use this only when agents need a particular implementation fix or a changed
 protocol/capability. It is not a compatibility requirement for a Core release:
@@ -10,12 +10,14 @@ linked Core version. See [runtime compatibility](../agent-compatibility.md).
 - A verified agent-side fix or protocol change requires publishing affected
   agents. Do not repin the fleet merely because Core or the CLI released.
 
-## Order (release after dependencies, never before)
+## Order (only for dependencies actually changed)
 
-Agents before the modules that pin them; modules before the workspaces that
-compose them.
+Identify the required agent implementation or capability change first. Skip
+unchanged components. A newer Core or CLI version alone is not a reason to
+publish agents or retag ancestor modules. These steps require explicit release
+authorization; they are not permission to merge or publish automatically.
 
-1. **Core** — bump `version/info.codefly.yaml` in a PR, run
+1. **Core, if the implementation needs a new Core API** — bump `version/info.codefly.yaml` in a PR, run
    `make check-version-tag`, and merge after checks pass. Core's version-tag
    workflow tags the exact green main commit. Never tag Core manually.
    If this change touched any `companions/*/info.codefly.yaml`, wait for
@@ -23,35 +25,32 @@ compose them.
    `codefly companion verify` before moving on — a companion version bump
    that isn't backed by a pushed, publicly pullable image breaks every
    Codefly-native build at the companion pull, not just this release.
-2. **CLI** — pin to the new core and release:
+2. **CLI, only if its implementation or required tooling changes** — adopt the reviewed Core API and qualify it:
    ```bash
    GOWORK=off go get github.com/codefly-dev/core@vX.Y.Z && go mod tidy
    # commit, merge the CLI PR, then:
    codefly publish patch        # in pkg/cli mode
-   codefly self build           # install the new binary — it carries the CI port-isolation fix
+   codefly self build           # install the qualified CLI when needed
    ```
-   The rebuilt binary matters: agent publish runs `codefly ci run`, and the
-   [port-isolation](../agent-ci-port-isolation.md) fix is what keeps sequential
-   agent releases from colliding on one host port.
+   Agent publication runs `codefly ci run`. Verify that the selected CLI has the
+   required tooling, including [port isolation](../agent-ci-port-isolation.md).
+   Do not rebuild it merely to match an agent's linked Core version.
 3. **Affected agents** — update only those needing the implementation change:
    ```bash
-   codefly agent deps --pin vX.Y.Z --all   # pins go.mod + base/* + factory locks (cli#434)
+   codefly agent deps --dir /path/to/affected-agent --pin vX.Y.Z
    # commit each repo, then per agent repo (clean, on main, synced):
    codefly publish patch                   # runs release CI + creates the GitHub release
    ```
    `codefly publish` works for every agent kind — service, module, toolbox,
    provider (cli#433). It aborts untouched if pre-flight or CI fails.
-4. **Composed modules** — only after the agents they pin are published:
-   ```bash
-   cd module-saas-starter
-   codefly update workspace     # refresh the pinned agent versions
-   codefly publish patch
-   ```
-5. **Downstream base-sync workspaces** — move the base ref once the starter
-   publishes (e.g. `obin-ai/lodestar`):
-   ```bash
-   codefly sync module          # reconcile the immutable base + overlay
-   ```
+4. **Consumers** — qualify the selected artifact against the actual operation,
+   configuration and functional/stateful requirements. An owner may deliberately
+   update a module's tested default after the required artifact is published;
+   that is not a reason to refresh unrelated agents or all module dependencies.
+5. **Product-owned nested replacements** — this workflow is being implemented
+   under [CLI #753](https://github.com/codefly-dev/cli/issues/753) and Core #589.
+   Do not substitute dependency-source edits or intermediate tags and call that
+   workflow delivered. See [the coverage report](../independent-upgrade-coverage.md).
 
 ## Gotchas
 
@@ -73,13 +72,13 @@ compose them.
 
 ## Checklist
 
-- [ ] Core tagged and fetchable (`git ls-remote --tags <core> vX.Y.Z`)
+- [ ] Required Core changes, if any, tagged and fetchable (`git ls-remote --tags <core> vX.Y.Z`)
 - [ ] If companion versions changed: `companions-publish.yml` finished and
       `codefly companion verify` passes
-- [ ] CLI pinned to the core tag, released, and reinstalled (`codefly version`)
+- [ ] Required CLI changes, if any, qualified and explicitly authorized for release
 - [ ] Every affected agent updated and published; unchanged contracts need no action
-- [ ] `module-saas-starter` refreshed and published after its agents
-- [ ] Downstream base-sync refs moved
+- [ ] Actual consumer combination qualified; no unrelated selections changed
+- [ ] Any owner-default adoption reviewed separately from product selection
 
 ## Tagged Core rollout checkpoint (2026-09-11)
 
