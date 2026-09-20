@@ -4,8 +4,10 @@ This is the implementation boundary for [CLI #753](https://github.com/codefly-de
 and its agent-admission work in [CLI #752](https://github.com/codefly-dev/cli/pull/752),
 coordinated with [Core #589](https://github.com/codefly-dev/core/pull/589).
 It is not a claim that the complete product workflow is available.
-Generation stays in #751 and checkout diagnostics in #733; neither is folded
-into #752. No additional tracker, merge, release or fleet rebuild is implied.
+At the owner's subsequent direction, generation #751 and checkout diagnostics
+#733 are consolidated into #752 with their original commits. #753 remains the
+single tracker. Consolidating branches does not authorize merging to main,
+releasing or rebuilding the fleet.
 
 The required workflow is: select a nested replacement, inspect differences,
 check compatibility, test the effective combination, approve, deploy those
@@ -32,6 +34,14 @@ exact inputs, and inspect the actual deployment.
   does not require rebuilding or repinning the fleet. The release runbook and
   skill now target affected repositories instead of recommending `--all` or
   requiring every ancestor to publish in a fixed chain.
+- Companion-only protobuf generation and checkout drift diagnostics from #751
+  and #733. Generation requires Core's `proto.FormatGoOutputs`, absent from the
+  currently selected v0.3.40; the combined branch cannot build until the reviewed
+  Core implementation is consumed. Drift diagnostics are advisory, not deployment
+  admission or proof of verified artifact provenance.
+- Removed the product-specific PostgreSQL IPC sweep from both `run` and `clear`,
+  matching the Core removal. Generic owned-process/container cleanup remains;
+  no named replacement hook or product-resource heuristic is added to the CLI.
 
 These are agent-admission guarantees, not proof of service behavior, retained
 data recovery, authorized production artifacts or approval of a composition.
@@ -122,14 +132,16 @@ kind-owned artifact verification before actual solution qualification can pass.
 Daemon monitoring still classifies concrete process names. Core's public
 ownership API needs an authenticated read-only membership/owner result,
 including leaderless groups, so CLI does not duplicate private registry or
-reaper logic. PostgreSQL IPC cleanup also awaits its agent-owned migration;
-removing the host call without recovery would lose behavior.
+reaper logic. PostgreSQL IPC cleanup is no longer a host migration prerequisite:
+the owner directed its removal from Core/CLI. The CLI no longer scavenges native
+PostgreSQL shared memory or semaphores; native retained-data/recovery behavior
+has not been requalified by removing those calls.
 
 Published-agent qualification remains a release blocker. Core #589 records 17
 official service artifacts rejected for missing lifecycle declarations,
 including Go 0.0.52, Next.js 0.0.153 and Redis 0.0.89. Known owner work includes
-service-go#81, service-python#86, service-nextjs#129, service-generic#59,
-service-redis#62 and service-postgres#138. Missing declarations require truthful
+service-go#81, service-python#86, service-nextjs#129, service-generic#59 and
+service-redis#62. Missing declarations require truthful
 owner adoption and authorized publication, not a blanket fleet rebuild.
 The supported-set inventory and non-service qualification are not complete.
 
