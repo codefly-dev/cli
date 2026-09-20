@@ -198,7 +198,7 @@ func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 	deepCopied := map[string]bool{
 		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
 		"ManagedServices": true, "ServiceSecrets": true, "Secrets": true,
-		"ResourceQuota": true, "Dns": true,
+		"ResourceQuota": true, "Dns": true, "AuditSinks": true,
 	}
 	typ := reflect.TypeOf(resources.Environment{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -352,4 +352,48 @@ func TestSelectedFixturePrefersOverrideThenEnvironment(t *testing.T) {
 	require.Empty(t, SelectedFixture(&resources.Environment{}, ""))
 	require.Equal(t, "custom", SelectedFixture(&resources.Environment{}, "custom"))
 	require.Empty(t, SelectedFixture(nil, ""))
+}
+
+// TestCloneEnvironmentIsolatesTransportAndAuditBindings covers the fields the
+// coverage guard cannot see: they hang off a managed service and off each audit
+// sink, so a shared map or slice there contaminates concurrent flows exactly as
+// a shared top-level field would.
+func TestCloneEnvironmentIsolatesTransportAndAuditBindings(t *testing.T) {
+	original := &resources.Environment{
+		Name: "staging",
+		ManagedServices: map[string]resources.EnvironmentManagedService{
+			"store": {
+				Transport: &resources.EnvironmentManagedTransport{Mode: "proxy", Args: []string{"--private-ip"}},
+				Identity: &resources.EnvironmentWorkloadIdentity{
+					Principal:   "platform-db@example",
+					Annotations: map[string]string{"iam.example/service-account": "platform-db@example"},
+					Labels:      map[string]string{"example/workload-identity": "true"},
+				},
+			},
+		},
+		AuditSinks: []resources.EnvironmentAuditSink{{
+			Name:      "audit",
+			Writer:    &resources.EnvironmentWorkloadIdentity{Principal: "audit-writer@example"},
+			Retention: &resources.EnvironmentAuditRetention{Days: 400, Locked: true},
+		}},
+	}
+	clone := cloneEnvironment(original)
+
+	managed := original.ManagedServices["store"]
+	cloned := clone.ManagedServices["store"]
+	require.NotSame(t, managed.Transport, cloned.Transport)
+	require.NotSame(t, managed.Identity, cloned.Identity)
+	require.NotSame(t, &original.AuditSinks[0], &clone.AuditSinks[0])
+	require.NotSame(t, original.AuditSinks[0].Writer, clone.AuditSinks[0].Writer)
+	require.NotSame(t, original.AuditSinks[0].Retention, clone.AuditSinks[0].Retention)
+
+	cloned.Transport.Args[0] = "--public-ip"
+	cloned.Identity.Annotations["iam.example/service-account"] = "other@example"
+	cloned.Identity.Labels["example/workload-identity"] = "false"
+	clone.AuditSinks[0].Retention.Locked = false
+
+	require.Equal(t, "--private-ip", managed.Transport.Args[0])
+	require.Equal(t, "platform-db@example", managed.Identity.Annotations["iam.example/service-account"])
+	require.Equal(t, "true", managed.Identity.Labels["example/workload-identity"])
+	require.True(t, original.AuditSinks[0].Retention.Locked)
 }

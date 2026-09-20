@@ -125,7 +125,7 @@ func renderModuleTree(
 					service.Name,
 					env.Name,
 					env.Namespace,
-					managedService.SecretReferences,
+					&managedService,
 				)
 				if bundleErr != nil {
 					return fmt.Errorf("select managed service %s bundle: %w", service.Name, bundleErr)
@@ -158,6 +158,15 @@ func renderModuleTree(
 					service.Autoscale,
 				); projectErr != nil {
 					return fmt.Errorf("project service %s autoscale: %w", service.Name, projectErr)
+				}
+				if projectErr := projectManagedTransport(
+					ctx,
+					filepath.Join(stage, unitDir, service.Name),
+					module.Name,
+					service,
+					env,
+				); projectErr != nil {
+					return fmt.Errorf("project service %s managed transport: %w", service.Name, projectErr)
 				}
 			}
 			options.Units = append(options.Units, entry)
@@ -313,7 +322,10 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		if err := projectRenderedServiceSecrets(stage, env); err != nil {
 			return err
 		}
-		return projectRenderedServiceAutoscale(stage, env, graph)
+		if err := projectRenderedServiceAutoscale(stage, env, graph); err != nil {
+			return err
+		}
+		return projectRenderedManagedTransport(ctx, stage, env, graph)
 	})
 }
 

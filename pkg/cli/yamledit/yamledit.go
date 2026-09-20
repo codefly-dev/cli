@@ -242,3 +242,18 @@ func AppendSequenceItems(original []byte, parent *yaml.Node, key string, items [
 	}
 	return SpliceLines(lines, ins, ins, rendered), nil
 }
+
+// DeleteMapKey removes key and its value from a mapping node. It is how a writer
+// that owns a field expresses "the source no longer declares this": leaving the
+// previous value behind would keep a fact the declaration has retracted.
+func DeleteMapKey(node *yaml.Node, key string) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return
+		}
+	}
+}

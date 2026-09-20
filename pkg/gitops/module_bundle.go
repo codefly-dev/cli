@@ -364,14 +364,19 @@ func validateTransportNeutralModuleBundle(root string) error {
 }
 
 // retainManagedBundle assembles a managed service's promotable bundle from the
-// two things a managed service contributes to the cluster: the bootstrap Jobs its
-// agent emitted (a one-shot handoff) and the ExternalSecret projection its
-// environment declares. It reports whether a bundle was produced; when the service
-// contributes neither, its rendered tree is removed and false is returned so the
-// caller records it as an unrendered managed unit.
+// three things a managed service contributes to the cluster: the bootstrap Jobs
+// its agent emitted (a one-shot handoff), the ExternalSecret projection its
+// environment declares, and the egress NetworkPolicy that opens the declared
+// port to the declared peers. It reports whether a bundle was produced; when the
+// service contributes none of them, its rendered tree is removed and false is
+// returned so the caller records it as an unrendered managed unit.
+//
+// The policy is load-bearing for the bundle's existence, not only its content: a
+// passwordless endpoint projects no secret, so for such a cell the policy is the
+// only manifest the managed unit has. Moving it elsewhere would delete the tree.
 func retainManagedBundle(
 	root, service, environment, namespace string,
-	secretRefs []resources.EnvironmentManagedSecretReference,
+	managed *resources.EnvironmentManagedService,
 ) (bool, error) {
 	var jobs []map[string]any
 	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
@@ -402,11 +407,15 @@ func retainManagedBundle(
 	if err != nil {
 		return false, err
 	}
-	projection, err := managedSecretProjection(service, namespace, secretRefs)
+	projection, err := managedSecretProjection(service, namespace, managed.SecretReferences)
 	if err != nil {
 		return false, err
 	}
-	if len(jobs) == 0 && projection == nil {
+	policy, err := managedEgressPolicy(service, namespace, managed)
+	if err != nil {
+		return false, err
+	}
+	if len(jobs) == 0 && projection == nil && policy == nil {
 		if err := os.RemoveAll(root); err != nil {
 			return false, err
 		}
@@ -449,6 +458,18 @@ func retainManagedBundle(
 			return false, writeErr
 		}
 		resourcesList = append(resourcesList, "external-secret.yaml")
+	}
+	if policy != nil {
+		rendered, marshalErr := yaml.Marshal(policy)
+		if marshalErr != nil {
+			return false, marshalErr
+		}
+		// A NetworkPolicy is a plain traffic declaration, world-readable like its
+		// siblings.
+		if writeErr := os.WriteFile(filepath.Join(base, egressPolicyFile), rendered, 0o644); writeErr != nil { //nolint:gosec
+			return false, writeErr
+		}
+		resourcesList = append(resourcesList, egressPolicyFile)
 	}
 	baseKustomization := map[string]any{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",

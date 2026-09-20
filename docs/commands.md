@@ -887,7 +887,13 @@ document, burying the one line that changed.)
   it can never disagree with the derived `gitops.path`), `gitops.repo-url` and
   `gitops.path` (path = `<workloads_path_prefix>/<namespace>`), each managed
   database's `managed-services.<name>` `kind` / `external-name` /
-  `egress-cidrs`, `service-secrets.secret-store`, and `dns`.
+  `egress-cidrs` / `port` / `transport` / `identity`, `audit-sinks`,
+  `service-secrets.secret-store`, and `dns`.
+
+  A contract-owned field the descriptor no longer declares is **removed**, not
+  left behind. A cell that moves off its authenticated proxy, or retires an
+  audit sink, would otherwise keep deploying workloads that dial and write
+  somewhere it no longer serves.
 - *Operator-owned* (never touched): `description`, `fixture`, `ingress`,
   `resource-quota`, `secrets`, `configuration-profile`, `gitops.branch`,
   `cluster.kubeconfig` (a local path, not a cell fact), a managed service's

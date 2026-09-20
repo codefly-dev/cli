@@ -71,7 +71,24 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 		for name, managed := range env.ManagedServices {
 			managed.EgressCIDRs = append([]string(nil), managed.EgressCIDRs...)
 			managed.SecretReferences = append([]resources.EnvironmentManagedSecretReference(nil), managed.SecretReferences...)
+			if managed.Transport != nil {
+				transport := *managed.Transport
+				transport.Args = append([]string(nil), managed.Transport.Args...)
+				managed.Transport = &transport
+			}
+			managed.Identity = cloneWorkloadIdentity(managed.Identity)
 			clone.ManagedServices[name] = managed
+		}
+	}
+	if len(env.AuditSinks) > 0 {
+		clone.AuditSinks = make([]resources.EnvironmentAuditSink, len(env.AuditSinks))
+		for i, sink := range env.AuditSinks {
+			sink.Writer = cloneWorkloadIdentity(sink.Writer)
+			if sink.Retention != nil {
+				retention := *sink.Retention
+				sink.Retention = &retention
+			}
+			clone.AuditSinks[i] = sink
 		}
 	}
 	if env.ServiceSecrets != nil {
@@ -119,6 +136,27 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 		clone.ResourceQuota = &quota
 	}
 	return &clone
+}
+
+func cloneWorkloadIdentity(identity *resources.EnvironmentWorkloadIdentity) *resources.EnvironmentWorkloadIdentity {
+	if identity == nil {
+		return nil
+	}
+	copied := *identity
+	copied.Annotations = cloneStringMap(identity.Annotations)
+	copied.Labels = cloneStringMap(identity.Labels)
+	return &copied
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	copied := make(map[string]string, len(values))
+	for key, value := range values {
+		copied[key] = value
+	}
+	return copied
 }
 
 func cloneResourceList(list *resources.EnvironmentResourceList) *resources.EnvironmentResourceList {

@@ -155,7 +155,7 @@ func TestRetainManagedBundleProjectsSecretsWithoutBootstrapJobs(t *testing.T) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	retained, err := retainManagedBundle(root, "workos", "production", "payments", workosSecretReferences())
+	retained, err := retainManagedBundle(root, "workos", "production", "payments", &resources.EnvironmentManagedService{SecretReferences: workosSecretReferences()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestRetainManagedBundleRemovesTreeWithoutJobsOrSecrets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "stray.yaml"), []byte("apiVersion: v1\nkind: ConfigMap\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	retained, err := retainManagedBundle(root, "cache", "production", "payments", nil)
+	retained, err := retainManagedBundle(root, "cache", "production", "payments", &resources.EnvironmentManagedService{})
 	if err != nil {
 		t.Fatal(err)
 	}

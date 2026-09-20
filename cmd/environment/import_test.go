@@ -36,6 +36,53 @@ const fixtureContract = `{
   "gitops": {"repo": "https://github.com/x/fleet.git", "workloads_path_prefix": "workloads/hosted/staging"}
 }`
 
+// identityFixtureContract is a descriptor that negotiates the managed-identity
+// transport and audit-sink capabilities: a passwordless database reached through
+// an in-pod proxy, the exact runtime principal and the platform's own attachment
+// keys, and one audit sink with its applied target, writer, residency and
+// retention lock.
+const identityFixtureContract = `{
+  "schema": "codefly/cell/v1",
+  "cell": "hosted-us-central1",
+  "coordinate": "hosted/gcp/us-central1/US/staging",
+  "requires_capabilities": ["managed-identity-transport", "audit-sinks"],
+  "cluster": {"kind": "gke", "context": "obinh-usc1-gke"},
+  "dns": {"app_host_suffix": "staging.example"},
+  "registries": [{"kind": "gar", "url": "us-central1-docker.pkg.dev/obinh-usc1/images"}],
+  "databases": [{
+    "engine": "postgres",
+    "kind": "cloud-sql-postgres",
+    "name": "platform",
+    "fqdn": "10.20.11.7",
+    "port": 5432,
+    "egress_cidrs": ["10.20.11.0/28"],
+    "database_names": ["users"],
+    "password_auth": false,
+    "transport": {
+      "mode": "proxy",
+      "image": "us-central1-docker.pkg.dev/obinh-usc1/images/db-proxy@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "args": ["--private-ip", "--auto-iam-authn", "obinh-usc1:us-central1:platform"],
+      "local_port": 5432
+    },
+    "identity": {
+      "kind": "gcp-service-account",
+      "principal": "platform-db@obinh-usc1.iam.gserviceaccount.com",
+      "annotations": {"iam.gke.io/gcp-service-account": "platform-db@obinh-usc1.iam.gserviceaccount.com"},
+      "labels": {"obin.ai/workload-identity": "true"}
+    }
+  }],
+  "secret_stores": [{"name": "gcp-secret-manager", "kind": "ClusterSecretStore"}],
+  "audit_sinks": [{
+    "name": "audit",
+    "kind": "bigquery-dataset",
+    "target": "obinh-usc1:audit_us",
+    "writer": {"kind": "gcp-service-account", "principal": "audit-writer@obinh-usc1.iam.gserviceaccount.com"},
+    "residency": "US",
+    "retention": {"days": 400, "locked": true}
+  }],
+  "gitops": {"repo": "https://github.com/x/fleet.git", "workloads_path_prefix": "delivery/hosted/staging"}
+}`
+
 func writeWorkspace(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -48,7 +95,9 @@ func writeWorkspace(t *testing.T, content string) string {
 func doImport(t *testing.T, dir string, opts importOptions) string {
 	t.Helper()
 	opts.dir = dir
-	opts.contractData = []byte(fixtureContract)
+	if opts.contractData == nil {
+		opts.contractData = []byte(fixtureContract)
+	}
 	if opts.envName == "" {
 		opts.envName = "azure"
 	}
@@ -510,5 +559,111 @@ environments:
 	}
 	if !strings.HasSuffix(env.Gitops.Path, "/"+env.Namespace) {
 		t.Errorf("gitops.path %q does not agree with namespace %q", env.Gitops.Path, env.Namespace)
+	}
+}
+
+// TestImportCarriesTransportBindingIntoExistingEnvironment is the regression for
+// the silent drop on the path an operator uses twice: updating an environment
+// that already exists wrote back only kind, external-name and egress-cidrs, so a
+// re-import parsed the port, the proxy and the runtime principal and then threw
+// them away before they reached workspace.codefly.yaml.
+func TestImportCarriesTransportBindingIntoExistingEnvironment(t *testing.T) {
+	src := `name: acme
+layout: modules
+environments:
+    - name: gcp
+      managed-services:
+          platform:
+              kind: cloud-sql-postgres
+              external-name: old.example
+              egress-cidrs:
+                  - 10.0.0.0/28
+`
+	dir := writeWorkspace(t, src)
+	doImport(t, dir, importOptions{envName: "gcp", contractData: []byte(identityFixtureContract)})
+
+	env := loadWorkspace(t, dir).FindEnvironment("gcp")
+	managed, ok := env.ManagedServices["platform"]
+	if !ok {
+		t.Fatalf("managed services = %v", env.ManagedServices)
+	}
+	if managed.Port != 5432 {
+		t.Errorf("port = %d, want the declared 5432", managed.Port)
+	}
+	if managed.Transport == nil {
+		t.Fatal("declared transport was dropped")
+	}
+	if managed.Transport.Mode != "proxy" || managed.Transport.LocalPort != 5432 {
+		t.Errorf("transport = %+v", managed.Transport)
+	}
+	if !strings.Contains(managed.Transport.Image, "@sha256:") ||
+		!reflect.DeepEqual(managed.Transport.Args, []string{"--private-ip", "--auto-iam-authn", "obinh-usc1:us-central1:platform"}) {
+		t.Errorf("transport image/args = %q %v", managed.Transport.Image, managed.Transport.Args)
+	}
+	if managed.Identity == nil || managed.Identity.Principal != "platform-db@obinh-usc1.iam.gserviceaccount.com" {
+		t.Fatalf("identity = %+v", managed.Identity)
+	}
+	if managed.Identity.Annotations["iam.gke.io/gcp-service-account"] != "platform-db@obinh-usc1.iam.gserviceaccount.com" ||
+		managed.Identity.Labels["obin.ai/workload-identity"] != "true" {
+		t.Errorf("identity attachment keys = %+v", managed.Identity)
+	}
+}
+
+// TestImportCarriesAuditSinksVerbatim pins that every sink field is the
+// producer's applied output rather than something codefly reassembles — the
+// target is taken whole, and the retention lock is carried as declared because
+// an unapproved lock read as approved is the failure that matters.
+func TestImportCarriesAuditSinksVerbatim(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\nenvironments:\n    - name: gcp\n      description: staging\n")
+	doImport(t, dir, importOptions{envName: "gcp", contractData: []byte(identityFixtureContract)})
+
+	env := loadWorkspace(t, dir).FindEnvironment("gcp")
+	if len(env.AuditSinks) != 1 {
+		t.Fatalf("audit sinks = %+v", env.AuditSinks)
+	}
+	sink := env.AuditSinks[0]
+	if sink.Name != "audit" || sink.Kind != "bigquery-dataset" || sink.Target != "obinh-usc1:audit_us" {
+		t.Errorf("sink identity/target = %+v", sink)
+	}
+	if sink.Writer == nil || sink.Writer.Principal != "audit-writer@obinh-usc1.iam.gserviceaccount.com" {
+		t.Errorf("sink writer = %+v", sink.Writer)
+	}
+	if sink.Residency != "US" {
+		t.Errorf("sink residency = %q", sink.Residency)
+	}
+	if sink.Retention == nil || sink.Retention.Days != 400 || !sink.Retention.Locked {
+		t.Errorf("sink retention = %+v", sink.Retention)
+	}
+}
+
+// TestImportRetractsTransportBindingTheContractDropped covers the other half of
+// carrying a contract-owned field: a cell that moves off the proxy must not
+// leave the workload with a sidecar dialing a decommissioned address, so the
+// fields the new descriptor no longer declares are removed rather than kept.
+func TestImportRetractsTransportBindingTheContractDropped(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
+	doImport(t, dir, importOptions{envName: "gcp", contractData: []byte(identityFixtureContract)})
+	if env := loadWorkspace(t, dir).FindEnvironment("gcp"); env.ManagedServices["store"].Transport == nil {
+		t.Fatal("first import did not establish the transport binding")
+	}
+
+	doImport(t, dir, importOptions{envName: "gcp", contractData: []byte(fixtureContract)})
+
+	env := loadWorkspace(t, dir).FindEnvironment("gcp")
+	managed := env.ManagedServices["store"]
+	if managed.Transport != nil {
+		t.Errorf("retracted transport survived: %+v", managed.Transport)
+	}
+	if managed.Identity != nil {
+		t.Errorf("retracted identity survived: %+v", managed.Identity)
+	}
+	if managed.Port != 0 {
+		t.Errorf("retracted port survived: %d", managed.Port)
+	}
+	if len(env.AuditSinks) != 0 {
+		t.Errorf("retracted audit sinks survived: %+v", env.AuditSinks)
+	}
+	if !reflect.DeepEqual(managed.EgressCIDRs, []string{"10.20.11.0/28"}) {
+		t.Errorf("egress CIDRs = %v, want the new contract's", managed.EgressCIDRs)
 	}
 }

@@ -33,8 +33,8 @@ var importCmd = &cobra.Command{
 	Short: "Point an environment at a cell by consuming its codefly/cell/v1 contract",
 	Long: `Import a cell descriptor (codefly/cell/v1) into an environment in
 workspace.codefly.yaml, so cell facts — cluster, registry, managed-database
-egress CIDRs, secret store, DNS, gitops path — are sourced from the contract
-instead of hand-typed.
+egress CIDRs, port, transport and runtime identity, audit sinks, secret store,
+DNS, gitops path — are sourced from the contract instead of hand-typed.
 
 The descriptor is produced on the platform side, e.g. by infra-base's
 ` + "`obinctl cell-contract <coordinate>`" + `. Read it from a file or from stdin
@@ -411,6 +411,13 @@ func applyContractFields(envNode *yaml.Node, env *resources.Environment, envName
 			return err
 		}
 	}
+	// Audit sinks are carried whole and verbatim: each sink's target, writer
+	// principal, residency and retention are applied producer outputs, and the
+	// retention lock in particular is a fact — an absent or false lock means the
+	// lock is not approved, never that codefly may assume it.
+	if err := setOrDelete(envNode, "audit-sinks", env.AuditSinks, len(env.AuditSinks) > 0); err != nil {
+		return err
+	}
 	if env.ServiceSecrets != nil {
 		serviceSecrets := yamledit.EnsureMap(envNode, "service-secrets")
 		if err := setEncoded(serviceSecrets, "secret-store", env.ServiceSecrets.SecretStore); err != nil {
@@ -481,8 +488,31 @@ func applyManagedServices(envNode *yaml.Node, services map[string]resources.Envi
 		if err := setEncoded(target, "egress-cidrs", svc.EgressCIDRs); err != nil {
 			return err
 		}
+		if err := setOrDelete(target, "port", svc.Port, svc.Port != 0); err != nil {
+			return err
+		}
+		if err := setOrDelete(target, "transport", svc.Transport, svc.Transport != nil); err != nil {
+			return err
+		}
+		if err := setOrDelete(target, "identity", svc.Identity, svc.Identity != nil); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// setOrDelete writes a contract-owned field, or removes it when the contract no
+// longer declares it. Every field here is a deployment fact the cell owns
+// outright: a port kept after the contract dropped it, or a proxy transport kept
+// after the cell moved to a direct connection, renders a workload that dials
+// somewhere the cell no longer serves — which is the same stale-value outage as
+// a left-behind egress CIDR, just further down the connection.
+func setOrDelete(node *yaml.Node, key string, value any, declared bool) error {
+	if !declared {
+		yamledit.DeleteMapKey(node, key)
+		return nil
+	}
+	return setEncoded(node, key, value)
 }
 
 func setEncoded(node *yaml.Node, key string, value any) error {
