@@ -390,6 +390,11 @@ never overwritten. Identical digest-addressed uploads can be repeated with a new
 record destination after inspecting the prior outcome. Changed selection, keys,
 input bytes or receipts must be rechecked; no automatic retry grants new authority.
 Local mutation authority does not expose a remote delegated signing service.
+This is publication for a complete consumer combination, not a standalone module
+release publisher: `INPUTS.json` must already carry target bindings and every
+non-derived runtime artifact. Missing bindings/coverage fail through Core before
+upload. `stage-build` itself needs neither, and publication does not authenticate
+the live target or authorize its use. The effect adapter must establish that.
 Real authenticated TLS registry, actual garbage collection and source-packaging tests prove this boundary,
 not production builder adoption or functional/stateful qualification.
 

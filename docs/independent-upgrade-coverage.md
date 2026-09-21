@@ -67,7 +67,9 @@ exact inputs, and inspect the actual deployment.
   existing local prepared mutation gate, creates no module/CLI release and does not grant
   deployment authority. A digest-named OCI retention manifest protects the outputs
   against ordinary garbage collection, including untagged-manifest removal; actual
-  Distribution GC/readback is tested. Explicit retention-root deletion or expiration
+  Distribution GC/readback is tested. Normal CI coverage/race gates require these
+  real registry tests, including retained-handle uploads; missing Docker is a failure,
+  not a skip. Explicit retention-root deletion or expiration
   remains under registry operator control.
   OCI acquisition likewise preserves the signed manifest/blob representation
   without recursively downloading layers or sources. Credential and token requests
@@ -315,6 +317,16 @@ service-go#81, service-python#86, service-nextjs#129, service-generic#59 and
 service-redis#62. Missing declarations require truthful
 owner adoption and authorized publication, not a blanket fleet rebuild.
 The supported-set inventory and non-service qualification are not complete.
+
+A clean-home reproduction independently downloaded Python `0.0.62`, Next.js
+`0.0.153` and generic `0.0.35` and reproduced the same missing live protocol
+declarations at `pkg/engine/supervisor.go`'s `GetAgentInformation`/`contract.Check`
+boundary. This rules out stale ambient installs as the explanation for the eight
+engine/gateway failures. Command: `GOWORK=off CODEFLY_HOME=<empty directory> go test
+./pkg/engine ./pkg/gateway -run '^(TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization|TestGatewayInspectsJVMAndDotNetCodeUnitsThroughGenericAgent|TestGatewayRunsEveryDeclaredCodeUnitThroughItsProductionPlugin)$' -count=1`.
+Evidence: `/tmp/cli752-agent-declaration-clean.log`; downloaded artifacts are kept
+in `/tmp/cli752-agent-declaration-clean-f8b447dd`. Linked build metadata is diagnostic
+provenance only, never a replacement for the failing runtime declaration check.
 
 Authentic packaged contract/usage evidence and real consumer qualification also
 depend on module-saas-starter#852 and obin-ai/platform-obin#25, as tracked in

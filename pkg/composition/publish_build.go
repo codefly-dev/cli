@@ -99,8 +99,10 @@ func ExecuteBuildPublication(ctx context.Context, mutation *BuildPublicationMuta
 }
 
 type derivedPublication struct {
-	artifact core.ReleaseArtifact
-	path     string
+	artifact  core.ReleaseArtifact
+	path      string
+	directory *os.Root
+	name      string
 }
 
 // PublishBuild publishes digest-addressed bytes with a content-addressed OCI
@@ -168,10 +170,8 @@ func (session *SelectionSession) PublishBuild(ctx context.Context, staged *Stage
 			if publishErr != nil {
 				return publishErr
 			}
-			for n := range candidate.Inputs.Runtime {
-				if candidate.Inputs.Runtime[n].Path == outputs[i].path {
-					candidate.Inputs.Runtime[n].Path = path
-				}
+			if err = replacePublishedInputPath(candidate.Inputs.Runtime, outputs[i].path, path); err != nil {
+				return err
 			}
 		}
 		retention, retentionErr := retainPublishedOutputs(ctx, repository, outputs, staged)
@@ -199,6 +199,24 @@ func (session *SelectionSession) PublishBuild(ctx context.Context, staged *Stage
 	return published, nil
 }
 
+func replacePublishedInputPath(inputs []RuntimeFile, from, to string) error {
+	index := -1
+	for i := range inputs {
+		if inputs[i].Path != from {
+			continue
+		}
+		if index != -1 {
+			return errors.New("published output has ambiguous runtime input paths")
+		}
+		index = i
+	}
+	if index == -1 {
+		return errors.New("published output has no runtime input path")
+	}
+	inputs[index].Path = to
+	return nil
+}
+
 // A digest-only blob upload has no GC root. The OCI manifest retains the exact
 // output bytes; its digest-derived tag also survives deletion of untagged
 // manifests. Consumers never resolve this tag to choose their runtime bytes.
@@ -208,7 +226,7 @@ func retainPublishedOutputs(ctx context.Context, repository *remote.Repository, 
 	manifest := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest, ArtifactType: "application/vnd.codefly.build-outputs.v1", Config: config,
 		Annotations: map[string]string{"dev.codefly.selection": staged.SelectionIdentity, "dev.codefly.build": staged.Identity}}
 	for _, output := range outputs {
-		file, err := openInputFile(ctx, nil, output.path)
+		file, err := openInputFile(ctx, output.directory, output.name)
 		if err != nil {
 			return "", err
 		}
@@ -378,7 +396,7 @@ func (session *SelectionSession) prepareDerivedOutput(ctx context.Context, resol
 	if err != nil {
 		return nil, nil, err
 	}
-	return &derivedPublication{artifact: artifact, path: path}, &core.SignedDerivedOutput{Statement: statement, Signature: ed25519.Sign(signer.Key, statement)}, nil
+	return &derivedPublication{artifact: artifact, path: path, directory: destination, name: name}, &core.SignedDerivedOutput{Statement: statement, Signature: ed25519.Sign(signer.Key, statement)}, nil
 }
 
 func (session *SelectionSession) checkPublicationInputs(ctx context.Context, snapshot *selectionSnapshot, resolved *core.ResolvedComposition, files *DeploymentFiles) error {
@@ -394,7 +412,7 @@ func (session *SelectionSession) checkPublicationInputs(ctx context.Context, sna
 }
 
 func pushDerivedOutput(ctx context.Context, repository *remote.Repository, output *derivedPublication) error {
-	file, err := openInputFile(ctx, nil, output.path)
+	file, err := openInputFile(ctx, output.directory, output.name)
 	if err != nil {
 		return err
 	}

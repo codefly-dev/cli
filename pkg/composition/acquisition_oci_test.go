@@ -31,9 +31,34 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
+	"gopkg.in/yaml.v3"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 )
+
+func TestOCIQualificationRequiredByNormalCIGates(t *testing.T) {
+	data, err := os.ReadFile("../../.github/workflows/go.yml")
+	require.NoError(t, err)
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string            `yaml:"name"`
+				Env  map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &workflow))
+	for _, name := range []string{"Test with coverage", "Test with race detection"} {
+		found := false
+		for _, step := range workflow.Jobs["quality"].Steps {
+			if step.Name == name {
+				found = true
+				require.Equal(t, "1", step.Env["CODEFLY_COMPOSITION_OCI_QUALIFY"], name+" must run actual registry/GC/upload regressions")
+			}
+		}
+		require.True(t, found, "missing CI gate %s", name)
+	}
+}
 
 func TestOCIArtifactRequiresExactReferenceBeforeCacheUse(t *testing.T) {
 	session := &SelectionSession{Root: t.TempDir()}

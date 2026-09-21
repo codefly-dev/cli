@@ -101,6 +101,8 @@ jobs:
 
       - name: Test with coverage
         if: matrix.gate == 'coverage'
+        env:
+          CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
         run: go test -failfast ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
 
       - name: Check test coverage
@@ -126,6 +128,8 @@ jobs:
 
       - name: Test with race detection
         if: matrix.gate == 'race'
+        env:
+          CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
         run: go test -failfast -race ./... -v
 
       # The cross-process control-ownership proof drives the CLI built by the
