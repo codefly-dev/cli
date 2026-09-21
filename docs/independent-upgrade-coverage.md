@@ -159,8 +159,12 @@ An agent used to build an artifact is not necessarily present in production.
 
 ## Concrete integration points and blockers
 
-The CLI consumes pushed Core `v0.3.41-0.20260921024138-3264a63d712e`, with
+The CLI consumes pushed Core `v0.3.41-0.20260921051148-11b7464e9048`, with
 `GOWORK=off` and no replacement. Uncommitted Core files are not a dependency.
+This includes Core's nonblocking render-output opener and descriptor validation,
+fixing the reproduced regular-to-FIFO replacement hang in the shared verifier.
+CLI runtime admission and snapshot copy opens have their own nonblocking checks;
+neither fix establishes functional qualification or permits deployment effects.
 This is not the unpublished v0.3.41 tag and does not authorize a release.
 
 `LoadModuleTrust` uses package-scoped release and build signers with no global-key
@@ -188,8 +192,8 @@ Cross-repo review reproduced a shutdown defect in previously consumed Core
 `5fe990d2c3a1`: `AgentConn.Close` can return after the leader exits while a child
 in the same tracked group continues writing. The owning real-process regression
 is recorded in `/tmp/core584-shutdown-repro.log`. The earlier CLI tests missed it.
-Consumed Core `3264a63d712e` supplies `CloseAndWait`: CLI now requires successful
-authenticated group shutdown on a fresh ten-second cleanup context, joins
+Core's `CloseAndWait`, introduced in `3264a63d712e`, remains required. The CLI
+requires authenticated group shutdown on a fresh ten-second cleanup context, joins
 shutdown and render errors, discards the receipt on failure, and only then
 verifies output bytes and publishes completion. Real CLI regressions cover
 same-group writers, cancellation, filesystem cleanup denial on both protocols,
