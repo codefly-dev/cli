@@ -161,6 +161,10 @@ homebrew_casks:
       email: action@github.com
 
 release:
+  header: '{{ readFile ".release/agent-compatibility.md" }}'
+  extra_files:
+    - glob: .release/contract.json
+    - glob: .release/agent-requirements.json
   mode: keep-existing
   prerelease: auto
   make_latest: auto

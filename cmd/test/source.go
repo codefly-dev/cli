@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/blang/semver"
@@ -13,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
@@ -68,7 +68,7 @@ var SourceCmd = &cobra.Command{
 		defer prepared.Close()
 		if sourceQualification {
 			if sourceAgent == "" {
-				return fmt.Errorf("source qualification requires an exact --agent")
+				return fmt.Errorf("source qualification requires an explicit --agent")
 			}
 			if err := verifySourceCapabilityHandshake(ctx, prepared.Service.Agent); err != nil {
 				return err
@@ -122,23 +122,22 @@ func prepareSourceWorkspace(ctx context.Context, dir, agentSpec string) (*source
 	if agentSpec == "" {
 		return sourceworkspace.Prepare(ctx, dir)
 	}
-	if !strings.Contains(agentSpec, ":") {
-		return nil, fmt.Errorf("source agent must include an exact version")
-	}
 	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, agentSpec)
 	if err != nil {
 		return nil, fmt.Errorf("invalid source agent: %w", err)
 	}
-	if agent.Version == "latest" {
-		return nil, fmt.Errorf("source agent must use an exact version, not latest")
-	}
-	if _, err := semver.Parse(strings.TrimPrefix(agent.Version, "v")); err != nil || strings.HasPrefix(agent.Version, "v") {
-		return nil, fmt.Errorf("source agent version %q is not canonical semantic version", agent.Version)
+	if agent.Version != "latest" {
+		if _, err := semver.Parse(agent.Version); err != nil {
+			return nil, fmt.Errorf("source agent version %q is not canonical semantic version", agent.Version)
+		}
 	}
 	return sourceworkspace.PrepareWithAgent(ctx, dir, agent)
 }
 
 func verifySourceCapabilityHandshake(ctx context.Context, agent *resources.Agent) error {
+	if _, err := manager.ResolveLatest(ctx, agent); err != nil {
+		return err
+	}
 	connection, err := manager.Load(ctx, agent, manager.WithoutSandbox(), manager.WithoutPrincipal())
 	if err != nil {
 		return fmt.Errorf("load exact source agent %s: %w", agent.Identifier(), err)
@@ -150,6 +149,9 @@ func verifySourceCapabilityHandshake(ctx context.Context, agent *resources.Agent
 func verifySourceCapabilityClients(ctx context.Context, agent *resources.Agent, connection grpc.ClientConnInterface) error {
 	info, err := agentv0.NewAgentClient(connection).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 	if err != nil {
+		return fmt.Errorf("source agent handshake: %w", err)
+	}
+	if err := contract.Check(info.GetContract()); err != nil {
 		return fmt.Errorf("source agent handshake: %w", err)
 	}
 	runtimeAdvertised := false
@@ -210,6 +212,6 @@ func init() {
 	SourceCmd.Flags().BoolVarP(&sourceVerbose, "verbose", "v", false, "Verbose test output")
 	SourceCmd.Flags().BoolVar(&sourceRace, "race", false, "Enable plugin-defined race checking")
 	SourceCmd.Flags().BoolVar(&sourceCoverage, "coverage", false, "Enable plugin-defined coverage")
-	SourceCmd.Flags().StringVar(&sourceAgent, "agent", "", "Use an exact publisher/name:version instead of the compatibility pin")
-	SourceCmd.Flags().BoolVar(&sourceQualification, "qualification", false, "Assert the exact agent's Runtime, Code, and Tooling handshake")
+	SourceCmd.Flags().StringVar(&sourceAgent, "agent", "", "Select publisher/name[:version] instead of discovering installed agents")
+	SourceCmd.Flags().BoolVar(&sourceQualification, "qualification", false, "Assert the selected agent's Runtime, Code, and Tooling handshake")
 }

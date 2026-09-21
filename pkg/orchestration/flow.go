@@ -15,6 +15,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/dockerstart"
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -1013,6 +1014,9 @@ func (flow *Flow) Sync(ctx context.Context) error {
 }
 
 func (flow *Flow) Deploy(ctx context.Context) error {
+	if err := selectionguard.RejectUnboundExecution(flow.workspace.Dir(), flow.originModule.Dir()); err != nil {
+		return err
+	}
 	w := wool.Get(ctx).In("flow.Deploy")
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
@@ -1615,13 +1619,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	containerRecoveryProjection.Lock()
 	defer containerRecoveryProjection.Unlock()
 	if _, err := flow.projectContainerRecovery(); err != nil {
-		// A host that cannot resolve ownership — no readable PID namespace, an
-		// unwritable home — still has to run. Core degrades that same condition
-		// to "no durable identity" rather than stopping every containerized
-		// run, and failing here would take out build, test, ci, deploy, sync,
-		// gitops and the control plane on hosts where they work today. Say so
-		// loudly and continue unlabeled, as these paths did before.
-		w.Warn("cannot project container recovery ownership: containers this flow creates will not be recoverable by scope", wool.Field("error", err.Error()))
+		w.Warn("cannot project container recovery ownership; operations requiring recovery will be refused", wool.Field("error", err.Error()))
 	}
 	remotes := make(map[string]*Remote)
 	var dependencyOptions []architecture.DependencyOption

@@ -170,5 +170,5 @@ technique works for debugging the client code.
 ## Generating client code
 
 ```shell
-codefly generate proto --proto ../proto --output . --local
+codefly generate proto --proto ../proto --output .
 ```

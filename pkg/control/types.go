@@ -3,6 +3,7 @@ package control
 import (
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 )
@@ -581,10 +582,11 @@ type AuthorityConfig struct {
 type MutationKind string
 
 const (
-	MutationFile           MutationKind = "file"
-	MutationDeploy         MutationKind = "deploy"
-	MutationGitOpsPublish  MutationKind = "gitops-publish"
-	MutationGitOpsRollback MutationKind = "gitops-rollback"
+	MutationFile                    MutationKind = "file"
+	MutationDeploy                  MutationKind = "deploy"
+	MutationGitOpsPublish           MutationKind = "gitops-publish"
+	MutationGitOpsRollback          MutationKind = "gitops-rollback"
+	MutationCompositionBuildPublish MutationKind = "composition-build-publish"
 )
 
 // Mutation is a proposed change to be prepared before it applies.
@@ -602,6 +604,7 @@ type PreparedMutation struct {
 }
 
 type MutationResult struct {
-	Deploy        *DeployResult
-	GitOpsPublish *gitops.PublishResult
+	Deploy           *DeployResult
+	GitOpsPublish    *gitops.PublishResult
+	CompositionBuild *composition.PublishedBuild
 }

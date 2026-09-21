@@ -10,6 +10,7 @@ import (
 
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
 
@@ -24,8 +25,9 @@ type agentUpdate struct {
 	To   string
 }
 
-// updateServiceAgent bumps a service's agent to its latest compatible release
-// with a surgical, text-preserving edit of the single agent.version token. It
+// updateServiceAgent checks the latest candidate's live protocol before updating
+// a service's selection. Operation and functional qualification remain separate.
+// It uses a surgical, text-preserving edit of the single agent.version token and
 // never reserializes resources.Service, so unmodeled keys, comments, and
 // formatting survive byte-for-byte. It refuses to touch files carrying a
 // "Code generated ... DO NOT EDIT" marker, pointing at the source to edit
@@ -45,13 +47,19 @@ func updateServiceAgent(ctx context.Context, svc *resources.Service) (*agentUpda
 		return nil, nil
 	}
 	from := svc.Agent.Version
-	if _, err = manager.PinToLatestRelease(ctx, svc.Agent); err != nil {
+	candidate := *svc.Agent
+	if _, err = manager.PinToLatestRelease(ctx, &candidate); err != nil {
 		return nil, fmt.Errorf("cannot resolve latest agent version: %w", err)
 	}
-	if svc.Agent.Version == from {
+	if candidate.Version == from {
 		return nil, nil
 	}
-	updated, err := rewriteAgentVersion(content, svc.Agent.Version)
+	inspectCtx, cancel := context.WithTimeout(ctx, manager.DefaultStartupTimeout+2*manager.DefaultDialTimeout)
+	defer cancel()
+	if _, _, err = services.InspectAgent(inspectCtx, &candidate); err != nil {
+		return nil, fmt.Errorf("cannot select agent %s: %w", candidate.Identifier(), err)
+	}
+	updated, err := rewriteAgentVersion(content, candidate.Version)
 	if err != nil {
 		return nil, fmt.Errorf("cannot update %s: %w", file, err)
 	}
@@ -61,6 +69,7 @@ func updateServiceAgent(ctx context.Context, svc *resources.Service) (*agentUpda
 	if err = shared.WriteFileAtomic(ctx, file, updated, 0o600); err != nil {
 		return nil, fmt.Errorf("cannot write %s: %w", file, err)
 	}
+	svc.Agent.Version = candidate.Version
 	return &agentUpdate{Name: svc.Agent.Name, From: from, To: svc.Agent.Version}, nil
 }
 

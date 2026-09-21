@@ -4,16 +4,17 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 )
 
-// TestGatewayInspectsJVMAndDotNetCodeUnitsThroughGenericAgent proves the
-// production Gateway binds each declared unit to Codefly's real generic agent
-// and returns repository-relative typed evidence. No project manifest or
-// source file crosses into the caller for local interpretation.
-func TestGatewayInspectsJVMAndDotNetCodeUnitsThroughGenericAgent(t *testing.T) {
+// The test-only peer uses Core's source operations. The assertions exercise
+// gateway unit selection and repository-relative evidence, not a released agent.
+func TestGatewayInspectsCodeUnitsThroughProtocolPeer(t *testing.T) {
 	root := t.TempDir()
+	selected := protocoltest.Install(t, "inspection-peer")[0]
+	writeCodeUnitFixture(t, root, "mind.yaml", "source_agents:\n  src/ads: "+selected+"\n  src/cart: "+selected+"\n")
 	writeCodeUnitFixture(t, root, "AGENTS.md", "# Rules\n\nUse the typed runtime capability.\n")
 	writeCodeUnitFixture(t, root, "src/ads/AGENTS.md", "# Conventions\n\nKeep ads guidance local.\n")
 	writeCodeUnitFixture(t, root, "src/cart/AGENTS.md", "# Conventions\n\nKeep cart guidance local.\n")

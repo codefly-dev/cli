@@ -470,7 +470,7 @@ func TestAgentCIStagePreservesTypedFailure(t *testing.T) {
 func TestSeedAgentCISourcePackagerCopiesExactInstalledSeed(t *testing.T) {
 	sourceHome := t.TempDir()
 	agentHome := t.TempDir()
-	source := sourcePackagerPath(sourceHome)
+	source := filepath.Join(sourceHome, "agents", "services", "example.test", "unknown__3.2.1")
 	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -478,10 +478,15 @@ func TestSeedAgentCISourcePackagerCopiesExactInstalledSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := seedAgentCISourcePackager(sourceHome, agentHome); err != nil {
+	selected := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "example.test", Name: "unknown", Version: "3.2.1"}
+	// Discovery would return only this newer version, but CI must preserve the selection.
+	if err := os.WriteFile(filepath.Join(filepath.Dir(source), "unknown__4.0.0"), []byte("newer-packager"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedAgentCISourcePackager(sourceHome, agentHome, selected); err != nil {
 		t.Fatalf("seedAgentCISourcePackager: %v", err)
 	}
-	destination := sourcePackagerPath(agentHome)
+	destination := filepath.Join(agentHome, "agents", "services", "example.test", "unknown__3.2.1")
 	payload, err := os.ReadFile(destination)
 	if err != nil {
 		t.Fatalf("read seeded packager: %v", err)
@@ -495,8 +500,9 @@ func TestSeedAgentCISourcePackagerCopiesExactInstalledSeed(t *testing.T) {
 }
 
 func TestSeedAgentCISourcePackagerAllowsMissingSeed(t *testing.T) {
-	if err := seedAgentCISourcePackager(t.TempDir(), t.TempDir()); err != nil {
-		t.Fatalf("missing installed packager should fall back to source bootstrap: %v", err)
+	selected := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "example.test", Name: "unpublished", Version: "1.0.0"}
+	if err := seedAgentCISourcePackager(t.TempDir(), t.TempDir(), selected); err != nil {
+		t.Fatalf("missing installed candidates should leave an empty isolated home: %v", err)
 	}
 }
 

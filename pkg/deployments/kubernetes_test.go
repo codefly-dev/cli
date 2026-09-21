@@ -9,10 +9,21 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLocalApplyRefusesUnboundSelectionBeforeEffects(t *testing.T) {
+	workspace, module, service := deploymentFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), selectionguard.SelectionFile), []byte("{}"), 0o600))
+	manager := &LocalApplyManager{Workspace: workspace}
+	// No kubeconfig, image transport or deployment output is provided. The
+	// selection must be rejected before any of those boundaries are reached.
+	require.ErrorIs(t, manager.Handle(t.Context(), service, module, nil), selectionguard.ErrUnboundExecution)
+	require.ErrorIs(t, manager.ApplyModuleKustomize(t.Context(), module, ""), selectionguard.ErrUnboundExecution)
+}
 
 func TestVerifyLocalK3dTargetRejectsRemoteKindsBeforeInspectingKubeconfig(t *testing.T) {
 	for _, kind := range []string{"eks", "gke", "aks", "external"} {

@@ -86,3 +86,6 @@ Thumbs.db
 
 # Local secret env files (e.g. symlink to ~/development/deus/llm.secret.env for cassette recording)
 *.secret.env
+
+# Prepared CLI-agent release compatibility artifacts
+/.release/

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 )
@@ -58,6 +59,9 @@ func (p *planeImpl) ConfigureMutationAuthority(ctx context.Context, cfg Authorit
 	defer p.gate.mu.Unlock()
 	p.gate.mode = cfg.Mode
 	// Re-pinning authority invalidates any outstanding prepared mutations.
+	for _, pending := range p.gate.pending {
+		eraseBuildPublicationKeys(pending.mutation)
+	}
 	p.gate.pending = map[string]pendingMutation{}
 	return nil
 }
@@ -66,8 +70,20 @@ func (p *planeImpl) PrepareMutation(ctx context.Context, m Mutation) (PreparedMu
 	if err := validateMutation(m); err != nil {
 		return PreparedMutation{}, err
 	}
+	if m.Kind == MutationCompositionBuildPublish {
+		request, ok := m.Payload.(*composition.BuildPublicationMutation)
+		if !ok || request == nil {
+			return PreparedMutation{}, fmt.Errorf("build publication mutation requires typed inputs")
+		}
+		cloned, err := request.Clone()
+		if err != nil {
+			return PreparedMutation{}, err
+		}
+		m.Payload = cloned
+	}
 	token, err := newMutationToken()
 	if err != nil {
+		eraseBuildPublicationKeys(m)
 		return PreparedMutation{}, err
 	}
 	p.gate.mu.Lock()
@@ -89,6 +105,7 @@ func (p *planeImpl) ApplyPreparedMutation(ctx context.Context, token PreparedMut
 	if !ok {
 		return MutationResult{}, fmt.Errorf("unknown or already-consumed prepared mutation")
 	}
+	defer eraseBuildPublicationKeys(pending.mutation)
 	if time.Now().After(pending.expiresAt) {
 		return MutationResult{}, fmt.Errorf("prepared mutation expired")
 	}
@@ -104,6 +121,13 @@ type mutationExecutor interface {
 
 func executeMutation(ctx context.Context, executor mutationExecutor, m Mutation, permit mutationauthority.PreparedPermit) (MutationResult, error) {
 	switch m.Kind {
+	case MutationCompositionBuildPublish:
+		request, ok := m.Payload.(*composition.BuildPublicationMutation)
+		if !ok || request == nil {
+			return MutationResult{}, fmt.Errorf("build publication mutation requires typed inputs")
+		}
+		result, err := composition.ExecuteBuildPublication(ctx, request, permit)
+		return MutationResult{CompositionBuild: result}, err
 	case MutationFile:
 		edit, ok := m.Payload.(Edit)
 		if !ok {
@@ -136,10 +160,26 @@ func executeMutation(ctx context.Context, executor mutationExecutor, m Mutation,
 	}
 }
 
+func eraseBuildPublicationKeys(mutation Mutation) {
+	if mutation.Kind != MutationCompositionBuildPublish {
+		return
+	}
+	if request, ok := mutation.Payload.(*composition.BuildPublicationMutation); ok && request != nil {
+		for _, signer := range request.Options.Signers {
+			clear(signer.Key)
+		}
+	}
+}
+
 // validateMutation checks the payload type matches the kind before a token is
 // issued, so a malformed mutation fails at prepare time, not apply time.
 func validateMutation(m Mutation) error {
 	switch m.Kind {
+	case MutationCompositionBuildPublish:
+		request, ok := m.Payload.(*composition.BuildPublicationMutation)
+		if !ok || request == nil || request.Options.HTTPClient != nil {
+			return fmt.Errorf("build publication mutation requires typed inputs and host-owned HTTP transport")
+		}
 	case MutationFile:
 		if _, ok := m.Payload.(Edit); !ok {
 			return fmt.Errorf("file mutation payload must be an Edit, got %T", m.Payload)

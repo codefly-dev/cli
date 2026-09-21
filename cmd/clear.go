@@ -15,7 +15,6 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/core/agents/manager"
-	postgresipc "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/wool"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -239,12 +238,6 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 			w.Info("reaped managed process groups", wool.Field("count", len(recovered)), wool.Field("pgids", recovered))
 		} else {
 			w.Info("managed process groups reconciled")
-		}
-		if err := postgresipc.ReapOrphanedPostgresIPC(ctx); err != nil {
-			w.Warn("cannot reap stale PostgreSQL IPC", wool.ErrField(err))
-			failures = append(failures, fmt.Errorf("reap stale PostgreSQL IPC: %w", err))
-		} else {
-			w.Info("reaped orphaned PostgreSQL IPC")
 		}
 	}
 

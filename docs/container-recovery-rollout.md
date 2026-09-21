@@ -11,7 +11,7 @@ needs before the new CLI/fleet combination is published.
 is the machine-readable inventory; the table below is its view, and
 `pkg/conformance` fails if the two disagree. The rules are enforced there, not
 here: an agent that creates containers cannot be marked as needing no rebuild,
-every agent the source-workspace roster or a conformance row pins must be
+every agent a conformance row selects must be
 classified, and a pin that cannot say which kind of agent it means is an error
 rather than a guess.
 
@@ -31,7 +31,34 @@ about whether an agent understands what it was handed. Two consumers matter:
   `GetAgentInformation`. `Runner.validateContainerRecovery` compares it against
   what the CLI projected and refuses `Init` when they differ.
 
-## Where the fleet sits
+## Versioned API adoption
+
+The CLI checks `AgentInformation.contract`, independently of the Core version
+linked into the agent. Discovery requires lifecycle protocol 1 and startup
+protocol 2, including for native agents. Container/free runtime initialization
+and builder operations additionally require `container-recovery-scope/v1`,
+then an exact acknowledgement of the flow's captured recovery identity.
+An absent flow identity is an error on those paths. Native/Nix runtime
+initialization does not require the recovery capability.
+
+Agents with no declaration are rejected during discovery. Publishing support
+for a selected agent requires qualification at its owner; it does not require
+blanket fleet updates or block the CLI implementation PR's required host tests.
+Neither a Core bump nor a matching recovery header proves that an undeclared
+agent implements the contract.
+
+CLI releases attach the consumed Core `contract.json` and an
+`agent-requirements.json` using the same protobuf schema. The latter lists
+capabilities needed by container/free and builder operations, not requirements
+for every runtime context. Release notes compare both protocol versions and
+these requirements with the previous stable CLI release. Unchanged requirements
+need no agent rebuild solely for a CLI/Core bump. Missing or malformed artifacts
+from a release that already publishes the contract fail preparation.
+
+## Historical pre-marker fleet snapshot
+
+This snapshot predates published Core v0.3.41. It explains the original rollout
+exposure, not current compatibility policy or the current release inventory.
 
 | Core revision | Recovery | Marker written | Acknowledgement |
 |---|---|---|---|
@@ -49,8 +76,10 @@ The exposure is wider than Docker. The CLI sets the marker for every selected
 runtime context except `native` and `nix`, and the default context is `free`,
 so a service agent built before `471a8578` fails `Runner.Init` on the default
 path whether or not it creates containers itself.
-`TestContainerRecoveryRejectsAReleasedLegacyAgent` records that outcome against
-the published `go:0.0.47`.
+The former released-agent regression recorded that outcome against `go:0.0.47`.
+Its replacement, `TestContainerRecoveryRejectsUndeclaredPeerBeforeLifecycle`,
+uses a CLI-owned test peer and verifies rejection at discovery before lifecycle
+calls. The required CLI suite no longer downloads the historical agent.
 
 Native and Nix are exempt from the guard, which is one place the quiet failures
 live: an agent selected for a native backend that still reaches Docker through
@@ -217,10 +246,10 @@ and inspect containers without creating any.
    real daemon — an interrupted generate's container carries
    `codefly.recovery-scope`, the exact-scope sweep of a run that renamed the
    naming scope walks past it, and the disposable sweep collects it.
-4. Publish the rebuilt agents before or together with the CLI, then move
-   `pkg/sourceworkspace/compatibility.json`, the agent pins in
-   `pkg/conformance/matrix.json`, and `module-saas-starter`'s composed pins onto
-   the published versions.
+4. Publish agents implementing the required protocol and capabilities, then
+   qualify explicit artifact selections in `pkg/conformance/matrix.json` and
+   update any user-owned selections that need those features. The CLI has no
+   source-agent compatibility roster; unchanged protocols require no repinning.
 5. Record the qualified combinations in [the supported matrix](supported-matrix.md).
 
 Mixed generations are unsupported in the other direction too, and they fail

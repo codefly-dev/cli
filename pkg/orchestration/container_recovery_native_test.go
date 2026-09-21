@@ -7,11 +7,11 @@ import (
 	"debug/buildinfo"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
@@ -19,7 +19,6 @@ import (
 	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/mod/semver"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -47,21 +46,6 @@ const AgentNameEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_NAME"
 // so without holding the build to a repository, a row qualifies whatever
 // binary it was handed rather than the agent it claims to cover.
 const AgentRepositoryEnv = "CODEFLY_CONTAINER_RECOVERY_AGENT_REPOSITORY"
-
-// corePin is the Core release this CLI is compiled against, read from its own
-// build information so the qualification cannot drift from go.mod.
-func corePin(t *testing.T) string {
-	t.Helper()
-	build, ok := debug.ReadBuildInfo()
-	require.True(t, ok)
-	for _, dep := range build.Deps {
-		if dep.Path == "github.com/codefly-dev/core" {
-			return dep.Version
-		}
-	}
-	t.Fatal("this build does not depend on github.com/codefly-dev/core")
-	return ""
-}
 
 // A companion-row agent reaches Docker only through a Core package, and the
 // CLI's acknowledgement guard exempts native and Nix — so on the native path
@@ -103,18 +87,6 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 	// while covering a different agent's build.
 	require.Equal(t, "github.com/codefly-dev/"+repository, build.Main.Path,
 		"the binary under qualification was built from %s, not the repository this qualification names", build.Main.Path)
-	var agentCore string
-	for _, dep := range build.Deps {
-		if dep.Path == "github.com/codefly-dev/core" {
-			agentCore = dep.Version
-		}
-	}
-	// The rollout gate is "6a40c4bf28ac or later", and this CLI's own pin is
-	// already past it, so anything at or after that pin understands the marker
-	// this CLI writes. Requiring equality would fail a developer who rebuilt
-	// the agent on a newer Core, which the gate explicitly allows.
-	require.GreaterOrEqual(t, semver.Compare(agentCore, corePin(t)), 0,
-		"the agent under qualification embeds Core %s, older than this CLI's %s", agentCore, corePin(t))
 
 	// The identity `codefly run --runtime-context=native` projects.
 	scope, err := dockerrun.NewContainerRecoveryScope(resources.CodeflyHomeDir(), t.TempDir(), "native-qualification")
@@ -127,8 +99,9 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 	require.NoError(t, err)
 
 	var headers metadata.MD
-	_, err = client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
+	info, err := client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
 	require.NoError(t, err)
+	require.NoError(t, contract.Check(info.GetContract(), contract.ContainerRecoveryScope))
 	acknowledgement := strings.Join(headers.Get(recoveryscope.Header), "")
 	require.Equal(t, recoveryscope.Acknowledgement(), acknowledgement,
 		"the agent must echo the exact identity it will stamp on the containers it creates")
@@ -142,12 +115,10 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 		resources.RuntimeContextFree,
 	} {
 		runner := &Runner{
-			runtimeContext: runtimeContext,
-			// What Flow.configureRunner hands every runner it builds. Without
-			// it validateContainerRecovery has no identity to hold the agent
-			// to and accepts anything, qualifying nothing.
+			runtimeContext:            runtimeContext,
 			containerRecoveryIdentity: recoveryscope.Acknowledgement(),
 			instance: &services.Instance{
+				Info:                   info,
 				Identity:               &resources.ServiceIdentity{Name: "api", Module: "app"},
 				ContainerRecoveryScope: acknowledgement,
 			},

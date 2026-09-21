@@ -558,6 +558,61 @@ behind. Inventory-only scaffolds may omit the base manifest and service code;
 their first `sync module` treats the missing manifest as an empty base and
 populates the pinned source without rerunning the agent.
 
+#### Product-Owned Selections and Approval
+
+`codefly composition` selects nested released components, inspects differences and
+stages exact selected executors. See [the complete command contract](composition-selections.md)
+for required configuration identity flags and deployment guards.
+
+`composition stage-build` stages Core-selected source builds using
+`--build-requests` plus `--render-requests`, an explicit staging parent and
+sandbox/principal choices. Build and render configuration share one identity.
+It produces verified local build evidence, not a published artifact, signed
+derived output or qualification. Keep both request files for subsequent commands.
+
+`composition acquire` supports HTTPS and digest-addressed OCI objects using the
+configured Docker registry credentials over TLS. It does not recursively acquire
+layers or dependency source. `composition publish-build BUILD.json INPUTS.json
+SIGNERS.json --expected-selection DIGEST --expected-build DIGEST --repository REGISTRY/REPOSITORY --output
+ABSOLUTE_INPUTS.json` separately publishes verified build outputs by digest and
+signs Core derived statements with the package owner's configured build authority.
+It re-reads remote bytes, retains them with a digest-named OCI manifest reference,
+and preserves existing output records. The output file can be passed directly to
+`stage-render`; publication is not qualification or deployment. Registry policy
+must preserve the retention roots against explicit deletion/expiration.
+
+`codefly composition --workspace . inspect-local-target local` reads the explicit
+local k3d environment's live target binding without applying resources. It needs
+no selection/configuration flags. `--expected-identity DIGEST` rechecks an
+independently retained binding and rejects namespace recreation or other identity
+drift. The binding contains cluster routing/CA identity and actual namespace UIDs,
+not credentials. A successful read is not qualification, fencing or deploy authority.
+
+`configure-approval-authority CONFIG.json` explicitly installs a product-scoped
+host policy/key/audience/target binding outside the workspace; replacing it needs
+`--expected-digest` from `inspect-approval-authority`. This is trusted-local
+administration, not a candidate or remote caller's policy choice.
+
+After reviewing a Core admission record, `approve-admission` signs it only after
+fresh admission under installed host policy:
+
+```sh
+codefly composition approve-admission inputs.json admission.json "$APPROVAL_FILE" \
+  --expected-identity "$ADMISSION_ID" --expected-authority "$AUTHORITY_DIGEST" \
+  --signing-key "$APPROVER_KEY_FILE" \
+  --expires "$APPROVAL_EXPIRY" --render-requests requests.json --identity-key identity.key
+codefly composition check-approval inputs.json "$APPROVAL_FILE" \
+  --render-requests requests.json --identity-key identity.key
+```
+
+These commands neither execute qualification tests nor consume authorization for
+deployment. Existing effect guards remain; approval is not observed running state.
+`inspect-approval-use ID` reads a protected historical consumption record by the
+`useIdentity` returned during approval inspection. A record establishes only
+single-use consumption on this host, not deployment or health. There is no CLI
+reserve/reset/retry command; the effect-owner consumption API is not yet wired
+into a deployment adapter.
+
 #### Module composition
 
 `add module --source <path>` and `add module --worktree <owner/repo>@<ref>`
@@ -606,6 +661,47 @@ modules:
       path: platform/lodestar/modules/saas
 ```
 
+A composition that vendors its sources — a submodule per producer repository —
+can state the pin and the checkout satisfying it on the same committed entry,
+with no `codefly.local.yaml` in play:
+
+```yaml
+modules:
+    - name: saas
+      source: obin-ai/lodestar
+      version: "0.0.62"
+      path: platform/lodestar/modules/saas
+```
+
+The resolver prefers the `path` and drops the `version` with it, so a submodule
+parked past the tag the entry names runs as if it were that tag. `codefly
+doctor workspace` compares the two and reports the divergence with the
+`module_checkout_version_drift` diagnostic: it names the pin and what `git
+describe --tags` says the checkout actually is.
+
+The same comparison covers a pin satisfied by a machine-local checkout — a
+committed `source` + `version` with the location in a `resolve.<name>.path`
+overlay entry rather than a committed `path:`. Doctor asks the resolver where
+each pin lands rather than re-deriving the precedence, so both spellings of
+"this pin is satisfied by this checkout" are checked. Two resolutions are
+deliberately excluded: a path a [resolution receipt](#resolution-receipts)
+names is a materialization the CLI wrote, reported by `module_resolution_stale`
+instead; and a `worktree:` directive names its own git ref, which — not the
+pin's version — is what the user asked to run. It is a warning, not a failure
+— vendoring a checkout deliberately ahead of its tag is normal while developing
+the module, and only a problem unnoticed. Only a checkout that is its own
+repository is compared (a `path:` inside the workspace's own working tree is
+described by the workspace's tags), and a checkout with no reachable version
+tag — a shallow CI submodule clone — is left alone rather than reported as a
+version nothing established.
+
+Only the two tag namespaces a module package is published under are consulted:
+`v<version>` and `module-package/v<version>`. A vendored monorepo routinely
+carries per-component and nightly tags as well, and `git describe` does not
+prefer a version tag among tags on one commit — unrestricted, it would report a
+checkout sitting exactly on its pin as drifted. A producer tagging outside both
+conventions is therefore not checked rather than checked against the wrong tag.
+
 A `pinned` (committed `source` + `version`) reference resolves through the
 producer's verified module package rather than a git clone: `run` fetches the
 signed release from GitHub, verifies its signature and artifact digest against
@@ -619,8 +715,13 @@ module-trust:
   repositories:
     codefly/saas-starter: https://github.com/codefly-dev/module-saas-starter
   signers:
-    <signature identity written into provenance.json>: <base64 ed25519 public key>
+    codefly/saas-starter:
+      <signature identity written into provenance.json>: <base64 ed25519 public key>
 ```
+
+Signing authority is package-scoped. A key authorized for one package cannot
+authorize another package's release, even when signer names match. Flat signer
+maps are rejected; migrate each key under only the package IDs its owner authorizes.
 
 A repository is looked up by its `source`; when `module-trust.repositories`
 maps more than one package ID to the same repository, add `package: <id>` to
@@ -851,69 +952,32 @@ codefly environment show <env> [--json]
 
 #### `codefly environment import`
 
-Point an environment at a *cell* by consuming its `codefly/cell/v1` contract,
-so cell facts are sourced from the platform instead of hand-typed. Hand-typing
-an egress CIDR wrong silently drops all database traffic — the exact bug the
-contract prevents.
-
-The descriptor is produced on the platform side. For obin cells, infra-base's
-`obinctl` emits it:
+Import a producer-independent `codefly/cell/v2` descriptor whose `environment`
+contains Codefly's environment fields. Producers supply resolved endpoints,
+ports, secret references, runtime identities and delivery paths. The CLI does
+not interpret a provider's infrastructure inventory or infer service aliases.
 
 ```bash
-obinctl cell-contract <coordinate> > cell.json
-codefly environment import azure --cell-contract cell.json
-
-# Or stream it straight in and preview the change:
-obinctl cell-contract hosted-eastus2 | codefly environment import azure --cell-contract - --dry-run
+codefly environment import production --cell-contract cell.json --dry-run
+codefly environment import production --cell-contract cell.json
 ```
 
-The namespace defaults to the environment's existing namespace, or the
-workspace name when the environment is new; override it with `--namespace`.
-`--dry-run` prints the unified diff and writes nothing. After a write, the same
-readiness validation as `codefly doctor workspace --env <env>` runs and its
-result is printed.
+The requested environment and namespace must match the descriptor. The namespace
+defaults to the environment's existing namespace or the workspace name; select
+another declared target with `--namespace`. This flag does not rewrite the
+contract's delivery paths or secret references. Legacy v1 descriptors are rejected;
+their producers must emit explicit v2 declarations.
 
-**Ownership.** An import replaces only the fields the contract owns and
-preserves everything else byte-for-byte, comments included: it re-serializes
-only the single environment item being imported and splices it back into the
-original file, so other environments, top-level keys, blank lines, and comments
-outside that item are never reflowed. (A whole-file round-trip through the YAML
-library would strip blank lines and normalize indentation across the whole
-document, burying the one line that changed.)
+Declared fields replace their exact named values. Maps merge by explicit key;
+omitted fields and unrelated entries remain intact. Explicit empty maps, empty
+sequences and nulls clear the corresponding field where its schema permits.
+There is no special `store` alias, single-database limit, default secret path or
+ignored producer extension. Unknown fields and capabilities fail validation.
 
-- *Contract-owned* (replaced on every import): `cluster.kind` and
-  `cluster.context`, `registry`, `namespace` (set to the resolved namespace —
-  `--namespace` if given, else the existing one, else the workspace name — so
-  it can never disagree with the derived `gitops.path`), `gitops.repo-url` and
-  `gitops.path` (path = `<workloads_path_prefix>/<namespace>`), each managed
-  database's `managed-services.<name>` `kind` / `external-name` /
-  `egress-cidrs`, `service-secrets.secret-store`, and `dns`.
-- *Operator-owned* (never touched): `description`, `fixture`, `ingress`,
-  `resource-quota`, `secrets`, `configuration-profile`, `gitops.branch`,
-  `cluster.kubeconfig` (a local path, not a cell fact), a managed service's
-  `secret-references`, `service-secrets.services` mappings, and any other
-  declared field.
-
-A provenance comment is stamped above the environment item and replaced (not
-stacked) on re-import:
-
-```yaml
-environments:
-    # imported from cell contract hosted-eastus2 (hosted-eastus2) on 2026-09-06T12:00:00Z; re-run: codefly environment import azure --cell-contract …
-    - name: azure
-      ...
-```
-
-The consumer maps a single cluster, registry, database and secret store per
-cell (core's `ParseCellContract` rejects more). core maps the managed database
-under the `store` key by default, but an existing environment that already
-declares the database of the same kind under a different service name (the name
-the deploy path matches) is updated in place under that name — the import never
-adds a second `store` entry beside it. A sole existing managed service of a
-different kind (a cache, a queue) is left untouched and the database is inserted
-beside it. An environment with two or more managed services and no exact `store`
-match is ambiguous and refused rather than silently leaving a stale one. Object
-stores in the descriptor are ignored until core models them.
+An import re-serializes only the selected environment item. Surrounding workspace
+bytes remain unchanged; a provenance comment records the cell, coordinate and
+import time. `--dry-run` prints the diff without writing. After a write, workspace
+readiness validation runs for the selected environment.
 
 #### `codefly environment show`
 
@@ -1134,8 +1198,10 @@ source:
 ```
 
 The directory must remain inside the repository after symlink resolution, and
-the agent version must be exact. Source tests, packaging, and audit all use that
-same selection.
+an omitted agent version resolves `latest`. Source tests, packaging, and audit
+all use that selection, checking compatibility from the running agent rather
+than its release. Self-hosted packagers declare `source.agent: self` and their
+own bootstrap command; see [runtime agent compatibility](agent-compatibility.md).
 
 Conformance defaults to scaffolding a fresh service through `Builder.Create`.
 Attach-only generic agents whose `Builder.Create` intentionally declines to
@@ -1168,8 +1234,7 @@ Generate client code from service APIs.
 codefly generate client --from billing/api/grpc --language go --output libraries/billing-api-client  # A codefly library from a live local service
 codefly generate client --from package:codefly/saas-starter@0.1.0 --language go,typescript --services AuditService  # From a composed module package's contract
 codefly generate client --from contracts:module-saas-starter/contracts/api --language python --no-facade  # From a `generate contracts` export, bindings only
-codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files (Docker)
-codefly generate proto --proto ../proto --output ./generated --local                     # Same, with locally installed pinned plugins
+codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files, in the proto companion
 codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
 codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
 codefly generate runnables documents                                                     # Derive a Runnable package per method carrying the operation option

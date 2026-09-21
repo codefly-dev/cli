@@ -2,115 +2,89 @@ package sourceworkspace
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	"github.com/codefly-dev/core/resources"
+	"github.com/stretchr/testify/require"
 )
 
-func TestEmbeddedCompatibilityRosterDrivesExportedPins(t *testing.T) {
-	tests := []struct {
-		name    string
-		version string
-	}{
-		{name: "go", version: GenericGoPluginVersion},
-		{name: "python", version: GenericPythonPluginVersion},
-		{name: "generic", version: GenericPluginVersion},
-		{name: "nextjs", version: NodePluginVersion},
-		{name: "rust", version: RustPluginVersion},
-		{name: "swift", version: SwiftPluginVersion},
-	}
-	for _, test := range tests {
-		plugin, ok := PinnedPlugin("codefly.dev", test.name)
-		if !ok {
-			t.Fatalf("missing codefly.dev/%s", test.name)
-		}
-		if plugin.Version != test.version {
-			t.Fatalf("codefly.dev/%s version = %q, exported pin = %q", test.name, plugin.Version, test.version)
-		}
-	}
-}
+func TestSourceSelectionUsesRunningAgentsWithoutCompiledPins(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/source\n"), 0o600))
+	_, err := selectPlugin(t.Context(), root)
+	require.ErrorContains(t, err, "no installed compatible")
 
-func TestCompatibilityRosterSelectionReportsEvidence(t *testing.T) {
-	tests := []struct {
-		file     string
-		name     string
-		evidence string
-	}{
-		{file: "go.mod", name: "go", evidence: "marker:go.mod"},
-		{file: "requirements.txt", name: "python", evidence: "marker:requirements.txt"},
-		{file: "main.ts", name: "nextjs", evidence: "extension:.ts"},
-		{file: "main.rs", name: "rust", evidence: "extension:.rs"},
+	binary := filepath.Join(t.TempDir(), "agent")
+	output, err := exec.Command("go", "build", "-o", binary, "./testdata/agent").CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	install := func(name, version string) {
+		t.Helper()
+		agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "example.test", Name: name, Version: version}
+		path, err := agent.Path(t.Context())
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.Symlink(binary, path))
 	}
-	for _, test := range tests {
-		t.Run(test.file, func(t *testing.T) {
-			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, test.file), []byte("fixture\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			plugin, evidence, err := Roster().SelectPlugin(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if plugin.Name != test.name || evidence.String() != test.evidence {
-				t.Fatalf("selection = %s via %s, want %s via %s", plugin.Name, evidence, test.name, test.evidence)
-			}
+	install("unknown-source-agent", "0.0.1")
+	selected, err := selectPlugin(t.Context(), root)
+	require.NoError(t, err)
+	require.Equal(t, "example.test/unknown-source-agent:0.0.1", selected.Identifier())
+	t.Run("manager startup budget", func(t *testing.T) {
+		t.Setenv("TEST_SOURCE_STARTUP_DELAY", "16s")
+		slowSelection, err := selectPlugin(t.Context(), root)
+		require.NoError(t, err)
+		require.Equal(t, selected, slowSelection)
+	})
+	linkedRoot := filepath.Join(t.TempDir(), "linked-source")
+	require.NoError(t, os.Symlink(root, linkedRoot))
+	linkedSelection, err := selectPlugin(t.Context(), linkedRoot)
+	require.NoError(t, err)
+	require.Equal(t, selected, linkedSelection)
+
+	install("unknown-source-agent", "99.0.0")
+	selected, err = selectPlugin(t.Context(), root)
+	require.NoError(t, err)
+	require.Equal(t, "99.0.0", selected.Version)
+
+	for _, declaration := range []string{"future", "undeclared"} {
+		t.Run(declaration, func(t *testing.T) {
+			t.Setenv("TEST_SOURCE_CONTRACT", declaration)
+			_, err := selectPlugin(t.Context(), root)
+			require.ErrorContains(t, err, "no installed compatible")
 		})
 	}
+	install("another-source-agent", "1.0.0")
+	_, err = selectPlugin(t.Context(), root)
+	require.ErrorContains(t, err, "multiple compatible")
+
+	broken := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "example.test", Name: "broken", Version: "1.0.0"}
+	brokenPath, err := broken.Path(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(brokenPath, []byte("corrupted executable"), 0o755))
+	_, err = selectPlugin(t.Context(), root)
+	require.ErrorContains(t, err, "cannot discover source agents")
+	require.ErrorContains(t, err, "broken")
 }
 
-func TestParseCompatibilityRosterRejectsFloatingAndAmbiguousEntries(t *testing.T) {
-	tests := []struct {
-		name    string
-		payload string
-	}{
-		{
-			name: "floating version",
-			payload: `{"schema_version":1,"plugins":[
-                {"publisher":"codefly.dev","name":"go","version":"latest","markers":["go.mod"]},
-                {"publisher":"codefly.dev","name":"generic","version":"0.0.1","fallback":true}
-            ]}`,
-		},
-		{
-			name: "duplicate marker",
-			payload: `{"schema_version":1,"plugins":[
-                {"publisher":"codefly.dev","name":"go","version":"0.0.1","markers":["project"]},
-                {"publisher":"codefly.dev","name":"python","version":"0.0.1","markers":["project"]},
-                {"publisher":"codefly.dev","name":"generic","version":"0.0.1","fallback":true}
-            ]}`,
-		},
+func TestSourceSelectionRequiresCompleteUnambiguousLanguageSupport(t *testing.T) {
+	first := Plugin{
+		Agent: &resources.Agent{Publisher: "example.test", Name: "unlisted", Version: "3.1.0"},
+		Info:  &agentv0.AgentInformation{Languages: []*agentv0.Language{{Type: agentv0.Language_GO}}},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := ParseCompatibilityRoster([]byte(test.payload)); err == nil {
-				t.Fatal("invalid roster was accepted")
-			}
-		})
+	for _, languages := range [][]string{nil, {"unknown"}, {"go", "python"}} {
+		_, err := selectForLanguages([]Plugin{first}, languages)
+		require.ErrorContains(t, err, "no installed compatible")
 	}
-}
-
-func TestWriteCompatibilityRosterPromotesSelectionPin(t *testing.T) {
-	roster := Roster()
-	for i := range roster.Plugins {
-		if roster.Plugins[i].Name == "go" {
-			roster.Plugins[i].Version = "9.9.9"
-		}
-	}
-	path := filepath.Join(t.TempDir(), "compatibility.json")
-	if err := WriteCompatibilityRoster(path, roster); err != nil {
-		t.Fatal(err)
-	}
-	written, err := LoadCompatibilityRoster(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module fixture\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	plugin, _, err := written.SelectPlugin(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plugin.Version != "9.9.9" {
-		t.Fatalf("selected version = %q, want promoted 9.9.9", plugin.Version)
-	}
+	second := first
+	second.Agent = &resources.Agent{Publisher: "other.test", Name: "unlisted", Version: "1.0.0"}
+	_, err := selectForLanguages([]Plugin{first, second}, []string{"go"})
+	require.ErrorContains(t, err, "multiple compatible")
+	selected, err := selectForLanguages([]Plugin{first}, []string{"go"})
+	require.NoError(t, err)
+	selected.Version = "changed"
+	require.Equal(t, "3.1.0", first.Agent.Version)
 }

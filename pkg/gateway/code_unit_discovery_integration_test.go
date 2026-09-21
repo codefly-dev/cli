@@ -54,10 +54,10 @@ func TestGatewayDiscoversCodeUnitsThroughRootedSource(t *testing.T) {
 		agent     string
 		manifests []string
 	}{
-		"src/ads":    {language: "jvm", agent: "generic", manifests: []string{"src/ads/build.gradle"}},
-		"src/api":    {language: "go", agent: "go", manifests: []string{"src/api/go.mod"}},
-		"src/cart":   {language: "dotnet", agent: "generic", manifests: []string{"src/cart/cart.sln", "src/cart/src/cart.csproj"}},
-		"src/worker": {language: "python", agent: "python", manifests: []string{"src/worker/pyproject.toml", "src/worker/requirements.txt"}},
+		"src/ads":    {language: "jvm", agent: "", manifests: []string{"src/ads/build.gradle"}},
+		"src/api":    {language: "go", agent: "", manifests: []string{"src/api/go.mod"}},
+		"src/cart":   {language: "dotnet", agent: "", manifests: []string{"src/cart/cart.sln", "src/cart/src/cart.csproj"}},
+		"src/worker": {language: "python", agent: "", manifests: []string{"src/worker/pyproject.toml", "src/worker/requirements.txt"}},
 	}
 	for _, unit := range units {
 		expected, ok := want[unit.GetPath()]

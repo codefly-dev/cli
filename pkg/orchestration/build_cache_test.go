@@ -6,11 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
-
-	"github.com/codefly-dev/cli/pkg/sourceworkspace"
-	"github.com/codefly-dev/core/agents/manager"
 	"testing"
+	"time"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -157,31 +154,61 @@ func (client *observedRecipeClient) Build(ctx context.Context, request *builderv
 	return response, err
 }
 
-func TestRecipeAgentsReceiveBuildContextAndOutputDirectory(t *testing.T) {
-	if os.Getenv(resources.CodeflyHomeEnv) == "" {
-		t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+type recipeProtocolPeer struct {
+	builderv0.UnimplementedBuilderServer
+	tamper bool
+}
+
+func (*recipeProtocolPeer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
+	return &builderv0.BuildCapabilitiesResponse{BuildxSelection: true}, nil
+}
+
+func (peer *recipeProtocolPeer) Build(_ context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+	if err := coreservices.ValidateBuildRequestOutputDirectory(request); err != nil {
+		return nil, err
 	}
-	for _, name := range []string{"go", "nextjs"} {
-		t.Run(name, func(t *testing.T) {
+	output := request.GetOutputDirectory()
+	if err := os.MkdirAll(output, 0o755); err != nil {
+		return nil, err
+	}
+	dockerfile := filepath.Join(output, "Dockerfile")
+	if err := os.WriteFile(dockerfile, []byte("FROM scratch\n"), 0o644); err != nil {
+		return nil, err
+	}
+	plan, err := coreservices.SingleImageBuildPlan(output, "example.test/app:v1", coreservices.RecipeBuildPlatforms(), []string{"Dockerfile"})
+	if err != nil {
+		return nil, err
+	}
+	if peer.tamper {
+		if err := os.WriteFile(dockerfile, []byte("FROM scratch\nLABEL changed=true\n"), 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return &builderv0.BuildResponse{
+		State:  &builderv0.BuildStatus{State: builderv0.BuildStatus_SUCCESS},
+		Result: &builderv0.BuildResult{Kind: &builderv0.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}},
+	}, nil
+}
+
+func TestRecipePeerReceivesBuildContextAndOutputDirectory(t *testing.T) {
+	for _, tamper := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tamper=%t", tamper), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
-			plugin, ok := sourceworkspace.PinnedPlugin("codefly.dev", name)
-			require.True(t, ok)
-			agent := plugin.Agent()
-			connection, err := manager.Load(ctx, agent, manager.WithoutSandbox(), manager.WithoutPrincipal(), manager.WithEnv("DOCKER_HOST=unix:///nonexistent-recipe-test-docker.sock"))
+			calls := make(chan string, 4)
+			server := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, request any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+				calls <- info.FullMethod
+				return handler(ctx, request)
+			}))
+			builderv0.RegisterBuilderServer(server, &recipeProtocolPeer{tamper: tamper})
+			conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 			require.NoError(t, err)
-			t.Cleanup(connection.Close)
-			observed := &observedRecipeClient{BuilderClient: builderv0.NewBuilderClient(connection.GRPCConn())}
+			t.Cleanup(func() { _ = conn.Close() })
+			observed := &observedRecipeClient{BuilderClient: builderv0.NewBuilderClient(conn)}
 			client := &coreservices.BuilderAgent{BuilderClient: observed}
 			root := t.TempDir()
-			service := &resources.Service{Name: "api", Version: "1.0.0", Agent: agent}
+			service := &resources.Service{Name: "api", Version: "1.0.0"}
 			service.WithDir(root)
-			require.NoError(t, service.Save(ctx))
-			require.NoError(t, os.MkdirAll(filepath.Join(root, "code"), 0o755))
-			require.NoError(t, os.WriteFile(filepath.Join(root, "code", "go.mod"), []byte("module example.com/recipe\n\ngo 1.27.0\n"), 0o644))
-			require.NoError(t, os.WriteFile(filepath.Join(root, "code", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
-			_, err = client.Load(ctx, &builderv0.LoadRequest{Identity: &basev0.ServiceIdentity{Name: "api", Module: "app", Version: "1.0.0", WorkspacePath: root, RelativeToWorkspace: "."}, CreationMode: &builderv0.CreationMode{Communicate: false}})
-			require.NoError(t, err)
 			flow := &Flow{world: &World{Workspace: &resources.Workspace{Name: "workspace"}}}
 			cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "protected", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}}
 			flow.WithBuildCache(cache)
@@ -192,7 +219,15 @@ func TestRecipeAgentsReceiveBuildContextAndOutputDirectory(t *testing.T) {
 			require.NoError(t, err)
 			t.Setenv("PATH", t.TempDir())
 			_, err = build.Build(ctx)
-			require.ErrorIs(t, err, exec.ErrNotFound)
+			if tamper {
+				require.ErrorContains(t, err, "digest")
+				require.NotErrorIs(t, err, exec.ErrNotFound, "tampered recipes must be rejected before Docker execution")
+			} else {
+				require.ErrorIs(t, err, exec.ErrNotFound)
+			}
+			require.Len(t, calls, 2)
+			require.Equal(t, builderv0.Builder_BuildCapabilities_FullMethodName, <-calls)
+			require.Equal(t, builderv0.Builder_Build_FullMethodName, <-calls)
 			require.NotNil(t, observed.request)
 			output, err := buildRecipeOutputDirectory(root)
 			require.NoError(t, err)
@@ -206,7 +241,11 @@ func TestRecipeAgentsReceiveBuildContextAndOutputDirectory(t *testing.T) {
 			require.Equal(t, builderv0.BuildStatus_SUCCESS, observed.response.GetState().GetState())
 			plan := observed.response.GetResult().GetDockerBuildPlan()
 			require.NotNil(t, plan)
-			require.NoError(t, coreservices.VerifyDockerBuildPlan(output, plan))
+			if tamper {
+				require.Error(t, coreservices.VerifyDockerBuildPlan(output, plan))
+			} else {
+				require.NoError(t, coreservices.VerifyDockerBuildPlan(output, plan))
+			}
 		})
 	}
 }

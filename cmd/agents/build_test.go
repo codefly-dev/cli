@@ -2,7 +2,6 @@ package agents
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"gopkg.in/yaml.v3"
 )
@@ -201,7 +199,7 @@ func TestAgentSourceSelectsExactNestedProject(t *testing.T) {
 	}
 }
 
-func TestAgentSourceRejectsIncompleteFloatingAndEscapingSelections(t *testing.T) {
+func TestAgentSourceRejectsIncompleteAndEscapingSelections(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "source"), "not a directory")
 	tests := []struct {
@@ -209,11 +207,10 @@ func TestAgentSourceRejectsIncompleteFloatingAndEscapingSelections(t *testing.T)
 		source agentSource
 		want   string
 	}{
-		{name: "missing directory", source: agentSource{Agent: "codefly.dev/go:0.0.49"}, want: "requires directory and exact agent"},
-		{name: "missing agent", source: agentSource{Directory: "."}, want: "requires directory and exact agent"},
+		{name: "missing directory", source: agentSource{Agent: "codefly.dev/go:0.0.49"}, want: "requires directory and agent"},
+		{name: "missing agent", source: agentSource{Directory: "."}, want: "requires directory and agent"},
 		{name: "parent escape", source: agentSource{Directory: "../source", Agent: "codefly.dev/go:0.0.49"}, want: "must stay inside"},
 		{name: "absolute escape", source: agentSource{Directory: root, Agent: "codefly.dev/go:0.0.49"}, want: "must stay inside"},
-		{name: "floating agent", source: agentSource{Directory: ".", Agent: "codefly.dev/go:latest"}, want: "exact version"},
 		{name: "noncanonical version", source: agentSource{Directory: ".", Agent: "codefly.dev/go:v0.0.49"}, want: "not canonical"},
 		{name: "file", source: agentSource{Directory: "source", Agent: "codefly.dev/go:0.0.49"}, want: "not a directory"},
 	}
@@ -235,6 +232,18 @@ func TestAgentSourceRejectsIncompleteFloatingAndEscapingSelections(t *testing.T)
 	_, _, err := resolveAgentSource(context.Background(), root, &manifest)
 	if err == nil || !strings.Contains(err.Error(), "resolves outside") {
 		t.Fatalf("symlink escape error = %v", err)
+	}
+}
+
+func TestAgentSourceAllowsRuntimeResolvedVersions(t *testing.T) {
+	for _, spec := range []string{"example.test/unknown", "example.test/unknown:latest", "example.test/unknown:1.2.3"} {
+		t.Run(spec, func(t *testing.T) {
+			manifest := agentYAML{Source: &agentSource{Directory: ".", Agent: spec}}
+			_, selected, err := resolveAgentSource(t.Context(), t.TempDir(), &manifest)
+			if err != nil || selected == nil {
+				t.Fatalf("selection %q: %v", spec, err)
+			}
+		})
 	}
 }
 
@@ -297,68 +306,6 @@ func TestBuildAgentsEmptySelectionIsNoop(t *testing.T) {
 func TestBuildAllAgentsRequiresDiscoveredAgent(t *testing.T) {
 	if err := BuildAllAgents(context.Background(), t.TempDir(), BuildOptions{SkipAudit: true}); err == nil {
 		t.Fatal("BuildAllAgents unexpectedly accepted an empty root")
-	}
-}
-
-func TestEnsureSourcePackagerBootstrapsExactGoAgent(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("CODEFLY_HOME", home)
-	agentDir := filepath.Join(t.TempDir(), "service-go")
-	if err := os.MkdirAll(agentDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(agentDir, "agent.codefly.yaml"), fmt.Sprintf(`publisher: codefly.dev
-kind: codefly:service
-name: go
-version: %s
-`, sourceworkspace.GenericGoPluginVersion))
-
-	previous := bootstrapSourcePackager
-	t.Cleanup(func() { bootstrapSourcePackager = previous })
-	var gotSource, gotDestination string
-	bootstrapSourcePackager = func(_ context.Context, source, destination string) error {
-		gotSource, gotDestination = source, destination
-		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(destination, []byte("agent"), 0o755)
-	}
-
-	if err := ensureSourcePackager(context.Background(), []string{agentDir}); err != nil {
-		t.Fatalf("ensureSourcePackager: %v", err)
-	}
-	if gotSource != agentDir {
-		t.Fatalf("bootstrap source = %q, want %q", gotSource, agentDir)
-	}
-	wantDestination := filepath.Join(home, "agents", "services", "codefly.dev", "go__"+sourceworkspace.GenericGoPluginVersion)
-	if gotDestination != wantDestination {
-		t.Fatalf("bootstrap destination = %q, want %q", gotDestination, wantDestination)
-	}
-
-	bootstrapSourcePackager = func(context.Context, string, string) error {
-		t.Fatal("installed source packager was bootstrapped again")
-		return nil
-	}
-	if err := ensureSourcePackager(context.Background(), []string{agentDir}); err != nil {
-		t.Fatalf("ensure installed source packager: %v", err)
-	}
-}
-
-func TestEnsureSourcePackagerRejectsMismatchedGoAgent(t *testing.T) {
-	t.Setenv("CODEFLY_HOME", t.TempDir())
-	agentDir := filepath.Join(t.TempDir(), "service-go")
-	if err := os.MkdirAll(agentDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(agentDir, "agent.codefly.yaml"), `publisher: codefly.dev
-kind: codefly:service
-name: go
-version: 9.9.9
-`)
-
-	err := ensureSourcePackager(context.Background(), []string{agentDir})
-	if err == nil || !strings.Contains(err.Error(), "9.9.9") || !strings.Contains(err.Error(), sourceworkspace.GenericGoPluginVersion) {
-		t.Fatalf("mismatched source packager error = %v", err)
 	}
 }
 

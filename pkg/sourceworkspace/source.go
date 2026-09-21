@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/codefly-dev/core/resources"
 	"golang.org/x/mod/modfile"
@@ -38,20 +37,9 @@ func (p *Prepared) Close() error {
 	return p.cleanup()
 }
 
-// SelectPlugin returns the authoritative plugin for a checkout. This registry
-// is intentionally typed and extensible; callers never select native commands.
-func SelectPlugin(sourceDir string) (*resources.Agent, error) {
-	plugin, _, err := compatibilityRoster.SelectPlugin(sourceDir)
-	return plugin, err
-}
-
-func skipDetectionDir(name string) bool {
-	switch name {
-	case ".git", ".hg", ".svn", "node_modules", "vendor", "target", "dist", "build", "__pycache__":
-		return true
-	default:
-		return strings.HasPrefix(name, ".")
-	}
+// SelectPlugin selects from runtime advertisements, never release pins.
+func SelectPlugin(ctx context.Context, sourceDir string) (*resources.Agent, error) {
+	return selectPlugin(ctx, sourceDir)
 }
 
 // Prepare creates and loads a flat one-service workspace whose source path is
@@ -62,7 +50,7 @@ func Prepare(ctx context.Context, sourceDir string) (*Prepared, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve source directory: %w", err)
 	}
-	plugin, err := SelectPlugin(absoluteSource)
+	plugin, err := selectPlugin(ctx, absoluteSource)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +101,7 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 	}
 	spec := map[string]any{"source-dir": "code"}
 	goWorkFile := ""
-	if plugin.Name == "go" {
+	if _, statErr := os.Stat(filepath.Join(absoluteSource, "go.mod")); statErr == nil {
 		if sourceGoWorkFile := goWorkspaceFile(absoluteSource); sourceGoWorkFile != "" {
 			goWorkFile = filepath.Join(workspaceDir, "go.work")
 			if err := writeNormalizedGoWorkspace(sourceGoWorkFile, goWorkFile); err != nil {

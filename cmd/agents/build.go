@@ -55,8 +55,9 @@ type agentYAML struct {
 // agentSource selects the exact source root and plugin used to qualify an
 // agent release when the repository root is not itself one language project.
 type agentSource struct {
-	Directory string `yaml:"directory"`
-	Agent     string `yaml:"agent"`
+	Directory string   `yaml:"directory"`
+	Agent     string   `yaml:"agent"`
+	Bootstrap []string `yaml:"bootstrap,omitempty"`
 }
 
 type agentConformance struct {
@@ -227,7 +228,6 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 
 func buildAgents(ctx context.Context, root string, dirs []string, opts buildOptions) error {
 	var agents []string
-	var predecessorConsumers []string
 	var quarantined []quarantinedAgent
 	var discoveryFailures []error
 	for _, dir := range dirs {
@@ -255,9 +255,6 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 			continue
 		}
 		agents = append(agents, dir)
-		if ag.Source == nil && !isCanonicalSourcePackager(&ag) {
-			predecessorConsumers = append(predecessorConsumers, dir)
-		}
 	}
 
 	if len(quarantined) > 0 {
@@ -277,15 +274,6 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 			return errors.Join(append(discoveryFailures, fmt.Errorf("no buildable agents under %s — all %d are quarantined", root, len(quarantined)))...)
 		}
 		return errors.Join(append(discoveryFailures, fmt.Errorf("no agent directories found under %s", root))...)
-	}
-	// Seed the compatibility-roster packager only for implicit consumers.
-	// Explicit source agents resolve through the normal plugin loader, and the
-	// canonical Go candidate bootstraps itself under its own private identity.
-	// Every release artifact still comes from the ordinary Builder.Package RPC.
-	if len(predecessorConsumers) > 0 {
-		if err := ensureSourcePackager(ctx, agents); err != nil {
-			return errors.Join(append(discoveryFailures, err)...)
-		}
 	}
 
 	cli.Header(1, "Building %d agents", len(agents))
@@ -322,7 +310,7 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 		}
 		g.Go(func() error {
 			log := &agentLogger{}
-			res := compileAgent(groupCtx, agents[i], log, opts.nativeOnly, false)
+			res := compileAgent(groupCtx, agents[i], log, opts.nativeOnly, false, nil)
 			results[i] = res
 			n := completed.Add(1)
 			if res.err != nil {
@@ -469,7 +457,7 @@ func (r *agentBuildResult) summary() string {
 }
 
 func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
-	res := compileAgent(ctx, dir, &agentLogger{direct: true}, opts.nativeOnly, false)
+	res := compileAgent(ctx, dir, &agentLogger{direct: true}, opts.nativeOnly, false, nil)
 	if res.err != nil {
 		return res.err
 	}
@@ -485,7 +473,7 @@ func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
 // result always carries the outcome. When nativeOnly is set the container
 // target is omitted. standaloneModuleGraph is reserved for CI/release proof;
 // local builds bind the exact go.work detected for the source checkout.
-func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly, standaloneModuleGraph bool) *agentBuildResult {
+func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly, standaloneModuleGraph bool, source *agentSourceInvocation) *agentBuildResult {
 	res := &agentBuildResult{label: filepath.Base(dir), dir: dir}
 	if err := ctx.Err(); err != nil {
 		res.err = err
@@ -509,12 +497,6 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		return res
 	}
 	res.ag = ag
-	if ag.Source == nil && !isCanonicalSourcePackager(&ag) {
-		if err = ensureSourcePackager(ctx, sourcePackagerCandidates(dir)); err != nil {
-			res.err = err
-			return res
-		}
-	}
 	// A quarantined agent is excluded from bulk builds; an explicit single
 	// build still proceeds (that's how you fix it) but says so loudly.
 	if ag.Quarantine {
@@ -549,12 +531,15 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		return res
 	}
 	defer os.RemoveAll(temporary)
-	prepared, pluginHome, err := prepareAgentPackager(ctx, dir, &ag, temporary)
-	if err != nil {
-		res.err = err
-		return res
+	if source == nil {
+		prepared, pluginHome, prepareErr := prepareAgentPackager(ctx, dir, &ag, temporary)
+		if prepareErr != nil {
+			res.err = prepareErr
+			return res
+		}
+		defer prepared.Close()
+		source = &agentSourceInvocation{prepared: prepared, home: pluginHome}
 	}
-	defer prepared.Close()
 	executable, err := os.Executable()
 	if err != nil {
 		res.err = fmt.Errorf("resolve Codefly executable: %w", err)
@@ -577,12 +562,12 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 	started := time.Now()
 	command := exec.CommandContext(ctx, executable, arguments...)
-	command.Dir = prepared.Dir
-	goWorkFile := prepared.GoWorkFile
+	command.Dir = source.prepared.Dir
+	goWorkFile := source.prepared.GoWorkFile
 	if standaloneModuleGraph {
 		goWorkFile = "off"
 	}
-	command.Env = agentBuildChildEnvironment(pluginHome, goWorkFile, "CI=1", "CODEFLY_COLOR=never")
+	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, "CI=1", "CODEFLY_COLOR=never")
 	response := &builderv0.PackageResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {
 		res.err = err
@@ -606,41 +591,50 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	if res.containerPath != "" {
 		log.Info("Installed (container): %s", res.containerPath)
 	}
-	log.Header(1, "Agent %s:%s packaged successfully through codefly.dev/go", ag.Name, ag.Version)
+	log.Header(1, "Agent %s:%s packaged successfully", ag.Name, ag.Version)
 	return res
 }
 
-// Only the canonical Go source packager may break its own compiler-upgrade
-// cycle. Its seed is native-only and private; all release artifacts still come
-// from the candidate's ordinary Builder.Package RPC, followed by owner audits.
-func isCanonicalSourcePackager(manifest *agentYAML) bool {
-	return manifest != nil && manifest.Publisher == genericGoPluginPublisher &&
-		manifest.Kind == serviceAgentKind && manifest.Name == "go" && manifest.Source == nil
+// Self-hosting is an explicit declaration owned by the agent repository.
+func isSelfHostedSourcePackager(manifest *agentYAML) bool {
+	return manifest != nil && manifest.Source != nil && manifest.Source.Agent == "self"
 }
 
 func prepareAgentPackager(ctx context.Context, root string, manifest *agentYAML, temporary string) (*sourceworkspace.Prepared, string, error) {
-	if !isCanonicalSourcePackager(manifest) {
+	if !isSelfHostedSourcePackager(manifest) {
 		prepared, err := prepareAgentSource(ctx, root, manifest)
 		return prepared, resolveSourcePluginHome(), err
 	}
-	// Reuse explicit-source validation before using a version in any path. The
-	// candidate keeps its true identity; it never replaces a predecessor's bytes.
+	if len(manifest.Source.Bootstrap) == 0 {
+		return nil, "", fmt.Errorf("self-hosted source agent must declare source.bootstrap")
+	}
+	for _, component := range []string{manifest.Publisher, manifest.Name} {
+		if !filepath.IsLocal(component) || strings.ContainsAny(component, "/\\") || component == "." {
+			return nil, "", fmt.Errorf("self-hosted source agent publisher and name must be single path components")
+		}
+	}
+	if _, err := semver.Parse(manifest.Version); err != nil {
+		return nil, "", fmt.Errorf("self-hosted source agent must declare its canonical artifact version: %w", err)
+	}
 	candidate := *manifest
-	candidate.Source = &agentSource{Directory: ".", Agent: fmt.Sprintf("%s/go:%s", manifest.Publisher, manifest.Version)}
+	sourceSpec := *manifest.Source
+	sourceSpec.Agent = fmt.Sprintf("%s/%s:%s", manifest.Publisher, manifest.Name, manifest.Version)
+	candidate.Source = &sourceSpec
 	source, agent, err := resolveAgentSource(ctx, root, &candidate)
 	if err != nil {
 		return nil, "", err
 	}
 	privateHome := filepath.Join(temporary, "source-packager")
-	seed := filepath.Join(privateHome, "agents", "services", manifest.Publisher, "go__"+agent.Version)
-	if err = buildSourcePackager(ctx, source, seed); err != nil {
-		return nil, "", fmt.Errorf("bootstrap candidate source packager %s: %w", candidate.Source.Agent, err)
-	}
-	prepared, err := sourceworkspace.PrepareWithAgent(ctx, source, agent)
+	registration, err := resources.AgentKindRegistrationFor(agent.Kind)
 	if err != nil {
 		return nil, "", err
 	}
-	return prepared, privateHome, nil
+	seed := filepath.Join(privateHome, "agents", registration.InstallSubdirectory, agent.Publisher, agent.Name+"__"+agent.Version)
+	if err = buildSourcePackager(ctx, source, seed, manifest.Source.Bootstrap); err != nil {
+		return nil, "", fmt.Errorf("bootstrap candidate source packager %s: %w", candidate.Source.Agent, err)
+	}
+	prepared, err := sourceworkspace.PrepareWithAgent(ctx, source, agent)
+	return prepared, privateHome, err
 }
 
 func prepareAgentSource(ctx context.Context, root string, manifest *agentYAML) (*sourceworkspace.Prepared, error) {
@@ -660,8 +654,11 @@ func resolveAgentSource(ctx context.Context, root string, manifest *agentYAML) (
 	}
 	directory := strings.TrimSpace(manifest.Source.Directory)
 	agentSpec := strings.TrimSpace(manifest.Source.Agent)
+	if agentSpec == "self" {
+		agentSpec = fmt.Sprintf("%s/%s:%s", manifest.Publisher, manifest.Name, manifest.Version)
+	}
 	if directory == "" || agentSpec == "" {
-		return "", nil, fmt.Errorf("agent source requires directory and exact agent")
+		return "", nil, fmt.Errorf("agent source requires directory and agent")
 	}
 	if filepath.IsAbs(directory) || filepath.Clean(directory) != filepath.FromSlash(directory) || strings.HasPrefix(filepath.ToSlash(directory), "../") {
 		return "", nil, fmt.Errorf("agent source directory %q must stay inside the repository", directory)
@@ -690,98 +687,26 @@ func resolveAgentSource(ctx context.Context, root string, manifest *agentYAML) (
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return "", nil, fmt.Errorf("agent source directory %q resolves outside the repository", directory)
 	}
-	if !strings.Contains(agentSpec, ":") {
-		return "", nil, fmt.Errorf("agent source agent must include an exact version")
-	}
 	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, agentSpec)
 	if err != nil {
 		return "", nil, fmt.Errorf("invalid agent source agent: %w", err)
 	}
-	if agent.Version == latestAgentVersion {
-		return "", nil, fmt.Errorf("agent source agent must use an exact version, not latest")
-	}
-	if _, err := semver.Parse(strings.TrimPrefix(agent.Version, "v")); err != nil || strings.HasPrefix(agent.Version, "v") {
-		return "", nil, fmt.Errorf("agent source agent version %q is not canonical semantic version", agent.Version)
+	if agent.Version != latestAgentVersion {
+		if _, err := semver.Parse(agent.Version); err != nil {
+			return "", nil, fmt.Errorf("source agent version %q is not canonical: %w", agent.Version, err)
+		}
 	}
 	return dir, agent, nil
 }
 
-const genericGoPluginPublisher = "codefly.dev"
-
-var bootstrapSourcePackager = buildSourcePackager
-
-func sourcePackagerPath(home string) string {
-	return filepath.Join(
-		home,
-		"agents", "services", genericGoPluginPublisher,
-		"go__"+sourceworkspace.GenericGoPluginVersion,
-	)
-}
-
-func sourcePackagerCandidates(dir string) []string {
-	candidates := []string{dir}
-	if root := findMonorepoRoot(dir); root != "" {
-		goDir := filepath.Join(root, "service-go")
-		if goDir != dir {
-			candidates = append(candidates, goDir)
-		}
+func buildSourcePackager(ctx context.Context, sourceDir, destination string, bootstrap []string) error {
+	if len(bootstrap) == 0 || strings.TrimSpace(bootstrap[0]) == "" {
+		return fmt.Errorf("source bootstrap command is required")
 	}
-	return candidates
-}
-
-// ensureSourcePackager breaks the sole bootstrap cycle in plugin-owned agent
-// packaging. It installs only a native seed binary and only when the exact Go
-// plugin version selected by sourceworkspace is absent. The caller then uses
-// that plugin's normal Builder.Package operation to create the real native,
-// Linux, and SBOM release artifacts.
-func ensureSourcePackager(ctx context.Context, agentDirs []string) error {
-	destination := sourcePackagerPath(resources.CodeflyHomeDir())
-	if info, err := os.Stat(destination); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
-		return nil
-	}
-
-	var found []string
-	for _, dir := range agentDirs {
-		data, err := os.ReadFile(filepath.Join(dir, "agent.codefly.yaml"))
-		if err != nil {
-			continue
-		}
-		var ag agentYAML
-		if err := yaml.Unmarshal(data, &ag); err != nil {
-			continue
-		}
-		if ag.Publisher != genericGoPluginPublisher || ag.Name != "go" {
-			continue
-		}
-		found = append(found, ag.Publisher+"/"+ag.Name+":"+ag.Version)
-		if ag.Version != sourceworkspace.GenericGoPluginVersion {
-			continue
-		}
-		cli.Info("Bootstrapping native source packager %s/go:%s", genericGoPluginPublisher, sourceworkspace.GenericGoPluginVersion)
-		if err := bootstrapSourcePackager(ctx, dir, destination); err != nil {
-			return fmt.Errorf("bootstrap %s/go:%s from %s: %w", genericGoPluginPublisher, sourceworkspace.GenericGoPluginVersion, dir, err)
-		}
-		return nil
-	}
-
-	detail := "no Go agent source was found"
-	if len(found) > 0 {
-		detail = "available Go agent source is " + strings.Join(found, ", ")
-	}
-	return fmt.Errorf(
-		"source packager %s/go:%s is not installed at %s and cannot be bootstrapped: %s",
-		genericGoPluginPublisher,
-		sourceworkspace.GenericGoPluginVersion,
-		destination,
-		detail,
-	)
-}
-
-func buildSourcePackager(ctx context.Context, sourceDir, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return fmt.Errorf("create agent directory: %w", err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(destination), ".codefly-go-bootstrap-*")
+	temporary, err := os.CreateTemp(filepath.Dir(destination), ".codefly-source-bootstrap-*")
 	if err != nil {
 		return fmt.Errorf("create temporary executable: %w", err)
 	}
@@ -792,15 +717,22 @@ func buildSourcePackager(ctx context.Context, sourceDir, destination string) err
 	}
 	defer os.Remove(temporaryPath)
 
-	command := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", temporaryPath, ".")
+	// #nosec G204 -- source.bootstrap explicitly authorizes a repository-owned build command.
+	command := exec.CommandContext(ctx, bootstrap[0], bootstrap[1:]...)
 	command.Dir = sourceDir
-	// A seed must come from the declared standalone source on the host platform,
-	// never a caller's workspace replacements or cross-compilation environment.
 	command.Env = agentBuildChildEnvironment(resources.CodeflyHomeDir(), "off",
-		"GOOS="+runtime.GOOS, "GOARCH="+runtime.GOARCH, "CGO_ENABLED=1", "GOTOOLCHAIN=local")
+		"CODEFLY_AGENT_OUTPUT="+temporaryPath,
+		"CODEFLY_AGENT_OS="+runtime.GOOS, "CODEFLY_AGENT_ARCH="+runtime.GOARCH)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("native Go bootstrap build: %w\n%s", err, boundedAgentCIOutput(output))
+		return fmt.Errorf("native source bootstrap build: %w\n%s", err, boundedAgentCIOutput(output))
+	}
+	info, err := os.Lstat(temporaryPath)
+	if err != nil {
+		return fmt.Errorf("inspect bootstrap output: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return fmt.Errorf("source bootstrap must emit a nonempty regular executable at CODEFLY_AGENT_OUTPUT")
 	}
 	if err := os.Chmod(temporaryPath, 0o755); err != nil {
 		return fmt.Errorf("mark bootstrap executable: %w", err)
@@ -823,20 +755,7 @@ func buildSourcePackager(ctx context.Context, sourceDir, destination string) err
 }
 
 func resolveSourcePluginHome() string {
-	current := resources.CodeflyHomeDir()
-	plugin := sourcePackagerPath(current)
-	if _, err := os.Stat(plugin); err == nil {
-		return current
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return current
-	}
-	defaultHome := filepath.Join(home, ".codefly")
-	if _, err := os.Stat(sourcePackagerPath(defaultHome)); err == nil {
-		return defaultHome
-	}
-	return current
+	return resources.CodeflyHomeDir()
 }
 
 func installAgentPackageArtifacts(artifacts []*builderv0.PackageArtifact, result *agentBuildResult) error {

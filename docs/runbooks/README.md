@@ -15,8 +15,8 @@ each runbook below.
 ### Shipping
 - [Cut a release](cut-a-release.md) — tag → GoReleaser → signed archives, SBOMs, attestations,
   Homebrew cask.
-- [Release the whole agent fleet](release-the-fleet.md) — re-pin every agent on a new core and
-  publish in dependency order.
+- [Release affected agents](release-the-fleet.md) — publish only agents needing an implementation
+  or protocol change; unchanged contracts require no fleet repinning.
 - [Publish an image to the registry](publish-an-image.md) — `ghcr.io/codefly-dev` visibility,
   repo linking, digest pinning, anonymous-pull guards.
 

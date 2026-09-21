@@ -273,3 +273,41 @@ func writeExecutable(t *testing.T, path, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestReleasePublishesAgentCompatibilityBeforeImmutablePublication(t *testing.T) {
+	var workflow releaseWorkflow
+	readRepositoryYAML(t, ".github/workflows/release.yaml", &workflow)
+	prepared := false
+	for _, step := range workflow.Jobs["release"].Steps {
+		if strings.Contains(step.Run, "go run ./tools/agentcontract") {
+			prepared = true
+		}
+		if strings.Contains(step.Run, "release --snapshot") && !prepared {
+			t.Fatal("agent compatibility must be prepared before release qualification")
+		}
+	}
+	if !prepared {
+		t.Fatal("release does not prepare the consumed agent contract")
+	}
+	var configuration struct {
+		Release struct {
+			Header     string `yaml:"header"`
+			ExtraFiles []struct {
+				Glob string `yaml:"glob"`
+			} `yaml:"extra_files"`
+		} `yaml:"release"`
+	}
+	readRepositoryYAML(t, ".goreleaser.yaml", &configuration)
+	if !strings.Contains(configuration.Release.Header, ".release/agent-compatibility.md") {
+		t.Fatal("release notes omit agent compatibility")
+	}
+	files := map[string]bool{}
+	for _, file := range configuration.Release.ExtraFiles {
+		files[file.Glob] = true
+	}
+	for _, name := range []string{".release/contract.json", ".release/agent-requirements.json"} {
+		if !files[name] {
+			t.Fatalf("immutable release omits %s", name)
+		}
+	}
+}

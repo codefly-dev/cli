@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/agents/contract"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/recoveryscope"
@@ -32,7 +34,7 @@ func TestContainerRecoveryRequiresAgentAcknowledgementBeforeDockerInit(t *testin
 		{"nix", resources.RuntimeContextNix, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			runner := &Runner{runtimeContext: tc.runtime, containerRecoveryIdentity: recoveryscope.Acknowledgement(), instance: &services.Instance{Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: tc.ack}}
+			runner := &Runner{runtimeContext: tc.runtime, containerRecoveryIdentity: recoveryscope.Acknowledgement(), instance: &services.Instance{Info: &agentv0.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: tc.ack}}
 			if tc.reject {
 				// No Runtime client or World is installed: the real Init must
 				// return before configuration, port allocation or any agent RPC.
@@ -43,13 +45,46 @@ func TestContainerRecoveryRequiresAgentAcknowledgementBeforeDockerInit(t *testin
 			}
 		})
 	}
-	// A host that could not resolve ownership projects nothing, and the flow
-	// warns and runs on. There is no identity to hold an agent to, so the guard
-	// steps aside rather than rejecting every agent on such a host.
 	t.Run("flow projected nothing", func(t *testing.T) {
-		runner := &Runner{runtimeContext: resources.RuntimeContextContainer, instance: &services.Instance{Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}}}
-		require.NoError(t, runner.validateContainerRecovery())
+		runner := &Runner{runtimeContext: resources.RuntimeContextContainer, instance: &services.Instance{Info: &agentv0.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}}}
+		require.ErrorContains(t, runner.validateContainerRecovery(), "container recovery requires a resolved scope")
 	})
+}
+
+func TestContainerRecoveryChecksTheDeclaredAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		declaration *agentv0.AgentContract
+		wantError   string
+	}{
+		{name: "undeclared", wantError: "does not declare a CLI-agent protocol"},
+		{name: "incompatible", declaration: &agentv0.AgentContract{ProtocolVersion: 2}, wantError: "host requires version 1"},
+		{name: "missing capability", declaration: &agentv0.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 2}, wantError: "does not implement required capability"},
+		{name: "compatible", declaration: contract.Current()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := &services.Instance{
+				Identity:               &resources.ServiceIdentity{Name: "db", Module: "infra"},
+				Info:                   &agentv0.AgentInformation{Contract: tc.declaration},
+				ContainerRecoveryScope: "scope",
+			}
+			runner := &Runner{runtimeContext: resources.RuntimeContextContainer, containerRecoveryIdentity: "scope", instance: instance}
+			manager := &Manager{world: &World{Mode: BuildMode, containerRecoveryIdentity: "scope"}}
+			for _, err := range []error{runner.validateContainerRecovery(), manager.validateContainerRecovery(instance)} {
+				if tc.wantError == "" {
+					require.NoError(t, err)
+				} else {
+					require.ErrorContains(t, err, tc.wantError)
+				}
+			}
+		})
+	}
+	for _, runtimeContext := range []string{resources.RuntimeContextNative, resources.RuntimeContextNix} {
+		runner := &Runner{runtimeContext: runtimeContext, instance: &services.Instance{
+			Info: &agentv0.AgentInformation{Contract: &agentv0.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 2}},
+		}}
+		require.NoError(t, runner.validateContainerRecovery())
+	}
 }
 
 // newProjectionWorkspaceFlow builds a real flow whose origin is excluded and
@@ -178,7 +213,7 @@ func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 	agent := &Runner{
 		runtimeContext:            resources.RuntimeContextContainer,
 		containerRecoveryIdentity: projected,
-		instance:                  &services.Instance{Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: projected},
+		instance:                  &services.Instance{Info: &agentv0.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: projected},
 	}
 	require.NoError(t, agent.validateContainerRecovery())
 
@@ -194,16 +229,12 @@ func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 	foreign := &Runner{
 		runtimeContext:            resources.RuntimeContextContainer,
 		containerRecoveryIdentity: projected,
-		instance:                  &services.Instance{Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: recoveryscope.Acknowledgement()},
+		instance:                  &services.Instance{Info: &agentv0.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: recoveryscope.Acknowledgement()},
 	}
 	require.ErrorContains(t, foreign.validateContainerRecovery(), "did not acknowledge this run's container recovery scope")
 }
 
-// A host that cannot resolve ownership — here an unwritable codefly home — must
-// still run. Core degrades the same condition rather than stopping every
-// containerized run; failing would take out build, test, ci, deploy, sync,
-// gitops and the control plane on hosts where they work today.
-func TestInitManagersRunsWhenOwnershipCannotBeResolved(t *testing.T) {
+func TestInitManagersLeavesUnresolvedOwnershipForOperationPreflight(t *testing.T) {
 	blocked := filepath.Join(t.TempDir(), "home-is-a-file")
 	require.NoError(t, os.WriteFile(blocked, []byte("not a directory"), 0o600))
 	t.Setenv(recoveryscope.EnvironmentVariable, "")
@@ -358,6 +389,7 @@ func TestBuilderModesRequireAgentContainerRecoveryAcknowledgement(t *testing.T) 
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					instance := &services.Instance{
+						Info:                   &agentv0.AgentInformation{Contract: contract.Current()},
 						Identity:               &resources.ServiceIdentity{Name: "accounts", Module: "billing"},
 						ContainerRecoveryScope: tc.acknowledgement,
 					}

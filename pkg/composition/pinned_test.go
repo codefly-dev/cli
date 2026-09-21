@@ -50,8 +50,9 @@ module-trust:
   repositories:
     %s: %s.git
   signers:
-    %s: %q
-`, pinnedfixture.PackageID, pinnedfixture.RepositoryURL(), pinnedfixture.Signer, fixture.SignerKeyBase64())
+    %s:
+      %s: %q
+`, pinnedfixture.PackageID, pinnedfixture.RepositoryURL(), pinnedfixture.PackageID, pinnedfixture.Signer, fixture.SignerKeyBase64())
 	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, resources.WorkspaceConfigurationName), []byte(doc), 0o644))
 	ref := &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0"}
 
@@ -172,6 +173,40 @@ module-trust:
 
 	_, statErr := os.Stat(filepath.Join(workspaceDir, ".codefly", "cache", "modules"))
 	require.True(t, os.IsNotExist(statErr), "an untrusted signature must materialize nothing")
+}
+
+func TestModuleTrustDoesNotAuthorizeSignersAcrossPackages(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	fixture := pinnedfixture.New(t)
+	fixture.AddRelease(t, "0.1.0")
+	fixture.UseGitHub(t)
+	dir := t.TempDir()
+	doc := fmt.Sprintf(`name: consumer
+module-trust:
+  repositories:
+    %s: %s
+    example/other: https://github.com/example/other
+  signers:
+    example/other:
+      %s: %q
+`, pinnedfixture.PackageID, pinnedfixture.RepositoryURL(), pinnedfixture.Signer, fixture.SignerKeyBase64())
+	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(doc), 0o600))
+	_, err := ResolvePinnedModule(t.Context(), dir, &resources.ModuleReference{Name: "saas", Source: pinnedfixture.Owner + "/" + pinnedfixture.RepoName, Version: "0.1.0"})
+	require.ErrorIs(t, err, corecomposition.ErrSignature)
+	require.NoDirExists(t, filepath.Join(dir, ".codefly", "cache", "modules"))
+}
+
+func TestModuleTrustRejectsFlatAndMalformedSigningKeys(t *testing.T) {
+	for _, signers := range []string{"    shared: key\n", "    example/module:\n      signer: invalid-base64!\n"} {
+		t.Run(signers, func(t *testing.T) {
+			dir := t.TempDir()
+			doc := "name: consumer\nmodule-trust:\n  signers:\n" + signers
+			require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(doc), 0o600))
+			trust, _, err := LoadModuleTrust(dir)
+			require.Error(t, err)
+			require.Nil(t, trust)
+		})
+	}
 }
 
 func TestResolvePinnedModuleRejectsMovedTag(t *testing.T) {

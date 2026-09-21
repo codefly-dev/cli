@@ -3,8 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
@@ -50,34 +48,10 @@ func (s *Source) Close() error {
 // DetectSourceAgent selects a language service agent from source evidence. This
 // is a Codefly policy: Mind and other adapters ask for typed behavior and stay
 // unaware of language toolchains.
-func DetectSourceAgent(root string) (string, error) {
-	agent, err := sourceworkspace.SelectPlugin(root)
+func DetectSourceAgent(ctx context.Context, root string) (string, error) {
+	agent, err := sourceworkspace.SelectPlugin(ctx, root)
 	if err != nil {
 		return "", err
 	}
 	return agent.String(), nil
-}
-
-// DetectFormulaAgent selects the plugin that owns an explicit formula command.
-// Formula interpretation remains in Codefly; transport adapters do not learn
-// language runner syntax.
-func DetectFormulaAgent(command []string) string {
-	if len(command) == 0 {
-		return ""
-	}
-	executable := strings.ToLower(filepath.Base(command[0]))
-	switch executable {
-	case "go":
-		return fmt.Sprintf("go:%s", sourceworkspace.GenericGoPluginVersion)
-	case "python", "python3", "pytest", "uv":
-		return fmt.Sprintf("python:%s", sourceworkspace.GenericPythonPluginVersion)
-	case "cargo", "rustc":
-		return fmt.Sprintf("rust:%s", sourceworkspace.RustPluginVersion)
-	case "npm", "npx", "node", "pnpm", "yarn":
-		return fmt.Sprintf("nextjs:%s", sourceworkspace.NodePluginVersion)
-	case "swift":
-		return fmt.Sprintf("swift:%s", sourceworkspace.SwiftPluginVersion)
-	default:
-		return ""
-	}
 }

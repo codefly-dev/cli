@@ -7,6 +7,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/codefly-dev/core/runners/base"
 )
 
 // MonitorConfig configures the process monitor.
@@ -22,7 +25,7 @@ type MonitorConfig struct {
 	CheckInterval time.Duration // how often to check (default 30s)
 	CPUThreshold  float64       // warn if CPU% exceeds this (default 200%)
 	MemoryMB      int           // warn if RSS exceeds this (default 512MB)
-	MaxOrphans    int           // max orphaned agent processes (default 3)
+	MaxOrphans    int           // max authenticated groups whose owner exited (default 3)
 	LogPath       string        // monitor log file
 }
 
@@ -40,11 +43,13 @@ func DefaultMonitorConfig() MonitorConfig {
 
 // ProcessInfo describes a running codefly-related process.
 type ProcessInfo struct {
-	PID     int
-	CPU     float64 // percentage
-	MemRSS  int     // KB
-	Command string
-	Name    string // extracted: "go-grpc", "go-generic", "neo4j", etc.
+	PID        int
+	PGID       int
+	OwnerAlive bool
+	CPU        float64 // percentage
+	MemRSS     int     // KB
+	Command    string
+	Name       string // executable reported by authenticated process inspection
 }
 
 // MonitorResult is the output of a single monitor check.
@@ -59,17 +64,54 @@ type MonitorResult struct {
 
 // CheckProcesses scans for codefly-related processes and returns their status.
 func CheckProcesses() ([]ProcessInfo, error) {
-	// Use ps to get all processes with CPU and memory.
-	out, err := exec.Command("ps", "aux").Output()
+	return checkProcesses(context.Background())
+}
+
+func checkProcesses(ctx context.Context) ([]ProcessInfo, error) {
+	// Do not collect command arguments: they may contain secrets and prove no
+	// ownership. Core authenticates registered group members, including children
+	// whose leader exited; executable names are display-only.
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,pgid=,pcpu=,rss=,comm=").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ps failed: %w", err)
 	}
 
 	var processes []ProcessInfo
+	groups := make(map[int]*base.ProcessGroupOwnership)
 	for _, line := range strings.Split(string(out), "\n") {
 		info := parsePSLine(line)
-		if info != nil && isCodeflyRelatedProcess(info.Command) {
+		if info == nil {
+			continue
+		}
+		ownership, inspected := groups[info.PGID]
+		if !inspected {
+			group, lookupErr := base.LookupProcessGroup(info.PGID)
+			if errors.Is(lookupErr, base.ErrProcessGroupNotRegistered) {
+				groups[info.PGID] = nil
+				continue
+			}
+			if lookupErr != nil {
+				return nil, lookupErr
+			}
+			var inspectErr error
+			ownership, inspectErr = group.InspectOwnership(ctx)
+			if inspectErr != nil {
+				return nil, inspectErr
+			}
+			groups[info.PGID] = ownership
+		}
+		if ownership == nil || !ownership.Authenticated {
+			continue
+		}
+		for _, member := range ownership.Members {
+			if member.PID != info.PID {
+				continue
+			}
+			info.OwnerAlive = ownership.OwnerAlive
+			info.Command = member.Executable
+			info.Name = filepath.Base(member.Executable)
 			processes = append(processes, *info)
+			break
 		}
 	}
 
@@ -78,7 +120,11 @@ func CheckProcesses() ([]ProcessInfo, error) {
 
 // Monitor runs a single check and returns the result.
 func Monitor(cfg MonitorConfig) (*MonitorResult, error) {
-	procs, err := CheckProcesses()
+	return monitor(context.Background(), cfg)
+}
+
+func monitor(ctx context.Context, cfg MonitorConfig) (*MonitorResult, error) {
+	procs, err := checkProcesses(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -88,8 +134,7 @@ func Monitor(cfg MonitorConfig) (*MonitorResult, error) {
 		Processes: procs,
 	}
 
-	// Track orphaned agents (not part of any codefly session)
-	orphanedAgents := 0
+	orphanedGroups := make(map[int]bool)
 
 	for _, p := range procs {
 		result.TotalCPU += p.CPU
@@ -108,16 +153,15 @@ func Monitor(cfg MonitorConfig) (*MonitorResult, error) {
 				fmt.Sprintf("HIGH MEM: PID %d (%s) at %dMB", p.PID, p.Name, p.MemRSS/1024))
 		}
 
-		// Count orphaned agents
-		if isAgentProcess(p.Name) {
-			orphanedAgents++
+		if !p.OwnerAlive {
+			orphanedGroups[p.PGID] = true
 		}
 	}
 
 	// Too many orphaned agents
-	if orphanedAgents > cfg.MaxOrphans {
+	if len(orphanedGroups) > cfg.MaxOrphans {
 		result.Warnings = append(result.Warnings,
-			fmt.Sprintf("ORPHANS: %d agent processes detected (max %d)", orphanedAgents, cfg.MaxOrphans))
+			fmt.Sprintf("ORPHANS: %d authenticated process groups have exited owners (max %d)", len(orphanedGroups), cfg.MaxOrphans))
 	}
 
 	return result, nil
@@ -146,7 +190,7 @@ func RunMonitorLoop(ctx context.Context, cfg MonitorConfig) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			result, err := Monitor(cfg)
+			result, err := monitor(ctx, cfg)
 			if err != nil {
 				logger.Printf("check failed: %v", err)
 				continue
@@ -198,71 +242,35 @@ func FormatStatus(result *MonitorResult) string {
 
 func parsePSLine(line string) *ProcessInfo {
 	fields := strings.Fields(line)
-	if len(fields) < 11 {
+	if len(fields) < 5 {
 		return nil
 	}
 
-	pid, err := strconv.Atoi(fields[1])
+	pid, err := strconv.Atoi(fields[0])
 	if err != nil {
+		return nil
+	}
+	pgid, err := strconv.Atoi(fields[1])
+	if err != nil || pgid <= 0 {
 		return nil
 	}
 	cpu, err := strconv.ParseFloat(fields[2], 64)
 	if err != nil {
 		return nil
 	}
-	// RSS is field 5 in ps aux
-	rss, _ := strconv.Atoi(fields[5])
+	rss, err := strconv.Atoi(fields[3])
+	if err != nil {
+		return nil
+	}
 
-	command := strings.Join(fields[10:], " ")
-	name := extractProcessName(command)
+	command := strings.Join(fields[4:], " ")
 
 	return &ProcessInfo{
 		PID:     pid,
+		PGID:    pgid,
 		CPU:     cpu,
 		MemRSS:  rss,
 		Command: command,
-		Name:    name,
+		Name:    filepath.Base(command),
 	}
-}
-
-func extractProcessName(command string) string {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return ""
-	}
-	executable := filepath.Base(strings.Trim(fields[0], "\"'"))
-	switch executable {
-	case "go-grpc", "go-generic", "mind-server", "neo4j", "codefly":
-		return executable
-	}
-	for _, field := range fields[1:] {
-		name := filepath.Base(strings.Trim(field, "\"'"))
-		if strings.HasPrefix(name, "org.neo4j.") {
-			return "neo4j"
-		}
-	}
-	return executable
-}
-
-func isCodeflyRelatedProcess(command string) bool {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return false
-	}
-	executable := filepath.Base(strings.Trim(fields[0], "\"'"))
-	switch executable {
-	case "go-grpc", "go-generic", "mind-server", "neo4j", "codefly":
-		return true
-	}
-	for _, field := range fields[1:] {
-		name := filepath.Base(strings.Trim(field, "\"'"))
-		if strings.HasPrefix(name, "org.neo4j.") {
-			return true
-		}
-	}
-	return false
-}
-
-func isAgentProcess(name string) bool {
-	return name == "go-grpc" || name == "go-generic"
 }

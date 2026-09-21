@@ -61,19 +61,20 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 
 ### Shipping
 - **Cut a release** (`codefly publish` → GoReleaser → Homebrew cask) → [docs/runbooks/cut-a-release.md](docs/runbooks/cut-a-release.md)
-- **Release the whole agent fleet** (re-pin every agent on a new core, publish in dependency order) → [docs/runbooks/release-the-fleet.md](docs/runbooks/release-the-fleet.md)
+- **Release affected agents** (only for required agent changes, never an unchanged Core protocol) → [docs/runbooks/release-the-fleet.md](docs/runbooks/release-the-fleet.md)
 - **How releases & self-update work** → [docs/cli-updates.md](docs/cli-updates.md)
 
 ### Extending the CLI
 - **Add a new command** (Cobra wiring, help, MCP exposure) → [docs/runbooks/add-a-command.md](docs/runbooks/add-a-command.md)
 - **Rebuild the CLI and agents from local source** → [docs/runbooks/update-agents.md](docs/runbooks/update-agents.md)
-- **Point a workspace at a cell** (import a `codefly/cell/v1` contract instead of hand-typing cell facts) → [docs/commands.md#codefly-environment](docs/commands.md)
+- **Point a workspace at a cell** (import explicit `codefly/cell/v2` environment declarations) → [docs/commands.md#codefly-environment](docs/commands.md)
 - **Export a module's API contracts** → [docs/commands.md#generate-contracts](docs/commands.md#generate-contracts)
 
 ### Reference (deep dives, not step-by-step)
 - **All CLI commands, by category** → [docs/commands.md](docs/commands.md)
 - **Orchestration engine** → [docs/orchestration.md](docs/orchestration.md)
 - **Runnables** (what the CLI does with `runnable.codefly.yaml`, and what is deliberately not implemented yet) → [docs/runnable.md](docs/runnable.md)
+- **Product-owned selections** (Core resolution, local checkouts, evidence and execution blockers) → [docs/composition-selections.md](docs/composition-selections.md)
 - **Deployment completion stages** (rendered / applied / bootstrapped / healthy, bootstrap ordering, expand/contract schema rollout) → [docs/deployment-completion.md](docs/deployment-completion.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
 - **Supported CLI/core/agent combinations** (the conformance matrix, and why a required row cannot skip itself) → [docs/supported-matrix.md](docs/supported-matrix.md)
@@ -162,7 +163,13 @@ relative paths.
 - **CLI ↔ Agent communication is ALWAYS gRPC.** Never import agent code, never call agent
   functions. The agent runs as a separate process. Clients: `runtimev0.RuntimeClient`,
   `builderv0.BuilderClient`, `agentv0.AgentClient`, `codev0.CodeClient`.
-- **NEVER mock.** Tests use real agent processes and real infrastructure where possible.
+- **Compatibility is runtime-only.** No concrete-agent roster, name exceptions, release-pin
+  admission or linked-Core matching in CLI/Core. Unchanged protocols need no fleet repinning.
+  Require the running peer's protocol and operation capabilities; missing is an error.
+  See [docs/agent-compatibility.md](docs/agent-compatibility.md) for selection and bootstrap.
+- **CLI tests own the host boundary, not released agents.** Use test-only gRPC peers
+  with controlled responses and real files/sockets; no released-agent downloads,
+  fleet pins or provider toolchains in CLI gates. Agent behavior is tested by its owner.
 - **The orchestration package is the most critical code.** Changes there affect every
   `codefly run`. Test thoroughly.
 - **Configs flow as environment variables, not files.** Connection strings derived from network

@@ -110,11 +110,5 @@ func (runner *Runner) validateContainerRecovery() error {
 }
 
 func validateContainerRecovery(instance *services.Instance, expected string) error {
-	if expected == "" {
-		return nil
-	}
-	if instance.ContainerRecoveryScope != expected {
-		return fmt.Errorf("agent for %s did not acknowledge this run's container recovery scope; rebuild the agent against the CLI's pinned Core before running with Docker (upgrading the CLI alone does not update agent binaries); existing unlabeled containers require explicit recovery by container ID", instance.Unique())
-	}
-	return nil
+	return instance.RequireContainerRecoveryScope(expected)
 }

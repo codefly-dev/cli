@@ -7,9 +7,13 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
+
+	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
 	"github.com/codefly-dev/core/resources"
@@ -52,6 +56,9 @@ type SolutionRenderRequest struct {
 // manifests into the owned gitops tree, driving the codefly:solution executor
 // through the same promotable render pipeline services and modules use.
 func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResult, error) {
+	if err := selectionguard.RejectUnboundExecution(req.Workspace.Dir(), req.Source); err != nil {
+		return RenderResult{}, err
+	}
 	if err := req.Workspace.ValidateEnvironments(ctx); err != nil {
 		return RenderResult{}, err
 	}
@@ -208,7 +215,23 @@ var connectSolutionExecutor = func(ctx context.Context, workDir string, agent *r
 	if err != nil {
 		return nil, nil, fmt.Errorf("load solution agent %s: %w", agent.Name, err)
 	}
-	return solution.NewClient(conn.GRPCConn()), conn.Close, nil
+	client, err := admittedSolutionExecutor(ctx, conn)
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("inspect solution agent %s: %w", agent.Identifier(), err)
+	}
+	return client, conn.Close, nil
+}
+
+func admittedSolutionExecutor(ctx context.Context, conn *manager.AgentConn) (solutionExecutor, error) {
+	info, err := agentv0.NewAgentClient(conn.GRPCConn()).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	if err != nil {
+		return nil, err
+	}
+	if err = contract.Check(info.GetContract()); err != nil {
+		return nil, err
+	}
+	return solution.NewClient(conn.GRPCConn()), nil
 }
 
 func solutionDiagnostics(phase, name string, diagnostics []*basev0.FailureDiagnostic) error {

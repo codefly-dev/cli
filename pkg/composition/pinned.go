@@ -544,8 +544,9 @@ func placeholderTagLock(packageID, repositoryURL, version, ref string) *corecomp
 // resources.Workspace because core's schema does not carry it yet (tracked
 // separately as a small core change); this keeps the CLI-only until then.
 type rawModuleTrust struct {
-	Repositories map[string]string `yaml:"repositories"`
-	Signers      map[string]string `yaml:"signers"`
+	Repositories map[string]string            `yaml:"repositories"`
+	Signers      map[string]map[string]string `yaml:"signers"`
+	BuildSigners map[string]map[string]string `yaml:"build-signers"`
 }
 
 type rawWorkspaceModuleTrustProbe struct {
@@ -564,7 +565,7 @@ type rawWorkspaceModuleTrustProbe struct {
 // producer's `provenance.Repository` for VerifyRelease's strict comparison to
 // succeed — both sides of that comparison flow from this same normalized map.
 func LoadModuleTrust(workspaceDir string) (*corecomposition.TrustPolicy, map[string]string, error) {
-	data, err := os.ReadFile(filepath.Join(workspaceDir, resources.WorkspaceConfigurationName))
+	data, err := readSelectionMetadata(context.Background(), filepath.Join(workspaceDir, resources.WorkspaceConfigurationName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
@@ -588,15 +589,29 @@ func LoadModuleTrust(workspaceDir string) (*corecomposition.TrustPolicy, map[str
 	for id, repository := range probe.ModuleTrust.Repositories {
 		repositories[id] = normalizeRepositoryURL(repository)
 	}
-	signers := map[string]ed25519.PublicKey{}
-	for identity, encoded := range probe.ModuleTrust.Signers {
-		key, err := decodeTrustSignerKey(encoded)
-		if err != nil {
-			return nil, nil, fmt.Errorf("module-trust signer %q: %w", identity, err)
+	signers := make(map[string]map[string]ed25519.PublicKey)
+	for packageID, declarations := range probe.ModuleTrust.Signers {
+		signers[packageID] = make(map[string]ed25519.PublicKey)
+		for identity, encoded := range declarations {
+			key, err := decodeTrustSignerKey(encoded)
+			if err != nil {
+				return nil, nil, fmt.Errorf("module-trust package %q signer %q: %w", packageID, identity, err)
+			}
+			signers[packageID][identity] = key
 		}
-		signers[identity] = key
 	}
-	return &corecomposition.TrustPolicy{Repositories: repositories, Signers: signers}, overrides, nil
+	buildSigners := make(map[string]map[string]ed25519.PublicKey)
+	for packageID, declarations := range probe.ModuleTrust.BuildSigners {
+		buildSigners[packageID] = make(map[string]ed25519.PublicKey)
+		for identity, encoded := range declarations {
+			key, err := decodeTrustSignerKey(encoded)
+			if err != nil {
+				return nil, nil, fmt.Errorf("module-trust package %q build signer %q: %w", packageID, identity, err)
+			}
+			buildSigners[packageID][identity] = key
+		}
+	}
+	return &corecomposition.TrustPolicy{Repositories: repositories, Signers: signers, BuildSigners: buildSigners}, overrides, nil
 }
 
 func decodeTrustSignerKey(encoded string) (ed25519.PublicKey, error) {

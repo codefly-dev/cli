@@ -85,7 +85,7 @@ func TestBuildInventoryLatestTagBeatsLatestResolvable(t *testing.T) {
 	}
 }
 
-func TestBuildInventoryDistinguishesSourcePinFromPromotionCandidate(t *testing.T) {
+func TestBuildInventoryReportsAvailableArtifacts(t *testing.T) {
 	agent := &resources.Agent{
 		Kind:      resources.ServiceAgent,
 		Publisher: "codefly.dev",
@@ -101,18 +101,6 @@ func TestBuildInventoryDistinguishesSourcePinFromPromotionCandidate(t *testing.T
 
 	if inv.LatestResolvable != "0.0.63" {
 		t.Fatalf("latest resolvable = %q, want 0.0.63", inv.LatestResolvable)
-	}
-	if inv.SourceWorkspace == nil {
-		t.Fatal("source-workspace status missing")
-	}
-	if inv.SourceWorkspace.WillLaunch != "0.0.62" {
-		t.Fatalf("source checkout version = %q, want pinned 0.0.62", inv.SourceWorkspace.WillLaunch)
-	}
-	if !inv.SourceWorkspace.Stale || inv.SourceWorkspace.PromotionCandidate != "0.0.63" {
-		t.Fatalf("source-workspace status = %+v, want stale promotion candidate 0.0.63", inv.SourceWorkspace)
-	}
-	if len(inv.SourceWorkspace.Markers) == 0 {
-		t.Fatal("source-workspace marker families missing")
 	}
 }
 

@@ -15,12 +15,12 @@ func TestPrepareModelsGoCheckoutAsPluginSourceResource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module example.com/source\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := Prepare(context.Background(), source)
+	prepared, err := PrepareWithAgent(context.Background(), source, &resources.Agent{Kind: resources.ServiceAgent, Publisher: "example.test", Name: "custom", Version: "1.2.3"})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	defer prepared.Close()
-	if prepared.Service.Agent == nil || prepared.Service.Agent.Name != "go" || prepared.Service.Agent.Version != GenericGoPluginVersion {
+	if prepared.Service.Agent == nil || prepared.Service.Agent.Name != "custom" || prepared.Service.Agent.Version != "1.2.3" {
 		t.Fatalf("plugin = %+v", prepared.Service.Agent)
 	}
 	if prepared.Service.Spec["source-dir"] != "code" || prepared.Service.Spec["with-workspace"] != false {
@@ -42,110 +42,11 @@ func TestPrepareModelsGoCheckoutAsPluginSourceResource(t *testing.T) {
 	}
 }
 
-func TestSelectPluginCoversFixerLanguages(t *testing.T) {
-	tests := []struct {
-		marker  string
-		name    string
-		version string
-	}{
-		{marker: "go.mod", name: "go", version: GenericGoPluginVersion},
-		{marker: "pyproject.toml", name: "python", version: GenericPythonPluginVersion},
-		{marker: "uv.lock", name: "python", version: GenericPythonPluginVersion},
-		{marker: "setup.py", name: "python", version: GenericPythonPluginVersion},
-		{marker: "setup.cfg", name: "python", version: GenericPythonPluginVersion},
-		{marker: "requirements.in", name: "python", version: GenericPythonPluginVersion},
-		{marker: "requirements.txt", name: "python", version: GenericPythonPluginVersion},
-		{marker: "package.json", name: "nextjs", version: NodePluginVersion},
-		{marker: "Cargo.toml", name: "rust", version: RustPluginVersion},
-		{marker: "Package.swift", name: "swift", version: SwiftPluginVersion},
-	}
-	for _, test := range tests {
-		t.Run(test.marker, func(t *testing.T) {
-			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, test.marker), []byte("marker"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			plugin, err := SelectPlugin(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if plugin.Name != test.name || plugin.Version != test.version {
-				t.Fatalf("plugin = %+v, want %s:%s", plugin, test.name, test.version)
-			}
-		})
-	}
-}
-
-func TestSelectPluginPrefersPythonPackageOverFrontendManifest(t *testing.T) {
-	dir := t.TempDir()
-	for _, marker := range []string{"setup.py", "package.json"} {
-		if err := os.WriteFile(filepath.Join(dir, marker), []byte("marker"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	plugin, err := SelectPlugin(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plugin.Name != "python" {
-		t.Fatalf("plugin = %s, want python", plugin.Name)
-	}
-}
-
-func TestSelectPluginUsesMarkerlessSourceEvidence(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "dependency"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "node_modules", "dependency", "index.js"), []byte("export {}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print('ok')\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	plugin, err := SelectPlugin(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plugin.Name != "python" {
-		t.Fatalf("plugin = %s, want python", plugin.Name)
-	}
-}
-
-func TestSelectPluginFallsBackToGenericWithoutInterpretingUnknownLanguages(t *testing.T) {
-	tests := []struct {
-		name string
-		file string
-	}{
-		{name: "empty source tree"},
-		{name: "unknown build manifest", file: "pom.xml"},
-		{name: "unknown project declaration", file: "Cart.csproj"},
-		{name: "unknown source extension", file: "main.zig"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			dir := t.TempDir()
-			if test.file != "" {
-				if err := os.WriteFile(filepath.Join(dir, test.file), []byte("source evidence\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			plugin, err := SelectPlugin(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if plugin.Publisher != "codefly.dev" || plugin.Name != "generic" || plugin.Version != GenericPluginVersion {
-				t.Fatalf("plugin = %+v, want pinned language-neutral fallback", plugin)
-			}
-		})
-	}
-}
-
 func TestPrepareWithAgentDoesNotRequireLanguageMarkers(t *testing.T) {
 	source := t.TempDir()
 	prepared, err := PrepareWithAgent(context.Background(), source, &resources.Agent{
 		Kind: resources.ServiceAgent, Publisher: "codefly.dev",
-		Name: "go", Version: GenericGoPluginVersion,
+		Name: "go", Version: "1.2.3",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +102,7 @@ func TestPrepareCarriesExactGoWorkspaceAcrossEphemeralSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prepared, err := Prepare(context.Background(), source)
+	prepared, err := PrepareWithAgent(context.Background(), source, &resources.Agent{Kind: resources.ServiceAgent, Publisher: "example.test", Name: "custom", Version: "1.2.3"})
 	if err != nil {
 		t.Fatal(err)
 	}

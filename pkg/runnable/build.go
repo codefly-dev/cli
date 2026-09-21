@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
@@ -224,6 +225,9 @@ func load(ctx context.Context, workspace *resources.Workspace, r *resources.Runn
 	info, err := agentv0.NewAgentClient(connection.GRPCConn()).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
 	if err != nil {
 		return nil, nil, fmt.Errorf("agent metadata: %w", err)
+	}
+	if err = contract.Check(info.GetContract()); err != nil {
+		return nil, nil, fmt.Errorf("incompatible Runnable agent %s: %w", r.Agent.Identifier(), err)
 	}
 	if !slices.ContainsFunc(info.GetCapabilities(), func(c *agentv0.Capability) bool { return c.GetType() == agentv0.Capability_BUILDER }) {
 		return nil, nil, fmt.Errorf("runnable agent %s does not advertise Builder; install a compatible agent", r.Agent.Identifier())

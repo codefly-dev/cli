@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,26 +15,25 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-// fixtureContract is a valid codefly/cell/v1 descriptor: one acr registry, one
-// azure-postgres-flexible database, one ClusterSecretStore, a DNS suffix and a
-// gitops prefix. It mirrors the shape infra-base's `obinctl cell-contract`
-// emits.
 const fixtureContract = `{
-  "schema": "codefly/cell/v1",
+  "schema": "codefly/cell/v2",
   "cell": "hosted-eastus2",
   "coordinate": "hosted-eastus2",
-  "cluster": {"kind": "aks", "name": "hosted-eastus2", "context": "hosted-eastus2"},
-  "dns": {"app_host_suffix": "staging.example"},
-  "registries": [{"kind": "acr", "url": "x.azurecr.io"}],
-  "databases": [{
-    "kind": "azure-postgres-flexible",
-    "name": "platform",
-    "fqdn": "p.postgres.database.azure.com",
-    "egress_cidrs": ["10.20.11.0/28"],
-    "database_names": ["users"]
-  }],
-  "secret_stores": [{"name": "cell-secrets", "kind": "ClusterSecretStore"}],
-  "gitops": {"repo": "https://github.com/x/fleet.git", "workloads_path_prefix": "workloads/hosted/staging"}
+  "environment": {
+    "name": "azure",
+    "namespace": "acme",
+    "cluster": {"kind": "aks", "context": "hosted-eastus2"},
+    "dns": {"app-host-suffix": "staging.example"},
+    "registry": {"url": "x.azurecr.io"},
+    "managed-services": {"store": {
+      "kind": "azure-postgres-flexible",
+      "external-name": "p.postgres.database.azure.com",
+      "port": 5432,
+      "egress-cidrs": ["10.20.11.0/28"]
+    }},
+    "service-secrets": {"secret-store": {"name": "cell-secrets", "kind": "ClusterSecretStore"}},
+    "gitops": {"repo-url": "https://github.com/x/fleet.git", "branch": "main", "path": "workloads/hosted/staging/acme"}
+  }
 }`
 
 func writeWorkspace(t *testing.T, content string) string {
@@ -48,7 +48,9 @@ func writeWorkspace(t *testing.T, content string) string {
 func doImport(t *testing.T, dir string, opts importOptions) string {
 	t.Helper()
 	opts.dir = dir
-	opts.contractData = []byte(fixtureContract)
+	if opts.contractData == nil {
+		opts.contractData = []byte(fixtureContract)
+	}
 	if opts.envName == "" {
 		opts.envName = "azure"
 	}
@@ -191,6 +193,30 @@ func TestImportPreservesOperatorFields(t *testing.T) {
 	}
 }
 
+func TestImportRejectsRemovedContractsWithoutWriting(t *testing.T) {
+	for name, contract := range map[string]string{
+		"legacy inventory":   `{"schema":"codefly/cell/v1","databases":[{"engine":"postgres"}]}`,
+		"transport":          strings.Replace(fixtureContract, `"port": 5432,`, `"port": 5432,"transport":{"mode":"proxy"},`, 1),
+		"audit sinks":        strings.Replace(fixtureContract, `"name": "azure",`, `"name": "azure","audit-sinks":[{"name":"audit"}],`, 1),
+		"unknown capability": strings.Replace(fixtureContract, `"cell": "hosted-eastus2",`, `"cell": "hosted-eastus2","requires_capabilities":["managed-identity-transport"],`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeWorkspace(t, existingAzureWorkspace)
+			path := filepath.Join(dir, resources.WorkspaceConfigurationName)
+			before := readFile(t, path)
+			err := runImport(t.Context(), &importOptions{
+				dir: dir, envName: "azure", contractData: []byte(contract), stdout: io.Discard,
+			})
+			if err == nil {
+				t.Fatal("removed or unsupported contract accepted")
+			}
+			if after := readFile(t, path); after != before {
+				t.Fatal("rejected import modified the workspace")
+			}
+		})
+	}
+}
+
 func TestImportRejectsWrongSchema(t *testing.T) {
 	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
 	opts := importOptions{
@@ -203,6 +229,49 @@ func TestImportRejectsWrongSchema(t *testing.T) {
 	err := runImport(context.Background(), &opts)
 	if err == nil || !strings.Contains(err.Error(), "unsupported cell-contract schema") {
 		t.Fatalf("err = %v, want unsupported cell-contract schema", err)
+	}
+}
+
+func TestImportRejectsRetargetingWithoutWriting(t *testing.T) {
+	dir := writeWorkspace(t, existingAzureWorkspace)
+	path := filepath.Join(dir, resources.WorkspaceConfigurationName)
+	before := readFile(t, path)
+	err := runImport(t.Context(), &importOptions{
+		dir: dir, envName: "azure", namespace: "another", namespaceSet: true,
+		contractData: []byte(fixtureContract), stdout: &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match declared target") {
+		t.Fatalf("expected target rejection, got %v", err)
+	}
+	if got := readFile(t, path); got != before {
+		t.Fatal("target rejection modified workspace")
+	}
+}
+
+func TestImportCarriesGenericFieldsIntoExistingEnvironment(t *testing.T) {
+	dir := writeWorkspace(t, existingAzureWorkspace)
+	contract := `{"schema":"codefly/cell/v2","environment":{
+	  "name":"azure","namespace":"acme","configuration-profile":"staging",
+	  "managed-services":{"store":{
+	    "kind":"external","external-name":"endpoint.example","port":8443,
+	    "identity":{"principal":"runtime","annotations":{"identity":"runtime"},"labels":{"enabled":"true"}},
+	    "secret-references":[]
+	  }},
+	  "gitops":{"repo-url":"https://example.com/owner/delivery","path":"reviewed/app","branch":"release"}
+	}}`
+	doImport(t, dir, importOptions{contractData: []byte(contract)})
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	store := env.ManagedServices["store"]
+	if store.Port != 8443 || store.Identity == nil || store.Identity.Principal != "runtime" || store.Identity.Annotations["identity"] != "runtime" || store.Identity.Labels["enabled"] != "true" {
+		t.Fatalf("generic endpoint declaration lost fields: %+v", store)
+	}
+	if len(store.SecretReferences) != 0 || env.Gitops.Branch != "release" {
+		t.Fatalf("explicit declarations did not replace old values: %+v", env)
+	}
+	contract = strings.Replace(contract, `"annotations":{"identity":"runtime"}`, `"annotations":{}`, 1)
+	doImport(t, dir, importOptions{contractData: []byte(contract)})
+	if got := loadWorkspace(t, dir).FindEnvironment("azure").ManagedServices["store"].Identity.Annotations; len(got) != 0 {
+		t.Fatalf("explicit empty map retained old annotations: %v", got)
 	}
 }
 
@@ -300,7 +369,7 @@ environments:
                   - 10.0.0.0/28
 `
 	dir := writeWorkspace(t, src)
-	doImport(t, dir, importOptions{})
+	doImport(t, dir, importOptions{contractData: []byte(strings.Replace(fixtureContract, `"store":`, `"platform":`, 1))})
 	ws := loadWorkspace(t, dir)
 	env := ws.FindEnvironment("azure")
 	if _, dup := env.ManagedServices["store"]; dup {
@@ -315,7 +384,7 @@ environments:
 	}
 }
 
-func TestImportRejectsAmbiguousManagedServices(t *testing.T) {
+func TestImportPreservesOtherExplicitManagedServices(t *testing.T) {
 	src := `name: acme
 layout: modules
 environments:
@@ -333,31 +402,22 @@ environments:
                   - 10.0.1.0/28
 `
 	dir := writeWorkspace(t, src)
-	path := filepath.Join(dir, resources.WorkspaceConfigurationName)
-	before := readFile(t, path)
-	err := runImport(context.Background(), &importOptions{
-		dir: dir, envName: "azure", contractData: []byte(fixtureContract),
-		now: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC), stdout: &bytes.Buffer{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "managed services") {
-		t.Fatalf("err = %v, want an ambiguity error mentioning managed services", err)
-	}
-	if readFile(t, path) != before {
-		t.Error("file was modified despite the ambiguity error")
+	doImport(t, dir, importOptions{})
+	services := loadWorkspace(t, dir).FindEnvironment("azure").ManagedServices
+	if len(services) != 3 || services["db-a"].ExternalName != "a.example" || services["db-b"].ExternalName != "b.example" || services["store"].ExternalName != "p.postgres.database.azure.com" {
+		t.Fatalf("explicit service names were not preserved: %+v", services)
 	}
 }
 
-// TestImportGitopsPathUsesNamespace pins the decision behind finding #4: the
-// gitops path follows core's ToEnvironment, which derives it from the namespace
-// (not the workspace name). They coincide by default; this asserts the
-// namespace wins when --namespace makes them differ.
-func TestImportGitopsPathUsesNamespace(t *testing.T) {
+func TestImportUsesDeclaredNamespaceAndDeliveryPath(t *testing.T) {
 	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
-	doImport(t, dir, importOptions{namespace: "prod-azure", namespaceSet: true})
+	contract := strings.Replace(fixtureContract, `"namespace": "acme"`, `"namespace": "prod-azure"`, 1)
+	contract = strings.Replace(contract, "workloads/hosted/staging/acme", "reviewed/product", 1)
+	doImport(t, dir, importOptions{namespace: "prod-azure", namespaceSet: true, contractData: []byte(contract)})
 	ws := loadWorkspace(t, dir)
 	env := ws.FindEnvironment("azure")
-	if env.Gitops.Path != "workloads/hosted/staging/prod-azure" {
-		t.Errorf("gitops path = %q, want namespace-based workloads/hosted/staging/prod-azure", env.Gitops.Path)
+	if env.Gitops.Path != "reviewed/product" {
+		t.Errorf("gitops path = %q, want declared reviewed/product", env.Gitops.Path)
 	}
 	if env.Namespace != "prod-azure" {
 		t.Errorf("namespace = %q, want prod-azure", env.Namespace)

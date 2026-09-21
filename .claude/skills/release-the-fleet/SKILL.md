@@ -1,23 +1,26 @@
 ---
 name: release-the-fleet
-description: Bring every codefly agent, composed module, and downstream workspace onto one uniform core version and publish them in dependency order. Use after a core change the whole fleet must pick up, when re-pinning agents to a new core, or when a build fails because agents disagree on their core version. Covers core → CLI → agents → composed modules → workspaces. For a CLI-only release use cut-a-release.
+description: Publish affected agents and consumers when a verified agent implementation fix or changed wire protocol requires it. Do not use merely because Core or CLI released or linked Core versions differ; unchanged contracts require no fleet repinning. Covers dependency-ordered publication. For a CLI-only release use cut-a-release.
 ---
 
-# Release the agent fleet on a new core version
+# Release affected agents
 
 **Steps and the full ordering:** [docs/runbooks/release-the-fleet.md](../../../docs/runbooks/release-the-fleet.md).
 
 ## What must not be skipped
 
-- **Release after dependencies, never before.** Core → CLI → agents → the modules that pin
-  them → the workspaces that compose them. Publishing a module before its agents means the
-  module pins a version nobody can pull.
-- **Rebuild the CLI before publishing agents** (`codefly self build`). Agent publish runs
-  `codefly ci run`, and sequential agent releases collide on one host port without the
-  port-isolation fix — see
+- **Check the running contract first.** Different linked Core or artifact versions
+  are not incompatibility. Only affected agents need an implementation update;
+  do not turn an ordinary Core release into a fleet rebuild.
+- **Publish changed dependencies before their consumers.** This is not a mandatory
+  Core/CLI/fleet/ancestor release chain. Skip components that need no implementation change.
+  No release or merge is authorized merely by invoking this skill.
+- **Verify the CLI tooling needed to publish.** Agent publish runs `codefly ci run`;
+  use a CLI with the required port-isolation behavior, and rebuild only when needed. See
   [docs/agent-ci-port-isolation.md](../../../docs/agent-ci-port-isolation.md).
-- **Re-pin with `codefly agent deps --pin vX.Y.Z --all`.** It moves `go.mod`, `base/*`, and the
-  factory locks together. Editing `go.mod` by hand leaves the other two behind.
+- **Update only affected agents:** `codefly agent deps --dir /path/to/affected-agent --pin vX.Y.Z`
+  moves that agent's `go.mod`, `base/*`, and factory locks together. Do not use a blanket
+  `--all` update to infer compatibility from matching build dependencies.
 - **If core touched `companions/*`,** wait for `companions-publish.yml` and then
   `codefly companion verify`. A companion bump with no pushed, publicly pullable image breaks
   every Codefly-native build at the companion pull — not just this release.

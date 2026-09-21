@@ -16,7 +16,6 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/gh"
-	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	"github.com/codefly-dev/core/resources"
 	"github.com/google/go-github/v89/github"
 	"github.com/spf13/cobra"
@@ -27,6 +26,8 @@ import (
 // platform — that gap (module-saas-starter#3) is exactly what these commands
 // surface.
 const ciPlatform = "linux_amd64"
+
+const latestAgentVersion = "latest"
 
 // Seams so the resolvability logic can be tested without reaching GitHub, an
 // OCI registry, or the local filesystem.
@@ -78,21 +79,13 @@ type versionEntry struct {
 }
 
 type inventory struct {
-	Agent            string                  `json:"agent"`
-	CIPlatform       string                  `json:"ci_platform"`
-	OCIConfigured    bool                    `json:"oci_configured"`
-	Versions         []versionEntry          `json:"versions"`
-	Pinned           []string                `json:"pinned,omitempty"`
-	LatestTag        string                  `json:"latest_tag,omitempty"`
-	LatestResolvable string                  `json:"latest_resolvable,omitempty"`
-	SourceWorkspace  *sourceWorkspaceVersion `json:"source_workspace,omitempty"`
-}
-
-type sourceWorkspaceVersion struct {
-	WillLaunch         string   `json:"will_launch"`
-	Markers            []string `json:"markers,omitempty"`
-	PromotionCandidate string   `json:"promotion_candidate,omitempty"`
-	Stale              bool     `json:"stale"`
+	Agent            string         `json:"agent"`
+	CIPlatform       string         `json:"ci_platform"`
+	OCIConfigured    bool           `json:"oci_configured"`
+	Versions         []versionEntry `json:"versions"`
+	Pinned           []string       `json:"pinned,omitempty"`
+	LatestTag        string         `json:"latest_tag,omitempty"`
+	LatestResolvable string         `json:"latest_resolvable,omitempty"`
 }
 
 func (inv inventory) versionResolvable(version string) bool {
@@ -321,18 +314,6 @@ func buildInventory(agent *resources.Agent, releases []releaseInfo, tags, local,
 	}
 	if latestResolvable != nil {
 		inv.LatestResolvable = latestResolvable.String()
-	}
-	if plugin, ok := sourceworkspace.PinnedPlugin(agent.Publisher, agent.Name); ok {
-		status := &sourceWorkspaceVersion{
-			WillLaunch: plugin.Version,
-			Markers:    append([]string(nil), plugin.Markers...),
-		}
-		pinned, pinErr := semver.Parse(plugin.Version)
-		if pinErr == nil && latestResolvable != nil && latestResolvable.GT(pinned) {
-			status.PromotionCandidate = latestResolvable.String()
-			status.Stale = true
-		}
-		inv.SourceWorkspace = status
 	}
 	return inv
 }
@@ -620,14 +601,6 @@ func renderInventory(inv inventory) {
 	}
 	fmt.Printf("latest tag        -> %s\n", dashIfEmpty(inv.LatestTag))
 	fmt.Printf("latest resolvable -> %s\n", dashIfEmpty(inv.LatestResolvable))
-	if source := inv.SourceWorkspace; source != nil {
-		fmt.Printf("source checkout   -> %s (this CLI's compatibility pin)\n", source.WillLaunch)
-		if source.Stale {
-			fmt.Printf("promotion candidate -> %s\n", source.PromotionCandidate)
-			fmt.Printf("  warning: source-workspace pin %s is stale; qualified release %s awaits exact CLI qualification and review\n",
-				source.WillLaunch, source.PromotionCandidate)
-		}
-	}
 	if inv.LatestTag != "" && !inv.versionResolvable(inv.LatestTag) {
 		fmt.Printf("  warning: latest tag %s has no downloadable artifact\n", inv.LatestTag)
 	}

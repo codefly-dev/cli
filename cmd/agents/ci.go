@@ -19,6 +19,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/failures"
 	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
@@ -175,7 +176,6 @@ type agentCIState struct {
 	before       agentWorktreeSnapshot
 	temporary    string
 	agentHome    string
-	sourceHome   string
 	conformance  string
 	workspaceRaw []byte
 	// conformanceApplicable is derived from the installed agent's advertised
@@ -217,13 +217,9 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	}
 	state.temporary = temporary
 	state.agentHome = filepath.Join(temporary, "home")
-	state.sourceHome = resources.CodeflyHomeDir()
 	defer os.RemoveAll(temporary)
 
 	previousHome, hadHome := os.LookupEnv(resources.CodeflyHomeEnv)
-	if err := os.Setenv(resources.CodeflyHomeEnv, state.agentHome); err != nil {
-		return finalizeAgentCI(state, err), err
-	}
 	defer func() {
 		if hadHome {
 			_ = os.Setenv(resources.CodeflyHomeEnv, previousHome)
@@ -249,17 +245,29 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
+	var source *agentSourceInvocation
+	defer func() {
+		if source != nil {
+			_ = source.prepared.Close()
+		}
+	}()
 	if err := runStage("source", func() error {
-		return validateAgentSource(ctx, options.dir, state.sourceHome, &state.manifest)
+		// Resolve against the original home once, before isolating CI. Both
+		// validation and packaging use this same private executable selection.
+		source, err = prepareAgentCISource(ctx, options.dir, &state.manifest, state.temporary)
+		if err != nil {
+			return err
+		}
+		if err := os.Setenv(resources.CodeflyHomeEnv, state.agentHome); err != nil {
+			return err
+		}
+		return validateAgentSource(ctx, source)
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
 	if err := runStage("build", func() error {
-		if err := seedAgentCISourcePackager(state.sourceHome, state.agentHome); err != nil {
-			return err
-		}
 		log := &agentLogger{}
-		result := compileAgent(ctx, options.dir, log, options.nativeOnly, true)
+		result := compileAgent(ctx, options.dir, log, options.nativeOnly, true, source)
 		state.build = result
 		if result.err != nil {
 			diagnostics := strings.TrimSpace(strings.Join(log.lines, "\n"))
@@ -510,16 +518,44 @@ func conformanceMode(manifest agentYAML) string {
 	return strings.TrimSpace(manifest.Conformance.Mode)
 }
 
-func validateAgentSource(ctx context.Context, dir, sourceHome string, manifest *agentYAML) error {
-	sourceDir, agent, err := resolveAgentSource(ctx, dir, manifest)
+type agentSourceInvocation struct {
+	prepared  *sourceworkspace.Prepared
+	directory string
+	home      string
+}
+
+func prepareAgentCISource(ctx context.Context, dir string, manifest *agentYAML, temporary string) (*agentSourceInvocation, error) {
+	sourceDir, _, err := resolveAgentSource(ctx, dir, manifest)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if agent == nil {
-		if _, selectionErr := sourceworkspace.SelectPlugin(sourceDir); selectionErr != nil {
-			return selectionErr
+	prepared, sourceHome, err := prepareAgentPackager(ctx, dir, manifest, temporary)
+	if err != nil {
+		return nil, err
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = prepared.Close()
+		}
+	}()
+	privateHome := filepath.Join(temporary, "source-packager")
+	if !isSelfHostedSourcePackager(manifest) {
+		if _, err := manager.ResolveLatest(ctx, prepared.Service.Agent); err != nil {
+			return nil, err
+		}
+		if err := prepared.Service.Save(ctx); err != nil {
+			return nil, err
+		}
+		if err := seedAgentCISourcePackager(sourceHome, privateHome, prepared.Service.Agent); err != nil {
+			return nil, err
 		}
 	}
+	failed = false
+	return &agentSourceInvocation{prepared: prepared, directory: sourceDir, home: privateHome}, nil
+}
+
+func validateAgentSource(ctx context.Context, source *agentSourceInvocation) error {
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve Codefly executable: %w", err)
@@ -527,14 +563,13 @@ func validateAgentSource(ctx context.Context, dir, sourceHome string, manifest *
 	command := exec.CommandContext(ctx, executable,
 		"--timestamps=false",
 		"test", "source",
-		"--dir", sourceDir,
+		"--dir", source.directory,
 		"--runtime-context", "free",
 	)
-	if agent != nil {
-		command.Args = append(command.Args, "--agent", fmt.Sprintf("%s/%s:%s", agent.Publisher, agent.Name, agent.Version))
-	}
-	command.Dir = sourceDir
-	command.Env = agentCIChildEnvironment(sourceHome,
+	agent := source.prepared.Service.Agent
+	command.Args = append(command.Args, "--agent", fmt.Sprintf("%s/%s:%s", agent.Publisher, agent.Name, agent.Version))
+	command.Dir = source.directory
+	command.Env = agentCIChildEnvironment(source.home,
 		"CI=1",
 		"CODEFLY_COLOR=never",
 	)
@@ -909,26 +944,29 @@ func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error 
 	return nil
 }
 
-// seedAgentCISourcePackager copies the exact installed Go packager into the
-// isolated CI home when one is available. Publishing the generic Go agent
-// temporarily bumps its own manifest before release CI; that bumped source
-// cannot bootstrap the older packager version selected by this CLI. Seeding
-// the already-installed exact version breaks that cycle while the isolated
-// runner still packages and validates the bumped source under test.
-func seedAgentCISourcePackager(sourceHome, agentHome string) error {
-	source := sourcePackagerPath(sourceHome)
-	info, err := os.Stat(source)
-	if os.IsNotExist(err) {
-		return nil
-	}
+// Preserve the exact selection, including an older installed version. Discovery's
+// latest-per-name inventory cannot represent an explicitly selected predecessor.
+func seedAgentCISourcePackager(sourceHome, agentHome string, agent *resources.Agent) error {
+	registration, err := resources.AgentKindRegistrationFor(agent.Kind)
 	if err != nil {
-		return fmt.Errorf("inspect installed source packager: %w", err)
+		return err
 	}
-	if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
-		return fmt.Errorf("installed source packager %s is not an executable file", source)
+	for _, component := range []string{agent.Publisher, agent.Name, agent.Version} {
+		if !filepath.IsLocal(component) || component == "." || strings.ContainsAny(component, "/\\") {
+			return fmt.Errorf("source agent identity must contain single path components")
+		}
 	}
-	if err := copyAgentCIFile(source, sourcePackagerPath(agentHome)); err != nil {
-		return fmt.Errorf("seed isolated source packager: %w", err)
+	relative := filepath.Join("agents", registration.InstallSubdirectory, agent.Publisher, agent.Name+"__"+agent.Version)
+	source := filepath.Join(sourceHome, relative)
+	if _, err := os.Stat(source); os.IsNotExist(err) {
+		// An explicit remote selection is acquired by the ordinary loader into
+		// the private home during validation, never into the user's installation.
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := copyAgentCIFile(source, filepath.Join(agentHome, relative)); err != nil {
+		return fmt.Errorf("seed isolated source agent %s: %w", agent, err)
 	}
 	return nil
 }

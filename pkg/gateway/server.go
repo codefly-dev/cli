@@ -194,17 +194,19 @@ type serviceConfigurator interface {
 
 // MindYAML mirrors the mind.yaml config structure.
 type MindYAML struct {
-	Service        string    `yaml:"service"`
-	Plugin         string    `yaml:"plugin"`
-	Config         SvcConfig `yaml:"config"`
-	Infrastructure []string  `yaml:"infrastructure,omitempty"`
+	Service        string            `yaml:"service"`
+	Plugin         string            `yaml:"plugin"`
+	SourceAgents   map[string]string `yaml:"source_agents,omitempty"`
+	Config         SvcConfig         `yaml:"config"`
+	Infrastructure []string          `yaml:"infrastructure,omitempty"`
 }
 
 // SvcConfig holds the project layout configuration from mind.yaml.
 type SvcConfig struct {
-	Path string `yaml:"path"`
-	Type string `yaml:"type"`
-	Port int    `yaml:"port,omitempty"`
+	Language string `yaml:"language,omitempty"`
+	Path     string `yaml:"path"`
+	Type     string `yaml:"type"`
+	Port     int    `yaml:"port,omitempty"`
 }
 
 // NewServer creates a Gateway server. It attempts to load mind.yaml from
@@ -273,6 +275,15 @@ func NewServer(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("parse mind.yaml: %w", parseErr)
 		}
 		s.mindYAML = &my
+		for unit, selected := range my.SourceAgents {
+			canonical, pathErr := canonicalCodeUnitPath(unit)
+			if pathErr != nil || canonical != unit || strings.TrimSpace(selected) == "" {
+				if ownsHost {
+					_ = host.Close()
+				}
+				return nil, fmt.Errorf("source_agents requires canonical unit paths and nonempty agent selections: %q", unit)
+			}
+		}
 	}
 	// No mind.yaml is fine — the gateway still serves basic RPCs (git, shell)
 	// and will report a clear error for plugin-dependent operations.
@@ -401,32 +412,48 @@ func (s *Server) Serve(ctx context.Context) error {
 	return s.grpcSrv.Serve(lis)
 }
 
-func (s *Server) executionServiceBehavior() (serviceExecution, error) {
-	return s.executionServiceBehaviorWithAgent("")
+func (s *Server) executionServiceBehavior(ctx context.Context) (serviceExecution, error) {
+	return s.executionServiceBehaviorWithAgent(ctx, "")
 }
 
-func (s *Server) executionServiceBehaviorWithAgent(agentOverride string) (serviceExecution, error) {
-	s.serviceMu.Lock()
-	defer s.serviceMu.Unlock()
-	if agentOverride == "" && s.serviceBehavior != nil {
-		return s.serviceBehavior, nil
+func (s *Server) executionServiceBehaviorWithAgent(ctx context.Context, agentOverride string) (serviceExecution, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	s.serviceMu.Lock()
+	if agentOverride == "" && s.serviceBehavior != nil {
+		service := s.serviceBehavior
+		s.serviceMu.Unlock()
+		return service, nil
+	}
+	s.serviceMu.Unlock()
 	if s.host == nil {
 		return nil, fmt.Errorf("workspace host is unavailable")
 	}
 	name := filepath.Base(s.cfg.WorkDir)
 	agentName := ""
-	if s.mindYAML != nil {
+	switch {
+	case s.mindYAML != nil && strings.TrimSpace(s.mindYAML.Plugin) != "":
 		name = s.mindYAML.Service
 		agentName = pluginToAgentName(s.mindYAML.Plugin)
-	} else if agentOverride != "" {
+	case agentOverride != "":
 		agentName = agentOverride
-	} else {
+	default:
 		var err error
-		agentName, err = engine.DetectSourceAgent(s.cfg.WorkDir)
+		agentName, err = engine.DetectSourceAgent(ctx, s.cfg.WorkDir)
 		if err != nil {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
+	}
+	// Discovery starts processes and performs RPCs. Only cache publication belongs
+	// under the mutex; another caller may have populated it while we inspected.
+	s.serviceMu.Lock()
+	defer s.serviceMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if agentOverride == "" && s.serviceBehavior != nil {
+		return s.serviceBehavior, nil
 	}
 	if agentOverride != "" && s.mindYAML == nil {
 		if service := s.rootAgentServices[agentName]; service != nil {
@@ -462,7 +489,7 @@ func (s *Server) sourceExecute(ctx context.Context, request *codev0.CodeRequest)
 // proxyExecute sends a unified CodeRequest to the shared service behavior.
 // Read-only requests may reconnect once; ambiguous mutations are never replayed.
 func (s *Server) proxyExecute(ctx context.Context, req *codev0.CodeRequest) (*codev0.CodeResponse, error) {
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -476,22 +503,13 @@ func codeFailureMessage(response *codev0.CodeResponse) string {
 	return response.GetFailure().GetMessage()
 }
 
-// pluginToAgentName maps mind.yaml plugin names to agent identifiers
-// understood by the agent manager.
-// Accepts both formats: "go-generic" (canonical) and "generic-go" (legacy).
+// pluginToAgentName preserves explicit identities without agent-family aliases.
 func pluginToAgentName(plugin string) string {
-	switch plugin {
-	case "go-generic", "generic-go":
-		return "go:latest"
-	case "rust-generic", "generic-rust":
-		return "rust:latest"
-	case "node-generic", "generic-node":
-		return "nextjs:latest"
-	case "python-generic", "generic-python":
-		return "python:latest"
-	default:
-		return plugin + ":latest"
+	plugin = strings.TrimSpace(plugin)
+	if plugin == "" || strings.Contains(plugin, ":") {
+		return plugin
 	}
+	return plugin + ":latest"
 }
 
 // serviceRoot returns the absolute path to the service source tree.
@@ -613,7 +631,10 @@ func shouldSkipGatewayDir(name string) bool {
 
 // language returns the language string for the current service.
 func (s *Server) language() string {
-	return pluginToLang(s.mindYAML.Plugin)
+	if s.mindYAML == nil {
+		return ""
+	}
+	return s.mindYAML.Config.Language
 }
 
 // ─── Topology ────────────────────────────────────────────────
@@ -630,7 +651,7 @@ func (s *Server) ListServices(_ context.Context, _ *gatewayv1.ListServicesReques
 	return &gatewayv1.ListServicesResponse{
 		Services: []*gatewayv1.ServiceInfo{{
 			Name:     my.Service,
-			Language: pluginToLang(my.Plugin),
+			Language: my.Config.Language,
 			Type:     my.Config.Type,
 			Port:     int32(my.Config.Port),
 		}},
@@ -1438,7 +1459,7 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 		}
 		target := targets[0]
 		inspected = &target
-		service, err := s.serviceBehaviorForCodeUnit(target, "")
+		service, err := s.serviceBehaviorForCodeUnit(ctx, target, "")
 		if err != nil {
 			return &gatewayv1.GetProjectInfoResponse{
 				CodeUnit: cloneCodeUnitTarget(req.GetCodeUnit()),
@@ -1527,7 +1548,7 @@ func (s *Server) GetSemanticIndex(ctx context.Context, req *gatewayv1.GetSemanti
 	}
 	target := targets[0]
 	inspected := &gatewayv1.CodeUnitTarget{Id: target.id, Path: target.path}
-	service, err := s.serviceBehaviorForCodeUnit(target, "")
+	service, err := s.serviceBehaviorForCodeUnit(ctx, target, "")
 	if err != nil {
 		return &gatewayv1.GetSemanticIndexResponse{CodeUnit: inspected, Failure: gatewaySemanticIndexFailure(err)}, nil
 	}
@@ -1687,7 +1708,7 @@ func trimTrailingSpace(s string) string {
 }
 
 func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gatewayv1.BuildResponse, error) {
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err != nil {
 		return &gatewayv1.BuildResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 	}
@@ -1708,7 +1729,7 @@ func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gateway
 }
 
 func (s *Server) Lint(ctx context.Context, _ *gatewayv1.LintRequest) (*gatewayv1.LintResponse, error) {
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err != nil {
 		return &gatewayv1.LintResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 	}
@@ -1746,17 +1767,7 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	}
 	var service serviceExecution
 	if len(codeUnits) == 0 {
-		agentOverride := ""
-		if s.mindYAML == nil {
-			if formula := runtimeReq.GetFormula(); formula != nil {
-				agentOverride = engine.DetectFormulaAgent(formula.GetCommand())
-			}
-		}
-		if agentOverride != "" {
-			service, err = s.executionServiceBehaviorWithAgent(agentOverride)
-		} else {
-			service, err = s.executionServiceBehavior()
-		}
+		service, err = s.executionServiceBehavior(ctx)
 		if err != nil {
 			return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 		}
@@ -1855,7 +1866,7 @@ func (s *Server) ConfigureService(ctx context.Context, req *gatewayv1.ConfigureS
 	if err := s.validateService(requestedService); err != nil {
 		return nil, err
 	}
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "plugin unavailable: %v", err)
 	}
@@ -2326,7 +2337,7 @@ func (s *Server) ListAllCommands(ctx context.Context, _ *gatewayv1.ListAllComman
 
 	// Ask the configured service behavior. Agent startup remains lazy and is
 	// owned by engine.WorkspaceHost rather than this transport adapter.
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err == nil {
 		resp, listErr := service.ListCommands(ctx, &agentv0.ListCommandsRequest{})
 		if listErr == nil {
@@ -3118,21 +3129,6 @@ func parseInt(s string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
-}
-
-func pluginToLang(plugin string) string {
-	switch plugin {
-	case "go-generic", "generic-go":
-		return "go"
-	case "rust-generic", "generic-rust":
-		return "rust"
-	case "node-generic", "generic-node":
-		return "node"
-	case "python-generic", "generic-python":
-		return "python"
-	default:
-		return plugin
-	}
 }
 
 func gitStatusString(xy string) string {

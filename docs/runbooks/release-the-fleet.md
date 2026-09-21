@@ -1,58 +1,56 @@
-# Runbook: Release the whole agent fleet on a new core version
+# Runbook: Release affected agents
 
-Bring every codefly agent onto a single uniform core version and publish it.
-Use this after a core change that the fleet must pick up (the endpoint of an
-epic like codefly-dev/cli#435).
+Use this only when agents need a particular implementation fix or a changed
+protocol/capability. It is not a compatibility requirement for a Core release:
+agents implementing unchanged contracts continue working independently of their
+linked Core version. See [runtime compatibility](../agent-compatibility.md).
 
 ## When to use
 
-- Core released a new version and the agents, composed modules, and downstream
-  workspaces must all move onto it together.
+- A verified agent-side fix or protocol change requires publishing affected
+  agents. Do not repin the fleet merely because Core or the CLI released.
 
-## Order (release after dependencies, never before)
+## Order (only for dependencies actually changed)
 
-Agents before the modules that pin them; modules before the workspaces that
-compose them.
+Identify the required agent implementation or capability change first. Skip
+unchanged components. A newer Core or CLI version alone is not a reason to
+publish agents or retag ancestor modules. These steps require explicit release
+authorization; they are not permission to merge or publish automatically.
 
-1. **Core** — merge the core change, then in the core checkout on a clean,
-   synced `main`:
-   ```bash
-   codefly publish patch        # bumps version/info.codefly.yaml, tags, pushes
-   ```
+1. **Core, if the implementation needs a new Core API** — bump `version/info.codefly.yaml` in a PR, run
+   `make check-version-tag`, and merge after checks pass. Core's version-tag
+   workflow tags the exact green main commit. Never tag Core manually.
    If this change touched any `companions/*/info.codefly.yaml`, wait for
    `companions-publish.yml` to finish pushing the bumped tags, then run
    `codefly companion verify` before moving on — a companion version bump
    that isn't backed by a pushed, publicly pullable image breaks every
    Codefly-native build at the companion pull, not just this release.
-2. **CLI** — pin to the new core and release:
+2. **CLI, only if its implementation or required tooling changes** — adopt the reviewed Core API and qualify it:
    ```bash
    GOWORK=off go get github.com/codefly-dev/core@vX.Y.Z && go mod tidy
    # commit, merge the CLI PR, then:
    codefly publish patch        # in pkg/cli mode
-   codefly self build           # install the new binary — it carries the CI port-isolation fix
+   codefly self build           # install the qualified CLI when needed
    ```
-   The rebuilt binary matters: agent publish runs `codefly ci run`, and the
-   [port-isolation](../agent-ci-port-isolation.md) fix is what keeps sequential
-   agent releases from colliding on one host port.
-3. **Agents** — re-pin every agent and publish each:
+   Agent publication runs `codefly ci run`. Verify that the selected CLI has the
+   required tooling, including [port isolation](../agent-ci-port-isolation.md).
+   Do not rebuild it merely to match an agent's linked Core version.
+3. **Affected agents** — update only those needing the implementation change:
    ```bash
-   codefly agent deps --pin vX.Y.Z --all   # pins go.mod + base/* + factory locks (cli#434)
+   codefly agent deps --dir /path/to/affected-agent --pin vX.Y.Z
    # commit each repo, then per agent repo (clean, on main, synced):
    codefly publish patch                   # runs release CI + creates the GitHub release
    ```
    `codefly publish` works for every agent kind — service, module, toolbox,
    provider (cli#433). It aborts untouched if pre-flight or CI fails.
-4. **Composed modules** — only after the agents they pin are published:
-   ```bash
-   cd module-saas-starter
-   codefly update workspace     # refresh the pinned agent versions
-   codefly publish patch
-   ```
-5. **Downstream base-sync workspaces** — move the base ref once the starter
-   publishes (e.g. `obin-ai/lodestar`):
-   ```bash
-   codefly sync module          # reconcile the immutable base + overlay
-   ```
+4. **Consumers** — qualify the selected artifact against the actual operation,
+   configuration and functional/stateful requirements. An owner may deliberately
+   update a module's tested default after the required artifact is published;
+   that is not a reason to refresh unrelated agents or all module dependencies.
+5. **Product-owned nested replacements** — this workflow is being implemented
+   under [CLI #753](https://github.com/codefly-dev/cli/issues/753) and Core #589.
+   Do not substitute dependency-source edits or intermediate tags and call that
+   workflow delivered. See [the coverage report](../independent-upgrade-coverage.md).
 
 ## Gotchas
 
@@ -74,13 +72,13 @@ compose them.
 
 ## Checklist
 
-- [ ] Core tagged and fetchable (`git ls-remote --tags <core> vX.Y.Z`)
+- [ ] Required Core changes, if any, tagged and fetchable (`git ls-remote --tags <core> vX.Y.Z`)
 - [ ] If companion versions changed: `companions-publish.yml` finished and
       `codefly companion verify` passes
-- [ ] CLI pinned to the core tag, released, and reinstalled (`codefly version`)
-- [ ] Every agent re-pinned and published (service / module / toolbox / provider)
-- [ ] `module-saas-starter` refreshed and published after its agents
-- [ ] Downstream base-sync refs moved
+- [ ] Required CLI changes, if any, qualified and explicitly authorized for release
+- [ ] Every affected agent updated and published; unchanged contracts need no action
+- [ ] Actual consumer combination qualified; no unrelated selections changed
+- [ ] Any owner-default adoption reviewed separately from product selection
 
 ## Tagged Core rollout checkpoint (2026-09-11)
 
@@ -92,7 +90,9 @@ The tag contains merged Core #458, including Buildx forwarding and pre-build
 capability negotiation, and resolves through Go modules. The conformance
 matrix already records the matching `v0.3.27` release line.
 
-The source-workspace pins are Go `0.0.47` and Next.js `0.0.152`.
+The historical source-workspace pins were Go `0.0.47` and Next.js `0.0.152`.
+The production roster has since been removed; these are qualification records,
+not current admission or selection rules.
 Both consume Core `v0.3.27` and explicitly implement `BuildCapabilities`.
 Go's legacy executor honors Buildx selection through Core; Next.js produces
 recipes and rejects requests without an output directory before preparing
@@ -139,7 +139,12 @@ and record the published CLI version. The CLI manifest remains `0.1.145`;
 this checkpoint does not publish a CLI release.
 
 
-## Runnable core pin and v2 marker: source merge versus release
+## Historical v2 marker rollout: source merge versus release
+
+The rollout observations in this section describe the September 2026 pre-marker
+fleet, not a current instruction to rebuild after every Core release. Core
+v0.3.41 is published; current admission uses live protocol/capability declarations.
+Owner-side agent qualification is separate from the required CLI checks.
 
 CLI #639 may merge as a source increment. It does not publish a CLI version or
 establish compatibility with the currently released agent fleet. CLI #640 remains
@@ -156,11 +161,11 @@ the gate for a coordinated release:
 3. Test the actual runtime pairings before declaring them supported. Do not infer
    wire compatibility from the Go module release line alone.
 
-`TestContainerRecoveryRejectsAReleasedLegacyAgent` downloads the real Go agent
-`0.0.47` into a private cache, checks its embedded core `v0.3.27`, starts it through
-core's process manager, and reads its gRPC metadata under the new CLI's v2 marker.
-The agent returns no acknowledgement. The CLI rejects Docker/free initialization
-before issuing any runtime Init RPC. This test runs in the ordinary Go suite.
+The ordinary Go suite now uses
+`TestContainerRecoveryRejectsUndeclaredPeerBeforeLifecycle`: a locally built,
+test-only gRPC peer omits the protocol declaration, and the CLI rejects it at
+discovery before any lifecycle call. It neither downloads an old release nor
+uses a linked Core version as a compatibility assertion.
 
 The existing guard exempts native and Nix runtime contexts. It is not proof that
 legacy agents using Docker internally are compatible, and source merge does not
@@ -262,7 +267,7 @@ publishing and matrix items are carried in
 
 ## Upgrading the generic Go packager
 
-The canonical `codefly.dev/go` service agent can qualify its own successor even
+An agent declaring `source.agent: self` and its bootstrap command can qualify its own successor even
 when the published predecessor has an older cross compiler. Agent qualification
 builds one native seed from the candidate's standalone source into a private,
 temporary plugin home, using the candidate's exact version. That seed serves
@@ -271,9 +276,9 @@ Source tests, audits, conformance, drift checks and required release platforms
 remain mandatory. No candidate binary is stored under a released predecessor's
 identity, and the temporary seed is never a published artifact.
 
-Other agents continue to use their explicit source agent or the CLI compatibility
-roster. After publishing a packager, qualify its adoption through the normal
-source-agent promotion flow before releasing the dependent fleet.
+Other agents use their explicit source selection or runtime discovery of
+installed candidates. Publishing a packager does not require a CLI roster
+promotion. Qualify its operations through the runtime contracts before adoption.
 
 Fresh generated and copied conformance workspaces record an empty Git baseline
 and their initial source snapshot before invoking the workspace gate. This gives

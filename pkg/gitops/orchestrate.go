@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -31,6 +32,9 @@ func renderModuleTree(
 	sink orchestration.OutputSink,
 	includeBootstrap bool,
 ) (RenderResult, error) {
+	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
+		return RenderResult{}, err
+	}
 	if err := workspace.ValidateEnvironments(ctx); err != nil {
 		return RenderResult{}, err
 	}
@@ -141,23 +145,13 @@ func renderModuleTree(
 				if entry.Output == nil {
 					return fmt.Errorf("service %s returned no Kubernetes deployment evidence", service.Name)
 				}
-				if _, projectErr := projectServiceSecrets(
+				if projectErr := projectServiceConfiguration(
+					ctx,
 					filepath.Join(stage, unitDir, service.Name),
-					service.Name,
-					env.Name,
-					env.Namespace,
-					env.ServiceSecrets,
+					service,
+					env,
 				); projectErr != nil {
-					return fmt.Errorf("project service %s secrets: %w", service.Name, projectErr)
-				}
-				if _, projectErr := projectServiceAutoscale(
-					filepath.Join(stage, unitDir, service.Name),
-					service.Name,
-					env.Name,
-					env.Namespace,
-					service.Autoscale,
-				); projectErr != nil {
-					return fmt.Errorf("project service %s autoscale: %w", service.Name, projectErr)
+					return projectErr
 				}
 			}
 			options.Units = append(options.Units, entry)
@@ -313,7 +307,10 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		if err := projectRenderedServiceSecrets(stage, env); err != nil {
 			return err
 		}
-		return projectRenderedServiceAutoscale(stage, env, graph)
+		if err := projectRenderedServiceAutoscale(stage, env, graph); err != nil {
+			return err
+		}
+		return projectRenderedManagedIdentity(ctx, stage, env, graph)
 	})
 }
 
@@ -399,6 +396,9 @@ func renderServiceFlow(
 	record func(map[string]*builderv0.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
 ) (result error) {
+	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
+		return err
+	}
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
 	if err != nil {
 		return err

@@ -262,6 +262,23 @@ func TestCloneEnvironmentIsolatesDns(t *testing.T) {
 	require.Equal(t, "staging.eastus2.azure.example.com", original.Dns.AppHostSuffix)
 }
 
+func TestCloneEnvironmentIsolatesManagedServiceIdentity(t *testing.T) {
+	original := &resources.Environment{ManagedServices: map[string]resources.EnvironmentManagedService{
+		"endpoint": {Identity: &resources.EnvironmentWorkloadIdentity{
+			Principal: "owner", Annotations: map[string]string{"identity": "owner"}, Labels: map[string]string{"enabled": "true"},
+		}},
+	}}
+	clone := cloneEnvironment(original)
+	identity := clone.ManagedServices["endpoint"].Identity
+	identity.Principal = "another"
+	identity.Annotations["identity"] = "another"
+	identity.Labels["enabled"] = "false"
+	want := original.ManagedServices["endpoint"].Identity
+	require.Equal(t, "owner", want.Principal)
+	require.Equal(t, "owner", want.Annotations["identity"])
+	require.Equal(t, "true", want.Labels["enabled"])
+}
+
 func TestSelectEnvironmentIsEquivalentAcrossFlows(t *testing.T) {
 	workspace := declaredWorkspace(t)
 

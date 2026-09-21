@@ -32,7 +32,7 @@ jobs:
         include:
           - gate: bootstrap-audit
           - gate: control-integration
-            conformance_rows: linux-amd64-nix-run
+            conformance_rows: linux-amd64-native-control
           - gate: coverage
             conformance_rows: linux-amd64-source,linux-amd64-native-npm
           - gate: race
@@ -47,14 +47,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-
-      # The production source-workspace regression runs the released Python
-      # plugin on a fresh Linux host. Provision its declared uv runtime in the
-      # ordinary test lanes so the proof exercises real tests instead of an
-      # environment-blocked agent response.
-      - name: Set up uv
-        if: matrix.gate == 'coverage' || matrix.gate == 'race'
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       # pkg/librarystore's npm backend shells out to the real npm CLI (npm pack,
       # npm publish) against an httptest registry rather than mocking the store;
@@ -101,6 +93,8 @@ jobs:
 
       - name: Test with coverage
         if: matrix.gate == 'coverage'
+        env:
+          CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
         run: go test -failfast ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
 
       - name: Check test coverage
@@ -126,6 +120,8 @@ jobs:
 
       - name: Test with race detection
         if: matrix.gate == 'race'
+        env:
+          CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
         run: go test -failfast -race ./... -v
 
       # The cross-process control-ownership proof drives the CLI built by the
@@ -137,39 +133,9 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestRunRefusesAControlAddressAnotherProcessOwns$|^TestConcurrentDisposableRunsClaimDistinctIdentities$' ./cmd/run -v
 
-      # The pinned Redis agent resolves a Nix runtime during runtime-init, so the
-      # proof needs Nix on the runner or the agent fails with "nix is not
-      # installed" instead of exercising the real dependency. Mirrors core's CI.
-      - name: Install Nix
-        # Strict — nix is core to the platform; if it doesn't install,
-        # CI must fail loud rather than silently skipping nix tests.
-        # DeterminateSystems' installer is the de-facto standard for
-        # GH Actions: deterministic, no daemon issues on ephemeral runners.
-        #
-        # This used to follow @main. It is now pinned to a release, like every
-        # other action here, so the comment records the tag at the pinned commit
-        # (v23) rather than the branch it was reached through — Dependabot
-        # resolves the version from the tag at the SHA, so a `# main` comment
-        # would be silently rewritten to a version on the first bump.
-        if: matrix.gate == 'control-integration'
-        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-
-      - name: Allow unprivileged user namespaces (for bwrap)
-        # Ubuntu 24.04 ships with kernel.apparmor_restrict_unprivileged_userns=1
-        # which blocks bubblewrap's user-namespace setup ("bwrap: setting up uid
-        # map: Permission denied"). Disabling the restriction is the standard CI
-        # workaround — bwrap then works in unprivileged mode, which is what the
-        # nix runtime's sandbox expects.
-        if: matrix.gate == 'control-integration'
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-      - name: Install the pinned Redis agent
-        if: matrix.gate == 'control-integration'
-        run: codefly agent install codefly.dev/redis:0.0.74
-
       - name: Run the in-process run-profile proof
         if: matrix.gate == 'control-integration'
-        run: go test -tags=integration -run '^TestRunProfilesStartRealDependencyShapesInProcess$' ./pkg/control -v
+        run: go test -tags=integration -run '^TestRunProfilesThroughProtocolPeers$' ./pkg/control -v
 
       # Pull separately from the proof below so a cold-cache image fetch is
       # attributed to its own step instead of inflating the test's wall time —
@@ -209,19 +175,9 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestAnInterruptedGenerateLeavesARecoverableContainer$' ./cmd/generate -v
 
-      # The source-workspace pin is promoted by hand through `codefly agent
-      # promote-source`, which qualifies a candidate only through `codefly test
-      # source`. This drives the pin the binary actually embeds against the
-      # contracts that gate never reaches — Builder.SBOM, Builder.Package, and a
-      # go.work-governed checkout — so a promotion cannot land on a release that
-      # regressed one of them. It downloads the pinned agent, so it needs
-      # network but no Docker. It claims no conformance row: a roster pin is not
-      # a docs/supported-matrix.md row.
-      - name: Qualify the embedded source-workspace pin
+      - name: Verify source attachment across the generic protocol
         if: matrix.gate == 'control-integration'
-        env:
-          CODEFLY_SOURCE_PIN_QUALIFY: "1"
-        run: go test -tags=integration -run '^TestPinnedGoAgentAnswersSourceContractsForAGoWorkCheckout$' ./pkg/sourceworkspace -v
+        run: go test -tags=integration -run '^TestSourceAttachmentPreservesSelectionAndBuilderIdentity$' ./pkg/sourceworkspace -v
 
       # Always-run so a failed or filtered-out test still has to account for
       # the rows its job claimed. Keep these last: they audit every step above.

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "cli": "source",
-  "core": "v0.3.38",
+  "core": "v0.3.41",
   "rows": [
     {
       "id": "linux-amd64-source",
@@ -39,23 +39,16 @@
       ]
     },
     {
-      "id": "linux-amd64-nix-run",
+      "id": "linux-amd64-native-control",
       "status": "qualified",
-      "summary": "codefly run drives a real pinned Redis agent through Load, Init and Start over gRPC, with the agent resolving a Nix runtime, against the in-process control plane.",
+      "summary": "CLI-owned protocol peers exercise control-plane profile selection, Load/Init/Start, accepted network mappings, configuration export and teardown. No released agents or provider toolchains are qualified.",
       "os": "linux",
       "arch": "amd64",
-      "backend": "nix",
+      "backend": "native",
       "prerequisites": [
-        "nix"
+        "go"
       ],
       "build_tag": "integration",
-      "agents": [
-        {
-          "publisher": "codefly.dev",
-          "name": "redis",
-          "version": "0.0.88"
-        }
-      ],
       "ci": [
         "go.yml#control-integration"
       ],
