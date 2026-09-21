@@ -57,6 +57,15 @@ agent-specific SBOM/package qualification no longer belongs to the CLI gate.
 The workflow regression prevents reintroducing released-agent installs in the
 required gate, and AGENTS.md documents this ownership boundary.
 
+Run 35618463413 exposed another required-suite download: the build-cache test's
+released Next.js binary returned HTTP 504, failing `race` and canceling `coverage`.
+That test now uses a generic Builder gRPC peer and retains live capability
+negotiation, exact cache/Buildx/output-directory forwarding, staged-plan digest
+verification and the Docker execution boundary. A tampered recipe must fail
+before Docker execution. The legacy-protocol rejection test likewise uses a
+local undeclared peer and proves rejection before any lifecycle call instead
+of downloading an old Go agent and inspecting its linked Core version.
+
 The historical published-agent failure logs below remain diagnostic evidence,
 not current CLI test requirements. Agent implementation/adoption work stays at
 its owner. The PR must remain draft until the actual required checks are green.

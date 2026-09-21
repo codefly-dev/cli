@@ -41,11 +41,11 @@ then an exact acknowledgement of the flow's captured recovery identity.
 An absent flow identity is an error on those paths. Native/Nix runtime
 initialization does not require the recovery capability.
 
-The first enforcing CLI release requires coordinated agent publication and
-consumer pin updates: existing agents with no declaration are rejected during
-discovery. Keep the adoption PRs in draft until supported fleet combinations
-have passed qualification; neither a Core bump nor a matching recovery header
-proves that an undeclared agent implements the contract.
+Agents with no declaration are rejected during discovery. Publishing support
+for a selected agent requires qualification at its owner; it does not require
+blanket fleet updates or block the CLI implementation PR's required host tests.
+Neither a Core bump nor a matching recovery header proves that an undeclared
+agent implements the contract.
 
 CLI releases attach the consumed Core `contract.json` and an
 `agent-requirements.json` using the same protobuf schema. The latter lists
@@ -55,7 +55,10 @@ these requirements with the previous stable CLI release. Unchanged requirements
 need no agent rebuild solely for a CLI/Core bump. Missing or malformed artifacts
 from a release that already publishes the contract fail preparation.
 
-## Where the fleet sits
+## Historical pre-marker fleet snapshot
+
+This snapshot predates published Core v0.3.41. It explains the original rollout
+exposure, not current compatibility policy or the current release inventory.
 
 | Core revision | Recovery | Marker written | Acknowledgement |
 |---|---|---|---|
@@ -73,8 +76,10 @@ The exposure is wider than Docker. The CLI sets the marker for every selected
 runtime context except `native` and `nix`, and the default context is `free`,
 so a service agent built before `471a8578` fails `Runner.Init` on the default
 path whether or not it creates containers itself.
-`TestContainerRecoveryRejectsAReleasedLegacyAgent` records that outcome against
-the published `go:0.0.47`.
+The former released-agent regression recorded that outcome against `go:0.0.47`.
+Its replacement, `TestContainerRecoveryRejectsUndeclaredPeerBeforeLifecycle`,
+uses a CLI-owned test peer and verifies rejection at discovery before lifecycle
+calls. The required CLI suite no longer downloads the historical agent.
 
 Native and Nix are exempt from the guard, which is one place the quiet failures
 live: an agent selected for a native backend that still reaches Docker through

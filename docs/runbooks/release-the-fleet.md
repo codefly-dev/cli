@@ -139,7 +139,12 @@ and record the published CLI version. The CLI manifest remains `0.1.145`;
 this checkpoint does not publish a CLI release.
 
 
-## Runnable core pin and v2 marker: source merge versus release
+## Historical v2 marker rollout: source merge versus release
+
+The rollout observations in this section describe the September 2026 pre-marker
+fleet, not a current instruction to rebuild after every Core release. Core
+v0.3.41 is published; current admission uses live protocol/capability declarations.
+Owner-side agent qualification is separate from the required CLI checks.
 
 CLI #639 may merge as a source increment. It does not publish a CLI version or
 establish compatibility with the currently released agent fleet. CLI #640 remains
@@ -156,11 +161,11 @@ the gate for a coordinated release:
 3. Test the actual runtime pairings before declaring them supported. Do not infer
    wire compatibility from the Go module release line alone.
 
-`TestContainerRecoveryRejectsAReleasedLegacyAgent` downloads the real Go agent
-`0.0.47` into a private cache, checks its embedded core `v0.3.27`, starts it through
-core's process manager, and reads its gRPC metadata under the new CLI's v2 marker.
-The agent returns no acknowledgement. The CLI rejects Docker/free initialization
-before issuing any runtime Init RPC. This test runs in the ordinary Go suite.
+The ordinary Go suite now uses
+`TestContainerRecoveryRejectsUndeclaredPeerBeforeLifecycle`: a locally built,
+test-only gRPC peer omits the protocol declaration, and the CLI rejects it at
+discovery before any lifecycle call. It neither downloads an old release nor
+uses a linked Core version as a compatibility assertion.
 
 The existing guard exempts native and Nix runtime contexts. It is not proof that
 legacy agents using Docker internally are compatible, and source merge does not
