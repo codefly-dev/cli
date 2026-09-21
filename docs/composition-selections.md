@@ -152,7 +152,17 @@ The normalized authority digest includes all requirements, signer key bytes,
 approver/key/audience and target bindings. Requirement ordering is immaterial.
 Changing policy is a separate explicit administration operation, never inferred
 from an approval file or accepted as an approval-command flag. Authority files
-and directories cannot be group/world writable; symlinked authority records and
+and directories must be owned by the effective user or root and cannot be
+group/world writable. Every ancestor is checked through directory handles:
+non-sticky writable ancestors and foreign-owned storage are rejected, while
+trusted-owned sticky temporary ancestors remain valid. Reads validate the opened
+file's owner and permissions; atomic replacements stay relative to the validated
+registry handle. Home aliases require trusted ownership and protected ancestry
+too; aliases containing parent traversal require selecting the canonical home
+directly. macOS mutation-granting ACLs are rejected even when mode bits
+look protected; deny-delete and read-only ACLs remain valid. Unsupported ownership
+or access verification fails closed. This boundary does not defend against root
+or another process running as the same user. Symlinked authority records and
 storage inside a checkout are rejected. Concurrent configuration replacements
 serialize and compare the prior digest. Keep the host configuration and its
 `CODEFLY_HOME` selection under operator control; changing the host profile is

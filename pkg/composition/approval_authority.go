@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,7 +16,6 @@ import (
 	core "github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/policy"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/shared"
 )
 
 // ApprovalAuthorityConfig is host configuration, never a candidate-supplied
@@ -39,6 +37,7 @@ type approvalAuthority struct {
 	config   ApprovalAuthorityConfig
 	digest   string
 	path     string
+	home     string
 	document []byte
 }
 
@@ -107,12 +106,9 @@ func (session *SelectionSession) approvalAuthorityPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	home, err = filepath.EvalSymlinks(home)
+	home, err = canonicalAuthorityHome(home)
 	if err != nil {
-		return "", errors.New("approval authority requires an existing host CODEFLY_HOME directory")
-	}
-	if err = protectedAuthorityDirectory(home); err != nil {
-		return "", err
+		return "", fmt.Errorf("approval authority requires a trusted existing host CODEFLY_HOME directory: %w", err)
 	}
 	local := make(map[string]string)
 	data, err := os.ReadFile(filepath.Join(session.Root, LocalSelectionFile))
@@ -171,7 +167,12 @@ func (session *SelectionSession) ConfigureApprovalAuthority(ctx context.Context,
 		if pathErr != nil {
 			return pathErr
 		}
-		before, readErr := readAuthorityDocument(path)
+		directory, openErr := openAuthorityRegistry(path, true)
+		if openErr != nil {
+			return openErr
+		}
+		defer func() { _ = directory.Close() }()
+		before, readErr := readAuthorityDocumentAt(directory, filepath.Base(path))
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return readErr
 		}
@@ -188,24 +189,8 @@ func (session *SelectionSession) ConfigureApprovalAuthority(ctx context.Context,
 		if (readErr == nil && (expected == "" || expected != contentDigest(before))) || (os.IsNotExist(readErr) && expected != "") {
 			return errors.New("approval authority changed or already exists; explicit current digest is required")
 		}
-		if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o700); mkdirErr != nil {
-			return mkdirErr
-		}
-		if directoryErr := protectedAuthorityDirectory(filepath.Dir(path)); directoryErr != nil {
-			return directoryErr
-		}
-		if contextErr := ctx.Err(); contextErr != nil {
-			return contextErr
-		}
-		if writeErr := shared.WriteFileAtomic(ctx, path, data, 0o600); writeErr != nil {
+		if writeErr := writeAuthorityDocumentAt(ctx, directory, filepath.Base(path), data); writeErr != nil {
 			return writeErr
-		}
-		directory, openErr := os.Open(filepath.Dir(path))
-		if openErr != nil {
-			return openErr
-		}
-		if syncErr := errors.Join(directory.Sync(), directory.Close()); syncErr != nil {
-			return syncErr
 		}
 		inspection = &ApprovalAuthorityInspection{Digest: contentDigest(data), Path: path}
 		return nil
@@ -225,7 +210,11 @@ func (session *SelectionSession) loadApprovalAuthority() (*approvalAuthority, er
 	if err != nil {
 		return nil, err
 	}
-	authority := &approvalAuthority{path: path, document: data}
+	home, err := filepath.Abs(resources.CodeflyHomeDir())
+	if err != nil {
+		return nil, err
+	}
+	authority := &approvalAuthority{path: path, home: home, document: data}
 	if err = decodeSelectionJSON(data, &authority.config); err != nil {
 		return nil, errors.New("invalid approval authority configuration")
 	}
@@ -261,6 +250,13 @@ func normalizedApprovalAuthority(config *ApprovalAuthorityConfig) ([]byte, error
 }
 
 func (authority *approvalAuthority) unchanged() error {
+	home, err := canonicalAuthorityHome(authority.home)
+	if err != nil {
+		return err
+	}
+	if home != filepath.Dir(filepath.Dir(authority.path)) {
+		return errors.New("approval authority home changed during admission")
+	}
 	if err := protectedAuthorityDirectory(filepath.Dir(authority.path)); err != nil {
 		return err
 	}
@@ -275,45 +271,18 @@ func (authority *approvalAuthority) unchanged() error {
 }
 
 func protectedAuthorityDirectory(path string) error {
-	if _, err := isolatedExecutionDirectory(path, nil); err != nil {
-		return err
-	}
-	info, err := os.Stat(path)
+	directory, err := openProtectedAuthorityDirectory(path)
 	if err != nil {
 		return err
 	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return errors.New("approval authority directory must not be group/world writable")
-	}
-	return nil
+	return directory.Close()
 }
 
 func readAuthorityDocument(path string) ([]byte, error) {
-	before, err := os.Lstat(path)
+	directory, err := openAuthorityRegistry(path, false)
 	if err != nil {
 		return nil, err
 	}
-	if !before.Mode().IsRegular() || before.Mode().Perm()&0o022 != 0 || before.Size() > 1<<20 {
-		return nil, errors.New("approval authority must be a bounded regular file, not group/world writable")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	after, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !os.SameFile(before, after) || !after.Mode().IsRegular() || after.Mode().Perm()&0o022 != 0 {
-		return nil, errors.New("approval authority changed while opening")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > 1<<20 {
-		return nil, errors.New("approval authority exceeds size limit")
-	}
-	return data, nil
+	defer func() { _ = directory.Close() }()
+	return readAuthorityDocumentAt(directory, filepath.Base(path))
 }

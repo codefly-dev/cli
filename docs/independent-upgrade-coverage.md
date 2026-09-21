@@ -64,6 +64,10 @@ exact inputs, and inspect the actual deployment.
   verifier keys, audiences or allowed targets. Authority replacement requires its
   prior digest; approvals bind the full normalized policy and signer keys, exact
   admission and target bindings. Fresh checks enforce literal expiry and drift.
+  Host storage validates root/effective-UID ownership, protected ancestry and
+  opened handles, including home aliases and macOS ACL mutation grants. Trusted
+  sticky temporary ancestors remain supported. Reads and atomic replacement use
+  validated directory handles; this is not same-UID/root compromise protection.
   This does not consume authorization or integrate an effect path.
 - Daemon monitoring uses Core's authenticated read-only group ownership API;
   executable names are display-only, and errors do not imply orphanhood.
