@@ -5,47 +5,118 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 
+	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/artifactexecution"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 type renderer struct {
-	builderv0.UnimplementedBuilderServer
 	digest   string
 	contract string
 }
 
-func (r *renderer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
+type agentRenderer struct {
+	agentv0.UnimplementedAgentServer
+	*renderer
+}
+type builderRenderer struct {
+	builderv0.UnimplementedBuilderServer
+	*renderer
+}
+type solutionRenderer struct {
+	solutionv0.UnimplementedSolutionServer
+	*renderer
+}
+
+func (r *agentRenderer) GetAgentInformation(context.Context, *agentv0.AgentInformationRequest) (*agentv0.AgentInformation, error) {
+	declaration := contract.Current()
+	if os.Getenv("RENDER_TEST_MODE") == "missing-protocol" {
+		declaration = &agentv0.AgentContract{}
+	}
+	return &agentv0.AgentInformation{Contract: declaration}, nil
+}
+
+func (r *solutionRenderer) GetSolutionInformation(_ context.Context, request *solutionv0.GetSolutionInformationRequest) (*solutionv0.GetSolutionInformationResponse, error) {
+	if !proto.Equal(request.GetArtifact(), r.solutionIdentity()) && (request.GetArtifact().GetPublisher() != "" || request.GetArtifact().GetName() != "" || request.GetArtifact().GetVersion() != "") {
+		return nil, errors.New("host invented executor coordinates")
+	}
+	return &solutionv0.GetSolutionInformationResponse{Artifact: r.solutionIdentity(), Capabilities: &solutionv0.SolutionCapabilities{SupportsRender: true, ExecutionContracts: []string{r.contract}}}, nil
+}
+
+func (r *renderer) solutionIdentity() *solutionv0.SolutionArtifact {
+	return &solutionv0.SolutionArtifact{Publisher: "test-owner", Name: "declared-renderer", Version: "test-version", ArtifactDigest: r.digest}
+}
+
+func (r *solutionRenderer) Render(ctx context.Context, request *solutionv0.RenderRequest) (*solutionv0.RenderResponse, error) {
+	if !proto.Equal(request.GetContext().GetArtifact(), r.solutionIdentity()) {
+		return nil, errors.New("returned identity was not carried into render")
+	}
+	receipt, err := r.emit(ctx, request.Execution, artifactexecution.SolutionRender, request.Destination)
+	return &solutionv0.RenderResponse{Execution: receipt}, err
+}
+
+func (r *builderRenderer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
 	return &builderv0.BuildCapabilitiesResponse{ExecutionContracts: []string{r.contract}}, nil
 }
 
-func (r *renderer) Deploy(_ context.Context, request *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
-	if err := artifactexecution.Check(request.Execution, artifactexecution.BuilderRender, r.digest, []string{r.contract}); err != nil {
+func (r *builderRenderer) Deploy(ctx context.Context, request *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
+	receipt, err := r.emit(ctx, request.Execution, artifactexecution.BuilderRender, request.OutputDirectory)
+	state := builderv0.DeploymentStatus_SUCCESS
+	if os.Getenv("RENDER_TEST_MODE") == "failed" {
+		state = builderv0.DeploymentStatus_ERROR
+	}
+	return &builderv0.DeploymentResponse{State: &builderv0.DeploymentStatus{State: state}, Execution: receipt}, err
+}
+
+func (r *renderer) emit(ctx context.Context, execution *basev0.ArtifactExecution, protocol, directory string) (*basev0.ArtifactExecutionReceipt, error) {
+	if err := artifactexecution.Check(execution, protocol, r.digest, []string{r.contract}); err != nil {
 		return nil, err
 	}
-	data, err := json.Marshal(request.Execution)
+	if os.Getenv("RENDER_TEST_MODE") == "wait" {
+		if err := os.WriteFile(filepath.Join(directory, "waiting"), []byte("active"), 0o600); err != nil {
+			return nil, err
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	data, err := json.Marshal(execution)
 	if err != nil {
 		return nil, err
 	}
-	receipt := &basev0.ArtifactExecutionReceipt{Identity: request.Execution.Identity}
-	for _, output := range request.Execution.Outputs {
+	receipt := &basev0.ArtifactExecutionReceipt{Identity: execution.Identity}
+	for _, output := range execution.Outputs {
 		path := output.Name + ".json"
-		if err := os.WriteFile(filepath.Join(request.OutputDirectory, path), data, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(directory, path), data, 0o600); err != nil {
 			return nil, err
 		}
 		receipt.Outputs = append(receipt.Outputs, &basev0.ArtifactExecutionOutput{
 			Name: output.Name, MediaType: output.MediaType, Path: path, Digest: fmt.Sprintf("sha256:%x", sha256.Sum256(data)),
 		})
 	}
-	return &builderv0.DeploymentResponse{State: &builderv0.DeploymentStatus{State: builderv0.DeploymentStatus_SUCCESS}, Execution: receipt}, nil
+	switch os.Getenv("RENDER_TEST_MODE") {
+	case "missing-receipt":
+		return nil, nil
+	case "wrong-receipt":
+		receipt.Identity = r.digest
+	case "extra-file":
+		if err := os.WriteFile(filepath.Join(directory, "extra"), data, 0o600); err != nil {
+			return nil, err
+		}
+	}
+	return receipt, nil
 }
 
 func main() {
@@ -60,12 +131,20 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	r := &renderer{digest: fmt.Sprintf("sha256:%x", sha256.Sum256(data)), contract: *contract}
+	if os.Getenv("RENDER_TEST_MODE") == "unsupported" {
+		r.contract = "artifact-execution/v2"
+	}
+	if *address == "" {
+		agents.Serve(agents.PluginRegistration{Agent: &agentRenderer{renderer: r}, Builder: &builderRenderer{renderer: r}, Solution: &solutionRenderer{renderer: r}})
+		return
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		panic(err)
 	}
 	server := grpc.NewServer()
-	builderv0.RegisterBuilderServer(server, &renderer{digest: fmt.Sprintf("sha256:%x", sha256.Sum256(data)), contract: *contract})
+	builderv0.RegisterBuilderServer(server, &builderRenderer{renderer: r})
 	if err := os.WriteFile(*address, []byte(listener.Addr().String()), 0o600); err != nil {
 		panic(err)
 	}

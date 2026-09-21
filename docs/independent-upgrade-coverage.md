@@ -86,11 +86,12 @@ An agent used to build an artifact is not necessarily present in production.
 
 1. **Product execution.** Connect the implemented Core selections to typed
    build/render inputs using Core's now-published execution binding API.
-   Batch request preparation and staged-output verification are implemented;
-   exact selected-executor loading and actual invocation remain incomplete.
+   Batch request preparation, exact selected-executor loading, typed render
+   invocation and staged-output verification are implemented. Build invocation
+   and qualified effect-boundary integration remain incomplete.
 2. **Local development execution.** Local records preserve release choices and
    bind identity to actual bytes; driving builds/tests from those records remains
-   blocked by executor loading/adoption and actual execution wiring. Restoring
+   blocked by owner executor adoption and build/test execution wiring. Restoring
    releases is implemented.
 3. **Selective acquisition.** HTTPS requirements are acquired and authenticated.
    OCI transport and execution of declared source-build requirements remain.
@@ -121,7 +122,7 @@ An agent used to build an artifact is not necessarily present in production.
 
 ## Concrete integration points and blockers
 
-The CLI consumes pushed Core `v0.3.41-0.20260921013030-2247375610e8`, with
+The CLI consumes pushed Core `v0.3.41-0.20260921020008-5fe990d2c3a1`, with
 `GOWORK=off` and no replacement. Uncommitted Core files are not a dependency.
 This is not the unpublished v0.3.41 tag and does not authorize a release.
 
@@ -132,16 +133,18 @@ Semantic source-supported comparison and real packaged consumer evidence remain
 qualification work, not something a matching protocol alone proves.
 
 Core's typed selection-to-build/render binding is now available. The CLI uses
-`PrepareArtifactExecutions` and `VerifyArtifactExecutionDirectory` for inspection;
+`PrepareArtifactExecutions`, `manager.LoadArtifact` and
+`VerifyArtifactExecutionDirectory` for selected-executor staging and inspection;
 Core admission requires exact staged render outputs and qualification over
 `ExecutionIdentity`. Independent gRPC renderer tests produce the inspected
 files and exercise missing capability, changed/missing/extra/symlinked evidence,
 multiple services and stale qualification. This is not published-executor
-adoption or deployment qualification. The shared loader still has no entry point
-for acquired executor path/digest without installed-agent coordinates; that
-concrete dispatch gap is being addressed by Core #589's `manager.LoadArtifact`,
-not yet pushed or consumed here. No URI/name inference, install
-mutation or parallel CLI loader is substituted. Explicit rejection guards
+adoption or deployment qualification. `stage-render` binds actual typed RPC
+payloads to configuration identity and invokes exact acquired native executables
+through authenticated Core lifecycle/operation admission. Builder and Solution
+subprocess regressions cover partial failure, cancellation and concurrent batches;
+the sandbox integration test exercises UDS with network denied. No URI/name
+inference, install mutation or parallel CLI loader is substituted. Explicit rejection guards
 remain; positive selection-bound deployment and observation are incomplete.
 
 The deployment integration must cover at least these effect-owning boundaries,
@@ -160,12 +163,11 @@ This inventory is not a completed all-path admission audit. `composition
 check-deployment` calls Core admission for inspection; it does not authorize these
 legacy effects or imply that anything is running.
 
-Real solution-kind loading has an additional Core blocker: the loader dispatches
-all verified-artifact kinds to the provider artifact verifier, whose manifest
-parser only accepts `codefly:provider`. The real-process solution admission test
-therefore qualifies the RPC boundary using a service-kind test executable, not
-the complete solution installation path. Core #589 must provide correct
-kind-owned artifact verification before actual solution qualification can pass.
+The exact-artifact Solution path no longer uses the installed-provider verifier:
+`LoadArtifact` authenticates raw executable bytes and the live generic/operation
+declarations, then carries the returned Solution identity into Render. Legacy
+coordinate-based solution installation is a different path; staging does not
+establish that path's production qualification.
 
 Daemon monitoring now consumes `TrackedProcessGroup.InspectOwnership`, including
 Core's leaderless-member authentication and recorded-owner birth checks. The CLI

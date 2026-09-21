@@ -10,8 +10,9 @@ No agent names, source-family guesses or linked-Core comparisons are admission r
 
 - `--workspace`: the workspace declaring package-scoped `module-trust`.
 - `--product`: the directory containing Core's `module.codefly.yaml` descriptor.
-- `--configuration`: a JSON object of effective configuration values, including
-  secrets. Values are not printed or persisted by these commands.
+- Exactly one of `--configuration` (a JSON object of effective configuration
+  values) or `--render-requests` (the actual typed render payloads described below).
+  Values may contain secrets and are not printed or persisted by these commands.
 - `--identity-key`: a private file containing at least 32 raw bytes. Use the same
   protected key when comparing inputs across qualification environments. Core
   computes an HMAC identity, not a guessable public hash of secret values.
@@ -55,6 +56,13 @@ Commands:
   all selected services and emit their bound protobuf-JSON render requests.
   Requires signed artifact-operation declarations and media types. Does not
   invoke an executor, provide configuration values or establish qualification.
+- `stage-render INPUTS.json --output-parent ABSOLUTE_DIRECTORY --without-principal`:
+  requires `--render-requests`; acquire exact selected executors, authenticate
+  their live contracts through Core's loader, invoke Builder Deploy or Solution
+  Render, close each tracked process, and verify receipts against actual files.
+  This stages only; no apply, image import, publication or approval is performed.
+  Returns the new private directory, its `inputs.json` and Core's deployment-input
+  record. Prior qualifications/executions are rejected, never silently reused.
 - `check-inputs INPUTS.json`: authenticate actual runtime files and staged render
   outputs, computing Core's selection/runtime/binding/execution identities for
   qualification. Without executions this checks runtime inputs only, never
@@ -85,7 +93,7 @@ escaped, symlinked and missing output files are rejected. The resulting sealed
 evidence feeds Core admission; qualifications must sign `ExecutionIdentity`.
 Changing output bytes invalidates qualification even with unchanged runtime
 inputs. Receipt JSON is not proof of executor invocation or live capability:
-these commands inspect supplied evidence, not authenticate its RPC origin or
+the inspection commands inspect supplied evidence, not authenticate its RPC origin or
 authorize deployment. Deployment owners must keep outputs isolated and reverify
 them at the effect boundary.
 `module-trust.build-signers` is package-scoped, separately from release `signers`.
@@ -97,25 +105,50 @@ index or dependency source. Cross-process locks serialize CLI mutations; atomic
 writes preserve the preceding selection on failure. Changed local bytes change
 Core's identity even when the checkout path or release label has not changed.
 
+## Selected-executor staging
+
+`--render-requests` is an array of `{target, service, protocol, request}` objects.
+Use Core instance targets, for example `modules/left`, and the protocol from the
+signed operation declaration. `request` is strict protobuf JSON of the existing
+Builder `DeploymentRequest` or Solution `RenderRequest`, not an alternative
+artifact-selection model. Every participating service needs exactly one request.
+The CLI owns `execution`, staging destinations and verified Solution identity;
+supplying those fields is rejected. Solution `artifactReference` is also rejected.
+Core's HMAC configuration identity covers deterministic protobuf encodings of all
+these payloads, keyed by instance/service/protocol. Use the same request file and
+identity key for selection, staging and subsequent qualification inspection.
+Changing environment, configuration, values or target changes this identity.
+
+The staging parent must already exist at a canonical absolute path outside the
+product and independent local checkouts. Each invocation creates its own private
+directory; a complete `inputs.json` is written atomically only after every service
+passes verification. Failure/cancellation removes only that invocation's staging
+directory, reporting cleanup failures. A host crash can leave an incomplete directory without a completion
+record; it is not approval, and existing completed batches are not overwritten.
+
+`--sandbox=required` is the default, with UDS and network denied. Unsupported or
+missing sandboxes fail, never fall back. `--allow-network` explicitly allows
+sandboxed executor network access. `--sandbox=none` explicitly permits unrestricted
+local execution. `--without-principal` is mandatory for this local command; it
+does not grant production authorization. The programmatic boundary also requires
+explicit Core sandbox/principal options. No credentials or policy are invented.
+
+Supported acquired executors are raw native executable bytes declared as
+`application/octet-stream`; archives, OCI manifests and other representations
+are rejected, not unpacked or inferred. Core `manager.LoadArtifact` snapshots and
+hashes the exact bytes, requires generic and operation-specific live declarations,
+and restricts the connection to the prepared operation. Solution identity comes
+from digest-only inspection and is carried unchanged into Render. No installed
+agent coordinates, provider descriptors, downloads or install mutations occur.
+Owner executors must truthfully implement `artifact-execution/v1`; linking newer
+Core does not opt them in. Tests use independently built authentic subprocesses,
+not published production executor qualification.
+
 ## Explicit Deployment Blocker
 
-Core `2247375610e8` supplies the typed execution binding contract:
-signed `ProvidedService.ArtifactOperations`, artifact media types, prepared
-instance-scoped requests, opt-in live executor capability checks, output receipts
-and execution-bound qualification. The CLI now consumes its batch preparation
-and directory-verification APIs. The former missing-contract blocker is resolved;
-actual selected-executor orchestration and qualified deployment are not.
-
-The shared process loader still accepts installed-agent coordinates rather than
-an acquired executor path/digest. Loading two instance-scoped signed executors
-must not require invented coordinates, active-install replacement or a separate
-CLI process loader. Core #589 is implementing `manager.LoadArtifact`; it is not
-yet pushed or consumed by this CLI commit. Solution artifact loading also
-still dispatches through provider-only verification. Executors must truthfully
-implement and advertise `artifact-execution/v1`; linking newer Core is not adoption.
-
-Until exact executor loading, actual configuration/binding delivery and executor
-adoption are qualified, multi-instance build/render/deployment is **blocked**.
+Core `5fe990d2c3a1` supplies execution binding and the acquired-executable loader.
+Both are consumed; selected-executor staging is implemented. Qualified
+multi-instance deployment remains **blocked**.
 An explicit rejection stopgap guards local apply/image-import entry points,
 Flow deployment, platform sends, GitOps render/publication and rollback when a
 participating product declares nested selections. This is not completed positive
@@ -123,7 +156,7 @@ admission at every low-level transport. It must be replaced by selection-bound
 execution and effect-time Core admission, not removed to make deployments pass.
 
 Not delivered: running the effective combination's functional/stateful tests,
-selection-bound build/render, OCI acquisition, durable deployment approval,
+selection-bound builds, OCI acquisition, durable deployment approval,
 actual observed/rollback identity comparison, authorized upstream submission,
 or hot onboarding without host restart. HTTP/Git/process regressions establish
 selection and evidence plumbing, not real database retained-data recovery.

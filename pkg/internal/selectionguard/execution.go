@@ -10,7 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var ErrUnboundExecution = errors.New("composition execution is blocked: exact selected-executor loading, acknowledgement and effect-time admission are not integrated")
+var ErrUnboundExecution = errors.New("composition deployment is blocked: qualified selected-executor outputs and effect-time admission are not integrated into this path")
 
 const SelectionFile = "module.codefly.selection.json"
 

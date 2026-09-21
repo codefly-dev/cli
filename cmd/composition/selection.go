@@ -17,13 +17,18 @@ import (
 
 // NewCommand keeps command state per invocation, including tests and MCP callers.
 func NewCommand() *cobra.Command {
-	var workspace, product, configuration, identityKey string
+	var workspace, product, configuration, identityKey, renderRequests string
 	command := &cobra.Command{Use: "composition", Short: "Inspect and select product-owned component releases"}
 	command.PersistentFlags().StringVar(&workspace, "workspace", ".", "Workspace containing package-scoped module-trust")
 	command.PersistentFlags().StringVar(&product, "product", ".", "Directory containing module.codefly.yaml")
 	command.PersistentFlags().StringVar(&configuration, "configuration", "", "JSON file containing the effective configuration values")
 	command.PersistentFlags().StringVar(&identityKey, "identity-key", "", "Private file containing at least 32 raw bytes for configuration identity")
+	command.PersistentFlags().StringVar(&renderRequests, "render-requests", "", "JSON array of typed, instance-scoped render RPC payloads")
+	command.MarkFlagsMutuallyExclusive("configuration", "render-requests")
 	session := func() (*selection.SelectionSession, error) {
+		if renderRequests != "" {
+			return newRenderSession(workspace, product, renderRequests, identityKey)
+		}
 		if configuration == "" || identityKey == "" {
 			return nil, errors.New("--configuration and --identity-key are required; configuration identity cannot be inferred")
 		}
@@ -136,6 +141,27 @@ func NewCommand() *cobra.Command {
 		}
 		return current.PrepareRender(cmd.Context(), &inputs)
 	})
+	var stage stageFlags
+	stageCommand := add("stage-render INPUTS.json", "Invoke exact selected executors into verified staging without deployment effects", cobra.ExactArgs(1), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
+		requests, key, err := readRenderConfiguration(renderRequests, identityKey)
+		if err != nil {
+			return nil, err
+		}
+		if err = stage.validate(); err != nil {
+			return nil, err
+		}
+		var inputs selection.DeploymentFiles
+		if err = readJSON(args[0], &inputs); err != nil {
+			return nil, err
+		}
+		return current.StageRender(cmd.Context(), &inputs, &selection.StageOptions{
+			OutputParent: stage.outputParent, Requests: requests, IdentityKey: key, LoadOptions: stage.loadOptions,
+		})
+	})
+	stageCommand.Flags().StringVar(&stage.outputParent, "output-parent", "", "Existing canonical absolute staging parent outside product and local checkouts")
+	stageCommand.Flags().StringVar(&stage.sandbox, "sandbox", "required", "Executor sandbox: required or none (explicit unrestricted execution)")
+	stageCommand.Flags().BoolVar(&stage.allowNetwork, "allow-network", false, "Allow executor network access in the sandbox")
+	stageCommand.Flags().BoolVar(&stage.withoutPrincipal, "without-principal", false, "Explicit local execution without an authenticated principal; never deployment authorization")
 	add("check-inputs INPUTS.json", "Authenticate runtime and staged output files for qualification", cobra.ExactArgs(1), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
 		var inputs selection.DeploymentFiles
 		if err := readJSON(args[0], &inputs); err != nil {
