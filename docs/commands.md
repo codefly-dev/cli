@@ -564,6 +564,13 @@ populates the pinned source without rerunning the agent.
 stages exact selected executors. See [the complete command contract](composition-selections.md)
 for required configuration identity flags and deployment guards.
 
+`codefly composition --workspace . inspect-local-target local` reads the explicit
+local k3d environment's live target binding without applying resources. It needs
+no selection/configuration flags. `--expected-identity DIGEST` rechecks an
+independently retained binding and rejects namespace recreation or other identity
+drift. The binding contains cluster routing/CA identity and actual namespace UIDs,
+not credentials. A successful read is not qualification, fencing or deploy authority.
+
 `configure-approval-authority CONFIG.json` explicitly installs a product-scoped
 host policy/key/audience/target binding outside the workspace; replacing it needs
 `--expected-digest` from `inspect-approval-authority`. This is trusted-local

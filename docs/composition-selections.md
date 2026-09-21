@@ -6,7 +6,7 @@ No agent names, source-family guesses or linked-Core comparisons are admission r
 
 ## Available commands
 
-`codefly composition` emits structured JSON. Every command requires:
+`codefly composition` emits structured JSON. Selection/admission commands require:
 
 - `--workspace`: the workspace declaring package-scoped `module-trust`.
 - `--product`: the directory containing Core's `module.codefly.yaml` descriptor.
@@ -19,6 +19,21 @@ No agent names, source-family guesses or linked-Core comparisons are admission r
 
 Commands:
 
+- `inspect-local-target ENVIRONMENT [--expected-identity DIGEST]`: resolve the
+  workspace's explicit local k3d environment and read its real API. This command
+  needs only `--workspace` and the environment name, not a product/configuration
+  identity. It requires an explicit valid namespace, authenticated HTTPS and a
+  resolved cluster CA. The returned binding hashes the verified cluster routing/CA
+  identity, the observed `kube-system` UID and the selected namespace's name/UID.
+  No credentials or kubeconfig paths are returned; the verified flattened config
+  is passed to the read-only API query through stdin, not a temporary file.
+  Missing/deleting namespaces and mismatches against an independently retained
+  digest fail. Inspection has a 30-second total deadline, or the caller's shorter
+  deadline. Recreating a namespace changes the identity even at the same name;
+  unrelated namespace annotations do not. This is a live observation, not an
+  atomic snapshot across API calls, a target-wide fence, mutation authority,
+  functional qualification or deployment. Kubernetes has no built-in cluster UID;
+  the `kube-system` UID is an incarnation anchor, not independent server attestation.
 - `init-release VERSION`: acquire signed metadata and authenticate an exact base
   release, then create `module.codefly.selection.json`. Never overwrite an existing
   release selection. No dependency sources are downloaded.

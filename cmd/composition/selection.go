@@ -25,6 +25,7 @@ func NewCommand() *cobra.Command {
 	command.PersistentFlags().StringVar(&identityKey, "identity-key", "", "Private file containing at least 32 raw bytes for configuration identity")
 	command.PersistentFlags().StringVar(&renderRequests, "render-requests", "", "JSON array of typed, instance-scoped render RPC payloads")
 	command.MarkFlagsMutuallyExclusive("configuration", "render-requests")
+	command.AddCommand(newTargetCommand(&workspace))
 	session := func() (*selection.SelectionSession, error) {
 		if renderRequests != "" {
 			return newRenderSession(workspace, product, renderRequests, identityKey)

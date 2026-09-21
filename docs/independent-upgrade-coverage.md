@@ -86,6 +86,12 @@ exact inputs, and inspect the actual deployment.
   Shared runtime admission and both copy paths use nonblocking descriptor-validated
   opens; real FIFO and post-admission replacement tests cover cancellation, lock
   release, no consumption and partial-snapshot cleanup.
+- Read-only local Kubernetes target inspection/rechecking binds verified cluster
+  routing/CA identity to live `kube-system` and selected namespace UIDs. Explicit
+  namespaces, TLS verification, missing/deleting targets and retained-identity
+  mismatch are enforced. Namespace recreation invalidates the binding; ordinary
+  metadata updates do not. This is an observation primitive for the existing local
+  adapter, not target fencing, qualification execution or positive effect admission.
 - Daemon monitoring uses Core's authenticated read-only group ownership API;
   executable names are display-only, and errors do not imply orphanhood.
 - Dependabot may propose Core build-dependency updates. Runtime admission and

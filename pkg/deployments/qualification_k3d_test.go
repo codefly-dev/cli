@@ -37,12 +37,12 @@ func requireDisposableK3d(t *testing.T) completionQualification {
 	}
 	// k3d caps a cluster name at 32 characters.
 	cluster := fmt.Sprintf("codefly-done-%x", time.Now().UnixNano())
-	runQualificationCommand(t, "k3d", "cluster", "create", cluster,
-		"--servers", "1", "--agents", "0", "--wait", "--timeout", "3m",
-		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
 	t.Cleanup(func() {
 		_ = exec.Command("k3d", "cluster", "delete", cluster).Run()
 	})
+	runQualificationCommand(t, "k3d", "cluster", "create", cluster,
+		"--servers", "1", "--agents", "0", "--wait", "--timeout", "3m",
+		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
 
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig.yaml")
 	require.NoError(t, os.WriteFile(kubeconfig,
