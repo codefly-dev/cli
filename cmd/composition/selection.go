@@ -134,6 +134,13 @@ func NewCommand() *cobra.Command {
 		}
 		return current.Admit(cmd.Context(), &inputs, policy, time.Now())
 	})
+	add("record-admission INPUTS.json POLICY.json DESTINATION.json", "Persist Core admission without replacing records or authorizing deployment", cobra.ExactArgs(3), recordAdmission)
+	var expectedAdmission string
+	recheck := add("recheck-admission INPUTS.json POLICY.json RECORD.json", "Recheck retained admission against current policy and actual files", cobra.ExactArgs(3), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
+		return recheckAdmission(cmd, current, args, expectedAdmission)
+	})
+	recheck.Flags().StringVar(&expectedAdmission, "expected-identity", "", "Admission identity retained independently from the supplied record")
+	_ = recheck.MarkFlagRequired("expected-identity")
 	add("prepare-render INPUTS.json", "Prepare Core-bound render requests without invoking executors", cobra.ExactArgs(1), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
 		var inputs selection.DeploymentFiles
 		if err := readJSON(args[0], &inputs); err != nil {

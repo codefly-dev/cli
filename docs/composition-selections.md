@@ -76,6 +76,26 @@ Commands:
   evidence, expired or foreign qualifications, patched outputs and local checkouts
   are rejected. This is inspection under the supplied policy, not authority for a
   later executor to deploy different bytes or choose its own policy.
+- `record-admission INPUTS.json POLICY.json DESTINATION.json`: perform the same
+  Core admission and persist its identity and exact record, including signed
+  qualifications. The destination must be absolute, outside the product/local
+  checkouts, with an existing canonical parent. Publication is exclusive and
+  synced: concurrent writers cannot overwrite an existing record, and incomplete
+  writes never appear at the destination. Runtime paths and configuration values
+  are not stored. An interrupted caller must inspect any completed destination;
+  it must not overwrite it on retry. Filesystem sync/cleanup errors are reported
+  even if publication already occurred.
+- `recheck-admission INPUTS.json POLICY.json RECORD.json --expected-identity ID`:
+  authenticate the saved record against an identity retained independently by
+  the caller, then re-admit the actual runtime/output files under current policy.
+  Core includes admission time in its identity; this reproduces the original
+  record at its original time and separately checks current qualification expiry.
+  Missing evidence, changed bytes/bindings/configuration, revoked signers, record
+  tampering and stricter unmet policy fail. The output distinguishes the retained
+  identity from the newly evaluated identity; neither means anything is running.
+  These commands persist/recheck admission evidence, not an authorized approval
+  decision: they do not establish who may choose policy or grant mutation rights.
+  Never derive `--expected-identity` from an untrusted record being checked.
 - `upstream`: prepare Core's owner-scoped adoption facts. No GitHub submission,
   merge or release occurs. Local-development facts remain labelled as such.
 - `propose-removal TARGET RELEASE.json`: ask Core to prove full effective-input

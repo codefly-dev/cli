@@ -54,6 +54,11 @@ exact inputs, and inspect the actual deployment.
   compatibility, exact-runtime-file admission inspection, owner-scoped adoption
   facts and Core-proven override-removal proposals. See
   [the command contract and limits](composition-selections.md).
+- Exclusive durable Core admission records and rechecking against an independently
+  retained admission identity, current policy and freshly verified runtime/render
+  files. This includes qualification expiry, signer revocation and record/output
+  tampering checks. It does not issue functional evidence or authorize deployment;
+  the effect-path rejection guards are unchanged.
 - Daemon monitoring uses Core's authenticated read-only group ownership API;
   executable names are display-only, and errors do not imply orphanhood.
 - Dependabot may propose Core build-dependency updates. Runtime admission and
@@ -110,6 +115,9 @@ An agent used to build an artifact is not necessarily present in production.
    deployment-admission API before effects on every applicable path, reject
    private patches and absent required functional/stateful evidence, and never
    silently replace approved inputs. Retain existing mutation authorization.
+   Persisting and rechecking Core admission is implemented; trusted approval-policy
+   ownership, authorized durable approval decisions, qualification execution and
+   positive effect-time integration are not supplied by that inspection surface.
 7. **Upstream loop.** Prepare a scoped request to the owner of the inherited
    default, reusing existing records and including exact replacements and
    shareable evidence. Submission needs authorization; deployment need not

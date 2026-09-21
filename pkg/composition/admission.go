@@ -86,20 +86,28 @@ func openDeploymentInputs(files *DeploymentFiles) (core.DeploymentInputs, func()
 func (session *SelectionSession) Admit(ctx context.Context, files *DeploymentFiles, policy core.DeploymentPolicy, now time.Time) (*AdmissionInspection, error) {
 	var inspection *AdmissionInspection
 	err := session.withResolved(ctx, func(snapshot *selectionSnapshot, resolved *core.ResolvedComposition) error {
-		inputs, closeFiles, err := session.verifiedDeploymentInputs(ctx, resolved, files)
+		var err error
+		inspection, err = session.admitResolved(ctx, resolved, files, policy, now)
 		if err != nil {
 			return err
 		}
-		defer closeFiles()
-		approved, err := session.Engine.AdmitDeployment(ctx, resolved, inputs, policy, now)
-		if err != nil {
-			return fmt.Errorf("deployment admission: %w", err)
-		}
-		if err := session.unchanged(snapshot); err != nil {
-			return err
-		}
-		inspection = &AdmissionInspection{Identity: approved.Identity(), Record: approved.Record()}
-		return nil
+		return session.unchanged(snapshot)
 	})
+	if err != nil {
+		return nil, err
+	}
 	return inspection, err
+}
+
+func (session *SelectionSession) admitResolved(ctx context.Context, resolved *core.ResolvedComposition, files *DeploymentFiles, policy core.DeploymentPolicy, now time.Time) (*AdmissionInspection, error) {
+	inputs, closeFiles, err := session.verifiedDeploymentInputs(ctx, resolved, files)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFiles()
+	approved, err := session.Engine.AdmitDeployment(ctx, resolved, inputs, policy, now)
+	if err != nil {
+		return nil, fmt.Errorf("deployment admission: %w", err)
+	}
+	return &AdmissionInspection{Identity: approved.Identity(), Record: approved.Record()}, nil
 }

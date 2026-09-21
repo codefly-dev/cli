@@ -55,3 +55,19 @@ func TestPrepareRenderRequiresExplicitConfiguration(t *testing.T) {
 	require.ErrorContains(t, cmd.ExecuteContext(t.Context()), "--configuration and --identity-key are required")
 	require.Empty(t, output.String())
 }
+
+func TestAdmissionRecordCommandsRequireExplicitInputs(t *testing.T) {
+	for _, args := range [][]string{
+		{"record-admission", "inputs.json", "policy.json", "/tmp/admission.json"},
+		{"recheck-admission", "inputs.json", "policy.json", "record.json", "--expected-identity", "retained"},
+	} {
+		cmd := NewCommand()
+		cmd.SetArgs(args)
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		require.ErrorContains(t, cmd.ExecuteContext(t.Context()), "--configuration and --identity-key are required")
+	}
+	cmd := NewCommand()
+	cmd.SetArgs([]string{"recheck-admission", "inputs.json", "policy.json", "record.json"})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	require.ErrorContains(t, cmd.ExecuteContext(t.Context()), `required flag(s) "expected-identity" not set`)
+}
