@@ -21,6 +21,34 @@ The required workflow is: select a nested replacement, inspect differences,
 check compatibility, test the effective combination, approve, deploy those
 exact inputs, and inspect the actual deployment.
 
+## PR landing boundary
+
+The owner's narrowed landing scope is to pass the required checks and mark #752
+ready for review, not complete the product workflow below. Branch protection
+verified on 2026-09-21 requires `bootstrap-audit`, `control-integration`,
+`coverage`, `race` and `dashboard`. Qualification invocation, production effect
+integration and observed/rollback product work remain tracked in #753; they are
+not additional implementation requirements for this PR to leave draft.
+
+The `bootstrap-audit` failure at run 35611839282 identifies GO-2026-5882,
+GO-2026-5884 and GO-2026-5885 in ORAS v2.6.0. Consuming upstream v2.6.1 fixes
+the registry upload/redirect/token credential handling instead of suppressing
+the audit. Real registry acquisition/publication/GC/render-handoff race tests
+and the upstream remote-registry race suite pass with this dependency.
+
+There is also a required-check owner dependency, not just optional native CI:
+`control-integration` runs 35573538289 and 35586885454 fail
+`TestRunProfilesStartRealDependencyShapesInProcess` because the selected released
+Redis 0.0.88 does not declare CLI-agent protocol version 1. Existing owner work is
+service-redis#62. Do not skip that proof, weaken admission, or edit the agent from
+this PR. The subsequent run canceled coverage/race/control after the audit
+failure; cancellation does not establish that those gates pass. Full local
+normal/race suites separately retain the eight documented engine/gateway agent
+declaration failures. The PR must remain draft until required checks are green.
+
+Optional native/lint/pins results remain visible in the PR body, not reasons to
+expand this landing scope. No CLI release or merge is authorized.
+
 ## What #752 implements
 
 - Runtime protocol/capability admission, including the direct gateway supervisor
