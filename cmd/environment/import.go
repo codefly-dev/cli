@@ -82,7 +82,7 @@ entries are preserved, comments included. Read from stdin with --cell-contract -
 			return nil
 		}
 		if PostImportValidate != nil {
-			PostImportValidate(ctx, opts.dir, opts.envName)
+			return PostImportValidate(ctx, opts.dir, opts.envName)
 		}
 		return nil
 	},

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -570,5 +571,58 @@ environments:
 	}
 	if !strings.HasSuffix(env.Gitops.Path, "/"+env.Namespace) {
 		t.Errorf("gitops.path %q does not agree with namespace %q", env.Gitops.Path, env.Namespace)
+	}
+}
+
+// executeImport runs the cobra command rather than runImport, so the test sees
+// the command's exit status — the thing a CI step gates on.
+func executeImport(t *testing.T, dir string, args ...string) error {
+	t.Helper()
+	contract := filepath.Join(dir, "cell.json")
+	if err := os.WriteFile(contract, []byte(fixtureContract), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	importNamespace = ""
+	importDryRun = false
+	Cmd.SetArgs(append([]string{"import", "azure", "--cell-contract", contract}, args...))
+	Cmd.SetOut(io.Discard)
+	Cmd.SetErr(io.Discard)
+	t.Cleanup(func() { Cmd.SetArgs(nil) })
+	return Cmd.Execute()
+}
+
+func stubPostImportValidate(t *testing.T, result error) *int {
+	t.Helper()
+	calls := 0
+	PostImportValidate = func(context.Context, string, string) error {
+		calls++
+		return result
+	}
+	t.Cleanup(func() { PostImportValidate = nil })
+	return &calls
+}
+
+func TestImportFailsWhenPostValidationRefusesWorkspace(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
+	stubPostImportValidate(t, errors.New("workspace is not ready"))
+
+	if err := executeImport(t, dir); err == nil {
+		t.Fatal("import exited without error although post-import validation refused the workspace")
+	}
+	if loadWorkspace(t, dir).FindEnvironment("azure") == nil {
+		t.Fatal("import failed without writing the environment the validation was run against")
+	}
+}
+
+func TestImportDryRunSkipsPostValidation(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
+	calls := stubPostImportValidate(t, errors.New("workspace is not ready"))
+
+	if err := executeImport(t, dir, "--dry-run"); err != nil {
+		t.Fatalf("dry-run returned error: %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("dry-run ran post-import validation %d time(s)", *calls)
 	}
 }
