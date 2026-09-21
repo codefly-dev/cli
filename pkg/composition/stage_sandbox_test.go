@@ -42,3 +42,20 @@ func TestStageBuildWithRealSandboxAndUDS(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Executions, 2)
 }
+
+func TestStageBuildLocalCheckoutsWithRealSandboxAndUDS(t *testing.T) {
+	session, options, registry := buildStageFixture(t)
+	localBuildCheckouts(t, session, registry)
+	options.LoadOptions = func(directory string) ([]manager.LoadOption, error) {
+		sb, err := sandbox.New()
+		if err != nil {
+			return nil, err
+		}
+		require.NotEqual(t, sandbox.BackendNative, sb.Backend())
+		sb.WithWritePaths(directory).WithNetwork(sandbox.NetworkDeny)
+		return []manager.LoadOption{manager.WithSandbox(sb), manager.WithoutPrincipal(), manager.WithUDS(), manager.WithWorkDir(directory)}, nil
+	}
+	built, err := session.StageBuild(t.Context(), options)
+	require.NoError(t, err)
+	require.Len(t, built.Executions, 2)
+}

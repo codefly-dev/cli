@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"slices"
 	"time"
 
@@ -101,7 +101,7 @@ func (session *SelectionSession) contractSnapshot(ctx context.Context, resolved 
 		if err != nil {
 			return nil, err
 		}
-		data, err := os.ReadFile(path)
+		data, err := readContractArtifact(ctx, path)
 		if err != nil {
 			return nil, err
 		}
@@ -119,4 +119,19 @@ func (session *SelectionSession) contractSnapshot(ctx context.Context, resolved 
 		return &snapshot, nil
 	}
 	return nil, fmt.Errorf("%s: contracts artifact %s is not in the selected requirements", target, name)
+}
+
+func readContractArtifact(ctx context.Context, path string) ([]byte, error) {
+	file, err := openInputFile(ctx, nil, path)
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(&approvedInputReader{ctx: ctx, reader: io.LimitReader(file, maxSelectionArtifactBytes+1)})
+	if err = errors.Join(readErr, file.Close(), ctx.Err()); err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxSelectionArtifactBytes {
+		return nil, errors.New("contract snapshot exceeds artifact size limit")
+	}
+	return data, nil
 }

@@ -570,6 +570,17 @@ sandbox/principal choices. Build and render configuration share one identity.
 It produces verified local build evidence, not a published artifact, signed
 derived output or qualification. Keep both request files for subsequent commands.
 
+`composition acquire` supports HTTPS and digest-addressed OCI objects using the
+configured Docker registry credentials over TLS. It does not recursively acquire
+layers or dependency source. `composition publish-build BUILD.json INPUTS.json
+SIGNERS.json --expected-selection DIGEST --expected-build DIGEST --repository REGISTRY/REPOSITORY --output
+ABSOLUTE_INPUTS.json` separately publishes verified build outputs by digest and
+signs Core derived statements with the package owner's configured build authority.
+It re-reads remote bytes, retains them with a digest-named OCI manifest reference,
+and preserves existing output records. The output file can be passed directly to
+`stage-render`; publication is not qualification or deployment. Registry policy
+must preserve the retention roots against explicit deletion/expiration.
+
 `codefly composition --workspace . inspect-local-target local` reads the explicit
 local k3d environment's live target binding without applying resources. It needs
 no selection/configuration flags. `--expected-identity DIGEST` rechecks an

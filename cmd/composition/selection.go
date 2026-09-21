@@ -165,6 +165,11 @@ func NewCommand() *cobra.Command {
 		return runStageBuild(cmd, current, renderRequests, buildRequests, identityKey, buildStage)
 	})
 	addStageFlags(buildCommand, &buildStage)
+	var publication buildPublicationFlags
+	publishCommand := add("publish-build BUILD.json INPUTS.json SIGNERS.json", "Publish exact staged outputs by digest with owner-authorized derived evidence", cobra.ExactArgs(3), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
+		return publication.run(cmd, current, workspace, args)
+	})
+	publication.register(publishCommand)
 	add("check-inputs INPUTS.json", "Authenticate runtime and staged output files for qualification", cobra.ExactArgs(1), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
 		var inputs selection.DeploymentFiles
 		if err := readJSON(args[0], &inputs); err != nil {

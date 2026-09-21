@@ -17,6 +17,7 @@ import (
 // StagedBuild contains invocation evidence only. It is not an authorized derived
 // output, a published URI, functional qualification or deployment approval.
 type StagedBuild struct {
+	Identity          string           `json:"identity"`
 	SelectionIdentity string           `json:"selectionIdentity"`
 	Directory         string           `json:"directory"`
 	EvidenceFile      string           `json:"evidenceFile"`
@@ -111,6 +112,10 @@ func (session *SelectionSession) StageBuild(ctx context.Context, options *StageO
 		if err = errors.Join(ctx.Err(), resolved.CheckLocalInputs(), session.unchanged(snapshot)); err != nil {
 			return err
 		}
+		staged.Identity, err = buildEvidenceIdentity(staged)
+		if err != nil {
+			return err
+		}
 		data, encodeErr := json.MarshalIndent(staged, "", "  ")
 		if encodeErr != nil {
 			return encodeErr
@@ -122,4 +127,20 @@ func (session *SelectionSession) StageBuild(ctx context.Context, options *StageO
 		return nil
 	})
 	return result, err
+}
+
+// The independently retained invocation digest binds measured output receipts,
+// not their mutable filesystem locations. Core still rechecks all actual bytes.
+func buildEvidenceIdentity(staged *StagedBuild) (string, error) {
+	value := *staged
+	value.Identity, value.Directory, value.EvidenceFile = "", "", ""
+	value.Executions = append([]ExecutionFiles(nil), staged.Executions...)
+	for i := range value.Executions {
+		value.Executions[i].Directory = ""
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return contentDigest(data), nil
 }

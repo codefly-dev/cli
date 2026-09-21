@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -154,6 +155,38 @@ func buildSelectedSource(ctx context.Context, execution *basev0.ArtifactExecutio
 		return nil, errors.New("packager requires exactly one declared source")
 	}
 	input := execution.Inputs[0]
+	location, err := url.Parse(input.Uri)
+	if err != nil {
+		return nil, err
+	}
+	var data []byte
+	if location.Scheme == "file" {
+		// This fixture packages one real source unit from the independently
+		// selected checkout. Core owns the full-tree identity and drift checks.
+		root, openErr := os.OpenRoot(location.Path)
+		if openErr != nil {
+			return nil, openErr
+		}
+		data, err = root.ReadFile("runtime/source.txt")
+		err = errors.Join(err, root.Close())
+	} else {
+		data, err = fetchBuildSource(ctx, input)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var output bytes.Buffer
+	writer := gzip.NewWriter(&output)
+	if _, err = writer.Write(data); err != nil {
+		return nil, err
+	}
+	if err = writer.Close(); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
+}
+
+func fetchBuildSource(ctx context.Context, input *basev0.ArtifactExecutionInput) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, input.Uri, nil)
 	if err != nil {
 		return nil, err
@@ -170,15 +203,7 @@ func buildSelectedSource(ctx context.Context, execution *basev0.ArtifactExecutio
 	if err != nil || fmt.Sprintf("sha256:%x", sha256.Sum256(data)) != input.Digest {
 		return nil, errors.New("source bytes differ from selected digest")
 	}
-	var output bytes.Buffer
-	writer := gzip.NewWriter(&output)
-	if _, err = writer.Write(data); err != nil {
-		return nil, err
-	}
-	if err = writer.Close(); err != nil {
-		return nil, err
-	}
-	return output.Bytes(), nil
+	return data, nil
 }
 
 func main() {

@@ -59,8 +59,20 @@ exact inputs, and inspect the actual deployment.
   rehashes every output before batch completion. Typed build/render payloads
   share one configuration identity. Real TLS source-packaging tests cover two
   instances, refused source/payload drift, partial failure and CLI invocation.
-  This stages bytes only: derived-output publication/signing and functional or
-  stateful qualification are not delivered by a build receipt.
+  This stages bytes only: functional or stateful qualification is not delivered
+  by a build receipt. Separate `publish-build` verifies and privately snapshots
+  outputs, uses package-scoped owner signing keys for Core derived statements,
+  uploads exact digest-addressed objects to an explicitly selected OCI repository,
+  reads back their bytes, and retains an exclusive complete record. It uses the
+  existing local prepared mutation gate, creates no module/CLI release and does not grant
+  deployment authority. A digest-named OCI retention manifest protects the outputs
+  against ordinary garbage collection, including untagged-manifest removal; actual
+  Distribution GC/readback is tested. Explicit retention-root deletion or expiration
+  remains under registry operator control.
+  OCI acquisition likewise preserves the signed manifest/blob representation
+  without recursively downloading layers or sources. Credential and token requests
+  require HTTPS. Cache reads use nonblocking validated regular descriptors; cache
+  writes and creation are root-relative and reject escaping ancestor symlinks.
   Build and render both reject replaceable output ancestry and inherited macOS
   allow ACLs before invoking an executor. The render ACL regression fails with
   the old mode-only boundary and passes with the shared storage check.
@@ -138,16 +150,19 @@ An agent used to build an artifact is not necessarily present in production.
 1. **Product execution.** Connect the implemented Core selections to typed
    build/render inputs using Core's now-published execution binding API.
    Batch request preparation, exact selected-executor loading, typed render
-   and build invocation and staged-output verification are implemented. Derived
-   publication/signing and qualified effect-boundary integration remain incomplete. Staging now
+   and build invocation, staged-output verification and derived publication/signing
+   are implemented. Qualified effect-boundary integration remains incomplete. Staging now
    requires checked registered-group shutdown, with the limits detailed below.
 2. **Local development execution.** Local records preserve release choices and
-   bind identity to actual bytes; driving builds/tests from those records remains
-   blocked by owner executor adoption and exact-input test execution wiring. Restoring
-   releases is implemented.
-3. **Selective acquisition.** HTTPS requirements are acquired and authenticated.
-   Declared source-build requirements can be staged. OCI transport and authorized
-   derived-output publication/signing remain.
+   bind identity to actual bytes. Real two-checkout source builds, changed-input
+   rejection, release restoration and macOS sandbox/UDS execution with network
+   denied are tested. Production builder adoption and exact-input functional/stateful
+   test execution remain incomplete; local output cannot be deployed as a release.
+3. **Selective acquisition.** HTTPS and digest-addressed OCI requirements are
+   acquired and authenticated, without implicit source/layer collection. Declared
+   source-build requirements can be staged and owner-authorized outputs published.
+   Content-addressed retention roots survive ordinary registry GC. Operator deletion
+   policy and truthful production executor adoption still govern actual availability.
 4. **Inspection.** Project the shared effective record into human/structured
    output: inherited references, each selection/artifact difference, reasons,
    evidence and approved versus observed deployment. Keep private configuration
@@ -185,6 +200,19 @@ This includes Core's nonblocking render-output opener and descriptor validation,
 fixing the reproduced regular-to-FIFO replacement hang in the shared verifier.
 CLI runtime admission and snapshot copy opens have their own nonblocking checks;
 neither fix establishes functional qualification or permits deployment effects.
+The acquisition cache and subsequent compatibility snapshot read now share that
+descriptor boundary too. Real FIFO replacements reproduce the previous hangs;
+the fixed paths reject/reacquire without holding the selection lock past cancellation.
+Root-relative cache creation and writes also reject escaped symlink ancestors and
+preserve unrelated external files when an opened directory is renamed.
+
+Core source reconciliation confirms an additional owning contract gap: the
+artifact-execution API and exact-executor loader support build/render, not an
+exact-combination functional/stateful test invocation. Runtime test `selection_id`
+acknowledges test selectors only. Core #584 must supply the missing invocation and
+acknowledgement binding before CLI qualification can honestly produce signed
+evidence for runtime/render/target identities. Existing qualification verification
+is not that invocation capability; no parallel CLI wire contract is substituted.
 The release also includes Linux retained-projection-symlink activation
 (`f05de63c`), preserving concurrent readers during projection replacement.
 Lifecycle v1 and startup v2 declarations are unchanged from Core v0.3.40;

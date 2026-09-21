@@ -62,11 +62,15 @@ Commands:
   absolute checkout paths. Persist only `.codefly/composition-local.json`.
 - `restore TARGET...`: remove those local substitutions without touching checkout
   files, release selections or other local substitutions.
-- `acquire`: fetch only Core's computed HTTPS artifact requirements. Check digests
+- `acquire`: fetch only Core's computed HTTPS or digest-addressed OCI artifact requirements. Check digests
   before atomically publishing cache entries and rehash every cache hit. No
   submodules, recursive checkout, archive fallback or implicit source collection.
-  Missing/private/unsupported transports fail explicitly; OCI acquisition is not
-  implemented here. Build requirements are reported, not executed.
+  Missing/private/unsupported transports fail explicitly. OCI locations must be
+  `oci://registry/repository@sha256:DIGEST`, matching the selected digest and an
+  explicit media type. Docker's configured credential store supplies registry
+  authorization; artifact and auth-token requests require HTTPS. Manifests remain
+  manifest bytes, with no implicit layer downloads, archive extraction or source
+  checkout. Build requirements are executed only by explicit `stage-build`.
 - `check TARGET ARTIFACT USAGE.json AUTHORITY.json`: authenticate consumer usage
   with Core against the exact effective selection and instance, authenticate the
   inherited and selected owner contracts snapshots, then use Core's evaluator.
@@ -86,6 +90,20 @@ Commands:
   shutdown. Returns a private batch directory and `build.json` invocation evidence.
   It does not publish outputs, issue signed derived-output statements, assign an
   artifact URI, run qualification or authorize deployment.
+- `publish-build BUILD.json INPUTS.json SIGNERS.json --expected-selection DIGEST --expected-build DIGEST
+  --repository REGISTRY/REPOSITORY --output ABSOLUTE_RECORD`: prepare a local
+  mutation, reverify every build output, snapshot its bytes, and sign Core's
+  derived statements using package-scoped owner build authority. Upload by digest
+  and independently read back/hash each URI before retaining the complete record.
+  INPUTS supplies released runtime files and explicit target bindings, without
+  old derived/render/qualification evidence. `--expected-build` must be retained
+  independently from the supplied files when `stage-build` returns its invocation
+  digest: editing both output bytes and the receipt cannot preserve that digest.
+  It is not an externally authenticated RPC receipt or protection against a
+  dishonest authorized signing operator. SIGNERS maps package IDs to
+  `{signer, keyFile}`; keys are private 64-byte Ed25519 files, not candidate-chosen
+  verifiers. The output file contains `DeploymentFiles` and can be passed directly
+  to `stage-render`; stdout also reports the selection identity and those inputs.
 - `stage-render INPUTS.json --output-parent ABSOLUTE_DIRECTORY --without-principal`:
   requires `--render-requests`; acquire exact selected executors, authenticate
   their live contracts through Core's loader, invoke Builder Deploy or Solution
@@ -352,10 +370,37 @@ there is no automatic resume or qualification claim.
 
 Build receipts are not authorized derived outputs. Core still requires an
 owner-authorized build signer and signed URI plus the prepared build execution
-identity before derived bytes can enter render/admission. Publication/signing
-integration remains incomplete; this command does not invent a URL or publish
-under the current release hold. Real TLS/source-packaging and process tests prove
-the CLI boundary, not adoption by production builders.
+identity before derived bytes can enter render/admission. `publish-build` supplies
+this separate authorized operation, using the exact output-name mapping enforced
+by Core. It creates no module or CLI release. An OCI manifest references the exact
+outputs and is retained under `sha256-<manifest digest>`, a storage reference with
+no release-version meaning. Its bytes and reference are read back before success;
+the returned `retentionReference` identifies it. This protects blobs against
+ordinary registry garbage collection, including deletion of untagged manifests.
+Consumers still use signed digest URIs, never this tag to select runtime bytes.
+Registry operators must preserve these roots against explicit deletion/expiration;
+the CLI does not change registry policy or unpack/publish referenced image layers.
+Missing referenced content is a registry error, not a substitute representation.
+
+No publication completion is returned until Core authenticates all runtime inputs,
+each remote object is read back, and the exclusive local record is synced. On an
+error after upload begins, remote bytes may exist: the error explicitly reports
+uncertainty, no remote object is deleted, and an existing completion record is
+never overwritten. Identical digest-addressed uploads can be repeated with a new
+record destination after inspecting the prior outcome. Changed selection, keys,
+input bytes or receipts must be rechecked; no automatic retry grants new authority.
+Local mutation authority does not expose a remote delegated signing service.
+Real authenticated TLS registry, actual garbage collection and source-packaging tests prove this boundary,
+not production builder adoption or functional/stateful qualification.
+
+Local development uses the same `stage-build` path. Core supplies each external
+checkout's file URI and full-tree content identity to its selected builder; no
+released source download or aggregate checkout is required. The builder must
+support that source form. Real subprocess tests package two different checkouts,
+detect an edit after preparation, and restore the original release choices while
+preserving local edits. Actual macOS sandbox/UDS builds read both checkouts with
+network denied. Local outputs remain development evidence: Core refuses their
+deployment, and no functional/stateful qualification is implied.
 
 ## Explicit Deployment Blocker
 
@@ -379,7 +424,7 @@ admission at every low-level transport. It must be replaced by selection-bound
 execution and effect-time Core admission, not removed to make deployments pass.
 
 Not delivered: running the effective combination's functional/stateful tests,
-derived-output publication/signing, OCI acquisition, production deployment authorization integration,
+production deployment authorization integration,
 actual observed/rollback identity comparison, authorized upstream submission,
 or hot onboarding without host restart. HTTP/Git/process regressions establish
 selection and evidence plumbing, not real database retained-data recovery.
@@ -387,5 +432,12 @@ Runtime `TestRequest.selection_id` acknowledges test selectors, not the tested
 composition's runtime/render/target identities. An ordinary workspace test pass
 must not be relabelled as exact-composition qualification without that binding
 and the qualification authority's actual execution evidence.
+Source reconciliation with Core confirms the missing invocation contract belongs
+in Core: `artifactexecution.Prepare` accepts only Builder Build/Render and Solution
+Render, and `manager.LoadArtifact` restricts connections to those operations.
+Core's signed qualification verification exists; a selection-bound qualification
+executor request/receipt does not. Core #584 retains this dependency. The CLI must
+not add a parallel wire schema or sign ordinary workspace test results as though
+they prove a different effective combination.
 The generic environment primitives and the deprecated cell wrapper remain under
 Core review; these commands do not establish a replacement wrapper or a rename.

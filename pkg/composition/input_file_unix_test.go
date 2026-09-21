@@ -6,13 +6,77 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	core "github.com/codefly-dev/core/composition"
+
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
+
+func TestAcquisitionReplacesFIFOWithoutBlockingSelection(t *testing.T) {
+	r := newSelectionRegistry(t)
+	artifact := r.artifact("runtime", core.ArtifactRuntime, []byte("selected bytes"))
+	session := &SelectionSession{Root: t.TempDir(), Engine: &core.Engine{}}
+	directory := filepath.Join(session.Root, ".codefly", "selection-artifacts")
+	require.NoError(t, os.MkdirAll(directory, 0o700))
+	path := filepath.Join(directory, strings.TrimPrefix(artifact.Digest, "sha256:"))
+	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	err := rejectFIFOWithoutWaiting(t, path, func(ctx context.Context) error {
+		return session.locked(ctx, func() error {
+			_, acquireErr := session.acquireArtifact(ctx, r.artifacts.Client(), artifact)
+			return acquireErr
+		})
+	})
+	require.NoError(t, err)
+	require.True(t, artifactMatches(t.Context(), path, artifact.Digest))
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	require.NoError(t, session.locked(ctx, func() error { return nil }))
+}
+
+func TestContractArtifactRejectsFIFOAfterAcquisition(t *testing.T) {
+	r := newSelectionRegistry(t)
+	artifact := r.artifact("contracts", core.ArtifactContracts, []byte(`{"module":"team/module"}`))
+	session := &SelectionSession{Root: t.TempDir(), Engine: &core.Engine{}}
+	path, err := session.acquireArtifact(t.Context(), r.artifacts.Client(), artifact)
+	require.NoError(t, err)
+	data, err := readContractArtifact(t.Context(), path)
+	require.NoError(t, err)
+	require.Equal(t, artifact.Digest, contentDigest(data))
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- session.locked(ctx, func() error { _, readErr := readContractArtifact(ctx, path); return readErr })
+	}()
+	select {
+	case err = <-done:
+		require.ErrorContains(t, err, "regular file")
+	case <-ctx.Done():
+		// Drain a regressed blocking ReadFile, including its read-until-EOF,
+		// before reporting the failure. No abandoned lock-holding goroutine.
+		writer, openErr := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		require.NoError(t, openErr)
+		_, writeErr := writer.Write([]byte("drain"))
+		require.NoError(t, writeErr)
+		require.NoError(t, writer.Close())
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("FIFO writer did not drain blocked contract read")
+		}
+		t.Fatal("contract cache read outlived cancellation")
+	}
+	lockCtx, stop := context.WithTimeout(t.Context(), time.Second)
+	defer stop()
+	require.NoError(t, session.locked(lockCtx, func() error { return nil }))
+}
 
 // A regression must drain the blocked syscall before failing, not leave a
 // goroutine holding the product lock or hide the hang by starting a FIFO peer.
