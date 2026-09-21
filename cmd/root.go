@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	compositioncmd "github.com/codefly-dev/cli/cmd/composition"
 	configcmd "github.com/codefly-dev/cli/cmd/config"
 	"github.com/codefly-dev/cli/cmd/endpoint"
 	"github.com/codefly-dev/cli/cmd/environment"
@@ -274,6 +275,7 @@ func init() {
 
 	// Verify base-file integrity of composed modules
 	RootCmd.AddCommand(VerifyCmd)
+	RootCmd.AddCommand(compositioncmd.NewCommand())
 
 	// Audit + upgrade dependencies
 	RootCmd.AddCommand(AuditCmd)

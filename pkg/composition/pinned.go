@@ -546,6 +546,7 @@ func placeholderTagLock(packageID, repositoryURL, version, ref string) *corecomp
 type rawModuleTrust struct {
 	Repositories map[string]string            `yaml:"repositories"`
 	Signers      map[string]map[string]string `yaml:"signers"`
+	BuildSigners map[string]map[string]string `yaml:"build-signers"`
 }
 
 type rawWorkspaceModuleTrustProbe struct {
@@ -599,7 +600,18 @@ func LoadModuleTrust(workspaceDir string) (*corecomposition.TrustPolicy, map[str
 			signers[packageID][identity] = key
 		}
 	}
-	return &corecomposition.TrustPolicy{Repositories: repositories, Signers: signers}, overrides, nil
+	buildSigners := make(map[string]map[string]ed25519.PublicKey)
+	for packageID, declarations := range probe.ModuleTrust.BuildSigners {
+		buildSigners[packageID] = make(map[string]ed25519.PublicKey)
+		for identity, encoded := range declarations {
+			key, err := decodeTrustSignerKey(encoded)
+			if err != nil {
+				return nil, nil, fmt.Errorf("module-trust package %q build signer %q: %w", packageID, identity, err)
+			}
+			buildSigners[packageID][identity] = key
+		}
+	}
+	return &corecomposition.TrustPolicy{Repositories: repositories, Signers: signers, BuildSigners: buildSigners}, overrides, nil
 }
 
 func decodeTrustSignerKey(encoded string) (ed25519.PublicKey, error) {

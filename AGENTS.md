@@ -74,6 +74,7 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 - **All CLI commands, by category** → [docs/commands.md](docs/commands.md)
 - **Orchestration engine** → [docs/orchestration.md](docs/orchestration.md)
 - **Runnables** (what the CLI does with `runnable.codefly.yaml`, and what is deliberately not implemented yet) → [docs/runnable.md](docs/runnable.md)
+- **Product-owned selections** (Core resolution, local checkouts, evidence and execution blockers) → [docs/composition-selections.md](docs/composition-selections.md)
 - **Deployment completion stages** (rendered / applied / bootstrapped / healthy, bootstrap ordering, expand/contract schema rollout) → [docs/deployment-completion.md](docs/deployment-completion.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
 - **Supported CLI/core/agent combinations** (the conformance matrix, and why a required row cannot skip itself) → [docs/supported-matrix.md](docs/supported-matrix.md)

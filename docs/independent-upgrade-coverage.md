@@ -35,13 +35,21 @@ exact inputs, and inspect the actual deployment.
   skill now target affected repositories instead of recommending `--all` or
   requiring every ancestor to publish in a fixed chain.
 - Companion-only protobuf generation and checkout drift diagnostics from #751
-  and #733. Generation requires Core's `proto.FormatGoOutputs`, absent from the
-  currently selected v0.3.40; the combined branch cannot build until the reviewed
-  Core implementation is consumed. Drift diagnostics are advisory, not deployment
+  and #733. The consumed Core pseudo-version includes `proto.FormatGoOutputs`,
+  and the combined branch builds. Drift diagnostics are advisory, not deployment
   admission or proof of verified artifact provenance.
 - Removed the product-specific PostgreSQL IPC sweep from both `run` and `clear`,
   matching the Core removal. Generic owned-process/container cleanup remains;
   no named replacement hook or product-resource heuristic is added to the CLI.
+- Product-owned nested selections, independent local checkout records and dirty
+  content inspection, selective HTTPS acquisition, authenticated consumer
+  compatibility, exact-runtime-file admission inspection, owner-scoped adoption
+  facts and Core-proven override-removal proposals. See
+  [the command contract and limits](composition-selections.md).
+- Daemon monitoring uses Core's authenticated read-only group ownership API;
+  executable names are display-only, and errors do not imply orphanhood.
+- Dependabot may propose Core build-dependency updates. Runtime admission and
+  qualification remain required; there is no fleet-linked-Core pin policy.
 
 These are agent-admission guarantees, not proof of service behavior, retained
 data recovery, authorized production artifacts or approval of a composition.
@@ -49,19 +57,14 @@ An agent used to build an artifact is not necessarily present in production.
 
 ## What remains under #753
 
-1. **Product selections.** Integrate Core's instance-scoped replacement model
-   into the CLI. Preserve inherited module/base releases and record exact
-   selected artifacts without editing dependency source or requiring ancestor
-   tags. Existing service-agent updates do not meet this requirement.
-2. **Local development.** Expose one or multiple external checkouts through the
-   shared selection model, preserving release choices and checkout files.
-   Bind results to actual content, report dirty state, invalidate affected
-   results on edits/rebuilds, and restore releases explicitly. Existing local
-   overlays alone are not qualified evidence for this workflow.
-3. **Selective acquisition.** Consume Core's computed artifact requirements.
-   Missing required artifacts must fail, never trigger recursive source
-   checkout, submodules or a hidden aggregate source tree. Current pinned-module
-   materialization is not this nested acquisition planner.
+1. **Product execution.** Connect the implemented Core selections to typed
+   build/render inputs once Core provides the missing execution binding contract.
+   Product selection is available; executing that effective combination is not.
+2. **Local development execution.** Local records preserve release choices and
+   bind identity to actual bytes; driving builds/tests from those records remains
+   blocked by the same execution contract. Restoring releases is implemented.
+3. **Selective acquisition.** HTTPS requirements are acquired and authenticated.
+   OCI transport and execution of declared source-build requirements remain.
 4. **Inspection.** Project the shared effective record into human/structured
    output: inherited references, each selection/artifact difference, reasons,
    evidence and approved versus observed deployment. Keep private configuration
@@ -89,23 +92,20 @@ An agent used to build an artifact is not necessarily present in production.
 
 ## Concrete integration points and blockers
 
-The CLI still consumes released Core v0.3.40, not the in-progress #589 worktree.
-Core is being changed independently; its uncommitted files are not a CLI build
-dependency. A committed, reviewed integration point is needed for its shared
-selection/acquisition, authenticated usage, compatibility and deployment APIs.
+The CLI consumes pushed Core `v0.3.41-0.20260921003427-c72b2d6fcc22`, with
+`GOWORK=off` and no replacement. Uncommitted Core files are not a dependency.
+This is not the unpublished v0.3.41 tag and does not authorize a release.
 
-`pkg/composition/pinned.go:LoadModuleTrust` currently accepts a flat signer map.
-Core #589 requires package-scoped signer authority. The CLI loader, fixtures,
-trust-coverage checks and documented YAML must migrate together; no global-key
-fallback is acceptable. There is currently no CLI wiring for the new
-authenticated `ConsumerPins`/consumer-authority requirements or shared
-undetermined verdict presentation.
+`LoadModuleTrust` uses package-scoped release and build signers with no global-key
+fallback. Selection checks use authenticated consumer usage and Core's evaluator;
+UNDETERMINED is explicit and exits nonzero, not a demonstrated break or SAFE.
+Semantic source-supported comparison and real packaged consumer evidence remain
+qualification work, not something a matching protocol alone proves.
 
-The separate dependency-update policy in `.github/dependabot.yml` and
-`pkg/cliupdate/dependabot_contract_test.go` still reserves Core bumps for manual
-adoption and describes the old fleet ordering. Reconcile that policy with the
-conformance matrix and reviewed Core API migrations under #753; the targeted
-release-runbook correction is not a claim that this policy audit is complete.
+Core confirmed a missing typed selection-to-build/render input and output binding.
+No URI/name inference or arbitrary Solution values closes that gap. Explicit
+rejection guards prevent legacy execution entry points from ignoring selections;
+positive selection-bound deployment and observation remain incomplete.
 
 The deployment integration must cover at least these effect-owning boundaries,
 not only the top-level `deploy` command:
@@ -119,8 +119,9 @@ not only the top-level `deploy` command:
   evidence must be compared with the approved effective inputs, not just
   successful application or an artifact version.
 
-This inventory is an integration checklist, not a completed all-path admission
-audit. None of these routes currently calls Core's new `AdmitDeployment` API.
+This inventory is not a completed all-path admission audit. `composition
+check-deployment` calls Core admission for inspection; it does not authorize these
+legacy effects or imply that anything is running.
 
 Real solution-kind loading has an additional Core blocker: the loader dispatches
 all verified-artifact kinds to the provider artifact verifier, whose manifest
@@ -129,10 +130,10 @@ therefore qualifies the RPC boundary using a service-kind test executable, not
 the complete solution installation path. Core #589 must provide correct
 kind-owned artifact verification before actual solution qualification can pass.
 
-Daemon monitoring still classifies concrete process names. Core's public
-ownership API needs an authenticated read-only membership/owner result,
-including leaderless groups, so CLI does not duplicate private registry or
-reaper logic. PostgreSQL IPC cleanup is no longer a host migration prerequisite:
+Daemon monitoring now consumes `TrackedProcessGroup.InspectOwnership`, including
+Core's leaderless-member authentication and recorded-owner birth checks. The CLI
+does not duplicate registry/reaper authentication. PostgreSQL IPC cleanup is no
+longer a host migration prerequisite:
 the owner directed its removal from Core/CLI. The CLI no longer scavenges native
 PostgreSQL shared memory or semaphores; native retained-data/recovery behavior
 has not been requalified by removing those calls.

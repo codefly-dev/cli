@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -31,6 +32,9 @@ func renderModuleTree(
 	sink orchestration.OutputSink,
 	includeBootstrap bool,
 ) (RenderResult, error) {
+	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
+		return RenderResult{}, err
+	}
 	if err := workspace.ValidateEnvironments(ctx); err != nil {
 		return RenderResult{}, err
 	}
@@ -399,6 +403,9 @@ func renderServiceFlow(
 	record func(map[string]*builderv0.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
 ) (result error) {
+	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
+		return err
+	}
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
 	if err != nil {
 		return err

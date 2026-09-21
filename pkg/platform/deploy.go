@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/sdk"
@@ -18,6 +19,7 @@ import (
 type Deployment struct {
 	Service    *resources.Service
 	OutputPath string
+	ModuleRoot string
 }
 
 type DeploymentManager struct {
@@ -31,6 +33,9 @@ func NewDeploymentManager(ctx context.Context, workspace *resources.Workspace, e
 }
 
 func (d *DeploymentManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error {
+	if err := selectionguard.RejectUnboundExecution(d.workspace.Dir(), module.Dir()); err != nil {
+		return err
+	}
 	w := wool.Get(ctx).In("Builder")
 	switch v := deploy.Kind.(type) {
 	case *builderv0.DeploymentOutput_Kubernetes:
@@ -38,6 +43,7 @@ func (d *DeploymentManager) Handle(ctx context.Context, service *resources.Servi
 			d.deployments = append(d.deployments, Deployment{
 				Service:    service,
 				OutputPath: deployments.KustomizeDir(ctx, d.workspace, module, service),
+				ModuleRoot: module.Dir(),
 			})
 		}
 	default:
@@ -50,12 +56,20 @@ func (d *DeploymentManager) Handle(ctx context.Context, service *resources.Servi
 var _ deployments.Manager = &DeploymentManager{}
 
 func (d *DeploymentManager) Deploy(ctx context.Context, workspace *resources.Workspace) error {
+	for _, deploy := range d.deployments {
+		if err := selectionguard.RejectUnboundExecution(workspace.Dir(), deploy.ModuleRoot); err != nil {
+			return err
+		}
+	}
 	w := wool.Get(ctx).In("UpdateWorkspace")
 	w.Info("deploying workspace", wool.Field("workspace", workspace))
 	url := fmt.Sprintf("%s/deploy", GetClient().URL("platform/workspace"))
 	c := http.Client{Timeout: 5 * time.Second}
 
 	for _, deploy := range d.deployments {
+		if err := selectionguard.RejectUnboundExecution(workspace.Dir(), deploy.ModuleRoot); err != nil {
+			return err
+		}
 		proto, err := sdk.SerializeDirectory(deploy.OutputPath, []string{".yaml"})
 		if err != nil {
 			return w.Wrapf(err, "cannot serialize workspace")

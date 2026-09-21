@@ -15,6 +15,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/dockerstart"
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -1013,6 +1014,9 @@ func (flow *Flow) Sync(ctx context.Context) error {
 }
 
 func (flow *Flow) Deploy(ctx context.Context) error {
+	if err := selectionguard.RejectUnboundExecution(flow.workspace.Dir(), flow.originModule.Dir()); err != nil {
+		return err
+	}
 	w := wool.Get(ctx).In("flow.Deploy")
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {

@@ -176,22 +176,17 @@ func TestVersionUpdatesUseOneCatchAllGroup(t *testing.T) {
 	}
 }
 
-// The core pin is the CLI's half of a cross-repo release contract:
-// docs/runbooks/release-the-fleet.md re-pins it as an ordered step (core tagged
-// -> cli -> agents -> composed modules) and pkg/conformance/matrix.json records
-// the release line beside it. Letting Dependabot bump it either reds the whole
-// gomod pull request against TestMatrixCoreMatchesGoMod or, within a line, goes
-// green while moving the CLI off the core the fleet was published against.
-func TestGomodUpdatesLeaveTheCorePinToTheFleetRunbook(t *testing.T) {
+// Core is a build dependency, not a fleet compatibility pin. CI still has to
+// qualify an update; an unchanged runtime protocol does not require agent tags.
+func TestGomodUpdatesIncludeCore(t *testing.T) {
 	gomod := dependabotEntry(t, readDependabotConfig(t), "gomod")
 
 	const core = "github.com/codefly-dev/core"
 	for _, ignore := range gomod.Ignore {
 		if ignore.DependencyName == core {
-			return
+			t.Fatalf("gomod updates exclude %s; runtime admission, not fleet pinning, owns agent compatibility", core)
 		}
 	}
-	t.Fatalf("gomod updates do not ignore %s; docs/runbooks/release-the-fleet.md owns that pin, not Dependabot", core)
 }
 
 // Every declared directory must actually hold a manifest the ecosystem can

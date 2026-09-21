@@ -137,6 +137,9 @@ func preparePublish(
 	if err := validatePublishRequest(workspace, request); err != nil {
 		return nil, err
 	}
+	if err := rejectUnboundPublication(ctx, workspace, request.Module); err != nil {
+		return nil, err
+	}
 	config, repositorySlug, baseBranch, pathRoot, err := resolveGitops(workspace, request.Environment, request.Local)
 	if err != nil {
 		return nil, err
@@ -1212,6 +1215,9 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 		return nil, "", fmt.Errorf("rollback target must be an exact Git object ID")
 	}
 	if err := validatePublishRequest(workspace, &request.PublishRequest); err != nil {
+		return nil, "", err
+	}
+	if err := rejectUnboundPublication(ctx, workspace, request.Module); err != nil {
 		return nil, "", err
 	}
 	if err := requireReviewedRevision(workspace.Dir(), request.Module, request.Environment, request.ToRevision); err != nil {

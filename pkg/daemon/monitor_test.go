@@ -2,46 +2,63 @@ package daemon
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/core/runners/base"
+	"github.com/stretchr/testify/require"
 )
 
-func TestProcessClassificationUsesExactExecutableNames(t *testing.T) {
-	tests := []struct {
-		name    string
-		command string
-		related bool
-		extract string
-	}{
-		{
-			name:    "agent executable",
-			command: "/tmp/codefly/agents/go-grpc --port 1234",
-			related: true,
-			extract: "go-grpc",
-		},
-		{
-			name:    "compiler source path is not an agent",
-			command: "go build ./plugins/go-grpc/cmd/go-grpc",
-			related: false,
-			extract: "go",
-		},
-		{
-			name:    "unrelated substring is not an agent",
-			command: "/usr/bin/python test-go-grpc-worker.py",
-			related: false,
-			extract: "python",
-		},
+func TestMonitorRequiresAuthenticatedMembershipNotExecutableName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	command := exec.Command("sleep", "60")
+	group, err := base.StartTrackedProcessGroup(command)
+	require.NoError(t, err)
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		require.NoError(t, group.Terminate(ctx))
+		select {
+		case <-waited:
+		case <-ctx.Done():
+			t.Error("managed process did not exit")
+		}
+		require.NoError(t, group.RemoveIfDead())
+	})
+	processes, err := checkProcesses(t.Context())
+	require.NoError(t, err)
+	found := false
+	for _, process := range processes {
+		require.NotEqual(t, os.Getpid(), process.PID, "unregistered caller is not managed by its executable name")
+		if process.PID == command.Process.Pid {
+			found = true
+			require.True(t, process.OwnerAlive)
+			require.Equal(t, group.PGID(), process.PGID)
+		}
 	}
+	require.True(t, found, "a registered arbitrary executable must be monitored")
+	result, err := monitor(t.Context(), MonitorConfig{CPUThreshold: 10000, MemoryMB: 10000, MaxOrphans: 0})
+	require.NoError(t, err)
+	require.Empty(t, result.Warnings, "live owned processes are not orphaned agents")
+	require.Empty(t, result.Killed)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = checkProcesses(ctx)
+	require.Error(t, err, "cancellation cannot report a successful empty observation")
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isCodeflyRelatedProcess(tt.command); got != tt.related {
-				t.Fatalf("isCodeflyRelatedProcess(%q) = %v, want %v", tt.command, got, tt.related)
-			}
-			if got := extractProcessName(tt.command); got != tt.extract {
-				t.Fatalf("extractProcessName(%q) = %q, want %q", tt.command, got, tt.extract)
-			}
-		})
+func TestParseMonitorProcessColumns(t *testing.T) {
+	info := parsePSLine("123 120 1.2 2048 /some path/new-tool")
+	require.NotNil(t, info)
+	require.Equal(t, 123, info.PID)
+	require.Equal(t, 120, info.PGID)
+	require.Equal(t, "new-tool", info.Name)
+	for _, invalid := range []string{"", "pid pgid cpu rss name", "1 0 0 2 executable", "1 2 0 bad executable"} {
+		require.Nil(t, parsePSLine(invalid))
 	}
 }
 

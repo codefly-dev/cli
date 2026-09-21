@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
+
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	coreservices "github.com/codefly-dev/core/agents/services"
@@ -54,6 +56,9 @@ type SolutionRenderRequest struct {
 // manifests into the owned gitops tree, driving the codefly:solution executor
 // through the same promotable render pipeline services and modules use.
 func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResult, error) {
+	if err := selectionguard.RejectUnboundExecution(req.Workspace.Dir(), req.Source); err != nil {
+		return RenderResult{}, err
+	}
 	if err := req.Workspace.ValidateEnvironments(ctx); err != nil {
 		return RenderResult{}, err
 	}

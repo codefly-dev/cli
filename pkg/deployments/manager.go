@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -233,6 +234,9 @@ func (l *LocalApplyManager) observe(
 }
 
 func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error {
+	if err := selectionguard.RejectUnboundExecution(l.Workspace.Dir(), module.Dir()); err != nil {
+		return err
+	}
 	w := wool.Get(ctx).In("Builder")
 	switch v := deploy.Kind.(type) {
 	case *builderv0.DeploymentOutput_Kubernetes:
@@ -344,6 +348,9 @@ func (l *LocalApplyManager) applyTree(ctx context.Context, module, service, tree
 }
 
 func (l *LocalApplyManager) ApplyModuleKustomize(ctx context.Context, module *resources.Module, dir string) error {
+	if err := selectionguard.RejectUnboundExecution(l.Workspace.Dir(), module.Dir()); err != nil {
+		return err
+	}
 	if err := VerifyLocalK3dTargetUnchanged(ctx, l.Env, &l.target); err != nil {
 		return err
 	}
