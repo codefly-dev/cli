@@ -53,12 +53,12 @@ entries are preserved, comments included. Read from stdin with
 		ctx, done := common.NewContext()
 		defer done()
 
-		contractPath, err := contractFlag(cmd)
+		contractPath, contractFlagName, err := contractFlag(cmd)
 		if err != nil {
 			return err
 		}
 		if contractPath == "" {
-			return fmt.Errorf("--coordinate-contract is required")
+			return fmt.Errorf("--%s is required", contractFlagName)
 		}
 		data, err := readContract(cmd.InOrStdin(), contractPath)
 		if err != nil {
@@ -97,14 +97,18 @@ entries are preserved, comments included. Read from stdin with
 
 // contractFlag returns the descriptor location from --coordinate-contract, or
 // from the superseded --cell-contract spelling still accepted for one release.
-func contractFlag(cmd *cobra.Command) (string, error) {
+// It also reports which spelling it read, so a caller rejecting an empty value
+// names the flag the operator actually passed.
+func contractFlag(cmd *cobra.Command) (path string, flag string, err error) {
 	if cmd.Flags().Changed("cell-contract") {
 		if cmd.Flags().Changed("coordinate-contract") {
-			return "", fmt.Errorf("--cell-contract is the former spelling of --coordinate-contract; pass only one")
+			return "", "", fmt.Errorf("--cell-contract is the former spelling of --coordinate-contract; pass only one")
 		}
-		return cmd.Flags().GetString("cell-contract")
+		path, err = cmd.Flags().GetString("cell-contract")
+		return path, "cell-contract", err
 	}
-	return cmd.Flags().GetString("coordinate-contract")
+	path, err = cmd.Flags().GetString("coordinate-contract")
+	return path, "coordinate-contract", err
 }
 
 // labelled renders an optional identifier as a leading-space suffix. The
@@ -138,9 +142,9 @@ type importOptions struct {
 	stdout       io.Writer
 }
 
-// runImport parses the coordinate contract, merges its owned fields into the
-// named environment of workspace.codefly.yaml, and either writes the file or,
-// under --dry-run, prints its unified diff and writes nothing.
+// runImport parses the contract, merges its owned fields into the named
+// environment of workspace.codefly.yaml, and either writes the file or, under
+// --dry-run, prints its unified diff and writes nothing.
 //
 // The merge preserves the rest of the document byte-for-byte: it re-serializes
 // only the one environment item being imported and splices it back into the

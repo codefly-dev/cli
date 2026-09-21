@@ -67,7 +67,10 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 			clone.Ingress[i].Hosts = append([]string(nil), env.Ingress[i].Hosts...)
 		}
 	}
-	if len(env.ManagedServices) > 0 {
+	// Maps here are guarded on nil, not length: an explicitly empty map (a
+	// workspace declaring "managed-services: {}" decodes to one) is still a
+	// shared header, and the first flow to add an entry contaminates the other.
+	if env.ManagedServices != nil {
 		clone.ManagedServices = make(map[string]resources.EnvironmentManagedService, len(env.ManagedServices))
 		for name, managed := range env.ManagedServices {
 			managed.EgressCIDRs = append([]string(nil), managed.EgressCIDRs...)
@@ -83,14 +86,14 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 	}
 	if env.ServiceSecrets != nil {
 		serviceSecrets := *env.ServiceSecrets
-		if len(env.ServiceSecrets.Services) > 0 {
+		if env.ServiceSecrets.Services != nil {
 			serviceSecrets.Services = make(map[string]resources.EnvironmentServiceSecretMapping, len(env.ServiceSecrets.Services))
 			for name, mapping := range env.ServiceSecrets.Services {
 				if mapping.SecretStore != nil {
 					secretStore := *mapping.SecretStore
 					mapping.SecretStore = &secretStore
 				}
-				if len(mapping.RemoteKeys) > 0 {
+				if mapping.RemoteKeys != nil {
 					remoteKeys := make(map[string]resources.EnvironmentSecretRemoteRef, len(mapping.RemoteKeys))
 					for key, remote := range mapping.RemoteKeys {
 						remoteKeys[key] = remote
@@ -108,8 +111,6 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 	}
 	if env.ServiceConfig != nil {
 		serviceConfig := *env.ServiceConfig
-		// Guarded on nil, not length: an explicitly empty map is still a shared
-		// header, and the first flow to add a service would contaminate the other.
 		if env.ServiceConfig.Services != nil {
 			serviceConfig.Services = make(map[string]resources.EnvironmentServiceConfigMapping, len(env.ServiceConfig.Services))
 			for name, mapping := range env.ServiceConfig.Services {

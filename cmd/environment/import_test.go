@@ -375,14 +375,18 @@ func TestImportAcceptsFormerContractFlagSpelling(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct {
-		args    []string
-		want    string
-		wantErr bool
+		args     []string
+		want     string
+		wantFlag string
+		wantErr  bool
 	}{
-		"current":         {args: []string{"--coordinate-contract", "c.json"}, want: "c.json"},
-		"former spelling": {args: []string{"--cell-contract", "c.json"}, want: "c.json"},
-		"neither":         {args: nil, want: ""},
-		"both":            {args: []string{"--coordinate-contract", "a.json", "--cell-contract", "b.json"}, wantErr: true},
+		"current":         {args: []string{"--coordinate-contract", "c.json"}, want: "c.json", wantFlag: "coordinate-contract"},
+		"former spelling": {args: []string{"--cell-contract", "c.json"}, want: "c.json", wantFlag: "cell-contract"},
+		"neither":         {args: nil, want: "", wantFlag: "coordinate-contract"},
+		// An explicitly empty former spelling must not be reported against the
+		// flag the operator did not pass.
+		"empty former spelling": {args: []string{"--cell-contract", ""}, want: "", wantFlag: "cell-contract"},
+		"both":                  {args: []string{"--coordinate-contract", "a.json", "--cell-contract", "b.json"}, wantErr: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cmd := &cobra.Command{}
@@ -391,7 +395,7 @@ func TestImportAcceptsFormerContractFlagSpelling(t *testing.T) {
 			if err := cmd.Flags().Parse(tc.args); err != nil {
 				t.Fatal(err)
 			}
-			got, err := contractFlag(cmd)
+			got, flag, err := contractFlag(cmd)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("passing both spellings accepted")
@@ -402,7 +406,10 @@ func TestImportAcceptsFormerContractFlagSpelling(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got != tc.want {
-				t.Fatalf("contractFlag = %q, want %q", got, tc.want)
+				t.Fatalf("contractFlag path = %q, want %q", got, tc.want)
+			}
+			if flag != tc.wantFlag {
+				t.Fatalf("contractFlag reported --%s, want --%s", flag, tc.wantFlag)
 			}
 		})
 	}

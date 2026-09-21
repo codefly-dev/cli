@@ -190,32 +190,104 @@ func TestSelectEnvironmentConcurrentOverridesDoNotContaminate(t *testing.T) {
 	require.Equal(t, "acme-dev", declared.Secrets[0].Account)
 }
 
-// cloneEnvironment is correct by enumeration, not by construction: it must
-// name every non-value field of resources.Environment. This canary fails the
-// moment core grows the struct with a field the clone would silently share,
-// which would quietly reintroduce cross-flow contamination.
+// cloneEnvironment is correct by enumeration, not by construction: every place a
+// resources.Environment holds a pointer, map or slice is a place the clone must
+// copy rather than share. This canary walks the whole type graph, so a field
+// added to a nested type trips it too — keyed on top-level names alone it passed
+// while EnvironmentServiceConfigMapping went entirely unexamined.
 func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 	deepCopied := map[string]bool{
-		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
-		"ManagedServices": true, "ServiceSecrets": true, "Secrets": true,
-		"ResourceQuota": true, "Dns": true, "ServiceConfig": true,
+		".Cluster":   true,
+		".Registry":  true,
+		".Gitops":    true,
+		".Dns":       true,
+		".Secrets":   true,
+		".Secrets[]": true,
+
+		".Ingress":         true,
+		".Ingress[].Hosts": true,
+
+		".ManagedServices":                        true,
+		".ManagedServices[].EgressCIDRs":          true,
+		".ManagedServices[].SecretReferences":     true,
+		".ManagedServices[].Identity":             true,
+		".ManagedServices[].Identity.Annotations": true,
+		".ManagedServices[].Identity.Labels":      true,
+
+		".ServiceSecrets":                        true,
+		".ServiceSecrets.Services":               true,
+		".ServiceSecrets.Services[].SecretStore": true,
+		".ServiceSecrets.Services[].RemoteKeys":  true,
+		".ServiceSecrets.Services[].Defaults":    true,
+
+		".ServiceConfig":                   true,
+		".ServiceConfig.Services":          true,
+		".ServiceConfig.Services[].Values": true,
+
+		".ResourceQuota":                           true,
+		".ResourceQuota.Requests":                  true,
+		".ResourceQuota.Limits":                    true,
+		".ResourceQuota.DefaultContainer":          true,
+		".ResourceQuota.DefaultContainer.Requests": true,
+		".ResourceQuota.DefaultContainer.Limits":   true,
 	}
-	typ := reflect.TypeOf(resources.Environment{})
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		if deepCopied[field.Name] {
-			continue
-		}
-		switch field.Type.Kind() {
-		case reflect.Bool, reflect.String,
-			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-			reflect.Float32, reflect.Float64:
-			// Value kinds are copied by the struct assignment.
-		default:
-			t.Errorf("resources.Environment.%s (%s) is shared, not copied, by cloneEnvironment — extend the clone before concurrent flows can contaminate each other", field.Name, field.Type)
+
+	found := referencePaths(reflect.TypeOf(resources.Environment{}))
+	for _, path := range found {
+		if !deepCopied[path] {
+			t.Errorf("resources.Environment%s is shared, not copied, by cloneEnvironment — extend the clone before concurrent flows can contaminate each other", path)
 		}
 	}
+
+	// A path core has dropped must not linger here, or the list stops describing
+	// the clone and the next real gap hides behind a stale entry.
+	present := make(map[string]bool, len(found))
+	for _, path := range found {
+		present[path] = true
+	}
+	for path := range deepCopied {
+		if !present[path] {
+			t.Errorf("deepCopied lists resources.Environment%s, which no longer exists — drop it", path)
+		}
+	}
+}
+
+// referencePaths returns every path within t that reaches a pointer, map or
+// slice: the locations a struct assignment copies by reference. A pointer is
+// transparent in the path, a map or slice element is spelled "[]".
+func referencePaths(t reflect.Type) []string {
+	var paths []string
+	onPath := map[reflect.Type]bool{}
+
+	var walk func(reflect.Type, string)
+	walk = func(typ reflect.Type, prefix string) {
+		switch typ.Kind() {
+		case reflect.Ptr:
+			paths = append(paths, prefix)
+			descend(typ.Elem(), prefix, onPath, walk)
+		case reflect.Map, reflect.Slice:
+			paths = append(paths, prefix)
+			descend(typ.Elem(), prefix+"[]", onPath, walk)
+		case reflect.Struct:
+			for i := 0; i < typ.NumField(); i++ {
+				field := typ.Field(i)
+				walk(field.Type, prefix+"."+field.Name)
+			}
+		}
+	}
+	walk(t, "")
+	return paths
+}
+
+// descend recurses into an element type, refusing to re-enter a type already on
+// the current path so a self-referential contract cannot spin forever.
+func descend(elem reflect.Type, prefix string, onPath map[reflect.Type]bool, walk func(reflect.Type, string)) {
+	if onPath[elem] {
+		return
+	}
+	onPath[elem] = true
+	defer delete(onPath, elem)
+	walk(elem, prefix)
 }
 
 func TestCloneEnvironmentIsolatesServiceConfig(t *testing.T) {
@@ -249,6 +321,43 @@ func TestCloneEnvironmentIsolatesAnEmptyServiceConfig(t *testing.T) {
 
 	clone.ServiceConfig.Services["api"] = resources.EnvironmentServiceConfigMapping{}
 	require.NotContains(t, original.ServiceConfig.Services, "api")
+}
+
+// An empty map decoded from a workspace ("managed-services: {}") is non-nil, so
+// the clone shares its header until it is copied.
+func TestCloneEnvironmentIsolatesEmptyMaps(t *testing.T) {
+	original := &resources.Environment{
+		Name:            "azure",
+		ManagedServices: map[string]resources.EnvironmentManagedService{},
+		ServiceSecrets: &resources.EnvironmentServiceSecrets{
+			Services: map[string]resources.EnvironmentServiceSecretMapping{},
+		},
+	}
+	clone := cloneEnvironment(original)
+
+	clone.ManagedServices["store"] = resources.EnvironmentManagedService{}
+	clone.ServiceSecrets.Services["api"] = resources.EnvironmentServiceSecretMapping{}
+
+	require.NotContains(t, original.ManagedServices, "store")
+	require.NotContains(t, original.ServiceSecrets.Services, "api")
+}
+
+// RemoteKeys hangs off a per-service mapping copied by value, so its map aliases
+// the original's until it too is copied.
+func TestCloneEnvironmentIsolatesEmptyRemoteKeys(t *testing.T) {
+	original := &resources.Environment{
+		Name: "azure",
+		ServiceSecrets: &resources.EnvironmentServiceSecrets{
+			Services: map[string]resources.EnvironmentServiceSecretMapping{
+				"api": {RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{}},
+			},
+		},
+	}
+	clone := cloneEnvironment(original)
+
+	clone.ServiceSecrets.Services["api"].RemoteKeys["token"] = resources.EnvironmentSecretRemoteRef{}
+
+	require.NotContains(t, original.ServiceSecrets.Services["api"].RemoteKeys, "token")
 }
 
 // A nil services map must stay nil, so the environment re-serializes without an
