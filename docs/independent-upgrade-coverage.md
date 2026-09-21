@@ -5,7 +5,9 @@ and its agent-admission work in [CLI #752](https://github.com/codefly-dev/cli/pu
 coordinated with [Core #589](https://github.com/codefly-dev/core/pull/589).
 It is not a claim that the complete product workflow is available.
 At the owner's subsequent direction, generation #751 and checkout diagnostics
-#733 are consolidated into #752 with their original commits. #753 remains the
+#733 and managed-identity #756 are consolidated into #752 with their original
+commits. Issues #754, #755 and #757 are transferred to #753 and closed as
+superseded, not completed. #753 remains the
 single tracker. Consolidating branches does not authorize merging to main,
 releasing or rebuilding the fleet.
 
@@ -50,6 +52,25 @@ exact inputs, and inspect the actual deployment.
   executable names are display-only, and errors do not imply orphanhood.
 - Dependabot may propose Core build-dependency updates. Runtime admission and
   qualification remain required; there is no fleet-linked-Core pin policy.
+- Generic managed-service identity projection from #756 uses Core's atomic
+  workload projection at module and service rendering boundaries. Conflicting
+  identities fail before publication; build-only and non-consuming services
+  remain unchanged. Endpoint/port and secret references retain their existing
+  explicit configuration owners; the CLI does not rewrite endpoint addresses.
+
+The #756 merge preserves the newer Core contract, not its superseded cell/v1
+implementation. Core deliberately removed proxy transport/image/args, inferred
+loopback routing and audit sinks in ac8b363f/186d2403. Import tests reject those
+unsupported declarations without changing workspace files; existing endpoint,
+secret-reference, identity and deep-copy regressions remain. The retained cell/v2
+wrapper is under owner review, not an approved final primitive contract.
+
+The incoming namespace-wide NetworkPolicy is not retained: with no existing
+egress policy, its empty pod selector would isolate every pod while allowing only
+the endpoint CIDR/port, blocking DNS and unrelated destinations. Egress CIDRs
+remain explicit configuration facts. Safe policy generation and real-cluster
+qualification remain tracked in #753; this merge does not claim that policy
+generation is implemented or that imported CIDRs alone enforce isolation.
 
 These are agent-admission guarantees, not proof of service behavior, retained
 data recovery, authorized production artifacts or approval of a composition.

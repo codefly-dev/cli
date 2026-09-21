@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -189,6 +190,30 @@ func TestImportPreservesOperatorFields(t *testing.T) {
 	}
 	if env.Cluster.Context != "hosted-eastus2" {
 		t.Errorf("cluster context = %q, want updated", env.Cluster.Context)
+	}
+}
+
+func TestImportRejectsRemovedContractsWithoutWriting(t *testing.T) {
+	for name, contract := range map[string]string{
+		"legacy inventory":   `{"schema":"codefly/cell/v1","databases":[{"engine":"postgres"}]}`,
+		"transport":          strings.Replace(fixtureContract, `"port": 5432,`, `"port": 5432,"transport":{"mode":"proxy"},`, 1),
+		"audit sinks":        strings.Replace(fixtureContract, `"name": "azure",`, `"name": "azure","audit-sinks":[{"name":"audit"}],`, 1),
+		"unknown capability": strings.Replace(fixtureContract, `"cell": "hosted-eastus2",`, `"cell": "hosted-eastus2","requires_capabilities":["managed-identity-transport"],`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeWorkspace(t, existingAzureWorkspace)
+			path := filepath.Join(dir, resources.WorkspaceConfigurationName)
+			before := readFile(t, path)
+			err := runImport(t.Context(), &importOptions{
+				dir: dir, envName: "azure", contractData: []byte(contract), stdout: io.Discard,
+			})
+			if err == nil {
+				t.Fatal("removed or unsupported contract accepted")
+			}
+			if after := readFile(t, path); after != before {
+				t.Fatal("rejected import modified the workspace")
+			}
+		})
 	}
 }
 
