@@ -83,6 +83,9 @@ exact inputs, and inspect the actual deployment.
   post-link cancellation/cleanup-denial tests assert uncertain consumption is
   never refunded. Snapshots are ephemeral, not crash-resumable deployments; no
   production effect caller or guard relaxation is delivered by this increment.
+  Shared runtime admission and both copy paths use nonblocking descriptor-validated
+  opens; real FIFO and post-admission replacement tests cover cancellation, lock
+  release, no consumption and partial-snapshot cleanup.
 - Daemon monitoring uses Core's authenticated read-only group ownership API;
   executable names are display-only, and errors do not imply orphanhood.
 - Dependabot may propose Core build-dependency updates. Runtime admission and

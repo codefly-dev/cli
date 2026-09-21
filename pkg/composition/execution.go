@@ -44,7 +44,7 @@ func (session *SelectionSession) PrepareRender(ctx context.Context, files *Deplo
 }
 
 func (session *SelectionSession) prepareRender(ctx context.Context, resolved *core.ResolvedComposition, files *DeploymentFiles) ([]*core.PreparedArtifactExecution, error) {
-	inputs, closeFiles, err := openDeploymentInputs(files)
+	inputs, closeFiles, err := openDeploymentInputs(ctx, files)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func (session *SelectionSession) prepareRender(ctx context.Context, resolved *co
 
 func (session *SelectionSession) verifiedDeploymentInputs(ctx context.Context, resolved *core.ResolvedComposition, files *DeploymentFiles) (core.DeploymentInputs, func(), error) {
 	if files == nil || len(files.Executions) == 0 {
-		return openDeploymentInputs(files)
+		return openDeploymentInputs(ctx, files)
 	}
 	prepared, err := session.prepareRender(ctx, resolved, files)
 	if err != nil {
@@ -98,7 +98,7 @@ func (session *SelectionSession) verifiedDeploymentInputs(ctx context.Context, r
 	}
 	// Preparation consumed the first streams. Admission must read fresh handles,
 	// so changes between preparation and admission cannot reuse stale hashes.
-	inputs, closeFiles, err := openDeploymentInputs(files)
+	inputs, closeFiles, err := openDeploymentInputs(ctx, files)
 	if err != nil {
 		return core.DeploymentInputs{}, nil, err
 	}

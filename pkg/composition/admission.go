@@ -49,7 +49,7 @@ func (session *SelectionSession) CheckInputs(ctx context.Context, files *Deploym
 	return record, err
 }
 
-func openDeploymentInputs(files *DeploymentFiles) (core.DeploymentInputs, func(), error) {
+func openDeploymentInputs(ctx context.Context, files *DeploymentFiles) (core.DeploymentInputs, func(), error) {
 	if files == nil {
 		return core.DeploymentInputs{}, nil, errors.New("deployment inputs are required")
 	}
@@ -61,21 +61,12 @@ func openDeploymentInputs(files *DeploymentFiles) (core.DeploymentInputs, func()
 		}
 	}
 	for _, input := range files.Runtime {
-		file, err := os.Open(input.Path)
+		file, err := openInputFile(ctx, nil, input.Path)
 		if err != nil {
 			closeFiles()
 			return inputs, nil, err
 		}
 		opened = append(opened, file)
-		info, err := file.Stat()
-		if err != nil {
-			closeFiles()
-			return inputs, nil, err
-		}
-		if !info.Mode().IsRegular() || info.Size() > maxSelectionArtifactBytes {
-			closeFiles()
-			return inputs, nil, errors.New("runtime input must be a regular file within the artifact size limit")
-		}
 		inputs.Runtime = append(inputs.Runtime, core.RuntimeInput{Target: input.Target, Name: input.Name, Content: io.LimitReader(file, maxSelectionArtifactBytes+1)})
 	}
 	return inputs, closeFiles, nil

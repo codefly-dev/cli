@@ -1,0 +1,153 @@
+//go:build unix
+
+package composition
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
+)
+
+// A regression must drain the blocked syscall before failing, not leave a
+// goroutine holding the product lock or hide the hang by starting a FIFO peer.
+func rejectFIFOWithoutWaiting(t *testing.T, path string, run func(context.Context) error) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- run(ctx) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(300 * time.Millisecond):
+	}
+	peer, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK, 0)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, peer.Close()) }()
+	select {
+	case err = <-done:
+		t.Fatalf("input open outlived cancellation and required a FIFO peer: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("FIFO peer did not release input open")
+	}
+	return nil
+}
+
+func TestApprovedInputsRejectFIFOAndReleaseSelectionLock(t *testing.T) {
+	session, files, approval, checked, _ := approvalUseFixture(t)
+	path := filepath.Join(t.TempDir(), "runtime-fifo")
+	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	files.Runtime[0].Path = path
+	err := rejectFIFOWithoutWaiting(t, path, func(ctx context.Context) error {
+		prepared, prepareErr := session.PrepareApprovedInputs(ctx, files, approval, checked.AuthorityDigest, time.Now())
+		if prepared != nil {
+			_ = prepared.Close()
+		}
+		return prepareErr
+	})
+	require.ErrorContains(t, err, "regular file")
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, session.locked(ctx, func() error { return nil }))
+	_, err = session.InspectApprovalUse(ctx, checked.UseIdentity)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	directory, _, err := session.approvalStorageDirectory("composition-approved-inputs")
+	require.NoError(t, err)
+	entries, err := os.ReadDir(directory)
+	if !os.IsNotExist(err) {
+		require.NoError(t, err)
+		require.Empty(t, entries)
+	}
+}
+
+func TestApprovedInputsRejectFIFOReplacementAfterAdmissionAndCleanCopies(t *testing.T) {
+	session, files, approval, checked, now := approvalUseFixture(t)
+	retained, err := session.PrepareApprovedInputs(t.Context(), files, approval, checked.AuthorityDigest, now)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, retained.Close()) })
+	for _, path := range []string{files.Runtime[0].Path,
+		filepath.Join(files.Executions[0].Directory, approval.Admission.Record.Executions[0].Outputs[0].Path)} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			// Reproduce a replacement after authenticating the actual source bytes
+			// but before the construction/copy phase used by PrepareApprovedInputs.
+			_, checkErr := session.CheckApproval(t.Context(), files, approval, time.Now())
+			require.NoError(t, checkErr)
+			before, readErr := os.ReadFile(path)
+			require.NoError(t, readErr)
+			require.NoError(t, os.Remove(path))
+			require.NoError(t, syscall.Mkfifo(path, 0o600))
+			t.Cleanup(func() {
+				require.NoError(t, os.Remove(path))
+				require.NoError(t, os.WriteFile(path, before, 0o600))
+			})
+			err = rejectFIFOWithoutWaiting(t, path, func(ctx context.Context) error {
+				return session.locked(ctx, func() error {
+					prepared, prepareErr := session.newApprovedInputs(ctx, files, approval, checked.AuthorityDigest, &approval.Admission.Record)
+					if prepared != nil {
+						_ = prepared.Close()
+					}
+					return prepareErr
+				})
+			})
+			require.ErrorContains(t, err, "regular file")
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+			defer cancel()
+			require.NoError(t, session.locked(ctx, func() error { return nil }))
+			_, inspectErr := session.InspectApprovalUse(ctx, checked.UseIdentity)
+			require.ErrorIs(t, inspectErr, os.ErrNotExist)
+			entries, readErr := os.ReadDir(retained.parent.Name())
+			require.NoError(t, readErr)
+			require.Len(t, entries, 1, "failed construction must remove its partial runtime/render copies only")
+			require.Equal(t, retained.name, entries[0].Name())
+		})
+	}
+	_, err = retained.Reserve(t.Context(), time.Now())
+	require.NoError(t, err, "failed copying must not spend approval or damage the retained snapshot")
+}
+
+func TestInputOpenValidatesNonblockingDescriptorAndRetainsContainment(t *testing.T) {
+	directory, err := os.OpenRoot(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, directory.Close()) })
+	require.NoError(t, directory.WriteFile("regular", []byte("approved"), 0o600))
+	for _, root := range []*os.Root{nil, directory} {
+		path := "regular"
+		if root == nil {
+			path = filepath.Join(directory.Name(), path)
+		}
+		file, openErr := openInputFile(t.Context(), root, path)
+		require.NoError(t, openErr)
+		raw, rawErr := file.SyscallConn()
+		require.NoError(t, rawErr)
+		var flags int
+		var flagErr error
+		require.NoError(t, raw.Control(func(fd uintptr) { flags, flagErr = unix.FcntlInt(fd, unix.F_GETFL, 0) }))
+		require.NoError(t, flagErr)
+		require.NotZero(t, flags&unix.O_NONBLOCK, "both absolute and root-relative opens must be nonblocking")
+		require.NoError(t, file.Close())
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		file, openErr = openInputFile(ctx, root, path)
+		require.ErrorIs(t, openErr, context.Canceled)
+		require.Nil(t, file)
+	}
+	external := filepath.Join(t.TempDir(), "external")
+	require.NoError(t, os.WriteFile(external, []byte("not selected"), 0o600))
+	require.NoError(t, directory.Symlink(external, "escape"))
+	for _, path := range []string{"escape", "../external", "."} {
+		file, openErr := openInputFile(t.Context(), directory, path)
+		require.Error(t, openErr)
+		require.Nil(t, file)
+	}
+}

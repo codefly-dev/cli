@@ -216,6 +216,11 @@ then re-admits those copies through Core. Equal authenticated runtime digests ca
 share a copy without losing their instance/name identities. Caller-owned receipts,
 qualifications and approval records are defensively copied. Private-directory
 permissions and macOS allow ACLs are checked before copying any bytes.
+Runtime admission and runtime/render copying open inputs nonblocking on supported
+Unix platforms, then validate the opened descriptor as a bounded regular file.
+A FIFO input or a file replaced by a FIFO after admission cannot wait for a peer
+while retaining the product lock. Render copying keeps root-relative containment;
+failed snapshot construction removes its partial copies without consuming approval.
 
 The returned `ApprovedInputs` opens only named approved inputs as read-only
 handles. Its `Reserve` method freshly checks the private copies, current selection,
@@ -295,6 +300,11 @@ not published production executor qualification.
 Core `3264a63d712e` supplies execution binding, the acquired-executable loader and
 checked registered-group shutdown. These are consumed by selected-executor
 staging. Qualified multi-instance deployment remains **blocked**.
+An additional Core-owned verifier defect is reproduced against that version:
+replacing a render output with a FIFO between its path stat and blocking open
+can stall verification past cancellation. The CLI's nonblocking runtime/copy
+opens do not fix Core's separate verifier. The reproduction is handed to Core
+#589; no local dependency replacement or verification bypass is used.
 An explicit rejection stopgap guards local apply/image-import entry points,
 Flow deployment, platform sends, GitOps render/publication and rollback when a
 participating product declares nested selections. This is not completed positive

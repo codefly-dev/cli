@@ -55,7 +55,7 @@ func (session *SelectionSession) PrepareApprovedInputs(ctx context.Context, file
 		if err != nil {
 			return err
 		}
-		prepared, err = session.newApprovedInputs(files, approval, authority.digest)
+		prepared, err = session.newApprovedInputs(ctx, files, approval, authority.digest, &checked.Current.Record)
 		if err != nil {
 			return err
 		}
@@ -64,9 +64,6 @@ func (session *SelectionSession) PrepareApprovedInputs(ctx context.Context, file
 				resultErr = errors.Join(resultErr, prepared.Close())
 			}
 		}()
-		if err = prepared.copyInputs(ctx, &checked.Current.Record); err != nil {
-			return err
-		}
 		if _, err = session.recheckResolved(ctx, resolved, &prepared.files, authority.config.Policy, &prepared.approval.Admission, verified.AdmissionIdentity, now.Add(time.Since(started))); err != nil {
 			return err
 		}
@@ -82,7 +79,7 @@ func (session *SelectionSession) PrepareApprovedInputs(ctx context.Context, file
 	return prepared, nil
 }
 
-func (session *SelectionSession) newApprovedInputs(files *DeploymentFiles, approval *DeploymentApproval, authority string) (*ApprovedInputs, error) {
+func (session *SelectionSession) newApprovedInputs(ctx context.Context, files *DeploymentFiles, approval *DeploymentApproval, authority string, record *core.DeploymentRecord) (*ApprovedInputs, error) {
 	// Clone caller-owned maps, receipts and signatures before retaining them.
 	data, err := json.Marshal(struct {
 		Files    *DeploymentFiles
@@ -117,8 +114,12 @@ func (session *SelectionSession) newApprovedInputs(files *DeploymentFiles, appro
 	if err = validatePrivateInputDirectory(directory); err != nil {
 		return nil, errors.Join(err, directory.Close(), parent.RemoveAll(name), parent.Close())
 	}
-	return &ApprovedInputs{session: session, parent: parent, directory: directory, name: name,
-		files: cloned.Files, approval: cloned.Approval, authority: authority}, nil
+	prepared := &ApprovedInputs{session: session, parent: parent, directory: directory, name: name,
+		files: cloned.Files, approval: cloned.Approval, authority: authority}
+	if err = prepared.copyInputs(ctx, record); err != nil {
+		return nil, errors.Join(err, prepared.Close())
+	}
+	return prepared, nil
 }
 
 func validatePrivateInputDirectory(directory *os.Root) error {
@@ -150,7 +151,7 @@ func (prepared *ApprovedInputs) copyInputs(ctx context.Context, record *core.Dep
 		name := copied[digest]
 		if name == "" {
 			name = fmt.Sprintf("runtime/%04d", i)
-			source, err := os.Open(input.Path)
+			source, err := openInputFile(ctx, nil, input.Path)
 			if err != nil {
 				return err
 			}
@@ -194,7 +195,7 @@ func copyApprovedOutputs(ctx context.Context, source, destination *os.Root, pref
 		if copied[output.Path] {
 			continue
 		}
-		file, err := source.Open(output.Path)
+		file, err := openInputFile(ctx, source, output.Path)
 		if err != nil {
 			return err
 		}
