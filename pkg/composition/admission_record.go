@@ -55,6 +55,22 @@ type AdmissionRecheck struct {
 // No returned value grants permission to mutate or proves bytes stayed unchanged
 // after this call; effect owners still need isolation and effect-time admission.
 func (session *SelectionSession) RecheckAdmission(ctx context.Context, files *DeploymentFiles, policy core.DeploymentPolicy, recorded *AdmissionInspection, expected string, now time.Time) (*AdmissionRecheck, error) {
+	var result *AdmissionRecheck
+	err := session.withResolved(ctx, func(snapshot *selectionSnapshot, resolved *core.ResolvedComposition) error {
+		var err error
+		result, err = session.recheckResolved(ctx, resolved, files, policy, recorded, expected, now)
+		if err != nil {
+			return err
+		}
+		return session.unchanged(snapshot)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (session *SelectionSession) recheckResolved(ctx context.Context, resolved *core.ResolvedComposition, files *DeploymentFiles, policy core.DeploymentPolicy, recorded *AdmissionInspection, expected string, now time.Time) (*AdmissionRecheck, error) {
 	if recorded == nil || expected == "" || recorded.Identity != expected {
 		return nil, errors.New("retained admission identity must match the supplied record")
 	}
@@ -62,7 +78,7 @@ func (session *SelectionSession) RecheckAdmission(ctx context.Context, files *De
 		return nil, errors.New("recorded admission time must not be zero or in the future")
 	}
 	var result *AdmissionRecheck
-	err := session.withResolved(ctx, func(snapshot *selectionSnapshot, resolved *core.ResolvedComposition) error {
+	err := func() error {
 		// Core identities include ApprovedAt. Reproduce the original at that
 		// instant, then independently admit at the current time using fresh files.
 		original, err := session.admitResolved(ctx, resolved, files, policy, recorded.Record.ApprovedAt)
@@ -97,15 +113,12 @@ func (session *SelectionSession) RecheckAdmission(ctx context.Context, files *De
 		if !bytes.Equal(want, got) {
 			return errors.New("deployment inputs changed during admission recheck")
 		}
-		if err = session.unchanged(snapshot); err != nil {
-			return err
-		}
 		if err = ctx.Err(); err != nil {
 			return err
 		}
 		result = &AdmissionRecheck{RecordedIdentity: expected, Current: *current}
 		return nil
-	})
+	}()
 	return result, err
 }
 

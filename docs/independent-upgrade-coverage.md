@@ -59,6 +59,12 @@ exact inputs, and inspect the actual deployment.
   files. This includes qualification expiry, signer revocation and record/output
   tampering checks. It does not issue functional evidence or authorize deployment;
   the effect-path rejection guards are unchanged.
+- Trusted-local, product-scoped host approval authority and signed exact-admission
+  approvals using Core scoped authorization. Candidate files cannot choose policy,
+  verifier keys, audiences or allowed targets. Authority replacement requires its
+  prior digest; approvals bind the full normalized policy and signer keys, exact
+  admission and target bindings. Fresh checks enforce literal expiry and drift.
+  This does not consume authorization or integrate an effect path.
 - Daemon monitoring uses Core's authenticated read-only group ownership API;
   executable names are display-only, and errors do not imply orphanhood.
 - Dependabot may propose Core build-dependency updates. Runtime admission and
@@ -115,9 +121,10 @@ An agent used to build an artifact is not necessarily present in production.
    deployment-admission API before effects on every applicable path, reject
    private patches and absent required functional/stateful evidence, and never
    silently replace approved inputs. Retain existing mutation authorization.
-   Persisting and rechecking Core admission is implemented; trusted approval-policy
-   ownership, authorized durable approval decisions, qualification execution and
-   positive effect-time integration are not supplied by that inspection surface.
+   Persisting/rechecking admission and trusted-local host-policy/signed approval
+   decisions are implemented. Qualification execution, remote approval delegation,
+   durable authorization consumption, positive effect-time integration and actual
+   observed/rollback comparison remain incomplete.
 7. **Upstream loop.** Prepare a scoped request to the owner of the inherited
    default, reusing existing records and including exact replacements and
    shareable evidence. Submission needs authorization; deployment need not

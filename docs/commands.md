@@ -558,6 +558,32 @@ behind. Inventory-only scaffolds may omit the base manifest and service code;
 their first `sync module` treats the missing manifest as an empty base and
 populates the pinned source without rerunning the agent.
 
+#### Product-Owned Selections and Approval
+
+`codefly composition` selects nested released components, inspects differences and
+stages exact selected executors. See [the complete command contract](composition-selections.md)
+for required configuration identity flags and deployment guards.
+
+`configure-approval-authority CONFIG.json` explicitly installs a product-scoped
+host policy/key/audience/target binding outside the workspace; replacing it needs
+`--expected-digest` from `inspect-approval-authority`. This is trusted-local
+administration, not a candidate or remote caller's policy choice.
+
+After reviewing a Core admission record, `approve-admission` signs it only after
+fresh admission under installed host policy:
+
+```sh
+codefly composition approve-admission inputs.json admission.json "$APPROVAL_FILE" \
+  --expected-identity "$ADMISSION_ID" --expected-authority "$AUTHORITY_DIGEST" \
+  --signing-key "$APPROVER_KEY_FILE" \
+  --expires "$APPROVAL_EXPIRY" --render-requests requests.json --identity-key identity.key
+codefly composition check-approval inputs.json "$APPROVAL_FILE" \
+  --render-requests requests.json --identity-key identity.key
+```
+
+These commands neither execute qualification tests nor consume authorization for
+deployment. Existing effect guards remain; approval is not observed running state.
+
 #### Module composition
 
 `add module --source <path>` and `add module --worktree <owner/repo>@<ref>`

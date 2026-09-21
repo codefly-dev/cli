@@ -141,6 +141,7 @@ func NewCommand() *cobra.Command {
 	})
 	recheck.Flags().StringVar(&expectedAdmission, "expected-identity", "", "Admission identity retained independently from the supplied record")
 	_ = recheck.MarkFlagRequired("expected-identity")
+	addApprovalCommands(add)
 	add("prepare-render INPUTS.json", "Prepare Core-bound render requests without invoking executors", cobra.ExactArgs(1), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
 		var inputs selection.DeploymentFiles
 		if err := readJSON(args[0], &inputs); err != nil {

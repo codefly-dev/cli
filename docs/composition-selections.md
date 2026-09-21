@@ -96,6 +96,25 @@ Commands:
   These commands persist/recheck admission evidence, not an authorized approval
   decision: they do not establish who may choose policy or grant mutation rights.
   Never derive `--expected-identity` from an untrusted record being checked.
+- `configure-approval-authority CONFIG.json [--expected-digest DIGEST]`: trusted-local
+  administration of this product's host-owned policy, approver identity/public key,
+  audience and exact target bindings. Initial configuration cannot overwrite an
+  existing authority; replacement requires its current digest.
+- `inspect-approval-authority`: inspect the installed authority's normalized digest
+  and host path, without exporting signing credentials.
+- `approve-admission INPUTS.json RECORD.json DESTINATION.json --expected-identity ID
+  --expected-authority DIGEST --signing-key FILE --expires RFC3339`: re-admit the independently reviewed record
+  using installed host policy and actual files, then persist a signed approval.
+  The private key must match the installed approver, and expiry cannot exceed
+  qualification validity. No policy, verification key or audience is accepted from
+  the candidate. Destination publication is exclusive, as for `record-admission`.
+  Both the admission identity and authority digest must match the independently
+  reviewed values; changing host policy between review and signing fails.
+- `check-approval INPUTS.json APPROVAL.json`: verify the signed approval against
+  current installed authority, then re-admit actual files and qualifications.
+  Policy/key/audience/target changes invalidate the approval. Missing claims,
+  foreign signatures, altered records and expired evidence fail. Literal expiry
+  is enforced, including time spent waiting for locks or verifying files.
 - `upstream`: prepare Core's owner-scoped adoption facts. No GitHub submission,
   merge or release occurs. Local-development facts remain labelled as such.
 - `propose-removal TARGET RELEASE.json`: ask Core to prove full effective-input
@@ -119,6 +138,42 @@ the inspection commands inspect supplied evidence, not authenticate its RPC orig
 authorize deployment. Deployment owners must keep outputs isolated and reverify
 them at the effect boundary.
 `module-trust.build-signers` is package-scoped, separately from release `signers`.
+
+### Host Approval Authority
+
+Authority is stored outside the product, workspace and selected local checkouts,
+under an existing host `CODEFLY_HOME/composition-authorities/` directory, keyed by
+the canonical product root. The configuration contains `audience`, `approver`
+(Core `policy.Principal`, identity only), `key` (base64 Ed25519 public key),
+`policy` (Core `DeploymentPolicy`) and `bindings` (exact non-secret target identity
+digests). Policy must explicitly require functional qualification and supply its
+signers. Core additionally enforces every selected owner's declared requirements.
+The normalized authority digest includes all requirements, signer key bytes,
+approver/key/audience and target bindings. Requirement ordering is immaterial.
+Changing policy is a separate explicit administration operation, never inferred
+from an approval file or accepted as an approval-command flag. Authority files
+and directories cannot be group/world writable; symlinked authority records and
+storage inside a checkout are rejected. Concurrent configuration replacements
+serialize and compare the prior digest. Keep the host configuration and its
+`CODEFLY_HOME` selection under operator control; changing the host profile is
+administration, not a remotely supplied deployment input.
+
+Approval uses Core's existing Ed25519 scoped-authorization primitive with action
+`composition.admission.approve`, exact admission resource, configured audience,
+normalized authority digest and target-binding digest. This is the CLI's explicit
+implementation contract, not a previously mandated handbook token schema. It is
+not a Gateway mutation permit or an execution-recorder `evidence/append` grant.
+The signing key file must contain 64 raw Ed25519 bytes with owner-only permissions;
+it is never copied to host configuration or printed. Approval administration and
+signing are intentionally not added to MCP or remote Gateway surfaces.
+
+`check-approval` verifies evidence; it does not consume `MaxUses`, reserve a rollout
+attempt, establish live target identity or grant a deployment effect. There is no
+cross-restart single-use/idempotent-effect claim. Effect owners must still use
+their mutation authorization, durable attempt fencing, isolated exact approved
+bytes, fresh target verification and effect-time admission. All existing effect
+guards remain. These commands do not execute functional/stateful qualification
+tests; a valid approval depends on those authorities' authentic signed evidence.
 
 Commit the product descriptor and release selection file. Keep the identity key,
 configuration files, `.codefly/composition-local.json`, artifact cache and
@@ -193,7 +248,7 @@ admission at every low-level transport. It must be replaced by selection-bound
 execution and effect-time Core admission, not removed to make deployments pass.
 
 Not delivered: running the effective combination's functional/stateful tests,
-selection-bound builds, OCI acquisition, durable deployment approval,
+selection-bound builds, OCI acquisition, deployment authorization consumption,
 actual observed/rollback identity comparison, authorized upstream submission,
 or hot onboarding without host restart. HTTP/Git/process regressions establish
 selection and evidence plumbing, not real database retained-data recovery.
