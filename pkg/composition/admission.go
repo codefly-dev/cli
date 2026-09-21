@@ -18,6 +18,7 @@ type RuntimeFile struct {
 }
 
 type DeploymentFiles struct {
+	Executions     []ExecutionFiles           `json:"executions,omitempty"`
 	Runtime        []RuntimeFile              `json:"runtime"`
 	Derived        []core.SignedDerivedOutput `json:"derived,omitempty"`
 	Bindings       map[string]string          `json:"bindings"`
@@ -34,7 +35,7 @@ type AdmissionInspection struct {
 func (session *SelectionSession) CheckInputs(ctx context.Context, files *DeploymentFiles) (*core.DeploymentRecord, error) {
 	var record *core.DeploymentRecord
 	err := session.withResolved(ctx, func(snapshot *selectionSnapshot, resolved *core.ResolvedComposition) error {
-		inputs, closeFiles, err := openDeploymentInputs(files)
+		inputs, closeFiles, err := session.verifiedDeploymentInputs(ctx, resolved, files)
 		if err != nil {
 			return err
 		}
@@ -85,7 +86,7 @@ func openDeploymentInputs(files *DeploymentFiles) (core.DeploymentInputs, func()
 func (session *SelectionSession) Admit(ctx context.Context, files *DeploymentFiles, policy core.DeploymentPolicy, now time.Time) (*AdmissionInspection, error) {
 	var inspection *AdmissionInspection
 	err := session.withResolved(ctx, func(snapshot *selectionSnapshot, resolved *core.ResolvedComposition) error {
-		inputs, closeFiles, err := openDeploymentInputs(files)
+		inputs, closeFiles, err := session.verifiedDeploymentInputs(ctx, resolved, files)
 		if err != nil {
 			return err
 		}

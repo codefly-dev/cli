@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -44,6 +45,9 @@ func releaseNotes(current, previous *agentv0.AgentContract, previousTag string) 
 		"Container/free runtime initialization and builder operations require `" + contract.ContainerRecoveryScope + "` and an exact acknowledgement of this flow's recovery scope.",
 		"Native/Nix runtime initialization requires the declared protocols but no container-recovery capability.", "",
 	}
+	if supported := contract.SupportedOperationContracts(); len(supported) != 0 {
+		lines = append(lines, "Core supports operation contracts: "+strings.Join(supported, ", ")+". This is host support, not executor advertisement. Selection-bound operations require explicit live executor opt-in; unchanged lifecycle protocols do not prove operation support.", "")
+	}
 	switch {
 	case previous == nil:
 		lines = append(lines, "Contract enforcement introduced: agents without a protocol declaration must adopt the contract before this CLI can load them, including native agents. Coordinate agent publication and consumer pins before upgrading.")
@@ -71,12 +75,8 @@ func generate(directory, tag, output string) error {
 	if err != nil {
 		return err
 	}
-	var compiled agentv0.AgentContract
-	if err = protojson.Unmarshal(manifest, &compiled); err != nil {
+	if err = validateManifest(manifest); err != nil {
 		return err
-	}
-	if !proto.Equal(&compiled, contract.Current()) {
-		return fmt.Errorf("core manifest differs from the compiled agent contract")
 	}
 	required := contract.Current()
 	required.Capabilities = []string{contract.ContainerRecoveryScope}
@@ -116,6 +116,38 @@ func generate(directory, tag, output string) error {
 		if err = os.WriteFile(filepath.Join(output, name), data, 0o600); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateManifest(manifest []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(manifest, &fields); err != nil {
+		return err
+	}
+	var operations []string
+	if raw, exists := fields["operationContracts"]; exists {
+		if err := json.Unmarshal(raw, &operations); err != nil {
+			return err
+		}
+		delete(fields, "operationContracts")
+	}
+	expected := contract.SupportedOperationContracts()
+	slices.Sort(operations)
+	slices.Sort(expected)
+	if !slices.Equal(operations, expected) {
+		return fmt.Errorf("core manifest differs from compiled operation contracts")
+	}
+	data, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	var compiled agentv0.AgentContract
+	if err := protojson.Unmarshal(data, &compiled); err != nil {
+		return err
+	}
+	if !proto.Equal(&compiled, contract.Current()) {
+		return fmt.Errorf("core manifest differs from the compiled agent contract")
 	}
 	return nil
 }

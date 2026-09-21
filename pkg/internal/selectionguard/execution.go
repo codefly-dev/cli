@@ -10,12 +10,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var ErrUnboundExecution = errors.New("composition execution is blocked: Core's typed selection-to-build/render binding and executor acknowledgement are not available")
+var ErrUnboundExecution = errors.New("composition execution is blocked: exact selected-executor loading, acknowledgement and effect-time admission are not integrated")
 
 const SelectionFile = "module.codefly.selection.json"
 
-// RejectUnboundExecution is an explicit stopgap while Core #589 defines the
-// execution binding contract. Legacy executors must not ignore product-owned
+// RejectUnboundExecution is an explicit stopgap until the CLI integrates Core's
+// execution binding at every effect boundary. Legacy executors must not ignore product-owned
 // selections, even when they could still render the inherited source tree.
 // This is rejection, not deployment admission or a replacement compatibility model.
 func RejectUnboundExecution(roots ...string) error {

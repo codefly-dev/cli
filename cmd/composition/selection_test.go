@@ -44,3 +44,14 @@ func TestSelectionInputRejectsUnknownFieldsAndTrailingDocuments(t *testing.T) {
 		require.Error(t, readJSON(path, &target))
 	}
 }
+
+func TestPrepareRenderRequiresExplicitConfiguration(t *testing.T) {
+	cmd := NewCommand()
+	cmd.SetArgs([]string{"prepare-render", "inputs.json"})
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	require.ErrorContains(t, cmd.ExecuteContext(t.Context()), "--configuration and --identity-key are required")
+	require.Empty(t, output.String())
+}

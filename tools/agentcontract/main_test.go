@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/codefly-dev/core/agents/contract"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestReleaseCompatibility(t *testing.T) {
@@ -75,4 +77,38 @@ func TestGenerateFromConsumedCore(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, string(data), contract.ContainerRecoveryScope)
 	}
+	data, err := os.ReadFile(filepath.Join(output, "contract.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(data), "operationContracts")
+	require.NoError(t, validateManifest(data))
+	data, err = os.ReadFile(filepath.Join(output, "agent-requirements.json"))
+	require.NoError(t, err)
+	var requirements agentv0.AgentContract
+	require.NoError(t, protojson.Unmarshal(data, &requirements))
+	require.Equal(t, []string{contract.ContainerRecoveryScope}, requirements.Capabilities)
+	data, err = os.ReadFile(filepath.Join(output, "agent-compatibility.md"))
+	require.NoError(t, err)
+	require.Contains(t, string(data), "not executor advertisement")
+}
+
+func TestManifestSeparatesOperationSupportAndRejectsUnknownFields(t *testing.T) {
+	data, err := protojson.Marshal(contract.Current())
+	require.NoError(t, err)
+	var fields map[string]any
+	require.NoError(t, json.Unmarshal(data, &fields))
+	fields["operationContracts"] = contract.SupportedOperationContracts()
+	data, err = json.Marshal(fields)
+	require.NoError(t, err)
+	require.NoError(t, validateManifest(data))
+	for _, value := range []any{nil, []string{"artifact-execution/v999"}, "artifact-execution/v1"} {
+		fields["operationContracts"] = value
+		data, err = json.Marshal(fields)
+		require.NoError(t, err)
+		require.Error(t, validateManifest(data))
+	}
+	fields["operationContracts"] = contract.SupportedOperationContracts()
+	fields["undeclaredRequirement"] = true
+	data, err = json.Marshal(fields)
+	require.NoError(t, err)
+	require.Error(t, validateManifest(data))
 }

@@ -51,10 +51,17 @@ Commands:
   `ConsumerUsageAuthority` JSON shapes (byte arrays are base64). SAFE and
   NEW_CAPABILITY return zero; BREAKING and UNDETERMINED emit the report and exit 2.
   Changed contracts without source-supported evidence remain UNDETERMINED.
-- `check-inputs INPUTS.json`: authenticate actual runtime files and compute Core's
-  selection/runtime/binding identities for qualification. Not functional evidence.
+- `prepare-render INPUTS.json`: ask Core to authenticate runtime streams once for
+  all selected services and emit their bound protobuf-JSON render requests.
+  Requires signed artifact-operation declarations and media types. Does not
+  invoke an executor, provide configuration values or establish qualification.
+- `check-inputs INPUTS.json`: authenticate actual runtime files and staged render
+  outputs, computing Core's selection/runtime/binding/execution identities for
+  qualification. Without executions this checks runtime inputs only, never
+  deployment readiness.
 - `check-deployment INPUTS.json POLICY.json`: invoke Core's `AdmitDeployment` on
-  actual runtime files, signed derived outputs, target bindings and qualifications.
+  actual runtime files, verified render outputs for every selected service,
+  signed derived outputs, target bindings and qualifications.
   Policy uses Core's `DeploymentPolicy`. Missing owner-required functional/stateful
   evidence, expired or foreign qualifications, patched outputs and local checkouts
   are rejected. This is inspection under the supplied policy, not authority for a
@@ -68,6 +75,19 @@ Commands:
 `INPUTS.json` for deployment inspection contains `runtime` entries with `target`,
 `name`, and `path`; `bindings` maps target names to non-secret identity digests;
 `derived` and `qualifications` use Core's signed statement/signature types.
+`executions` contains one entry per selected service: `target`, `service`,
+`directory` (absolute canonical path to an isolated staging directory), and
+`receipt` (the executor's protobuf-JSON ArtifactExecutionReceipt object).
+Directories must be disjoint. Every inspection prepares the current Core
+requests, rejects extra/missing/duplicate/foreign receipts, and calls
+`VerifyArtifactExecutionDirectory` to hash the actual output files. Undeclared,
+escaped, symlinked and missing output files are rejected. The resulting sealed
+evidence feeds Core admission; qualifications must sign `ExecutionIdentity`.
+Changing output bytes invalidates qualification even with unchanged runtime
+inputs. Receipt JSON is not proof of executor invocation or live capability:
+these commands inspect supplied evidence, not authenticate its RPC origin or
+authorize deployment. Deployment owners must keep outputs isolated and reverify
+them at the effect boundary.
 `module-trust.build-signers` is package-scoped, separately from release `signers`.
 
 Commit the product descriptor and release selection file. Keep the identity key,
@@ -79,15 +99,23 @@ Core's identity even when the checkout path or release label has not changed.
 
 ## Explicit Deployment Blocker
 
-Core #589 confirmed there is no typed contract connecting resolved nested
-instance/artifact selections to build/render operation inputs and acknowledged
-output provenance. `ReleaseArtifact` supplies purpose/URI/digest; `BuildRequirement`
-names source/service/agent/output, but neither supplies that binding. The existing
-Solution render RPC takes a single artifact reference and executor-defined values.
-The legacy composition projection explicitly rejects nested selections.
+Core `2247375610e8` supplies the typed execution binding contract:
+signed `ProvidedService.ArtifactOperations`, artifact media types, prepared
+instance-scoped requests, opt-in live executor capability checks, output receipts
+and execution-bound qualification. The CLI now consumes its batch preparation
+and directory-verification APIs. The former missing-contract blocker is resolved;
+actual selected-executor orchestration and qualified deployment are not.
 
-Until Core defines this contract and executors implement it, multi-instance
-build/render/deployment is **blocked**, not equivalent to a legacy deployment.
+The shared process loader still accepts installed-agent coordinates rather than
+an acquired executor path/digest. Loading two instance-scoped signed executors
+must not require invented coordinates, active-install replacement or a separate
+CLI process loader. Core #589 is implementing `manager.LoadArtifact`; it is not
+yet pushed or consumed by this CLI commit. Solution artifact loading also
+still dispatches through provider-only verification. Executors must truthfully
+implement and advertise `artifact-execution/v1`; linking newer Core is not adoption.
+
+Until exact executor loading, actual configuration/binding delivery and executor
+adoption are qualified, multi-instance build/render/deployment is **blocked**.
 An explicit rejection stopgap guards local apply/image-import entry points,
 Flow deployment, platform sends, GitOps render/publication and rollback when a
 participating product declares nested selections. This is not completed positive

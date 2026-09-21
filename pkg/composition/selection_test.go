@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/artifactexecution"
 	core "github.com/codefly-dev/core/composition"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	updatev0 "github.com/codefly-dev/core/generated/go/codefly/update/v0"
 	"github.com/codefly-dev/core/moduleupdate"
 	"github.com/stretchr/testify/require"
@@ -111,7 +113,7 @@ func (r *selectionRegistry) artifact(name string, purpose core.ArtifactPurpose, 
 	defer r.mu.Unlock()
 	path := "/" + strings.TrimPrefix(contentDigest(content), "sha256:")
 	r.content[path] = content
-	return core.ReleaseArtifact{Name: name, Purpose: purpose, URI: r.artifacts.URL + path, Digest: contentDigest(content)}
+	return core.ReleaseArtifact{Name: name, Purpose: purpose, URI: r.artifacts.URL + path, Digest: contentDigest(content), MediaType: "application/octet-stream"}
 }
 
 func (r *selectionRegistry) publish(t *testing.T, manifest *core.PackageManifest) core.ReleaseSelection {
@@ -368,24 +370,36 @@ func TestCompatibilityAuthenticatesActualConsumerAndReportsUnknown(t *testing.T)
 
 func TestAdmissionBindsActualRuntimeFilesEvidenceAndTarget(t *testing.T) {
 	r := newSelectionRegistry(t)
+	binary, path := executionBinary(t)
 	manifest := selectionManifest("team/foo", "1.0.0")
 	manifest.RequiredQualifications = &[]string{"stateful"}
-	manifest.ReleaseArtifacts = []core.ReleaseArtifact{r.artifact("runtime", core.ArtifactRuntime, []byte("owner runtime"))}
-	manifest.Services = []core.ProvidedService{{Name: "api", RuntimeArtifacts: []string{"runtime"}}}
+	manifest.ReleaseArtifacts = []core.ReleaseArtifact{
+		r.artifact("runtime", core.ArtifactRuntime, []byte("owner runtime")),
+		r.artifact("renderer", core.ArtifactBuildAgent, binary),
+	}
+	declareRender(manifest, "api")
 	root := r.publish(t, manifest)
 	session := r.session(t, &core.Descriptor{Kind: core.DescriptorKind, Name: "product", Base: core.Base{ID: root.ID, Version: root.Version}, Services: core.Services{Include: []string{"api"}}})
 	_, err := session.Initialize(t.Context(), &SelectionInputs{Root: root})
 	require.NoError(t, err)
 	artifacts, err := session.Acquire(t.Context(), r.artifacts.Client())
 	require.NoError(t, err)
-	files := &DeploymentFiles{Runtime: []RuntimeFile{{Name: "runtime", Path: artifacts[0].Path}}, Bindings: map[string]string{"deployment-target": contentDigest([]byte("cluster identity"))}}
+	files := &DeploymentFiles{Bindings: map[string]string{"deployment-target": contentDigest([]byte("cluster identity"))}}
+	for _, artifact := range artifacts {
+		if artifact.Requirement.Artifact.Name == "runtime" {
+			files.Runtime = append(files.Runtime, RuntimeFile{Name: "runtime", Path: artifact.Path})
+		}
+	}
+	_, err = session.Admit(t.Context(), files, core.DeploymentPolicy{}, time.Now())
+	require.ErrorContains(t, err, "verified render outputs")
+	renderFiles(t, session, files, executionClient(t, path, artifactexecution.Contract))
 	record, err := session.CheckInputs(t.Context(), files)
 	require.NoError(t, err)
 	now := time.Now()
 	policy := core.DeploymentPolicy{RequiredQualifications: []string{"functional"}, QualificationSigners: map[string]map[string]ed25519.PublicKey{}}
 	for _, kind := range []string{"functional", "stateful"} {
 		statement, marshalErr := json.Marshal(core.Qualification{Schema: "codefly/deployment-qualification/v1", SelectionIdentity: record.SelectionIdentity,
-			RuntimeIdentity: record.RuntimeIdentity, BindingIdentity: record.BindingIdentity, Kind: kind, Signer: "consumer", ExpiresAt: now.Add(time.Hour)})
+			RuntimeIdentity: record.RuntimeIdentity, ExecutionIdentity: record.ExecutionIdentity, BindingIdentity: record.BindingIdentity, Kind: kind, Signer: "consumer", ExpiresAt: now.Add(time.Hour)})
 		require.NoError(t, marshalErr)
 		policy.QualificationSigners[kind] = map[string]ed25519.PublicKey{"consumer": r.key.Public().(ed25519.PublicKey)}
 		files.Qualifications = append(files.Qualifications, core.SignedQualification{Statement: statement, Signature: ed25519.Sign(r.key, statement)})
@@ -393,16 +407,46 @@ func TestAdmissionBindsActualRuntimeFilesEvidenceAndTarget(t *testing.T) {
 	admitted, err := session.Admit(t.Context(), files, policy, now)
 	require.NoError(t, err)
 	require.Equal(t, record.SelectionIdentity, admitted.Record.SelectionIdentity)
-	files.Bindings["deployment-target"] = contentDigest([]byte("different cluster"))
+	require.Equal(t, record.ExecutionIdentity, admitted.Record.ExecutionIdentity)
+	qualified := files.Qualifications[0]
+	var oldQualification core.Qualification
+	require.NoError(t, json.Unmarshal(qualified.Statement, &oldQualification))
+	oldQualification.ExecutionIdentity = ""
+	oldStatement, err := json.Marshal(oldQualification)
+	require.NoError(t, err)
+	files.Qualifications[0] = core.SignedQualification{Statement: oldStatement, Signature: ed25519.Sign(r.key, oldStatement)}
 	_, err = session.Admit(t.Context(), files, policy, now)
 	require.ErrorContains(t, err, "different inputs")
+	files.Qualifications[0] = qualified
+
+	var receipt basev0.ArtifactExecutionReceipt
+	require.NoError(t, protojson.Unmarshal(files.Executions[0].Receipt, &receipt))
+	outputPath := filepath.Join(files.Executions[0].Directory, receipt.Outputs[0].Path)
+	originalOutput, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	originalReceipt := files.Executions[0].Receipt
+	changedOutput := []byte("different render of the same runtime")
+	require.NoError(t, os.WriteFile(outputPath, changedOutput, 0o600))
+	receipt.Outputs[0].Digest = contentDigest(changedOutput)
+	files.Executions[0].Receipt, err = protojson.Marshal(&receipt)
+	require.NoError(t, err)
+	changed, err := session.CheckInputs(t.Context(), files)
+	require.NoError(t, err)
+	require.NotEqual(t, record.ExecutionIdentity, changed.ExecutionIdentity)
+	_, err = session.Admit(t.Context(), files, policy, now)
+	require.ErrorContains(t, err, "different inputs")
+	require.NoError(t, os.WriteFile(outputPath, originalOutput, 0o600))
+	files.Executions[0].Receipt = originalReceipt
+	files.Bindings["deployment-target"] = contentDigest([]byte("different cluster"))
+	_, err = session.Admit(t.Context(), files, policy, now)
+	require.ErrorContains(t, err, "did not acknowledge")
 	files.Bindings["deployment-target"] = contentDigest([]byte("cluster identity"))
 	_, err = session.Admit(t.Context(), files, policy, now.Add(2*time.Hour))
 	require.ErrorContains(t, err, "expired")
 	files.Qualifications = files.Qualifications[:1]
 	_, err = session.Admit(t.Context(), files, policy, now)
 	require.ErrorContains(t, err, "required stateful qualification")
-	require.NoError(t, os.WriteFile(artifacts[0].Path, []byte("private patch"), 0o600))
+	require.NoError(t, os.WriteFile(files.Runtime[0].Path, []byte("private patch"), 0o600))
 	_, err = session.Admit(t.Context(), files, policy, now)
 	require.ErrorIs(t, err, core.ErrDigestMismatch)
 }
@@ -438,6 +482,10 @@ func TestNestedAgentReplacementDoesNotChangeModuleOrImplyRuntimeAgent(t *testing
 	record, err := session.CheckInputs(t.Context(), files)
 	require.NoError(t, err)
 	require.Len(t, record.Artifacts, 1, "a lifecycle tool must not be reported as a deployed runtime artifact")
+	_, err = session.PrepareRender(t.Context(), files)
+	require.ErrorContains(t, err, "explicit render artifact operation is missing")
+	_, err = session.Admit(t.Context(), files, core.DeploymentPolicy{}, time.Now())
+	require.ErrorContains(t, err, "explicit render artifact operation is missing")
 }
 
 func TestLocalCheckoutCannotMaskIncompatibleReleaseSelection(t *testing.T) {

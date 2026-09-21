@@ -85,11 +85,13 @@ An agent used to build an artifact is not necessarily present in production.
 ## What remains under #753
 
 1. **Product execution.** Connect the implemented Core selections to typed
-   build/render inputs once Core provides the missing execution binding contract.
-   Product selection is available; executing that effective combination is not.
+   build/render inputs using Core's now-published execution binding API.
+   Batch request preparation and staged-output verification are implemented;
+   exact selected-executor loading and actual invocation remain incomplete.
 2. **Local development execution.** Local records preserve release choices and
    bind identity to actual bytes; driving builds/tests from those records remains
-   blocked by the same execution contract. Restoring releases is implemented.
+   blocked by executor loading/adoption and actual execution wiring. Restoring
+   releases is implemented.
 3. **Selective acquisition.** HTTPS requirements are acquired and authenticated.
    OCI transport and execution of declared source-build requirements remain.
 4. **Inspection.** Project the shared effective record into human/structured
@@ -119,7 +121,7 @@ An agent used to build an artifact is not necessarily present in production.
 
 ## Concrete integration points and blockers
 
-The CLI consumes pushed Core `v0.3.41-0.20260921003427-c72b2d6fcc22`, with
+The CLI consumes pushed Core `v0.3.41-0.20260921013030-2247375610e8`, with
 `GOWORK=off` and no replacement. Uncommitted Core files are not a dependency.
 This is not the unpublished v0.3.41 tag and does not authorize a release.
 
@@ -129,10 +131,18 @@ UNDETERMINED is explicit and exits nonzero, not a demonstrated break or SAFE.
 Semantic source-supported comparison and real packaged consumer evidence remain
 qualification work, not something a matching protocol alone proves.
 
-Core confirmed a missing typed selection-to-build/render input and output binding.
-No URI/name inference or arbitrary Solution values closes that gap. Explicit
-rejection guards prevent legacy execution entry points from ignoring selections;
-positive selection-bound deployment and observation remain incomplete.
+Core's typed selection-to-build/render binding is now available. The CLI uses
+`PrepareArtifactExecutions` and `VerifyArtifactExecutionDirectory` for inspection;
+Core admission requires exact staged render outputs and qualification over
+`ExecutionIdentity`. Independent gRPC renderer tests produce the inspected
+files and exercise missing capability, changed/missing/extra/symlinked evidence,
+multiple services and stale qualification. This is not published-executor
+adoption or deployment qualification. The shared loader still has no entry point
+for acquired executor path/digest without installed-agent coordinates; that
+concrete dispatch gap is being addressed by Core #589's `manager.LoadArtifact`,
+not yet pushed or consumed here. No URI/name inference, install
+mutation or parallel CLI loader is substituted. Explicit rejection guards
+remain; positive selection-bound deployment and observation are incomplete.
 
 The deployment integration must cover at least these effect-owning boundaries,
 not only the top-level `deploy` command:
