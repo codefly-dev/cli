@@ -43,7 +43,7 @@ exact inputs, and inspect the actual deployment.
   skill now target affected repositories instead of recommending `--all` or
   requiring every ancestor to publish in a fixed chain.
 - Companion-only protobuf generation and checkout drift diagnostics from #751
-  and #733. The consumed Core pseudo-version includes `proto.FormatGoOutputs`,
+  and #733. The consumed Core release includes `proto.FormatGoOutputs`,
   and the combined branch builds. Drift diagnostics are advisory, not deployment
   admission or proof of verified artifact provenance.
 - Removed the product-specific PostgreSQL IPC sweep from both `run` and `clear`,
@@ -54,6 +54,19 @@ exact inputs, and inspect the actual deployment.
   compatibility, exact-runtime-file admission inspection, owner-scoped adoption
   facts and Core-proven override-removal proposals. See
   [the command contract and limits](composition-selections.md).
+- Selected source-build staging invokes Core-bound Builder Build operations on
+  exact acquired executors, requires checked registered-group shutdown, and
+  rehashes every output before batch completion. Typed build/render payloads
+  share one configuration identity. Real TLS source-packaging tests cover two
+  instances, refused source/payload drift, partial failure and CLI invocation.
+  This stages bytes only: derived-output publication/signing and functional or
+  stateful qualification are not delivered by a build receipt.
+  Build and render both reject replaceable output ancestry and inherited macOS
+  allow ACLs before invoking an executor. The render ACL regression fails with
+  the old mode-only boundary and passes with the shared storage check.
+  Command JSON/configuration-key reads and approval signing-key opens reuse the
+  nonblocking regular-file boundary; real FIFO regressions ensure malformed
+  command inputs cannot wait indefinitely for a peer before staging/admission.
 - Exclusive durable Core admission records and rechecking against an independently
   retained admission identity, current policy and freshly verified runtime/render
   files. This includes qualification expiry, signer revocation and record/output
@@ -125,15 +138,16 @@ An agent used to build an artifact is not necessarily present in production.
 1. **Product execution.** Connect the implemented Core selections to typed
    build/render inputs using Core's now-published execution binding API.
    Batch request preparation, exact selected-executor loading, typed render
-   invocation and staged-output verification are implemented. Build invocation
-   and qualified effect-boundary integration remain incomplete. Staging now
+   and build invocation and staged-output verification are implemented. Derived
+   publication/signing and qualified effect-boundary integration remain incomplete. Staging now
    requires checked registered-group shutdown, with the limits detailed below.
 2. **Local development execution.** Local records preserve release choices and
    bind identity to actual bytes; driving builds/tests from those records remains
-   blocked by owner executor adoption and build/test execution wiring. Restoring
+   blocked by owner executor adoption and exact-input test execution wiring. Restoring
    releases is implemented.
 3. **Selective acquisition.** HTTPS requirements are acquired and authenticated.
-   OCI transport and execution of declared source-build requirements remain.
+   Declared source-build requirements can be staged. OCI transport and authorized
+   derived-output publication/signing remain.
 4. **Inspection.** Project the shared effective record into human/structured
    output: inherited references, each selection/artifact difference, reasons,
    evidence and approved versus observed deployment. Keep private configuration
@@ -187,6 +201,17 @@ failures from published Python, Next.js and generic artifacts missing protocol
 declarations; no race reports occurred. Full lint retains 315 baseline findings,
 with zero new findings against `973e46d4`. This is dependency-integration evidence,
 not qualified production executors, functional/stateful delivery or release clearance.
+
+Build-staging verification uses the same published Core dependency. Full build,
+composition/command race, real macOS sandbox/UDS build and render, and focused
+Linux build/command race tests pass. The final full normal and race suites retain
+the same eight missing-protocol failures; neither produced race reports. Full
+lint remains at 315 findings and changed-line lint against `73353171` is clean.
+The Linux container requires an init/reaper: without it, a real executor child
+became a PID-1-owned zombie and checked shutdown correctly refused completion.
+The repeated run with Docker `--init` passed; no shutdown check was weakened.
+These tests package real source bytes over TLS and verify signed-derived handoff,
+but do not qualify production executors or retained-data recovery.
 
 `LoadModuleTrust` uses package-scoped release and build signers with no global-key
 fallback. Selection checks use authenticated consumer usage and Core's evaluator;

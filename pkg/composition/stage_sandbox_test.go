@@ -25,3 +25,20 @@ func TestStageRenderWithRealSandboxAndUDS(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Record.Executions, 4)
 }
+
+func TestStageBuildWithRealSandboxAndUDS(t *testing.T) {
+	session, options, _ := buildStageFixture(t)
+	options.LoadOptions = func(directory string) ([]manager.LoadOption, error) {
+		sb, err := sandbox.New()
+		if err != nil {
+			return nil, err
+		}
+		require.NotEqual(t, sandbox.BackendNative, sb.Backend())
+		// This real source packager must fetch the exact source URI over TLS.
+		sb.WithWritePaths(directory).WithNetwork(sandbox.NetworkOpen)
+		return []manager.LoadOption{manager.WithSandbox(sb), manager.WithoutPrincipal(), manager.WithUDS(), manager.WithWorkDir(directory)}, nil
+	}
+	result, err := session.StageBuild(t.Context(), options)
+	require.NoError(t, err)
+	require.Len(t, result.Executions, 2)
+}

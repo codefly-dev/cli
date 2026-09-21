@@ -1,9 +1,9 @@
 package composition
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
-	"os"
 	"time"
 
 	selection "github.com/codefly-dev/cli/pkg/composition"
@@ -71,7 +71,7 @@ func (flags *approvalFlags) run(cmd *cobra.Command, session *selection.Selection
 }
 
 func readApprovalKey(path string) (ed25519.PrivateKey, error) {
-	file, err := os.Open(path)
+	file, err := selection.OpenInputFile(context.Background(), path)
 	if err != nil {
 		return nil, errors.New("cannot open approval signing key")
 	}

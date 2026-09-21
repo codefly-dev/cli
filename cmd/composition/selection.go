@@ -2,10 +2,10 @@ package composition
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"time"
 
 	selection "github.com/codefly-dev/cli/pkg/composition"
@@ -17,18 +17,23 @@ import (
 
 // NewCommand keeps command state per invocation, including tests and MCP callers.
 func NewCommand() *cobra.Command {
-	var workspace, product, configuration, identityKey, renderRequests string
+	var workspace, product, configuration, identityKey, renderRequests, buildRequests string
 	command := &cobra.Command{Use: "composition", Short: "Inspect and select product-owned component releases"}
 	command.PersistentFlags().StringVar(&workspace, "workspace", ".", "Workspace containing package-scoped module-trust")
 	command.PersistentFlags().StringVar(&product, "product", ".", "Directory containing module.codefly.yaml")
 	command.PersistentFlags().StringVar(&configuration, "configuration", "", "JSON file containing the effective configuration values")
 	command.PersistentFlags().StringVar(&identityKey, "identity-key", "", "Private file containing at least 32 raw bytes for configuration identity")
 	command.PersistentFlags().StringVar(&renderRequests, "render-requests", "", "JSON array of typed, instance-scoped render RPC payloads")
+	command.PersistentFlags().StringVar(&buildRequests, "build-requests", "", "JSON array of typed, instance-scoped build RPC payloads; retained for render and admission")
 	command.MarkFlagsMutuallyExclusive("configuration", "render-requests")
+	command.MarkFlagsMutuallyExclusive("configuration", "build-requests")
 	command.AddCommand(newTargetCommand(&workspace))
 	session := func() (*selection.SelectionSession, error) {
+		if buildRequests != "" && renderRequests == "" {
+			return nil, errors.New("--build-requests requires --render-requests to bind the complete execution configuration")
+		}
 		if renderRequests != "" {
-			return newRenderSession(workspace, product, renderRequests, identityKey)
+			return newRenderSession(workspace, product, renderRequests, identityKey, buildRequests)
 		}
 		if configuration == "" || identityKey == "" {
 			return nil, errors.New("--configuration and --identity-key are required; configuration identity cannot be inferred")
@@ -40,7 +45,7 @@ func NewCommand() *cobra.Command {
 		if values == nil {
 			return nil, errors.New("configuration must be an object, not null")
 		}
-		key, err := os.ReadFile(identityKey)
+		key, err := readCommandFile(identityKey)
 		if err != nil {
 			return nil, err
 		}
@@ -152,25 +157,14 @@ func NewCommand() *cobra.Command {
 	})
 	var stage stageFlags
 	stageCommand := add("stage-render INPUTS.json", "Invoke exact selected executors into verified staging without deployment effects", cobra.ExactArgs(1), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
-		requests, key, err := readRenderConfiguration(renderRequests, identityKey)
-		if err != nil {
-			return nil, err
-		}
-		if err = stage.validate(); err != nil {
-			return nil, err
-		}
-		var inputs selection.DeploymentFiles
-		if err = readJSON(args[0], &inputs); err != nil {
-			return nil, err
-		}
-		return current.StageRender(cmd.Context(), &inputs, &selection.StageOptions{
-			OutputParent: stage.outputParent, Requests: requests, IdentityKey: key, LoadOptions: stage.loadOptions,
-		})
+		return runStageRender(cmd, current, args[0], renderRequests, buildRequests, identityKey, stage)
 	})
-	stageCommand.Flags().StringVar(&stage.outputParent, "output-parent", "", "Existing canonical absolute staging parent outside product and local checkouts")
-	stageCommand.Flags().StringVar(&stage.sandbox, "sandbox", "required", "Executor sandbox: required or none (explicit unrestricted execution)")
-	stageCommand.Flags().BoolVar(&stage.allowNetwork, "allow-network", false, "Allow executor network access in the sandbox")
-	stageCommand.Flags().BoolVar(&stage.withoutPrincipal, "without-principal", false, "Explicit local execution without an authenticated principal; never deployment authorization")
+	addStageFlags(stageCommand, &stage)
+	var buildStage stageFlags
+	buildCommand := add("stage-build", "Invoke selected source builds into verified staging without publication", cobra.NoArgs, func(cmd *cobra.Command, current *selection.SelectionSession, _ []string) (any, error) {
+		return runStageBuild(cmd, current, renderRequests, buildRequests, identityKey, buildStage)
+	})
+	addStageFlags(buildCommand, &buildStage)
 	add("check-inputs INPUTS.json", "Authenticate runtime and staged output files for qualification", cobra.ExactArgs(1), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
 		var inputs selection.DeploymentFiles
 		if err := readJSON(args[0], &inputs); err != nil {
@@ -211,7 +205,7 @@ func (compatibilityRefused) MachineReadable() bool { return true }
 func (compatibilityRefused) CommandExitCode() int  { return 2 }
 
 func readJSON(path string, value any) error {
-	data, err := os.ReadFile(path)
+	data, err := readCommandFile(path)
 	if err != nil {
 		return err
 	}
@@ -225,4 +219,35 @@ func readJSON(path string, value any) error {
 		return errors.New("unexpected trailing JSON value")
 	}
 	return nil
+}
+
+const maxCommandInputBytes = 16 << 20
+
+func readCommandFile(path string) (data []byte, resultErr error) {
+	file, err := selection.OpenInputFile(context.Background(), path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, file.Close())
+		if resultErr != nil {
+			clear(data)
+			data = nil
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxCommandInputBytes {
+		return nil, errors.New("composition command input exceeds the 16 MiB size limit")
+	}
+	data, err = io.ReadAll(io.LimitReader(file, maxCommandInputBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxCommandInputBytes {
+		return nil, errors.New("composition command input exceeds the 16 MiB size limit")
+	}
+	return data, nil
 }

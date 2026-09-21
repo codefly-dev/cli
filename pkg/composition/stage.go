@@ -25,10 +25,11 @@ import (
 )
 
 type StageOptions struct {
-	OutputParent string
-	Requests     []RenderInput
-	IdentityKey  []byte
-	HTTPClient   *http.Client
+	OutputParent  string
+	Requests      []RenderInput
+	BuildRequests []BuildInput
+	IdentityKey   []byte
+	HTTPClient    *http.Client
 	// Every call needs its own explicit sandbox/principal choice.
 	LoadOptions func(directory string) ([]manager.LoadOption, error)
 }
@@ -45,7 +46,7 @@ func (session *SelectionSession) StageRender(ctx context.Context, files *Deploym
 	if options == nil {
 		return nil, errors.New("explicit staging options are required")
 	}
-	identity, err := RenderConfigurationIdentity(options.IdentityKey, options.Requests)
+	identity, err := ExecutionConfigurationIdentity(options.IdentityKey, options.Requests, options.BuildRequests)
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +92,9 @@ func (session *SelectionSession) StageRender(ctx context.Context, files *Deploym
 				}
 			}
 		}()
+		if err = validateStagingDirectory(directory); err != nil {
+			return err
+		}
 		data, encodeErr := json.Marshal(files)
 		if encodeErr != nil {
 			return encodeErr
@@ -138,6 +142,14 @@ func (session *SelectionSession) StageRender(ctx context.Context, files *Deploym
 	return result, err
 }
 
+func validateStagingDirectory(path string) error {
+	directory, err := openProtectedAuthorityDirectory(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(validatePrivateInputDirectory(directory), directory.Close())
+}
+
 func (session *SelectionSession) checkStagingParent(parent string, local map[string]string) error {
 	roots := make([]string, 0, 1+len(local))
 	roots = append(roots, session.Root)
@@ -167,8 +179,12 @@ type renderCall struct {
 }
 
 func (session *SelectionSession) acquireRenderBatch(ctx context.Context, resolved *core.ResolvedComposition, prepared []*core.PreparedArtifactExecution, requests []renderInput, client *http.Client) ([]renderCall, error) {
+	return session.acquireExecutionBatch(ctx, resolved, prepared, requests, client, "render")
+}
+
+func (session *SelectionSession) acquireExecutionBatch(ctx context.Context, resolved *core.ResolvedComposition, prepared []*core.PreparedArtifactExecution, requests []renderInput, client *http.Client, operationName string) ([]renderCall, error) {
 	if len(prepared) != len(requests) {
-		return nil, errors.New("explicit render payload required for every selected service")
+		return nil, fmt.Errorf("explicit %s payload required for every selected service", operationName)
 	}
 	operations := resolved.Record().Operations
 	batch := make([]renderCall, len(prepared))
@@ -179,13 +195,13 @@ func (session *SelectionSession) acquireRenderBatch(ctx context.Context, resolve
 			return input.target == request.Target && input.service == request.Service && input.protocol == request.Protocol
 		})
 		if index < 0 {
-			return nil, errors.New("render payload does not match selected service and protocol")
+			return nil, fmt.Errorf("%s payload does not match selected service and protocol", operationName)
 		}
 		operation := slices.IndexFunc(operations, func(op core.ResolvedArtifactOperation) bool {
-			return op.Target == request.Target && op.Service == request.Service && op.Operation == "render"
+			return op.Target == request.Target && op.Service == request.Service && op.Operation == operationName
 		})
 		if operation < 0 {
-			return nil, errors.New("selected render operation is missing")
+			return nil, fmt.Errorf("selected %s operation is missing", operationName)
 		}
 		artifact := operations[operation].Executor.Artifact
 		if artifact.MediaType != "application/octet-stream" {
@@ -230,6 +246,13 @@ func (session *SelectionSession) completeRender(ctx context.Context, snapshot *s
 const renderShutdownTimeout = 10 * time.Second
 
 func invokeRender(ctx context.Context, path string, execution *basev0.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (receipt *basev0.ArtifactExecutionReceipt, renderErr error) {
+	if execution == nil || (execution.Protocol != artifactexecution.BuilderRender && execution.Protocol != artifactexecution.SolutionRender) {
+		return nil, errors.New("unsupported render protocol")
+	}
+	return invokeArtifactExecution(ctx, path, execution, payload, directory, opts)
+}
+
+func invokeArtifactExecution(ctx context.Context, path string, execution *basev0.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (receipt *basev0.ArtifactExecutionReceipt, renderErr error) {
 	conn, err := manager.LoadArtifact(ctx, path, execution, opts...)
 	if err != nil {
 		return nil, err
@@ -241,10 +264,27 @@ func invokeRender(ctx context.Context, path string, execution *basev0.ArtifactEx
 		defer cancel()
 		if shutdownErr := conn.CloseAndWait(cleanupCtx); shutdownErr != nil {
 			receipt = nil
-			renderErr = errors.Join(renderErr, fmt.Errorf("shutdown selected renderer: %w", shutdownErr))
+			operation := "renderer"
+			if execution.Protocol == artifactexecution.BuilderBuild {
+				operation = "builder"
+			}
+			renderErr = errors.Join(renderErr, fmt.Errorf("shutdown selected %s: %w", operation, shutdownErr))
 		}
 	}()
 	switch execution.Protocol {
+	case artifactexecution.BuilderBuild:
+		request, ok := proto.Clone(payload).(*builderv0.BuildRequest)
+		if !ok {
+			return nil, errors.New("builder build payload type mismatch")
+		}
+		request.Execution, request.OutputDirectory = execution, directory
+		client := services.NewBuilderAgentClient(conn.GRPCConn())
+		client.ProcessInfo = conn.ProcessInfo()
+		response, callErr := client.Build(ctx, request)
+		if callErr != nil {
+			return nil, errors.New("selected builder build failed; no staged result was accepted")
+		}
+		return response.Execution, nil
 	case artifactexecution.BuilderRender:
 		request, ok := proto.Clone(payload).(*builderv0.DeploymentRequest)
 		if !ok {

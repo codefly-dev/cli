@@ -2,13 +2,17 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -76,6 +80,15 @@ func (r *builderRenderer) BuildCapabilities(context.Context, *builderv0.BuildCap
 	return &builderv0.BuildCapabilitiesResponse{ExecutionContracts: []string{r.contract}}, nil
 }
 
+func (r *builderRenderer) Build(ctx context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+	receipt, err := r.emit(ctx, request.Execution, artifactexecution.BuilderBuild, request.OutputDirectory)
+	state := builderv0.BuildStatus_SUCCESS
+	if os.Getenv("RENDER_TEST_MODE") == "failed" {
+		state = builderv0.BuildStatus_ERROR
+	}
+	return &builderv0.BuildResponse{State: &builderv0.BuildStatus{State: state}, Execution: receipt}, err
+}
+
 func (r *builderRenderer) Deploy(ctx context.Context, request *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
 	receipt, err := r.emit(ctx, request.Execution, artifactexecution.BuilderRender, request.OutputDirectory)
 	state := builderv0.DeploymentStatus_SUCCESS
@@ -99,6 +112,12 @@ func (r *renderer) emit(ctx context.Context, execution *basev0.ArtifactExecution
 	data, err := json.Marshal(execution)
 	if err != nil {
 		return nil, err
+	}
+	if protocol == artifactexecution.BuilderBuild {
+		data, err = buildSelectedSource(ctx, execution)
+		if err != nil {
+			return nil, err
+		}
 	}
 	receipt := &basev0.ArtifactExecutionReceipt{Identity: execution.Identity}
 	for _, output := range execution.Outputs {
@@ -126,6 +145,40 @@ func (r *renderer) emit(ctx context.Context, execution *basev0.ArtifactExecution
 		}
 	}
 	return receipt, nil
+}
+
+// The test builder performs real packaging of the declared source bytes, not
+// an acknowledgement-only Build implementation.
+func buildSelectedSource(ctx context.Context, execution *basev0.ArtifactExecution) ([]byte, error) {
+	if len(execution.Inputs) != 1 || execution.Inputs[0].Name != "source" {
+		return nil, errors.New("packager requires exactly one declared source")
+	}
+	input := execution.Inputs[0]
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, input.Uri, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, errors.New("source acquisition failed")
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil || fmt.Sprintf("sha256:%x", sha256.Sum256(data)) != input.Digest {
+		return nil, errors.New("source bytes differ from selected digest")
+	}
+	var output bytes.Buffer
+	writer := gzip.NewWriter(&output)
+	if _, err = writer.Write(data); err != nil {
+		return nil, err
+	}
+	if err = writer.Close(); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
 }
 
 func main() {

@@ -6,12 +6,20 @@ No agent names, source-family guesses or linked-Core comparisons are admission r
 
 ## Available commands
 
-`codefly composition` emits structured JSON. Selection/admission commands require:
+`codefly composition` emits structured JSON.
+
+Command JSON and configuration-identity key inputs must be regular files of at
+most 16 MiB. Descriptor-validated nonblocking opens reject FIFOs before waiting
+for a peer; approval signing keys retain their stricter private 64-byte rule.
+
+Selection/admission commands require:
 
 - `--workspace`: the workspace declaring package-scoped `module-trust`.
 - `--product`: the directory containing Core's `module.codefly.yaml` descriptor.
 - Exactly one of `--configuration` (a JSON object of effective configuration
   values) or `--render-requests` (the actual typed render payloads described below).
+  For source builds, also supply `--build-requests` with `--render-requests` on
+  selection, staging and every subsequent inspection/admission command.
   Values may contain secrets and are not printed or persisted by these commands.
 - `--identity-key`: a private file containing at least 32 raw bytes. Use the same
   protected key when comparing inputs across qualification environments. Core
@@ -71,6 +79,13 @@ Commands:
   all selected services and emit their bound protobuf-JSON render requests.
   Requires signed artifact-operation declarations and media types. Does not
   invoke an executor, provide configuration values or establish qualification.
+- `stage-build --output-parent ABSOLUTE_DIRECTORY --without-principal`: requires
+  both request files and explicit source-build selections. Ask Core for the exact
+  build operations, acquire selected native executors, authenticate their live
+  contracts, invoke Builder Build and verify receipts/files after checked group
+  shutdown. Returns a private batch directory and `build.json` invocation evidence.
+  It does not publish outputs, issue signed derived-output statements, assign an
+  artifact URI, run qualification or authorize deployment.
 - `stage-render INPUTS.json --output-parent ABSOLUTE_DIRECTORY --without-principal`:
   requires `--render-requests`; acquire exact selected executors, authenticate
   their live contracts through Core's loader, invoke Builder Deploy or Solution
@@ -287,7 +302,9 @@ Changing environment, configuration, values or target changes this identity.
 
 The staging parent must already exist at a canonical absolute path outside the
 product and independent local checkouts. Each invocation creates its own private
-directory; a complete `inputs.json` is written atomically only after every service
+directory with trusted ownership/protected ancestry and no inherited allow ACL;
+these checks precede invocation, including on render staging. A complete
+`inputs.json` is written atomically only after every service
 passes verification. Failure/cancellation removes only that invocation's staging
 directory, reporting cleanup failures. A host crash can leave an incomplete directory without a completion
 record; it is not approval, and existing completed batches are not overwritten.
@@ -309,6 +326,36 @@ agent coordinates, provider descriptors, downloads or install mutations occur.
 Owner executors must truthfully implement `artifact-execution/v1`; linking newer
 Core does not opt them in. Tests use independently built authentic subprocesses,
 not published production executor qualification.
+
+### Selected Source Builds
+
+`--build-requests` is an array of `{target, service, request}` objects. `request`
+is strict protobuf JSON for Core's Builder `BuildRequest`; `execution` and
+`outputDirectory` are host-owned and cannot be supplied. Exactly one payload is
+required for each computed source-build operation. `sourceBuilds` in the initial
+selection remains an explicit choice; staging never turns it on automatically.
+Build and render payloads share one HMAC configuration identity. Existing
+render-only identities remain unchanged, while adding/removing/changing a build
+payload invalidates the effective identity used by later render and admission.
+
+The build batch validates/acquires its selected executors before invoking any.
+The private output directory requires trusted ownership and protected ancestry;
+inherited allow ACLs are refused before execution. Each executor receives Core's
+bound source URIs/digests and must honor them. No dependency-source checkout or
+aggregate tree is created. Network access for a source-fetching executor must be
+explicitly allowed; a missing sandbox is never silently replaced with native
+execution. Failed/canceled calls, missing capabilities, invalid receipts or
+shutdown failures remove only the incomplete batch. Earlier outputs are rehashed
+after later executors finish. Existing completed batches and release selections
+are not overwritten. Interrupted processes can leave incomplete directories;
+there is no automatic resume or qualification claim.
+
+Build receipts are not authorized derived outputs. Core still requires an
+owner-authorized build signer and signed URI plus the prepared build execution
+identity before derived bytes can enter render/admission. Publication/signing
+integration remains incomplete; this command does not invent a URL or publish
+under the current release hold. Real TLS/source-packaging and process tests prove
+the CLI boundary, not adoption by production builders.
 
 ## Explicit Deployment Blocker
 
@@ -332,9 +379,13 @@ admission at every low-level transport. It must be replaced by selection-bound
 execution and effect-time Core admission, not removed to make deployments pass.
 
 Not delivered: running the effective combination's functional/stateful tests,
-selection-bound builds, OCI acquisition, production deployment authorization integration,
+derived-output publication/signing, OCI acquisition, production deployment authorization integration,
 actual observed/rollback identity comparison, authorized upstream submission,
 or hot onboarding without host restart. HTTP/Git/process regressions establish
 selection and evidence plumbing, not real database retained-data recovery.
+Runtime `TestRequest.selection_id` acknowledges test selectors, not the tested
+composition's runtime/render/target identities. An ordinary workspace test pass
+must not be relabelled as exact-composition qualification without that binding
+and the qualification authority's actual execution evidence.
 The generic environment primitives and the deprecated cell wrapper remain under
 Core review; these commands do not establish a replacement wrapper or a rename.

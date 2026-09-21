@@ -564,6 +564,12 @@ populates the pinned source without rerunning the agent.
 stages exact selected executors. See [the complete command contract](composition-selections.md)
 for required configuration identity flags and deployment guards.
 
+`composition stage-build` stages Core-selected source builds using
+`--build-requests` plus `--render-requests`, an explicit staging parent and
+sandbox/principal choices. Build and render configuration share one identity.
+It produces verified local build evidence, not a published artifact, signed
+derived output or qualification. Keep both request files for subsequent commands.
+
 `codefly composition --workspace . inspect-local-target local` reads the explicit
 local k3d environment's live target binding without applying resources. It needs
 no selection/configuration flags. `--expected-identity DIGEST` rechecks an

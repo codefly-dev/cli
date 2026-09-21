@@ -39,3 +39,21 @@ func TestRenderAndConfigurationModesAreMutuallyExclusive(t *testing.T) {
 	command.SetArgs([]string{"inspect", "--configuration", "config", "--render-requests", "requests"})
 	require.ErrorContains(t, command.ExecuteContext(t.Context()), "were all set")
 }
+
+func TestBuildConfigurationRequiresRenderInputsAndRejectsEmptyOrUnknownFields(t *testing.T) {
+	command := NewCommand()
+	command.SilenceErrors, command.SilenceUsage = true, true
+	command.SetArgs([]string{"stage-build", "--build-requests", "build.json"})
+	require.ErrorContains(t, command.ExecuteContext(t.Context()), "requires --render-requests")
+	path := filepath.Join(t.TempDir(), "build.json")
+	for _, content := range []string{"null", "[]", `[{"private-value":"secret"}]`} {
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		_, err := readBuildConfiguration(path)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "private-value")
+	}
+	build, _, err := NewCommand().Find([]string{"stage-build"})
+	require.NoError(t, err)
+	require.Equal(t, "required", build.Flags().Lookup("sandbox").DefValue)
+	require.Equal(t, "false", build.Flags().Lookup("without-principal").DefValue)
+}

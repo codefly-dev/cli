@@ -76,9 +76,22 @@ func decodeRenderInputs(inputs []RenderInput) ([]renderInput, error) {
 // RenderConfigurationIdentity binds the exact wire configuration for all calls.
 // Sorting and deterministic protobuf encoding ignore JSON spelling/key order.
 func RenderConfigurationIdentity(key []byte, inputs []RenderInput) (string, error) {
+	return ExecutionConfigurationIdentity(key, inputs, nil)
+}
+
+// ExecutionConfigurationIdentity includes build and render payloads in one
+// identity so a later render cannot silently use a different build configuration.
+func ExecutionConfigurationIdentity(key []byte, inputs []RenderInput, builds []BuildInput) (string, error) {
 	decoded, err := decodeRenderInputs(inputs)
 	if err != nil {
 		return "", err
+	}
+	if len(builds) != 0 {
+		buildRequests, buildErr := decodeBuildInputs(builds)
+		if buildErr != nil {
+			return "", buildErr
+		}
+		decoded = append(decoded, buildRequests...)
 	}
 	values := make(map[string]string, len(decoded))
 	for _, input := range decoded {
