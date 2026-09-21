@@ -321,7 +321,7 @@ func init() {
 	RootCmd.AddCommand(configcmd.Cmd)
 	RootCmd.AddCommand(providercmd.Cmd)
 
-	// Declare and inspect deploy environments (import a cell contract, show).
+	// Declare and inspect deploy environments (import a coordinate contract, show).
 	RootCmd.AddCommand(environment.Cmd)
 
 	// Static help plus optional workspace-aware AI guidance.

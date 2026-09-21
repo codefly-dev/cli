@@ -557,7 +557,7 @@ environments:
 
 // TestImportPreservesClusterKubeconfig is the regression test for the finding
 // that importing replaced the cluster node wholesale, dropping the operator's
-// kubeconfig path — a local fact the cell contract never carries. kind/context
+// kubeconfig path — a local fact the coordinate contract never carries. kind/context
 // must update; kubeconfig must survive.
 func TestImportPreservesClusterKubeconfig(t *testing.T) {
 	src := `name: acme
