@@ -20,5 +20,6 @@ import (
 // the in-container static builds that opt in with `codefly_nosemantic` get the
 // analyzer-free variant — see source_nosemantic.go.
 func newSource(root string) *Source {
-	return &Source{server: codecore.NewDefaultCodeServer(root, codecore.WithSemanticAnalyzer(semantic.New()))}
+	analyzer := semantic.New()
+	return &Source{server: codecore.NewDefaultCodeServer(root, codecore.WithSemanticAnalyzer(analyzer)), analyzer: analyzer}
 }
