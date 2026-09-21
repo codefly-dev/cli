@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/resources"
+	"github.com/spf13/cobra"
 )
 
 const fixtureContract = `{
-  "schema": "codefly/cell/v2",
-  "cell": "hosted-eastus2",
+  "schema": "codefly/coordinate/v1",
   "coordinate": "hosted-eastus2",
   "environment": {
     "name": "azure",
@@ -196,9 +196,10 @@ func TestImportPreservesOperatorFields(t *testing.T) {
 func TestImportRejectsRemovedContractsWithoutWriting(t *testing.T) {
 	for name, contract := range map[string]string{
 		"legacy inventory":   `{"schema":"codefly/cell/v1","databases":[{"engine":"postgres"}]}`,
+		"superseded cell/v2": `{"schema":"codefly/cell/v2","cell":"hosted-eastus2","environment":{"name":"azure","namespace":"acme"}}`,
 		"transport":          strings.Replace(fixtureContract, `"port": 5432,`, `"port": 5432,"transport":{"mode":"proxy"},`, 1),
 		"audit sinks":        strings.Replace(fixtureContract, `"name": "azure",`, `"name": "azure","audit-sinks":[{"name":"audit"}],`, 1),
-		"unknown capability": strings.Replace(fixtureContract, `"cell": "hosted-eastus2",`, `"cell": "hosted-eastus2","requires_capabilities":["managed-identity-transport"],`, 1),
+		"unknown capability": strings.Replace(fixtureContract, `"coordinate": "hosted-eastus2",`, `"coordinate": "hosted-eastus2","requires_capabilities":["managed-identity-transport"],`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeWorkspace(t, existingAzureWorkspace)
@@ -222,13 +223,13 @@ func TestImportRejectsWrongSchema(t *testing.T) {
 	opts := importOptions{
 		dir:          dir,
 		envName:      "azure",
-		contractData: []byte(`{"schema": "obin-infra/cell-contract/v1", "cell": "x"}`),
+		contractData: []byte(`{"schema": "obin-infra/cell-contract/v1", "coordinate": "x"}`),
 		now:          time.Now(),
 		stdout:       &bytes.Buffer{},
 	}
 	err := runImport(context.Background(), &opts)
-	if err == nil || !strings.Contains(err.Error(), "unsupported cell-contract schema") {
-		t.Fatalf("err = %v, want unsupported cell-contract schema", err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported coordinate-contract schema") {
+		t.Fatalf("err = %v, want unsupported coordinate-contract schema", err)
 	}
 }
 
@@ -250,7 +251,7 @@ func TestImportRejectsRetargetingWithoutWriting(t *testing.T) {
 
 func TestImportCarriesGenericFieldsIntoExistingEnvironment(t *testing.T) {
 	dir := writeWorkspace(t, existingAzureWorkspace)
-	contract := `{"schema":"codefly/cell/v2","environment":{
+	contract := `{"schema":"codefly/coordinate/v1","environment":{
 	  "name":"azure","namespace":"acme","configuration-profile":"staging",
 	  "managed-services":{"store":{
 	    "kind":"external","external-name":"endpoint.example","port":8443,
@@ -300,6 +301,91 @@ func TestImportRestampsProvenanceComment(t *testing.T) {
 	content := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
 	if n := strings.Count(content, provenanceMarker); n != 1 {
 		t.Fatalf("provenance comment count = %d, want 1\n%s", n, content)
+	}
+}
+
+func TestImportCarriesResolvedServiceValues(t *testing.T) {
+	dir := writeWorkspace(t, existingAzureWorkspace)
+	contract := `{"schema":"codefly/coordinate/v1","coordinate":"hosted-eastus2","environment":{
+	  "name":"azure","namespace":"acme",
+	  "service-config":{"services":{"frontend":{"values":{"region":"eastus2"}}}}
+	}}`
+	doImport(t, dir, importOptions{contractData: []byte(contract)})
+
+	ws := loadWorkspace(t, dir)
+	env := ws.FindEnvironment("azure")
+	if env == nil {
+		t.Fatal("azure environment missing after import")
+	}
+	if env.ServiceConfig == nil {
+		t.Fatal("service-config dropped on import")
+	}
+	got := env.ServiceConfig.Services["frontend"].Values
+	if want := map[string]string{"region": "eastus2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolved values = %v, want %v", got, want)
+	}
+}
+
+func TestImportReplacesLegacyProvenanceComment(t *testing.T) {
+	stamped := "name: acme\nlayout: modules\nenvironments:\n" +
+		"    # " + legacyProvenanceMarker + " hosted-eastus2 (hosted-eastus2) on 2026-09-05T12:00:00Z; re-run: codefly environment import azure --cell-contract …\n" +
+		"    - name: azure\n      namespace: acme\n"
+	dir := writeWorkspace(t, stamped)
+
+	doImport(t, dir, importOptions{})
+
+	content := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	if strings.Contains(content, legacyProvenanceMarker) {
+		t.Fatalf("pre-coordinate/v1 provenance comment survived re-import\n%s", content)
+	}
+	if n := strings.Count(content, provenanceMarker); n != 1 {
+		t.Fatalf("provenance comment count = %d, want 1\n%s", n, content)
+	}
+}
+
+func TestImportAcceptsFormerContractFlagSpelling(t *testing.T) {
+	if importCmd.Flags().Lookup("coordinate-contract") == nil {
+		t.Fatal("--coordinate-contract is not registered")
+	}
+	former := importCmd.Flags().Lookup("cell-contract")
+	if former == nil {
+		t.Fatal("--cell-contract is not registered")
+	}
+	if former.Deprecated == "" {
+		t.Fatal("--cell-contract is not marked deprecated")
+	}
+
+	for name, tc := range map[string]struct {
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		"current":         {args: []string{"--coordinate-contract", "c.json"}, want: "c.json"},
+		"former spelling": {args: []string{"--cell-contract", "c.json"}, want: "c.json"},
+		"neither":         {args: nil, want: ""},
+		"both":            {args: []string{"--coordinate-contract", "a.json", "--cell-contract", "b.json"}, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.Flags().String("coordinate-contract", "", "")
+			cmd.Flags().String("cell-contract", "", "")
+			if err := cmd.Flags().Parse(tc.args); err != nil {
+				t.Fatal(err)
+			}
+			got, err := contractFlag(cmd)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("passing both spellings accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("contractFlag = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

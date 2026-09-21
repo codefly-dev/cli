@@ -946,27 +946,29 @@ the next step) to link the generated library into the entry service locally.
 Declare and inspect the deploy environments in `workspace.codefly.yaml`.
 
 ```bash
-codefly environment import <env> --cell-contract <file|-> [--namespace <ns>] [--dry-run]
+codefly environment import <env> --coordinate-contract <file|-> [--namespace <ns>] [--dry-run]
 codefly environment show <env> [--json]
 ```
 
 #### `codefly environment import`
 
-Import a producer-independent `codefly/cell/v2` descriptor whose `environment`
+Import a producer-independent `codefly/coordinate/v1` descriptor whose `environment`
 contains Codefly's environment fields. Producers supply resolved endpoints,
 ports, secret references, runtime identities and delivery paths. The CLI does
 not interpret a provider's infrastructure inventory or infer service aliases.
 
 ```bash
-codefly environment import production --cell-contract cell.json --dry-run
-codefly environment import production --cell-contract cell.json
+codefly environment import production --coordinate-contract coordinate.json --dry-run
+codefly environment import production --coordinate-contract coordinate.json
 ```
 
 The requested environment and namespace must match the descriptor. The namespace
 defaults to the environment's existing namespace or the workspace name; select
 another declared target with `--namespace`. This flag does not rewrite the
-contract's delivery paths or secret references. Legacy v1 descriptors are rejected;
-their producers must emit explicit v2 declarations.
+contract's delivery paths or secret references. The superseded `codefly/cell/v1`
+and `codefly/cell/v2` descriptors are rejected; their producers must emit explicit
+`codefly/coordinate/v1` declarations. `--cell-contract` remains accepted as the
+former spelling of `--coordinate-contract` for one release.
 
 Declared fields replace their exact named values. Maps merge by explicit key;
 omitted fields and unrelated entries remain intact. Explicit empty maps, empty
