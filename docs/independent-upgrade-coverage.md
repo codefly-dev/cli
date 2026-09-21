@@ -75,6 +75,14 @@ exact inputs, and inspect the actual deployment.
   synced use records. Concurrent processes and lost replies cannot refund use;
   historical inspection does not assert deployment. No consuming deployment
   adapter, cross-host/target-wide fence or reset/retry command is delivered.
+- Private approved-input preparation copies runtime bytes and Core-declared
+  render outputs, re-admits the copies, and retains independent evidence. Named
+  read-only handles survive source cache/staging removal; reservation freshly
+  rechecks those private bytes, current selection and host authority. macOS
+  inherited allow ACLs are refused before copying. Deterministic real-filesystem
+  post-link cancellation/cleanup-denial tests assert uncertain consumption is
+  never refunded. Snapshots are ephemeral, not crash-resumable deployments; no
+  production effect caller or guard relaxation is delivered by this increment.
 - Daemon monitoring uses Core's authenticated read-only group ownership API;
   executable names are display-only, and errors do not imply orphanhood.
 - Dependabot may propose Core build-dependency updates. Runtime admission and

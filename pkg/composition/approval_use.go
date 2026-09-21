@@ -118,11 +118,19 @@ func (session *SelectionSession) approvalUsePath(identity string) (string, strin
 	if !ok || err != nil || len(digest) != 32 || name != strings.ToLower(name) {
 		return "", "", errors.New("approval use identity must be a canonical SHA-256 digest")
 	}
+	directory, product, err := session.approvalStorageDirectory("composition-approval-uses")
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Join(directory, name+".json"), product, nil
+}
+
+func (session *SelectionSession) approvalStorageDirectory(name string) (string, string, error) {
 	path, err := session.approvalAuthorityPath()
 	if err != nil {
 		return "", "", err
 	}
-	directory := filepath.Join(filepath.Dir(filepath.Dir(path)), "composition-approval-uses")
+	directory := filepath.Join(filepath.Dir(filepath.Dir(path)), name)
 	// Recheck the new storage directory against independent local checkouts too.
 	local := map[string]string{}
 	data, err := os.ReadFile(filepath.Join(session.Root, LocalSelectionFile))
@@ -138,7 +146,7 @@ func (session *SelectionSession) approvalUsePath(identity string) (string, strin
 		return "", "", err
 	}
 	product := "sha256:" + strings.TrimSuffix(filepath.Base(path), ".json")
-	return filepath.Join(directory, name+".json"), product, nil
+	return directory, product, nil
 }
 
 // InspectApprovalUse is historical evidence, independent of current key
@@ -183,12 +191,7 @@ func publishApprovalUse(ctx context.Context, directory *os.Root, name string, da
 	}
 	linked := false
 	defer func() {
-		if cleanupErr := directory.Remove(temporary); cleanupErr != nil {
-			resultErr = errors.Join(resultErr, cleanupErr)
-		}
-		if resultErr != nil && linked {
-			resultErr = errors.Join(ErrApprovalUseUncertain, resultErr)
-		}
+		resultErr = finalizeApprovalUse(ctx, directory, temporary, linked, resultErr)
 	}()
 	if err = validateAuthorityAccess(file); err != nil {
 		return errors.Join(err, file.Close())
@@ -207,5 +210,18 @@ func publishApprovalUse(ctx context.Context, directory *os.Root, name string, da
 		return errors.Join(ErrApprovalUseUncertain, fmt.Errorf("publish approval use without replacing records: %w", err))
 	}
 	linked = true
-	return errors.Join(syncAuthorityDirectory(directory), ctx.Err())
+	return nil
+}
+
+// Once linked, neither a failed sync nor failed cleanup can refund the use.
+// Check cancellation after cleanup as well as before publication.
+func finalizeApprovalUse(ctx context.Context, directory *os.Root, temporary string, linked bool, resultErr error) error {
+	if linked {
+		resultErr = errors.Join(resultErr, syncAuthorityDirectory(directory))
+	}
+	resultErr = errors.Join(resultErr, directory.Remove(temporary), ctx.Err())
+	if linked && resultErr != nil {
+		return errors.Join(ErrApprovalUseUncertain, resultErr)
+	}
+	return resultErr
 }

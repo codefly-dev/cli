@@ -53,3 +53,22 @@ func TestApprovalAuthorityRejectsACLMutation(t *testing.T) {
 	_, err = session.InspectApprovalAuthority(t.Context())
 	require.NoError(t, err, "read-only ACLs do not permit authority replacement")
 }
+
+func TestApprovedInputsRejectInheritedReadACLBeforeCopying(t *testing.T) {
+	session, files, approval, checked, now := approvalUseFixture(t)
+	path, _, err := session.approvalStorageDirectory("composition-approved-inputs")
+	require.NoError(t, err)
+	require.NoError(t, os.Mkdir(path, 0o700))
+	grant := "everyone allow list,search,readattr,readextattr,readsecurity,file_inherit,directory_inherit"
+	output, err := exec.CommandContext(t.Context(), "chmod", "+a", grant, path).CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	t.Cleanup(func() { require.NoError(t, exec.Command("chmod", "-N", path).Run()) })
+	prepared, err := session.PrepareApprovedInputs(t.Context(), files, approval, checked.AuthorityDigest, now)
+	require.ErrorContains(t, err, "must not inherit allow ACLs")
+	require.Nil(t, prepared)
+	entries, err := os.ReadDir(path)
+	require.NoError(t, err)
+	require.Empty(t, entries, "no input bytes may be copied into inherited public-read storage")
+	_, err = session.InspectApprovalUse(t.Context(), checked.UseIdentity)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}

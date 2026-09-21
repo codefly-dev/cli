@@ -7,3 +7,8 @@ func validateAuthorityAccess(_ *os.File) error {
 	// already checked together with the owner on the open handle.
 	return nil
 }
+
+func validatePrivateInputAccess(_ *os.File) error {
+	// A private directory's zero group/other bits also bound named ACL grants.
+	return nil
+}

@@ -9,7 +9,7 @@ package composition
 // Darwin extended ACLs can grant mutation independently of POSIX mode bits.
 // Reject mutation grants; read-only grants and ordinary deny-delete ACLs remain
 // valid. Inspect the open handle, not a path that could resolve differently.
-static int approval_acl_check(int fd) {
+static int approval_acl_check(int fd, int private_storage) {
     acl_t acl = acl_get_fd_np(fd, ACL_TYPE_EXTENDED);
     // On an already-open descriptor Darwin reports ENOENT for no extended ACL.
     // Other errors (including unsupported retrieval) are not absence evidence.
@@ -31,6 +31,10 @@ static int approval_acl_check(int fd) {
             break;
         }
         if (tag != ACL_EXTENDED_ALLOW) continue;
+        if (private_storage) {
+            result = EPERM;
+            break;
+        }
         acl_perm_t writes[] = {ACL_WRITE_DATA, ACL_APPEND_DATA, ACL_DELETE,
             ACL_DELETE_CHILD, ACL_WRITE_ATTRIBUTES, ACL_WRITE_EXTATTRIBUTES,
             ACL_WRITE_SECURITY, ACL_CHANGE_OWNER};
@@ -57,10 +61,19 @@ import (
 )
 
 func validateAuthorityAccess(file *os.File) error {
-	code := C.approval_acl_check(C.int(file.Fd()))
+	code := C.approval_acl_check(C.int(file.Fd()), 0)
 	runtime.KeepAlive(file)
 	if code != 0 {
 		return fmt.Errorf("approval authority ACL must not grant mutation: %w", syscall.Errno(code))
+	}
+	return nil
+}
+
+func validatePrivateInputAccess(file *os.File) error {
+	code := C.approval_acl_check(C.int(file.Fd()), 1)
+	runtime.KeepAlive(file)
+	if code != 0 {
+		return fmt.Errorf("private approved inputs must not inherit allow ACLs: %w", syscall.Errno(code))
 	}
 	return nil
 }

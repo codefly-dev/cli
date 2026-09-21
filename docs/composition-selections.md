@@ -208,6 +208,27 @@ is deliberately no reserve/reset/retry CLI command: deployment owners must first
 integrate qualification, exact-byte application, mutation authorization, target
 fencing and observed/rollback reconciliation. Existing deployment guards remain.
 
+`SelectionSession.PrepareApprovedInputs` provides a separate, process-local
+input-isolation primitive. It verifies the host-authorized approval and actual
+source inputs, copies admitted runtime artifacts and declared render outputs
+into a random private directory under `CODEFLY_HOME/composition-approved-inputs/`,
+then re-admits those copies through Core. Equal authenticated runtime digests can
+share a copy without losing their instance/name identities. Caller-owned receipts,
+qualifications and approval records are defensively copied. Private-directory
+permissions and macOS allow ACLs are checked before copying any bytes.
+
+The returned `ApprovedInputs` opens only named approved inputs as read-only
+handles. Its `Reserve` method freshly checks the private copies, current selection,
+host authority and literal expiry before calling durable approval consumption.
+Changing or removing original cache/staging paths does not change these copies.
+`Close` removes only that snapshot and never refunds approval use; cleanup errors
+must be handled, and cleanup can be retried. These copies are not synced for crash
+recovery, and interrupted processes may leave private directories behind. There
+is no automatic resume or deployment retry. Same-UID/root tampering is not an
+isolation guarantee. No production effect caller uses this API yet: target
+verification/fencing, qualification execution and exact-byte application remain
+required, and all effect guards remain in place.
+
 Commit the product descriptor and release selection file. Keep the identity key,
 configuration files, `.codefly/composition-local.json`, artifact cache and
 `.codefly-composition.lock` machine-local. Commands never edit a checkout, Git
@@ -281,7 +302,7 @@ admission at every low-level transport. It must be replaced by selection-bound
 execution and effect-time Core admission, not removed to make deployments pass.
 
 Not delivered: running the effective combination's functional/stateful tests,
-selection-bound builds, OCI acquisition, deployment authorization consumption,
+selection-bound builds, OCI acquisition, production deployment authorization integration,
 actual observed/rollback identity comparison, authorized upstream submission,
 or hot onboarding without host restart. HTTP/Git/process regressions establish
 selection and evidence plumbing, not real database retained-data recovery.
