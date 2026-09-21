@@ -88,9 +88,8 @@ An agent used to build an artifact is not necessarily present in production.
    build/render inputs using Core's now-published execution binding API.
    Batch request preparation, exact selected-executor loading, typed render
    invocation and staged-output verification are implemented. Build invocation
-   and qualified effect-boundary integration remain incomplete. Staging is not
-   shutdown-qualified: Core connection cleanup can leave a tracked child writer
-   alive, as detailed below.
+   and qualified effect-boundary integration remain incomplete. Staging now
+   requires checked registered-group shutdown, with the limits detailed below.
 2. **Local development execution.** Local records preserve release choices and
    bind identity to actual bytes; driving builds/tests from those records remains
    blocked by owner executor adoption and build/test execution wiring. Restoring
@@ -124,7 +123,7 @@ An agent used to build an artifact is not necessarily present in production.
 
 ## Concrete integration points and blockers
 
-The CLI consumes pushed Core `v0.3.41-0.20260921020008-5fe990d2c3a1`, with
+The CLI consumes pushed Core `v0.3.41-0.20260921024138-3264a63d712e`, with
 `GOWORK=off` and no replacement. Uncommitted Core files are not a dependency.
 This is not the unpublished v0.3.41 tag and does not authorize a release.
 
@@ -149,17 +148,21 @@ the sandbox integration test exercises UDS with network denied. No URI/name
 inference, install mutation or parallel CLI loader is substituted. Explicit rejection guards
 remain; positive selection-bound deployment and observation are incomplete.
 
-Cross-repo review subsequently reproduced a shutdown defect in consumed Core
+Cross-repo review reproduced a shutdown defect in previously consumed Core
 `5fe990d2c3a1`: `AgentConn.Close` can return after the leader exits while a child
 in the same tracked group continues writing. The owning real-process regression
-is recorded in `/tmp/core584-shutdown-repro.log`. Passing CLI staging tests did
-not establish descendant quiescence. Core #589 is implementing authenticated
-group shutdown with an error-reporting API; no tested pushed replacement is yet
-consumed. CLI must await successful shutdown using a bounded fresh cleanup
-context, propagate cleanup failures, and only then verify/publish staged evidence.
-Current completion records are not shutdown-qualified. This blocks staging
-qualification as well as deployment qualification; no CLI kill workaround or
-effect-guard removal closes it.
+is recorded in `/tmp/core584-shutdown-repro.log`. The earlier CLI tests missed it.
+Consumed Core `3264a63d712e` supplies `CloseAndWait`: CLI now requires successful
+authenticated group shutdown on a fresh ten-second cleanup context, joins
+shutdown and render errors, discards the receipt on failure, and only then
+verifies output bytes and publishes completion. Real CLI regressions cover
+same-group writers, cancellation, filesystem cleanup denial on both protocols,
+combined operation/cleanup errors and absence of a completion record on failure.
+The cleanup-denial regression failed against the old CLI defer even with the new
+Core dependency; merely changing the dependency would have hidden the error.
+This is registered-group shutdown evidence, not an attestation about intentionally
+detached processes. Older records are not retroactively qualified, supplied
+receipts are not invocation/shutdown proof, and deployment effects remain guarded.
 
 The deployment integration must cover at least these effect-owning boundaries,
 not only the top-level `deploy` command:

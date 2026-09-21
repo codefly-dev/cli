@@ -10,7 +10,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/contract"
@@ -106,6 +110,11 @@ func (r *renderer) emit(ctx context.Context, execution *basev0.ArtifactExecution
 			Name: output.Name, MediaType: output.MediaType, Path: path, Digest: fmt.Sprintf("sha256:%x", sha256.Sum256(data)),
 		})
 	}
+	if control := os.Getenv("RENDER_TEST_CONTROL"); control != "" {
+		if err := controlledRender(ctx, control, filepath.Join(directory, execution.Outputs[0].Name+".json")); err != nil {
+			return nil, err
+		}
+	}
 	switch os.Getenv("RENDER_TEST_MODE") {
 	case "missing-receipt":
 		return nil, nil
@@ -120,6 +129,12 @@ func (r *renderer) emit(ctx context.Context, execution *basev0.ArtifactExecution
 }
 
 func main() {
+	if output := os.Getenv("RENDER_TEST_CHILD_OUTPUT"); output != "" {
+		if err := childWriter(output); err != nil {
+			panic(err)
+		}
+		return
+	}
 	address := flag.String("address-file", "", "Listening address output file")
 	contract := flag.String("contract", artifactexecution.Contract, "Explicit execution capability")
 	flag.Parse()
@@ -150,5 +165,69 @@ func main() {
 	}
 	if err := server.Serve(listener); err != nil {
 		panic(err)
+	}
+}
+
+func controlledRender(ctx context.Context, control, output string) error {
+	childPID := 0
+	if os.Getenv("RENDER_TEST_MODE") == "child-writer" {
+		path, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		child := exec.Command(path)
+		child.Env = append(os.Environ(), "RENDER_TEST_CHILD_OUTPUT="+output)
+		if err = child.Start(); err != nil {
+			return err
+		}
+		childPID = child.Process.Pid
+		go func() { _ = child.Wait() }()
+		if err = waitForFile(ctx, filepath.Join(control, "child-ready")); err != nil {
+			return err
+		}
+	}
+	data, err := json.Marshal(struct{ PGID, ChildPID int }{syscall.Getpgrp(), childPID})
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(control, "ready"), data, 0o600); err != nil {
+		return err
+	}
+	return waitForFile(ctx, filepath.Join(control, "release"))
+}
+
+func childWriter(output string) error {
+	// Stay in the inherited tracked group but outlive its leader's graceful exit.
+	signal.Ignore(syscall.SIGTERM, os.Interrupt)
+	control := os.Getenv("RENDER_TEST_CONTROL")
+	if err := os.WriteFile(filepath.Join(control, "child-ready"), []byte("ready"), 0o600); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := waitForFile(ctx, filepath.Join(control, "mutate")); err != nil {
+		return err
+	}
+	if err := os.WriteFile(output, []byte("surviving child changed output"), 0o600); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return nil
+}
+
+func waitForFile(ctx context.Context, path string) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }

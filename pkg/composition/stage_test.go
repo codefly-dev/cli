@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,11 @@ import (
 )
 
 func stageFixture(t *testing.T) (*SelectionSession, *DeploymentFiles, *StageOptions) {
+	t.Helper()
+	return stageFixtureWithSelection(t, []string{"left", "right"}, []string{"builder", "solution"})
+}
+
+func stageFixtureWithSelection(t *testing.T, targets, services []string) (*SelectionSession, *DeploymentFiles, *StageOptions) {
 	t.Helper()
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	// Keep real process sockets below the Unix-domain path length limit.
@@ -39,16 +45,21 @@ func stageFixture(t *testing.T) (*SelectionSession, *DeploymentFiles, *StageOpti
 	module := r.publish(t, manifest)
 	product := selectionManifest("team/product", "1.0.0")
 	var requests []RenderInput
-	for _, target := range []string{"left", "right"} {
+	for _, target := range targets {
 		instance := moduleDefault(target, module)
-		instance.Services.Include = []string{"builder", "solution"}
+		instance.Services.Include = services
 		product.Modules = append(product.Modules, instance)
-		requests = append(requests,
-			RenderInput{Target: "modules/" + target, Service: "builder", Protocol: artifactexecution.BuilderRender, Request: json.RawMessage(`{"environment":{"name":"test"}}`)},
-			RenderInput{Target: "modules/" + target, Service: "solution", Protocol: artifactexecution.SolutionRender, Request: json.RawMessage(`{"values":{"secret":"not-for-output"}}`)})
+		for _, input := range []RenderInput{
+			{Target: "modules/" + target, Service: "builder", Protocol: artifactexecution.BuilderRender, Request: json.RawMessage(`{"environment":{"name":"test"}}`)},
+			{Target: "modules/" + target, Service: "solution", Protocol: artifactexecution.SolutionRender, Request: json.RawMessage(`{"values":{"secret":"not-for-output"}}`)},
+		} {
+			if slices.Contains(services, input.Service) {
+				requests = append(requests, input)
+			}
+		}
 	}
 	root := r.publish(t, product)
-	session := r.session(t, &core.Descriptor{Kind: core.DescriptorKind, Name: "product", Base: core.Base{ID: root.ID, Version: root.Version}, Modules: core.ModuleInstances{Include: []string{"left", "right"}}})
+	session := r.session(t, &core.Descriptor{Kind: core.DescriptorKind, Name: "product", Base: core.Base{ID: root.ID, Version: root.Version}, Modules: core.ModuleInstances{Include: targets}})
 	key := bytes.Repeat([]byte{9}, 32)
 	session.ConfigurationIdentity, err = RenderConfigurationIdentity(key, requests)
 	require.NoError(t, err)

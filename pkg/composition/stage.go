@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/agents/services"
@@ -38,8 +39,8 @@ type StagedRender struct {
 	Record     *core.DeploymentRecord `json:"record"`
 }
 
-// StageRender invokes selected executors, closes their tracked processes, and
-// verifies output bytes. It never applies, publishes or grants deployment approval.
+// StageRender invokes selected executors, requires registered-group shutdown,
+// and verifies output bytes. It never applies, publishes or grants deployment approval.
 func (session *SelectionSession) StageRender(ctx context.Context, files *DeploymentFiles, options *StageOptions) (*StagedRender, error) {
 	if options == nil {
 		return nil, errors.New("explicit staging options are required")
@@ -226,12 +227,23 @@ func (session *SelectionSession) completeRender(ctx context.Context, snapshot *s
 	return &StagedRender{Directory: directory, InputsFile: inputsFile, Record: record}, nil
 }
 
-func invokeRender(ctx context.Context, path string, execution *basev0.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (*basev0.ArtifactExecutionReceipt, error) {
+const renderShutdownTimeout = 10 * time.Second
+
+func invokeRender(ctx context.Context, path string, execution *basev0.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (receipt *basev0.ArtifactExecutionReceipt, renderErr error) {
 	conn, err := manager.LoadArtifact(ctx, path, execution, opts...)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() {
+		// RPC cancellation must not cancel authenticated group shutdown. No
+		// receipt can establish completion while a registered writer survives.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), renderShutdownTimeout)
+		defer cancel()
+		if shutdownErr := conn.CloseAndWait(cleanupCtx); shutdownErr != nil {
+			receipt = nil
+			renderErr = errors.Join(renderErr, fmt.Errorf("shutdown selected renderer: %w", shutdownErr))
+		}
+	}()
 	switch execution.Protocol {
 	case artifactexecution.BuilderRender:
 		request, ok := proto.Clone(payload).(*builderv0.DeploymentRequest)

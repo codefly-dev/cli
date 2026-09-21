@@ -59,9 +59,9 @@ Commands:
 - `stage-render INPUTS.json --output-parent ABSOLUTE_DIRECTORY --without-principal`:
   requires `--render-requests`; acquire exact selected executors, authenticate
   their live contracts through Core's loader, invoke Builder Deploy or Solution
-  Render, call Core connection cleanup, and verify receipts against actual files.
-  Shutdown qualification is blocked by the Core defect described below: cleanup
-  currently does not prove that descendant output writers have stopped.
+  Render, require Core's checked registered-group shutdown, and verify receipts
+  against actual files. Shutdown failure discards the receipt and prevents a
+  completion record, even when rendering succeeded.
   This stages only; no apply, image import, publication or approval is performed.
   Returns the new private directory, its `inputs.json` and Core's deployment-input
   record. Prior qualifications/executions are rejected, never silently reused.
@@ -109,17 +109,20 @@ Core's identity even when the checkout path or release label has not changed.
 
 ## Selected-executor staging
 
-**Known shutdown blocker at Core `5fe990d2c3a1`:** cross-repo review reproduced
-`AgentConn.Close` returning after leader exit while a child in the same tracked
-group remains alive. That child can continue writing staged files. Consequently,
-the current `invokeRender` cleanup followed by hashing is not proof of writer
-quiescence, and its `inputs.json` must not be treated as shutdown-qualified
-evidence. Existing passing staging tests did not cover a surviving child writer.
-Core #589 owns authenticated whole-group termination and an error-reporting
-shutdown API. CLI integration must use a bounded fresh cleanup context even when
-render was canceled, return cleanup failures, and require successful shutdown
-before output verification or completion publication. No raw-kill or parallel
-CLI lifecycle workaround is authorized. Deployment effects remain guarded.
+Core `3264a63d712e` fixes the reproduced `5fe990d2c3a1` shutdown defect, where
+`AgentConn.Close` could return while a same-group child continued writing.
+`invokeRender` now requires successful `CloseAndWait` before accepting a receipt.
+Cleanup uses a fresh ten-second context independent of RPC cancellation/deadline;
+shutdown errors are joined with render errors, never logged and ignored.
+Registry/private-directory cleanup failure also refuses completion. Tests use
+real authenticated child writers, canceled RPCs and filesystem cleanup denial.
+No raw-kill or parallel CLI lifecycle workaround is used.
+
+This establishes shutdown of the authenticated registered group, not intentionally
+detached processes or unrelated writers. It does not authorize deployment.
+Persisted receipt JSON alone cannot establish invocation or shutdown provenance;
+old completion records are not retroactively qualified by upgrading Core.
+Keep output isolation, effect-time revalidation and deployment guards in place.
 
 `--render-requests` is an array of `{target, service, protocol, request}` objects.
 Use Core instance targets, for example `modules/left`, and the protocol from the
@@ -160,10 +163,9 @@ not published production executor qualification.
 
 ## Explicit Deployment Blocker
 
-Core `5fe990d2c3a1` supplies execution binding and the acquired-executable loader.
-Both are consumed; selected-executor invocation is implemented, but staging is
-not shutdown-qualified pending the owning fix above. Qualified multi-instance
-deployment remains **blocked**.
+Core `3264a63d712e` supplies execution binding, the acquired-executable loader and
+checked registered-group shutdown. These are consumed by selected-executor
+staging. Qualified multi-instance deployment remains **blocked**.
 An explicit rejection stopgap guards local apply/image-import entry points,
 Flow deployment, platform sends, GitOps render/publication and rollback when a
 participating product declares nested selections. This is not completed positive
