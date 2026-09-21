@@ -59,7 +59,9 @@ Commands:
 - `stage-render INPUTS.json --output-parent ABSOLUTE_DIRECTORY --without-principal`:
   requires `--render-requests`; acquire exact selected executors, authenticate
   their live contracts through Core's loader, invoke Builder Deploy or Solution
-  Render, close each tracked process, and verify receipts against actual files.
+  Render, call Core connection cleanup, and verify receipts against actual files.
+  Shutdown qualification is blocked by the Core defect described below: cleanup
+  currently does not prove that descendant output writers have stopped.
   This stages only; no apply, image import, publication or approval is performed.
   Returns the new private directory, its `inputs.json` and Core's deployment-input
   record. Prior qualifications/executions are rejected, never silently reused.
@@ -107,6 +109,18 @@ Core's identity even when the checkout path or release label has not changed.
 
 ## Selected-executor staging
 
+**Known shutdown blocker at Core `5fe990d2c3a1`:** cross-repo review reproduced
+`AgentConn.Close` returning after leader exit while a child in the same tracked
+group remains alive. That child can continue writing staged files. Consequently,
+the current `invokeRender` cleanup followed by hashing is not proof of writer
+quiescence, and its `inputs.json` must not be treated as shutdown-qualified
+evidence. Existing passing staging tests did not cover a surviving child writer.
+Core #589 owns authenticated whole-group termination and an error-reporting
+shutdown API. CLI integration must use a bounded fresh cleanup context even when
+render was canceled, return cleanup failures, and require successful shutdown
+before output verification or completion publication. No raw-kill or parallel
+CLI lifecycle workaround is authorized. Deployment effects remain guarded.
+
 `--render-requests` is an array of `{target, service, protocol, request}` objects.
 Use Core instance targets, for example `modules/left`, and the protocol from the
 signed operation declaration. `request` is strict protobuf JSON of the existing
@@ -147,8 +161,9 @@ not published production executor qualification.
 ## Explicit Deployment Blocker
 
 Core `5fe990d2c3a1` supplies execution binding and the acquired-executable loader.
-Both are consumed; selected-executor staging is implemented. Qualified
-multi-instance deployment remains **blocked**.
+Both are consumed; selected-executor invocation is implemented, but staging is
+not shutdown-qualified pending the owning fix above. Qualified multi-instance
+deployment remains **blocked**.
 An explicit rejection stopgap guards local apply/image-import entry points,
 Flow deployment, platform sends, GitOps render/publication and rollback when a
 participating product declares nested selections. This is not completed positive
