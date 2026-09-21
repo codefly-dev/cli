@@ -107,6 +107,17 @@ func contractFlag(cmd *cobra.Command) (string, error) {
 	return cmd.Flags().GetString("coordinate-contract")
 }
 
+// labelled renders an optional identifier as a leading-space suffix. The
+// coordinate is an optional provenance label, so a contract that omits it would
+// otherwise leave a dangling subject in the message and in the comment this
+// stamps into workspace.codefly.yaml.
+func labelled(coordinate string) string {
+	if coordinate == "" {
+		return ""
+	}
+	return " " + coordinate
+}
+
 // readContract returns the descriptor bytes from path, or from stdin when path
 // is "-".
 func readContract(stdin io.Reader, path string) ([]byte, error) {
@@ -216,8 +227,8 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	if err := shared.WriteFileAtomic(ctx, file, updated, 0o600); err != nil {
 		return fmt.Errorf("cannot write %s: %w", resources.WorkspaceConfigurationName, err)
 	}
-	fmt.Fprintf(opts.stdout, "Imported coordinate contract %s into environment %q of %s.\n",
-		contract.Coordinate, opts.envName, resources.WorkspaceConfigurationName)
+	fmt.Fprintf(opts.stdout, "Imported coordinate contract%s into environment %q of %s.\n",
+		labelled(contract.Coordinate), opts.envName, resources.WorkspaceConfigurationName)
 	return nil
 }
 
@@ -399,8 +410,8 @@ func applyContractFields(target, declaration *yaml.Node) {
 // stampProvenance writes (or, on re-import, replaces) the provenance comment
 // above the environment item, keeping any operator comment lines around it.
 func stampProvenance(envNode *yaml.Node, contract *resources.CoordinateContract, opts *importOptions) {
-	line := fmt.Sprintf("# %s %s on %s; re-run: codefly environment import %s --coordinate-contract …",
-		provenanceMarker, contract.Coordinate, opts.now.Format(time.RFC3339), opts.envName)
+	line := fmt.Sprintf("# %s%s on %s; re-run: codefly environment import %s --coordinate-contract …",
+		provenanceMarker, labelled(contract.Coordinate), opts.now.Format(time.RFC3339), opts.envName)
 
 	kept := make([]string, 0)
 	for _, existing := range strings.Split(envNode.HeadComment, "\n") {

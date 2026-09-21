@@ -239,6 +239,30 @@ func TestCloneEnvironmentIsolatesServiceConfig(t *testing.T) {
 	require.NotContains(t, original.ServiceConfig.Services, "api")
 }
 
+// An explicitly empty services map is still a shared header until it is copied.
+func TestCloneEnvironmentIsolatesAnEmptyServiceConfig(t *testing.T) {
+	original := &resources.Environment{
+		Name:          "azure",
+		ServiceConfig: &resources.EnvironmentServiceConfig{Services: map[string]resources.EnvironmentServiceConfigMapping{}},
+	}
+	clone := cloneEnvironment(original)
+
+	clone.ServiceConfig.Services["api"] = resources.EnvironmentServiceConfigMapping{}
+	require.NotContains(t, original.ServiceConfig.Services, "api")
+}
+
+// A nil services map must stay nil, so the environment re-serializes without an
+// empty service-config block it never declared.
+func TestCloneEnvironmentKeepsANilServiceConfigMapNil(t *testing.T) {
+	original := &resources.Environment{
+		Name:          "azure",
+		ServiceConfig: &resources.EnvironmentServiceConfig{},
+	}
+	clone := cloneEnvironment(original)
+
+	require.Nil(t, clone.ServiceConfig.Services)
+}
+
 func TestCloneEnvironmentIsolatesResourceQuota(t *testing.T) {
 	original := &resources.Environment{
 		Name: "staging",

@@ -326,6 +326,25 @@ func TestImportCarriesResolvedServiceValues(t *testing.T) {
 	}
 }
 
+// The coordinate is an optional provenance label, so an omitted one must not
+// leave a dangling subject in the comment this persists to workspace.codefly.yaml.
+func TestImportOmitsAnAbsentCoordinateFromProvenance(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
+	contract := `{"schema":"codefly/coordinate/v1","environment":{"name":"azure","namespace":"acme"}}`
+
+	out := doImport(t, dir, importOptions{contractData: []byte(contract)})
+
+	if strings.Contains(out, "contract  into") {
+		t.Errorf("stdout has a dangling subject: %q", out)
+	}
+	content := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, provenanceMarker+"  ") {
+			t.Errorf("provenance comment has a dangling subject: %q", line)
+		}
+	}
+}
+
 func TestImportReplacesLegacyProvenanceComment(t *testing.T) {
 	stamped := "name: acme\nlayout: modules\nenvironments:\n" +
 		"    # " + legacyProvenanceMarker + " hosted-eastus2 (hosted-eastus2) on 2026-09-05T12:00:00Z; re-run: codefly environment import azure --cell-contract …\n" +

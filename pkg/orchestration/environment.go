@@ -108,7 +108,9 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 	}
 	if env.ServiceConfig != nil {
 		serviceConfig := *env.ServiceConfig
-		if len(env.ServiceConfig.Services) > 0 {
+		// Guarded on nil, not length: an explicitly empty map is still a shared
+		// header, and the first flow to add a service would contaminate the other.
+		if env.ServiceConfig.Services != nil {
 			serviceConfig.Services = make(map[string]resources.EnvironmentServiceConfigMapping, len(env.ServiceConfig.Services))
 			for name, mapping := range env.ServiceConfig.Services {
 				mapping.Values = maps.Clone(mapping.Values)
