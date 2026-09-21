@@ -44,7 +44,7 @@ func (session *SelectionSession) CheckInputs(ctx context.Context, files *Deploym
 		if err != nil {
 			return err
 		}
-		return session.unchanged(snapshot)
+		return session.unchanged(ctx, snapshot)
 	})
 	return record, err
 }
@@ -82,7 +82,7 @@ func (session *SelectionSession) Admit(ctx context.Context, files *DeploymentFil
 		if err != nil {
 			return err
 		}
-		return session.unchanged(snapshot)
+		return session.unchanged(ctx, snapshot)
 	})
 	if err != nil {
 		return nil, err

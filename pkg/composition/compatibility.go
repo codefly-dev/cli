@@ -43,7 +43,7 @@ func (session *SelectionSession) CheckCompatibility(ctx context.Context, target,
 		if localErr := resolved.CheckLocalInputs(); localErr != nil {
 			return localErr
 		}
-		if changedErr := session.unchanged(snapshot); changedErr != nil {
+		if changedErr := session.unchanged(ctx, snapshot); changedErr != nil {
 			return changedErr
 		}
 		data, err := protojson.Marshal(result)

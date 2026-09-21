@@ -109,7 +109,7 @@ func (session *SelectionSession) StageBuild(ctx context.Context, options *StageO
 				return err
 			}
 		}
-		if err = errors.Join(ctx.Err(), resolved.CheckLocalInputs(), session.unchanged(snapshot)); err != nil {
+		if err = errors.Join(ctx.Err(), resolved.CheckLocalInputs(), session.unchanged(ctx, snapshot)); err != nil {
 			return err
 		}
 		staged.Identity, err = buildEvidenceIdentity(staged)

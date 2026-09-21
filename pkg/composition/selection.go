@@ -60,7 +60,7 @@ func NewSelectionSession(workspace, product, configurationIdentity string) (*Sel
 	if err != nil {
 		return nil, err
 	}
-	before, err := os.ReadFile(trustPath)
+	before, err := readSelectionMetadata(context.Background(), trustPath)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func NewSelectionSession(workspace, product, configurationIdentity string) (*Sel
 	if trust == nil {
 		return nil, errors.New("composition selection requires package-scoped module-trust")
 	}
-	after, err := os.ReadFile(trustPath)
+	after, err := readSelectionMetadata(context.Background(), trustPath)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +144,25 @@ func decodeSelectionJSON(data []byte, target any) error {
 	return nil
 }
 
-func (session *SelectionSession) snapshot(initial bool) (*selectionSnapshot, error) {
+func readSelectionMetadata(ctx context.Context, path string) ([]byte, error) {
+	file, err := openInputFile(ctx, nil, path)
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(&approvedInputReader{ctx: ctx, reader: io.LimitReader(file, maxSelectionArtifactBytes+1)})
+	if err = errors.Join(readErr, file.Close(), ctx.Err()); err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxSelectionArtifactBytes {
+		return nil, errors.New("selection metadata exceeds artifact size limit")
+	}
+	return data, nil
+}
+
+func (session *SelectionSession) snapshot(ctx context.Context, initial bool) (*selectionSnapshot, error) {
 	snapshot := &selectionSnapshot{local: map[string]string{}, files: map[string][]byte{}}
 	for _, name := range []string{core.DescriptorFileName, SelectionFile, LocalSelectionFile} {
-		data, err := os.ReadFile(filepath.Join(session.Root, name))
+		data, err := readSelectionMetadata(ctx, filepath.Join(session.Root, name))
 		optional := name == LocalSelectionFile || (initial && name == SelectionFile)
 		if err != nil && (!os.IsNotExist(err) || !optional) {
 			return nil, err
@@ -194,9 +209,9 @@ func (session *SelectionSession) resolve(ctx context.Context, snapshot *selectio
 	return session.Engine.ResolveComposition(ctx, snapshot.descriptor, snapshot.inputs.Root, session.options(snapshot))
 }
 
-func (session *SelectionSession) unchanged(snapshot *selectionSnapshot) error {
+func (session *SelectionSession) unchanged(ctx context.Context, snapshot *selectionSnapshot) error {
 	if session.trustPath != "" {
-		current, err := os.ReadFile(session.trustPath)
+		current, err := readSelectionMetadata(ctx, session.trustPath)
 		if err != nil {
 			return err
 		}
@@ -205,7 +220,7 @@ func (session *SelectionSession) unchanged(snapshot *selectionSnapshot) error {
 		}
 	}
 	for name, before := range snapshot.files {
-		after, err := os.ReadFile(filepath.Join(session.Root, name))
+		after, err := readSelectionMetadata(ctx, filepath.Join(session.Root, name))
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -241,7 +256,7 @@ func (session *SelectionSession) Initialize(ctx context.Context, inputs *Selecti
 		return result, errors.New("release selection inputs are required")
 	}
 	err := session.locked(ctx, func() error {
-		snapshot, err := session.snapshot(true)
+		snapshot, err := session.snapshot(ctx, true)
 		if err != nil {
 			return err
 		}
@@ -253,7 +268,7 @@ func (session *SelectionSession) Initialize(ctx context.Context, inputs *Selecti
 		if err != nil {
 			return err
 		}
-		if err := session.unchanged(snapshot); err != nil {
+		if err := session.unchanged(ctx, snapshot); err != nil {
 			return err
 		}
 		if err := session.writeJSON(ctx, SelectionFile, inputs); err != nil {
@@ -342,7 +357,7 @@ func (session *SelectionSession) validateReleases(ctx context.Context, snapshot 
 
 func (session *SelectionSession) withResolved(ctx context.Context, run func(*selectionSnapshot, *core.ResolvedComposition) error) error {
 	return session.locked(ctx, func() error {
-		snapshot, err := session.snapshot(false)
+		snapshot, err := session.snapshot(ctx, false)
 		if err != nil {
 			return err
 		}
@@ -350,7 +365,7 @@ func (session *SelectionSession) withResolved(ctx context.Context, run func(*sel
 		if err != nil {
 			return err
 		}
-		if err := session.unchanged(snapshot); err != nil {
+		if err := session.unchanged(ctx, snapshot); err != nil {
 			return err
 		}
 		if err := ctx.Err(); err != nil {
@@ -370,7 +385,7 @@ func (session *SelectionSession) selectExpected(ctx context.Context, replacement
 		return result, errors.New("replacement is required")
 	}
 	err := session.locked(ctx, func() error {
-		snapshot, err := session.snapshot(false)
+		snapshot, err := session.snapshot(ctx, false)
 		if err != nil {
 			return err
 		}
@@ -396,7 +411,7 @@ func (session *SelectionSession) selectExpected(ctx context.Context, replacement
 		if err != nil {
 			return err
 		}
-		if changedErr := session.unchanged(snapshot); changedErr != nil {
+		if changedErr := session.unchanged(ctx, snapshot); changedErr != nil {
 			return changedErr
 		}
 		// Replace only the selections node, preserving comments and unrelated
@@ -444,7 +459,7 @@ func (session *SelectionSession) selectExpected(ctx context.Context, replacement
 func (session *SelectionSession) Develop(ctx context.Context, changes map[string]string) (SelectionInspection, error) {
 	var result SelectionInspection
 	err := session.locked(ctx, func() error {
-		snapshot, err := session.snapshot(false)
+		snapshot, err := session.snapshot(ctx, false)
 		if err != nil {
 			return err
 		}
@@ -465,7 +480,7 @@ func (session *SelectionSession) Develop(ctx context.Context, changes map[string
 		if err != nil {
 			return err
 		}
-		if err := session.unchanged(snapshot); err != nil {
+		if err := session.unchanged(ctx, snapshot); err != nil {
 			return err
 		}
 		if err := session.writeJSON(ctx, LocalSelectionFile, snapshot.local); err != nil {

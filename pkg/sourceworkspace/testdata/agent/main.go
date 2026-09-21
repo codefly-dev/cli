@@ -31,13 +31,18 @@ func (*discoveryAgent) GetAgentInformation(context.Context, *agentv0.AgentInform
 	if os.Getenv("TEST_SOURCE_NO_BUILDER") == "" {
 		capabilities = []*agentv0.Capability{{Type: agentv0.Capability_BUILDER}}
 	}
+	validation := &agentv0.ValidationCapabilities{
+		SourcePackage: &agentv0.ValidationOperationCapability{Supported: true},
+	}
+	if os.Getenv("TEST_SOURCE_CI_RECORD") != "" {
+		capabilities = append(capabilities, &agentv0.Capability{Type: agentv0.Capability_RUNTIME})
+		validation.Test = &agentv0.TestValidationCapability{Supported: true, Suites: []*agentv0.TestSuiteCapability{{Name: "source", DefaultSuite: true, DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE}}}
+	}
 	return &agentv0.AgentInformation{
 		Capabilities: capabilities,
 		Contract:     advertised,
 		Languages:    []*agentv0.Language{{Type: agentv0.Language_GO}},
-		Validation: &agentv0.ValidationCapabilities{
-			SourcePackage: &agentv0.ValidationOperationCapability{Supported: true},
-		},
+		Validation:   validation,
 	}, nil
 }
 
@@ -55,6 +60,11 @@ func (*discoveryBuilder) Load(context.Context, *builderv0.LoadRequest) (*builder
 }
 
 func main() {
+	if marker := os.Getenv("TEST_SOURCE_STARTED"); marker != "" {
+		if err := os.WriteFile(marker, []byte("started"), 0o600); err != nil {
+			panic(err)
+		}
+	}
 	if delay := os.Getenv("TEST_SOURCE_STARTUP_DELAY"); delay != "" {
 		duration, err := time.ParseDuration(delay)
 		if err != nil {
@@ -62,5 +72,5 @@ func main() {
 		}
 		time.Sleep(duration)
 	}
-	agents.Serve(agents.PluginRegistration{Agent: &discoveryAgent{}, Builder: &discoveryBuilder{}})
+	agents.Serve(agents.PluginRegistration{Agent: &discoveryAgent{}, Builder: &discoveryBuilder{}, Runtime: &ciRuntime{}})
 }

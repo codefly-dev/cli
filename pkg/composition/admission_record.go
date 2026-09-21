@@ -33,7 +33,7 @@ func (session *SelectionSession) RecordAdmission(ctx context.Context, files *Dep
 		if err != nil {
 			return err
 		}
-		if err = session.unchanged(snapshot); err != nil {
+		if err = session.unchanged(ctx, snapshot); err != nil {
 			return err
 		}
 		return publishAdmissionRecord(ctx, destination, append(data, '\n'))
@@ -62,7 +62,7 @@ func (session *SelectionSession) RecheckAdmission(ctx context.Context, files *De
 		if err != nil {
 			return err
 		}
-		return session.unchanged(snapshot)
+		return session.unchanged(ctx, snapshot)
 	})
 	if err != nil {
 		return nil, err

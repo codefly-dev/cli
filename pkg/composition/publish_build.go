@@ -162,7 +162,7 @@ func (session *SelectionSession) PublishBuild(ctx context.Context, staged *Stage
 			return err
 		}
 		for i := range outputs {
-			if err = errors.Join(ctx.Err(), session.unchanged(snapshot)); err != nil {
+			if err = errors.Join(ctx.Err(), session.unchanged(ctx, snapshot)); err != nil {
 				return err
 			}
 			attempted = true
@@ -408,7 +408,7 @@ func (session *SelectionSession) checkPublicationInputs(ctx context.Context, sna
 	if _, err = session.Engine.CheckDeploymentInputs(ctx, resolved, inputs); err != nil {
 		return err
 	}
-	return errors.Join(ctx.Err(), session.unchanged(snapshot), resolved.CheckLocalInputs())
+	return errors.Join(ctx.Err(), session.unchanged(ctx, snapshot), resolved.CheckLocalInputs())
 }
 
 func pushDerivedOutput(ctx context.Context, repository *remote.Repository, output *derivedPublication) error {

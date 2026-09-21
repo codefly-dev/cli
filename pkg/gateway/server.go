@@ -412,16 +412,21 @@ func (s *Server) Serve(ctx context.Context) error {
 	return s.grpcSrv.Serve(lis)
 }
 
-func (s *Server) executionServiceBehavior() (serviceExecution, error) {
-	return s.executionServiceBehaviorWithAgent("")
+func (s *Server) executionServiceBehavior(ctx context.Context) (serviceExecution, error) {
+	return s.executionServiceBehaviorWithAgent(ctx, "")
 }
 
-func (s *Server) executionServiceBehaviorWithAgent(agentOverride string) (serviceExecution, error) {
-	s.serviceMu.Lock()
-	defer s.serviceMu.Unlock()
-	if agentOverride == "" && s.serviceBehavior != nil {
-		return s.serviceBehavior, nil
+func (s *Server) executionServiceBehaviorWithAgent(ctx context.Context, agentOverride string) (serviceExecution, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	s.serviceMu.Lock()
+	if agentOverride == "" && s.serviceBehavior != nil {
+		service := s.serviceBehavior
+		s.serviceMu.Unlock()
+		return service, nil
+	}
+	s.serviceMu.Unlock()
 	if s.host == nil {
 		return nil, fmt.Errorf("workspace host is unavailable")
 	}
@@ -435,10 +440,20 @@ func (s *Server) executionServiceBehaviorWithAgent(agentOverride string) (servic
 		agentName = agentOverride
 	default:
 		var err error
-		agentName, err = engine.DetectSourceAgent(s.cfg.WorkDir)
+		agentName, err = engine.DetectSourceAgent(ctx, s.cfg.WorkDir)
 		if err != nil {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
+	}
+	// Discovery starts processes and performs RPCs. Only cache publication belongs
+	// under the mutex; another caller may have populated it while we inspected.
+	s.serviceMu.Lock()
+	defer s.serviceMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if agentOverride == "" && s.serviceBehavior != nil {
+		return s.serviceBehavior, nil
 	}
 	if agentOverride != "" && s.mindYAML == nil {
 		if service := s.rootAgentServices[agentName]; service != nil {
@@ -474,7 +489,7 @@ func (s *Server) sourceExecute(ctx context.Context, request *codev0.CodeRequest)
 // proxyExecute sends a unified CodeRequest to the shared service behavior.
 // Read-only requests may reconnect once; ambiguous mutations are never replayed.
 func (s *Server) proxyExecute(ctx context.Context, req *codev0.CodeRequest) (*codev0.CodeResponse, error) {
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1444,7 +1459,7 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 		}
 		target := targets[0]
 		inspected = &target
-		service, err := s.serviceBehaviorForCodeUnit(target, "")
+		service, err := s.serviceBehaviorForCodeUnit(ctx, target, "")
 		if err != nil {
 			return &gatewayv1.GetProjectInfoResponse{
 				CodeUnit: cloneCodeUnitTarget(req.GetCodeUnit()),
@@ -1533,7 +1548,7 @@ func (s *Server) GetSemanticIndex(ctx context.Context, req *gatewayv1.GetSemanti
 	}
 	target := targets[0]
 	inspected := &gatewayv1.CodeUnitTarget{Id: target.id, Path: target.path}
-	service, err := s.serviceBehaviorForCodeUnit(target, "")
+	service, err := s.serviceBehaviorForCodeUnit(ctx, target, "")
 	if err != nil {
 		return &gatewayv1.GetSemanticIndexResponse{CodeUnit: inspected, Failure: gatewaySemanticIndexFailure(err)}, nil
 	}
@@ -1693,7 +1708,7 @@ func trimTrailingSpace(s string) string {
 }
 
 func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gatewayv1.BuildResponse, error) {
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err != nil {
 		return &gatewayv1.BuildResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 	}
@@ -1714,7 +1729,7 @@ func (s *Server) Build(ctx context.Context, _ *gatewayv1.BuildRequest) (*gateway
 }
 
 func (s *Server) Lint(ctx context.Context, _ *gatewayv1.LintRequest) (*gatewayv1.LintResponse, error) {
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err != nil {
 		return &gatewayv1.LintResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 	}
@@ -1752,7 +1767,7 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	}
 	var service serviceExecution
 	if len(codeUnits) == 0 {
-		service, err = s.executionServiceBehavior()
+		service, err = s.executionServiceBehavior(ctx)
 		if err != nil {
 			return &gatewayv1.TestResponse{Success: false, Output: fmt.Sprintf("plugin unavailable: %v", err)}, nil
 		}
@@ -1851,7 +1866,7 @@ func (s *Server) ConfigureService(ctx context.Context, req *gatewayv1.ConfigureS
 	if err := s.validateService(requestedService); err != nil {
 		return nil, err
 	}
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "plugin unavailable: %v", err)
 	}
@@ -2322,7 +2337,7 @@ func (s *Server) ListAllCommands(ctx context.Context, _ *gatewayv1.ListAllComman
 
 	// Ask the configured service behavior. Agent startup remains lazy and is
 	// owned by engine.WorkspaceHost rather than this transport adapter.
-	service, err := s.executionServiceBehavior()
+	service, err := s.executionServiceBehavior(ctx)
 	if err == nil {
 		resp, listErr := service.ListCommands(ctx, &agentv0.ListCommandsRequest{})
 		if listErr == nil {

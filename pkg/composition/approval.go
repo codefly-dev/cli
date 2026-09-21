@@ -90,7 +90,7 @@ func (session *SelectionSession) ApproveAdmission(ctx context.Context, files *De
 		if err != nil {
 			return err
 		}
-		if err = session.unchanged(snapshot); err != nil {
+		if err = session.unchanged(ctx, snapshot); err != nil {
 			return err
 		}
 		if err = authority.unchanged(); err != nil {
@@ -125,7 +125,7 @@ func (session *SelectionSession) CheckApproval(ctx context.Context, files *Deplo
 		if _, err = session.recheckResolved(ctx, resolved, files, authority.config.Policy, &approval.Admission, result.AdmissionIdentity, now.Add(time.Since(started))); err != nil {
 			return err
 		}
-		if err = session.unchanged(snapshot); err != nil {
+		if err = session.unchanged(ctx, snapshot); err != nil {
 			return err
 		}
 		if err = ctx.Err(); err != nil {

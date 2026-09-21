@@ -38,7 +38,7 @@ func (session *SelectionSession) PrepareRender(ctx context.Context, files *Deplo
 			}
 			requests = append(requests, data)
 		}
-		return session.unchanged(snapshot)
+		return session.unchanged(ctx, snapshot)
 	})
 	return requests, err
 }

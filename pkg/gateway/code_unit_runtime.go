@@ -107,7 +107,10 @@ func canonicalCodeUnitPath(value string) (string, error) {
 // root behavior: that cache is precisely what made a heterogeneous project
 // route every unit through the first detected plugin. Explicit source_agents
 // entries select artifacts; formula commands never select agent identities.
-func (s *Server) serviceBehaviorForCodeUnit(target normalizedCodeUnitTarget, agentOverride string) (serviceExecution, error) {
+func (s *Server) serviceBehaviorForCodeUnit(ctx context.Context, target normalizedCodeUnitTarget, agentOverride string) (serviceExecution, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s.host == nil {
 		return nil, fmt.Errorf("workspace host is unavailable")
 	}
@@ -117,7 +120,7 @@ func (s *Server) serviceBehaviorForCodeUnit(target normalizedCodeUnitTarget, age
 	}
 	var err error
 	if agentName == "" {
-		agentName, err = engine.DetectSourceAgent(target.root)
+		agentName, err = engine.DetectSourceAgent(ctx, target.root)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("detect agent at code unit %q (%s): %w", target.id, target.path, err)
@@ -125,6 +128,9 @@ func (s *Server) serviceBehaviorForCodeUnit(target normalizedCodeUnitTarget, age
 	key := target.id + "\x00" + target.path + "\x00" + agentName
 	s.serviceMu.Lock()
 	defer s.serviceMu.Unlock()
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		return nil, cancelErr
+	}
 	if service := s.codeUnitServices[key]; service != nil {
 		return service, nil
 	}
@@ -143,8 +149,8 @@ func (s *Server) serviceBehaviorForCodeUnit(target normalizedCodeUnitTarget, age
 	return service, nil
 }
 
-func (s *Server) executionServiceBehaviorForCodeUnit(target normalizedCodeUnitTarget, _ *runtimev0.TestRequest) (serviceExecution, error) {
-	return s.serviceBehaviorForCodeUnit(target, "")
+func (s *Server) executionServiceBehaviorForCodeUnit(ctx context.Context, target normalizedCodeUnitTarget, _ *runtimev0.TestRequest) (serviceExecution, error) {
+	return s.serviceBehaviorForCodeUnit(ctx, target, "")
 }
 
 func (s *Server) testCodeUnits(ctx context.Context, request *runtimev0.TestRequest, targets []normalizedCodeUnitTarget) (*runtimev0.TestResponse, error) {
@@ -161,7 +167,7 @@ func (s *Server) testCodeUnits(ctx context.Context, request *runtimev0.TestReque
 			defer wait.Done()
 			run := runs[index]
 			result := codeUnitTestResult{target: run.target}
-			service, bindErr := s.executionServiceBehaviorForCodeUnit(run.target, run.request)
+			service, bindErr := s.executionServiceBehaviorForCodeUnit(ctx, run.target, run.request)
 			if bindErr != nil {
 				result.response = codeUnitTestError(run.request, bindErr.Error())
 				results[index] = result

@@ -12,10 +12,104 @@ import (
 	"time"
 
 	core "github.com/codefly-dev/core/composition"
+	"github.com/codefly-dev/core/resources"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
+
+func TestSelectionMetadataRejectsFIFOAndReleasesLock(t *testing.T) {
+	for _, name := range []string{core.DescriptorFileName, SelectionFile, LocalSelectionFile} {
+		t.Run(name, func(t *testing.T) {
+			r := newSelectionRegistry(t)
+			release := r.publish(t, selectionManifest("team/root", "1.0.0"))
+			session := r.session(t, &core.Descriptor{Kind: core.DescriptorKind, Name: "consumer", Base: core.Base{ID: release.ID, Version: release.Version}})
+			_, err := session.Initialize(t.Context(), &SelectionInputs{Root: release})
+			require.NoError(t, err)
+			path := filepath.Join(session.Root, name)
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			err = os.Remove(path)
+			require.True(t, err == nil || os.IsNotExist(err))
+			require.NoError(t, syscall.Mkfifo(path, 0o600))
+			err = rejectMetadataFIFO(t, path, func(ctx context.Context) error {
+				_, inspectErr := session.Inspect(ctx)
+				return inspectErr
+			})
+			require.ErrorContains(t, err, "regular file")
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			require.NoError(t, session.locked(ctx, func() error { return nil }))
+		})
+	}
+}
+
+func TestSelectionMetadataRecheckRejectsFIFOReplacement(t *testing.T) {
+	for _, name := range []string{core.DescriptorFileName, SelectionFile, LocalSelectionFile, resources.WorkspaceConfigurationName} {
+		t.Run(name, func(t *testing.T) {
+			r := newSelectionRegistry(t)
+			release := r.publish(t, selectionManifest("team/root", "1.0.0"))
+			session := r.session(t, &core.Descriptor{Kind: core.DescriptorKind, Name: "consumer", Base: core.Base{ID: release.ID, Version: release.Version}})
+			_, err := session.Initialize(t.Context(), &SelectionInputs{Root: release})
+			require.NoError(t, err)
+			snapshot, err := session.snapshot(t.Context(), false)
+			require.NoError(t, err)
+			path := filepath.Join(session.Root, name)
+			if name == resources.WorkspaceConfigurationName {
+				session.trustPath, session.trustDocument = path, []byte("trusted")
+			}
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			err = os.Remove(path)
+			require.True(t, err == nil || os.IsNotExist(err))
+			require.NoError(t, syscall.Mkfifo(path, 0o600))
+			err = rejectMetadataFIFO(t, path, func(ctx context.Context) error {
+				return session.locked(ctx, func() error { return session.unchanged(ctx, snapshot) })
+			})
+			require.ErrorContains(t, err, "regular file")
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			require.NoError(t, session.locked(ctx, func() error { return nil }))
+		})
+	}
+}
+
+func TestSelectionTrustRejectsFIFO(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, resources.WorkspaceConfigurationName)
+	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	for _, read := range []func(context.Context) error{
+		func(context.Context) error { _, _, err := LoadModuleTrust(root); return err },
+		func(context.Context) error { _, err := NewSelectionSession(root, root, ""); return err },
+	} {
+		require.ErrorContains(t, rejectMetadataFIFO(t, path, read), "regular file")
+	}
+}
+
+func rejectMetadataFIFO(t *testing.T, path string, run func(context.Context) error) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- run(ctx) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+	}
+	// A regressed ReadFile needs both an opening peer and EOF. Drain it before
+	// failing the test so no goroutine or product lock is abandoned.
+	peer, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	require.NoError(t, err)
+	_, err = peer.Write([]byte("{}\n"))
+	require.NoError(t, err)
+	require.NoError(t, peer.Close())
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("metadata read did not drain")
+	}
+	t.Fatal("metadata FIFO read outlived cancellation")
+	return nil
+}
 
 func TestAcquisitionReplacesFIFOWithoutBlockingSelection(t *testing.T) {
 	r := newSelectionRegistry(t)

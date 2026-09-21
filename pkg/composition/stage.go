@@ -226,7 +226,7 @@ func (session *SelectionSession) completeRender(ctx context.Context, snapshot *s
 	if err != nil {
 		return nil, err
 	}
-	if err = session.unchanged(snapshot); err != nil {
+	if err = session.unchanged(ctx, snapshot); err != nil {
 		return nil, err
 	}
 	if err = ctx.Err(); err != nil {

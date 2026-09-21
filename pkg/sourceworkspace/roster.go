@@ -34,6 +34,9 @@ func DiscoverPlugins(ctx context.Context) ([]Plugin, error) {
 	var plugins []Plugin
 	var failures []error
 	for _, selected := range installed {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		// Preserve the manager's startup/dial budgets and bound the discovery RPC too.
 		probeCtx, cancel := context.WithTimeout(ctx, manager.DefaultStartupTimeout+2*manager.DefaultDialTimeout)
 		agent, info, err := services.InspectAgent(probeCtx, selected)
@@ -56,6 +59,9 @@ func DiscoverPlugins(ctx context.Context) ([]Plugin, error) {
 }
 
 func selectPlugin(ctx context.Context, sourceDir string) (*resources.Agent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	physicalSource, err := filepath.EvalSymlinks(sourceDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve source root: %w", err)

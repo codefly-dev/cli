@@ -310,7 +310,7 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 		}
 		g.Go(func() error {
 			log := &agentLogger{}
-			res := compileAgent(groupCtx, agents[i], log, opts.nativeOnly, false)
+			res := compileAgent(groupCtx, agents[i], log, opts.nativeOnly, false, nil)
 			results[i] = res
 			n := completed.Add(1)
 			if res.err != nil {
@@ -457,7 +457,7 @@ func (r *agentBuildResult) summary() string {
 }
 
 func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
-	res := compileAgent(ctx, dir, &agentLogger{direct: true}, opts.nativeOnly, false)
+	res := compileAgent(ctx, dir, &agentLogger{direct: true}, opts.nativeOnly, false, nil)
 	if res.err != nil {
 		return res.err
 	}
@@ -473,7 +473,7 @@ func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
 // result always carries the outcome. When nativeOnly is set the container
 // target is omitted. standaloneModuleGraph is reserved for CI/release proof;
 // local builds bind the exact go.work detected for the source checkout.
-func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly, standaloneModuleGraph bool) *agentBuildResult {
+func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly, standaloneModuleGraph bool, source *agentSourceInvocation) *agentBuildResult {
 	res := &agentBuildResult{label: filepath.Base(dir), dir: dir}
 	if err := ctx.Err(); err != nil {
 		res.err = err
@@ -531,12 +531,15 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		return res
 	}
 	defer os.RemoveAll(temporary)
-	prepared, pluginHome, err := prepareAgentPackager(ctx, dir, &ag, temporary)
-	if err != nil {
-		res.err = err
-		return res
+	if source == nil {
+		prepared, pluginHome, prepareErr := prepareAgentPackager(ctx, dir, &ag, temporary)
+		if prepareErr != nil {
+			res.err = prepareErr
+			return res
+		}
+		defer prepared.Close()
+		source = &agentSourceInvocation{prepared: prepared, home: pluginHome}
 	}
-	defer prepared.Close()
 	executable, err := os.Executable()
 	if err != nil {
 		res.err = fmt.Errorf("resolve Codefly executable: %w", err)
@@ -559,12 +562,12 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 	started := time.Now()
 	command := exec.CommandContext(ctx, executable, arguments...)
-	command.Dir = prepared.Dir
-	goWorkFile := prepared.GoWorkFile
+	command.Dir = source.prepared.Dir
+	goWorkFile := source.prepared.GoWorkFile
 	if standaloneModuleGraph {
 		goWorkFile = "off"
 	}
-	command.Env = agentBuildChildEnvironment(pluginHome, goWorkFile, "CI=1", "CODEFLY_COLOR=never")
+	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, "CI=1", "CODEFLY_COLOR=never")
 	response := &builderv0.PackageResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {
 		res.err = err

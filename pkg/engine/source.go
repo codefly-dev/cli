@@ -48,8 +48,8 @@ func (s *Source) Close() error {
 // DetectSourceAgent selects a language service agent from source evidence. This
 // is a Codefly policy: Mind and other adapters ask for typed behavior and stay
 // unaware of language toolchains.
-func DetectSourceAgent(root string) (string, error) {
-	agent, err := sourceworkspace.SelectPlugin(root)
+func DetectSourceAgent(ctx context.Context, root string) (string, error) {
+	agent, err := sourceworkspace.SelectPlugin(ctx, root)
 	if err != nil {
 		return "", err
 	}

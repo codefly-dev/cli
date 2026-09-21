@@ -38,8 +38,8 @@ func (p *Prepared) Close() error {
 }
 
 // SelectPlugin selects from runtime advertisements, never release pins.
-func SelectPlugin(sourceDir string) (*resources.Agent, error) {
-	return selectPlugin(context.Background(), sourceDir)
+func SelectPlugin(ctx context.Context, sourceDir string) (*resources.Agent, error) {
+	return selectPlugin(ctx, sourceDir)
 }
 
 // Prepare creates and loads a flat one-service workspace whose source path is

@@ -43,7 +43,7 @@ func (session *SelectionSession) Acquire(ctx context.Context, client *http.Clien
 		if err := resolved.CheckLocalInputs(); err != nil {
 			return err
 		}
-		return session.unchanged(snapshot)
+		return session.unchanged(ctx, snapshot)
 	})
 	return artifacts, err
 }

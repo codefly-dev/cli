@@ -67,7 +67,7 @@ func (session *SelectionSession) PrepareApprovedInputs(ctx context.Context, file
 		if _, err = session.recheckResolved(ctx, resolved, &prepared.files, authority.config.Policy, &prepared.approval.Admission, verified.AdmissionIdentity, now.Add(time.Since(started))); err != nil {
 			return err
 		}
-		if err = errors.Join(ctx.Err(), session.unchanged(snapshot), authority.unchanged()); err != nil {
+		if err = errors.Join(ctx.Err(), session.unchanged(ctx, snapshot), authority.unchanged()); err != nil {
 			return err
 		}
 		_, err = authority.verify(&prepared.approval, now.Add(time.Since(started)))

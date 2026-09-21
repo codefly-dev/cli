@@ -79,5 +79,8 @@ agent-name exception or compiled predecessor release exists.
 Existing self-hosted repositories must declare this bootstrap to build from an
 empty home; merely naming a particular language agent no longer activates a
 CLI-owned compiler command. Other repositories declare their source agent or
-install a candidate for runtime discovery. Isolated agent CI seeds the newest
-installed candidates without inferring compatibility from their versions.
+install a candidate for runtime discovery. Agent CI resolves against the original
+home before isolation and retains the exact selected version in a private home
+for both source validation and packaging, including older installed versions.
+A self-hosted candidate is bootstrapped once, before source validation; it does
+not need an intermediate release. Neither path replaces installed agent files.

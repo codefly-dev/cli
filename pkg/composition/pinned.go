@@ -565,7 +565,7 @@ type rawWorkspaceModuleTrustProbe struct {
 // producer's `provenance.Repository` for VerifyRelease's strict comparison to
 // succeed — both sides of that comparison flow from this same normalized map.
 func LoadModuleTrust(workspaceDir string) (*corecomposition.TrustPolicy, map[string]string, error) {
-	data, err := os.ReadFile(filepath.Join(workspaceDir, resources.WorkspaceConfigurationName))
+	data, err := readSelectionMetadata(context.Background(), filepath.Join(workspaceDir, resources.WorkspaceConfigurationName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil

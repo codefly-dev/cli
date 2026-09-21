@@ -78,7 +78,7 @@ func (session *SelectionSession) ReserveApproval(ctx context.Context, files *Dep
 			return err
 		}
 		defer func() { _ = directory.Close() }()
-		if err = session.unchanged(snapshot); err != nil {
+		if err = session.unchanged(ctx, snapshot); err != nil {
 			return err
 		}
 		if err = authority.unchanged(); err != nil {
@@ -98,7 +98,7 @@ func (session *SelectionSession) ReserveApproval(ctx context.Context, files *Dep
 			return err
 		}
 		// Expiry, cancellation or drift after committing cannot unspend a token.
-		if err = errors.Join(ctx.Err(), session.unchanged(snapshot), authority.unchanged()); err != nil {
+		if err = errors.Join(ctx.Err(), session.unchanged(ctx, snapshot), authority.unchanged()); err != nil {
 			return errors.Join(ErrApprovalUseUncertain, err)
 		}
 		if _, err = authority.verify(approval, now.Add(time.Since(started))); err != nil {
