@@ -11,6 +11,12 @@ superseded, not completed. #753 remains the
 single tracker. Consolidating branches does not authorize merging to main,
 releasing or rebuilding the fleet.
 
+The owner's instruction to leave only one open CLI PR also consolidates the
+previously separate dashboard dependency update #637 into #752. Its eight npm
+updates and generated embedded assets are preserved; `npm ci` and
+`npm run build` reproduce those assets. This is additional dashboard scope,
+not an agent-compatibility requirement.
+
 The required workflow is: select a nested replacement, inspect differences,
 check compatibility, test the effective combination, approve, deploy those
 exact inputs, and inspect the actual deployment.
