@@ -145,31 +145,13 @@ func renderModuleTree(
 				if entry.Output == nil {
 					return fmt.Errorf("service %s returned no Kubernetes deployment evidence", service.Name)
 				}
-				if _, projectErr := projectServiceSecrets(
-					filepath.Join(stage, unitDir, service.Name),
-					service.Name,
-					env.Name,
-					env.Namespace,
-					env.ServiceSecrets,
-				); projectErr != nil {
-					return fmt.Errorf("project service %s secrets: %w", service.Name, projectErr)
-				}
-				if _, projectErr := projectServiceAutoscale(
-					filepath.Join(stage, unitDir, service.Name),
-					service.Name,
-					env.Name,
-					env.Namespace,
-					service.Autoscale,
-				); projectErr != nil {
-					return fmt.Errorf("project service %s autoscale: %w", service.Name, projectErr)
-				}
-				if projectErr := projectManagedIdentity(
+				if projectErr := projectServiceConfiguration(
 					ctx,
 					filepath.Join(stage, unitDir, service.Name),
 					service,
 					env,
 				); projectErr != nil {
-					return fmt.Errorf("project service %s managed identity: %w", service.Name, projectErr)
+					return projectErr
 				}
 			}
 			options.Units = append(options.Units, entry)

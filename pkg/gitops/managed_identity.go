@@ -13,6 +13,19 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
+func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *resources.Environment) error {
+	if _, err := projectServiceSecrets(root, service.Name, env.Name, env.Namespace, env.ServiceSecrets); err != nil {
+		return fmt.Errorf("project service %s secrets: %w", service.Name, err)
+	}
+	if _, err := projectServiceAutoscale(root, service.Name, env.Name, env.Namespace, service.Autoscale); err != nil {
+		return fmt.Errorf("project service %s autoscale: %w", service.Name, err)
+	}
+	if err := projectManagedIdentity(ctx, root, service, env); err != nil {
+		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
+	}
+	return nil
+}
+
 // projectManagedIdentity applies only the declared runtime identity. Endpoint
 // addresses and container choices remain owned by their existing renderers.
 func projectManagedIdentity(
