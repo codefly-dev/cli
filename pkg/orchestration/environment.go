@@ -106,6 +106,17 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 		}
 		clone.ServiceSecrets = &serviceSecrets
 	}
+	if env.ServiceConfig != nil {
+		serviceConfig := *env.ServiceConfig
+		if len(env.ServiceConfig.Services) > 0 {
+			serviceConfig.Services = make(map[string]resources.EnvironmentServiceConfigMapping, len(env.ServiceConfig.Services))
+			for name, mapping := range env.ServiceConfig.Services {
+				mapping.Values = maps.Clone(mapping.Values)
+				serviceConfig.Services[name] = mapping
+			}
+		}
+		clone.ServiceConfig = &serviceConfig
+	}
 	if len(env.Secrets) > 0 {
 		clone.Secrets = make([]*resources.EnvironmentSecretProvider, len(env.Secrets))
 		for i, provider := range env.Secrets {

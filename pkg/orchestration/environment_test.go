@@ -198,7 +198,7 @@ func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 	deepCopied := map[string]bool{
 		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
 		"ManagedServices": true, "ServiceSecrets": true, "Secrets": true,
-		"ResourceQuota": true, "Dns": true,
+		"ResourceQuota": true, "Dns": true, "ServiceConfig": true,
 	}
 	typ := reflect.TypeOf(resources.Environment{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -216,6 +216,27 @@ func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
 			t.Errorf("resources.Environment.%s (%s) is shared, not copied, by cloneEnvironment — extend the clone before concurrent flows can contaminate each other", field.Name, field.Type)
 		}
 	}
+}
+
+func TestCloneEnvironmentIsolatesServiceConfig(t *testing.T) {
+	original := &resources.Environment{
+		Name: "azure",
+		ServiceConfig: &resources.EnvironmentServiceConfig{
+			Services: map[string]resources.EnvironmentServiceConfigMapping{
+				"frontend": {Values: map[string]string{"region": "eastus2"}},
+			},
+		},
+	}
+	clone := cloneEnvironment(original)
+
+	require.NotSame(t, original.ServiceConfig, clone.ServiceConfig)
+	require.Equal(t, "eastus2", clone.ServiceConfig.Services["frontend"].Values["region"])
+
+	// Mutating the clone must not contaminate the original a concurrent flow holds.
+	clone.ServiceConfig.Services["frontend"].Values["region"] = "westus"
+	clone.ServiceConfig.Services["api"] = resources.EnvironmentServiceConfigMapping{}
+	require.Equal(t, "eastus2", original.ServiceConfig.Services["frontend"].Values["region"])
+	require.NotContains(t, original.ServiceConfig.Services, "api")
 }
 
 func TestCloneEnvironmentIsolatesResourceQuota(t *testing.T) {
