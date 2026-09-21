@@ -165,13 +165,28 @@ An agent used to build an artifact is not necessarily present in production.
 
 ## Concrete integration points and blockers
 
-The CLI consumes pushed Core `v0.3.41-0.20260921051148-11b7464e9048`, with
+The CLI consumes published Core `v0.3.41` (merge `fda66313eb54`), with
 `GOWORK=off` and no replacement. Uncommitted Core files are not a dependency.
 This includes Core's nonblocking render-output opener and descriptor validation,
 fixing the reproduced regular-to-FIFO replacement hang in the shared verifier.
 CLI runtime admission and snapshot copy opens have their own nonblocking checks;
 neither fix establishes functional qualification or permits deployment effects.
-This is not the unpublished v0.3.41 tag and does not authorize a release.
+The release also includes Linux retained-projection-symlink activation
+(`f05de63c`), preserving concurrent readers during projection replacement.
+Lifecycle v1 and startup v2 declarations are unchanged from Core v0.3.40;
+`artifact-execution/v1` still requires truthful adoption by each selected executor.
+Consuming this release does not authorize CLI, fleet or module publication.
+
+Release-adoption verification used the actual CLI `go.mod`: module verification,
+full build, composition/command/deployments/conformance/orchestration/environment
+race tests, real macOS sandbox/UDS staging and disposable-k3d target inspection
+passed. Downloaded Core FIFO/containment and projection-activation regressions
+passed five race repetitions on both native macOS and a Linux container.
+Full CLI normal and race suites retain exactly the same eight engine/gateway
+failures from published Python, Next.js and generic artifacts missing protocol
+declarations; no race reports occurred. Full lint retains 315 baseline findings,
+with zero new findings against `973e46d4`. This is dependency-integration evidence,
+not qualified production executors, functional/stateful delivery or release clearance.
 
 `LoadModuleTrust` uses package-scoped release and build signers with no global-key
 fallback. Selection checks use authenticated consumer usage and Core's evaluator;

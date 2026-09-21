@@ -312,7 +312,7 @@ not published production executor qualification.
 
 ## Explicit Deployment Blocker
 
-Core `11b7464e9048` supplies execution binding, the acquired-executable loader and
+Published Core `v0.3.41` supplies execution binding, the acquired-executable loader and
 checked registered-group shutdown. These are consumed by selected-executor
 staging. Qualified multi-instance deployment remains **blocked**.
 The consumed Core also fixes the verifier hang reproduced against `3264a63d712e`:
@@ -322,6 +322,9 @@ validates the descriptor, retaining receipt/hash checks and root containment.
 The fix belongs to Core #589, separate from CLI runtime/copy opening; no local
 dependency replacement or verification bypass is used. This closes the FIFO
 opening defect, not qualification or deployment integration.
+The release also retains projection symlinks during Linux activation so concurrent
+readers do not lose the preceding inode. It does not automatically opt executors
+into `artifact-execution/v1` or authorize CLI, fleet or module publication.
 An explicit rejection stopgap guards local apply/image-import entry points,
 Flow deployment, platform sends, GitOps render/publication and rollback when a
 participating product declares nested selections. This is not completed positive
