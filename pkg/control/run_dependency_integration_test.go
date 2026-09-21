@@ -3,27 +3,28 @@
 package control
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
+	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/stretchr/testify/require"
 )
 
-// A workspace with an origin service ("api") that declares a real redis
-// dependency. api's own agent is never spawned (Run uses ExcludeRoot), so it
-// only needs to be well-formed YAML, not an installed agent.
+// The host selects test-only protocol peers from a disposable profile. No
+// released agent, provider implementation or toolchain participates here.
 const (
 	runDepWorkspaceYAML = `name: rundep
 layout: modules
@@ -41,7 +42,7 @@ run-profiles:
 name: app
 services:
     - name: api
-    - name: redis
+    - name: dependency
     - name: managed
 `
 	runDepAPIServiceYAML = `kind: service
@@ -50,11 +51,11 @@ version: 0.0.0
 module: app
 agent:
     kind: codefly:service
-    name: go-grpc
-    version: 0.0.16
-    publisher: codefly.ai
+    name: unselected-root
+    version: 0.0.1
+    publisher: example.test
 service-dependencies:
-    - name: redis
+    - name: dependency
       module: app
       endpoints:
           - name: tcp
@@ -66,15 +67,15 @@ workspace-configuration-dependencies:
     - local-auth
     - managed-auth
 `
-	runDepRedisServiceYAML = `kind: service
-name: redis
+	runDepServiceYAML = `kind: service
+name: dependency
 version: 0.0.0
 module: app
 agent:
     kind: codefly:service
-    name: redis
-    version: 0.0.88
-    publisher: codefly.dev
+    name: dependency-peer
+    version: 0.0.1
+    publisher: example.test
 endpoints:
     - name: tcp
 workspace-configuration-dependencies:
@@ -87,9 +88,9 @@ version: 0.0.0
 module: app
 agent:
     kind: codefly:service
-    name: redis
-    version: 0.0.88
-    publisher: codefly.dev
+    name: dependency-peer
+    version: 0.0.1
+    publisher: example.test
 endpoints:
     - name: tcp
 workspace-configuration-dependencies:
@@ -103,13 +104,13 @@ func writeRunDependencyWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		"workspace.codefly.yaml":                            runDepWorkspaceYAML,
-		"modules/app/module.codefly.yaml":                   runDepModuleYAML,
-		"modules/app/services/api/service.codefly.yaml":     runDepAPIServiceYAML,
-		"modules/app/services/redis/service.codefly.yaml":   runDepRedisServiceYAML,
-		"modules/app/services/managed/service.codefly.yaml": runDepManagedServiceYAML,
-		"configurations/local/local-auth.env":               "TOKEN=local\n",
-		"configurations/local/managed-auth.env":             "TOKEN=managed\n",
+		"workspace.codefly.yaml":                               runDepWorkspaceYAML,
+		"modules/app/module.codefly.yaml":                      runDepModuleYAML,
+		"modules/app/services/api/service.codefly.yaml":        runDepAPIServiceYAML,
+		"modules/app/services/dependency/service.codefly.yaml": runDepServiceYAML,
+		"modules/app/services/managed/service.codefly.yaml":    runDepManagedServiceYAML,
+		"configurations/local/local-auth.env":                  "TOKEN=local\n",
+		"configurations/local/managed-auth.env":                "TOKEN=managed\n",
 	}
 	for rel, content := range files {
 		p := filepath.Join(root, rel)
@@ -167,64 +168,11 @@ func connectionStringFrom(configs []*basev0.Configuration) string {
 	return ""
 }
 
-var libpqHostPort = regexp.MustCompile(`\bhost=(\S+)\b.*\bport=(\S+)\b|\bport=(\S+)\b.*\bhost=(\S+)\b`)
-
-// hostPortFromConnectionString extracts host:port from a connection string in
-// either URL form (redis://host:port, postgres://user:pass@host:port/db) or
-// libpq keyword/value form (host=... port=... ...).
-func hostPortFromConnectionString(dsn string) (host, port string, err error) {
-	if u, parseErr := url.Parse(dsn); parseErr == nil && u.Host != "" {
-		host, port = u.Hostname(), u.Port()
-		if host != "" && port != "" {
-			return host, port, nil
-		}
-	}
-	if m := libpqHostPort.FindStringSubmatch(dsn); m != nil {
-		if m[1] != "" {
-			return m[1], m[2], nil
-		}
-		return m[4], m[3], nil
-	}
-	return "", "", fmt.Errorf("no host:port found in %q", dsn)
-}
-
-func TestHostPortFromConnectionString(t *testing.T) {
-	cases := []struct {
-		name     string
-		dsn      string
-		wantHost string
-		wantPort string
-	}{
-		{"redis URL", "redis://host.docker.internal:36780", "host.docker.internal", "36780"},
-		{"postgres URL with credentials", "postgres://user:pass@127.0.0.1:5432/db", "127.0.0.1", "5432"},
-		{"libpq host-then-port", "host=127.0.0.1 port=5432 user=postgres dbname=postgres", "127.0.0.1", "5432"},
-		{"libpq port-then-host", "port=5432 host=127.0.0.1 user=postgres", "127.0.0.1", "5432"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			host, port, err := hostPortFromConnectionString(c.dsn)
-			if err != nil {
-				t.Fatalf("hostPortFromConnectionString(%q): %v", c.dsn, err)
-			}
-			if host != c.wantHost || port != c.wantPort {
-				t.Fatalf("hostPortFromConnectionString(%q) = (%q, %q), want (%q, %q)", c.dsn, host, port, c.wantHost, c.wantPort)
-			}
-		})
-	}
-}
-
-func TestHostPortFromConnectionStringRejectsUnparseable(t *testing.T) {
-	if _, _, err := hostPortFromConnectionString("not-a-connection-string"); err == nil {
-		t.Fatal("expected an error for an unparseable connection string")
-	}
-}
-
-// TestRunProfilesStartRealDependencyShapesInProcess proves that both named
-// profiles drive live Codefly agents and project only their selected workspace
-// configurations. The connection check preserves the in-process acceptance
-// coverage for dependency configuration and teardown.
-func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
-	conformancetest.Gate(t, "linux-amd64-nix-run", "nix")
+// The CLI must project only the selected profile and honor the peer's accepted
+// endpoint addresses. This proves host behavior, not any provider runtime.
+func TestRunProfilesThroughProtocolPeers(t *testing.T) {
+	conformancetest.Gate(t, "linux-amd64-native-control", "go")
+	protocoltest.Install(t, "dependency-peer")
 	tests := []struct {
 		profile            string
 		wantDependencies   []string
@@ -232,12 +180,12 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 	}{
 		{
 			profile:            "local",
-			wantDependencies:   []string{"app/redis"},
+			wantDependencies:   []string{"app/dependency"},
 			wantConfigurations: []string{"local-auth"},
 		},
 		{
 			profile:            "saas",
-			wantDependencies:   []string{"app/managed", "app/redis"},
+			wantDependencies:   []string{"app/dependency", "app/managed"},
 			wantConfigurations: []string{"local-auth", "managed-auth"},
 		},
 	}
@@ -258,13 +206,12 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 			defer cancel()
 
-			// The profile and environment-export contract is backend-neutral. Nix
-			// keeps this real-agent proof reproducible without making an unrelated
-			// desktop Docker daemon a precondition for the control-plane suite.
+			// Exercise the host lifecycle and accepted mappings, not a provider's
+			// installation or runtime packaging behavior.
 			if _, err := plane.Run(ctx, RunRequest{
 				Service:        "app/api",
 				Profile:        tt.profile,
-				RuntimeContext: resources.RuntimeContextNix,
+				RuntimeContext: resources.RuntimeContextNative,
 				ExcludeRoot:    true,
 				Wait:           true,
 				OutputEnv:      outputEnvironment,
@@ -309,7 +256,7 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 			for _, expected := range []string{
 				"CODEFLY__MODULE=app\n",
 				"CODEFLY__SERVICE=api\n",
-				"CODEFLY__ENDPOINT__APP__REDIS__TCP__TCP=",
+				"CODEFLY__ENDPOINT__APP__DEPENDENCY__TCP__TCP=",
 				"CODEFLY__WORKSPACE_CONFIGURATION__LOCAL_AUTH__TOKEN=local\n",
 			} {
 				if !strings.Contains(environment, expected) {
@@ -327,23 +274,62 @@ func TestRunProfilesStartRealDependencyShapesInProcess(t *testing.T) {
 				t.Fatalf("excluded-root output environment mode = %o, want 600", got)
 			}
 
-			dsn := connectionStringFrom(configs)
-			if dsn == "" {
-				t.Fatalf("no dependency connection string in configurations: %+v", configs)
+			var addresses []string
+			for _, dependency := range tt.wantDependencies {
+				var dsn string
+				for _, config := range configs {
+					if config.GetOrigin() == dependency {
+						dsn = connectionStringFrom([]*basev0.Configuration{config})
+					}
+				}
+				address, err := url.Parse(dsn)
+				require.NoError(t, err)
+				require.Equal(t, "tcp", address.Scheme)
+				conn, err := net.DialTimeout("tcp", address.Host, 10*time.Second)
+				require.NoError(t, err)
+				require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+				line, err := bufio.NewReader(conn).ReadString('\n')
+				require.NoError(t, conn.Close())
+				require.NoError(t, err)
+				require.Equal(t, dependency+"\n", line)
+				addresses = append(addresses, address.Host)
 			}
-
-			host, port, err := hostPortFromConnectionString(dsn)
-			if err != nil {
-				t.Fatalf("parse connection string %q: %v", dsn, err)
+			_, err = plane.Stop(ctx, StopRequest{Destroy: true})
+			require.NoError(t, err)
+			for _, address := range addresses {
+				conn, err := net.DialTimeout("tcp", address, time.Second)
+				if conn != nil {
+					_ = conn.Close()
+				}
+				require.Error(t, err, "stopped dependency must not keep listening")
 			}
-			if host == "host.docker.internal" {
-				host = "127.0.0.1"
+			for _, dependency := range tt.wantDependencies {
+				calls := protocoltest.Calls(t, filepath.Join(root, "modules", "app", "services", strings.TrimPrefix(dependency, "app/")))
+				var lifecycle []string
+				for _, call := range calls {
+					if strings.HasPrefix(call.Method, "Runtime.") {
+						lifecycle = append(lifecycle, call.Method)
+					}
+				}
+				require.Subset(t, lifecycle, []string{"Runtime.Load", "Runtime.Init", "Runtime.Start", "Runtime.Stop", "Runtime.Destroy"})
+				require.Equal(t, []string{"Runtime.Load", "Runtime.Init", "Runtime.Start"}, lifecycle[:3])
 			}
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second)
-			if err != nil {
-				t.Fatalf("dial resolved dependency address %s:%s: %v", host, port, err)
-			}
-			_ = conn.Close()
+		})
+	}
+	for _, declaration := range []string{"missing", "future"} {
+		t.Run("reject-"+declaration, func(t *testing.T) {
+			t.Setenv("CODEFLY_TEST_PEER_CONTRACT", declaration)
+			root := writeRunDependencyWorkspace(t)
+			plane, err := NewAt(root)
+			require.NoError(t, err)
+			defer plane.Close()
+			output := filepath.Join(t.TempDir(), "runtime.env")
+			_, err = plane.Run(t.Context(), RunRequest{Service: "app/api", Profile: "local", RuntimeContext: resources.RuntimeContextNative, ExcludeRoot: true, Wait: true, OutputEnv: output})
+			require.ErrorContains(t, err, "incompatible agent contract")
+			_, err = os.Stat(output)
+			require.ErrorIs(t, err, os.ErrNotExist)
+			_, err = os.Stat(filepath.Join(root, "modules/app/services/dependency/.protocol-test"))
+			require.ErrorIs(t, err, os.ErrNotExist, "rejected peer must not receive Runtime.Load")
 		})
 	}
 }

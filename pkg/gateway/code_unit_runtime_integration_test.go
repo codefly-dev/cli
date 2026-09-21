@@ -5,46 +5,21 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
+
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 )
 
-// TestGatewayRunsEveryDeclaredCodeUnitThroughItsProductionPlugin is the
-// regression for heterogeneous attached projects being collapsed into the
-// first root-detected agent. It uses the real Python and generic Node agents;
-// neither runtime, filesystem, nor gateway behavior is mocked.
-func TestGatewayRunsEveryDeclaredCodeUnitThroughItsProductionPlugin(t *testing.T) {
+// Routing and aggregation use controlled wire responses, not language runtimes.
+func TestGatewayRoutesEveryDeclaredCodeUnitToItsSelectedPeer(t *testing.T) {
 	root := t.TempDir()
-	writeCodeUnitFixture(t, root, "mind.yaml", "source_agents:\n  backend: codefly.dev/python:latest\n  frontend: codefly.dev/nextjs:latest\n")
-	writeCodeUnitFixture(t, root, "backend/pyproject.toml", `[project]
-name = "gateway-polyglot-backend"
-version = "0.0.0"
-`)
-	writeCodeUnitFixture(t, root, "backend/test_backend.py", `def test_backend_runtime():
-    assert "backend".upper() == "BACKEND"
-`)
-	writeCodeUnitFixture(t, root, "frontend/package.json", `{
-  "name": "gateway-polyglot-frontend",
-  "version": "0.0.0",
-  "private": true,
-  "scripts": {"test": "node --test"}
-}
-`)
-	writeCodeUnitFixture(t, root, "frontend/package-lock.json", `{
-  "name": "gateway-polyglot-frontend",
-  "version": "0.0.0",
-  "lockfileVersion": 3,
-  "requires": true,
-  "packages": {"": {"name": "gateway-polyglot-frontend", "version": "0.0.0"}}
-}
-`)
-	writeCodeUnitFixture(t, root, "frontend/frontend.test.js", `const test = require("node:test");
-const assert = require("node:assert/strict");
-
-test("frontend runtime", () => {
-  assert.equal("frontend".toUpperCase(), "FRONTEND");
-});
-`)
+	peers := protocoltest.Install(t, "backend-peer", "frontend-peer")
+	writeCodeUnitFixture(t, root, "mind.yaml", "source_agents:\n  backend: "+peers[0]+"\n  frontend: "+peers[1]+"\n")
+	writeCodeUnitFixture(t, root, "backend/test_backend.txt", "opaque backend input\n")
+	writeCodeUnitFixture(t, root, "frontend/test_frontend.txt", "opaque frontend input\n")
 
 	server, err := NewServer(Config{WorkDir: root})
 	if err != nil {
@@ -79,7 +54,7 @@ test("frontend runtime", () => {
 	selected, err := server.Test(t.Context(), &gatewayv1.TestRequest{
 		RuntimeRequest: &runtimev0.TestRequest{
 			Selection: &runtimev0.TestSelection{Scope: &runtimev0.TestSelection_File{
-				File: &runtimev0.TestFileSelection{Path: "backend/test_backend.py"},
+				File: &runtimev0.TestFileSelection{Path: "backend/test_backend.txt"},
 			}},
 			SelectionId: "backend-file-selection",
 		},
@@ -98,11 +73,28 @@ test("frontend runtime", () => {
 	if got := selectedRuntime.GetRun().GetSelectionId(); got != "backend-file-selection" {
 		t.Fatalf("selection acknowledgement = %q", got)
 	}
-	if got := selectedRuntime.GetRun().GetRequestedSelection().GetFile().GetPath(); got != "backend/test_backend.py" {
+	if got := selectedRuntime.GetRun().GetRequestedSelection().GetFile().GetPath(); got != "backend/test_backend.txt" {
 		t.Fatalf("reported selection path = %q, want repository-relative path", got)
 	}
 	if counts := selectedRuntime.GetCounts(); counts.GetTotal() != 1 || counts.GetPassed() != 1 {
 		t.Fatalf("selected counts = %+v, want one passing backend test", counts)
+	}
+	for _, unit := range []string{"backend", "frontend"} {
+		var requests []*runtimev0.TestRequest
+		for _, call := range protocoltest.Calls(t, filepath.Join(root, unit)) {
+			if call.Method == "Runtime.Test" {
+				request := &runtimev0.TestRequest{}
+				require.NoError(t, protojson.Unmarshal(call.Request, request))
+				requests = append(requests, request)
+			}
+		}
+		if unit == "backend" {
+			require.Len(t, requests, 2)
+			require.Equal(t, "test_backend.txt", requests[1].GetSelection().GetFile().GetPath())
+			require.Equal(t, "backend-file-selection", requests[1].GetSelectionId())
+		} else {
+			require.Len(t, requests, 1, "selection must not dispatch to the unrelated unit")
+		}
 	}
 }
 

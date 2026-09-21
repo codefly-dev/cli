@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"github.com/codefly-dev/core/policy"
@@ -279,7 +280,8 @@ func TestPreparedMutationRetentionRejectsOversizedResults(t *testing.T) {
 func newPreparedMutationGateway(t *testing.T) (*Server, ed25519.PrivateKey, string) {
 	t.Helper()
 	root := t.TempDir()
-	writeCodeUnitFixture(t, root, "mind.yaml", "service: app\nplugin: codefly.dev/generic:latest\n")
+	selected := protocoltest.Install(t, "mutation-peer")[0]
+	writeCodeUnitFixture(t, root, "mind.yaml", "service: app\nplugin: "+selected+"\n")
 	server, err := NewServer(Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)

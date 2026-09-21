@@ -36,15 +36,30 @@ the registry upload/redirect/token credential handling instead of suppressing
 the audit. Real registry acquisition/publication/GC/render-handoff race tests
 and the upstream remote-registry race suite pass with this dependency.
 
-There is also a required-check owner dependency, not just optional native CI:
-`control-integration` runs 35573538289 and 35586885454 fail
-`TestRunProfilesStartRealDependencyShapesInProcess` because the selected released
-Redis 0.0.88 does not declare CLI-agent protocol version 1. Existing owner work is
-service-redis#62. Do not skip that proof, weaken admission, or edit the agent from
-this PR. The subsequent run canceled coverage/race/control after the audit
-failure; cancellation does not establish that those gates pass. Full local
-normal/race suites separately retain the eight documented engine/gateway agent
-declaration failures. The PR must remain draft until required checks are green.
+The owner clarified that required CLI tests must not depend on released agents.
+The earlier `control-integration` failure against Redis 0.0.88 and eight local
+engine/gateway failures were the wrong test-ownership boundary, not reasons to
+coordinate a fleet release. Those CLI tests now use a locally built, test-only
+gRPC peer with controlled responses, a disposable host profile and request
+recording. They do not download released agents or execute language toolchains.
+No production admission check is relaxed and no production agent is modified.
+
+The replacement control proof checks both profiles, excluded-root configuration
+export and file permissions, accepted kernel-assigned addresses, each dependency's
+identity over a socket, lifecycle order, stopped listeners, and missing/future
+protocol rejection before runtime load. The required conformance row is now
+`linux-amd64-native-control`, with no claim of Nix/provider qualification.
+Engine/gateway proofs retain read-only versus mutating lifecycle behavior,
+per-unit request/selection routing, typed evidence projection, opaque configuration
+forwarding, and signed mutation/fence/concurrency enforcement on actual files.
+Source attachment checks the selected identity delivered to Builder.Load;
+agent-specific SBOM/package qualification no longer belongs to the CLI gate.
+The workflow regression prevents reintroducing released-agent installs in the
+required gate, and AGENTS.md documents this ownership boundary.
+
+The historical published-agent failure logs below remain diagnostic evidence,
+not current CLI test requirements. Agent implementation/adoption work stays at
+its owner. The PR must remain draft until the actual required checks are green.
 
 Optional native/lint/pins results remain visible in the PR body, not reasons to
 expand this landing scope. No CLI release or merge is authorized.

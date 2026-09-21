@@ -8,10 +8,17 @@ exist, or claims a status the repository cannot back.
 
 Every row describes the CLI **built from this checkout** against the
 `github.com/codefly-dev/core` release line pinned in `go.mod` — the matrix
-records the line (`v0.3.40`), not the pseudo-version, so a core bump within a
+records the line (`v0.3.41`), not the pseudo-version, so a core bump within a
 line does not invalidate the claim. Version skew between a
 released CLI and a released agent is not, by itself, a compatibility failure —
-a row is about whether a real lifecycle was driven end to end.
+a row names exactly the host behavior and infrastructure it exercises.
+
+Required CLI gates use test-only protocol peers, never released service agents.
+The native-control row proves host selection, accepted endpoint/configuration
+propagation and teardown through gRPC and real sockets. It replaces the former
+Redis/Nix-specific row and makes no Nix or released-agent qualification claim.
+Provider runtime, packaging and language-toolchain qualification belong to their
+owners, not prerequisites for a CLI contract change.
 
 ## What the statuses mean
 
@@ -27,7 +34,7 @@ a row is about whether a real lifecycle was driven end to end.
 |---|---|---|---|---|---|
 | `linux-amd64-source` | qualified | linux/amd64 | none | — | `go.yml` — `coverage`, `race`, `lint` |
 | `linux-amd64-native-npm` | qualified | linux/amd64 | native | `npm` | `go.yml` — `coverage`, `race` |
-| `linux-amd64-nix-run` | qualified | linux/amd64 | nix | `nix` | `go.yml` — `control-integration` |
+| `linux-amd64-native-control` | qualified | linux/amd64 | native protocol peers | `go` | `go.yml` — `control-integration` |
 | `linux-amd64-docker-generate` | not-yet-qualified | linux/amd64 | docker | `docker`, `buf` | `CODEFLY_GENERATE_QUALIFY=1`, developer machine only |
 | `linux-amd64-docker-mcp-run` | not-yet-qualified | linux/amd64 | docker | `docker` | `CODEFLY_MCP_RUN_QUALIFY=1`, developer machine only |
 | `linux-amd64-network-mcp-agent` | not-yet-qualified | linux/amd64 | native | — | `CODEFLY_MCP_AGENT_QUALIFY=1`, developer machine only |

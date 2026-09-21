@@ -5,22 +5,23 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 )
 
-// TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization exercises the real
-// production agent against malformed source. GetProjectInfo/GetSemanticIndex and
-// the agent-level command surface must run without ever triggering Runtime
-// Load/Init, while the first mutating Code operation initializes it lazily.
+// Inspection must not initialize Runtime; the first mutation must. Controlled
+// typed responses test host lifecycle decisions without a released plugin.
 func TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization(t *testing.T) {
 	root := t.TempDir()
 	writeSourceFile(t, root, "pyproject.toml", "[project]\nname = \"probe\"\nversion = \"0.0.0\"\n")
 	writeSourceFile(t, root, "broken.py", "def oops(:\n    return\n")
 
-	agent := "codefly.dev/python:latest"
+	agent := protocoltest.Install(t, "inspection-peer")[0]
+	protocoltest.Response(t, root, "project", &codev0.CodeResponse{Result: &codev0.CodeResponse_GetProjectInfo{GetProjectInfo: &codev0.GetProjectInfoResponse{Module: "probe", Language: "opaque-language"}}})
+	protocoltest.Response(t, root, "semantic", &codev0.CodeResponse{Result: &codev0.CodeResponse_GetSemanticIndex{GetSemanticIndex: &basev0.SemanticIndex{State: basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_DEGRADED, Languages: []string{"opaque-language"}, Issues: []*basev0.SemanticIssue{{Code: "parse_failed"}}}}})
 
 	host, err := NewWorkspaceHost(Config{Root: root})
 	if err != nil {
@@ -42,8 +43,8 @@ func TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization(t *testing.T) {
 		t.Fatalf("GetProjectInfo transport error: %v", err)
 	}
 	info := project.GetGetProjectInfo()
-	if info.GetModule() != "probe" || info.GetLanguage() != "python" {
-		t.Fatalf("project info did not recover identity from malformed source: %+v", info)
+	if info.GetModule() != "probe" || info.GetLanguage() != "opaque-language" {
+		t.Fatalf("project info response was not preserved: %+v", info)
 	}
 
 	semantic, err := service.GetSemanticIndex(ctx, &toolingv0.GetSemanticIndexRequest{})
@@ -54,8 +55,8 @@ func TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization(t *testing.T) {
 	if index.GetState() != basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_DEGRADED {
 		t.Fatalf("malformed source should degrade, not fail: state=%s issues=%+v", index.GetState(), index.GetIssues())
 	}
-	if len(index.GetLanguages()) != 1 || index.GetLanguages()[0] != "python" {
-		t.Fatalf("semantic languages = %v, want [python]", index.GetLanguages())
+	if len(index.GetLanguages()) != 1 || index.GetLanguages()[0] != "opaque-language" {
+		t.Fatalf("semantic languages = %v, want opaque response", index.GetLanguages())
 	}
 	if !hasIssueCode(index.GetIssues(), "parse_failed") {
 		t.Fatalf("semantic recovery should report the parse failure, got %+v", index.GetIssues())

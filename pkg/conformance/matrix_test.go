@@ -204,9 +204,9 @@ func TestEmbeddedMatrixIsQualifiedOnlyWhereCIProvesIt(t *testing.T) {
 		}
 	}
 	want := map[string]bool{
-		"linux-amd64-source":     true,
-		"linux-amd64-native-npm": true,
-		"linux-amd64-nix-run":    true,
+		"linux-amd64-source":         true,
+		"linux-amd64-native-npm":     true,
+		"linux-amd64-native-control": true,
 	}
 	if len(qualified) != len(want) {
 		t.Fatalf("qualified rows = %v, want %v", qualified, want)

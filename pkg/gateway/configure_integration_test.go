@@ -1,98 +1,63 @@
 package gateway
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
-func TestConfigureServicePersistsPythonEnvironmentForNextTestRun(t *testing.T) {
+func TestConfigureServiceForwardsOpaqueChangesAndReusesSession(t *testing.T) {
 	root := t.TempDir()
-	files := map[string]string{
-		"mind.yaml": "service: source\nplugin: codefly.dev/python:latest\n",
-		"pyproject.toml": `[project]
-name = "runtime-recovery"
-version = "0.0.0"
-`,
-		filepath.Join(".github", "workflows", "test.yml"): `jobs:
-  test:
-    steps:
-      - run: pytest -v
-`,
-		"test_environment.py": `import os
-import unittest
-
-class EnvironmentTest(unittest.TestCase):
-    def test_configured_value_reaches_runtime(self):
-        self.assertEqual(os.environ.get("RECOVERY_FLAG"), "enabled")
-`,
-	}
-	for relative, body := range files {
-		path := filepath.Join(root, relative)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
+	selected := protocoltest.Install(t, "configuration-peer")[0]
+	writeCodeUnitFixture(t, root, "mind.yaml", "service: source\nplugin: "+selected+"\n")
 	server, err := NewServer(Config{WorkDir: root})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, server.Close()) })
+	changes := []*builderv0.ConfigChange{{Path: "opaque.option", Value: "selected-value", Op: builderv0.ConfigChange_SET}}
+	configured, err := server.ConfigureService(t.Context(), &gatewayv1.ConfigureServiceRequest{Changes: changes})
+	require.NoError(t, err)
+	require.Equal(t, builderv0.ConfigureStatus_SUCCESS, configured.GetResponse().GetState().GetState())
+	require.Equal(t, "opaque: peer-response\n", configured.GetResponse().GetEffectiveYaml())
+	reset := &builderv0.ConfigChange{Path: "opaque.option", Op: builderv0.ConfigChange_UNSET}
+	_, err = server.ConfigureService(t.Context(), &gatewayv1.ConfigureServiceRequest{Changes: []*builderv0.ConfigChange{reset}})
+	require.NoError(t, err)
+	tested, err := server.Test(t.Context(), &gatewayv1.TestRequest{RuntimeRequest: &runtimev0.TestRequest{Target: "opaque-test-selector"}})
+	require.NoError(t, err)
+	require.Equal(t, runtimev0.TestRunResult_PASSED, tested.GetRuntimeResponse().GetResult().GetState())
+	var methods []string
+	var pid int
+	var configuredCalls int
+	for _, call := range protocoltest.Calls(t, root) {
+		if call.Method == "Agent.GetAgentInformation" {
+			continue
+		}
+		methods = append(methods, call.Method)
+		if pid == 0 {
+			pid = call.PID
+		}
+		require.Equal(t, pid, call.PID, "builder and runtime must share the selected session")
+		switch call.Method {
+		case "Builder.Configure":
+			request := &builderv0.ConfigureRequest{}
+			require.NoError(t, protojson.Unmarshal(call.Request, request))
+			require.Len(t, request.GetChanges(), 1)
+			expected := changes[0]
+			if configuredCalls > 0 {
+				expected = reset
+			}
+			require.True(t, proto.Equal(expected, request.GetChanges()[0]))
+			configuredCalls++
+		case "Runtime.Test":
+			request := &runtimev0.TestRequest{}
+			require.NoError(t, protojson.Unmarshal(call.Request, request))
+			require.Equal(t, "opaque-test-selector", request.GetTarget())
+		}
 	}
-	t.Cleanup(func() { _ = server.Close() })
-
-	configured, err := server.ConfigureService(t.Context(), &gatewayv1.ConfigureServiceRequest{
-		Changes: []*builderv0.ConfigChange{
-			{Path: "test.env.RECOVERY_FLAG", Value: "enabled", Op: builderv0.ConfigChange_SET},
-			{Path: "test.provisioning.editable", Value: "false", Op: builderv0.ConfigChange_SET},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := configured.GetResponse()
-	if response.GetState().GetState() != builderv0.ConfigureStatus_SUCCESS {
-		t.Fatalf("configure status = %s (%s)", response.GetState().GetState(), response.GetState().GetMessage())
-	}
-	if !strings.Contains(response.GetEffectiveYaml(), "RECOVERY_FLAG: enabled") {
-		t.Fatalf("effective configuration omitted persisted environment: %s", response.GetEffectiveYaml())
-	}
-	reset, err := server.ConfigureService(t.Context(), &gatewayv1.ConfigureServiceRequest{
-		Changes: []*builderv0.ConfigChange{{
-			Path: "test.provisioning.editable", Op: builderv0.ConfigChange_UNSET,
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resetResponse := reset.GetResponse()
-	if resetResponse.GetState().GetState() != builderv0.ConfigureStatus_SUCCESS {
-		t.Fatalf("reset status = %s (%s)", resetResponse.GetState().GetState(), resetResponse.GetState().GetMessage())
-	}
-	if strings.Contains(resetResponse.GetEffectiveYaml(), "editable:") {
-		t.Fatalf("reset left the explicit editable override in place: %s", resetResponse.GetEffectiveYaml())
-	}
-	if !strings.Contains(resetResponse.GetEffectiveYaml(), "RECOVERY_FLAG: enabled") {
-		t.Fatalf("reset discarded an unrelated persisted setting: %s", resetResponse.GetEffectiveYaml())
-	}
-
-	tested, err := server.Test(t.Context(), &gatewayv1.TestRequest{RuntimeRequest: &runtimev0.TestRequest{
-		Target: "test_environment.py::EnvironmentTest::test_configured_value_reaches_runtime",
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := tested.GetRuntimeResponse().GetResult(); result.GetState() != runtimev0.TestRunResult_PASSED {
-		t.Fatalf("test result = %s (%s)\noutput:\n%s\nfailures: %v", result.GetState(), result.GetMessage(), tested.GetOutput(), tested.GetFailures())
-	}
-	if tested.GetTestsPassed() != 1 {
-		t.Fatalf("passed tests = %d, want 1", tested.GetTestsPassed())
-	}
+	require.Equal(t, []string{"Builder.Load", "Builder.Configure", "Builder.Configure", "Runtime.Load", "Runtime.Init", "Runtime.Test"}, methods)
 }

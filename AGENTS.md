@@ -167,7 +167,9 @@ relative paths.
   admission or linked-Core matching in CLI/Core. Unchanged protocols need no fleet repinning.
   Require the running peer's protocol and operation capabilities; missing is an error.
   See [docs/agent-compatibility.md](docs/agent-compatibility.md) for selection and bootstrap.
-- **NEVER mock.** Tests use real agent processes and real infrastructure where possible.
+- **CLI tests own the host boundary, not released agents.** Use test-only gRPC peers
+  with controlled responses and real files/sockets; no released-agent downloads,
+  fleet pins or provider toolchains in CLI gates. Agent behavior is tested by its owner.
 - **The orchestration package is the most critical code.** Changes there affect every
   `codefly run`. Test thoroughly.
 - **Configs flow as environment variables, not files.** Connection strings derived from network
