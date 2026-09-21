@@ -318,8 +318,9 @@ module-trust:
   repositories:
     %s: %s
   signers:
-    %s: %q
-`, PackageID, RepositoryURL(), Signer, fixture.SignerKeyBase64())
+    %s:
+      %s: %q
+`, PackageID, RepositoryURL(), PackageID, Signer, fixture.SignerKeyBase64())
 	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(doc), 0o600))
 }
 

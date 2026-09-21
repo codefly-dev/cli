@@ -1369,10 +1369,11 @@ module-trust:
   repositories:
     %s: %s
   signers:
-    %s: %q
+    %s:
+      %s: %q
 `, pinnedfixture.Owner, pinnedfixture.RepoName, version,
 		pinnedfixture.PackageID, pinnedfixture.RepositoryURL(),
-		pinnedfixture.Signer, fixture.SignerKeyBase64())
+		pinnedfixture.PackageID, pinnedfixture.Signer, fixture.SignerKeyBase64())
 	if err := os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(doc), 0o644); err != nil {
 		t.Fatal(err)
 	}

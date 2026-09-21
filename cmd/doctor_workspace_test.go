@@ -260,7 +260,7 @@ func TestDoctorWorkspaceMalformedResolutionRecordIsReported(t *testing.T) {
 func TestDoctorWorkspaceModuleTrustDeclaredIsNotFlagged(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n" +
-			"module-trust:\n    repositories:\n        owner/saas: https://github.com/owner/saas\n    signers:\n        signer: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+			"module-trust:\n    repositories:\n        owner/saas: https://github.com/owner/saas\n    signers:\n        owner/saas:\n            signer: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	requireNoCode(t, report, codeModuleTrustMissing)
@@ -277,7 +277,7 @@ func TestDoctorWorkspaceFlagsPartiallyCoveredModuleTrust(t *testing.T) {
 		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n" +
 			"    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n" +
 			"    - name: blog\n      source: owner/blog\n      version: \"0.1.0\"\n" +
-			"module-trust:\n    repositories:\n        owner/blog: https://github.com/owner/blog\n    signers:\n        signer: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+			"module-trust:\n    repositories:\n        owner/blog: https://github.com/owner/blog\n    signers:\n        owner/blog:\n            signer: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	diag := requireCode(t, report, codeModuleTrustMissing, "fail")

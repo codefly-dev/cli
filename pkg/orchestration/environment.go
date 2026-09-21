@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/codefly-dev/core/resources"
 )
@@ -71,6 +72,12 @@ func cloneEnvironment(env *resources.Environment) *resources.Environment {
 		for name, managed := range env.ManagedServices {
 			managed.EgressCIDRs = append([]string(nil), managed.EgressCIDRs...)
 			managed.SecretReferences = append([]resources.EnvironmentManagedSecretReference(nil), managed.SecretReferences...)
+			if managed.Identity != nil {
+				identity := *managed.Identity
+				identity.Annotations = maps.Clone(identity.Annotations)
+				identity.Labels = maps.Clone(identity.Labels)
+				managed.Identity = &identity
+			}
 			clone.ManagedServices[name] = managed
 		}
 	}

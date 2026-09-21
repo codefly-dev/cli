@@ -544,8 +544,8 @@ func placeholderTagLock(packageID, repositoryURL, version, ref string) *corecomp
 // resources.Workspace because core's schema does not carry it yet (tracked
 // separately as a small core change); this keeps the CLI-only until then.
 type rawModuleTrust struct {
-	Repositories map[string]string `yaml:"repositories"`
-	Signers      map[string]string `yaml:"signers"`
+	Repositories map[string]string            `yaml:"repositories"`
+	Signers      map[string]map[string]string `yaml:"signers"`
 }
 
 type rawWorkspaceModuleTrustProbe struct {
@@ -588,13 +588,16 @@ func LoadModuleTrust(workspaceDir string) (*corecomposition.TrustPolicy, map[str
 	for id, repository := range probe.ModuleTrust.Repositories {
 		repositories[id] = normalizeRepositoryURL(repository)
 	}
-	signers := map[string]ed25519.PublicKey{}
-	for identity, encoded := range probe.ModuleTrust.Signers {
-		key, err := decodeTrustSignerKey(encoded)
-		if err != nil {
-			return nil, nil, fmt.Errorf("module-trust signer %q: %w", identity, err)
+	signers := make(map[string]map[string]ed25519.PublicKey)
+	for packageID, declarations := range probe.ModuleTrust.Signers {
+		signers[packageID] = make(map[string]ed25519.PublicKey)
+		for identity, encoded := range declarations {
+			key, err := decodeTrustSignerKey(encoded)
+			if err != nil {
+				return nil, nil, fmt.Errorf("module-trust package %q signer %q: %w", packageID, identity, err)
+			}
+			signers[packageID][identity] = key
 		}
-		signers[identity] = key
 	}
 	return &corecomposition.TrustPolicy{Repositories: repositories, Signers: signers}, overrides, nil
 }

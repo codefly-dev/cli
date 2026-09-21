@@ -30,21 +30,16 @@ var (
 
 var importCmd = &cobra.Command{
 	Use:   "import <env> --cell-contract <file|->",
-	Short: "Point an environment at a cell by consuming its codefly/cell/v1 contract",
-	Long: `Import a cell descriptor (codefly/cell/v1) into an environment in
-workspace.codefly.yaml, so cell facts — cluster, registry, managed-database
-egress CIDRs, secret store, DNS, gitops path — are sourced from the contract
-instead of hand-typed.
+	Short: "Import explicit environment declarations from a codefly/cell/v2 contract",
+	Long: `Import a codefly/cell/v2 descriptor into workspace.codefly.yaml.
+The producer supplies Codefly environment declarations with resolved endpoints,
+secret references and delivery paths. The requested environment and namespace
+must match the declaration; import never retargets a contract.
 
-The descriptor is produced on the platform side, e.g. by infra-base's
-` + "`obinctl cell-contract <coordinate>`" + `. Read it from a file or from stdin
-with ` + "`-`" + `:
+  codefly environment import production --cell-contract cell.json
 
-  obinctl cell-contract hosted-eastus2 | codefly environment import azure --cell-contract -
-
-Only the fields the contract owns are replaced; operator-owned fields
-(description, ingress, resource-quota, per-service secret mappings, …) are
-preserved, comments included.`,
+Declared fields replace their named values. Omitted fields and unrelated map
+entries are preserved, comments included. Read from stdin with --cell-contract -.`,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -172,9 +167,11 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		// EndLine after the edit would under-count and strand the original's
 		// trailing lines.
 		endLine := yamledit.EndLine(envNode)
-		if aerr := applyContractFields(envNode, env, opts.envName); aerr != nil {
-			return aerr
+		_, declaration, decodeErr := yamledit.Document(opts.contractData)
+		if decodeErr != nil {
+			return decodeErr
 		}
+		applyContractFields(envNode, yamledit.MapValue(declaration, "environment"))
 		stampProvenance(envNode, contract, opts)
 		updated, err = spliceEnvironment(original, envNode, endLine)
 	}
@@ -366,132 +363,18 @@ func clearFootComments(node *yaml.Node) {
 	}
 }
 
-// applyContractFields overwrites the environment's contract-owned fields from
-// env (the resources.Environment ToEnvironment produced) via node edits, leaving
-// every other field and comment untouched. A new environment takes the whole
-// ToEnvironment result elsewhere; this path only runs for an existing item.
-func applyContractFields(envNode *yaml.Node, env *resources.Environment, envName string) error {
-	// Persist the namespace ToEnvironment used to derive gitops.path and the
-	// managed secret's remote-key, so the file can never disagree with those
-	// derived values. env.Namespace is the resolved namespace (--namespace if
-	// given, else the item's existing namespace, else the workspace name) and is
-	// guaranteed non-empty — ToEnvironment rejects an empty namespace before we
-	// get here. Write it only when absent (the item defaulted to the workspace
-	// name, so make that explicit) or actually changing (--namespace); an
-	// unchanged value is left alone to keep any inline comment on its line.
-	if n := yamledit.MapValue(envNode, "namespace"); n == nil || n.Value != env.Namespace {
-		yamledit.SetMapValue(envNode, "namespace", yamledit.Scalar(env.Namespace))
-	}
-	if env.Cluster != nil {
-		// Edit cluster field-by-field rather than replacing the node wholesale:
-		// kind and context are contract facts, but kubeconfig is an operator-owned
-		// local path the contract never carries, so a whole-node replace would
-		// silently drop it (and any inline comments in the block).
-		cluster := yamledit.EnsureMap(envNode, "cluster")
-		yamledit.SetMapValue(cluster, "kind", yamledit.Scalar(env.Cluster.Kind))
-		yamledit.SetMapValue(cluster, "context", yamledit.Scalar(env.Cluster.Context))
-	}
-	if env.Registry != nil {
-		if err := setEncoded(envNode, "registry", env.Registry); err != nil {
-			return err
-		}
-	}
-	if env.Gitops != nil {
-		gitops := yamledit.EnsureMap(envNode, "gitops")
-		yamledit.SetMapValue(gitops, "repo-url", yamledit.Scalar(env.Gitops.RepoURL))
-		yamledit.SetMapValue(gitops, "path", yamledit.Scalar(env.Gitops.Path))
-		// branch is operator-owned: keep an existing one, seed the default only
-		// when the block is created here.
-		if yamledit.MapValue(gitops, "branch") == nil {
-			yamledit.SetMapValue(gitops, "branch", yamledit.Scalar(env.Gitops.Branch))
-		}
-	}
-	if len(env.ManagedServices) > 0 {
-		if err := applyManagedServices(envNode, env.ManagedServices, envName); err != nil {
-			return err
-		}
-	}
-	if env.ServiceSecrets != nil {
-		serviceSecrets := yamledit.EnsureMap(envNode, "service-secrets")
-		if err := setEncoded(serviceSecrets, "secret-store", env.ServiceSecrets.SecretStore); err != nil {
-			return err
-		}
-	}
-	if env.Dns != nil {
-		if err := setEncoded(envNode, "dns", env.Dns); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// applyManagedServices updates the environment's managed database in place.
-// core's ToEnvironment always emits the single database under the key "store",
-// but an operator may already declare it under the service name it replaces —
-// and that name, not "store", is what the deploy path matches. So the update
-// targets an existing entry regardless of its key (an exact "store" match
-// first, then the sole existing entry when it is the same kind of database) and
-// only inserts "store" when none matches. Two or more existing entries with no
-// exact match is ambiguous and refused, rather than silently leaving a stale
-// entry — with its stale, possibly wrong, egress CIDR, the outage this contract
-// exists to prevent — beside a new one.
-func applyManagedServices(envNode *yaml.Node, services map[string]resources.EnvironmentManagedService, envName string) error {
-	for contractKey, svc := range services {
-		managed := yamledit.MapValue(envNode, "managed-services")
-		if managed == nil {
-			managed = yamledit.EnsureMap(envNode, "managed-services")
-			if err := setEncoded(managed, contractKey, svc); err != nil {
-				return err
-			}
+// Merge only explicitly declared fields. Omitted keys retain operator-owned
+// values; sequences and scalars replace their exact named field.
+func applyContractFields(target, declaration *yaml.Node) {
+	for i := 0; i+1 < len(declaration.Content); i += 2 {
+		key, value := declaration.Content[i].Value, declaration.Content[i+1]
+		current := yamledit.MapValue(target, key)
+		if value.Kind == yaml.MappingNode && len(value.Content) > 0 && current != nil && current.Kind == yaml.MappingNode {
+			applyContractFields(current, value)
 			continue
 		}
-		target := yamledit.MapValue(managed, contractKey)
-		if target == nil {
-			keys := yamledit.MapKeys(managed)
-			switch len(keys) {
-			case 0:
-				if err := setEncoded(managed, contractKey, svc); err != nil {
-					return err
-				}
-				continue
-			case 1:
-				// Adopt the sole existing entry only when it is the same kind of
-				// service the contract maps — i.e. the operator declared this
-				// database under a different name. An entry of another kind (a
-				// cache, a queue) is an unrelated managed service: overwriting it
-				// would destroy its config and repoint its slot at the database,
-				// the exact silent-egress corruption this contract prevents. Insert
-				// the database beside it instead.
-				sole := yamledit.MapValue(managed, keys[0])
-				if k := yamledit.MapValue(sole, "kind"); k != nil && k.Value == svc.Kind {
-					target = sole
-				} else {
-					if err := setEncoded(managed, contractKey, svc); err != nil {
-						return err
-					}
-					continue
-				}
-			default:
-				return fmt.Errorf("environment %q declares %d managed services (%s) but the cell contract maps one; rename the database's entry to %q or remove the extras so import can update it unambiguously",
-					envName, len(keys), strings.Join(keys, ", "), contractKey)
-			}
-		}
-		yamledit.SetMapValue(target, "kind", yamledit.Scalar(svc.Kind))
-		yamledit.SetMapValue(target, "external-name", yamledit.Scalar(svc.ExternalName))
-		if err := setEncoded(target, "egress-cidrs", svc.EgressCIDRs); err != nil {
-			return err
-		}
+		yamledit.SetMapValue(target, key, value)
 	}
-	return nil
-}
-
-func setEncoded(node *yaml.Node, key string, value any) error {
-	encoded, err := yamledit.Encode(value)
-	if err != nil {
-		return err
-	}
-	yamledit.SetMapValue(node, key, encoded)
-	return nil
 }
 
 // stampProvenance writes (or, on re-import, replaces) the provenance comment
@@ -511,7 +394,7 @@ func stampProvenance(envNode *yaml.Node, contract *resources.CellContract, opts 
 }
 
 func init() {
-	importCmd.Flags().String("cell-contract", "", "Path to a codefly/cell/v1 descriptor, or - for stdin")
+	importCmd.Flags().String("cell-contract", "", "Path to a codefly/cell/v2 descriptor, or - for stdin")
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Kubernetes namespace to deploy into (default: existing namespace, else workspace name)")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Print the unified diff of workspace.codefly.yaml and write nothing")
 }

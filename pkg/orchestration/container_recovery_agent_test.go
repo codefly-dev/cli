@@ -3,19 +3,15 @@ package orchestration
 import (
 	"context"
 	"debug/buildinfo"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/codefly-dev/core/agents/manager"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 )
 
 // The reader of the process marker is the agent binary's Core, not the CLI's.
@@ -36,7 +32,8 @@ func TestContainerRecoveryRejectsAReleasedLegacyAgent(t *testing.T) {
 	const cacheKey = "container-recovery-legacy-agent"
 	t.Cleanup(func() { services.ClearAgent(cacheKey) })
 	client, err := services.LoadAgent(ctx, agent, cacheKey)
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "does not declare a CLI-agent protocol version")
+	require.Nil(t, client)
 
 	path, err := agent.Path(ctx)
 	require.NoError(t, err)
@@ -49,24 +46,4 @@ func TestContainerRecoveryRejectsAReleasedLegacyAgent(t *testing.T) {
 		}
 	}
 	require.Equal(t, "v0.3.27", coreVersion, "the published fixture must retain its pre-v2 Core")
-
-	var headers metadata.MD
-	info, err := client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
-	require.NoError(t, err)
-	acknowledgement := headers.Get(recoveryscope.Header)
-	require.Empty(t, acknowledgement)
-	for _, runtimeContext := range []string{resources.RuntimeContextContainer, resources.RuntimeContextFree} {
-		runner := &Runner{
-			runtimeContext: runtimeContext,
-			// What Flow.configureRunner hands every runner it builds.
-			containerRecoveryIdentity: recoveryscope.Acknowledgement(),
-			instance: &services.Instance{
-				Info:                   info,
-				Identity:               &resources.ServiceIdentity{Name: "legacy", Module: "test"},
-				ContainerRecoveryScope: strings.Join(acknowledgement, ""),
-			},
-		}
-		_, err := runner.Init(ctx)
-		require.ErrorContains(t, err, "does not declare a CLI-agent protocol version")
-	}
 }

@@ -660,8 +660,13 @@ module-trust:
   repositories:
     codefly/saas-starter: https://github.com/codefly-dev/module-saas-starter
   signers:
-    <signature identity written into provenance.json>: <base64 ed25519 public key>
+    codefly/saas-starter:
+      <signature identity written into provenance.json>: <base64 ed25519 public key>
 ```
+
+Signing authority is package-scoped. A key authorized for one package cannot
+authorize another package's release, even when signer names match. Flat signer
+maps are rejected; migrate each key under only the package IDs its owner authorizes.
 
 A repository is looked up by its `source`; when `module-trust.repositories`
 maps more than one package ID to the same repository, add `package: <id>` to
@@ -892,69 +897,32 @@ codefly environment show <env> [--json]
 
 #### `codefly environment import`
 
-Point an environment at a *cell* by consuming its `codefly/cell/v1` contract,
-so cell facts are sourced from the platform instead of hand-typed. Hand-typing
-an egress CIDR wrong silently drops all database traffic — the exact bug the
-contract prevents.
-
-The descriptor is produced on the platform side. For obin cells, infra-base's
-`obinctl` emits it:
+Import a producer-independent `codefly/cell/v2` descriptor whose `environment`
+contains Codefly's environment fields. Producers supply resolved endpoints,
+ports, secret references, runtime identities and delivery paths. The CLI does
+not interpret a provider's infrastructure inventory or infer service aliases.
 
 ```bash
-obinctl cell-contract <coordinate> > cell.json
-codefly environment import azure --cell-contract cell.json
-
-# Or stream it straight in and preview the change:
-obinctl cell-contract hosted-eastus2 | codefly environment import azure --cell-contract - --dry-run
+codefly environment import production --cell-contract cell.json --dry-run
+codefly environment import production --cell-contract cell.json
 ```
 
-The namespace defaults to the environment's existing namespace, or the
-workspace name when the environment is new; override it with `--namespace`.
-`--dry-run` prints the unified diff and writes nothing. After a write, the same
-readiness validation as `codefly doctor workspace --env <env>` runs and its
-result is printed.
+The requested environment and namespace must match the descriptor. The namespace
+defaults to the environment's existing namespace or the workspace name; select
+another declared target with `--namespace`. This flag does not rewrite the
+contract's delivery paths or secret references. Legacy v1 descriptors are rejected;
+their producers must emit explicit v2 declarations.
 
-**Ownership.** An import replaces only the fields the contract owns and
-preserves everything else byte-for-byte, comments included: it re-serializes
-only the single environment item being imported and splices it back into the
-original file, so other environments, top-level keys, blank lines, and comments
-outside that item are never reflowed. (A whole-file round-trip through the YAML
-library would strip blank lines and normalize indentation across the whole
-document, burying the one line that changed.)
+Declared fields replace their exact named values. Maps merge by explicit key;
+omitted fields and unrelated entries remain intact. Explicit empty maps, empty
+sequences and nulls clear the corresponding field where its schema permits.
+There is no special `store` alias, single-database limit, default secret path or
+ignored producer extension. Unknown fields and capabilities fail validation.
 
-- *Contract-owned* (replaced on every import): `cluster.kind` and
-  `cluster.context`, `registry`, `namespace` (set to the resolved namespace —
-  `--namespace` if given, else the existing one, else the workspace name — so
-  it can never disagree with the derived `gitops.path`), `gitops.repo-url` and
-  `gitops.path` (path = `<workloads_path_prefix>/<namespace>`), each managed
-  database's `managed-services.<name>` `kind` / `external-name` /
-  `egress-cidrs`, `service-secrets.secret-store`, and `dns`.
-- *Operator-owned* (never touched): `description`, `fixture`, `ingress`,
-  `resource-quota`, `secrets`, `configuration-profile`, `gitops.branch`,
-  `cluster.kubeconfig` (a local path, not a cell fact), a managed service's
-  `secret-references`, `service-secrets.services` mappings, and any other
-  declared field.
-
-A provenance comment is stamped above the environment item and replaced (not
-stacked) on re-import:
-
-```yaml
-environments:
-    # imported from cell contract hosted-eastus2 (hosted-eastus2) on 2026-09-06T12:00:00Z; re-run: codefly environment import azure --cell-contract …
-    - name: azure
-      ...
-```
-
-The consumer maps a single cluster, registry, database and secret store per
-cell (core's `ParseCellContract` rejects more). core maps the managed database
-under the `store` key by default, but an existing environment that already
-declares the database of the same kind under a different service name (the name
-the deploy path matches) is updated in place under that name — the import never
-adds a second `store` entry beside it. A sole existing managed service of a
-different kind (a cache, a queue) is left untouched and the database is inserted
-beside it. An environment with two or more managed services and no exact `store`
-match is ambiguous and refused rather than silently leaving a stale one. Object
-stores in the descriptor are ignored until core models them.
+An import re-serializes only the selected environment item. Surrounding workspace
+bytes remain unchanged; a provenance comment records the cell, coordinate and
+import time. `--dry-run` prints the diff without writing. After a write, workspace
+readiness validation runs for the selected environment.
 
 #### `codefly environment show`
 
