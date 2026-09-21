@@ -185,9 +185,9 @@ The #756 merge preserves the newer Core contract, not its superseded cell/v1
 implementation. Core deliberately removed proxy transport/image/args, inferred
 loopback routing and audit sinks in ac8b363f/186d2403. Import tests reject those
 unsupported declarations without changing workspace files; existing endpoint,
-secret-reference, identity and deep-copy regressions remain. That owner review
-resolved in Core v0.3.42: the wrapper is `codefly/coordinate/v1`, the `cell` field
-is gone, and both superseded cell schemas are rejected on import.
+secret-reference, identity and deep-copy regressions remain. Core v0.3.42 replaced
+that wrapper with `codefly/coordinate/v1`: the `cell` field is gone and both
+superseded cell schemas are rejected on import.
 
 The incoming namespace-wide NetworkPolicy is not retained: with no existing
 egress policy, its empty pod selector would isolate every pod while allowing only
