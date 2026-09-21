@@ -41,6 +41,10 @@ func addApprovalCommands(add func(string, string, cobra.PositionalArgs, func(*co
 		_ = approve.MarkFlagRequired(name)
 	}
 	add("check-approval INPUTS.json APPROVAL.json", "Verify approval, installed authority and fresh inputs without consuming or deploying", cobra.ExactArgs(2), checkApproval)
+	inspectUse := add("inspect-approval-use ID", "Inspect a retained host approval-use record without implying deployment", cobra.ExactArgs(1), func(cmd *cobra.Command, current *selection.SelectionSession, args []string) (any, error) {
+		return current.InspectApprovalUse(cmd.Context(), args[0])
+	})
+	inspectUse.Long = "Read historical single-use consumption evidence from protected host storage. A record does not prove deployment or health; an absent record does not prove that no effect occurred. No reset, retry or deployment authorization is provided."
 }
 
 func (flags *approvalFlags) run(cmd *cobra.Command, session *selection.SelectionSession, args []string) (any, error) {

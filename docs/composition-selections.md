@@ -115,6 +115,9 @@ Commands:
   Policy/key/audience/target changes invalidate the approval. Missing claims,
   foreign signatures, altered records and expired evidence fail. Literal expiry
   is enforced, including time spent waiting for locks or verifying files.
+- `inspect-approval-use ID`: read historical host consumption evidence for the
+  `useIdentity` returned by approval inspection. This is not a deployment or
+  health observation. Missing evidence is an error, not proof of no effects.
 - `upstream`: prepare Core's owner-scoped adoption facts. No GitHub submission,
   merge or release occurs. Local-development facts remain labelled as such.
 - `propose-removal TARGET RELEASE.json`: ask Core to prove full effective-input
@@ -179,11 +182,31 @@ signing are intentionally not added to MCP or remote Gateway surfaces.
 
 `check-approval` verifies evidence; it does not consume `MaxUses`, reserve a rollout
 attempt, establish live target identity or grant a deployment effect. There is no
-cross-restart single-use/idempotent-effect claim. Effect owners must still use
+idempotent-effect claim. Effect owners must still use
 their mutation authorization, durable attempt fencing, isolated exact approved
 bytes, fresh target verification and effect-time admission. All existing effect
 guards remain. These commands do not execute functional/stateful qualification
 tests; a valid approval depends on those authorities' authentic signed evidence.
+
+The effect-owner API `SelectionSession.ReserveApproval` now re-admits actual
+inputs under the independently reviewed installed authority and consumes one
+verified token in `CODEFLY_HOME/composition-approval-uses/`. The identity is bound
+to the verified signer and token ID, not token encoding or current policy, so
+rotation cannot reset use. A complete file is synced before exclusive publication;
+registry and home directory entries are synced too. Concurrent processes cannot
+replace an existing use, including an empty, damaged or symlinked entry. An error
+after publication retains the use and reports uncertainty; cancellation or losing
+the process reply never refunds it. Records contain Core admission evidence, not
+the bearer token or runtime file paths. Historical inspection survives expiry and
+policy rotation without treating old evidence as current authority.
+
+This is durable single-use consumption **within one intact trusted host profile**,
+not cross-host coordination, a target-wide fence, isolated execution inputs,
+idempotent effects or production rollout integration. Restoring/deleting host
+state can restore replayability and is not a supported recovery procedure. There
+is deliberately no reserve/reset/retry CLI command: deployment owners must first
+integrate qualification, exact-byte application, mutation authorization, target
+fencing and observed/rollback reconciliation. Existing deployment guards remain.
 
 Commit the product descriptor and release selection file. Keep the identity key,
 configuration files, `.codefly/composition-local.json`, artifact cache and

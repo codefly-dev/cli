@@ -583,6 +583,11 @@ codefly composition check-approval inputs.json "$APPROVAL_FILE" \
 
 These commands neither execute qualification tests nor consume authorization for
 deployment. Existing effect guards remain; approval is not observed running state.
+`inspect-approval-use ID` reads a protected historical consumption record by the
+`useIdentity` returned during approval inspection. A record establishes only
+single-use consumption on this host, not deployment or health. There is no CLI
+reserve/reset/retry command; the effect-owner consumption API is not yet wired
+into a deployment adapter.
 
 #### Module composition
 

@@ -165,6 +165,10 @@ func openAuthorityRegistry(path string, create bool) (*os.Root, error) {
 		if err = home.Mkdir(name, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 			return nil, err
 		}
+		// A concurrent creator may not yet have synced the registry entry.
+		if err = syncAuthorityDirectory(home); err != nil {
+			return nil, err
+		}
 	}
 	return openAuthorityChild(home, name, false)
 }
@@ -235,6 +239,10 @@ func writeAuthorityDocumentAt(ctx context.Context, directory *os.Root, name stri
 	if err = directory.Rename(temporary, name); err != nil {
 		return err
 	}
+	return syncAuthorityDirectory(directory)
+}
+
+func syncAuthorityDirectory(directory *os.Root) error {
 	parent, err := directory.Open(".")
 	if err != nil {
 		return err

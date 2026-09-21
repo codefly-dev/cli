@@ -68,7 +68,13 @@ exact inputs, and inspect the actual deployment.
   opened handles, including home aliases and macOS ACL mutation grants. Trusted
   sticky temporary ancestors remain supported. Reads and atomic replacement use
   validated directory handles; this is not same-UID/root compromise protection.
-  This does not consume authorization or integrate an effect path.
+  Approval inspection does not consume authorization or integrate an effect path.
+- Host-owned durable single-use approval consumption is available to effect
+  owners through `ReserveApproval`. It re-admits exact current inputs, uses the
+  verified signer/token ID across policy rotation, and exclusively publishes
+  synced use records. Concurrent processes and lost replies cannot refund use;
+  historical inspection does not assert deployment. No consuming deployment
+  adapter, cross-host/target-wide fence or reset/retry command is delivered.
 - Daemon monitoring uses Core's authenticated read-only group ownership API;
   executable names are display-only, and errors do not imply orphanhood.
 - Dependabot may propose Core build-dependency updates. Runtime admission and
@@ -127,7 +133,7 @@ An agent used to build an artifact is not necessarily present in production.
    silently replace approved inputs. Retain existing mutation authorization.
    Persisting/rechecking admission and trusted-local host-policy/signed approval
    decisions are implemented. Qualification execution, remote approval delegation,
-   durable authorization consumption, positive effect-time integration and actual
+   target-wide/cross-host fencing, positive effect-time integration and actual
    observed/rollback comparison remain incomplete.
 7. **Upstream loop.** Prepare a scoped request to the owner of the inherited
    default, reusing existing records and including exact replacements and

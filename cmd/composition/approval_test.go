@@ -40,7 +40,7 @@ func TestApprovalCommandsRequireExplicitChoicesAndHaveOfflineHelp(t *testing.T) 
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	cmd.SetArgs([]string{"approve-admission", "inputs", "record", "/tmp/approval"})
 	require.ErrorContains(t, cmd.ExecuteContext(t.Context()), "required flag(s)")
-	for _, name := range []string{"configure-approval-authority", "inspect-approval-authority", "approve-admission", "check-approval"} {
+	for _, name := range []string{"configure-approval-authority", "inspect-approval-authority", "approve-admission", "check-approval", "inspect-approval-use"} {
 		cmd = NewCommand()
 		var output bytes.Buffer
 		cmd.SetOut(&output)

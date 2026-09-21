@@ -32,6 +32,7 @@ type ApprovalOptions struct {
 }
 
 type ApprovalInspection struct {
+	UseIdentity       string    `json:"useIdentity"`
 	AdmissionIdentity string    `json:"admissionIdentity"`
 	AuthorityDigest   string    `json:"authorityDigest"`
 	ApproverID        string    `json:"approverID"`
@@ -172,6 +173,6 @@ func (authority *approvalAuthority) verify(approval *DeploymentApproval, now tim
 		!now.Before(time.Unix(claims.ExpiresAtUnix, 0)) || time.Unix(claims.ExpiresAtUnix, 0).After(record.Record.ValidUntil) {
 		return nil, errors.New("approval is expired, future, outside qualification validity or has invalid use/identity claims")
 	}
-	return &ApprovalInspection{AdmissionIdentity: record.Identity, AuthorityDigest: authority.digest,
+	return &ApprovalInspection{UseIdentity: approvalUseIdentity(authority.config.Key, claims.ID), AdmissionIdentity: record.Identity, AuthorityDigest: authority.digest,
 		ApproverID: approver.ID, ExpiresAt: time.Unix(claims.ExpiresAtUnix, 0).UTC()}, nil
 }
