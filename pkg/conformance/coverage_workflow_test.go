@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -33,15 +34,14 @@ func TestCoverageBudgetPreservesQualificationAndTimeoutDiagnostics(t *testing.T)
 		t.Fatal(err)
 	}
 	job := workflow.Jobs["quality"]
-	if job.Timeout != "${{ matrix.timeout_minutes }}" {
-		t.Fatal("quality job must use each gate's measured budget")
+	minutes, err := strconv.Atoi(job.Timeout)
+	if err != nil || minutes != 8 {
+		t.Fatalf("quality budget = %q, want every gate to share eight minutes", job.Timeout)
 	}
-	var jobBudget time.Duration
+	jobBudget := time.Duration(minutes) * time.Minute
 	for _, row := range job.Strategy.Matrix.Include {
-		if row.Gate == "coverage" {
-			jobBudget = time.Duration(row.Timeout) * time.Minute
-		} else if row.Timeout != 8 {
-			t.Errorf("coverage adjustment changed %s's budget", row.Gate)
+		if row.Timeout != 0 {
+			t.Errorf("%s carries a budget of its own; a slow gate is diagnosed, not given more time", row.Gate)
 		}
 	}
 	for _, step := range job.Steps {
@@ -61,8 +61,10 @@ func TestCoverageBudgetPreservesQualificationAndTimeoutDiagnostics(t *testing.T)
 				}
 			}
 		}
-		// The observed four-minute cumulative alarm is not a per-test timeout.
-		if packageBudget < 7*time.Minute || jobBudget < packageBudget+5*time.Minute || jobBudget > 15*time.Minute {
+		// The package alarm is what produces a stack trace, so it has to
+		// expire while the runner is still listening — and still leave room
+		// for compilation and the gates that run after the suite.
+		if packageBudget < 3*time.Minute || jobBudget-packageBudget < 3*time.Minute {
 			t.Fatalf("coverage budgets do not fit measured tests and diagnostic headroom: package=%s job=%s", packageBudget, jobBudget)
 		}
 		for _, flag := range []string{"./...", "-v", "-failfast", "-coverprofile=cover.out", "-covermode=atomic", "-coverpkg=./..."} {
