@@ -253,9 +253,10 @@ func copyFile(src, dst string) (err error) {
 }
 
 // releaseAgentCIArgs builds the `codefly agent ci` argument vector for a
-// release-grade run. Services and runnables require conformance; other kinds
-// explicitly pass skipConformance. Only source-only module agents pass nativeOnly to skip the
-// linux/amd64 build that runtime kinds (service, toolbox, provider) require.
+// release-grade run. Every kind that owns a conformance suite is qualified
+// through it; only a kind in conformanceWaivedKinds passes skipConformance.
+// Only source-only module agents pass nativeOnly to skip the linux/amd64 build
+// that runtime kinds (service, toolbox, provider) require.
 func releaseAgentCIArgs(agentDir, output string, nativeOnly, skipConformance bool) []string {
 	args := []string{"--timestamps=false", "agent", "ci", "--dir", agentDir, "--output", output}
 	if nativeOnly {
@@ -461,6 +462,13 @@ var sourceTagKinds = map[string]bool{
 	string(resources.ProviderAgent): true,
 }
 
+// conformanceWaivedKinds ship no runtime surface for agent CI to exercise, so a
+// release of one waives conformance explicitly. Every other kind is qualified
+// through the suite its kind owns; a release must never waive that.
+var conformanceWaivedKinds = map[resources.AgentKind]bool{
+	resources.ModuleAgent: true,
+}
+
 // newAgentReleaseGate selects release behavior from the manifest kind.
 func newAgentReleaseGate(agentDir string) (releaseGate, error) {
 	identity, err := readAgentIdentity(filepath.Join(agentDir, "agent.codefly.yaml"))
@@ -471,7 +479,7 @@ func newAgentReleaseGate(agentDir string) (releaseGate, error) {
 	case loaderAssetKinds[identity.Kind]:
 		return newAgentReleaser(agentDir)
 	case sourceTagKinds[identity.Kind]:
-		return newSourceTagReleaser(agentDir, identity.Kind == string(resources.ModuleAgent))
+		return newSourceTagReleaser(agentDir, resources.AgentKind(identity.Kind))
 	default:
 		return nil, unsupportedReleaseKindError(identity.Kind)
 	}
@@ -550,7 +558,7 @@ func newAgentReleaser(agentDir string) (*agentReleaser, error) {
 		self:            self,
 		agentDir:        agentDir,
 		reg:             &reg,
-		skipConformance: reg.Resource != resources.ServiceAgent && reg.Resource != resources.RunnableAgent,
+		skipConformance: conformanceWaivedKinds[reg.Resource],
 		publisher:       identity.Publisher,
 		name:            identity.Name,
 		ciOutput:        ciOutput,
@@ -608,13 +616,14 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 // consumers build the tagged source for linux, so they build every platform to
 // catch a linux-only break before the immutable tag.
 type sourceTagReleaser struct {
-	self       string
-	agentDir   string
-	output     string
-	nativeOnly bool
+	self            string
+	agentDir        string
+	output          string
+	nativeOnly      bool
+	skipConformance bool
 }
 
-func newSourceTagReleaser(agentDir string, nativeOnly bool) (*sourceTagReleaser, error) {
+func newSourceTagReleaser(agentDir string, kind resources.AgentKind) (*sourceTagReleaser, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve codefly executable: %w", err)
@@ -623,7 +632,13 @@ func newSourceTagReleaser(agentDir string, nativeOnly bool) (*sourceTagReleaser,
 	if err != nil {
 		return nil, err
 	}
-	return &sourceTagReleaser{self: self, agentDir: agentDir, output: output, nativeOnly: nativeOnly}, nil
+	return &sourceTagReleaser{
+		self:            self,
+		agentDir:        agentDir,
+		output:          output,
+		nativeOnly:      kind == resources.ModuleAgent,
+		skipConformance: conformanceWaivedKinds[kind],
+	}, nil
 }
 
 func (r *sourceTagReleaser) attach(engine *Engine) {
@@ -635,7 +650,7 @@ func (r *sourceTagReleaser) cleanup() {
 }
 
 func (r *sourceTagReleaser) beforeCommit(ctx context.Context, _ string) error {
-	return runReleaseAgentCI(ctx, r.self, r.agentDir, r.output, r.nativeOnly, true)
+	return runReleaseAgentCI(ctx, r.self, r.agentDir, r.output, r.nativeOnly, r.skipConformance)
 }
 
 func readAgentIdentity(path string) (agentIdentity, error) {

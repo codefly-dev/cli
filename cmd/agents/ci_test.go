@@ -333,22 +333,39 @@ source:
 	}
 }
 
-func TestLoadAgentCIManifestAllowsToolboxAndProviderWithSkipConformance(t *testing.T) {
-	for _, kind := range []string{"codefly:toolbox", "codefly:provider"} {
+// TestLoadAgentCIManifestRequiresKindOwnedConformance proves a kind that owns a
+// conformance suite cannot reach CI without declaring it, and that --skip-
+// conformance waives running the suite without waiving the declaration: a
+// release with nothing to qualify never reports as qualified.
+func TestLoadAgentCIManifestRequiresKindOwnedConformance(t *testing.T) {
+	for kind, mode := range kindConformanceModes {
 		t.Run(kind, func(t *testing.T) {
+			base := "publisher: codefly.dev\nkind: " + kind + "\nname: subject\nversion: 0.0.1\n"
+			for _, test := range []struct{ name, declaration, want string }{
+				{"absent", "", "conformance.mode: " + mode},
+				{"wrong mode", "conformance:\n  mode: generated-service\n", "conformance.mode: " + mode},
+				{"absent fixture", "conformance:\n  mode: " + mode + "\n", "conformance.fixture"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					dir := t.TempDir()
+					writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), base+test.declaration)
+					for _, skip := range []bool{false, true} {
+						_, err := loadAgentCIManifest(dir, skip)
+						if err == nil || !strings.Contains(err.Error(), test.want) {
+							t.Fatalf("skip=%v: error = %v, want %q", skip, err, test.want)
+						}
+					}
+				})
+			}
 			dir := t.TempDir()
 			writeFile(t, filepath.Join(dir, "agent.codefly.yaml"),
-				"publisher: codefly.dev\nkind: "+kind+"\nname: subject\nversion: 0.0.1\n")
-
-			if _, err := loadAgentCIManifest(dir, false); err == nil || !strings.Contains(err.Error(), "--skip-conformance") {
-				t.Fatalf("%s manifest without --skip-conformance error = %v, want it to require the flag", kind, err)
-			}
-			manifest, err := loadAgentCIManifest(dir, true)
+				base+"conformance:\n  mode: "+mode+"\n  fixture: conformance/operations.yaml\n")
+			manifest, err := loadAgentCIManifest(dir, false)
 			if err != nil {
-				t.Fatalf("%s manifest with --skip-conformance: %v", kind, err)
+				t.Fatalf("declared %s manifest: %v", kind, err)
 			}
-			if manifest.Kind != kind || manifest.Name != "subject" {
-				t.Fatalf("unexpected %s manifest: %+v", kind, manifest)
+			if conformanceMode(manifest) != mode || manifest.Conformance.Fixture != "conformance/operations.yaml" {
+				t.Fatalf("unexpected %s manifest: %+v", kind, manifest.Conformance)
 			}
 		})
 	}

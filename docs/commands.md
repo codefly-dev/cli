@@ -1177,6 +1177,67 @@ archive and descriptor verification. No language name selects a mode. Publishing
 a Runnable never passes `--skip-conformance`; source-only generation is not
 evidence of native packaging or invocation support.
 
+Toolbox agents declare `conformance.mode: toolbox-session` and a fixture naming
+the operations the host must serve and the one it must refuse:
+
+```yaml
+conformance:
+  mode: toolbox-session
+  fixture: ./conformance/operations.yaml
+```
+
+```yaml
+# conformance/operations.yaml
+operations:
+  - name: describe-identity
+    tool: git.status            # a tool toolbox.codefly.yaml declares
+    arguments:
+      path: .
+  - name: refused-write
+    tool: git.commit
+    denied: true                # the host policy must refuse this one
+```
+
+CI launches the installed artifact through Core's toolbox session under the
+sandbox and permission ceiling its own `toolbox.codefly.yaml` declares. The host
+owns the principal, the policy decision point and the session scope; the owner
+owns the operations. A declared permission the running binary does not serve, an
+operation naming a tool it does not advertise, a refusal the host served, a
+refusal that reached the plugin, or a session that does not release its process
+fails the stage.
+
+Provider agents declare `conformance.mode: provider-requests` and a fixture
+naming the requests their `provider.codefly.yaml` packages:
+
+```yaml
+conformance:
+  mode: provider-requests
+  fixture: ./conformance/operations.yaml
+```
+
+```yaml
+# conformance/operations.yaml
+operations:
+  - name: create-account
+    request: account.create     # a request descriptor the manifest packages
+    body:
+      name: conformance
+  - name: observe-account
+    request: account.observe
+    path_parameters:
+      account_id: acct_0001
+```
+
+CI composes each declared operation into the exact request the host would plan
+and runs it through the real provider broker with an exhausted request budget,
+so the descriptor packaging, digest binding, credential-purpose binding and
+read-only rule are all admitted without contacting the provider's upstream API.
+Each operation is additionally probed with a tampered descriptor digest, and a
+mutating one in a read-only context; both must be refused.
+
+Both declarations are required even when a run passes `--skip-conformance`: a
+release with no suite to run has nothing to waive.
+
 ```bash
 codefly agent ci
 codefly agent ci --format json --output .artifacts/codefly-agent
