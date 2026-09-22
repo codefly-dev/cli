@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -252,8 +253,8 @@ func copyFile(src, dst string) (err error) {
 }
 
 // releaseAgentCIArgs builds the `codefly agent ci` argument vector for a
-// release-grade run. Conformance is service-only, so every other kind passes
-// skipConformance; only source-only module agents pass nativeOnly to skip the
+// release-grade run. Services and runnables require conformance; other kinds
+// explicitly pass skipConformance. Only source-only module agents pass nativeOnly to skip the
 // linux/amd64 build that runtime kinds (service, toolbox, provider) require.
 func releaseAgentCIArgs(agentDir, output string, nativeOnly, skipConformance bool) []string {
 	args := []string{"--timestamps=false", "agent", "ci", "--dir", agentDir, "--output", output}
@@ -286,18 +287,15 @@ func runReleaseAgentCI(ctx context.Context, self, agentDir, output string, nativ
 // createAndUploadRelease publishes every staged loader archive and SBOM to
 // the GitHub release for tag in owner/repo.
 //
-// Idempotent by design: it creates the release on the first publish, or
-// uploads into an existing one (clobbering same-named assets) on a retry
-// or `re-tag`. Without this a re-run after a partial upload would error on
-// the already-existing release, stranding a half-uploaded release.
+// A retry may fill missing assets or reuse identical bytes, never replace them.
 func createAndUploadRelease(ctx context.Context, client *github.Client, owner, repo, tag string, assets []loaderAsset) error {
 	release, err := getOrCreateRelease(ctx, client, owner, repo, tag)
 	if err != nil {
 		return err
 	}
-	existing := map[string]int64{}
+	existing := map[string]*github.ReleaseAsset{}
 	for _, asset := range release.Assets {
-		existing[asset.GetName()] = asset.GetID()
+		existing[asset.GetName()] = asset
 	}
 	for _, asset := range assets {
 		files := []string{asset.archivePath}
@@ -335,22 +333,23 @@ func getOrCreateRelease(ctx context.Context, client *github.Client, owner, repo,
 	return created, nil
 }
 
-// uploadReleaseAsset uploads path into the release, replicating `gh --clobber`:
-// an already-present asset of the same name is deleted first, since the GitHub
-// API rejects uploading a duplicate name into a release.
-func uploadReleaseAsset(ctx context.Context, client *github.Client, owner, repo string, releaseID int64, path string, existing map[string]int64) error {
+func uploadReleaseAsset(ctx context.Context, client *github.Client, owner, repo string, releaseID int64, path string, existing map[string]*github.ReleaseAsset) error {
 	name := filepath.Base(path)
-	if id, ok := existing[name]; ok {
-		if _, err := client.Repositories.DeleteReleaseAsset(ctx, owner, repo, id); err != nil {
-			return fmt.Errorf("replace existing release asset %s: %w", name, err)
-		}
-		delete(existing, name)
-	}
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open release asset %s: %w", path, err)
 	}
 	defer file.Close()
+	if asset, ok := existing[name]; ok {
+		digest := sha256.New()
+		if _, err := io.Copy(digest, file); err != nil {
+			return err
+		}
+		if asset.GetDigest() != fmt.Sprintf("sha256:%x", digest.Sum(nil)) {
+			return fmt.Errorf("release asset %s already exists with different or unverifiable bytes; published assets cannot be replaced", name)
+		}
+		return nil
+	}
 	if _, _, err := client.Repositories.UploadReleaseAsset(ctx, owner, repo, releaseID, &github.UploadOptions{Name: name}, file); err != nil {
 		return fmt.Errorf("upload release asset %s: %w", name, err)
 	}
@@ -427,6 +426,7 @@ type agentReleaser struct {
 	ciOutput        string
 	stageDir        string
 	assets          []loaderAsset
+	publication     agentPublication
 }
 
 type releaseGate interface {
@@ -435,9 +435,10 @@ type releaseGate interface {
 }
 
 type agentIdentity struct {
-	Publisher string `yaml:"publisher"`
-	Kind      string `yaml:"kind"`
-	Name      string `yaml:"name"`
+	Publisher string           `yaml:"publisher"`
+	Kind      string           `yaml:"kind"`
+	Name      string           `yaml:"name"`
+	Release   agentPublication `yaml:"release"`
 }
 
 // loaderAssetKinds ship executable loader assets to a GitHub release: they
@@ -445,9 +446,10 @@ type agentIdentity struct {
 // the per-platform archive. Toolboxes are callable capability plugins with
 // their own `.goreleaser.yaml`, so they take the same service-shaped path.
 var loaderAssetKinds = map[string]bool{
-	"":                             true, // legacy manifests default to service
-	string(resources.ServiceAgent): true,
-	string(resources.ToolboxAgent): true,
+	"":                              true, // legacy manifests default to service
+	string(resources.ServiceAgent):  true,
+	string(resources.ToolboxAgent):  true,
+	string(resources.RunnableAgent): true,
 }
 
 // sourceTagKinds are immutable source releases: publish runs source/build/audit
@@ -482,6 +484,9 @@ func checkAgentReleasePreconditionsForManifest(path string) error {
 	}
 	switch {
 	case loaderAssetKinds[identity.Kind]:
+		if err := identity.Release.validate(filepath.Dir(path)); err != nil {
+			return err
+		}
 		return checkAgentReleasePreconditions()
 	case sourceTagKinds[identity.Kind]:
 		return nil
@@ -521,6 +526,9 @@ func newAgentReleaser(agentDir string) (*agentReleaser, error) {
 	if err != nil {
 		return nil, err
 	}
+	if validationErr := identity.Release.validate(agentDir); validationErr != nil {
+		return nil, validationErr
+	}
 	kind := identity.Kind
 	if kind == "" {
 		kind = string(resources.ServiceAgent)
@@ -542,11 +550,12 @@ func newAgentReleaser(agentDir string) (*agentReleaser, error) {
 		self:            self,
 		agentDir:        agentDir,
 		reg:             &reg,
-		skipConformance: reg.Resource != resources.ServiceAgent,
+		skipConformance: reg.Resource != resources.ServiceAgent && reg.Resource != resources.RunnableAgent,
 		publisher:       identity.Publisher,
 		name:            identity.Name,
 		ciOutput:        ciOutput,
 		stageDir:        stageDir,
+		publication:     identity.Release,
 	}, nil
 }
 
@@ -580,6 +589,9 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	client, err := gh.NewClient()
 	if err != nil {
 		return err
+	}
+	if r.publication.Owner == publicationWorkflow {
+		return r.waitForWorkflowRelease(ctx, client, owner, repo, newTag)
 	}
 	if err := createAndUploadRelease(ctx, client, owner, repo, newTag, r.assets); err != nil {
 		return err

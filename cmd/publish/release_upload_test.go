@@ -2,6 +2,7 @@ package publish
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -67,7 +68,7 @@ func (f *fakeGitHub) server(t *testing.T, tag string, existingAssets map[string]
 func writeRelease(w http.ResponseWriter, id int64, assets map[string]int64) {
 	var parts []string
 	for name, aid := range assets {
-		parts = append(parts, fmt.Sprintf(`{"id":%d,"name":%q}`, aid, name))
+		parts = append(parts, fmt.Sprintf(`{"id":%d,"name":%q,"digest":"sha256:%x"}`, aid, name, sha256.Sum256([]byte("payload-"+name))))
 	}
 	fmt.Fprintf(w, `{"id":%d,"assets":[%s]}`, id, strings.Join(parts, ","))
 }
@@ -115,7 +116,7 @@ func TestCreateAndUploadRelease_CreatesWhenAbsent(t *testing.T) {
 	require.Empty(t, f.deleted, "nothing to clobber on a fresh release")
 }
 
-func TestCreateAndUploadRelease_ClobbersExistingAsset(t *testing.T) {
+func TestCreateAndUploadRelease_ReusesIdenticalAssetWithoutMutation(t *testing.T) {
 	name := "service-go_0.0.16_linux_amd64.tar.gz"
 	f := &fakeGitHub{}
 	client := f.server(t, "v0.0.16", map[string]int64{name: 7})
@@ -124,8 +125,8 @@ func TestCreateAndUploadRelease_ClobbersExistingAsset(t *testing.T) {
 	require.NoError(t, createAndUploadRelease(context.Background(), client, "codefly-dev", "service-go", "v0.0.16", assets))
 
 	require.False(t, f.created, "an existing release must be reused, not recreated")
-	require.Equal(t, []int64{7}, f.deleted, "the same-named asset must be deleted before re-upload")
-	require.Equal(t, []string{name}, f.uploaded)
+	require.Empty(t, f.deleted)
+	require.Empty(t, f.uploaded)
 }
 
 func TestCreateAndUploadRelease_UploadsSBOMAlongsideArchive(t *testing.T) {
@@ -141,7 +142,7 @@ func TestCreateAndUploadRelease_UploadsSBOMAlongsideArchive(t *testing.T) {
 		"both the archive and its SBOM must be uploaded")
 }
 
-func TestCreateAndUploadRelease_ClobbersSBOMToo(t *testing.T) {
+func TestCreateAndUploadRelease_ReusesIdenticalSBOMWithoutMutation(t *testing.T) {
 	archive := "service-go_0.0.16_linux_amd64.tar.gz"
 	sbom := "service-go_0.0.16_linux_amd64.cdx.json"
 	f := &fakeGitHub{}
@@ -151,7 +152,17 @@ func TestCreateAndUploadRelease_ClobbersSBOMToo(t *testing.T) {
 	require.NoError(t, createAndUploadRelease(context.Background(), client, "codefly-dev", "service-go", "v0.0.16", assets))
 
 	require.False(t, f.created, "an existing release must be reused, not recreated")
-	require.ElementsMatch(t, []int64{7, 9}, f.deleted,
-		"both the archive and SBOM must be deleted before re-upload")
-	require.ElementsMatch(t, []string{archive, sbom}, f.uploaded)
+	require.Empty(t, f.deleted)
+	require.Empty(t, f.uploaded)
+}
+
+func TestCreateAndUploadRelease_RejectsChangedBytesWithoutDeletingAsset(t *testing.T) {
+	name := "service-go_0.0.16_linux_amd64.tar.gz"
+	f := &fakeGitHub{}
+	client := f.server(t, "v0.0.16", map[string]int64{name: 7})
+	assets := stageAssets(t, name)
+	require.NoError(t, os.WriteFile(assets[0].archivePath, []byte("changed bytes"), 0600))
+	require.ErrorContains(t, createAndUploadRelease(t.Context(), client, "codefly-dev", "service-go", "v0.0.16", assets), "cannot be replaced")
+	require.Empty(t, f.deleted)
+	require.Empty(t, f.uploaded)
 }

@@ -4,6 +4,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -14,7 +15,7 @@ type goWorkflow struct {
 
 type goWorkflowJob struct {
 	If         string `yaml:"if"`
-	TimeoutMin int    `yaml:"timeout-minutes"`
+	TimeoutMin string `yaml:"timeout-minutes"`
 	Strategy   struct {
 		Matrix struct {
 			Gate []string `yaml:"gate"`
@@ -88,8 +89,8 @@ func TestGolangciConfigIsV2AndPreservesGeneratedExclusions(t *testing.T) {
 
 // only-new-issues has a defined baseline only against a pull-request base, so
 // the lint job must be pull-request scoped and never a push-triggered quality
-// gate. Its budget must exceed the 5-minute quality gates and give the
-// analysis timeout headroom to finish and report cleanly.
+// gate. Its own budget must give the analysis timeout headroom to finish and
+// report cleanly, independently of the quality matrix's per-gate budgets.
 func TestLintJobIsPullRequestScopedWithHeadroom(t *testing.T) {
 	var workflow goWorkflow
 	readRepositoryYAML(t, ".github/workflows/go.yml", &workflow)
@@ -109,8 +110,9 @@ func TestLintJobIsPullRequestScopedWithHeadroom(t *testing.T) {
 	if lint.If != "github.event_name == 'pull_request'" {
 		t.Fatalf("lint job condition = %q, want it scoped to pull_request", lint.If)
 	}
-	if lint.TimeoutMin <= quality.TimeoutMin {
-		t.Fatalf("lint timeout = %dm, want more headroom than the quality gates (%dm)", lint.TimeoutMin, quality.TimeoutMin)
+	lintTimeout, err := strconv.Atoi(lint.TimeoutMin)
+	if err != nil || lintTimeout < 10 {
+		t.Fatalf("lint timeout = %q, want at least ten minutes for cold-cache analysis", lint.TimeoutMin)
 	}
 
 	var config golangciConfig
@@ -119,7 +121,7 @@ func TestLintJobIsPullRequestScopedWithHeadroom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run.timeout %q is not a duration: %v", config.Run.Timeout, err)
 	}
-	jobBudget := time.Duration(lint.TimeoutMin) * time.Minute
+	jobBudget := time.Duration(lintTimeout) * time.Minute
 	if analysisTimeout >= jobBudget {
 		t.Fatalf("analysis timeout %s must be strictly under the lint job budget %s so an overrun reports as a linter timeout, not a hard job kill", analysisTimeout, jobBudget)
 	}

@@ -60,6 +60,12 @@ does not already exist. Neither `main` nor the tag is ever force-pushed.
 `dashboard`), squash-merges it, and only then tags the commit `main` actually carries and
 pushes that tag. Tags are outside branch protection, so the tag push stays direct.
 
+Mergeability is not CI evidence: before merging, publication requires successful
+checks and commit statuses on the exact PR head, and refuses failed or cancelled
+checks even when GitHub allows the merge. Missing or pending checks keep waiting.
+Before pushing a tag it also requires successful CI on the actual tag commit,
+including when finishing an untagged release already on main.
+
 That is what lets `main` enforce its checks on **every** account (`enforce_admins: true`).
 Pushing a freshly-created release commit straight to `main` can never satisfy a required check
 — the commit has no check results — so a direct-push release forces protection to exempt

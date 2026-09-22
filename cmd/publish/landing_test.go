@@ -31,7 +31,8 @@ type fakeGitHubPullRequests struct {
 	// last entry repeats once exhausted.
 	states []string
 	// checkRuns is the check-runs payload served for the head SHA.
-	checkRuns string
+	checkRuns    string
+	commitStatus string
 	// checkRunsStatus, when non-zero, is served instead of checkRuns.
 	checkRunsStatus int
 	// mergeFailsAfterMerging reproduces a merge that commits server-side and
@@ -93,13 +94,24 @@ func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 		}
 		fmt.Fprintf(w, `{"merged":true,"sha":%q}`, sha)
 	})
-	mux.HandleFunc("/repos/codefly-dev/cli/commits/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/repos/codefly-dev/cli/commits/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/status") {
+			if f.commitStatus == "" {
+				fmt.Fprint(w, `{"total_count":0,"state":"pending","statuses":[]}`)
+			} else {
+				fmt.Fprint(w, f.commitStatus)
+			}
+			return
+		}
 		if f.checkRunsStatus != 0 {
 			http.Error(w, "server error", f.checkRunsStatus)
+			if f.afterChecks != nil {
+				f.afterChecks()
+			}
 			return
 		}
 		if f.checkRuns == "" {
-			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+			fmt.Fprint(w, `{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"success"}]}`)
 		} else {
 			fmt.Fprint(w, f.checkRuns)
 		}
@@ -255,8 +267,8 @@ func TestEngine_Release_RedPullRequest_PublishesNothing(t *testing.T) {
 	fake := &fakeGitHubPullRequests{
 		t: t, origin: origin, states: []string{"blocked"},
 		checkRuns: `{"total_count":2,"check_runs":[
-			{"name":"race","conclusion":"success"},
-			{"name":"control-integration","conclusion":"failure"}]}`,
+			{"name":"race","status":"completed","conclusion":"success"},
+			{"name":"control-integration","status":"completed","conclusion":"failure"}]}`,
 	}
 
 	_, err := landingEngine(t, dir, fake).Release(context.Background())
@@ -470,16 +482,60 @@ func TestEngine_Release_MergeErrorAfterServerSideMerge(t *testing.T) {
 
 // TestEngine_Release_UnreadableChecksKeepWaiting pins that a check list the API
 // will not serve is not read as "no failures": publish keeps waiting and the
-// release still completes once the pull request goes clean.
+// no release is published even when GitHub calls the pull request clean.
 func TestEngine_Release_UnreadableChecksKeepWaiting(t *testing.T) {
 	dir, origin, _ := releaseRepo(t, "0.1.0")
 	fake := &fakeGitHubPullRequests{
 		t: t, origin: origin, states: []string{"blocked", "clean"}, checkRunsStatus: http.StatusInternalServerError,
 	}
 
-	tag, err := landingEngine(t, dir, fake).Release(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "v0.1.1", tag)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	fake.afterChecks = cancel
+	_, err := landingEngine(t, dir, fake).Release(ctx)
+	require.ErrorContains(t, err, "publish budget ran out")
+	require.False(t, fake.merged)
+	require.Empty(t, gitIn(t, origin, "tag", "-l", "v0.1.1"))
+}
+
+func TestEngine_Release_MergeableStatesStillRequireSuccessfulChecks(t *testing.T) {
+	for _, state := range []string{"clean", "unstable", "has_hooks"} {
+		t.Run(state, func(t *testing.T) {
+			dir, origin, _ := releaseRepo(t, "0.1.0")
+			head := gitIn(t, origin, "rev-parse", "refs/heads/main")
+			fake := &fakeGitHubPullRequests{
+				t: t, origin: origin, states: []string{state},
+				checkRuns: `{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"failure"}]}`,
+			}
+			_, err := landingEngine(t, dir, fake).Release(t.Context())
+			require.ErrorContains(t, err, "is red (build)")
+			require.False(t, fake.merged)
+			require.Equal(t, head, gitIn(t, origin, "rev-parse", "refs/heads/main"))
+			require.Empty(t, gitIn(t, origin, "tag", "-l", "v0.1.1"))
+		})
+	}
+}
+
+func TestEngine_Release_MissingOrPendingChecksCannotPublish(t *testing.T) {
+	for _, checks := range []string{
+		`{"total_count":0,"check_runs":[]}`,
+		`{"total_count":1,"check_runs":[{"name":"build","status":"in_progress"}]}`,
+		`{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"skipped"}]}`,
+	} {
+		t.Run(checks, func(t *testing.T) {
+			dir, origin, _ := releaseRepo(t, "0.1.0")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			fake := &fakeGitHubPullRequests{
+				t: t, origin: origin, states: []string{"clean"},
+				checkRuns: checks, afterChecks: cancel,
+			}
+			_, err := landingEngine(t, dir, fake).Release(ctx)
+			require.ErrorContains(t, err, "publish budget ran out")
+			require.False(t, fake.merged)
+			require.Empty(t, gitIn(t, origin, "tag", "-l", "v0.1.1"))
+		})
+	}
 }
 
 // TestEngine_Release_DirectPushNeverResumes pins that the resume heuristic is

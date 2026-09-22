@@ -124,6 +124,11 @@ func run(c *cobra.Command, args []string) error {
 	// GitHub release assets. All are far slower than a bare tag push, so they
 	// get a generous timeout.
 	timeout := releaseWaitBudget
+	if manifest.Mode == ModeAgent {
+		if preconditionErr := checkAgentReleasePreconditionsForManifest(manifest.Path); preconditionErr != nil {
+			return preconditionErr
+		}
+	}
 	if manifest.Mode == ModeAgent && !dryRun {
 		var releaser releaseGate
 		releaser, err = newAgentReleaseGate(filepath.Dir(manifest.Path))

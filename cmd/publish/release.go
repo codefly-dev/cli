@@ -355,6 +355,17 @@ func (e *Engine) gitTag(ctx context.Context, tag string) error {
 // protection, so this is direct however the commit under it got to main. NO
 // --force.
 func (e *Engine) pushTag(ctx context.Context, tag string) error {
+	// Qualify the actual tag commit, including resumed or externally merged
+	// releases. A green PR head alone does not prove the squash commit passed.
+	if landing, ok := e.landing().(*pullRequestLanding); ok {
+		head, err := e.git(ctx, "rev-parse", "--verify", tag+"^{commit}")
+		if err != nil {
+			return err
+		}
+		if err := landing.waitForChecks(ctx, strings.TrimSpace(head)); err != nil {
+			return fmt.Errorf("refuse to push tag %s: %w", tag, err)
+		}
+	}
 	if _, err := e.git(ctx, "push", "origin", "refs/tags/"+tag); err != nil {
 		return fmt.Errorf("push tag %s: %w", tag, err)
 	}

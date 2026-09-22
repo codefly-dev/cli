@@ -20,6 +20,48 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
+func TestRunnableConformanceRequiresExplicitOperationAndHandler(t *testing.T) {
+	base := "publisher: example.test\nkind: codefly:runnable\nname: unnamed-language\nversion: 1.2.3\n"
+	for _, test := range []struct {
+		name, declaration string
+		valid             bool
+	}{
+		{"absent", "", false},
+		{"service mode", "conformance:\n  mode: generated-service\n  handler: entry.custom\n", false},
+		{"absent handler", "conformance:\n  mode: runnable-create\n", false},
+		{"escaping handler", "conformance:\n  mode: runnable-create\n  handler: ../entry.custom\n", false},
+		{"absolute handler", "conformance:\n  mode: runnable-create\n  handler: /entry.custom\n", false},
+		{"create", "conformance:\n  mode: runnable-create\n  handler: entry.custom\n", true},
+		{"package", "conformance:\n  mode: runnable-package\n  handler: nested/entry.custom\n", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), base+test.declaration)
+			for _, skip := range []bool{false, true} {
+				manifest, err := loadAgentCIManifest(dir, skip)
+				if (err == nil) != test.valid {
+					t.Fatalf("skip=%v: error=%v, valid=%v", skip, err, test.valid)
+				}
+				if err != nil {
+					continue
+				}
+				commands := runnableConformanceArguments(&manifest, "/qualification/package")
+				create := commands[2]
+				if !slices.Contains(create, "example.test/unnamed-language:1.2.3") || !slices.Contains(create, manifest.Conformance.Handler) || !slices.Contains(create, "--local-agents") {
+					t.Fatalf("creation did not bind candidate and owner handler: %v", create)
+				}
+				if manifest.Conformance.Mode == conformanceModeRunnablePackage {
+					if len(commands) != 4 || !slices.Contains(commands[3], "build") || !slices.Contains(commands[3], "/qualification/package") {
+						t.Fatalf("package qualification omitted build: %v", commands)
+					}
+				} else if len(commands) != 3 {
+					t.Fatalf("generation-only agent was required to package: %v", commands)
+				}
+			}
+		})
+	}
+}
+
 func TestLoadAgentCIManifest(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), `publisher: codefly

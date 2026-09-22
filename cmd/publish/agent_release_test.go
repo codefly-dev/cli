@@ -22,7 +22,7 @@ import (
 // fails.
 func TestLoaderArchiveName_MatchesInstallResolver(t *testing.T) {
 	host := platform{os: runtime.GOOS, arch: runtime.GOARCH}
-	for _, kind := range []resources.AgentKind{resources.ServiceAgent, resources.ToolboxAgent} {
+	for _, kind := range []resources.AgentKind{resources.ServiceAgent, resources.ToolboxAgent, resources.RunnableAgent} {
 		reg := registrationFor(t, kind)
 		got := loaderDownloadURL(reg, "codefly.dev", "go", "0.0.16", host)
 
@@ -168,10 +168,11 @@ func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
 	}{
 		{"codefly:service", resources.ServiceAgent, false},
 		{"codefly:toolbox", resources.ToolboxAgent, true},
+		{"codefly:runnable", resources.RunnableAgent, false},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			dir := t.TempDir()
-			manifest := []byte("publisher: codefly.dev\nkind: " + tc.kind + "\nname: web\nversion: 0.0.14\n")
+			manifest := []byte("publisher: codefly.dev\nkind: " + tc.kind + "\nname: web\nversion: 0.0.14\nrelease:\n  owner: cli\n")
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.codefly.yaml"), manifest, 0o644))
 
 			gate, err := newAgentReleaseGate(dir)
@@ -181,7 +182,7 @@ func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
 			require.True(t, ok, "%s must ship loader assets", tc.kind)
 			require.Equal(t, tc.resource, releaser.reg.Resource)
 			require.Equal(t, tc.skipConformance, releaser.skipConformance,
-				"conformance is service-only; %s must skip=%v", tc.kind, tc.skipConformance)
+				"%s must skip=%v", tc.kind, tc.skipConformance)
 		})
 	}
 }

@@ -54,6 +54,18 @@ authorization; they are not permission to merge or publish automatically.
 
 ## Gotchas
 
+- **One artifact publisher per executable agent.** `agent.codefly.yaml` must
+  declare `release.owner: workflow` with `release.workflow` naming its file in
+  `.github/workflows`, or explicitly declare `release.owner: cli` when no other
+  publisher exists. Missing ownership fails even a dry run. Workflow-owned
+  publication still qualifies the local candidate, then waits for the exact
+  tag/commit workflow to succeed and verifies downloaded archives and their
+  `<archive>.sbom.json` assets against GitHub's sizes and SHA-256 digests. The CLI
+  never uploads into a workflow-owned release. CLI-owned retries only fill
+  missing assets or reuse identical verified bytes; they never delete or replace
+  existing assets. A workflow failure after tagging leaves the immutable tag in
+  place and reports failure, not a completed release.
+
 - **`codefly publish` pre-flight is strict**: clean tree, on `main`, in sync
   with `origin/main`, tag not already present. It never force-pushes. Resolve
   any divergence by hand — a repo on a feature branch or with a dirty tree is
