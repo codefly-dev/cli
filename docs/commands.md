@@ -1173,7 +1173,14 @@ codefly agent install <name>[:<version>]              # Download a released agen
 codefly agent generate [agent-name]  # Generate agent scaffolding
 codefly agent build [agent-name]     # Build an agent binary
 codefly agent ci                     # Run source, release, generated-service, and drift gates
+codefly agent deps --pin vX.Y.Z      # Pin Core across root, base and generated factory locks
+codefly agent deps --pin vX.Y.Z --dependency github.com/codefly-dev/sdk-go@vA.B.C
 ```
+
+`agent deps --dependency` is repeatable and requires `--pin`. It updates only
+modules that already require the selected library, then verifies their standalone
+builds and regenerates factory locks. Unknown selections or a failed build leave
+the original locks intact. See [the release runbook](runbooks/release-the-fleet.md).
 
 `--kind` on `codefly agent install` selects the registered agent kind
 (`service`, the default, or `runnable`). A runnable language agent is named by

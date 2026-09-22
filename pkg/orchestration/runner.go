@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/core/agents/contract"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -288,6 +289,14 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		}
 		return nil, w.Wrapf(err, "cannot get dependencies endpoints")
 	}
+	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(cfgCtx, runner.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get initialized dependency network mappings")
+	}
+	if runner.testRequest != nil && !runner.serviceRunningForTest && len(dependenciesNetworkMappings) > 0 &&
+		!slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitDependencyMappings) {
+		return nil, w.NewError("dependency-only tests require agent capability %s to consume accepted addresses at Init", contract.RuntimeInitDependencyMappings)
+	}
 
 	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
 	if err != nil {
@@ -338,14 +347,15 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	// every dependency and never the service the suite is about. Start still
 	// carries both, and the agent takes the first non-empty.
 	req := &runtimev0.InitRequest{
-		RuntimeContext:             runtimeContext,
-		ProposedNetworkMappings:    networkMappings,
-		DependenciesEndpoints:      dependenciesEndpoints,
-		Configuration:              conf,
-		WorkspaceConfigurations:    workspaceConfigurations,
-		DependenciesConfigurations: dependenciesConfigurations,
-		Fixture:                    runner.fixture,
-		Overrides:                  runner.runtimeOverrides(),
+		RuntimeContext:              runtimeContext,
+		ProposedNetworkMappings:     networkMappings,
+		DependenciesEndpoints:       dependenciesEndpoints,
+		DependenciesNetworkMappings: dependenciesNetworkMappings,
+		Configuration:               conf,
+		WorkspaceConfigurations:     workspaceConfigurations,
+		DependenciesConfigurations:  dependenciesConfigurations,
+		Fixture:                     runner.fixture,
+		Overrides:                   runner.runtimeOverrides(),
 	}
 	err = resources.Validate(req)
 	if err != nil {
@@ -1095,7 +1105,9 @@ func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
 	w.Info(fmt.Sprintf("stopping %s", runner.Unique()))
 	start := time.Now()
 	runner.isStarted.Store(false)
-	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// The RPC must have the phase's budget. A shorter 10s deadline races
+	// the runtime's own bounded cleanup and abandons its final response.
+	stoppingContext, cancel := context.WithTimeout(ctx, defaultStopPhaseBudget)
 	defer cancel()
 	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
 	if err != nil {
@@ -1118,7 +1130,7 @@ func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
 		}
 	}
 	w.Debug("shutting down")
-	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	stoppingContext, cancel := context.WithTimeout(ctx, defaultShutdownPhaseBudget)
 	defer cancel()
 	_, err := runner.instance.Runtime.Destroy(stoppingContext, &runtimev0.DestroyRequest{})
 	if err != nil {

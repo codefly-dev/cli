@@ -126,6 +126,12 @@ Neither secrets nor configuration are implicitly copied to sidecars. Rendering
 refuses a declaration that cannot bind to a service container, and a literal
 configuration value cannot replace a rendered secret reference.
 
+A per-service secret mapping may specify `refresh-interval` and a `template`
+with `engine-version: v2`, `merge-policy: Merge` and `data` expressions for its
+explicit remote keys. These are External Secrets declarations, evaluated only by
+ESO. The CLI never resolves or evaluates secret expressions. Other template
+engines, replacement policies and undeclared output keys fail admission.
+
 Validation rebuilds the selected overlay and checks the complete CLI-owned
 ExternalSecret delivery specification, including its store, target, keys and
 properties. Overlay patches may not redirect or replace that specification.
@@ -135,14 +141,17 @@ independently of container configuration bindings.
 
 ## Qualification limits
 
-The actual infra-base fixture and its provenance are under
-`pkg/environments/testdata/coordinates`. Its current Lodestar output contains
-three public configuration values but no identity, secret references or delivery
-target. [Infra-base #1116](https://github.com/obin-ai/infra-base/issues/1116) owns
-that missing producer handoff; Azure bindings remain tracked in infra-base #1099.
-Rendering those values is not proof that the application consumes them.
+The actual infra-base fixture and its immutable source provenance are under
+`pkg/environments/testdata/coordinates`. The Lodestar output selects Accounts'
+writer identity, public identity keys its source reads, exact remote secret
+references, the existing registration-digest expression, cluster and GitOps
+target. The integration test imports this emitted JSON and verifies effective
+Kustomize output without managed services. Database convention values remain
+informational for consumers that have not adopted those keys. Azure runtime
+database bindings are not inferred from the GCP declaration.
 
-Nested JSON strings are preserved verbatim, but Core's structured-data runtime
-bridge and the Go SDK's nested document API are not implemented by this change.
-They are tracked in [Core #620](https://github.com/codefly-dev/core/issues/620)
-and [SDK-Go #34](https://github.com/codefly-dev/sdk-go/issues/34).
+Core transports structured runtime data through its scoped, versioned JSON
+carrier, and SDK-Go exposes raw and typed document accessors. This is separate
+from `service-config.values`, whose explicitly declared environment values
+remain strings. Render qualification does not establish live cloud identity,
+secret-store access or database connectivity.

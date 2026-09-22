@@ -168,6 +168,10 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
 	}
+	environment := flow.Environment()
+	if environment == nil || strings.TrimSpace(environment.Name) == "" {
+		return nil, status.Error(codes.FailedPrecondition, "the active flow has no configuration environment")
+	}
 	unique := resources.ServiceUnique(req.Module, req.Service)
 	svc, err := flow.ServiceFromUnique(unique)
 	if err != nil {
@@ -183,6 +187,9 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 	}
 	return &cli.GetConfigurationResponse{
 		Configuration: conf,
+		ProcessVariables: []*basev0.ConfigurationValue{{
+			Key: resources.EnvironmentPrefix, Value: environment.Name,
+		}},
 	}, nil
 }
 

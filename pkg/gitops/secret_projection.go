@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -61,7 +62,14 @@ type externalSecretStoreRef struct {
 }
 
 type externalSecretTarget struct {
-	Name string `yaml:"name"`
+	Name     string                  `yaml:"name"`
+	Template *externalSecretTemplate `yaml:"template,omitempty"`
+}
+
+type externalSecretTemplate struct {
+	EngineVersion string            `yaml:"engineVersion"`
+	MergePolicy   string            `yaml:"mergePolicy"`
+	Data          map[string]string `yaml:"data"`
 }
 
 type externalSecretData struct {
@@ -133,7 +141,21 @@ func serviceSecretProjection(service, namespace string, secrets *environments.En
 			RemoteRef: resolveRemoteRef(service, key, mapping),
 		})
 	}
-	return externalSecretProjection(service, namespace, store, data)
+	projection, err := externalSecretProjection(service, namespace, store, data)
+	if err != nil {
+		return nil, err
+	}
+	if mapping.RefreshInterval != "" {
+		projection.Spec.RefreshInterval = mapping.RefreshInterval
+	}
+	if mapping.Template != nil {
+		projection.Spec.Target.Template = &externalSecretTemplate{
+			EngineVersion: mapping.Template.EngineVersion,
+			MergePolicy:   mapping.Template.MergePolicy,
+			Data:          maps.Clone(mapping.Template.Data),
+		}
+	}
+	return projection, nil
 }
 
 // resolveRemoteRef locates one secret key in the remote store. An explicit

@@ -109,7 +109,7 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 		// External endpoints (e.g. public load-balanced) resolve to an
 		// environment-specific public host. A declared dns.codefly.yaml entry
 		// wins when present; otherwise the host is derived from the
-		// environment's declared app host suffix (sourced from the cell
+		// environment's declared app host suffix (sourced from the coordinate
 		// contract) so a promotable render is value-free — no local value file
 		// required. Only when neither exists is there nothing to route to.
 		if resources.IsExternalEndpoint(endpoint) {

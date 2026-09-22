@@ -12,7 +12,7 @@ import (
 
 // CoordinateContractSchema identifies the producer-independent environment
 // contract. The document is named for its subject: a deployment is named by its
-// coordinate, and "cell" is not a word the model has.
+// coordinate, using the producer's explicit deployment declarations.
 const CoordinateContractSchema = "codefly/coordinate/v1"
 
 // CoordinateContract carries Codefly's existing Environment model, not a

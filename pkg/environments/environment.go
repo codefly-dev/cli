@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -148,7 +149,7 @@ type EnvironmentManagedService struct {
 
 // EnvironmentWorkloadIdentity is the runtime principal a workload authenticates
 // as, and the platform's own means of attaching it. Annotations land on the
-// workload's ServiceAccount and Labels on its pod template, verbatim: a cell
+// workload's ServiceAccount and Labels on its pod template, verbatim: an environment
 // declares whatever its identity webhook keys off and codefly stamps it without
 // interpreting the keys.
 type EnvironmentWorkloadIdentity struct {
@@ -337,6 +338,24 @@ type EnvironmentServiceSecretMapping struct {
 	// (replaced by the service name); absent, codefly's default "<service>/<key>"
 	// applies.
 	Defaults *EnvironmentSecretRemoteRef `yaml:"defaults,omitempty"`
+	// Template is evaluated by ESO, never by the CLI. It preserves producer
+	// transformations without exposing the resolved secret to the renderer.
+	Template        *EnvironmentSecretTemplate `yaml:"template,omitempty"`
+	RefreshInterval string                     `yaml:"refresh-interval,omitempty"`
+}
+
+type EnvironmentSecretTemplate struct {
+	EngineVersion string            `yaml:"engine-version"`
+	MergePolicy   string            `yaml:"merge-policy"`
+	Data          map[string]string `yaml:"data"`
+}
+
+func (t *EnvironmentSecretTemplate) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "secret template", "engine-version", "merge-policy", "data"); err != nil {
+		return err
+	}
+	type plain EnvironmentSecretTemplate
+	return node.Decode((*plain)(t))
 }
 
 // EnvironmentServiceConfig declares resolved, non-secret configuration values
@@ -434,6 +453,22 @@ func (s *EnvironmentServiceSecrets) Validate() error {
 	for name, mapping := range s.Services {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("service-secrets: service name cannot be empty")
+		}
+		if mapping.RefreshInterval != "" {
+			interval, err := time.ParseDuration(mapping.RefreshInterval)
+			if err != nil || interval <= 0 {
+				return fmt.Errorf("service-secrets service %q: refresh-interval must be a positive duration", name)
+			}
+		}
+		if mapping.Template != nil {
+			if mapping.Template.EngineVersion != "v2" || mapping.Template.MergePolicy != "Merge" || len(mapping.Template.Data) == 0 {
+				return fmt.Errorf("service-secrets service %q: template requires engine-version v2, merge-policy Merge and data", name)
+			}
+			for key, value := range mapping.Template.Data {
+				if _, declared := mapping.RemoteKeys[key]; !declared || strings.TrimSpace(value) == "" {
+					return fmt.Errorf("service-secrets service %q: template key %q requires an explicit remote-key and nonempty expression", name, key)
+				}
+			}
 		}
 		if mapping.SecretStore != nil {
 			if err := mapping.SecretStore.validate(fmt.Sprintf("service-secrets service %q secret-store", name)); err != nil {
@@ -617,7 +652,7 @@ type Environment struct {
 
 	// ResourceQuota, when set, renders a ResourceQuota (and an optional
 	// LimitRange of container defaults) into this environment's namespace so one
-	// workspace sharing a cell cannot starve another. Absent, no quota is
+	// workspace sharing an environment cannot starve another. Absent, no quota is
 	// rendered and the namespace stays uncapped. CLI-side; not serialized to
 	// proto.
 	ResourceQuota *EnvironmentResourceQuota `yaml:"resource-quota,omitempty"`
@@ -631,7 +666,7 @@ type Environment struct {
 // EnvironmentDNS is the environment's DNS contract.
 type EnvironmentDNS struct {
 	// AppHostSuffix is the public host suffix an app's external endpoints hang
-	// off of in this cell (e.g. "staging.eastus2.azure.example.com"). Empty means
+	// off of in this environment (e.g. "staging.eastus2.azure.example.com"). Empty means
 	// no declared suffix, so external hosts fall back to a local dns.codefly.yaml.
 	AppHostSuffix string `yaml:"app-host-suffix,omitempty"`
 }
@@ -640,7 +675,7 @@ type EnvironmentDNS struct {
 // reachable at in this environment, or "" when no app host suffix is declared.
 // The label is "<service>-<module>" (the service-module subdomain convention,
 // see shared.ToDNSCase) so services sharing a name across modules do not collide
-// under one cell suffix; the suffix already scopes the cell/environment.
+// under one host suffix; the suffix already scopes the environment.
 func (env *Environment) AppHost(service *resources.ServiceIdentity) string {
 	if env == nil || env.DNS == nil || env.DNS.AppHostSuffix == "" || service == nil {
 		return ""

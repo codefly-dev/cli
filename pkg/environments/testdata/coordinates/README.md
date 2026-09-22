@@ -1,14 +1,15 @@
 # Coordinate fixtures
 
 `infra-base-lodestar.json` is byte-for-byte output of infra-base commit
-`7011c60b99116c397e73a8ad11e9cf5afe6f2044`:
+`fb376be7c7d2c0d85677d164b85399774ecbbeb6`:
 
 ```
-uv run --locked --directory tools/obin-cli obinctl coordinate-contract --all --out-dir <output>
+env -u OBIN_REGISTRY -u OBIN_REPO_ROOT bin/obinctl coordinate-contract hosted-us-east1 --namespace lodestar
 ```
 
-The output file is `hosted-us-east1.lodestar.json`. It carries public identifiers,
-not credentials. It does not yet declare workload identity or secret delivery.
-Import/render tests prove transport, not application support for these keys or
-successful cloud authentication. Other fixtures exercise the CLI contract and
-are not claims about current producer output.
+It carries public configuration, Accounts' exact primary workload identity,
+ExternalSecret references and transformation, cluster context and reviewed
+delivery source. It contains no credentials and no managed-services declaration.
+Import/render tests verify the effective Kustomize output, including rejection
+of a redirected secret template. They do not prove live cloud authentication.
+Other fixtures exercise the CLI contract, not an infrastructure producer.

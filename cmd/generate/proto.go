@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -19,6 +20,8 @@ import (
 var protoDir string
 var outputDir string
 var protoPaths []string
+var protoTemplate string
+var protoLocal bool
 
 // ProtoCmd generates code from local proto files.
 var ProtoCmd = &cobra.Command{
@@ -27,7 +30,9 @@ var ProtoCmd = &cobra.Command{
 	Long: `Generate code from local proto files without pushing to buf.build first.
 
 Runs buf inside the versioned proto companion image, using the buf.gen.yaml in
-the --proto directory: Go, gRPC, Connect, gateway, OpenAPI and TypeScript
+the --proto directory, or an explicit --template relative to --output.
+--local selects --output/buf.gen.local.yaml, not execution on the host.
+Go, gRPC, Connect, gateway, OpenAPI and TypeScript
 outputs, then goimports over every Go output the template declares. Nothing
 runs on the host but Docker, and the plugins and the formatter are the image's,
 pinned by its tag, so two machines regenerate the same bytes.
@@ -81,11 +86,11 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	w.Info("Using proto companion image", wool.Field("image", image.FullName()))
 
-	// buf.gen.yaml lives in the proto dir — that's where buf runs from.
-	bufGenPath := filepath.Join(protoDir, "buf.gen.yaml")
-	if ok, _ := shared.FileExists(ctx, bufGenPath); !ok {
-		return w.NewError("buf.gen.yaml not found in proto directory: %s", protoDir)
+	templatePath, err := resolveProtoTemplate(protoDir, outputDir, protoTemplate, protoLocal)
+	if err != nil {
+		return err
 	}
+	templateDir := filepath.Dir(templatePath)
 
 	// Ensure output directory exists
 	_, err = shared.CheckDirectoryOrCreate(ctx, outputDir)
@@ -93,17 +98,18 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 		return w.Wrapf(err, "cannot create output directory")
 	}
 
-	// Find the common ancestor of proto and output dirs so that
-	// buf.gen.yaml's relative output paths (e.g. "../code/pkg/gen") resolve
-	// correctly inside the container.
-	commonRoot := commonAncestor(protoDir, outputDir)
-	if commonRoot == "" {
-		return w.NewError("proto dir and output dir must share a common ancestor")
+	// Mount inputs, outputs and template together; buf resolves output paths
+	// against its working directory, which is the template's own directory.
+	commonRoot, err := protoMountRoot(protoDir, outputDir, templateDir)
+	if err != nil {
+		return err
 	}
 
 	// Compute container-internal paths relative to the common root.
 	relProto, _ := filepath.Rel(commonRoot, protoDir)
 	containerProto := filepath.Join("/workspace", relProto)
+	relTemplateDir, _ := filepath.Rel(commonRoot, templateDir)
+	containerTemplateDir := filepath.Join("/workspace", relTemplateDir)
 
 	// Create a unique container name
 	name := fmt.Sprintf("proto-gen-%d", time.Now().UnixMilli())
@@ -127,10 +133,9 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	runner.WithEphemeral()
 
 	// Mount the common ancestor so both proto and output paths are accessible.
-	// Work from the proto dir where buf.gen.yaml lives — buf resolves output
-	// paths relative to buf.gen.yaml's location.
+	// Work from the template directory so custom output paths retain their meaning.
 	runner.WithMount(commonRoot, "/workspace")
-	runner.WithWorkDir(containerProto)
+	runner.WithWorkDir(containerTemplateDir)
 	runner.WithPause()
 
 	defer func() {
@@ -148,7 +153,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	w.Info("Updating buf dependencies...")
 
 	// Update buf dependencies
-	proc, err := runner.NewProcess("buf", "dep", "update")
+	proc, err := runner.NewProcess("buf", "dep", "update", containerProto)
 	if err != nil {
 		return w.Wrapf(err, "cannot create process")
 	}
@@ -159,10 +164,12 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	w.Info("Generating proto code...")
 
-	// Generate code from the proto dir — buf.gen.yaml is here, so relative
-	// output paths like "../code/pkg/gen" resolve correctly within /workspace.
-	args := []string{"generate"}
-	args = append(args, protoGenerationPathArgs(protoDir, false)...)
+	// The input and path filters are absolute because a custom template may
+	// live outside the proto directory.
+	pathArgs := protoGenerationPathArgs(containerProto, true)
+	args := make([]string, 0, 4+len(pathArgs))
+	args = append(args, "generate", containerProto, "--template", filepath.Base(templatePath))
+	args = append(args, pathArgs...)
 	proc, err = runner.NewProcess("buf", args...)
 	if err != nil {
 		return w.Wrapf(err, "cannot create process")
@@ -177,11 +184,42 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	// companion owns that pass and runs it in the image, so the tree it hands
 	// back is the committed one. See core's proto.FormatGoOutputs.
 	w.Info("Formatting generated Go...")
-	if err = proto.FormatGoOutputs(ctx, runner, protoDir, "buf.gen.yaml", commonRoot, "/workspace"); err != nil {
+	if err = proto.FormatGoOutputs(ctx, runner, templateDir, filepath.Base(templatePath), commonRoot, "/workspace"); err != nil {
 		return w.Wrapf(err, "cannot format generated Go")
 	}
 
 	return nil
+}
+
+func protoMountRoot(protoDir, outputDir, templateDir string) (string, error) {
+	root := commonAncestor(commonAncestor(protoDir, outputDir), templateDir)
+	if root == "" || filepath.Dir(root) == root {
+		return "", fmt.Errorf("proto input, output and template must share a directory below the filesystem root")
+	}
+	return root, nil
+}
+
+func resolveProtoTemplate(protoDir, outputDir, template string, local bool) (string, error) {
+	var templatePath string
+	switch {
+	case template != "":
+		templatePath = template
+		if !filepath.IsAbs(templatePath) {
+			templatePath = filepath.Join(outputDir, templatePath)
+		}
+	case local:
+		templatePath = filepath.Join(outputDir, "buf.gen.local.yaml")
+	default:
+		templatePath = filepath.Join(protoDir, "buf.gen.yaml")
+	}
+	info, err := os.Stat(templatePath)
+	if err != nil {
+		return "", fmt.Errorf("cannot read generation template %s: %w", templatePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("generation template is not a regular file: %s", templatePath)
+	}
+	return filepath.Clean(templatePath), nil
 }
 
 // commonAncestor returns the longest shared directory prefix of two absolute paths.
@@ -238,6 +276,8 @@ func init() {
 	ProtoCmd.Flags().StringVar(&protoDir, "proto", "", "path to proto source directory (required)")
 	ProtoCmd.Flags().StringVar(&outputDir, "output", "", "path to output directory with buf.gen.yaml (required)")
 	ProtoCmd.Flags().StringSliceVar(&protoPaths, "path", nil, "limit generation to a proto-relative path (repeatable)")
+	ProtoCmd.Flags().StringVar(&protoTemplate, "template", "", "generation template, relative to --output or absolute; runs in its own directory")
+	ProtoCmd.Flags().BoolVar(&protoLocal, "local", false, "select --output/buf.gen.local.yaml; plugins still run inside the pinned companion")
 	_ = ProtoCmd.MarkFlagRequired("proto")
 	_ = ProtoCmd.MarkFlagRequired("output")
 }

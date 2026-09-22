@@ -18,7 +18,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/executionjournal"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
-	codefly "github.com/codefly-dev/sdk-go"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
+	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -186,7 +187,7 @@ func TestRecorderProcessLossRecoversAndExportsStartedThenUncertain(t *testing.T)
 		Attestor: attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			codefly.WorkContextToken,
+			workcontext.WorkContextToken,
 			Admission,
 		) (*basev0.WorkContextV1, error) {
 			return nil, errors.New("recovery must not re-authorize an already admitted start")
@@ -280,13 +281,13 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 		return err
 	}
 	signature := make([]byte, 64)
-	token, err := codefly.ParseWorkContextToken(
+	token, err := workcontext.ParseWorkContextToken(
 		"e30." + base64.RawURLEncoding.EncodeToString(signature),
 	)
 	if err != nil {
 		return err
 	}
-	execution, err := codefly.NewExecutionContext(token, "operation-process-loss")
+	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-process-loss")
 	if err != nil {
 		return err
 	}
@@ -295,7 +296,7 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 		Attestor: attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			codefly.WorkContextToken,
+			workcontext.WorkContextToken,
 			Admission,
 		) (*basev0.WorkContextV1, error) {
 			return testClaims(), nil
@@ -324,7 +325,7 @@ func TestRecorderRejectsAuthorityFailureBeforeJournal(t *testing.T) {
 		Attestor: fixture.attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			codefly.WorkContextToken,
+			workcontext.WorkContextToken,
 			Admission,
 		) (*basev0.WorkContextV1, error) {
 			return nil, errors.New("forged")
@@ -372,7 +373,7 @@ type recorderFixture struct {
 	attestor    *executionattestor.FileAttestor
 	authority   Authority
 	producer    *executionv1.ExecutionProducerV1
-	execution   codefly.ExecutionContext
+	execution   workcontextgrpc.ExecutionContext
 	clock       *testClock
 }
 
@@ -391,18 +392,18 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	t.Cleanup(func() { _ = journal.Close() })
 
 	signature := make([]byte, 64)
-	token, err := codefly.ParseWorkContextToken("e30." + base64.RawURLEncoding.EncodeToString(signature))
+	token, err := workcontext.ParseWorkContextToken("e30." + base64.RawURLEncoding.EncodeToString(signature))
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := codefly.NewExecutionContext(token, "operation-1")
+	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	claims := testClaims()
 	authority := AuthorityFunc(func(
 		_ context.Context,
-		_ codefly.WorkContextToken,
+		_ workcontext.WorkContextToken,
 		admission Admission,
 	) (*basev0.WorkContextV1, error) {
 		if admission.OperationID != "operation-1" || admission.ProducerID != "codefly.execution" {

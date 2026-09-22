@@ -172,9 +172,18 @@ func exportedConfigurations(mode string, req *runtimev0.InitRequest) []*basev0.C
 		for key, value := range req.GetOverrides() {
 			values = append(values, &basev0.ConfigurationValue{Key: key, Value: value})
 		}
+		for _, mapping := range req.GetDependenciesNetworkMappings() {
+			instance := resources.FilterNetworkInstance(context.Background(), mapping.GetInstances(), resources.NewNativeNetworkAccess())
+			values = append(values, &basev0.ConfigurationValue{Key: resources.EndpointDestination(mapping.GetEndpoint()), Value: instance.GetAddress()})
+		}
+	}
+	origin := "web/gateway"
+	if mappings := req.GetProposedNetworkMappings(); len(mappings) > 0 {
+		endpoint := mappings[0].GetEndpoint()
+		origin = endpoint.GetModule() + "/" + endpoint.GetService()
 	}
 	return []*basev0.Configuration{{
-		Origin: "web/gateway",
+		Origin: origin,
 		Infos: []*basev0.ConfigurationInformation{{
 			Name:                exposedConfigurationName,
 			ConfigurationValues: values,

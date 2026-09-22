@@ -36,7 +36,8 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
-	codefly "github.com/codefly-dev/sdk-go"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
+	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -307,7 +308,7 @@ func enableGovernedGateway(
 		Attestor: attestor,
 		Authority: executionrecorder.AuthorityFunc(func(
 			_ context.Context,
-			_ codefly.WorkContextToken,
+			_ workcontext.WorkContextToken,
 			admission executionrecorder.Admission,
 		) (*basev0.WorkContextV1, error) {
 			if admission.OperationID != operationID {
@@ -332,17 +333,17 @@ func enableGovernedGateway(
 func incomingExecutionContext(t *testing.T, operationID string) context.Context {
 	t.Helper()
 	signature := make([]byte, 64)
-	token, err := codefly.ParseWorkContextToken(
+	token, err := workcontext.ParseWorkContextToken(
 		"e30." + base64.RawURLEncoding.EncodeToString(signature),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := codefly.NewExecutionContext(token, operationID)
+	execution, err := workcontextgrpc.NewExecutionContext(token, operationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	outgoing, err := codefly.WithGRPCExecutionContext(t.Context(), execution)
+	outgoing, err := workcontextgrpc.WithGRPCExecutionContext(t.Context(), execution)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,17 +492,17 @@ func TestWriteFileAcceptsSDKExecutionContextOverRealGRPC(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = connection.Close() })
 
-	workContext, err := codefly.ParseWorkContextToken(
+	workContext, err := workcontext.ParseWorkContextToken(
 		"e30.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := codefly.NewExecutionContext(workContext, "operation-write-1")
+	execution, err := workcontextgrpc.NewExecutionContext(workContext, "operation-write-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, err := codefly.WithGRPCExecutionContext(t.Context(), execution)
+	ctx, err := workcontextgrpc.WithGRPCExecutionContext(t.Context(), execution)
 	if err != nil {
 		t.Fatal(err)
 	}

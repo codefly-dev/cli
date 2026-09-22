@@ -19,7 +19,8 @@ import (
 	"github.com/codefly-dev/core/executionreceipt"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
-	codefly "github.com/codefly-dev/sdk-go"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
+	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -45,16 +46,16 @@ type Admission struct {
 
 // Authority verifies the opaque SDK token and returns trusted claims.
 type Authority interface {
-	Verify(context.Context, codefly.WorkContextToken, Admission) (*basev0.WorkContextV1, error)
+	Verify(context.Context, workcontext.WorkContextToken, Admission) (*basev0.WorkContextV1, error)
 }
 
 // AuthorityFunc adapts a function into Authority.
-type AuthorityFunc func(context.Context, codefly.WorkContextToken, Admission) (*basev0.WorkContextV1, error)
+type AuthorityFunc func(context.Context, workcontext.WorkContextToken, Admission) (*basev0.WorkContextV1, error)
 
 // Verify implements Authority.
 func (fn AuthorityFunc) Verify(
 	ctx context.Context,
-	token codefly.WorkContextToken,
+	token workcontext.WorkContextToken,
 	admission Admission,
 ) (*basev0.WorkContextV1, error) {
 	return fn(ctx, token, admission)
@@ -148,7 +149,7 @@ func New(config Config) (*Recorder, error) {
 // execute the effect again.
 func (r *Recorder) Begin(
 	ctx context.Context,
-	execution codefly.ExecutionContext,
+	execution workcontextgrpc.ExecutionContext,
 	input BeginInput,
 ) (BeginResult, error) {
 	if r == nil {

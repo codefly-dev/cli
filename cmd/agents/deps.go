@@ -15,6 +15,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 // DepsCmd manages an agent's build dependencies: the local↔published core
@@ -46,6 +48,9 @@ published core in go.mod.
                     and their factory templates) to a published core version +
                     tidy + verify the standalone build (the ONLY mode that
                     pulls); "latest" allowed
+  --dependency <module>@<version>
+                    with --pin, also update an explicitly selected dependency
+                    wherever it is already required (repeatable)
   --all             apply to every agent under the directory tree
   --dir <path>      target agent directory (default: current directory)
 
@@ -81,6 +86,13 @@ Examples:
 		o.pin, err = cmd.Flags().GetString("pin")
 		if err != nil {
 			return fmt.Errorf("cannot read --pin: %w", err)
+		}
+		o.dependencies, err = cmd.Flags().GetStringArray("dependency")
+		if err != nil {
+			return fmt.Errorf("cannot read --dependency: %w", err)
+		}
+		if len(o.dependencies) > 0 && o.pin == "" {
+			return fmt.Errorf("--dependency requires --pin")
 		}
 		if o.unlink && o.link {
 			return fmt.Errorf("--link and --unlink are mutually exclusive")
@@ -140,9 +152,10 @@ Examples:
 }
 
 type depsOptions struct {
-	link   bool
-	unlink bool
-	pin    string
+	link         bool
+	unlink       bool
+	pin          string
+	dependencies []string
 }
 
 func applyDeps(ctx context.Context, dir string, o depsOptions) error {
@@ -152,7 +165,7 @@ func applyDeps(ctx context.Context, dir string, o depsOptions) error {
 	// pin first: it rewrites go.mod/go.sum from a pulled published version, then
 	// link/ci operate on the result.
 	if o.pin != "" {
-		if err := pinCore(ctx, dir, o.pin); err != nil {
+		if err := pinCore(ctx, dir, o.pin, o.dependencies...); err != nil {
 			return err
 		}
 	}
@@ -287,10 +300,14 @@ const goModModuleDirective = "module"
 // the root leaves fresh services generated on the stale lock while reporting
 // success. Runs with GOWORK=off so the local go.work can't mask a
 // missing/incompatible published version.
-func pinCore(ctx context.Context, dir, version string) (returnErr error) {
+func pinCore(ctx context.Context, dir, version string, dependencies ...string) (returnErr error) {
 	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
 
 	fixtures, err := baseFixtureDirs(dir)
+	if err != nil {
+		return err
+	}
+	pins, err := dependencyPins(append([]string{dir}, fixtures...), dependencies)
 	if err != nil {
 		return err
 	}
@@ -316,12 +333,12 @@ func pinCore(ctx context.Context, dir, version string) (returnErr error) {
 		}
 	}()
 
-	if err := pinModule(ctx, dir, env, version, ""); err != nil {
+	if err := pinModule(ctx, dir, env, version, "", pins[dir]); err != nil {
 		return err
 	}
 	for _, m := range fixtures {
 		label := relLabel(dir, m)
-		if err := pinModule(ctx, m, env, version, label); err != nil {
+		if err := pinModule(ctx, m, env, version, label, pins[m]); err != nil {
 			return err
 		}
 		if err := regenerateFactoryTemplate(ctx, dir, m); err != nil {
@@ -334,7 +351,7 @@ func pinCore(ctx context.Context, dir, version string) (returnErr error) {
 // pinModule pins a single Go module to coreModule@version, tidies, and verifies
 // its standalone build. label names the module in progress output ("" for the
 // agent root).
-func pinModule(ctx context.Context, dir string, env []string, version, label string) error {
+func pinModule(ctx context.Context, dir string, env []string, version, label string, dependencies []string) error {
 	// Strip committed filesystem `replace => ../path` directives first: those are
 	// local-dev overrides that don't exist in a single-repo CI checkout, so they
 	// break the standalone build. Local builds keep working via the root go.work.
@@ -343,8 +360,9 @@ func pinModule(ctx context.Context, dir string, env []string, version, label str
 	} else if len(dropped) > 0 {
 		cli.Info("  stripped %d local replace(s): %s", len(dropped), strings.Join(dropped, ", "))
 	}
-	if err := runGoEnv(ctx, dir, env, "get", coreModule+"@"+version); err != nil {
-		return fmt.Errorf("go get %s@%s: %w", coreModule, version, err)
+	arguments := append([]string{"get", coreModule + "@" + version}, dependencies...)
+	if err := runGoEnv(ctx, dir, env, arguments...); err != nil {
+		return fmt.Errorf("pin dependencies of %s: %w", moduleLabel(label), err)
 	}
 	if err := runGoEnv(ctx, dir, env, "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
@@ -361,6 +379,49 @@ func pinModule(ctx context.Context, dir string, env []string, version, label str
 		cli.Info("  pinned %s → %s@%s (standalone build OK)", label, coreModule, got)
 	}
 	return nil
+}
+
+// Select pins before any mutation so a typo cannot produce a partial update or
+// add a dependency to modules that never used it.
+func dependencyPins(dirs, dependencies []string) (map[string][]string, error) {
+	pins := make(map[string][]string)
+	selected := make(map[string]string)
+	for _, dependency := range dependencies {
+		path, version, found := strings.Cut(dependency, "@")
+		if !found || version == "" || strings.ContainsAny(version, "@ \t\r\n") || module.CheckPath(path) != nil {
+			return nil, fmt.Errorf("dependency %q must be module@version", dependency)
+		}
+		if path == coreModule {
+			return nil, fmt.Errorf("select Core through --pin, not --dependency")
+		}
+		if _, exists := selected[path]; exists {
+			return nil, fmt.Errorf("dependency %q is selected more than once", path)
+		}
+		selected[path] = dependency
+	}
+	matched := make(map[string]bool)
+	for _, dir := range dirs {
+		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err != nil {
+			return nil, err
+		}
+		file, err := modfile.Parse("go.mod", data, nil)
+		if err != nil {
+			return nil, err
+		}
+		for _, requirement := range file.Require {
+			if dependency, exists := selected[requirement.Mod.Path]; exists {
+				pins[dir] = append(pins[dir], dependency)
+				matched[requirement.Mod.Path] = true
+			}
+		}
+	}
+	for path := range selected {
+		if !matched[path] {
+			return nil, fmt.Errorf("dependency %q is not required by the agent or its base fixtures", path)
+		}
+	}
+	return pins, nil
 }
 
 // baseFixtureDirs returns every base-fixture Go module under the agent
@@ -658,10 +719,13 @@ func goModVersion(dir, module string) string {
 	if err != nil {
 		return "?"
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		f := strings.Fields(strings.TrimSpace(line))
-		if len(f) >= 2 && f[0] == module {
-			return f[1]
+	file, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "?"
+	}
+	for _, requirement := range file.Require {
+		if requirement.Mod.Path == module {
+			return requirement.Mod.Version
 		}
 	}
 	return "?"
@@ -673,4 +737,5 @@ func init() {
 	DepsCmd.Flags().Bool("link", false, "Wire go.work -> local core for dev builds (default action)")
 	DepsCmd.Flags().Bool("unlink", false, "Remove the local go.work (revert to published deps)")
 	DepsCmd.Flags().String("pin", "", "Pin go.mod to a published core version (e.g. latest, v0.1.164) + tidy + verify")
+	DepsCmd.Flags().StringArray("dependency", nil, "With --pin, also pin an existing module@version across owned locks (repeatable)")
 }

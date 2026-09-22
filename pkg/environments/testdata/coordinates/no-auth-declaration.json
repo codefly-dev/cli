@@ -1,6 +1,5 @@
 {
-  "schema": "codefly/cell/v1",
-  "cell": "hosted-eastus2",
+  "schema": "codefly/coordinate/v1",
   "coordinate": "hosted/azure/eastus2/US/staging",
   "cluster": { "kind": "aks", "context": "obinh-eus2-aks", "private_api": true },
   "dns": { "app_host_suffix": "staging.eastus2.azure.obin.obin.ai" },

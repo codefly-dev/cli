@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	codefly "github.com/codefly-dev/sdk-go"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 )
 
 const (
@@ -23,8 +23,8 @@ const (
 type WorkContextVerifier interface {
 	Verify(
 		context.Context,
-		codefly.WorkContextToken,
-		codefly.WorkContextExpectations,
+		workcontext.WorkContextToken,
+		workcontext.WorkContextExpectations,
 	) (*basev0.WorkContextV1, error)
 }
 
@@ -65,7 +65,7 @@ func NewWorkContextAuthority(config WorkContextAuthorityConfig) (*WorkContextAut
 // Verify implements Authority.
 func (a *WorkContextAuthority) Verify(
 	ctx context.Context,
-	token codefly.WorkContextToken,
+	token workcontext.WorkContextToken,
 	admission Admission,
 ) (*basev0.WorkContextV1, error) {
 	if a == nil || a.verifier == nil {
@@ -74,14 +74,14 @@ func (a *WorkContextAuthority) Verify(
 	if strings.TrimSpace(admission.ProducerID) == "" {
 		return nil, fmt.Errorf("%w: execution producer ID is required", ErrInvalid)
 	}
-	claims, err := a.verifier.Verify(ctx, token, codefly.WorkContextExpectations{
+	claims, err := a.verifier.Verify(ctx, token, workcontext.WorkContextExpectations{
 		Issuer:   a.issuer,
 		Audience: a.audience,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("verify SDK Work Context: %w", err)
 	}
-	if err := codefly.RequireWorkContextScope(claims, codefly.WorkContextScopeRequirement{
+	if err := workcontext.RequireWorkContextScope(claims, workcontext.WorkContextScopeRequirement{
 		ResourceKind:            executionEvidenceResourceKind,
 		Action:                  executionEvidenceAction,
 		ResourceID:              admission.ProducerID,

@@ -394,7 +394,12 @@ func promotableConfiguration(
 					}},
 				}},
 			}
-			environmentVariables := resources.ConfigurationAsEnvironmentVariables(secretConfiguration, true)
+			// Flat secret keys have no environment scope; structured secrets are
+			// rejected above until a typed Kubernetes reference can carry them.
+			environmentVariables, err := resources.ConfigurationAsEnvironmentVariables(secretConfiguration, "", true)
+			if err != nil {
+				return nil, err
+			}
 			if len(environmentVariables) != 1 {
 				return nil, fmt.Errorf("secret configuration %q/%q has no environment identity", sourceInfo.GetName(), sourceValue.GetKey())
 			}
