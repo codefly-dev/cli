@@ -445,9 +445,10 @@ type agentIdentity struct {
 // the per-platform archive. Toolboxes are callable capability plugins with
 // their own `.goreleaser.yaml`, so they take the same service-shaped path.
 var loaderAssetKinds = map[string]bool{
-	"":                             true, // legacy manifests default to service
-	string(resources.ServiceAgent): true,
-	string(resources.ToolboxAgent): true,
+	"":                              true, // legacy manifests default to service
+	string(resources.ServiceAgent):  true,
+	string(resources.ToolboxAgent):  true,
+	string(resources.RunnableAgent): true,
 }
 
 // sourceTagKinds are immutable source releases: publish runs source/build/audit
@@ -542,7 +543,7 @@ func newAgentReleaser(agentDir string) (*agentReleaser, error) {
 		self:            self,
 		agentDir:        agentDir,
 		reg:             &reg,
-		skipConformance: reg.Resource != resources.ServiceAgent,
+		skipConformance: reg.Resource != resources.ServiceAgent && reg.Resource != resources.RunnableAgent,
 		publisher:       identity.Publisher,
 		name:            identity.Name,
 		ciOutput:        ciOutput,

@@ -168,6 +168,7 @@ func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
 	}{
 		{"codefly:service", resources.ServiceAgent, false},
 		{"codefly:toolbox", resources.ToolboxAgent, true},
+		{"codefly:runnable", resources.RunnableAgent, false},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			dir := t.TempDir()
@@ -181,7 +182,7 @@ func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
 			require.True(t, ok, "%s must ship loader assets", tc.kind)
 			require.Equal(t, tc.resource, releaser.reg.Resource)
 			require.Equal(t, tc.skipConformance, releaser.skipConformance,
-				"conformance is service-only; %s must skip=%v", tc.kind, tc.skipConformance)
+				"%s must skip=%v", tc.kind, tc.skipConformance)
 		})
 	}
 }

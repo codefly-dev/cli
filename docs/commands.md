@@ -1224,6 +1224,14 @@ CI copies that fixture out of the repository and runs the Code/Runtime/Tooling
 gate against it. A malformed declaration or a fixture missing
 `workspace.codefly.yaml` fails the conformance stage rather than skipping it.
 
+Runnable agents must declare `conformance.mode: runnable-create` or
+`runnable-package`, plus `conformance.handler` (a relative handler filename).
+Both modes create a fresh Runnable through the exact built candidate in the
+isolated home. Package mode additionally runs `build runnable`, including its
+archive and descriptor verification. No language name selects a mode. Publishing
+a Runnable never passes `--skip-conformance`; source-only generation is not
+evidence of native packaging or invocation support.
+
 ```bash
 codefly agent ci
 codefly agent ci --format json --output .artifacts/codefly-agent

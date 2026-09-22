@@ -43,7 +43,9 @@ const (
 	// conformanceModeAttachSource runs the workspace gate against a fixture
 	// workspace the agent ships, for attach-only agents whose Builder.Create
 	// intentionally declines to generate a project template.
-	conformanceModeAttachSource = "attach-existing-source"
+	conformanceModeAttachSource    = "attach-existing-source"
+	conformanceModeRunnableCreate  = "runnable-create"
+	conformanceModeRunnablePackage = "runnable-package"
 )
 
 var AgentCICmd = &cobra.Command{
@@ -482,6 +484,17 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 	if _, _, err := resolveAgentSource(context.Background(), dir, &manifest); err != nil {
 		return agentYAML{}, err
 	}
+	if manifest.Kind == string(resources.RunnableAgent) {
+		mode := conformanceMode(manifest)
+		if mode != conformanceModeRunnableCreate && mode != conformanceModeRunnablePackage {
+			return agentYAML{}, fmt.Errorf("runnable CI requires explicit conformance.mode: runnable-create or runnable-package")
+		}
+		handler := manifest.Conformance.Handler
+		if !filepath.IsLocal(handler) || handler == "." || filepath.Clean(handler) != handler {
+			return agentYAML{}, fmt.Errorf("runnable conformance.handler must name a relative handler file inside the runnable")
+		}
+		return manifest, nil
+	}
 	if manifest.Kind != serviceAgentKind {
 		// Non-service kinds build and audit through the same pipeline as
 		// services, but agent CI has no conformance suite wired in for them
@@ -495,7 +508,7 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 			}
 			return manifest, nil
 		default:
-			return agentYAML{}, fmt.Errorf("agent CI supports codefly:service, codefly:module, codefly:toolbox, codefly:provider; got %s", manifest.Kind)
+			return agentYAML{}, fmt.Errorf("agent CI supports codefly:service, codefly:module, codefly:toolbox, codefly:provider, codefly:runnable; got %s", manifest.Kind)
 		}
 	}
 	mode := conformanceMode(manifest)
@@ -654,10 +667,49 @@ func snapshotAgentWorktree(ctx context.Context, dir string) (agentWorktreeSnapsh
 }
 
 func runAgentConformance(ctx context.Context, temporary, agentHome, agentDir string, manifest agentYAML) ([]byte, string, error) {
+	if manifest.Kind == string(resources.RunnableAgent) {
+		return runRunnableConformance(ctx, temporary, agentHome, &manifest)
+	}
 	if conformanceMode(manifest) == conformanceModeAttachSource {
 		return runAttachSourceConformance(ctx, temporary, agentHome, agentDir, manifest)
 	}
 	return runGeneratedServiceConformance(ctx, temporary, agentHome, manifest)
+}
+
+//nolint:goconst // Keep public CLI command lines recognizable as complete argv vectors.
+func runnableConformanceArguments(manifest *agentYAML, output string) [][]string {
+	commands := [][]string{
+		{"--timestamps=false", "init", "workspace", "runnable-conformance", "--layout", "modules", "--default"},
+		{"--timestamps=false", "add", "module", "app", "--yes"},
+		{"--timestamps=false", "--local-agents", "add", "runnable", "subject", "--module", "app", "--agent", manifest.Publisher + "/" + manifest.Name + ":" + manifest.Version, "--handler", manifest.Conformance.Handler},
+	}
+	if conformanceMode(*manifest) == conformanceModeRunnablePackage {
+		commands = append(commands, []string{"--timestamps=false", "--local-agents", "build", "runnable", "app/subject", "--output", output, "--json"})
+	}
+	return commands
+}
+
+// Exercise the exact installed candidate through the public CLI and its live
+// Builder contract. The owner declares its supported operation and handler;
+// language names and release-version compatibility never select behavior here.
+func runRunnableConformance(ctx context.Context, temporary, agentHome string, manifest *agentYAML) ([]byte, string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, "", err
+	}
+	workspaceDir := filepath.Join(temporary, "runnable-conformance")
+	for i, args := range runnableConformanceArguments(manifest, filepath.Join(workspaceDir, ".codefly", "package")) {
+		command := exec.CommandContext(ctx, executable, args...)
+		command.Dir = workspaceDir
+		if i == 0 {
+			command.Dir = temporary
+		}
+		command.Env = agentCIChildEnvironment(agentHome, "CODEFLY_AGENT_SOURCE=local", "CODEFLY_COLOR=never", "CI=1")
+		if output, err := command.CombinedOutput(); err != nil {
+			return nil, workspaceDir, fmt.Errorf("runnable conformance %v: %w\n%s", args, err, boundedAgentCIOutput(output))
+		}
+	}
+	return nil, workspaceDir, nil
 }
 
 func agentConformanceEnvironment(agentHome string) []string {

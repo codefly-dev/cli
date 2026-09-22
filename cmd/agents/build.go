@@ -63,6 +63,7 @@ type agentSource struct {
 type agentConformance struct {
 	Mode    string `yaml:"mode"`
 	Fixture string `yaml:"fixture"`
+	Handler string `yaml:"handler,omitempty"`
 }
 
 // BuildCmd builds an agent binary from source and installs it locally.
@@ -507,20 +508,15 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		}
 	}
 
-	subdir := "services"
-	if ag.Kind == "codefly:application" {
-		subdir = "applications"
-	} else if ag.Kind == "codefly:module" {
-		subdir = "modules"
+	nativePath, containerPath, err := agentBuildPaths(ctx, &ag)
+	if err != nil {
+		res.err = err
+		return res
 	}
-
-	codeflyHome := resources.CodeflyHomeDir()
-	nativeDir := filepath.Join(codeflyHome, "agents", subdir, ag.Publisher)
 	binaryName := fmt.Sprintf("%s__%s", ag.Name, ag.Version)
-	nativePath := filepath.Join(nativeDir, binaryName)
 	res.nativePath = nativePath
 	if !nativeOnly {
-		res.containerPath = filepath.Join(codeflyHome, "containers", "agents", subdir, ag.Publisher, binaryName)
+		res.containerPath = containerPath
 	} else {
 		res.linuxSkipped = true
 	}
@@ -593,6 +589,24 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 	log.Header(1, "Agent %s:%s packaged successfully", ag.Name, ag.Version)
 	return res
+}
+
+func agentBuildPaths(ctx context.Context, manifest *agentYAML) (string, string, error) {
+	kind := resources.AgentKind(manifest.Kind)
+	if kind == "" {
+		kind = resources.ServiceAgent
+	}
+	agent := &resources.Agent{Kind: kind, Publisher: manifest.Publisher, Name: manifest.Name, Version: manifest.Version}
+	native, err := agent.Path(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	registration, err := resources.AgentKindRegistrationFor(kind)
+	if err != nil {
+		return "", "", err
+	}
+	container := filepath.Join(resources.CodeflyHomeDir(), "containers", "agents", registration.InstallSubdirectory, manifest.Publisher, manifest.Name+"__"+manifest.Version)
+	return native, container, nil
 }
 
 // Self-hosting is an explicit declaration owned by the agent repository.

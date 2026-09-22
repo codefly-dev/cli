@@ -10,8 +10,40 @@ import (
 	"time"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
+
+func TestAgentBuildPathsMatchLoader(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	for _, kind := range []resources.AgentKind{resources.ServiceAgent, resources.ModuleAgent, resources.ToolboxAgent, resources.ProviderAgent, resources.RunnableAgent} {
+		t.Run(string(kind), func(t *testing.T) {
+			manifest := agentYAML{Kind: string(kind), Publisher: "example.test", Name: "subject", Version: "1.2.3"}
+			native, container, err := agentBuildPaths(t.Context(), &manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selected := &resources.Agent{Kind: kind, Publisher: manifest.Publisher, Name: manifest.Name, Version: manifest.Version}
+			want, err := selected.Path(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if native != want {
+				t.Fatalf("installed %s, loader expects %s", native, want)
+			}
+			relative, err := filepath.Rel(resources.CodeflyHomeDir(), native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if container != filepath.Join(resources.CodeflyHomeDir(), "containers", relative) {
+				t.Fatalf("wrong container path %s", container)
+			}
+		})
+	}
+	if _, _, err := agentBuildPaths(t.Context(), &agentYAML{Kind: "codefly:unknown"}); err == nil {
+		t.Fatal("unknown kind silently installed as a service")
+	}
+}
 
 func TestFindMonorepoRoot(t *testing.T) {
 	root := t.TempDir()
