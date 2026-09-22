@@ -166,20 +166,13 @@ func TestPersistentFlagAfterSubcommandFlagIsApplied(t *testing.T) {
 }
 
 func TestSimpleRootCommandsReturnErrorsThroughCobra(t *testing.T) {
-	for _, command := range []*cobra.Command{LoginCmd, VersionCmd, VerifyCmd} {
+	for _, command := range []*cobra.Command{LoginCmd, VersionCmd} {
 		if command.RunE == nil || command.Run != nil {
 			t.Errorf("%s is not exclusively RunE", command.Name())
 		}
 		if err := command.Args(command, []string{"extra"}); err == nil {
 			t.Errorf("%s accepted a positional argument", command.Name())
 		}
-	}
-}
-
-func TestVerifyMissingWorkspaceReturnsError(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := verifyCommand(); err == nil {
-		t.Fatal("verify returned success without a workspace")
 	}
 }
 

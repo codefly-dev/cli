@@ -2,8 +2,6 @@ package ci
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -22,26 +20,26 @@ func TestRunCmdRegistersPortIsolationFlags(t *testing.T) {
 }
 
 func TestRunCIPhasesContinuesAfterFailureWhenFailFastDisabled(t *testing.T) {
-	phases := []string{"verify", "lint", "compile", "test"}
+	phases := []string{"sync-drift", "lint", "compile", "test"}
 	var executed []string
 	err := runCIPhases(context.Background(), phases, false, func(_ context.Context, phase string) error {
 		executed = append(executed, phase)
-		if phase == "verify" {
-			return errors.New("workspace verification failed")
+		if phase == "lint" {
+			return errors.New("lint failed")
 		}
 		return nil
 	})
 	if !reflect.DeepEqual(executed, phases) {
 		t.Fatalf("executed phases = %v, want every phase to run despite early failure", executed)
 	}
-	if err == nil || !strings.Contains(err.Error(), "CI phase verify failed") {
-		t.Fatalf("error = %v, want the verify failure to be reported", err)
+	if err == nil || !strings.Contains(err.Error(), "CI phase lint failed") {
+		t.Fatalf("error = %v, want the lint failure to be reported", err)
 	}
 }
 
 func TestRunCIPhasesAggregatesEveryPhaseFailureWhenFailFastDisabled(t *testing.T) {
-	err := runCIPhases(context.Background(), []string{"verify", "lint", "compile"}, false, func(_ context.Context, phase string) error {
-		if phase == "verify" || phase == "compile" {
+	err := runCIPhases(context.Background(), []string{"sync-drift", "lint", "compile"}, false, func(_ context.Context, phase string) error {
+		if phase == "lint" || phase == "compile" {
 			return errors.New(phase + " broke")
 		}
 		return nil
@@ -49,21 +47,21 @@ func TestRunCIPhasesAggregatesEveryPhaseFailureWhenFailFastDisabled(t *testing.T
 	if err == nil {
 		t.Fatal("expected accumulated failures")
 	}
-	if !strings.Contains(err.Error(), "verify broke") || !strings.Contains(err.Error(), "compile broke") {
+	if !strings.Contains(err.Error(), "lint broke") || !strings.Contains(err.Error(), "compile broke") {
 		t.Fatalf("error = %v, want both independent failures reported", err)
 	}
 }
 
 func TestRunCIPhasesStopsAtFirstFailureWhenFailFastEnabled(t *testing.T) {
 	var executed []string
-	err := runCIPhases(context.Background(), []string{"verify", "lint", "compile"}, true, func(_ context.Context, phase string) error {
+	err := runCIPhases(context.Background(), []string{"lint", "compile"}, true, func(_ context.Context, phase string) error {
 		executed = append(executed, phase)
-		if phase == "verify" {
-			return errors.New("workspace verification failed")
+		if phase == "lint" {
+			return errors.New("lint failed")
 		}
 		return nil
 	})
-	if !reflect.DeepEqual(executed, []string{"verify"}) {
+	if !reflect.DeepEqual(executed, []string{"lint"}) {
 		t.Fatalf("executed phases = %v, want fail-fast to stop after the first failure", executed)
 	}
 	if err == nil {
@@ -74,15 +72,15 @@ func TestRunCIPhasesStopsAtFirstFailureWhenFailFastEnabled(t *testing.T) {
 func TestRunCIPhasesStopsOnContextCancellationEvenWhenFailFastDisabled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var executed []string
-	err := runCIPhases(ctx, []string{"verify", "lint", "compile"}, false, func(_ context.Context, phase string) error {
+	err := runCIPhases(ctx, []string{"lint", "compile"}, false, func(_ context.Context, phase string) error {
 		executed = append(executed, phase)
-		if phase == "verify" {
+		if phase == "lint" {
 			cancel()
 			return context.Canceled
 		}
 		return nil
 	})
-	if !reflect.DeepEqual(executed, []string{"verify"}) {
+	if !reflect.DeepEqual(executed, []string{"lint"}) {
 		t.Fatalf("executed phases = %v, want cancellation to stop the gate", executed)
 	}
 	if !errors.Is(err, context.Canceled) {
@@ -98,7 +96,7 @@ func TestNormalizeRunPhasesDefaultsAndDeduplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"verify", "sync-drift", "lint", "compile", "test", "audit", "sbom", "build"}
+	want := []string{"sync-drift", "lint", "compile", "test", "audit", "sbom", "build"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("default phases = %v, want %v", got, want)
 	}
@@ -119,7 +117,7 @@ func TestPhaseLocksDependencyClosureOnlyWhenRuntimeResourcesCanOverlap(t *testin
 			t.Fatalf("phase %q did not lock its dependency closure", phase)
 		}
 	}
-	for _, phase := range []string{"verify", "lint", "compile", "audit", "sbom", "build"} {
+	for _, phase := range []string{"lint", "compile", "audit", "sbom", "build"} {
 		if phaseLocksDependencyClosure(phase) {
 			t.Fatalf("phase %q unexpectedly locked its dependency closure", phase)
 		}
@@ -149,66 +147,6 @@ func TestCIRuntimeAuditIsTheDefault(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Fatalf("--audit-include-dev default = %q, want false", flag.DefValue)
-	}
-}
-
-func TestMetadataOnlyRunCannotBypassIntegrityVerification(t *testing.T) {
-	for _, test := range []struct {
-		name, manifest string
-		wantFailure    bool
-	}{
-		{"valid", `{"files":{"services/frontend/code/src/example.ts":"DIGEST"}}`, false},
-		{"stale", `{"files":{"services/frontend/code/src/example.ts":"wrong"}}`, true},
-		{"malformed", `{`, true},
-		{"missing files", `{}`, true},
-		{"null", `null`, true},
-		{"removed", "", true},
-		{"unsafe path", `{"files":{"../../outside":"DIGEST"}}`, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			root, workspace := loadComposedPlanFixture(t)
-			runCacheTestGit(t, root, "init")
-			runCacheTestGit(t, root, "add", ".")
-			runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "baseline")
-			path := "module/tools/base-manifest.json"
-			if test.manifest != "" {
-				digest := sha256.Sum256([]byte("export const example = 1;\n"))
-				writeCacheTestFile(t, filepath.Join(root, path), strings.ReplaceAll(test.manifest, "DIGEST", hex.EncodeToString(digest[:])))
-			}
-			ctx := context.Background()
-			plan, err := BuildPlan(ctx, workspace, PlanOptions{RepoRoot: root, ChangedFiles: []string{path}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(plan.Services) != 0 {
-				t.Fatalf("metadata selected services: %+v", plan.Services)
-			}
-			phases, err := plan.runPhases([]string{"test", "build"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(phases, []string{"verify", "test", "build"}) {
-				t.Fatalf("phases = %v", phases)
-			}
-			reporter := fixedCIReporter(t, plan)
-			err = runCIPhases(ctx, phases, false, func(ctx context.Context, phase string) error {
-				return executeCIPhase(ctx, reporter, workspace, plan, phase, []string{""}, false)
-			})
-			if (err != nil) != test.wantFailure {
-				t.Fatalf("gate error = %v, want failure %v", err, test.wantFailure)
-			}
-			report := reporter.Finalize(err)
-			if len(report.Tasks) != 1 || report.Tasks[0].ID != "verify:workspace" {
-				t.Fatalf("tasks = %+v", report.Tasks)
-			}
-			status := reportStatusPassed
-			if test.wantFailure {
-				status = reportStatusFailed
-			}
-			if report.Tasks[0].Status != status || report.Tasks[0].Integrity.GuardedModules != 1 {
-				t.Fatalf("verification evidence = %+v", report.Tasks[0])
-			}
-		})
 	}
 }
 

@@ -22,7 +22,7 @@
     {
       "id": "linux-amd64-native-npm",
       "status": "qualified",
-      "summary": "The librarystore npm backend driving the real npm CLI (npm pack, npm publish) against an httptest registry, and module sync regenerating a stale package lockfile.",
+      "summary": "The librarystore npm backend driving the real npm CLI (npm pack, npm publish) against an httptest registry.",
       "os": "linux",
       "arch": "amd64",
       "backend": "native",
@@ -34,8 +34,7 @@
         "go.yml#race"
       ],
       "gates": [
-        "pkg/librarystore",
-        "cmd/sync"
+        "pkg/librarystore"
       ]
     },
     {

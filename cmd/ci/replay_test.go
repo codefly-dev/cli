@@ -434,10 +434,8 @@ func TestReplayVisibilityFollowsTheStagesItReplays(t *testing.T) {
 		{kind: "build", phase: "lint", violates: true},
 		{kind: "build", phase: "test", violates: true},
 		{kind: "build", phase: "sync-drift", violates: true},
-		{kind: "build", phase: "verify", violates: true},
 		{kind: "runtime", phase: "test", violates: true},
 		{kind: "runtime", phase: "sync-drift", violates: true},
-		{kind: "runtime", phase: "verify", violates: true},
 		{kind: "runtime", phase: "lint", violates: false},
 		{kind: "runtime", phase: "build", violates: false},
 	} {

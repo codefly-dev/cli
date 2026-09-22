@@ -274,7 +274,6 @@ func init() {
 	RootCmd.AddCommand(PackageCmd)
 
 	// Verify base-file integrity of composed modules
-	RootCmd.AddCommand(VerifyCmd)
 	RootCmd.AddCommand(compositioncmd.NewCommand())
 
 	// Audit + upgrade dependencies

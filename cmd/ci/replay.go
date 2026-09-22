@@ -157,7 +157,7 @@ func verifyReplayVisibility(ctx context.Context, workspace *resources.Workspace,
 // test replay never judging the build edges it builds through.
 func replayStages(phases []string) []resources.Stage {
 	for _, phase := range phases {
-		if phase == ciPhaseVerify || phaseLocksDependencyClosure(phase) {
+		if phaseLocksDependencyClosure(phase) {
 			return resources.Stages()
 		}
 	}
@@ -167,9 +167,6 @@ func replayStages(phases []string) []resources.Stage {
 func resolveReplayTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, invocation ReplayInvocation) ([]ReplayTask, error) {
 	tasks := []ReplayTask{}
 	for _, phase := range invocation.Phases {
-		if phase == ciPhaseVerify {
-			continue
-		}
 		suites := []string{""}
 		if phase == string(resources.PhaseTest) {
 			suites = invocation.Suites

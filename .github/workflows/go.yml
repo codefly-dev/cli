@@ -81,10 +81,6 @@ jobs:
       - name: Install Dependencies
         run: go mod download
 
-      - name: Verify the composed-module command is packaged
-        if: matrix.gate == 'bootstrap-audit'
-        run: codefly sync module --help
-
       # govulncheck gate via the CLI (replaces scripts/govulncheck.sh):
       # suppressions + staleness from .govulncheck.yaml, fails only on
       # actionable (upstream-fixed) findings.

@@ -8,15 +8,19 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/integrity"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/spf13/cobra"
 )
 
 const (
-	ciPhaseVerify = "verify"
-	ciPhaseAudit  = "audit"
+	ciPhaseSyncDrift = "sync-drift"
+	ciPhaseLint      = "lint"
+	ciPhaseCompile   = "compile"
+	ciPhaseTest      = "test"
+	ciPhaseAudit     = "audit"
+	ciPhaseSBOM      = "sbom"
+	ciPhaseBuild     = "build"
 )
 
 var (
@@ -52,7 +56,7 @@ var RunCmd = &cobra.Command{
 			return fmt.Errorf("cannot build affected-service plan: %w", err)
 		}
 
-		phases, err := plan.runPhases(runPhases)
+		phases, err := normalizeRunPhases(runPhases)
 		if err != nil {
 			return err
 		}
@@ -123,13 +127,6 @@ func runCIPhases(ctx context.Context, phases []string, failFast bool, execute fu
 // runCIPhases applies across phases.
 func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resources.Workspace, plan *Plan, phase string, suites []string, failFast bool) error {
 	switch phase {
-	case "verify":
-		return runReportedWorkspacePhase(ctx, reporter, workspace, phase, func(taskContext context.Context) error {
-			if plan.IntegrityError != "" {
-				return fmt.Errorf("integrity verification unavailable: %s", plan.IntegrityError)
-			}
-			return runVerifyWorkspace(taskContext, workspace, plan)
-		})
 	case "test":
 		var errs error
 		for _, suite := range suites {
@@ -176,31 +173,9 @@ func normalizeTestSuites(suites []string) []string {
 	return result
 }
 
-func (plan *Plan) integrityModules() []string {
-	modules := make([]string, 0, len(plan.IntegrityInputs))
-	for _, input := range plan.IntegrityInputs {
-		modules = append(modules, input.Module)
-	}
-	return sortedUnique(modules)
-}
-
-func (plan *Plan) runPhases(requested []string) ([]string, error) {
-	phases, err := normalizeRunPhases(requested)
-	if err != nil || (len(plan.IntegrityInputs) == 0 && plan.IntegrityError == "") {
-		return phases, err
-	}
-	result := []string{ciPhaseVerify}
-	for _, phase := range phases {
-		if phase != ciPhaseVerify {
-			result = append(result, phase)
-		}
-	}
-	return result, nil
-}
-
 func normalizeRunPhases(phases []string) ([]string, error) {
 	if len(phases) == 0 {
-		phases = []string{"verify", "sync-drift", "lint", "compile", "test", "audit", "sbom", "build"}
+		phases = []string{ciPhaseSyncDrift, ciPhaseLint, ciPhaseCompile, ciPhaseTest, ciPhaseAudit, ciPhaseSBOM, ciPhaseBuild}
 	}
 	seen := map[string]bool{}
 	result := make([]string, 0, len(phases))
@@ -211,9 +186,9 @@ func normalizeRunPhases(phases []string) ([]string, error) {
 				continue
 			}
 			switch phase {
-			case "verify", "sync-drift", "lint", "compile", "test", "audit", "sbom", "build":
+			case ciPhaseSyncDrift, ciPhaseLint, ciPhaseCompile, ciPhaseTest, ciPhaseAudit, ciPhaseSBOM, ciPhaseBuild:
 			default:
-				return nil, fmt.Errorf("unsupported CI phase %q (use verify, sync-drift, lint, compile, test, audit, sbom, or build)", phase)
+				return nil, fmt.Errorf("unsupported CI phase %q (use sync-drift, lint, compile, test, audit, sbom, or build)", phase)
 			}
 			seen[phase] = true
 			result = append(result, phase)
@@ -224,19 +199,19 @@ func normalizeRunPhases(phases []string) ([]string, error) {
 
 func runPhaseAction(phase string) Action {
 	switch phase {
-	case "lint":
+	case ciPhaseLint:
 		return runLintService
-	case "compile":
+	case ciPhaseCompile:
 		return runCompileService
-	case "sync-drift":
+	case ciPhaseSyncDrift:
 		return runSyncDriftService
-	case "test":
+	case ciPhaseTest:
 		return runTestService
 	case ciPhaseAudit:
 		return runAuditService
-	case "sbom":
+	case ciPhaseSBOM:
 		return runSBOMService
-	case "build":
+	case ciPhaseBuild:
 		return runBuildService
 	default:
 		panic("validated CI phase has no action: " + phase)
@@ -244,34 +219,7 @@ func runPhaseAction(phase string) Action {
 }
 
 func phaseLocksDependencyClosure(phase string) bool {
-	return phase == "sync-drift" || phase == "test"
-}
-
-func summarizeIntegrityReport(report integrity.BaseReport) CIReportIntegrity {
-	summary := CIReportIntegrity{
-		GuardedModules: len(report.Modules),
-		FailedModules:  report.Failed(),
-		Modules:        make([]CIReportIntegrityModule, 0, len(report.Modules)),
-	}
-	for _, module := range report.Modules {
-		item := CIReportIntegrityModule{
-			Module:   module.Module,
-			Files:    module.Files,
-			Omitted:  make(map[string]int, len(module.Omitted)),
-			Allowed:  make([]CIReportIntegrityDivergence, 0, len(module.Allowed)),
-			Missing:  cloneStrings(module.Missing),
-			Modified: cloneStrings(module.Modified),
-			Error:    module.Error,
-		}
-		for service, count := range module.Omitted {
-			item.Omitted[service] = count
-		}
-		for _, allowed := range module.Allowed {
-			item.Allowed = append(item.Allowed, CIReportIntegrityDivergence{Path: allowed.Path, Reason: allowed.Reason})
-		}
-		summary.Modules = append(summary.Modules, item)
-	}
-	return summary
+	return phase == ciPhaseSyncDrift || phase == ciPhaseTest
 }
 
 func init() {

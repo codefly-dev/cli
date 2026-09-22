@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	modulesync "github.com/codefly-dev/cli/cmd/sync"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/core/actions/actions"
@@ -270,16 +269,6 @@ func addModule(name string) (result error) {
 			return fmt.Errorf("cannot resolve agent %s: %w", agent.Identifier(), err)
 		}
 	}
-	var preparedSource *modulesync.PreparedModuleSource
-	if agent != nil {
-		targetRoot := workspace.ModulePath(ctx, &resources.ModuleReference{Name: name})
-		preparedSource, err = modulesync.PrepareModuleSource(ctx, targetRoot, agent)
-		if err != nil {
-			return fmt.Errorf("prepare module scaffold source: %w", err)
-		}
-		defer preparedSource.Close()
-	}
-
 	action, err := actionsmodule.NewActionAddModule(ctx, input)
 	if err != nil {
 		return fmt.Errorf("cannot create action: %w", err)
@@ -321,9 +310,6 @@ func addModule(name string) (result error) {
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("module agent failed: %w", err)
-		}
-		if err := preparedSource.Pin(mod); err != nil {
-			return fmt.Errorf("pin module scaffold source: %w", err)
 		}
 		cli.Header(2, "Module agent scaffolded services for <%s>", name)
 	}
