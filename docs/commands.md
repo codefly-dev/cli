@@ -1210,7 +1210,8 @@ own bootstrap command; see [runtime agent compatibility](agent-compatibility.md)
 
 Conformance defaults to scaffolding a fresh service through `Builder.Create`.
 Attach-only generic agents whose `Builder.Create` intentionally declines to
-generate a project template (for example `codefly.dev/python`) declare an
+generate a project template (for example `codefly.dev/python`), or agents whose
+conformance needs a complete dependency graph, declare an
 attach-existing-source conformance mode in `agent.codefly.yaml` and ship a
 fixture workspace instead:
 
@@ -1223,6 +1224,10 @@ conformance:
 CI copies that fixture out of the repository and runs the Code/Runtime/Tooling
 gate against it. A malformed declaration or a fixture missing
 `workspace.codefly.yaml` fails the conformance stage rather than skipping it.
+The candidate uses `latest` or its exact version in that fixture. Other service
+agents require exact canonical release versions and are installed through
+`codefly agent install` into the isolated conformance home before the gate.
+An operator's installed agents cannot satisfy or override those fixture pins.
 
 Runnable agents must declare `conformance.mode: runnable-create` or
 `runnable-package`, plus `conformance.handler` (a relative handler filename).

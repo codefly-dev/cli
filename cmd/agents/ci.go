@@ -784,6 +784,9 @@ func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agent
 	if err := os.RemoveAll(filepath.Join(workspaceDir, ".codefly")); err != nil {
 		return nil, "", fmt.Errorf("reset attach-existing-source fixture state: %w", err)
 	}
+	if err := installFixtureDependencies(ctx, executable, workspaceDir, agentHome, &manifest); err != nil {
+		return nil, "", err
+	}
 	return runWorkspaceGate(ctx, executable, workspaceDir, agentConformanceEnvironment(agentHome))
 }
 
