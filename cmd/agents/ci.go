@@ -296,7 +296,13 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	if options.skipAudit {
 		state.skipStage("audit")
 	} else if err := runStage("audit", func() error {
-		return runAudit(ctx, options.dir, &state.build.ag, options.failOnVuln)
+		// Audit the same source selection used for validation and packaging.
+		// The candidate's isolated home need not contain a source auditor.
+		response, err := runPreparedAgentSourceAudit(ctx, source.prepared, source.home)
+		if err != nil {
+			return fmt.Errorf("audit selected agent source: %w", err)
+		}
+		return applyAgentAuditPolicy(options.dir, &state.build.ag, response, options.failOnVuln)
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}

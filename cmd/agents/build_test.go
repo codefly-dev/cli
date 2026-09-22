@@ -45,6 +45,34 @@ func TestAgentBuildPathsMatchLoader(t *testing.T) {
 	}
 }
 
+func TestSourceAuditKeepsPreparedDirectoryAndPrivatePackagerHome(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	t.Setenv("GOWORK", filepath.Join(t.TempDir(), "unrelated.work"))
+	directory, home := t.TempDir(), t.TempDir()
+	command := agentSourceAuditCommand(t.Context(), "codefly", directory, home)
+	if command.Dir != directory {
+		t.Fatalf("audit lost its prepared source directory: %s", command.Dir)
+	}
+	var homes, workspaces []string
+	for _, value := range command.Env {
+		if strings.HasPrefix(value, resources.CodeflyHomeEnv+"=") {
+			homes = append(homes, value)
+		}
+		if strings.HasPrefix(value, "GOWORK=") {
+			workspaces = append(workspaces, value)
+		}
+	}
+	if len(homes) != 1 || homes[0] != resources.CodeflyHomeEnv+"="+home {
+		t.Fatalf("audit used candidate/operator home instead of selected source packager: %v", homes)
+	}
+	if len(workspaces) != 1 || workspaces[0] != "GOWORK=off" {
+		t.Fatalf("audit inherited unrelated workspace: %v", workspaces)
+	}
+	if strings.Join(command.Args[1:], " ") != "--timestamps=false audit service source --json --outdated=true --fail-on-vuln=false" {
+		t.Fatalf("audit must return full evidence for the release policy: %v", command.Args)
+	}
+}
+
 func TestFindMonorepoRoot(t *testing.T) {
 	root := t.TempDir()
 

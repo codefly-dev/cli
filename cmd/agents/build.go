@@ -946,10 +946,10 @@ func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (
 		return nil, err
 	}
 	defer prepared.Close()
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("resolve Codefly executable: %w", err)
-	}
+	return runPreparedAgentSourceAudit(ctx, prepared, resolveSourcePluginHome())
+}
+
+func agentSourceAuditCommand(ctx context.Context, executable, directory, home string) *exec.Cmd {
 	command := exec.CommandContext(ctx, executable,
 		"--timestamps=false",
 		"audit", "service", "source",
@@ -957,8 +957,17 @@ func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (
 		"--outdated=true",
 		"--fail-on-vuln=false",
 	)
-	command.Dir = prepared.Dir
-	command.Env = agentCIChildEnvironment(resolveSourcePluginHome(), "CI=1", "CODEFLY_COLOR=never")
+	command.Dir = directory
+	command.Env = agentCIChildEnvironment(home, "CI=1", "CODEFLY_COLOR=never")
+	return command
+}
+
+func runPreparedAgentSourceAudit(ctx context.Context, prepared *sourceworkspace.Prepared, home string) (*builderv0.AuditResponse, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve Codefly executable: %w", err)
+	}
+	command := agentSourceAuditCommand(ctx, executable, prepared.Dir, home)
 	response := &builderv0.AuditResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Audit", response); err != nil {
 		return nil, err
