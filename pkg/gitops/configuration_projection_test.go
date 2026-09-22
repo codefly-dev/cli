@@ -37,10 +37,33 @@ func TestActualInfraBaseValuesReachRenderedWorkload(t *testing.T) {
 	for key, value := range env.ServiceConfig.Services["accounts"].Values {
 		require.Equal(t, value, values[key]["value"])
 	}
-	for _, doc := range rendered {
-		require.NotEqual(t, "ServiceAccount", doc.kind, "producer declared no identity")
-		require.NotEqual(t, "ExternalSecret", doc.kind, "producer declared no secret references")
+	secretMapping := env.ServiceSecrets.Services["accounts"]
+	for key := range secretMapping.RemoteKeys {
+		require.Equal(t, map[string]any{"secretKeyRef": map[string]any{"name": "secret-accounts", "key": key}}, values[key]["valueFrom"])
 	}
+	seen := map[string]bool{}
+	for _, doc := range rendered {
+		seen[doc.kind] = true
+		if doc.kind == "ServiceAccount" {
+			metadata := doc.value["metadata"].(map[string]any)
+			require.Equal(t, env.WorkloadIdentity("accounts").Principal, metadata["annotations"].(map[string]any)["iam.gke.io/gcp-service-account"])
+		}
+		if doc.kind == "ExternalSecret" {
+			spec := doc.value["spec"].(map[string]any)
+			require.Equal(t, "1m", spec["refreshInterval"])
+			template := spec["target"].(map[string]any)["template"].(map[string]any)
+			require.Equal(t, "v2", template["engineVersion"])
+			require.Equal(t, "Merge", template["mergePolicy"])
+			for key, expression := range secretMapping.Template.Data {
+				require.Equal(t, expression, template["data"].(map[string]any)[key])
+			}
+		}
+	}
+	require.True(t, seen["ServiceAccount"])
+	require.True(t, seen["ExternalSecret"])
+	require.Empty(t, env.ManagedServices)
+	addProjectionPatch(t, root, env.Name, "ExternalSecret", "- op: replace\n  path: /spec/target/template/data/SOLUTION_REGISTRATION_SECRETS\n  value: wrong-value")
+	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "accounts"}, env), "ExternalSecret")
 }
 
 func TestConfigurationProjectionRejectsOverriddenEffectiveValues(t *testing.T) {

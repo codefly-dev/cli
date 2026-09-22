@@ -54,7 +54,7 @@ import (
 	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
-	codefly "github.com/codefly-dev/sdk-go"
+	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -110,7 +110,7 @@ type Config struct {
 // ExecutionRecorder is the narrow neutral lifecycle capability used by the
 // Gateway. Warden and every other exporter stay behind Codefly's plugin API.
 type ExecutionRecorder interface {
-	Begin(context.Context, codefly.ExecutionContext, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
+	Begin(context.Context, workcontextgrpc.ExecutionContext, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
 	RecoverIncomplete(context.Context, int) (int, error)
 }
 
@@ -1979,7 +1979,7 @@ func (s *Server) headRevision(ctx context.Context) string {
 }
 
 func validateOptionalExecutionContext(ctx context.Context) error {
-	_, _, err := codefly.GRPCExecutionContextFromIncomingIfPresent(ctx)
+	_, _, err := workcontextgrpc.GRPCExecutionContextFromIncomingIfPresent(ctx)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}
@@ -1990,7 +1990,7 @@ func (s *Server) beginGovernedExecution(
 	ctx context.Context,
 	input executionrecorder.BeginInput,
 ) (*executionrecorder.Attempt, bool, error) {
-	execution, present, err := codefly.GRPCExecutionContextFromIncomingIfPresent(ctx)
+	execution, present, err := workcontextgrpc.GRPCExecutionContextFromIncomingIfPresent(ctx)
 	if err != nil {
 		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}

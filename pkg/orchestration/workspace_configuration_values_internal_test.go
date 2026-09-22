@@ -22,8 +22,11 @@ func TestApplyWorkspaceConfigurationValuesEmitsTheDeclaredCarrier(t *testing.T) 
 	if len(got) != 1 {
 		t.Fatalf("expected one configuration, got %d", len(got))
 	}
-	envs := resources.EnvironmentVariableAsStrings(
-		resources.ConfigurationAsEnvironmentVariables(got[0], false))
+	variables, err := resources.ConfigurationAsEnvironmentVariables(got[0], "local", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envs := resources.EnvironmentVariableAsStrings(variables)
 	want := "CODEFLY__WORKSPACE_CONFIGURATION__FEDERATION__MODULE_REGISTRATION_SECRETS=documents:deadbeef"
 	if len(envs) != 1 || envs[0] != want {
 		t.Errorf("emitted %v, want [%s]", envs, want)
@@ -102,8 +105,11 @@ func TestApplyWorkspaceConfigurationValuesEmitsEveryDerivedKeyInAGroup(t *testin
 			if len(got) != 1 {
 				t.Fatalf("expected the declared configuration to be reused, got %d", len(got))
 			}
-			envs := resources.EnvironmentVariableAsStrings(
-				resources.ConfigurationAsEnvironmentVariables(got[0], false))
+			variables, err := resources.ConfigurationAsEnvironmentVariables(got[0], "local", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			envs := resources.EnvironmentVariableAsStrings(variables)
 			for _, want := range []string{
 				"CODEFLY__WORKSPACE_CONFIGURATION__FEDERATION__MODULE_REGISTRATION_SECRETS=documents:aaaa",
 				"CODEFLY__WORKSPACE_CONFIGURATION__FEDERATION__MODULE_IDENTITY_SECRETS=documents:bbbb",

@@ -1095,7 +1095,9 @@ func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
 	w.Info(fmt.Sprintf("stopping %s", runner.Unique()))
 	start := time.Now()
 	runner.isStarted.Store(false)
-	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// The RPC must have the phase's budget. A shorter 10s deadline races
+	// the runtime's own bounded cleanup and abandons its final response.
+	stoppingContext, cancel := context.WithTimeout(ctx, defaultStopPhaseBudget)
 	defer cancel()
 	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
 	if err != nil {
@@ -1118,7 +1120,7 @@ func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
 		}
 	}
 	w.Debug("shutting down")
-	stoppingContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	stoppingContext, cancel := context.WithTimeout(ctx, defaultShutdownPhaseBudget)
 	defer cancel()
 	_, err := runner.instance.Runtime.Destroy(stoppingContext, &runtimev0.DestroyRequest{})
 	if err != nil {

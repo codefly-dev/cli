@@ -10,10 +10,131 @@
           "values": {
             "DATABASE_INSTANCE": "gke-test-luka:us-east1:obint-use1b-platform",
             "DATABASE_READER_USER": "obint-use1b-db-accounts-reader@gke-test-luka.iam",
-            "DATABASE_WRITER_USER": "obint-use1b-db-accounts-writer@gke-test-luka.iam"
+            "DATABASE_WRITER_USER": "obint-use1b-db-accounts-writer@gke-test-luka.iam",
+            "CODEFLY__WORKSPACE_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_ID": "client_01KBGD69QWKJ2RM5N49VP4QN1Y",
+            "CODEFLY__WORKSPACE_CONFIGURATION__IDENTITY__IDENTITY_ISSUER": "https://api.workos.com/user_management/client_01KBGD69QWKJ2RM5N49VP4QN1Y"
+          }
+        }
+      }
+    },
+    "cluster": {
+      "kind": "external",
+      "context": "gke_gke-test-luka_us-east1_obint-use1b-gke"
+    },
+    "gitops": {
+      "repo-url": "https://github.com/obin-ai/obin-fleet.git",
+      "path": "workloads/hosted/staging/lodestar/stages/hosted-us-east1/accounts",
+      "branch": "main",
+      "revision": "a4f60234b2e83e7bd38051d753cff9fa38e7c620"
+    },
+    "service-identity": {
+      "services": {
+        "accounts": {
+          "principal": "obint-use1b-db-accounts-writer@gke-test-luka.iam.gserviceaccount.com",
+          "annotations": {
+            "iam.gke.io/gcp-service-account": "obint-use1b-db-accounts-writer@gke-test-luka.iam.gserviceaccount.com"
+          }
+        }
+      }
+    },
+    "service-secrets": {
+      "secret-store": {
+        "kind": "ClusterSecretStore",
+        "name": "cell-secrets"
+      },
+      "services": {
+        "accounts": {
+          "secret-store": {
+            "kind": "ClusterSecretStore",
+            "name": "cell-secrets"
+          },
+          "remote-keys": {
+            "SOLUTION_REGISTRATION_SECRETS": {
+              "key": "obint-use1b-lodestar-internal-auth",
+              "property": "solution_registration.lastlogin-python"
+            },
+            "CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__CACHE__REDIS__CONNECTION": {
+              "key": "obint-use1b-lodestar-auth-sidecar",
+              "property": "redis_connection"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__ABUSE_PROTECTION__TURNSTILE_SECRET_KEY": {
+              "key": "obint-use1b-lodestar-abuse-protection",
+              "property": "turnstile_secret_key"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__EMAIL__RESEND_API_KEY": {
+              "key": "obint-use1b-lodestar-email",
+              "property": "resend_api_key"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__EMAIL__RESEND_WEBHOOK_SECRET": {
+              "key": "obint-use1b-lodestar-email",
+              "property": "resend_webhook_secret"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_AUTHORIZE_SELECTOR": {
+              "key": "obint-use1b-lodestar-identity",
+              "property": "authorize_selector"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_AUTHORIZE_URL": {
+              "key": "obint-use1b-lodestar-identity",
+              "property": "authorize_url"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_TOKEN_URL": {
+              "key": "obint-use1b-lodestar-identity",
+              "property": "token_url"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_SECRET": {
+              "key": "obint-use1b-lodestar-identity",
+              "property": "client_secret"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_MANAGEMENT_API_KEY": {
+              "key": "obint-use1b-lodestar-identity",
+              "property": "management_api_key"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_GATEWAY_TOKEN": {
+              "key": "obint-use1b-lodestar-internal-auth",
+              "property": "gateway_token"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_INTERNAL_TOKEN": {
+              "key": "obint-use1b-lodestar-internal-auth",
+              "property": "internal_token"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SECURITY__SESSION_ABSOLUTE_LIFETIME": {
+              "key": "obint-use1b-lodestar-auth-sidecar",
+              "property": "session_absolute_lifetime"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SECURITY__SESSION_IDLE_TIMEOUT": {
+              "key": "obint-use1b-lodestar-auth-sidecar",
+              "property": "session_idle_timeout"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SECURITY__SESSION_MAX_ACTIVE_DEVICES": {
+              "key": "obint-use1b-lodestar-auth-sidecar",
+              "property": "session_max_active_devices"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SECURITY__WEBAUTHN_RP_DISPLAY_NAME": {
+              "key": "obint-use1b-lodestar-auth-sidecar",
+              "property": "webauthn_rp_display_name"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SECURITY__WEBAUTHN_RP_ID": {
+              "key": "obint-use1b-lodestar-auth-sidecar",
+              "property": "webauthn_rp_id"
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SECURITY__WEBAUTHN_RP_ORIGINS": {
+              "key": "obint-use1b-lodestar-auth-sidecar",
+              "property": "webauthn_rp_origins"
+            }
+          },
+          "refresh-interval": "1m",
+          "template": {
+            "engine-version": "v2",
+            "merge-policy": "Merge",
+            "data": {
+              "SOLUTION_REGISTRATION_SECRETS": "lastlogin-python:{{ .SOLUTION_REGISTRATION_SECRETS | sha256sum }}"
+            }
           }
         }
       }
     }
-  }
+  },
+  "requires_capabilities": [
+    "service-identity"
+  ]
 }

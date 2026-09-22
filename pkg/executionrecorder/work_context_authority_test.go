@@ -6,20 +6,20 @@ import (
 	"testing"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	codefly "github.com/codefly-dev/sdk-go"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	"google.golang.org/protobuf/proto"
 )
 
 type workContextVerifierFunc func(
 	context.Context,
-	codefly.WorkContextToken,
-	codefly.WorkContextExpectations,
+	workcontext.WorkContextToken,
+	workcontext.WorkContextExpectations,
 ) (*basev0.WorkContextV1, error)
 
 func (fn workContextVerifierFunc) Verify(
 	ctx context.Context,
-	token codefly.WorkContextToken,
-	expected codefly.WorkContextExpectations,
+	token workcontext.WorkContextToken,
+	expected workcontext.WorkContextExpectations,
 ) (*basev0.WorkContextV1, error) {
 	return fn(ctx, token, expected)
 }
@@ -37,8 +37,8 @@ func TestWorkContextAuthorityUsesSDKVerificationAndExactProducerScope(t *testing
 		Audience: ExecutionWorkContextAudience,
 		Verifier: workContextVerifierFunc(func(
 			_ context.Context,
-			_ codefly.WorkContextToken,
-			expected codefly.WorkContextExpectations,
+			_ workcontext.WorkContextToken,
+			expected workcontext.WorkContextExpectations,
 		) (*basev0.WorkContextV1, error) {
 			verified = true
 			if expected.Issuer != "accounts" ||
@@ -51,7 +51,7 @@ func TestWorkContextAuthorityUsesSDKVerificationAndExactProducerScope(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := authority.Verify(t.Context(), codefly.WorkContextToken{}, Admission{
+	got, err := authority.Verify(t.Context(), workcontext.WorkContextToken{}, Admission{
 		ProducerID: "codefly.execution",
 	})
 	if err != nil {
@@ -70,7 +70,7 @@ func TestWorkContextAuthorityRejectsWildcardOtherProducerAndVerifierFailure(t *t
 	}{
 		{name: "wildcard"},
 		{name: "other producer", resourceIDs: []string{"other.execution"}},
-		{name: "invalid token", verifyErr: codefly.ErrWorkContextInvalid},
+		{name: "invalid token", verifyErr: workcontext.ErrWorkContextInvalid},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -84,8 +84,8 @@ func TestWorkContextAuthorityRejectsWildcardOtherProducerAndVerifierFailure(t *t
 				Issuer: "accounts", Audience: ExecutionWorkContextAudience,
 				Verifier: workContextVerifierFunc(func(
 					context.Context,
-					codefly.WorkContextToken,
-					codefly.WorkContextExpectations,
+					workcontext.WorkContextToken,
+					workcontext.WorkContextExpectations,
 				) (*basev0.WorkContextV1, error) {
 					if testCase.verifyErr != nil {
 						return nil, testCase.verifyErr
@@ -96,7 +96,7 @@ func TestWorkContextAuthorityRejectsWildcardOtherProducerAndVerifierFailure(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = authority.Verify(t.Context(), codefly.WorkContextToken{}, Admission{
+			_, err = authority.Verify(t.Context(), workcontext.WorkContextToken{}, Admission{
 				ProducerID: "codefly.execution",
 			})
 			if err == nil {

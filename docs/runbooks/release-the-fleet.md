@@ -41,6 +41,12 @@ authorization; they are not permission to merge or publish automatically.
    # commit each repo, then per agent repo (clean, on main, synced):
    codefly publish patch                   # runs release CI + creates the GitHub release
    ```
+   When that Core API change also requires a library update, select it explicitly
+   in the same operation, for example `--dependency github.com/codefly-dev/sdk-go@vA.B.C`.
+   Repeat `--dependency` for additional libraries. Only modules already requiring
+   the selected dependency change; unmatched or duplicate selections fail. The
+   command updates root/base locks and regenerates factory locks atomically,
+   restoring them all if any standalone build fails.
    `codefly publish` works for every agent kind — service, module, toolbox,
    provider (cli#433). It aborts untouched if pre-flight or CI fails.
 4. **Consumers** — qualify the selected artifact against the actual operation,

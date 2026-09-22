@@ -20,7 +20,7 @@ import (
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
-	codefly "github.com/codefly-dev/sdk-go"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 )
 
 const (
@@ -132,7 +132,7 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 		}
 	}()
 
-	verifier, err := codefly.NewWorkContextJWKSVerifier(codefly.WorkContextJWKSVerifierOptions{
+	verifier, err := workcontext.NewWorkContextJWKSVerifier(workcontext.WorkContextJWKSVerifierOptions{
 		URL: config.AuthorityJWKS,
 	})
 	if err != nil {
