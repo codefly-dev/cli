@@ -66,3 +66,56 @@ func TestResumedReleaseCannotTagFailedMain(t *testing.T) {
 	require.ErrorContains(t, err, "refuse to push tag v0.1.0")
 	require.Empty(t, gitIn(t, origin, "tag", "-l", "v0.1.0"))
 }
+
+func TestReleaseChecksIgnoreDependabotUpdateJob(t *testing.T) {
+	for _, dependabot := range []string{
+		`{"name":".github/dependabot.yml","status":"completed","conclusion":"failure","app":{"slug":"dependabot"}}`,
+		`{"name":".github/dependabot.yml","status":"in_progress","app":{"slug":"dependabot"}}`,
+	} {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/owner/repo/commits/head/check-runs", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, `{"total_count":2,"check_runs":[{"name":"native","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},%s]}`, dependabot)
+		})
+		mux.HandleFunc("/repos/owner/repo/commits/head/status", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, `{"total_count":0}`)
+		})
+		server := httptest.NewServer(mux)
+		base := server.URL + "/"
+		client, err := github.NewClient(github.WithURLs(&base, &base))
+		require.NoError(t, err)
+		landing := &pullRequestLanding{client: client, owner: "owner", repo: "repo"}
+
+		ready, failed, err := landing.readChecks(t.Context(), "head")
+		server.Close()
+
+		require.NoError(t, err)
+		require.Empty(t, failed, dependabot)
+		require.True(t, ready, dependabot)
+	}
+}
+
+func TestReleaseChecksNameTheAppBehindAnUnexpectedFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/head/check-runs", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"total_count":3,"check_runs":[
+			{"name":"race","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},
+			{"name":"coverage","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}},
+			{"name":"preview","status":"completed","conclusion":"failure","app":{"slug":"some-deploy-bot"}}
+		]}`)
+	})
+	mux.HandleFunc("/repos/owner/repo/commits/head/status", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"total_count":0}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	base := server.URL + "/"
+	client, err := github.NewClient(github.WithURLs(&base, &base))
+	require.NoError(t, err)
+	landing := &pullRequestLanding{client: client, owner: "owner", repo: "repo"}
+
+	_, failed, err := landing.readChecks(t.Context(), "head")
+
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"coverage", "preview (some-deploy-bot)"}, failed,
+		"CI failures read as bare names; anything else names the app that posted it")
+}
