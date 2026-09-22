@@ -3,6 +3,7 @@ package publish
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -95,17 +96,35 @@ func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *gith
 		case <-ticker.C:
 		}
 	}
-	if err := r.verifyWorkflowRelease(ctx, client, owner, repo, tag); err != nil {
+	// The tag is live and the workflow has published. A deadline consumed by
+	// the wait above must not turn a release that shipped into one reported as
+	// failed, so what follows runs on a budget of its own.
+	ctx, cancel := postPublicationContext(ctx)
+	defer cancel()
+	if err := verifyWorkflowRelease(ctx, client, owner, repo, tag, r.assets); err != nil {
 		return err
 	}
 	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, strings.TrimPrefix(tag, "v"), r.assets)
 }
 
+// releaseVerifyBudget sizes the work that follows a live tag: downloading every
+// loader archive, not a cleanup call.
+const releaseVerifyBudget = 10 * time.Minute
+
+func postPublicationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), releaseVerifyBudget)
+}
+
 // verifyWorkflowRelease confirms the release the owner workflow published
-// carries every locally qualified loader archive, with the bytes GitHub
-// recorded for it. The workflow is the sole publisher of those assets, so
-// every call here reads: nothing is created, replaced or deleted.
-func (r *agentReleaser) verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, repo, tag string) error {
+// carries every loader archive, with the bytes GitHub recorded for it. The
+// workflow is the sole publisher of those assets, so every call here reads:
+// nothing is created, replaced or deleted.
+//
+// The archive is the contract — core's downloader fetches exactly that name.
+// Whether a workflow also publishes an SBOM beside it, and under what name, is
+// its own GoReleaser configuration and nothing the manifest declares, so one is
+// verified when the release carries it and never demanded.
+func verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, repo, tag string, staged []loaderAsset) error {
 	release, _, err := client.Repositories.GetReleaseByTag(ctx, owner, repo, tag)
 	if err != nil {
 		return fmt.Errorf("read workflow-published release: %w", err)
@@ -117,33 +136,74 @@ func (r *agentReleaser) verifyWorkflowRelease(ctx context.Context, client *githu
 	for _, asset := range release.Assets {
 		assets[asset.GetName()] = asset
 	}
-	for _, staged := range r.assets {
-		archiveName := filepath.Base(staged.archivePath)
-		for _, name := range []string{archiveName, archiveName + ".sbom.json"} {
-			asset := assets[name]
-			if asset == nil {
-				return fmt.Errorf("workflow release %s is missing loader archive %s", tag, name)
-			}
-			stream, _, err := client.Repositories.DownloadReleaseAsset(ctx, owner, repo, asset.GetID(), http.DefaultClient)
-			if err != nil {
-				return fmt.Errorf("download workflow archive %s: %w", name, err)
-			}
-			err = verifyPublishedAsset(stream, asset)
-			closeErr := stream.Close()
-			if err != nil {
+	for _, candidate := range staged {
+		archiveName := filepath.Base(candidate.archivePath)
+		archive := assets[archiveName]
+		if archive == nil {
+			return fmt.Errorf("workflow release %s is missing loader archive %s", tag, archiveName)
+		}
+		if err := downloadAndVerifyAsset(ctx, client, owner, repo, archive); err != nil {
+			return err
+		}
+		if sbom, ok := assets[archiveName+".sbom.json"]; ok {
+			if err := downloadAndVerifyAsset(ctx, client, owner, repo, sbom); err != nil {
 				return err
-			}
-			if closeErr != nil {
-				return closeErr
 			}
 		}
 	}
 	return nil
 }
 
+// downloadAndVerifyAsset re-reads a freshly published asset before giving up.
+// GitHub can take a moment to serve an asset it has just accepted, and the tag
+// naming this release is already live, so a transient read must not be reported
+// as a failed publication. A verdict on the asset's own metadata or bytes
+// cannot change on a re-read and is returned immediately.
+func downloadAndVerifyAsset(ctx context.Context, client *github.Client, owner, repo string, asset *github.ReleaseAsset) error {
+	const attempts = 5
+	var lastErr error
+	for attempt := range attempts {
+		err := readPublishedAsset(ctx, client, owner, repo, asset)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, errAssetVerdict) {
+			return err
+		}
+		lastErr = err
+		if attempt == attempts-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * time.Second):
+		}
+	}
+	return lastErr
+}
+
+func readPublishedAsset(ctx context.Context, client *github.Client, owner, repo string, asset *github.ReleaseAsset) error {
+	stream, _, err := client.Repositories.DownloadReleaseAsset(ctx, owner, repo, asset.GetID(), http.DefaultClient)
+	if err != nil {
+		return fmt.Errorf("download published asset %s: %w", asset.GetName(), err)
+	}
+	err = verifyPublishedAsset(stream, asset)
+	closeErr := stream.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
+// errAssetVerdict marks a failure that re-reading the asset cannot change: its
+// recorded metadata or its published bytes are wrong. A transport failure
+// carries no such marker and is retried.
+var errAssetVerdict = errors.New("published asset failed verification")
+
 func verifyPublishedAsset(stream io.Reader, asset *github.ReleaseAsset) error {
 	if asset.GetSize() <= 0 || !strings.HasPrefix(asset.GetDigest(), "sha256:") {
-		return fmt.Errorf("published asset %s has no verifiable size and SHA-256 digest", asset.GetName())
+		return fmt.Errorf("%w: %s has no verifiable size and SHA-256 digest", errAssetVerdict, asset.GetName())
 	}
 	digest := sha256.New()
 	count, err := io.Copy(digest, io.LimitReader(stream, int64(asset.GetSize())+1))
@@ -151,7 +211,7 @@ func verifyPublishedAsset(stream io.Reader, asset *github.ReleaseAsset) error {
 		return err
 	}
 	if count != int64(asset.GetSize()) || fmt.Sprintf("sha256:%x", digest.Sum(nil)) != asset.GetDigest() {
-		return fmt.Errorf("published asset %s does not match its recorded size and digest", asset.GetName())
+		return fmt.Errorf("%w: %s does not match its recorded size and digest", errAssetVerdict, asset.GetName())
 	}
 	return nil
 }
