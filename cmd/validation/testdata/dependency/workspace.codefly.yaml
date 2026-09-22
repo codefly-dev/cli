@@ -1,0 +1,4 @@
+name: validation-dependencies
+layout: modules
+modules:
+  - name: app

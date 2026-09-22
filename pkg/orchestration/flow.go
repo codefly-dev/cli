@@ -1479,7 +1479,7 @@ func (flow *Flow) selectDependencyStage() error {
 	}
 	stage := resources.StageRun
 	switch flow.world.Mode {
-	case BuildMode, LintMode, CompileMode:
+	case BuildMode:
 		stage = resources.StageBuild
 	}
 	dependencies, err := flow.world.Dependencies.ForStage(stage)
