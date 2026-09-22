@@ -3,8 +3,8 @@ package gitops
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -42,24 +42,25 @@ func projectConfigurationValues(ctx context.Context, root, service string, env *
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	files, err := configurationSources(root, env.Name)
+	if err != nil {
+		return err
+	}
+	var allDocuments []manifest
+	paths := make([]string, 0, len(files))
+	for path, documents := range files {
+		paths = append(paths, path)
+		allDocuments = append(allDocuments, documents...)
+	}
+	configMaps, err := indexConfigurationMaps(allDocuments)
+	if err != nil {
+		return err
+	}
+	sort.Strings(paths)
 	pending := make(map[string][]byte)
 	matched := 0
-	err := walkRegularFiles(filepath.Join(root, "base"), func(path, relative string, _ os.FileInfo) error {
-		extension := strings.ToLower(filepath.Ext(relative))
-		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		documents, customization, err := decodeYAML(relative, data)
-		if err != nil {
-			return err
-		}
-		if customization != nil {
-			return nil
-		}
+	for _, path := range paths {
+		documents := files[path]
 		changed := false
 		for _, document := range documents {
 			spec, ok := podSpec(document)
@@ -68,7 +69,14 @@ func projectConfigurationValues(ctx context.Context, root, service string, env *
 			}
 			for _, candidate := range sliceField(spec, "containers") {
 				container, ok := candidate.(map[string]any)
-				if !ok || container["name"] != service {
+				if !ok {
+					return fmt.Errorf("service %q has an invalid container", service)
+				}
+				boundService, err := configMaps.service(container, metadataString(document.value, "namespace"))
+				if err != nil {
+					return err
+				}
+				if boundService != service {
 					continue
 				}
 				matched++
@@ -79,7 +87,7 @@ func projectConfigurationValues(ctx context.Context, root, service string, env *
 			}
 		}
 		if !changed {
-			return nil
+			continue
 		}
 		var out strings.Builder
 		encoder := yaml.NewEncoder(&out)
@@ -93,15 +101,11 @@ func projectConfigurationValues(ctx context.Context, root, service string, env *
 			return err
 		}
 		pending[path] = []byte(out.String())
-		return nil
-	})
-	if err != nil {
-		return err
 	}
 	if matched == 0 {
-		return fmt.Errorf("service %q declares configuration but no rendered workload contains its container", service)
+		return fmt.Errorf("service %q declares configuration but no rendered container declares %s=%s", service, resources.ServicePrefix, service)
 	}
-	paths := make([]string, 0, len(pending))
+	paths = paths[:0]
 	for path := range pending {
 		paths = append(paths, path)
 	}
@@ -173,87 +177,184 @@ func validateProjectedConfiguration(root string, service *resources.Service, env
 	if err != nil {
 		return err
 	}
-	if len(values) == 0 && len(refs) == 0 && identity == nil {
+	expectedSecret, err := expectedServiceSecret(root, service.Name, env)
+	if err != nil {
+		return err
+	}
+	if len(values) == 0 && len(refs) == 0 && identity == nil && expectedSecret == nil {
 		return nil
 	}
-	overlay := filepath.Join(root, "overlays", env.Name)
-	built, err := krusty.MakeKustomizer(krusty.MakeDefaultOptions()).Run(filesys.MakeFsOnDisk(), overlay)
+	documents, err := effectiveConfiguration(root, env.Name)
 	if err != nil {
 		return fmt.Errorf("build configuration overlay for %q: %w", service.Name, err)
 	}
-	data, err := built.AsYaml()
+	if err = validateProjectedSecret(documents, expectedSecret); err != nil {
+		return err
+	}
+	configMaps, err := indexConfigurationMaps(documents)
 	if err != nil {
 		return err
 	}
-	documents, _, err := decodeYAML("configuration-overlay.yaml", data)
-	if err != nil {
-		return err
-	}
-	accounts := map[string]map[string]any{}
+	accounts := map[namespacedName]map[string]any{}
 	for _, doc := range documents {
-		if doc.kind == "ServiceAccount" {
-			name, _ := mapField(doc.value, "metadata")["name"].(string)
-			accounts[name] = doc.value
+		if doc.group == "" && doc.kind == "ServiceAccount" {
+			key := namespacedName{namespace: metadataString(doc.value, "namespace"), name: metadataString(doc.value, "name")}
+			accounts[key] = doc.value
 		}
 	}
 	matched := 0
+	workloads := 0
 	for _, doc := range documents {
 		spec, ok := podSpec(doc)
 		if !ok {
 			continue
 		}
+		workloads++
+		if err := validateProjectedIdentity(service.Name, doc, accounts, identity); err != nil {
+			return err
+		}
+		if err := validateProjectedSecretNamespace(doc, expectedSecret); err != nil {
+			return err
+		}
 		for _, candidate := range sliceField(spec, "containers") {
 			container, ok := candidate.(map[string]any)
-			if !ok || container["name"] != service.Name {
+			if !ok {
+				return fmt.Errorf("service %q has an invalid effective container", service.Name)
+			}
+			boundService, err := configMaps.service(container, metadataString(doc.value, "namespace"))
+			if err != nil {
+				return err
+			}
+			if boundService != service.Name {
 				continue
 			}
 			matched++
-			entries := map[string]map[string]any{}
-			for _, item := range sliceField(container, "env") {
-				entry, ok := item.(map[string]any)
-				if !ok {
-					return fmt.Errorf("service %q has an invalid effective environment entry", service.Name)
-				}
-				name, _ := entry["name"].(string)
-				if _, exists := entries[name]; exists {
-					return fmt.Errorf("service %q repeats effective environment key %q", service.Name, name)
-				}
-				entries[name] = entry
-			}
-			for key, value := range values {
-				entry := entries[key]
-				if entry["value"] != value || entry["valueFrom"] != nil {
-					return fmt.Errorf("service %q overlay drops or overrides declared configuration key %q", service.Name, key)
-				}
-			}
-			for key := range refs {
-				entry := entries[key]
-				source, _ := entry["valueFrom"].(map[string]any)
-				ref, _ := source["secretKeyRef"].(map[string]any)
-				if ref["name"] != "secret-"+service.Name || ref["key"] != key || ref["optional"] == true || entry["value"] != nil {
-					return fmt.Errorf("service %q overlay drops or overrides declared secret key %q", service.Name, key)
-				}
-			}
-			if err := validateProjectedIdentity(service.Name, doc, accounts, identity); err != nil {
+			if err := validateContainerConfiguration(container, service.Name, values, refs); err != nil {
 				return err
 			}
 		}
 	}
-	if matched == 0 {
+	if (matched == 0 && (len(values) > 0 || len(refs) > 0)) || (workloads == 0 && identity != nil) {
 		return fmt.Errorf("service %q declarations bind no effective workload", service.Name)
 	}
 	return nil
 }
 
-func validateProjectedIdentity(service string, doc manifest, accounts map[string]map[string]any, identity *environments.EnvironmentWorkloadIdentity) error {
+func expectedServiceSecret(root, service string, env *environments.Environment) (*externalSecret, error) {
+	if env.ServiceSecrets == nil {
+		return nil, nil
+	}
+	keys, err := serviceSecretKeys(root, service)
+	if err != nil {
+		return nil, err
+	}
+	return serviceSecretProjection(service, env.Namespace, env.ServiceSecrets, keys)
+}
+
+func effectiveConfiguration(root, environment string) ([]manifest, error) {
+	overlay := filepath.Join(root, "overlays", environment)
+	built, err := krusty.MakeKustomizer(krusty.MakeDefaultOptions()).Run(filesys.MakeFsOnDisk(), overlay)
+	if err != nil {
+		return nil, err
+	}
+	data, err := built.AsYaml()
+	if err != nil {
+		return nil, err
+	}
+	documents, _, err := decodeYAML("configuration-overlay.yaml", data)
+	return documents, err
+}
+
+func validateProjectedSecretNamespace(doc manifest, expected *externalSecret) error {
+	if expected == nil || metadataString(doc.value, "namespace") == expected.Metadata.Namespace {
+		return nil
+	}
+	keys := map[string]struct{}{}
+	collectSecretKeyRefs(doc.value, expected.Spec.Target.Name, keys)
+	if len(keys) > 0 {
+		return fmt.Errorf("workload %q references projected secret %q from a different namespace", metadataString(doc.value, "name"), expected.Spec.Target.Name)
+	}
+	return nil
+}
+
+func validateContainerConfiguration(container map[string]any, service string, values map[string]string, refs map[string]environments.EnvironmentSecretRemoteRef) error {
+	entries := map[string]map[string]any{}
+	for _, item := range sliceField(container, "env") {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("service %q has an invalid effective environment entry", service)
+		}
+		name, _ := entry["name"].(string)
+		if _, exists := entries[name]; exists {
+			return fmt.Errorf("service %q repeats effective environment key %q", service, name)
+		}
+		entries[name] = entry
+	}
+	for key, value := range values {
+		entry := entries[key]
+		if entry["value"] != value || entry["valueFrom"] != nil {
+			return fmt.Errorf("service %q overlay drops or overrides declared configuration key %q", service, key)
+		}
+	}
+	for key := range refs {
+		entry := entries[key]
+		source, _ := entry["valueFrom"].(map[string]any)
+		ref, _ := source["secretKeyRef"].(map[string]any)
+		if ref["name"] != "secret-"+service || ref["key"] != key || ref["optional"] == true || entry["value"] != nil {
+			return fmt.Errorf("service %q overlay drops or overrides declared secret key %q", service, key)
+		}
+	}
+	return nil
+}
+
+func validateProjectedSecret(documents []manifest, expected *externalSecret) error {
+	if expected == nil {
+		return nil
+	}
+	data, err := yaml.Marshal(expected.Spec)
+	if err != nil {
+		return err
+	}
+	var expectedSpec map[string]any
+	if err := yaml.Unmarshal(data, &expectedSpec); err != nil {
+		return err
+	}
+	matched := 0
+	for _, doc := range documents {
+		if doc.group != "external-secrets.io" || doc.kind != kindExternalSecret || metadataString(doc.value, "namespace") != expected.Metadata.Namespace {
+			continue
+		}
+		spec := mapField(doc.value, "spec")
+		name, _ := mapField(spec, "target")["name"].(string)
+		if name == "" {
+			name = metadataString(doc.value, "name")
+		}
+		if name != expected.Spec.Target.Name {
+			continue
+		}
+		matched++
+		// The complete delivery specification is CLI-owned. Extra templates,
+		// dataFrom entries or policies can override an otherwise correct data key.
+		if !reflect.DeepEqual(spec, expectedSpec) {
+			return fmt.Errorf("overlay overrides projected ExternalSecret %q delivery specification", name)
+		}
+	}
+	if matched != 1 {
+		return fmt.Errorf("overlay must contain exactly one projected ExternalSecret for %s/%s, found %d", expected.Metadata.Namespace, expected.Spec.Target.Name, matched)
+	}
+	return nil
+}
+
+func validateProjectedIdentity(service string, doc manifest, accounts map[namespacedName]map[string]any, identity *environments.EnvironmentWorkloadIdentity) error {
 	if identity == nil {
 		return nil
 	}
 	template := podTemplate(doc)
 	name, _ := mapField(template, "spec")["serviceAccountName"].(string)
-	account := accounts[name]
+	namespace := metadataString(doc.value, "namespace")
+	account := accounts[namespacedName{namespace: namespace, name: name}]
 	if name == "" || account == nil {
-		return fmt.Errorf("service %q overlay drops its declared service account", service)
+		return fmt.Errorf("service %q overlay drops its declared service account %s/%s", service, namespace, name)
 	}
 	annotations := mapField(mapField(account, "metadata"), "annotations")
 	for key, value := range identity.Annotations {

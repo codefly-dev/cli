@@ -54,7 +54,8 @@ func writeConsumerTree(t *testing.T, root, environment, namespace, service, endp
 	deployment := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + service +
 		"\n  namespace: " + namespace + "\nspec:\n  template:\n    metadata:\n      labels:\n        app: " + service +
 		"\n    spec:\n      containers:\n        - name: " + service +
-		"\n          image: registry.example.com/" + service + "@sha256:" + strings.Repeat("a", 64) + "\n"
+		"\n          image: registry.example.com/" + service + "@sha256:" + strings.Repeat("a", 64) +
+		"\n          envFrom:\n            - configMapRef:\n                name: " + service + "\n"
 	files := map[string]string{
 		filepath.Join(base, "config-map.yaml"): configMap,
 		filepath.Join(base, "deployment.yaml"): deployment,

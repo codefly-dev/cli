@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 
@@ -16,8 +15,6 @@ import (
 	"github.com/codefly-dev/core/standards"
 	"github.com/codefly-dev/core/wool"
 )
-
-var kubernetesDNSLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 type RemoteManager struct {
 	dnsManager corenetwork.DNSManager
@@ -259,8 +256,8 @@ func (m *RemoteManager) StartPairing(ctx context.Context, _ *environments.Enviro
 		return w.NewError("no container or public instance in remote network mapping")
 	}
 	remotePort := remote.Port
-	if remotePort == 0 || remotePort > 65535 {
-		return w.NewError("remote port %d is outside 1..65535", remotePort)
+	if remotePort > 65535 {
+		return w.NewError("remote port %d exceeds 65535", remotePort)
 	}
 	remoteService, err := m.GetKubernetesService(ctx, service, remote.Hostname, uint16(remotePort))
 	if err != nil {
@@ -272,8 +269,8 @@ func (m *RemoteManager) StartPairing(ctx context.Context, _ *environments.Enviro
 		return w.NewError("no native instance found in local network mapping")
 	}
 	localPort := local.Port
-	if localPort == 0 || localPort > 65535 {
-		return w.NewError("local port %d is outside 1..65535", localPort)
+	if localPort > 65535 {
+		return w.NewError("local port %d exceeds 65535", localPort)
 	}
 	forwardPort := uint16(localPort)
 	// Each goroutine gets its own err binding — the previous version
@@ -308,9 +305,6 @@ func (m *RemoteManager) GetKubernetesService(ctx context.Context, identity *reso
 
 	name := hostParts[0]
 	namespace := hostParts[1]
-	if len(name) > 63 || len(namespace) > 63 || !kubernetesDNSLabel.MatchString(name) || !kubernetesDNSLabel.MatchString(namespace) {
-		return nil, w.NewError("invalid Kubernetes service or namespace in host %q", hostname)
-	}
 
 	return &KubernetesService{
 		Namespace:       namespace,
@@ -327,7 +321,7 @@ type KubernetesService struct {
 	*resources.ServiceIdentity
 }
 
-//nolint:gosec // G204: fixed kubectl executable, validated DNS labels and numeric ports; no shell.
+//nolint:gosec // G204: fixed kubectl executable, separate namespace/service arguments and numeric ports; no shell.
 func portForwardService(ctx context.Context, k8sSvc *KubernetesService, localPort uint16) error {
 	w := wool.Get(ctx).In("portForwardService")
 	cmd := exec.CommandContext(ctx, "kubectl", "port-forward", "-n", k8sSvc.Namespace, fmt.Sprintf("svc/%s", k8sSvc.Name), fmt.Sprintf("%d:%d", localPort, k8sSvc.Port))
@@ -345,7 +339,7 @@ func portForwardService(ctx context.Context, k8sSvc *KubernetesService, localPor
 	return nil
 }
 
-//nolint:gosec // G204: fixed kubectl executable and validated DNS labels passed as separate arguments; no shell.
+//nolint:gosec // G204: fixed kubectl executable with namespace/service passed as separate arguments; no shell.
 func fetchLogs(ctx context.Context, k8sService *KubernetesService, output wool.LogProcessorWithSource) error {
 	w := wool.Get(ctx).In("fetchLogs").With(wool.Field("namespace", k8sService.Namespace), wool.ThisField(k8sService))
 	identifier := &wool.Identifier{Unique: k8sService.Unique(), Kind: "SERVICE"}

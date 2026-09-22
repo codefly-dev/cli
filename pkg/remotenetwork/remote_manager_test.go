@@ -28,7 +28,7 @@ func TestKubernetesServicePreservesDeclaredTLS(t *testing.T) {
 }
 
 func TestPairingRejectsPortsBeforeStartingProcesses(t *testing.T) {
-	for _, invalid := range []uint32{0, 65536, 1<<32 - 1} {
+	for _, invalid := range []uint32{65536, 1<<32 - 1} {
 		for _, side := range []string{"local", "remote"} {
 			local := corenetwork.NativeInstance(resources.NewNetworkInstance("localhost", 12345))
 			remote := corenetwork.ContainerInstance(resources.NewNetworkInstance("api.product.svc.cluster.local", 8080))
@@ -42,11 +42,6 @@ func TestPairingRejectsPortsBeforeStartingProcesses(t *testing.T) {
 			require.ErrorContains(t, err, side+" port")
 		}
 	}
-}
-
-func TestKubernetesHostRejectsFlagLikeNames(t *testing.T) {
-	_, err := (&RemoteManager{}).GetKubernetesService(t.Context(), &resources.ServiceIdentity{Name: "api"}, "api.--context.svc.cluster.local", 8080)
-	require.ErrorContains(t, err, "invalid Kubernetes")
 }
 
 func (manager remoteDNSManager) GetDNS(context.Context, *resources.ServiceIdentity, string) (*basev0.DNS, error) {

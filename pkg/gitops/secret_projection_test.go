@@ -535,6 +535,8 @@ spec:
         - name: accounts
           image: registry.example.com/accounts@sha256:` + strings.Repeat("a", 64) + `
           env:
+            - name: CODEFLY__SERVICE
+              value: accounts
             - name: WORKOS_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

@@ -5,6 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"gopkg.in/yaml.v3"
 )
 
 func resourceEnvironment(t *testing.T, env *environments.Environment) *resources.Environment {
@@ -28,7 +29,11 @@ func selectedEnvironment(t *testing.T, workspace *resources.Workspace, name stri
 func setWorkspaceGitops(t *testing.T, workspace *resources.Workspace, gitops *environments.EnvironmentGitops) {
 	t.Helper()
 	if workspace.Extensions == nil {
-		workspace.Extensions = make(map[string]any)
+		workspace.Extensions = make(map[string]resources.YAMLValue)
 	}
-	workspace.Extensions["gitops"] = gitops
+	var node yaml.Node
+	if err := node.Encode(gitops); err != nil {
+		t.Fatal(err)
+	}
+	workspace.Extensions["gitops"] = resources.YAMLValue{Node: node}
 }

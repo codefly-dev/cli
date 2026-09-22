@@ -117,11 +117,21 @@ identity attachments, ingress, quotas and cloud deployment policy belong here.
 The spelling `codefly/coordinate/v1` and existing producer fields are unchanged.
 
 `service-config.values` entries are injected under their exact environment names
-into the container named for the consuming service. Explicit `service-secrets`
+into containers declaring that service through Core's `CODEFLY__SERVICE` runtime
+variable, directly or through a referenced, namespace-matched ConfigMap. Container
+names are agent-owned and are not service selectors. Only the selected overlay's
+resource graph supplies these declarations. Explicit `service-secrets`
 keys render both a container `secretKeyRef` and an ExternalSecret reference.
 Neither secrets nor configuration are implicitly copied to sidecars. Rendering
 refuses a declaration that cannot bind to a service container, and a literal
 configuration value cannot replace a rendered secret reference.
+
+Validation rebuilds the selected overlay and checks the complete CLI-owned
+ExternalSecret delivery specification, including its store, target, keys and
+properties. Overlay patches may not redirect or replace that specification.
+The target Secret and every consuming workload must share a namespace. Workload
+identity is checked at pod scope against the ServiceAccount's namespace and name,
+independently of container configuration bindings.
 
 ## Qualification limits
 
