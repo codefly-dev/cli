@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -26,12 +27,49 @@ func recordCI(method string) error {
 }
 
 // CI tests stop at a deliberate Package refusal after checking that validation
-// and packaging reached the same privately selected executable.
-func (*discoveryBuilder) Package(context.Context, *builderv0.PackageRequest) (*builderv0.PackageResponse, error) {
+// and packaging reached the same privately selected executable. Tests that need
+// the later stages point TEST_SOURCE_PACKAGE_EXECUTABLE at the bytes to emit.
+func (*discoveryBuilder) Package(_ context.Context, req *builderv0.PackageRequest) (*builderv0.PackageResponse, error) {
 	if err := recordCI("Builder.Package"); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.FailedPrecondition, "CI package boundary reached")
+	template := os.Getenv("TEST_SOURCE_PACKAGE_EXECUTABLE")
+	if template == "" {
+		return nil, status.Error(codes.FailedPrecondition, "CI package boundary reached")
+	}
+	payload, err := os.ReadFile(template)
+	if err != nil {
+		return nil, err
+	}
+	var artifacts []*builderv0.PackageArtifact
+	for _, target := range req.GetTargets() {
+		path := filepath.Join(req.GetOutputDirectory(), fmt.Sprintf("%s-%s-%s", req.GetArtifactName(), target.GetOs(), target.GetArchitecture()))
+		if err := os.MkdirAll(req.GetOutputDirectory(), 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, payload, 0o700); err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, &builderv0.PackageArtifact{
+			Kind:   builderv0.PackageArtifact_EXECUTABLE,
+			Path:   path,
+			Target: target,
+		})
+	}
+	return &builderv0.PackageResponse{
+		State:     &builderv0.PackageStatus{State: builderv0.PackageStatus_SUCCESS},
+		Artifacts: artifacts,
+	}, nil
+}
+
+func (*discoveryBuilder) Audit(context.Context, *builderv0.AuditRequest) (*builderv0.AuditResponse, error) {
+	if err := recordCI("Builder.Audit"); err != nil {
+		return nil, err
+	}
+	return &builderv0.AuditResponse{
+		State: &builderv0.AuditStatus{State: builderv0.AuditStatus_CLEAN},
+		Tool:  "test-source-auditor",
+	}, nil
 }
 
 type ciRuntime struct {
