@@ -732,14 +732,19 @@ func serviceUnique(svc *resources.Service) string {
 }
 
 type scopedConfiguration struct {
-	origin string // "workspace" or the service unique
+	origin string // "workspace", "module <name>", or the service unique
 	info   *basev0.ConfigurationInformation
 }
 
-// checkConfigurationSources discovers configuration files for the environment
-// without ever creating directories (core's reader would mkdir a missing
-// configurations/<env>; the doctor reports it instead). It returns the
-// configurations whose secret values are in scope for reference resolution.
+// checkConfigurationSources discovers the configurations the environment
+// provides, exactly as a run provisions them: the workspace's own
+// configurations/<profile>/* composed with the ones each composed module ships
+// in its tree — through core's configurations.ReadWorkspaceConfigurations, the
+// one definition of that rule, so the doctor cannot disagree with `run` — and
+// then the per-service directories. It never creates a directory: a missing
+// workspace directory is a failure only for the groups no composed module
+// provides. It returns the configurations whose secret values are in scope for
+// reference resolution.
 func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) []scopedConfiguration {
 	required := make([]string, 0, len(requiredBy))
 	for name := range requiredBy {
@@ -749,41 +754,88 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 
 	var toResolve []scopedConfiguration
 
-	wsCfgDir := filepath.Join(ws.Dir(), "configurations", env.Name)
-	relCfgDir := filepath.Join("configurations", env.Name)
-	wsInfos, loaded := loadConfigurationDir(ctx, wsCfgDir, "workspace", relCfgDir, report)
-	switch {
-	case loaded && wsInfos == nil && !dirExists(wsCfgDir):
-		if len(required) > 0 {
-			report.add(codeConfigurationDirMissing, "workspace configurations", "fail",
-				fmt.Sprintf("%s does not exist but %d workspace configuration(s) are required: %s", relCfgDir, len(required), strings.Join(required, ", ")),
-				fmt.Sprintf("create %s/ and add the required configuration files — fresh worktrees do not carry ignored *.secret.env files; copy the reference files from your primary checkout (secret values stay in the provider)", relCfgDir))
-		} else {
-			report.add("", "workspace configurations", "ok", fmt.Sprintf("none present under %s (none required)", relCfgDir), "")
-		}
-	case loaded:
-		if len(wsInfos) == 0 {
-			report.add("", "workspace configurations", "ok", fmt.Sprintf("none under %s", relCfgDir), "")
-		} else {
-			report.add("", "workspace configurations", "ok",
-				fmt.Sprintf("%d configuration(s) under %s: %s", len(wsInfos), relCfgDir, infoNames(wsInfos)), "")
-		}
-		byName := make(map[string]*basev0.ConfigurationInformation)
-		for _, info := range wsInfos {
+	// The profile, not the environment name, selects the directory — the same
+	// choice core makes when the run loads.
+	runtimeEnv := env.Runtime()
+	profile, err := runtimeEnv.ConfigurationProfileName()
+	if err != nil {
+		report.add(codeEnvironmentNotFound, "environment", "fail",
+			fmt.Sprintf("environment %q selects an invalid configuration profile: %v", env.Name, err),
+			fmt.Sprintf("fix `configuration-profile` of environment %q in %s", env.Name, resources.WorkspaceConfigurationName))
+		return nil
+	}
+	wsCfgDir := filepath.Join(ws.Dir(), "configurations", profile)
+	relCfgDir := filepath.Join("configurations", profile)
+
+	if provided := loadWorkspaceConfigurations(ctx, ws, runtimeEnv, relCfgDir, report); provided != nil {
+		byName := make(map[string]*basev0.ConfigurationInformation, len(provided.Infos))
+		var own, composed []*basev0.ConfigurationInformation
+		for _, info := range provided.Infos {
 			byName[info.Name] = info
+			if _, ok := provided.ComposedBy[info.Name]; ok {
+				composed = append(composed, info)
+			} else {
+				own = append(own, info)
+			}
+		}
+		// Only what nobody provides — a name no module ships, or one two modules
+		// disagree on — is what the workspace directory would have to hold; a
+		// module-shipped group is satisfied without it, exactly as in a run.
+		var unprovided []string
+		for _, name := range required {
+			if _, ok := byName[name]; !ok {
+				unprovided = append(unprovided, name)
+			}
+		}
+		switch {
+		case !dirExists(wsCfgDir) && len(unprovided) > 0:
+			report.add(codeConfigurationDirMissing, "workspace configurations", "fail",
+				fmt.Sprintf("%s does not exist and %d required workspace configuration(s) are provided by no composed module: %s", relCfgDir, len(unprovided), strings.Join(unprovided, ", ")),
+				fmt.Sprintf("create %s/ and add the required configuration files — fresh worktrees do not carry ignored *.secret.env files; copy the reference files from your primary checkout (secret values stay in the provider)", relCfgDir))
+		case !dirExists(wsCfgDir) && len(required) > 0:
+			report.add("", "workspace configurations", "ok",
+				fmt.Sprintf("none present under %s (all %d required configuration(s) are provided by composed modules)", relCfgDir, len(required)), "")
+		case !dirExists(wsCfgDir):
+			report.add("", "workspace configurations", "ok", fmt.Sprintf("none present under %s (none required)", relCfgDir), "")
+		case len(own) == 0:
+			report.add("", "workspace configurations", "ok", fmt.Sprintf("none under %s", relCfgDir), "")
+		default:
+			report.add("", "workspace configurations", "ok",
+				fmt.Sprintf("%d configuration(s) under %s: %s", len(own), relCfgDir, infoNames(own)), "")
+		}
+		if len(composed) > 0 {
+			report.add("", "composed module configurations", "ok",
+				fmt.Sprintf("%d configuration(s) shipped by composed modules: %s", len(composed), providedNames(composed, provided.ComposedBy)), "")
 		}
 		for _, name := range required {
+			requiredByList := strings.Join(requiredBy[name], ", ")
+			if conflict, ok := provided.Ambiguous[name]; ok {
+				report.add(codeConfigurationDuplicate, "workspace configurations", "fail",
+					fmt.Sprintf("required workspace configuration %q is ambiguous (required by %s): %v", name, requiredByList, conflict),
+					fmt.Sprintf("add %s/%s.env to this workspace: its own definition overrides every composed module's", relCfgDir, name))
+				continue
+			}
 			info, ok := byName[name]
 			if !ok {
 				report.add(codeConfigurationMissing, "workspace configurations", "fail",
-					fmt.Sprintf("required workspace configuration %q not found under %s (required by %s)", name, relCfgDir, strings.Join(requiredBy[name], ", ")),
+					fmt.Sprintf("required workspace configuration %q is neither under %s nor shipped by a composed module (required by %s)", name, relCfgDir, requiredByList),
 					fmt.Sprintf("add %s/%s.env (or %s.secret.env holding provider references)", relCfgDir, name, name))
 				continue
 			}
+			module, fromModule := provided.ComposedBy[name]
 			if len(info.ConfigurationValues) == 0 && info.Data == nil {
+				where, remedy := "exists under "+relCfgDir, fmt.Sprintf("populate the %s files for %q with the required keys", relCfgDir, name)
+				if fromModule {
+					where = fmt.Sprintf("is shipped by composed module %q", module)
+					remedy = fmt.Sprintf("add %s/%s.env with the required keys: the workspace's own definition overrides the module's", relCfgDir, name)
+				}
 				report.add(codeConfigurationMissing, "workspace configurations", "fail",
-					fmt.Sprintf("workspace configuration %q exists under %s but defines no values (required by %s)", name, relCfgDir, strings.Join(requiredBy[name], ", ")),
-					fmt.Sprintf("populate the %s files for %q with the required keys", relCfgDir, name))
+					fmt.Sprintf("workspace configuration %q %s but defines no values (required by %s)", name, where, requiredByList), remedy)
+				continue
+			}
+			if fromModule {
+				report.add("", "workspace configuration "+name, "ok",
+					fmt.Sprintf("provided by composed module %q (required by %s)", module, requiredByList), "")
 			}
 		}
 		if serviceScoped {
@@ -791,23 +843,23 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 			// workspace configurations must not be touched.
 			for _, name := range required {
 				if info, ok := byName[name]; ok {
-					toResolve = append(toResolve, scopedConfiguration{origin: "workspace", info: info})
+					toResolve = append(toResolve, scopedConfiguration{origin: workspaceConfigurationOrigin(name, provided.ComposedBy), info: info})
 				}
 			}
 		} else {
-			for _, info := range wsInfos {
-				toResolve = append(toResolve, scopedConfiguration{origin: "workspace", info: info})
+			for _, info := range provided.Infos {
+				toResolve = append(toResolve, scopedConfiguration{origin: workspaceConfigurationOrigin(info.Name, provided.ComposedBy), info: info})
 			}
 		}
 	}
 
 	serviceConfigurations := 0
 	for _, svc := range scope {
-		svcCfgDir := filepath.Join(svc.Dir(), "configurations", env.Name)
+		svcCfgDir := filepath.Join(svc.Dir(), "configurations", profile)
 		label := fmt.Sprintf("service %s", serviceUnique(svc))
-		relSvcDir := filepath.Join(svc.Name, "configurations", env.Name)
+		relSvcDir := filepath.Join(svc.Name, "configurations", profile)
 		if !dirExists(svcCfgDir) {
-			if others := otherEnvironmentDirs(filepath.Join(svc.Dir(), "configurations"), env.Name); len(others) > 0 {
+			if others := otherEnvironmentDirs(filepath.Join(svc.Dir(), "configurations"), profile); len(others) > 0 {
 				report.add(codeConfigurationDirMissing, "service configurations", "warn",
 					fmt.Sprintf("%s has configurations for %s but none for environment %q", label, strings.Join(others, ", "), env.Name),
 					fmt.Sprintf("create %s/ if this service needs configuration in %q", relSvcDir, env.Name))
@@ -827,6 +879,53 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 		report.add("", "service configurations", "ok", fmt.Sprintf("%d configuration(s) across %d service(s)", serviceConfigurations, len(scope)), "")
 	}
 	return toResolve
+}
+
+// loadWorkspaceConfigurations reads what the environment's profile provides to
+// the workspace through the same core read a run provisions from — which never
+// creates the workspace directory; its absence is judged by the caller. A tree
+// that cannot be read, in the workspace's own directory or in a composed
+// module's, is reported and returns nil. Duplicate keys within one
+// configuration are flagged as for a service directory.
+func loadWorkspaceConfigurations(ctx context.Context, ws *resources.Workspace, env *resources.Environment, relCfgDir string, report *workspaceReadinessReport) *configurations.WorkspaceConfigurations {
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, ws, env)
+	if err != nil {
+		code := codeConfigurationInvalid
+		if errors.Is(err, configurations.ErrConfigurationConflict) {
+			code = codeConfigurationDuplicate
+		}
+		report.add(code, "workspace configurations", "fail",
+			fmt.Sprintf("cannot load workspace configurations from %s and the composed modules: %v", relCfgDir, err),
+			fmt.Sprintf("fix the configuration files under %s, or the ones the named composed module ships", relCfgDir))
+		return nil
+	}
+	sort.SliceStable(provided.Infos, func(i, j int) bool { return provided.Infos[i].Name < provided.Infos[j].Name })
+	for _, info := range provided.Infos {
+		where := relCfgDir
+		if module, ok := provided.ComposedBy[info.Name]; ok {
+			where = fmt.Sprintf("composed module %q", module)
+		}
+		reportDuplicateKeys(info, "workspace", where, report)
+	}
+	return provided
+}
+
+// workspaceConfigurationOrigin labels where a workspace configuration in scope
+// for secret resolution came from.
+func workspaceConfigurationOrigin(name string, composedBy map[string]string) string {
+	if module, ok := composedBy[name]; ok {
+		return "module " + module
+	}
+	return "workspace"
+}
+
+// providedNames lists composed configurations with the module shipping each.
+func providedNames(infos []*basev0.ConfigurationInformation, composedBy map[string]string) string {
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, fmt.Sprintf("%s (%s)", info.Name, composedBy[info.Name]))
+	}
+	return strings.Join(names, ", ")
 }
 
 // loadConfigurationDir reads one configurations/<env> directory read-only.
@@ -849,17 +948,23 @@ func loadConfigurationDir(ctx context.Context, dir, label, relDir string, report
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
 	for _, info := range infos {
-		seen := make(map[string]bool)
-		for _, value := range info.ConfigurationValues {
-			if seen[value.Key] {
-				report.add(codeConfigurationDuplicate, label+" configurations", "fail",
-					fmt.Sprintf("configuration %q under %s defines key %s more than once", info.Name, relDir, value.Key),
-					fmt.Sprintf("keep a single definition of %s across the %q files", value.Key, info.Name))
-			}
-			seen[value.Key] = true
-		}
+		reportDuplicateKeys(info, label, relDir, report)
 	}
 	return infos, true
+}
+
+// reportDuplicateKeys flags a key one configuration defines more than once
+// across its files.
+func reportDuplicateKeys(info *basev0.ConfigurationInformation, label, relDir string, report *workspaceReadinessReport) {
+	seen := make(map[string]bool)
+	for _, value := range info.ConfigurationValues {
+		if seen[value.Key] {
+			report.add(codeConfigurationDuplicate, label+" configurations", "fail",
+				fmt.Sprintf("configuration %q under %s defines key %s more than once", info.Name, relDir, value.Key),
+				fmt.Sprintf("keep a single definition of %s across the %q files", value.Key, info.Name))
+		}
+		seen[value.Key] = true
+	}
 }
 
 // checkSecretReferences resolves every secret provider reference in scope

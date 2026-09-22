@@ -487,6 +487,133 @@ func TestDoctorWorkspaceRequiredWorkspaceConfiguration(t *testing.T) {
 	})
 }
 
+const testWorkspaceYAMLComposed = testWorkspaceYAML + `    - name: host-a
+      path: ../host-a
+    - name: host-b
+      path: ../host-b
+`
+
+// composedWorkspace lays out a workspace beside two path-referenced modules,
+// host-a and host-b, each shipping the configurations/local files given in
+// shipped[<module>]. The workspace's own backend/api service declares
+// workspaceDeps; extra lands in the workspace. It returns the workspace
+// directory.
+func composedWorkspace(t *testing.T, workspaceDeps []string, extra map[string]string, shipped map[string]map[string]string) string {
+	t.Helper()
+	files := map[string]string{
+		"solution/workspace.codefly.yaml":                            testWorkspaceYAMLComposed,
+		"solution/modules/backend/module.codefly.yaml":               testModuleYAML("api"),
+		"solution/modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", workspaceDeps...),
+	}
+	for _, host := range []string{"host-a", "host-b"} {
+		files[host+"/module.codefly.yaml"] = "kind: module\nname: " + host + "\nservices: []\n"
+		for name, content := range shipped[host] {
+			files[host+"/configurations/local/"+name] = content
+		}
+	}
+	for rel, content := range extra {
+		files["solution/"+rel] = content
+	}
+	return filepath.Join(writeTestWorkspace(t, files), "solution")
+}
+
+func findCheck(report *workspaceReadinessReport, name string) *workspaceDiagnostic {
+	for i := range report.Checks {
+		if report.Checks[i].Name == name {
+			return &report.Checks[i]
+		}
+	}
+	return nil
+}
+
+// A run provisions the configurations a composed module ships in its own tree
+// (core's ReadWorkspaceConfigurations); the doctor must answer as the run does.
+func TestDoctorWorkspaceComposedModuleConfigurations(t *testing.T) {
+	legalFromHostA := map[string]map[string]string{"host-a": {"legal.env": "LEGAL_URL=host-a-legal\n"}}
+
+	t.Run("module-shipped configuration satisfies a requirement", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"legal"}, nil, legalFromHostA)
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusReady {
+			t.Fatalf("status = %q, want ready: %s", report.Status, reportJSON(t, report))
+		}
+		requireNoCode(t, report, codeConfigurationMissing)
+		requireNoCode(t, report, codeConfigurationDirMissing)
+		check := findCheck(report, "workspace configuration legal")
+		if check == nil || check.Status != "ok" || !strings.Contains(check.Message, `"host-a"`) {
+			t.Fatalf("the satisfied group should name its providing module: %s", reportJSON(t, report))
+		}
+		if dirExists(filepath.Join(dir, "configurations", "local")) {
+			t.Fatal("doctor created the missing configurations directory")
+		}
+	})
+	t.Run("workspace file overrides a module-shipped one", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"legal"}, map[string]string{
+			"configurations/local/legal.env": "LEGAL_URL=solution-legal\n",
+		}, legalFromHostA)
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusReady {
+			t.Fatalf("status = %q, want ready: %s", report.Status, reportJSON(t, report))
+		}
+		if check := findCheck(report, "workspace configuration legal"); check != nil {
+			t.Fatalf("the workspace's own file wins, so no module should be credited: %+v", *check)
+		}
+		if check := findCheck(report, "composed module configurations"); check != nil {
+			t.Fatalf("the overridden module file is not a composed configuration: %+v", *check)
+		}
+		own := findCheck(report, "workspace configurations")
+		if own == nil || !strings.Contains(own.Message, "legal") {
+			t.Fatalf("the workspace's own configuration should be listed: %s", reportJSON(t, report))
+		}
+	})
+	t.Run("unprovided configuration still fails", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"legal", "openrouter"}, nil, legalFromHostA)
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusNotReady {
+			t.Fatalf("status = %q, want not_ready: %s", report.Status, reportJSON(t, report))
+		}
+		missingDir := requireCode(t, report, codeConfigurationDirMissing, "fail")
+		if !strings.Contains(missingDir.Message, "1 required") || !strings.Contains(missingDir.Message, "openrouter") || strings.Contains(missingDir.Message, "legal") {
+			t.Fatalf("the missing directory should count only the unprovided group: %q", missingDir.Message)
+		}
+		missing := findDiagnostics(report, codeConfigurationMissing)
+		if len(missing) != 1 || !strings.Contains(missing[0].Message, "openrouter") || !strings.Contains(missing[0].Message, "backend/api") {
+			t.Fatalf("exactly the unprovided group should be missing: %s", reportJSON(t, report))
+		}
+		if dirExists(filepath.Join(dir, "configurations", "local")) {
+			t.Fatal("doctor created the missing configurations directory")
+		}
+	})
+	t.Run("ambiguous providers fail", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"observability"}, nil, map[string]map[string]string{
+			"host-a": {"observability.env": "OBSERVABILITY_URL=host-a-observability\n"},
+			"host-b": {"observability.env": "OBSERVABILITY_URL=host-b-observability\n"},
+		})
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusNotReady {
+			t.Fatalf("status = %q, want not_ready: %s", report.Status, reportJSON(t, report))
+		}
+		diag := requireCode(t, report, codeConfigurationDuplicate, "fail")
+		for _, want := range []string{"observability", "host-a", "host-b", "backend/api"} {
+			if !strings.Contains(diag.Message, want) {
+				t.Fatalf("ambiguity should name the group, both providers and the requiring service; missing %q in %q", want, diag.Message)
+			}
+		}
+		requireNoCode(t, report, codeConfigurationMissing)
+	})
+	t.Run("identical definitions are one provider", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"observability"}, nil, map[string]map[string]string{
+			"host-a": {"observability.env": "OBSERVABILITY_URL=shared\n"},
+			"host-b": {"observability.env": "OBSERVABILITY_URL=shared\n"},
+		})
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusReady {
+			t.Fatalf("status = %q, want ready: %s", report.Status, reportJSON(t, report))
+		}
+		requireNoCode(t, report, codeConfigurationDuplicate)
+	})
+}
+
 func TestDoctorWorkspaceServiceConfigurations(t *testing.T) {
 	t.Run("present", func(t *testing.T) {
 		dir := singleServiceWorkspace(t, testWorkspaceYAML, nil, map[string]string{

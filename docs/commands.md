@@ -1965,9 +1965,16 @@ What it checks, in order:
    (`local` is implicit when undeclared).
 3. Declared secret backends are supported and their executables are on PATH
    (`op` for 1Password).
-4. `configurations/<env>` exists when services declare
-   `workspace-configuration-dependencies`, and required configurations exist
-   and define values. The directory is never created.
+4. Every workspace configuration group services declare under
+   `workspace-configuration-dependencies` is provided and defines values.
+   The doctor reads exactly what a run provisions: the workspace's own
+   `configurations/<profile>/*` composed with the groups each composed module
+   ships in its own tree, so a module-shipped group counts as satisfied and the
+   check names the module providing it. The workspace's own file wins over a
+   module's; a group two modules define differently is reported as ambiguous
+   (`configuration_duplicate`, naming both providers) until the workspace
+   declares it. A missing `configurations/<profile>` directory fails only for
+   the groups no composed module provides. The directory is never created.
 5. Per-service `configurations/<env>` files parse; duplicates are flagged.
 6. Secret provider references (`op://…`) resolve in memory through the
    configured backend; resolved values are discarded immediately. Plaintext
